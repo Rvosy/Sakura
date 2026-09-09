@@ -419,7 +419,14 @@ impl RuntimeLogService {
         Self::start_with_config(RuntimeLogConfig::production(path))
     }
 
-    pub fn start_with_config(mut config: RuntimeLogConfig) -> Self {
+    pub fn start_with_config(config: RuntimeLogConfig) -> Self {
+        Self::start_with_writer(config, run_writer)
+    }
+
+    fn start_with_writer(
+        mut config: RuntimeLogConfig,
+        write: impl FnOnce(&RuntimeLogInner) + Send + 'static,
+    ) -> Self {
         config.queue_capacity = config.queue_capacity.max(1);
         config.max_record_bytes = config.max_record_bytes.max(512);
         config.flush_interval = config.flush_interval.max(Duration::from_millis(1));
@@ -448,7 +455,7 @@ impl RuntimeLogService {
         let worker = thread::Builder::new()
             .name("sakura-runtime-log-writer".to_string())
             .spawn(move || {
-                run_writer(&worker_inner);
+                write(&worker_inner);
                 let _ = completion_sender.send(());
             });
         match worker {
@@ -842,10 +849,24 @@ impl RuntimeLogService {
 
     pub fn shutdown(&self, timeout: Duration) -> bool {
         let timeout = timeout.min(PRODUCTION_SHUTDOWN_TIMEOUT);
+        self.stop_writer(Some(timeout), timeout)
+    }
+
+    /// Content tests need the final flush and closed files, not the application's
+    /// best-effort exit deadline. Keep a watchdog so a stuck writer still fails.
+    #[cfg(test)]
+    pub(crate) fn drain_and_shutdown_for_test(&self) {
+        assert!(
+            self.stop_writer(None, Duration::from_secs(10)),
+            "runtime log writer did not finish draining and closing its files"
+        );
+    }
+
+    fn stop_writer(&self, drain_timeout: Option<Duration>, wait_timeout: Duration) -> bool {
         if let Ok(mut state) = self.inner.state.lock() {
             if !state.stopping {
                 state.stopping = true;
-                state.shutdown_deadline = Some(Instant::now() + timeout);
+                state.shutdown_deadline = drain_timeout.map(|timeout| Instant::now() + timeout);
             }
             self.inner.wake.notify_all();
         } else {
@@ -859,7 +880,7 @@ impl RuntimeLogService {
             .ok()
             .and_then(|mut completion| completion.take());
         let completed =
-            completion.is_some_and(|completion| completion.recv_timeout(timeout).is_ok());
+            completion.is_some_and(|completion| completion.recv_timeout(wait_timeout).is_ok());
         if completed {
             if let Ok(mut worker) = self.inner.worker.lock() {
                 if let Some(worker) = worker.take() {
@@ -3435,6 +3456,96 @@ fn local_clock_timestamp() -> String {
 mod tests {
     use super::*;
 
+    fn paused_writer(path: PathBuf) -> (RuntimeLogService, mpsc::Sender<()>) {
+        let (resume, paused) = mpsc::channel();
+        let log = RuntimeLogService::start_with_writer(test_config(path), move |inner| {
+            paused.recv_timeout(Duration::from_secs(10)).unwrap();
+            run_writer(inner);
+        });
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "test",
+            "test.delayed_writer",
+            "Delayed writer event",
+        )));
+        (log, resume)
+    }
+
+    #[test]
+    fn test_drain_preserves_pending_records_past_the_production_exit_budget() {
+        let root = temp_root("delayed-drain");
+        let path = root.join("sakura-runtime.log");
+        let (log, resume) = paused_writer(path.clone());
+        let draining = log.clone();
+        let (done, completion) = mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            draining.drain_and_shutdown_for_test();
+            done.send(()).unwrap();
+        });
+        // Synchronize with stop_writer before delaying the writer. No queue-empty
+        // polling: the completion signal must include its final flush and close.
+        let (state, wait) = log
+            .inner
+            .wake
+            .wait_timeout_while(
+                log.inner.state.lock().unwrap(),
+                Duration::from_secs(5),
+                |state| !state.stopping,
+            )
+            .unwrap();
+        assert!(!wait.timed_out());
+        drop(state);
+        let early_completion = completion.recv_timeout(PRODUCTION_SHUTDOWN_TIMEOUT * 2);
+        resume.send(()).unwrap();
+        let drained = shutdown.join();
+        if drained.is_err() {
+            if let Some(worker) = log.inner.worker.lock().unwrap().take() {
+                worker.join().unwrap();
+            }
+        }
+        drained.unwrap();
+        assert!(matches!(
+            early_completion,
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("Delayed writer event"));
+        assert!(log.inner.worker.lock().unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn production_shutdown_keeps_its_deadline_when_the_writer_is_stalled() {
+        let root = temp_root("delayed-production-shutdown");
+        let path = root.join("sakura-runtime.log");
+        let (log, resume) = paused_writer(path.clone());
+        let stopping = log.clone();
+        let (done, completion) = mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            done.send(stopping.shutdown(Duration::from_secs(30)))
+                .unwrap();
+        });
+        let completed = completion.recv_timeout(Duration::from_secs(5));
+        // Always release and join the fixture before asserting the timeout result.
+        resume.send(()).unwrap();
+        shutdown.join().unwrap();
+        log.inner
+            .worker
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(!completed.expect("production shutdown exceeded its bounded wait"));
+        let state = log.inner.state.lock().unwrap();
+        assert!(state.records.is_empty());
+        assert!(!path.exists(), "expired queued records must not be written");
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn wp_4l_01_unified_real_core_plugins_and_webview_share_writer_and_snapshot() {
         let root = temp_root("unified-real-processes");
@@ -3518,7 +3629,7 @@ mod tests {
             .details
             .iter()
             .any(|d| d.label == "window_label" && d.value == "settings"));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let software = fs::read_to_string(&path).unwrap();
         let plugins = fs::read_to_string(path.with_file_name("sakura-plugins.log")).unwrap();
         assert!(software.contains("Core 资源加载完成") && software.contains("前端运行正常"));
@@ -3549,7 +3660,7 @@ mod tests {
             "软件仍可记录",
             json!({})
         )));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let snapshot = log.viewer_snapshot(None).unwrap();
         assert_eq!(snapshot.failed_files, ["plugins"]);
         assert_eq!(snapshot.records.len(), 2);
@@ -3580,7 +3691,7 @@ mod tests {
                 "custom":true, "plugin_id":"fixture.one", "message":"插件日志轮转", "attributes":{"index":index}});
             assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
         }
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let plugin_path = path.with_file_name("sakura-plugins.log");
         assert!(
             plugin_path.exists()
@@ -3631,7 +3742,7 @@ mod tests {
             )
             .attributes(json!({"current_version": "1.2.3"})),
         ));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
 
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents.lines().count(), 2);
@@ -3664,7 +3775,7 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.starts_with('['));
         assert!(line.contains("] [API]"));
@@ -3689,7 +3800,7 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.contains("[API]"));
         assert!(line.contains("trace=17 call=2 status=401"));
@@ -3716,7 +3827,7 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.contains("[CONTEXT]"));
         assert!(line.contains("op=chat-123 trace=17 call=2 purpose=agent_step"));
@@ -3741,7 +3852,7 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.contains(
             "] [TTS] [info] 开始合成语音 │ provider=gpt_sovits text_chars=41 attempt=1\n"
@@ -3766,7 +3877,7 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.contains("provider=sakura.tts.gpt-sovits"));
         assert!(line.contains("provider_error_code=TTS_RUNTIME_PYTHON_MISSING"));
@@ -3791,7 +3902,7 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.contains("[CONTEXT]"));
         assert!(line.contains("op=chat-123 dependency=memory stage=process_exit status=degraded"));
@@ -3864,7 +3975,7 @@ mod tests {
             log.prepare_webview("main", failed).unwrap().severity,
             Severity::Warning
         );
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3886,7 +3997,7 @@ mod tests {
                 .attributes(json!({"revision": revision}))
             ));
         }
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         assert!(path.exists());
         assert!(backup_path(&path, 1).exists());
         assert!(backup_path(&path, 2).exists());
@@ -3999,23 +4110,7 @@ mod tests {
         for producer in producers {
             producer.join().unwrap();
         }
-        let drain_deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            if log
-                .inner
-                .state
-                .lock()
-                .is_ok_and(|state| state.records.is_empty())
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < drain_deadline,
-                "runtime log queue did not drain"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
 
         let records = fs::read_to_string(path)
             .unwrap()
@@ -4044,7 +4139,7 @@ mod tests {
             "test.failure.write",
             "Writer failure test event",
         )));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
         let _ = fs::remove_dir_all(root);
     }
@@ -4074,7 +4169,7 @@ mod tests {
                 "gestureId": "gesture-1",
             }))
         ));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let contents = fs::read_to_string(path).unwrap();
         assert!(!contents.contains("PRIVATE CHAT BODY"));
         assert!(!contents.contains(sentinel));
@@ -4115,7 +4210,7 @@ mod tests {
                 Some(credential),
             )
             .is_err());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let contents = fs::read_to_string(path).unwrap();
         assert!(contents.contains("[AGENT]"));
         assert!(!contents.contains("ignored"));
@@ -4212,7 +4307,7 @@ mod tests {
         assert!(!serde_json::to_string(&snapshot)
             .unwrap()
             .contains("不应展示的正文"));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4309,7 +4404,7 @@ mod tests {
         let serialized = serde_json::to_string(&record).unwrap();
         assert!(!serialized.contains("PRIVATE CHAT BODY"));
         assert!(!serialized.contains("private/runtime"));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4356,7 +4451,7 @@ mod tests {
                 ("错误码", "CONTEXT_WINDOW_EXCEEDED"),
             ]
         );
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let contents = fs::read_to_string(path).unwrap();
         assert!(contents.contains("context_window_tokens=131072"));
         assert!(contents.contains("tool_schema_tokens=500"));
@@ -4434,7 +4529,7 @@ mod tests {
             records[3].description.as_deref(),
             Some("这项操作没有正常完成。")
         );
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4522,7 +4617,7 @@ mod tests {
                 },
             ]
         );
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         assert!(fs::read_to_string(path)
             .unwrap()
             .contains("TTS 服务预热已排队"));
@@ -4572,7 +4667,7 @@ mod tests {
             assert!(record.details.iter().any(|detail| detail.label == "耗时"));
             assert_eq!(record.description.is_some(), stage == "failed");
         }
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let written = fs::read_to_string(path).unwrap();
         for record in records {
             assert!(written.contains(&record.message));
@@ -4622,7 +4717,7 @@ mod tests {
             records[1].description.as_deref(),
             Some("SoVITS 角色语音权重加载失败，文字回复仍可使用。")
         );
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4684,7 +4779,7 @@ mod tests {
             .unwrap();
         assert!(!incremental.reset_required);
         assert_eq!(incremental.records.len(), 1);
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 }

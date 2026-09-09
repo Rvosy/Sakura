@@ -955,7 +955,7 @@ mod tests {
                 }),
             },
         );
-        assert!(runtime_log.shutdown(std::time::Duration::from_millis(500)));
+        runtime_log.drain_and_shutdown_for_test();
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("[TTS]"));
         assert!(contents.contains("code=AUDIO_DEVICE_UNAVAILABLE"));
