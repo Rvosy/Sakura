@@ -289,6 +289,8 @@ struct SettingsWindowSession {
     closing: bool,
     reopen_after_close: bool,
     exit_pending: bool,
+    exit_revision: u64,
+    exit_acknowledged: bool,
     app_exit_authorized: bool,
 }
 
@@ -399,15 +401,41 @@ impl ProductShellState {
         Ok(authorized)
     }
 
-    pub fn begin_exit(&self) -> Result<bool, String> {
+    pub fn begin_exit(&self) -> Result<Option<u64>, String> {
         let mut session = self
             .settings
             .lock()
             .map_err(|_| "settings window state is unavailable".to_string())?;
         if session.exit_pending {
-            return Ok(false);
+            return Ok(None);
         }
         session.exit_pending = true;
+        session.exit_revision += 1;
+        session.exit_acknowledged = false;
+        Ok(Some(session.exit_revision))
+    }
+
+    pub fn acknowledge_exit(&self, revision: u64) -> Result<(), String> {
+        let mut session = self
+            .settings
+            .lock()
+            .map_err(|_| "settings window state is unavailable".to_string())?;
+        if !session.exit_pending || session.exit_revision != revision {
+            return Err("SETTINGS_EXIT_REQUEST_STALE".to_string());
+        }
+        session.exit_acknowledged = true;
+        Ok(())
+    }
+
+    pub fn cancel_unanswered_exit(&self, revision: u64) -> Result<bool, String> {
+        let mut session = self
+            .settings
+            .lock()
+            .map_err(|_| "settings window state is unavailable".to_string())?;
+        if !session.exit_pending || session.exit_revision != revision || session.exit_acknowledged {
+            return Ok(false);
+        }
+        session.exit_pending = false;
         Ok(true)
     }
 
@@ -899,8 +927,7 @@ pub fn resolve_settings_close(
 ) -> Result<(), String> {
     validate_settings_window(&window)?;
     if !discard {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        restore_and_focus_window(&window)?;
         return Ok(());
     }
     state.authorize_close()?;
@@ -909,6 +936,24 @@ pub fn resolve_settings_close(
         return Err(error.to_string());
     }
     Ok(())
+}
+
+pub fn restore_and_focus_window(window: &WebviewWindow) -> Result<(), String> {
+    if window.is_minimized().map_err(|error| error.to_string())? {
+        window.unminimize().map_err(|error| error.to_string())?;
+    }
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn acknowledge_settings_exit(
+    window: WebviewWindow,
+    revision: u64,
+    state: tauri::State<'_, ProductShellState>,
+) -> Result<(), String> {
+    validate_settings_window(&window)?;
+    state.acknowledge_exit(revision)
 }
 
 pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
@@ -920,12 +965,7 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
         if !state.settings_ready()? {
             return Ok(());
         }
-        if window.is_minimized().map_err(|error| error.to_string())? {
-            window.unminimize().map_err(|error| error.to_string())?;
-        }
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
+        return restore_and_focus_window(&window);
     }
 
     state.next_generation()?;
@@ -1282,8 +1322,8 @@ mod tests {
     #[test]
     fn app_exit_coordination_deduplicates_and_can_be_cancelled() {
         let state = ProductShellState::default();
-        assert!(state.begin_exit().unwrap());
-        assert!(!state.begin_exit().unwrap());
+        assert!(state.begin_exit().unwrap().is_some());
+        assert!(state.begin_exit().unwrap().is_none());
         assert!(state.exit_pending().unwrap());
         assert!(state.resolve_exit().unwrap());
         assert!(!state.exit_pending().unwrap());
@@ -1297,10 +1337,27 @@ mod tests {
     fn app_exit_never_reopens_a_settings_window_queued_during_destruction() {
         let state = ProductShellState::default();
         assert_eq!(state.next_generation().unwrap(), 1);
-        assert!(state.begin_exit().unwrap());
+        assert!(state.begin_exit().unwrap().is_some());
         state.authorize_close().unwrap();
         assert!(state.queue_reopen_if_closing().unwrap());
         assert!(!state.window_destroyed().unwrap());
+    }
+
+    #[test]
+    fn app_exit_timeout_does_not_cancel_a_visible_confirmation_or_a_new_request() {
+        let state = ProductShellState::default();
+        let first = state.begin_exit().unwrap().unwrap();
+        state.acknowledge_exit(first).unwrap();
+        assert!(!state.cancel_unanswered_exit(first).unwrap());
+        assert!(state.exit_pending().unwrap());
+        assert!(state.resolve_exit().unwrap());
+
+        let second = state.begin_exit().unwrap().unwrap();
+        assert!(!state.cancel_unanswered_exit(first).unwrap());
+        assert!(state.acknowledge_exit(first).is_err());
+        assert!(state.cancel_unanswered_exit(second).unwrap());
+        assert!(!state.exit_pending().unwrap());
+        assert!(state.acknowledge_exit(second).is_err());
     }
 
     #[test]

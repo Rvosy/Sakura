@@ -125,7 +125,7 @@ export class PetContextMenu {
     }
     for (const item of this.menu.querySelectorAll("[data-menu-unavailable]")) {
       item.disabled = true;
-      item.title = manifest.unavailableReason;
+      item.dataset.tooltip = manifest.unavailableReason;
       item.setAttribute("aria-disabled", "true");
     }
     const unavailableReason = this.menu.querySelector("#pet-context-menu-unavailable-reason");

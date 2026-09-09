@@ -63,8 +63,8 @@ export function createScreenAttachmentController({
     captureItem.disabled = capturing || submitting || attachments.length >= attachmentLimit;
     const detail = attachments.length ? `，已附加 ${attachments.length} 张截图` : "";
     toggle.setAttribute("aria-label", voiceActive ? "取消语音输入" : `添加附件${detail}`);
-    toggle.title = voiceActive ? "取消语音输入 · Esc" : `添加附件${detail}`;
-    captureItem.title = attachments.length >= attachmentLimit
+    toggle.dataset.tooltip = voiceActive ? "取消语音输入 · Esc" : `添加附件${detail}`;
+    captureItem.dataset.tooltip = attachments.length >= attachmentLimit
       ? `每条消息最多附加 ${attachmentLimit} 张截图`
       : "框选屏幕区域并随消息发送";
     renderAttachmentList();

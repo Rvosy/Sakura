@@ -164,12 +164,12 @@ const RUNTIME_LAYOUT_DEFAULTS = Object.freeze({
 function disableRuntimeControl(control, { markRow = true } = {}) {
   if (!control) return;
   control.disabled = true;
-  control.title = RUNTIME_UNAVAILABLE_REASON;
+  control.dataset.tooltip = RUNTIME_UNAVAILABLE_REASON;
   control.setAttribute("aria-disabled", "true");
   if (!markRow) return;
   const row = control.closest(".setting-row");
   row?.classList.add("is-disabled");
-  if (row) row.title = RUNTIME_UNAVAILABLE_REASON;
+  if (row) row.dataset.tooltip = RUNTIME_UNAVAILABLE_REASON;
 }
 
 function prepareRuntimeAppearance(snapshot, themeFields) {
@@ -358,12 +358,13 @@ function beginSettingsWindowClose() {
 }
 
 let exitRequestInFlight = false;
-async function requestAppExitClose() {
+async function requestAppExitClose(event) {
   if (exitRequestInFlight) {
     return;
   }
   exitRequestInFlight = true;
   try {
+    await invoke("acknowledge_settings_exit", { revision: event.payload });
     const { executeSettingsClose } = await settingsCloseFlowPromise;
     setError("");
     await executeSettingsClose({
@@ -390,18 +391,19 @@ async function requestAppExitClose() {
           await runtimeCharacterFeature?.waitForPreview();
           await runtimeProviderFeature?.cancelOperations();
           bypassCloseGuard = true;
-          await invoke("resolve_settings_exit", { discard: true });
+          await invoke("resolve_settings_exit", { discard: true, revision: event.payload });
         } catch (error) {
           settingsWindowClosing = false;
           throw error;
         }
       },
       stay: async () => {
-        await invoke("resolve_settings_exit", { discard: false });
+        await invoke("resolve_settings_exit", { discard: false, revision: event.payload });
       },
     });
   } catch (error) {
     bypassCloseGuard = false;
+    await invoke("resolve_settings_exit", { discard: false, revision: event.payload }).catch(() => {});
     setError(String(error));
   } finally {
     setSubmissionBusy(false);
@@ -538,7 +540,7 @@ async function chooseUnsavedClose(action) {
     const discard = document.createElement("button");
     discard.type = "button";
     discard.className = "danger-button";
-    discard.textContent = `不保存并${action}`;
+    discard.textContent = action === "退出" ? "直接退出" : "不保存并关闭";
     const save = document.createElement("button");
     save.type = "button";
     save.textContent = `保存并${action}`;
@@ -1060,7 +1062,7 @@ function renderThemeControls() {
     swatchButton.type = "button";
     swatchButton.className = "theme-color-swatch";
     swatchButton.dataset.themeSwatch = id;
-    swatchButton.title = "调整颜色";
+    swatchButton.dataset.tooltip = "调整颜色";
     swatchButton.addEventListener("click", () => openThemeColorPopover(id, swatchButton));
 
     const textInput = document.createElement("input");
@@ -1099,7 +1101,7 @@ function renderThemeControls() {
     option.textContent = mode.disabled && mode.reason
       ? `${mode.label}（${mode.reason}）`
       : mode.label;
-    if (mode.reason) option.title = mode.reason;
+    if (mode.reason) option.dataset.tooltip = mode.reason;
     fields.visualEffectMode.append(option);
   });
 }

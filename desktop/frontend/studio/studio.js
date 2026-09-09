@@ -1087,7 +1087,7 @@ function renderTheme(theme) {
     swatchButton.type = "button";
     swatchButton.className = "theme-color-swatch";
     swatchButton.dataset.themeSwatch = id;
-    swatchButton.title = "调整颜色";
+    swatchButton.dataset.tooltip = "调整颜色";
     swatchButton.addEventListener("click", () => openThemeColorPopover(id));
     const textInput = document.createElement("input");
     textInput.id = `theme-${id}`;
