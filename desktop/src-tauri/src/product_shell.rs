@@ -468,13 +468,6 @@ impl ProductShellState {
         Ok(authorized)
     }
 
-    pub fn exit_pending(&self) -> Result<bool, String> {
-        self.settings
-            .lock()
-            .map(|session| session.exit_pending)
-            .map_err(|_| "settings window state is unavailable".to_string())
-    }
-
     pub fn window_destroyed(&self) -> Result<bool, String> {
         let mut session = self
             .settings
@@ -1324,9 +1317,7 @@ mod tests {
         let state = ProductShellState::default();
         assert!(state.begin_exit().unwrap().is_some());
         assert!(state.begin_exit().unwrap().is_none());
-        assert!(state.exit_pending().unwrap());
         assert!(state.resolve_exit().unwrap());
-        assert!(!state.exit_pending().unwrap());
         assert!(!state.resolve_exit().unwrap());
         state.authorize_app_exit().unwrap();
         assert!(state.consume_app_exit_authorization().unwrap());
@@ -1349,14 +1340,13 @@ mod tests {
         let first = state.begin_exit().unwrap().unwrap();
         state.acknowledge_exit(first).unwrap();
         assert!(!state.cancel_unanswered_exit(first).unwrap());
-        assert!(state.exit_pending().unwrap());
         assert!(state.resolve_exit().unwrap());
 
         let second = state.begin_exit().unwrap().unwrap();
         assert!(!state.cancel_unanswered_exit(first).unwrap());
         assert!(state.acknowledge_exit(first).is_err());
         assert!(state.cancel_unanswered_exit(second).unwrap());
-        assert!(!state.exit_pending().unwrap());
+        assert!(!state.resolve_exit().unwrap());
         assert!(state.acknowledge_exit(second).is_err());
     }
 
