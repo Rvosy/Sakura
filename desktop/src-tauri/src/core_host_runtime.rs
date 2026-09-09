@@ -4012,7 +4012,7 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        runtime_log.drain_and_shutdown_for_test();
 
         let state = state.lock().expect("stderr state");
         assert_eq!(state.stats.structured_records, 1);
@@ -4078,7 +4078,7 @@ mod tests {
             &AtomicBool::new(false),
             Some(&sink),
         );
-        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        runtime_log.drain_and_shutdown_for_test();
 
         let stats = &state.lock().expect("stderr state").stats;
         assert_eq!(stats.structured_records, 0);
@@ -4294,7 +4294,7 @@ mod tests {
         assert!(exit.stderr.is_empty());
         assert!(exit.stderr_stats.structured_records >= 2);
         assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
-        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        runtime_log.drain_and_shutdown_for_test();
         let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
         assert!(records.matches("[CORE]").count() >= 3);
         let _ = fs::remove_dir_all(log_root);
@@ -4502,7 +4502,7 @@ mod tests {
                 .all(|record| record.event_code == "ipc.request.cancelled"
                     && record.severity == "info"));
             host.shutdown().unwrap();
-            assert!(log.shutdown(Duration::from_millis(500)));
+            log.drain_and_shutdown_for_test();
             let text = fs::read_to_string(&path).unwrap();
             assert_eq!(text.lines().filter(|line| line.contains("outcome=completed") && line.contains("asr.input.")).count(),
                 if level == Verbosity::Debug { 3 } else { 0 });
@@ -5044,7 +5044,7 @@ mod tests {
         assert!(exit.stderr.is_empty());
         assert!(exit.stderr_stats.structured_records >= 2);
         assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
-        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        runtime_log.drain_and_shutdown_for_test();
         let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
         assert!(records.matches("[CORE]").count() >= 3);
         let _ = fs::remove_dir_all(log_root);

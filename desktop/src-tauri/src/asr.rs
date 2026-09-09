@@ -1253,7 +1253,7 @@ mod tests {
         assert_eq!(records[3].event_code, "asr.capture.cancelled");
         assert_eq!(records[5].event_code, "asr.capture.failed");
         assert_eq!(records[5].severity, "warning");
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let text = fs::read_to_string(path).unwrap();
         assert_eq!(text.lines().count(), 6);
         assert!(text.contains("recording_id=capture-device-fault"));
