@@ -535,7 +535,10 @@ fn valid_settings_display_value(kind: &str, value: Option<&Value>, action_ids: &
 
 fn valid_install_id(value: Option<&Value>) -> bool {
     value.and_then(Value::as_str).is_some_and(|text| {
-        let Some(directory) = text.strip_prefix("pi_user_").or_else(|| text.strip_prefix("pi_bundled_")) else {
+        let Some(directory) = text
+            .strip_prefix("pi_user_")
+            .or_else(|| text.strip_prefix("pi_bundled_"))
+        else {
             return false;
         };
         (2..=2048).contains(&directory.len())
@@ -963,7 +966,8 @@ mod tests {
     #[test]
     fn encoded_install_ids_remain_bounded_across_the_desktop_boundary() {
         let mut value = snapshot();
-        value["plugins"][0]["installId"] = json!(format!("pi_bundled_{}", "e8a792e889b2".repeat(35)));
+        value["plugins"][0]["installId"] =
+            json!(format!("pi_bundled_{}", "e8a792e889b2".repeat(35)));
         assert!(validate_snapshot(&value).is_ok());
         for invalid in ["pi_user_", "pi_user_a", "pi_other_6162", "pi_user_../a"] {
             value["plugins"][0]["installId"] = json!(invalid);
