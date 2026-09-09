@@ -3248,48 +3248,10 @@ fn composer_tool_dock_hit_regions(
     Ok(combined)
 }
 
-fn append_tooltip_hit_region(
-    regions: &mut window_interaction::PhysicalHitRegions,
-    rect: [f64; 4],
-    scale: f64,
-) -> Result<(), String> {
-    let [x, y, width, height] = rect;
-    if !rect.iter().all(|value| value.is_finite() && *value >= 0.0)
-        || width == 0.0
-        || height == 0.0
-        || !scale.is_finite()
-        || scale <= 0.0
-        || (x + width) * scale > f64::from(regions.envelope[0]) + 1.0
-        || (y + height) * scale > f64::from(regions.envelope[1]) + 1.0
-    {
-        return Err("PET_TOOLTIP_GEOMETRY_INVALID".to_string());
-    }
-    // Include the modest shadow; viewport pixels already include content scaling and offsets.
-    let left = ((x - 6.0) * scale).floor().max(0.0);
-    let top = ((y - 6.0) * scale).floor().max(0.0);
-    let right = ((x + width + 6.0) * scale)
-        .ceil()
-        .min(f64::from(regions.envelope[0]));
-    let bottom = ((y + height + 6.0) * scale)
-        .ceil()
-        .min(f64::from(regions.envelope[1]));
-    regions
-        .interactive
-        .push(window_interaction::PhysicalHitRect {
-            x: left as i32,
-            y: top as i32,
-            width: (right - left) as u32,
-            height: (bottom - top) as u32,
-            corner_radius: (7.0 * scale).round() as u32,
-        });
-    Ok(())
-}
-
 #[tauri::command]
 fn set_pet_tool_dock_surface(
     window: WebviewWindow,
     rect: Option<[u32; 4]>,
-    tooltip_rect: Option<[f64; 4]>,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
 ) -> Result<(), String> {
     if window.label() != "main" {
@@ -3320,15 +3282,12 @@ fn set_pet_tool_dock_surface(
         .cloned()
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
     drop(geometry);
-    let mut next = match rect {
+    let next = match rect {
         Some(rect) => {
             composer_tool_dock_hit_regions(&layout_contract()?, &application, &base, rect)?
         }
         None => base,
     };
-    if let Some(tooltip_rect) = tooltip_rect {
-        append_tooltip_hit_region(&mut next, tooltip_rect, application.scale_factor)?;
-    }
     apply_precise_hit_regions(&window, &next)
 }
 
@@ -8676,22 +8635,6 @@ mod tests {
         assert_eq!(opened.interactive[0].y, 882);
         assert_eq!(opened.interactive[0].corner_radius, 16);
         assert_eq!(application.physical_placement, placement);
-        let mut with_help = opened.clone();
-        // CSS viewport pixels already contain content zoom; only native DPI is applied here.
-        append_tooltip_hit_region(&mut with_help, [400.0, 500.0, 120.0, 32.0], 1.5).unwrap();
-        assert_eq!(with_help.interactive.len(), 2);
-        assert_eq!(with_help.interactive[0], opened.interactive[0]);
-        assert_eq!(with_help.interactive[1].x, 591);
-        assert_eq!(with_help.interactive[1].y, 741);
-        assert_eq!(with_help.interactive[1].width, 198);
-        for invalid in [
-            [f64::NAN, 0.0, 10.0, 10.0],
-            [0.0, 0.0, 0.0, 10.0],
-            [899.0, 0.0, 100.0, 10.0],
-        ] {
-            assert!(append_tooltip_hit_region(&mut with_help, invalid, 1.0).is_err());
-        }
-        assert_eq!(with_help.interactive.len(), 2);
         assert_eq!(
             window_interaction::expand_surface_bounds_for_overlay(
                 application.active_bounds,

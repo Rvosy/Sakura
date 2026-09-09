@@ -16,7 +16,6 @@ import { installDevtoolsShortcutGuard } from "./core/devtools-guard.js";
 import { createInteractionLatencyTracer } from "./core/interaction-latency.js";
 import { createRuntimeDiagnostics } from "./core/runtime-diagnostics.js";
 import { applyTheme } from "./core/theme.js";
-import { createPetOverlaySurfaces } from "./pet/overlay-surfaces.js";
 import {
   appearanceChanges,
   applyAppearanceVariables,
@@ -790,7 +789,6 @@ function syncPortraitAppearance(
 }
 
 function commitSurfaceApplication(surface) {
-  document.dispatchEvent(new Event("sakura-tooltip-dismiss"));
   if (surface.backendMode) {
     stage.dataset.nativeViewport = String(surface.backendMode === "macos_cursor_router");
   }
@@ -1114,13 +1112,6 @@ function inputIsPinned() {
     || screenAttachment?.busy() === true;
 }
 
-const petOverlaySurfaces = createPetOverlaySurfaces(invoke);
-document.addEventListener("sakura-tooltip-bounds", (event) => {
-  void petOverlaySurfaces.setTooltip(event.detail).catch(() => {
-    document.dispatchEvent(new Event("sakura-tooltip-dismiss"));
-  });
-});
-
 screenAttachment = createScreenAttachmentController({
   composer,
   toggle: attachmentToggle,
@@ -1138,8 +1129,8 @@ screenAttachment = createScreenAttachmentController({
     const [x, y, , height] = productLayout.inputRect;
     return [x, y + height + 12, 216, Math.min(4, count) * 24 + 8];
   },
-  openSurface: (rect) => petOverlaySurfaces.setToolDock(rect),
-  closeSurface: () => petOverlaySurfaces.setToolDock(null),
+  openSurface: (rect) => invoke("set_pet_tool_dock_surface", { rect }),
+  closeSurface: () => invoke("set_pet_tool_dock_surface", { rect: null }),
 });
 
 const phaseLabels = Object.freeze({
@@ -1394,7 +1385,6 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   send.dataset.action = state.canCancel ? "cancel" : state.canRetry ? "retry" : "send";
   const actionLabel = state.canCancel ? "停止回复" : state.canRetry ? "重试连接" : "发送消息";
   send.setAttribute("aria-label", actionLabel);
-  send.dataset.tooltip = actionLabel;
   composerActionIndicator.setBusy(state.canCancel);
   input.disabled = presentationUnavailable;
   send.disabled = asrController?.active() === true || presentationUnavailable || state.silentInteraction || (

@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./audio/asr.css" />
     <script type="module" src="./app.js"></script>
-    <script type="module" src="./core/tooltip.js"></script>
   </head>
   <body data-shell-state="loading" data-chat-state="ready">
     <main id="pet-stage" class="pet-stage" aria-label="Sakura 桌宠">
@@ -83,7 +82,7 @@
           <span class="visually-hidden" role="status">正在录音，再次点击麦克风结束，按 Esc 取消</span>
           <canvas id="voice-waveform" aria-hidden="true"></canvas>
         </div>
-        <button type="button" id="voice-mic" aria-label="开始语音输入" data-tooltip="开始语音输入" hidden>
+        <button type="button" id="voice-mic" aria-label="开始语音输入" hidden>
           <span class="sakura-morph-icon" aria-hidden="true"><span class="sakura-icon icon-mic"></span></span>
         </button>
         <button type="submit" id="composer-send" tabindex="-1" data-action="send" aria-label="发送消息">
@@ -107,7 +106,6 @@
             data-tool-id="builtin.screen-capture"
             role="menuitem"
             tabindex="-1"
-            data-tooltip="框选屏幕区域并随消息发送"
           >
             <span class="composer-tool-dock__icon" data-tool-icon="camera" aria-hidden="true">
               <span class="sakura-icon icon-scan-line" aria-hidden="true"></span>

@@ -1,10 +1,9 @@
-// Shared by pet, settings and studio. Keep help outside scroll/transform containers.
+// Shared by settings and studio. Keep help outside scroll/transform containers.
 export function installTooltips(doc = document) {
   const win = doc.defaultView;
   const tip = doc.createElement("div");
   tip.id = "sakura-tooltip";
   tip.className = "sakura-tooltip";
-  tip.dataset.interactive = "true";
   tip.setAttribute("role", "tooltip");
   tip.setAttribute("popover", "manual");
   tip.hidden = true;
@@ -12,15 +11,6 @@ export function installTooltips(doc = document) {
   let anchor = null;
   let timer;
   let pinned = false;
-  let publishedBounds = null;
-
-  function publishBounds(bounds) {
-    if (bounds === null && publishedBounds === null) return;
-    if (bounds && publishedBounds && bounds.every((value, index) => value === publishedBounds[index])) return;
-    publishedBounds = bounds;
-    doc.dispatchEvent(new win.CustomEvent("sakura-tooltip-bounds", { detail: bounds }));
-  }
-
   function describe(add) {
     if (!anchor) return;
     const ids = new Set((anchor.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
@@ -36,7 +26,6 @@ export function installTooltips(doc = document) {
     describe(false);
     if (tip.matches(":popover-open")) tip.hidePopover();
     tip.hidden = true;
-    publishBounds(null);
     anchor = null;
     pinned = false;
   }
@@ -51,9 +40,6 @@ export function installTooltips(doc = document) {
     const top = above >= inset ? above : Math.min(rect.bottom + inset, win.innerHeight - height - inset);
     tip.style.left = `${left}px`;
     tip.style.top = `${Math.max(inset, top)}px`;
-    // The transparent pet window must include the tooltip in its native visible/input region.
-    const bounds = tip.getBoundingClientRect();
-    publishBounds([bounds.x, bounds.y, bounds.width, bounds.height]);
   }
 
   function refresh() {
@@ -120,7 +106,6 @@ export function installTooltips(doc = document) {
       }
     }, true],
     [doc, "scroll", hide, true],
-    [doc, "sakura-tooltip-dismiss", hide],
     [win, "resize", hide],
     [win, "blur", hide],
   ];

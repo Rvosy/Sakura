@@ -106,26 +106,8 @@ try:
         assert page.locator('dialog[open]').count() == 1, 'first Escape dismisses help, not dialog'
         page.evaluate('document.querySelector("dialog[open]").remove()')
 
-        # Production microphone controller updates a visible tooltip during ASR state changes.
-        boot = (frontend / 'tests/fixtures/composer-motion-boot.js').read_text(encoding='utf-8')
-        page.route('**/app.js', lambda route: route.fulfill(content_type='text/javascript', body=boot))
-        page.goto(url, wait_until='networkidle')
-        mic = page.locator('#voice-mic')
-        tip = page.locator('#sakura-tooltip')
-        mic.hover()
-        expect(tip).to_have_text('开始语音输入')
+        select.hover()
         expect(tip).to_be_visible()
-        page.evaluate('motionJourney.view.setState("recording")')
-        expect(tip).to_have_text('结束录音并识别')
-        assert mic.get_attribute('title') is None
-        page.evaluate('''() => {
-          document.documentElement.style.setProperty('--panel-background', '#282032');
-          document.documentElement.style.setProperty('--text', '#f0def6');
-          document.documentElement.style.setProperty('--border', '#9774ac');
-        }''')
-        expect(tip).to_have_css('background-color', 'rgb(40, 32, 50)')
-        expect(tip).to_have_css('color', 'rgb(240, 222, 246)')
-        page.screenshot(path=str(output / 'microphone-theme.png'))
         # Edge positioning, disabled controls, removal and scroll dismissal.
         page.evaluate('''() => {
           const button = document.createElement('button');
@@ -142,13 +124,42 @@ try:
         assert box['x'] + box['width'] <= 1008 and box['y'] + box['height'] <= 850
         page.evaluate('document.querySelector("#edge-help").remove()')
         expect(tip).to_be_hidden()
-        mic.hover()
+        select.hover()
         expect(tip).to_be_visible()
         page.evaluate('document.dispatchEvent(new Event("scroll"))')
         expect(tip).to_be_hidden()
+        # Main UI deliberately has no hover help, including while ASR changes state.
+        boot = (frontend / 'tests/fixtures/composer-motion-boot.js').read_text(encoding='utf-8')
+        page.route('**/app.js', lambda route: route.fulfill(content_type='text/javascript', body=boot))
+        page.goto(url, wait_until='networkidle')
+        for selector in ['#composer-attachment', '#voice-mic', '#composer-send']:
+            control = page.locator(selector)
+            control.hover()
+            page.wait_for_timeout(550)
+            expect(page.locator('[role="tooltip"]:visible')).to_have_count(0)
+            assert control.get_attribute('title') is None
+            assert control.get_attribute('aria-label')
+        for state in ['recording', 'recognizing', 'idle']:
+            page.evaluate('(state) => motionJourney.view.setState(state)', state)
+            page.locator('#voice-mic').hover()
+            page.wait_for_timeout(550)
+            expect(page.locator('[role="tooltip"]:visible')).to_have_count(0)
+            assert page.locator('#voice-mic').get_attribute('title') is None
+        # Expose the production screenshot item without invoking a real capture.
+        page.evaluate('''() => {
+          const dock = document.querySelector('#composer-tool-dock');
+          dock.hidden = false;
+          dock.dataset.open = 'true';
+          dock.style.cssText = 'display:block;opacity:1;visibility:visible;position:fixed;top:700px;left:180px';
+        }''')
+        page.locator('#capture-screen').hover()
+        page.wait_for_timeout(550)
+        expect(page.locator('[role="tooltip"]:visible')).to_have_count(0)
+        assert page.locator('[title], [data-tooltip]').count() == 0
+        page.screenshot(path=str(output / 'main-without-tooltip.png'))
         assert not errors, errors
         browser.close()
-        print(f'PASS: tooltip interactions, themes, select, modal, ASR and edges. Screenshots: {output}')
+        print(f'PASS: settings help, themes, select, modal and edges; no main UI hover help. Screenshots: {output}')
 finally:
     server.shutdown()
     server.server_close()

@@ -16,7 +16,6 @@ export function createAsrPresentation({ composer, input, button, status, recordi
     recording.setAttribute('aria-hidden', String(state !== 'recording'));
     const label = state === 'recording' ? '结束录音并识别' : waiting ? status.textContent : '开始语音输入';
     button.setAttribute('aria-label', label);
-    button.dataset.tooltip = label;
     indicator.setState(state);
   }
   return Object.freeze({
