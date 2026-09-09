@@ -28,7 +28,7 @@ GitCode 仓库先使用 Pull Mirror 同步 GitHub 的提交和 tag。GitHub 仓�
 1. 从已经发布完成的 GitHub Release 下载最终 assets；GitHub 仍是 source of truth。
 2. 用 GitHub tag 解析出的 40 位 commit SHA 创建/校验同 tag 的 GitCode Release，避免镜像延迟时把 tag 建到错误提交。新 Release 先保持 `pre` 状态。
 3. 将 GitHub Release 中的原始文件逐字节上传到 GitCode。失败后重跑时，已经可见的同名附件直接保留，继续补齐缺失附件，不重新构建文件。
-4. 读取 GitHub 最终 `latest.json`，保留 `version`、`notes`、`pub_date`、Tauri `signature` 和 Portable `sha256`，只把 artifact URL 改为 GitCode Release 附件下载 API。
+4. 读取 GitHub 最终 `latest.json`，保留 `version`、`notes`、`pub_date` 和 Tauri `signature`，把安装包及 Portable 的 artifact URL 改为 GitCode Release 附件下载 API。Portable 条目仅包含 URL。
 5. GitCode 版 `latest.json` 最后上传。只有全部预期附件都可见后，Release 才从 `pre` 提升为 `latest`，因此不会先暴露一个指向缺失附件的最新版 manifest。
 6. 最终检查 GitCode Release 的附件集合和 latest tag。镜像失败不会删除或撤回已经发布的 GitHub Release。
 

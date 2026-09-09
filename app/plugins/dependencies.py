@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -35,7 +34,6 @@ class PluginDependencyError(RuntimeError):
 class DependencyDeclaration:
     kind: str
     path: Path
-    fingerprint: str
     dependencies: tuple[str, ...] = ()
 
 
@@ -43,8 +41,8 @@ class PluginDependencyRoots:
     """Build and validate one ``uv pip --target`` root per plugin.
 
     Resolution is intentionally invoked only from explicit install/update/retry
-    operations.  Runtime startup calls ``verified_root`` and fails if the exact
-    declared environment is absent; it never repairs the environment.
+    operations. Runtime startup checks the installed marker, declaration kind
+    and Python ABI; it never repairs or fingerprints the environment.
     """
 
     def __init__(
@@ -66,10 +64,10 @@ class PluginDependencyRoots:
         root = Path(plugin_root)
         requirements_lock = root / "requirements.lock"
         if requirements_lock.is_file():
-            return self._file_declaration("requirements.lock", requirements_lock)
+            return DependencyDeclaration("requirements.lock", requirements_lock)
         requirements = root / "requirements.txt"
         if requirements.is_file():
-            return self._file_declaration("requirements.txt", requirements)
+            return DependencyDeclaration("requirements.txt", requirements)
         pyproject = root / "pyproject.toml"
         if not pyproject.is_file():
             return None
@@ -83,20 +81,14 @@ class PluginDependencyRoots:
         if not isinstance(dependencies, list) or any(not isinstance(item, str) for item in dependencies):
             raise PluginDependencyError("PLUGIN_DEPENDENCY_DECLARATION_INVALID")
         uv_lock = root / "uv.lock"
-        digest = hashlib.sha256(raw_bytes)
         kind = "pyproject.toml"
         if uv_lock.is_file():
-            try:
-                digest.update(uv_lock.read_bytes())
-            except OSError as error:
-                raise PluginDependencyError("PLUGIN_DEPENDENCY_DECLARATION_INVALID") from error
             kind = "uv.lock"
         if not dependencies and not uv_lock.is_file():
             return None
         return DependencyDeclaration(
             kind,
             pyproject,
-            digest.hexdigest(),
             tuple(dependencies),
         )
 
@@ -137,7 +129,6 @@ class PluginDependencyRoots:
             marker = {
                 "schemaVersion": 1,
                 "kind": declaration.kind,
-                "fingerprint": declaration.fingerprint,
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
             atomic_write_text(
@@ -188,7 +179,6 @@ class PluginDependencyRoots:
             not isinstance(marker, dict)
             or marker.get("schemaVersion") != 1
             or marker.get("kind") != declaration.kind
-            or marker.get("fingerprint") != declaration.fingerprint
             or marker.get("python") != expected_python
         ):
             raise PluginDependencyError("PLUGIN_DEPENDENCIES_STALE")
@@ -198,16 +188,6 @@ class PluginDependencyRoots:
         root = self._paths.plugin_dependency_root_for(plugin_id)
         if root.exists():
             shutil.rmtree(root)
-
-    @staticmethod
-    def _file_declaration(kind: str, path: Path) -> DependencyDeclaration:
-        try:
-            content = path.read_bytes()
-        except OSError as error:
-            raise PluginDependencyError("PLUGIN_DEPENDENCY_DECLARATION_INVALID") from error
-        if not content.strip():
-            return DependencyDeclaration(kind, path, hashlib.sha256(content).hexdigest())
-        return DependencyDeclaration(kind, path, hashlib.sha256(content).hexdigest())
 
     def _install_command(
         self,

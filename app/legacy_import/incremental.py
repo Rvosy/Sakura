@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import json
+import os
+import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import uuid
 from collections import defaultdict
@@ -18,7 +20,7 @@ from app.storage.timeline import TimelineDataError, TimelineStore
 
 from .errors import LegacyImportError
 from .files import copy_tree_checked
-from .history import import_history
+from .history import import_history, read_history_identities, write_history_identities
 from .inspector import detect_legacy_version, legacy_source_is_active
 from .transaction import PendingCommit, commit_payload
 
@@ -34,6 +36,80 @@ _TIMELINE_COLUMNS = (
 )
 _MAX_PUBLIC_CONFLICTS = 100
 _MAX_PUBLIC_CHARACTERS = 256
+# Inspect/apply run in separate CLI processes. Keep private preview contents in
+# the user's temporary directory, referenced only by a random public token.
+_MAX_PENDING_PLANS = 8
+
+
+def _plan_path(token: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise LegacyImportError("LEGACY_DATA_IMPORT_PLAN_STALE", "inspect")
+    return Path(tempfile.gettempdir()) / f"sakura-legacy-data-plan-{token}" / "plan.json"
+
+
+def _private_plan_directory(directory: Path) -> bool:
+    if directory.parent != Path(tempfile.gettempdir()) or not re.fullmatch(
+        r"sakura-legacy-data-plan-[0-9a-f]{32}", directory.name
+    ):
+        return False
+    try:
+        info = directory.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode) or (
+        getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    ):
+        return False
+    # Windows uses the current user's temp directory and inherited ACLs.
+    return not hasattr(os, "getuid") or (
+        info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) & 0o077 == 0
+    )
+
+
+def _remove_plan(path: Path) -> None:
+    if path.name != "plan.json" or not _private_plan_directory(path.parent):
+        return
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or (
+            getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            return
+        path.unlink()
+        path.parent.rmdir()  # Never recurse into unexpected files or directories.
+    except OSError:
+        pass  # Cleanup must not undo an already committed import.
+
+
+def _save_plan(plan: "_Plan", source: Path, target: Path, converted: Path) -> None:
+    path = _plan_path(plan.token)
+    # A pre-created directory or link must fail before any private data is written.
+    path.parent.mkdir(mode=0o700, exist_ok=False)
+    value = {
+        "source": str(source), "target": str(target),
+        "public": plan.public(), "contents": sorted(plan.comparison_items),
+        "identities": [
+            [identity, kind, item_id]
+            for (identity, kind), item_id in read_history_identities(converted).items()
+        ],
+    }
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            os.chmod(path, 0o600)
+            json.dump(value, handle, ensure_ascii=True, separators=(",", ":"))
+    except Exception:
+        _remove_plan(path)
+        raise
+    # In a shared /tmp, consider only private directories owned by this user.
+    previews = []
+    for directory in path.parent.parent.glob("sakura-legacy-data-plan-*"):
+        if _private_plan_directory(directory):
+            try:
+                previews.append((directory.lstat().st_mtime_ns, directory))
+            except OSError:
+                continue
+    for _modified, expired in sorted(previews)[:-_MAX_PENDING_PLANS]:
+        _remove_plan(expired / "plan.json")
 
 
 @dataclass
@@ -68,7 +144,8 @@ class _Plan:
     conflicts: list[dict[str, str]] = field(default_factory=list)
     recoverable_errors: int = 0
     blocked: bool = False
-    digest_items: list[str] = field(default_factory=list)
+    comparison_items: list[str] = field(default_factory=list)
+    token: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def classify(
         self,
@@ -77,20 +154,20 @@ class _Plan:
         character_id: str,
         item_id: str,
         status: str,
-        signature: str,
+        content: str,
         hard: bool = False,
     ) -> None:
         counts = self.by_character[character_id]
         field_name = f"{domain}_{status}"
         setattr(counts, field_name, getattr(counts, field_name) + 1)
-        self.digest_items.append(f"{domain}\0{character_id}\0{item_id}\0{status}\0{signature}")
+        self.comparison_items.append(
+            _canonical_content([domain, character_id, item_id, status, content, hard])
+        )
         if status == "conflicts":
             if len(self.conflicts) < _MAX_PUBLIC_CONFLICTS:
                 self.conflicts.append(
                     {
-                        "id": hashlib.sha256(
-                            f"{domain}\0{character_id}\0{item_id}".encode()
-                        ).hexdigest()[:24],
+                        "id": f"conflict-{len(self.conflicts) + 1}",
                         "domain": domain,
                         "characterId": character_id[:128],
                         "itemId": item_id[:128],
@@ -103,12 +180,10 @@ class _Plan:
         for counts in self.by_character.values():
             for name in totals.__dataclass_fields__:
                 setattr(totals, name, getattr(totals, name) + getattr(counts, name))
-        token_seed = "\n".join(sorted(self.digest_items)).encode()
-        token = hashlib.sha256(token_seed).hexdigest()
         ordered_characters = sorted(self.by_character, key=str.casefold)
         return {
             "schemaVersion": 1,
-            "planToken": token,
+            "planToken": self.token,
             "sourceLabel": self.source_label,
             "characters": [
                 self.by_character[character_id].public(character_id)
@@ -143,6 +218,7 @@ def inspect_character_data_import(source: Path, target: Path) -> dict[str, objec
     with tempfile.TemporaryDirectory(prefix="sakura-data-import-inspect-") as temporary:
         converted = Path(temporary) / "converted"
         plan = _inspect_into_plan(source, target, converted)
+        _save_plan(plan, source, target, converted)
         return plan.public()
 
 
@@ -165,9 +241,31 @@ def run_character_data_import(
         raise LegacyImportError("LEGACY_IMPORT_RECOVERY_REQUIRED", "staging")
     converted = staging / "converted"
     payload = staging / "payload"
-    plan = _inspect_into_plan(source, target, converted)
+    preview_path = _plan_path(plan_token)
+    try:
+        if not _private_plan_directory(preview_path.parent):
+            raise ValueError
+        previous = json.loads(preview_path.read_text(encoding="utf-8"))
+        if previous["source"] != str(source) or previous["target"] != str(target):
+            raise ValueError
+        identities = {
+            (identity, kind): item_id for identity, kind, item_id in previous["identities"]
+        }
+        previous_public = previous["public"]
+        previous_contents = previous["contents"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise LegacyImportError("LEGACY_DATA_IMPORT_PLAN_STALE", "inspect") from exc
+    try:
+        plan = _inspect_into_plan(source, target, converted, identities=identities)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    plan.token = plan_token
     public_plan = plan.public()
-    if public_plan["planToken"] != plan_token:
+    if (
+        sorted(plan.comparison_items) != previous_contents
+        or public_plan != previous_public
+    ):
         shutil.rmtree(staging, ignore_errors=True)
         raise LegacyImportError("LEGACY_DATA_IMPORT_PLAN_STALE", "inspect")
     if plan.blocked:
@@ -211,7 +309,9 @@ def run_character_data_import(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         shutil.rmtree(converted, ignore_errors=True)
-        return report, commit_payload(target, import_id, payload)
+        pending = commit_payload(target, import_id, payload)
+        _remove_plan(preview_path)
+        return report, pending
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -240,13 +340,18 @@ def _validate_source(source: Path, target: Path) -> None:
         raise LegacyImportError("LEGACY_SOURCE_TARGET_OVERLAP", "inspect")
 
 
-def _inspect_into_plan(source: Path, target: Path, converted: Path) -> _Plan:
+def _inspect_into_plan(
+    source: Path, target: Path, converted: Path,
+    *, identities: dict[tuple[str, str], str] | None = None,
+) -> _Plan:
     character_ids = _discover_scopes(source)
     stats = import_history(
         source,
         converted,
         character_ids=character_ids,
         import_id="incremental-scan",
+        identity_root=target,
+        identities=identities,
     )
     plan = _Plan(source.name[:120])
     plan.recoverable_errors += stats.errors_quarantined
@@ -371,7 +476,7 @@ def _inspect_timeline(converted: Path, target: Path, plan: _Plan) -> None:
             character_id=character_id,
             item_id=entry_id,
             status=status,
-            signature=_signature({"source": row, "target": existing}),
+            content=_canonical_content({"source": row, "target": existing}),
             hard=hard,
         )
 
@@ -419,6 +524,7 @@ def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool
                 row,
             )
             target_turns[row[1]] = row[2]
+        write_history_identities(connection, read_history_identities(converted))
         connection.commit()
     store.assert_activated()
 
@@ -436,12 +542,12 @@ def _inspect_memory(source: Path, target: Path, plan: _Plan, *, current_scope: s
         point_scopes = {}
         target_point_scopes = {}
         plan.recoverable_errors += 1
-        plan.digest_items.append("memory\0qdrant-unreadable")
+        plan.comparison_items.append("memory\0qdrant-unreadable")
     except Exception:  # noqa: BLE001 - other Memory subdomains remain inspectable
         point_scopes = {}
         target_point_scopes = {}
         plan.recoverable_errors += 1
-        plan.digest_items.append("memory\0qdrant-unreadable")
+        plan.comparison_items.append("memory\0qdrant-unreadable")
     try:
         _inspect_history_database(
             source_memory,
@@ -455,20 +561,20 @@ def _inspect_memory(source: Path, target: Path, plan: _Plan, *, current_scope: s
         if exc.code == "LEGACY_DATA_TARGET_MEMORY_INVALID":
             raise
         plan.recoverable_errors += 1
-        plan.digest_items.append("memory\0history-unreadable")
+        plan.comparison_items.append("memory\0history-unreadable")
     except Exception:  # noqa: BLE001 - preserve and report at apply time
         plan.recoverable_errors += 1
-        plan.digest_items.append("memory\0history-unreadable")
+        plan.comparison_items.append("memory\0history-unreadable")
     try:
         _inspect_profiles(source_memory, target_memory, plan)
     except LegacyImportError as exc:
         if exc.code == "LEGACY_DATA_TARGET_MEMORY_INVALID":
             raise
         plan.recoverable_errors += 1
-        plan.digest_items.append("memory\0profiles-unreadable")
+        plan.comparison_items.append("memory\0profiles-unreadable")
     except Exception:  # noqa: BLE001 - preserve and report at apply time
         plan.recoverable_errors += 1
-        plan.digest_items.append("memory\0profiles-unreadable")
+        plan.comparison_items.append("memory\0profiles-unreadable")
 
 
 def _merge_memory(
@@ -698,20 +804,20 @@ def _inspect_qdrant(
                     character_id=scope or "scope-conflict",
                     item_id=point_id,
                     status="conflicts",
-                    signature=_signature((vector, payload)),
+                    content=_canonical_content((vector, payload)),
                     hard=True,
                 )
                 continue
             if not scope:
                 plan.recoverable_errors += 1
-                plan.digest_items.append(
-                    f"memory\0unscoped-point\0{point_id}\0{_signature((vector, payload))}"
+                plan.comparison_items.append(
+                    f"memory\0unscoped-point\0{point_id}\0{_canonical_content((vector, payload))}"
                 )
                 continue
             scopes[point_id] = resolution
             payload = {**payload, "user_id": scope}
             existing = target_points.get(point_id)
-            source_signature = _signature((vector, payload))
+            source_content = _canonical_content((vector, payload))
             target_resolution = target_scopes.get(point_id, _ScopeResolution(""))
             hard = bool(
                 existing
@@ -722,7 +828,7 @@ def _inspect_qdrant(
                 )
             )
             status = "new" if existing is None else (
-                "identical" if _signature(existing) == source_signature else "conflicts"
+                "identical" if _canonical_content(existing) == source_content else "conflicts"
             )
             if hard:
                 status = "conflicts"
@@ -731,8 +837,8 @@ def _inspect_qdrant(
                 character_id=scope,
                 item_id=point_id,
                 status=status,
-                signature=_signature(
-                    {"source": source_signature, "target": existing}
+                content=_canonical_content(
+                    {"source": source_content, "target": existing}
                 ),
                 hard=hard,
             )
@@ -857,7 +963,7 @@ def _merge_qdrant(
                     or existing_scope.scope != scope
                 ):
                     raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
-                if _signature(existing) == _signature((vector, payload)):
+                if _canonical_content(existing) == _canonical_content((vector, payload)):
                     continue
                 if not overwrite_conflicts:
                     raise LegacyImportError(
@@ -978,8 +1084,8 @@ def _inspect_history_database(
         scope = source_resolution.scope
         if not scope:
             plan.recoverable_errors += 1
-            plan.digest_items.append(
-                f"memory\0unscoped-history\0{row_id}\0{_signature(source_map)}"
+            plan.comparison_items.append(
+                f"memory\0unscoped-history\0{row_id}\0{_canonical_content(source_map)}"
             )
             continue
         existing = target_rows.get(row_id)
@@ -1002,7 +1108,7 @@ def _inspect_history_database(
             )
         )
         status = "new" if existing is None else (
-            "identical" if _signature(source_map) == _signature(target_map) else "conflicts"
+            "identical" if _canonical_content(source_map) == _canonical_content(target_map) else "conflicts"
         )
         if hard:
             status = "conflicts"
@@ -1011,7 +1117,7 @@ def _inspect_history_database(
             character_id=scope,
             item_id=f"history:{row_id}",
             status=status,
-            signature=_signature({"source": source_map, "target": target_map}),
+            content=_canonical_content({"source": source_map, "target": target_map}),
             hard=hard,
         )
 
@@ -1107,7 +1213,7 @@ def _merge_history_database(
                         ):
                             raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
                         target_values = [target_map.get(name) for name in canonical_columns]
-                        if _signature(target_values) == _signature(values):
+                        if _canonical_content(target_values) == _canonical_content(values):
                             continue
                         if not overwrite_conflicts:
                             raise LegacyImportError(
@@ -1163,14 +1269,14 @@ def _inspect_profiles(source: Path, target: Path, plan: _Plan) -> None:
             continue
         existing = target_profiles.get(scope)
         status = "new" if existing is None else (
-            "identical" if _signature(existing) == _signature(profile) else "conflicts"
+            "identical" if _canonical_content(existing) == _canonical_content(profile) else "conflicts"
         )
         plan.classify(
             domain="memory",
             character_id=scope,
             item_id=f"profile:{scope}",
             status=status,
-            signature=_signature({"source": profile, "target": existing}),
+            content=_canonical_content({"source": profile, "target": existing}),
         )
 
 
@@ -1188,10 +1294,10 @@ def _merge_profiles(source: Path, target: Path, *, overwrite_conflicts: bool) ->
         if not isinstance(scope, str) or not scope.strip() or not isinstance(profile, dict):
             continue
         existing = target_profiles.get(scope)
-        if existing is not None and _signature(existing) != _signature(profile):
+        if existing is not None and _canonical_content(existing) != _canonical_content(profile):
             if not overwrite_conflicts:
                 raise LegacyImportError("LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "staging")
-        if _signature(existing) != _signature(profile):
+        if _canonical_content(existing) != _canonical_content(profile):
             target_profiles[scope] = profile
             changed = True
     if changed:
@@ -1221,15 +1327,14 @@ def _json_default(item: Any) -> Any:
     return str(item)
 
 
-def _signature(value: Any) -> str:
-    encoded = json.dumps(
+def _canonical_content(value: Any) -> str:
+    return json.dumps(
         value,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
         default=_json_default,
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    )
 
 
 __all__ = ["inspect_character_data_import", "run_character_data_import"]

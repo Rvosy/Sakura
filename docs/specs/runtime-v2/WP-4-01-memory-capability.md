@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-26
+updated: 2026-09-09
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -198,6 +198,8 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 最多 100 条，并同时受 256 KiB 通用 Collection payload 上限。未知字段、非法 cursor、跨角色记录和超界
 响应稳定拒绝或不投影。
 
+模型资源按固定 snapshot revision、必要文件布局和尺寸检查；FastEmbed/ONNX Runtime 在实际加载时验证模型
+可加载性。下载和导入不生成或扫描自设内容摘要，已有匹配版本缓存可直接复用，不因移除 SHA 字段重装资源。
 模型下载是插件 Settings Action，由插件内部线程执行固定 snapshot 下载。它属于带独立 Runtime 的本地资源，
 不是远程 Chat Completion 模型槽位。Action 立即返回，插件页在任务运行期间自动读取 Snapshot，并把
 `connecting/downloading/installing/completed` 映射为用户可读阶段；取消只影响当前 plugin generation
@@ -237,9 +239,9 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - 设置早于插件初始化完成时，Memory surface 原地恢复；重复的相同插件 Snapshot 不触发页面重绘。
 - 模型缺失、依赖导入、Qdrant/SQLite/锁冲突、损坏配置、回调超时和下载取消时聊天继续、v2 数据保持、
   无隐式网络访问。
-- 在隔离 v2 根记录切换前后的 SHA-256/size：Qdrant、SQLite、core profiles 和已安装的固定
+- 在隔离 v2 根直接比较受测文件内容与数据库记录：Qdrant、SQLite、core profiles 和已安装的固定
   FastEmbed/ONNX snapshot 在只读设置/搜索路径保持不变；completed chat 只允许当前 curation-state
-  语义变化。
+  语义变化，不为验收额外扫描真实模型或用户目录。
 - 正常退出、插件停用、reload、插件调用/cleanup timeout、Core crash 后线程、callback、Effect、pipe、文件锁与后代
   进程有界归零。
 - Frontend、Rust、Python focused tests，以及 `runtime-v2-memory-tests` 与当前产品 smoke journey 通过；

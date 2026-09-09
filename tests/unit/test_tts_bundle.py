@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import sys
 import uuid
 from pathlib import Path
@@ -181,23 +180,22 @@ def test_tts_bundle_cancel_preserves_part_for_resume() -> None:
 
 
 
-def test_tts_bundle_download_removes_part_on_sha256_failure() -> None:
-    root = _runtime_root("bundle_sha_failure")
-    payload = b"wrong-hash"
+def test_tts_bundle_download_removes_oversized_part() -> None:
+    root = _runtime_root("bundle_size_failure")
+    payload = b"oversized"
     entry = TTSBundleEntry(
         key="demo",
         label="Demo",
         filename="demo.7z",
         download_url="https://example.test/demo.7z",
-        size=len(payload),
-        sha256=hashlib.sha256(b"expected").hexdigest(),
+        size=len(payload) - 1,
     )
 
     def fake_urlopen(_request, timeout: int):  # type: ignore[no-untyped-def]
         assert timeout == 600
         return FakeResponse(payload)
 
-    with pytest.raises(RuntimeError, match="SHA256 不匹配"):
+    with pytest.raises(RuntimeError, match="文件大小不匹配"):
         download_and_extract_bundle(entry, root, urlopen=fake_urlopen, extractor=lambda *_args: None)
 
     archive = root / "tts" / "_dl" / entry.filename
@@ -545,7 +543,6 @@ def _entry(payload: bytes) -> TTSBundleEntry:
         filename="demo.7z",
         download_url="https://example.test/demo.7z",
         size=len(payload),
-        sha256=hashlib.sha256(payload).hexdigest(),
     )
 
 

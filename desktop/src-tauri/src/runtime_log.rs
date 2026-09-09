@@ -1765,7 +1765,7 @@ fn viewer_http_status(record: &RuntimeLogRecord) -> Option<u16> {
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 63] = [
+    const PRIORITY: [&str; 62] = [
         "diagnostic",
         "context_window_tokens",
         "context_window_source",
@@ -1795,7 +1795,6 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         "provider_error_type",
         "cause_type",
         "exception_site",
-        "failure_id",
         "command",
         "status",
         "http_status",
@@ -1952,7 +1951,6 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "error_type" | "provider_error_type" => "类型",
         "cause_type" => "根因类型",
         "exception_site" => "代码位置",
-        "failure_id" => "问题编号",
         "status" => "状态",
         "http_status" | "outcome" => "状态",
         "dependency" => "依赖",
@@ -2417,7 +2415,7 @@ fn short_correlation_id(value: &str) -> String {
 }
 
 fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
-    const DEFAULT_PRIORITY: [&str; 51] = [
+    const DEFAULT_PRIORITY: [&str; 50] = [
         "dependency",
         "stage",
         "detail_stage",
@@ -2429,7 +2427,6 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "reason_code",
         "cause_type",
         "exception_site",
-        "failure_id",
         "elapsed_ms",
         "command_elapsed_ms",
         "event_delay_ms",
@@ -2516,7 +2513,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "total_tokens",
         "model",
     ];
-    const API_FAILED_PRIORITY: [&str; 17] = [
+    const API_FAILED_PRIORITY: [&str; 16] = [
         "model_call",
         "status",
         "provider_error_type",
@@ -2527,7 +2524,6 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "stage",
         "cause_type",
         "exception_site",
-        "failure_id",
         "elapsed_ms",
         "attempt",
         "retryable",
@@ -2535,11 +2531,10 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "model",
         "purpose",
     ];
-    const IPC_FAILED_PRIORITY: [&str; 10] = [
+    const IPC_FAILED_PRIORITY: [&str; 9] = [
         "code",
         "diagnostic",
         "exception_site",
-        "failure_id",
         "cause_type",
         "deadline_ms",
         "elapsed_ms",
@@ -2617,7 +2612,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "reason_code",
         "error_type",
     ];
-    const FAILURE_DETAIL_PRIORITY: [&str; 8] = [
+    const FAILURE_DETAIL_PRIORITY: [&str; 7] = [
         "diagnostic",
         "code",
         "reason_code",
@@ -2625,7 +2620,6 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "error_type",
         "cause_type",
         "exception_site",
-        "failure_id",
     ];
     let Some(object) = attributes.and_then(Value::as_object) else {
         return String::new();
@@ -2864,7 +2858,6 @@ fn forbidden_key(key: &str) -> bool {
             | "cause_type"
             | "error_type"
             | "exception_site"
-            | "failure_id"
             | "provider_error_code"
             | "provider_error_type"
             | "reason_code"
@@ -2971,7 +2964,6 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "expected_bytes"
             | "expected_files"
             | "failed"
-            | "failure_id"
             | "created"
             | "updated"
             | "archived"
@@ -3125,7 +3117,6 @@ fn normalize_key(value: &str) -> String {
         .replace("expectedbytes", "expected_bytes")
         .replace("expectedfiles", "expected_files")
         .replace("finalreplyelapsedms", "final_reply_elapsed_ms")
-        .replace("failureid", "failure_id")
         .replace("gestureid", "gesture_id")
         .replace("hoststate", "host_state")
         .replace("historymessages", "history_messages")
@@ -4286,7 +4277,7 @@ mod tests {
         };
         assert!(log
             .submit_core_bridge(
-                r#"{"severity":"error","verbosity":"error","channel":"api","event":"api.request.failed","message":"ignored","operation_id":"operation-1234567890","attributes":{"diagnostic":"模型服务拒绝了身份验证","code":"MODEL_REQUEST_FAILED","reason_code":"AUTHENTICATION_FAILED","stage":"request","error_type":"authentication_error","cause_type":"PermissionError","exception_site":"app.llm.api_client:request:752","failure_id":"A1B2C3D4E5","elapsed_ms":2789.25,"content":"PRIVATE CHAT BODY","path":"/private/runtime.log"}}"#,
+                r#"{"severity":"error","verbosity":"error","channel":"api","event":"api.request.failed","message":"ignored","operation_id":"operation-1234567890","attributes":{"diagnostic":"模型服务拒绝了身份验证","code":"MODEL_REQUEST_FAILED","reason_code":"AUTHENTICATION_FAILED","stage":"request","error_type":"authentication_error","cause_type":"PermissionError","exception_site":"app.llm.api_client:request:752","elapsed_ms":2789.25,"content":"PRIVATE CHAT BODY","path":"/private/runtime.log"}}"#,
                 &context,
             )
             .unwrap());
@@ -4312,7 +4303,6 @@ mod tests {
                 "类型",
                 "根因类型",
                 "代码位置",
-                "问题编号",
                 "耗时"
             ]
         );

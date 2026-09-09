@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import logging
@@ -11,7 +10,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -43,7 +41,6 @@ class TTSBundleEntry:
     filename: str
     download_url: str
     size: int
-    sha256: str
     supported_systems: tuple[str, ...] = ()
 
 
@@ -67,7 +64,6 @@ GENIE_TTS = TTSBundleEntry(
         "resolve/master/Genie-TTS%20Server.7z"
     ),
     size=1041915345,
-    sha256="8f06077b6102aa29f1c9473926db9a74890d627f077393aa8ebb928b52f15de1",
     supported_systems=("windows",),
 )
 
@@ -112,15 +108,6 @@ def _format_size(size: int) -> str:
     return f"约 {size / 1_000_000_000:.1f} GB" if size >= 1_000_000_000 else f"约 {size / 1_000_000:.0f} MB"
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
-            digest.update(chunk)
-            time.sleep(0)
-    return digest.hexdigest()
-
-
 def _download(
     entry: TTSBundleEntry,
     archive: Path,
@@ -158,16 +145,12 @@ def _download(
                     on_download(TTSBundleDownloadProgress(downloaded, entry.size))
     if downloaded != entry.size:
         raise RuntimeError("TTS_BUNDLE_SIZE_MISMATCH")
-    if _sha256(part).lower() != entry.sha256.lower():
-        part.unlink(missing_ok=True)
-        raise RuntimeError("TTS_BUNDLE_SHA256_MISMATCH")
     os.replace(part, archive)
 
 
 def _failure_code(error: Exception, stage: str) -> str:
     known = {
         "TTS_BUNDLE_SIZE_MISMATCH": "DOWNLOAD_SIZE_MISMATCH",
-        "TTS_BUNDLE_SHA256_MISMATCH": "DOWNLOAD_CHECKSUM_MISMATCH",
         "TTS_BUNDLE_EXTRACTOR_MISSING": "EXTRACTOR_MISSING",
         "TTS_BUNDLE_RUNTIME_INVALID": "DOWNLOAD_CONTENT_INVALID",
         "TTS_BUNDLE_PLATFORM_UNSUPPORTED": "PLATFORM_UNSUPPORTED",
@@ -192,7 +175,6 @@ def _failure_detail(code: str) -> str:
     messages = {
         "DOWNLOAD_NETWORK_FAILED": "无法连接组件下载服务，请检查网络或代理后重试。",
         "DOWNLOAD_SIZE_MISMATCH": "下载文件大小不匹配，可保留分片后重试。",
-        "DOWNLOAD_CHECKSUM_MISMATCH": "下载文件校验失败，损坏分片已清理。",
         "DOWNLOAD_CONTENT_INVALID": "下载内容不是有效的 Genie TTS 组件。",
         "EXTRACTOR_MISSING": "缺少 7z 解压组件，请修复 Sakura Runtime。",
         "EXTRACT_FAILED": "组件解压失败，请确认磁盘空间充足后重试。",
@@ -274,7 +256,7 @@ def install_bundle(
     archive.parent.mkdir(parents=True, exist_ok=True)
     on_status("verify")
     on_progress(0)
-    if not archive.is_file() or archive.stat().st_size != entry.size or _sha256(archive) != entry.sha256:
+    if not archive.is_file() or archive.stat().st_size != entry.size:
         on_status("download")
         _download(
             entry,

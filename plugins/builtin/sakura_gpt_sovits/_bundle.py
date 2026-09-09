@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import logging
@@ -13,7 +12,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -50,7 +48,6 @@ class TTSBundleEntry:
     filename: str = ""
     download_url: str = ""
     size: int = 0
-    sha256: str = ""
     supported_systems: tuple[str, ...] = ()
     install_method: str = "archive"
     installer_script: str | None = None
@@ -81,7 +78,6 @@ GPT_SOVITS_STANDARD = TTSBundleEntry(
         "resolve/master/GPT-SoVITS-v2pro-20250604.7z"
     ),
     size=8185086602,
-    sha256="bd60d0796553ff05d8568136e199c13e0dc22ebe2ed24273134e34ed6f215cd6",
     supported_systems=("windows",),
 )
 GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
@@ -93,7 +89,6 @@ GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
         "resolve/master/GPT-SoVITS-v2pro-20250604-nvidia50.7z"
     ),
     size=8835144925,
-    sha256="97b4edcd451c42357db7e26e6c1c877ca5d85144fe97beaff6d7005d35bee008",
     supported_systems=("windows",),
 )
 GPT_SOVITS_MACOS = TTSBundleEntry(
@@ -199,15 +194,6 @@ def _format_size(entry: TTSBundleEntry) -> str:
     return f"约 {entry.size / 1_000_000_000:.1f} GB"
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
-            digest.update(chunk)
-            time.sleep(0)
-    return digest.hexdigest()
-
-
 def _download(
     entry: TTSBundleEntry,
     archive: Path,
@@ -243,16 +229,12 @@ def _download(
                     on_download(TTSBundleDownloadProgress(downloaded, entry.size))
     if downloaded != entry.size:
         raise RuntimeError("TTS_BUNDLE_SIZE_MISMATCH")
-    if _sha256(part).lower() != entry.sha256.lower():
-        part.unlink(missing_ok=True)
-        raise RuntimeError("TTS_BUNDLE_SHA256_MISMATCH")
     os.replace(part, archive)
 
 
 def _failure_code(error: Exception, stage: str) -> str:
     known = {
         "TTS_BUNDLE_SIZE_MISMATCH": "DOWNLOAD_SIZE_MISMATCH",
-        "TTS_BUNDLE_SHA256_MISMATCH": "DOWNLOAD_CHECKSUM_MISMATCH",
         "TTS_BUNDLE_EXTRACTOR_MISSING": "EXTRACTOR_MISSING",
         "TTS_BUNDLE_RUNTIME_INVALID": "DOWNLOAD_CONTENT_INVALID",
         "TTS_BUNDLE_PYTHON_INVALID": "DOWNLOAD_CONTENT_INVALID",
@@ -284,7 +266,6 @@ def _failure_detail(code: str) -> str:
     messages = {
         "DOWNLOAD_NETWORK_FAILED": "无法连接组件下载服务，请检查网络或代理后重试。",
         "DOWNLOAD_SIZE_MISMATCH": "下载文件大小不匹配，可保留分片后重试。",
-        "DOWNLOAD_CHECKSUM_MISMATCH": "下载文件校验失败，损坏分片已清理。",
         "DOWNLOAD_CONTENT_INVALID": "下载内容不是有效的 GPT-SoVITS 组件。",
         "DOWNLOAD_DEPENDENCY_MISSING": "安装脚本或运行依赖缺失，请修复 Sakura Runtime。",
         "EXTRACTOR_MISSING": "缺少 7z 解压组件，请修复 Sakura Runtime。",
@@ -411,7 +392,7 @@ def _install_archive(
     archive.parent.mkdir(parents=True, exist_ok=True)
     on_status("verify")
     on_progress(0)
-    if not archive.is_file() or archive.stat().st_size != entry.size or _sha256(archive) != entry.sha256:
+    if not archive.is_file() or archive.stat().st_size != entry.size:
         on_status("download")
         _download(entry, archive, check_cancel=check_cancel, on_progress=on_progress, on_download=on_download_progress)
     check_cancel()

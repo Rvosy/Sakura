@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-02
+updated: 2026-09-09
 ---
 
 # Sakura 0.9.x 到 Runtime v2 数据迁移合同
@@ -88,9 +88,9 @@ backup 已恢复到目标但进度尚未落盘时，恢复逻辑必须识别目�
 `rolling_back`。backup、staging 或 journal 清理失败时保留 journal，下次启动只继续安全的剩余回滚或清理；末尾
 清理不得删除迁移前已存在的空 `characters/`、`tts/` 目录。
 
-报告固定为 `data/legacy-imports/<id>/report.json`，只含域、数量、大小、相对标识、哈希、稳定错误和警告。报告、
-事件和日志不得含 API Key、聊天/记忆正文、绝对源路径或旧 `.env` 内容。大型 payload的逐文件哈希可以有界并行，
-但输出顺序必须按相对路径确定，任务队列必须有界，取消仍需在分块哈希期间生效。
+报告固定为 `data/legacy-imports/<id>/report.json`，只含域、数量、大小、相对标识、稳定错误和警告。报告、
+事件和日志不得含 API Key、聊天/记忆正文、绝对源路径或旧 `.env` 内容。文件清单按相对路径排序，
+只记录 domain、id 和 bytes，不计算或输出内容摘要；逐文件检查取消。复制时必要的相等判断直接分块比较 bytes。
 离线迁移进程不得打开或追加 `data/logs/sakura-runtime.log`，也不得接收日志文件路径。它只通过 stdout 机器协议向
 Rust 父进程提交白名单内的结构化 diagnostic；Rust 丢弃子进程自由 message，使用固定中文目录投影并由唯一 writer
 记录 import operation、领域、步骤、安全 diagnostic、异常类型、稳定 reason code 及 SQLite/OS 错误码。角色包或
@@ -137,9 +137,12 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   大小写只能做唯一匹配，冲突阻止提交。
 - JSONL 按 archive 后 active 顺序导入。user → human；相邻 assistant 行合并为一个或多个不超过上限的 segments
   entry；已知 error、未知 role、坏 UTF-8/JSON及非法时间不成为事实，原始行 bytes进入隔离，其余记录继续。
-  不安全 portrait清空该字段并隔离原始行，但文字仍导入。ID由角色 scope、role、规范时间和同时间同 role出现序号
-  确定，不得依赖整份文件哈希；active 文件尾部追加不能改变此前 ID。实现必须以二进制逐行迭代，发现问题时立即写入
-  quarantine，assistant 只保留当前不超过 `MAX_SEGMENTS` 的分块，不得缓存整文件 bytes、完整 parsed-record 列表或
+  不安全 portrait清空该字段并隔离原始行，但文字仍导入。源身份由角色 scope、role、规范时间和同时间同 role出现序号
+  确定；Timeline 使用随机 ID，并在同一 SQLite 的 `legacy_history_identities` 表保存源身份、kind 与 ID 的映射。
+  导入优先复用目标中的映射；active 文件尾部追加不能改变此前 ID，assistant 分块由首条源记录标识。
+  无映射的旧版导入按角色、kind、规范时间及 Timeline 中的出现顺序关联既有 legacy entry，保留 entry/turn ID；
+  正文变化仍报告冲突，不重新计算旧摘要。映射随 Timeline 一起提交或回滚，正常读取无需转换旧 ID。
+  实现必须以二进制逐行迭代，发现问题时立即写入 quarantine，assistant 只保留当前不超过 `MAX_SEGMENTS` 的分块，不得缓存整文件 bytes、完整 parsed-record 列表或
   完整 issue 列表；隔离内容必须保持原始行 bytes 不变。
 - 手动截图 marker 从 human正文剥离并生成 `manual_screen` observation；定时/自主 marker生成
   `scheduled_screen` observation；可关联的旧视觉摘要进入 observation，原始 store进入隔离区。
@@ -195,11 +198,17 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
 Settings → System 的“导入角色历史记录和记忆”只接受已识别为 0.9.x 的用户目录；1.0/Runtime v2 目录和普通
 文件夹必须明确拒绝。该入口接受 Rust保管的 opaque selection，只读取旧目录的
 `data/chat_history` 与 `data/memory`。inspect时 Shell停止 Core，比较 Timeline entry、Qdrant point、mem0 history
-row和 `core_profiles.json` 后重新启动；公共计划只包含角色 ID、计数、稳定冲突 ID和 plan token，不含正文、向量、绝对
+row和 `core_profiles.json` 后重新启动；公共计划只包含角色 ID、计数、计划内冲突编号和随机 plan token，不含正文、向量、绝对
 路径或记忆内容。
 
 相同稳定 ID且规范内容一致时跳过；目标缺失时新增；同 ID且内容不同时列为冲突，并且只有此时 UI显示覆盖确认。跨角色的
-entry/turn/point身份冲突不可覆盖。apply再次停止 Core并重新生成计划，token不一致返回 stale，不使用旧确认。合并只在
+entry/turn/point身份冲突不可覆盖。inspect 将规范比较内容、源/目标路径和本次分配的身份映射保存到系统临时目录中
+每个随机 token 独占的目录，创建权限为 `0700`，已存在的目录或链接一律拒绝复用；计划文件权限为 `0600`。
+Windows 使用当前用户的临时目录及继承 ACL。读取和清理拒绝符号链接、junction，以及 POSIX 上非当前用户所有或
+向组/其他用户开放的目录。最多保留 8 份，只删除核验后的计划文件和空目录，不递归删除。公共 token 仅为随机 ID。
+inspect 与 apply 可在不同进程执行。apply 再次
+停止 Core，按该映射重建计划，直接比较必要内容与分类结果；内容变化、文件缺失或源/目标不一致返回 stale，需重新
+检查。成功提交后删除临时计划；正文和向量仅供本地比较，不进入公共输出。合并只在
 当前 `data/chat_history`、`data/memory` 的 staging副本上进行，清除可重建 curation state，再通过原子树 journal提交。
 Core启动失败时回滚并重新启动原数据。此入口不得导入配置、角色包、TTS、插件或辅助数据。
 Memory scope 必须同时校验 Qdrant payload 的 `user_id`/`scope`、history 的 `user_id` 以及

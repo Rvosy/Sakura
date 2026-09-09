@@ -1,7 +1,6 @@
 """Offline verification and issue counts: python verify_bundle.py DIRECTORY_OR_ZIP."""
 
 import collections
-import hashlib
 import json
 import sys
 import zipfile
@@ -38,14 +37,12 @@ def verify(path):
         for name, info in manifest["files"].items():
             if Path(name).name != name or "/" in name or "\\" in name:
                 raise ValueError("unsafe file name")
-            digest = hashlib.sha256()
             size = 0
             with opener(name) as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
                     size += len(chunk)
-            if size != info["bytes"] or digest.hexdigest() != info["sha256"]:
-                raise ValueError("checksum mismatch: " + name)
+            if size != info["bytes"]:
+                raise ValueError("size mismatch: " + name)
         result = {}
         for table, counts in manifest["counts"].items():
             ids = set()

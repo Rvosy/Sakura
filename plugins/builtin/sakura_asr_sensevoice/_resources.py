@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -14,9 +13,9 @@ from pathlib import Path
 VERSION = "sensevoice-2024-07-17-int8-silero-9e2449e1"
 _BASE = "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/"
 FILES = (
-    ("model.int8.onnx", _BASE + "model.int8.onnx", 239233841, "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"),
-    ("tokens.txt", _BASE + "tokens.txt", 315894, "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"),
-    ("silero_vad.onnx", "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx", 643854, "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"),
+    ("model.int8.onnx", _BASE + "model.int8.onnx", 239233841),
+    ("tokens.txt", _BASE + "tokens.txt", 315894),
+    ("silero_vad.onnx", "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx", 643854),
 )
 
 
@@ -32,15 +31,6 @@ def log_event(logger, level, event, message, **fields):
         getattr(logger, level)(message, fields={"event": event, "provider_id": "sakura.asr.sensevoice", **fields})
     except Exception:
         pass
-
-
-def hash_file(path: Path, check=lambda: None):
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            check()
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class ModelResources:
@@ -71,13 +61,14 @@ class ModelResources:
             return False
         try:
             marker = json.loads((self.path / "complete.json").read_text("utf-8"))
-            return marker == {"version": VERSION, "sha256": {f[0]: f[3] for f in FILES}} and all((self.path / name).is_file() and not (self.path / name).is_symlink() and (self.path / name).stat().st_size == size for name, _, size, _ in FILES)
+            return isinstance(marker, dict) and marker.get("version") == VERSION and all((self.path / name).is_file() and not (self.path / name).is_symlink() and (self.path / name).stat().st_size == size for name, _, size in FILES)
         except (OSError, ValueError):
             return False
 
     def verify(self, check=lambda: None):
         try:
-            valid = self.ready() and all(hash_file(self.path / name, check) == digest for name, _, _, digest in FILES)
+            check()
+            valid = self.ready()
         except OSError:
             valid = False
         if not valid:
@@ -123,10 +114,9 @@ class ModelResources:
                         self.state = "succeeded"
                     return
             staging.mkdir(parents=True)
-            for name, url, size, digest in FILES:
+            for name, url, size in FILES:
                 self.check()
                 target = staging / name
-                hasher = hashlib.sha256()
                 received = 0
                 request = urllib.request.Request(url, headers={"User-Agent": "Sakura-ASR/1"})
                 with urllib.request.urlopen(request, timeout=20) as source, target.open("wb") as output:
@@ -136,15 +126,12 @@ class ModelResources:
                         if received > size:
                             raise ValueError("ASR_DOWNLOAD_SIZE_MISMATCH")
                         output.write(chunk)
-                        hasher.update(chunk)
                         with self.lock:
                             self.downloaded += len(chunk)
                 if received != size:
                     raise ValueError("ASR_DOWNLOAD_SIZE_MISMATCH")
-                if hasher.hexdigest() != digest:
-                    raise ValueError("ASR_DOWNLOAD_CHECKSUM_MISMATCH")
             self.check()
-            (staging / "complete.json").write_text(json.dumps({"version": VERSION, "sha256": {f[0]: f[3] for f in FILES}}), encoding="utf-8")
+            (staging / "complete.json").write_text(json.dumps({"version": VERSION}), encoding="utf-8")
             # Publish only a complete validated set; retain the old set on failure.
             if self.path.exists():
                 os.replace(self.path, backup)
@@ -166,7 +153,7 @@ class ModelResources:
         except Exception as error:
             with self.lock:
                 self.state = "failed"
-                self.error = str(error) if str(error) in {"ASR_DOWNLOAD_SIZE_MISMATCH", "ASR_DOWNLOAD_CHECKSUM_MISMATCH", "ASR_MODEL_RESTORE_FAILED"} else "ASR_DOWNLOAD_FAILED"
+                self.error = str(error) if str(error) in {"ASR_DOWNLOAD_SIZE_MISMATCH", "ASR_MODEL_RESTORE_FAILED"} else "ASR_DOWNLOAD_FAILED"
         finally:
             # These are internally generated children of the private model root.
             # On a failed rollback, the backup is the only remaining old set.

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import queue
@@ -588,22 +587,25 @@ class _Coordinator:
             return voice.onnx_model_dir
         if voice.gpt_model_path is None or voice.sovits_model_path is None:
             raise RuntimeError("TTS_ONNX_UNAVAILABLE")
-        fingerprint = {
+        source = {
             "format": _CONVERSION_FORMAT,
             "characterId": voice.character_id,
-            "gptSha256": _hash_file(voice.gpt_model_path, job.check_cancelled),
-            "sovitsSha256": _hash_file(voice.sovits_model_path, job.check_cancelled),
+            "gptSource": _model_source(voice.gpt_model_path),
+            "sovitsSource": _model_source(voice.sovits_model_path),
         }
-        digest = hashlib.sha256(
-            json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        final_dir = self._cache_root / digest
-        if _valid_conversion(final_dir, fingerprint):
-            self._report("tts.conversion.cache_hit", "debug", {})
-            return final_dir
-        for stale in self._cache_root.glob(f"{digest}.staging-*"):
-            shutil.rmtree(stale, ignore_errors=True)
-        staging = self._cache_root / f"{digest}.staging-{uuid.uuid4().hex}"
+        # Directory names are opaque IDs, including legacy hash-named caches.
+        # Legacy caches without source metadata remain available through an
+        # explicit ONNX directory; their source identity cannot be inferred.
+        self._cache_root.mkdir(parents=True, exist_ok=True)
+        for candidate in self._cache_root.iterdir():
+            job.check_cancelled()
+            if candidate.is_dir() and not candidate.is_symlink() and ".staging-" not in candidate.name:
+                if _valid_conversion(candidate, source):
+                    self._report("tts.conversion.cache_hit", "debug", {})
+                    return candidate
+        cache_id = uuid.uuid4().hex
+        final_dir = self._cache_root / cache_id
+        staging = self._cache_root / f"{cache_id}.staging-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         promoted = False
         started = time.monotonic()
@@ -618,14 +620,17 @@ class _Coordinator:
             models = sorted(path.name for path in _onnx_files(staging))
             if not models:
                 raise RuntimeError("TTS_ONNX_CONVERSION_FAILED")
-            marker = {**fingerprint, "models": models}
+            if (
+                _model_source(voice.gpt_model_path) != source["gptSource"]
+                or _model_source(voice.sovits_model_path) != source["sovitsSource"]
+            ):
+                raise RuntimeError("TTS_SOURCE_MODEL_CHANGED")
+            marker = {**source, "models": models}
             (staging / ".sakura-complete.json").write_text(
                 json.dumps(marker, ensure_ascii=False, sort_keys=True),
                 encoding="utf-8",
             )
             job.check_cancelled()
-            if final_dir.exists():
-                shutil.rmtree(final_dir)
             os.replace(staging, final_dir)
             promoted = True
             self._report("tts.conversion.finished", "info", {
@@ -1189,15 +1194,12 @@ def _absolute_path(value: object) -> Path | None:
     return path
 
 
-def _hash_file(path: Path, cancel_checker: Callable[[], None]) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            cancel_checker()
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                return digest.hexdigest()
-            digest.update(chunk)
+def _model_source(path: Path) -> dict[str, object]:
+    resolved = path.resolve(strict=True)
+    info = resolved.stat()
+    if not resolved.is_file() or info.st_size <= 0:
+        raise RuntimeError("TTS_SOURCE_MODEL_UNAVAILABLE")
+    return {"path": str(resolved), "size": info.st_size, "mtimeNs": info.st_mtime_ns}
 
 
 def _onnx_files(directory: Path) -> list[Path]:
@@ -1214,7 +1216,7 @@ def _onnx_files(directory: Path) -> list[Path]:
         return []
 
 
-def _valid_conversion(directory: Path, fingerprint: Mapping[str, Any]) -> bool:
+def _valid_conversion(directory: Path, source: Mapping[str, Any]) -> bool:
     try:
         marker = json.loads(
             (directory / ".sakura-complete.json").read_text(encoding="utf-8")
@@ -1225,7 +1227,9 @@ def _valid_conversion(directory: Path, fingerprint: Mapping[str, Any]) -> bool:
         return False
     models = marker.get("models")
     return (
-        all(marker.get(key) == value for key, value in fingerprint.items())
+        marker.get("format") == source["format"]
+        and marker.get("characterId") == source["characterId"]
+        and all(marker.get(key) == source[key] for key in ("gptSource", "sovitsSource"))
         and isinstance(models, list)
         and bool(models)
         and all(

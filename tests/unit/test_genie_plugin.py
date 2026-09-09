@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import os
 import shutil
 import sys
 import threading
@@ -238,7 +240,6 @@ def _root(
         json.dumps({
             "schemaVersion": 1,
             "kind": declaration.kind,
-            "fingerprint": declaration.fingerprint,
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         }),
         encoding="utf-8",
@@ -965,10 +966,12 @@ def test_partial_character_warmup_converts_and_synthesis_reuses_cache(
         assert [endpoint for endpoint, _ in server.calls] == ["load_character", "set_reference_audio", "tts"]
         assert manifest_path.read_bytes() == repaired
         if onnx_state != "valid":
-            (package / "model.ckpt").write_bytes(b"updated-gpt")
+            (package / "model.ckpt").write_bytes(b"GPT")
+            source_stamp = (package / "model.ckpt").stat().st_mtime_ns + 1_000_000_000
+            os.utime(package / "model.ckpt", ns=(source_stamp, source_stamp))
             job_id = provider.begin({"requestId": "changed-source", "characterId": "alpha.", "text": "hello", "options": {}})
             assert _direct_terminal(provider._jobs[job_id])["state"] == "succeeded"
-            assert conversions[-1] == (b"updated-gpt", b"sovits")
+            assert conversions[-1] == (b"GPT", b"sovits")
             assert len(conversions) == 2
     finally:
         provider.close()
@@ -1111,7 +1114,8 @@ def test_onnx_conversion_cancel_kills_child_tree_and_cleans_staging(
     child_code = (
         "import subprocess,sys,time; "
         "g=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
-        "open(sys.argv[1],'w').write(f'{__import__(\"os\").getpid()},{g.pid}'); "
+        "__import__('pathlib').Path(sys.argv[1]+'.tmp').write_text(f'{__import__(\"os\").getpid()},{g.pid}'); "
+        "__import__('os').replace(sys.argv[1]+'.tmp', sys.argv[1]); "
         "time.sleep(30)"
     )
     (work_dir / "convert.py").write_text(
@@ -1189,5 +1193,58 @@ def test_managed_genie_warmup_prepares_character_without_synthesis(
         coordinator.warmup(voice)
         assert ready.wait(1)
         assert calls == [(voice, provider_module.DEFAULT_TONE)]
+    finally:
+        coordinator.close()
+
+
+def test_legacy_conversion_requires_source_identity_or_explicit_onnx(tmp_path: Path, monkeypatch) -> None:
+    from plugins.builtin.sakura_genie import plugin as p
+
+    voice = _conversion_voice(p, tmp_path)
+    cache = tmp_path / "cache"
+    legacy = cache / ("a" * 64)
+    legacy.mkdir(parents=True)
+    (legacy / "model.onnx").write_bytes(b"old voice")
+    marker = legacy / ".sakura-complete.json"
+    marker.write_text(json.dumps({"format": p._CONVERSION_FORMAT, "characterId": "alpha",
+                                  "gptSha256": "ignored", "sovitsSha256": "ignored", "models": ["model.onnx"]}))
+    other_legacy = cache / ("b" * 64)
+    shutil.copytree(legacy, other_legacy)
+    # Another voice can have the same length and an older, preserved timestamp.
+    alternate = tmp_path / "other.ckpt"
+    alternate.write_bytes(b"new")
+    os.utime(alternate, ns=(1_000_000_000, 1_000_000_000))
+    voice = replace(voice, gpt_model_path=alternate)
+    config = p._ProviderConfig(True, "managed", "http://127.0.0.1:9881/", 5, tmp_path)
+    coordinator = p._Coordinator(config, cache, tmp_path / "log")
+    original_open = Path.open
+    conversions = []
+
+    def no_weight_scan(path, *args, **kwargs):
+        if path in (voice.gpt_model_path, voice.sovits_model_path):
+            pytest.fail("Model cache lookup must not read weights")
+        return original_open(path, *args, **kwargs)
+
+    def convert(gpt, sovits, staging, _job):
+        conversions.append((gpt, sovits))
+        (staging / "model.onnx").write_bytes(b"new voice")
+
+    monkeypatch.setattr(Path, "open", no_weight_scan)
+    monkeypatch.setattr(coordinator, "_run_converter", convert)
+    try:
+        assert coordinator._ensure_onnx_model(replace(voice, onnx_model_dir=legacy), _ConversionJob()) == legacy
+        assert conversions == []
+        result = coordinator._ensure_onnx_model(voice, _ConversionJob())
+        assert result not in (legacy, other_legacy)
+        assert conversions == [(alternate, voice.sovits_model_path)]
+        assert coordinator._ensure_onnx_model(voice, _ConversionJob()) == result
+        assert len(conversions) == 1
+        assert (result / "model.onnx").read_bytes() == b"new voice"
+        assert (legacy / "model.onnx").read_bytes() == b"old voice"
+        assert (other_legacy / "model.onnx").read_bytes() == b"old voice"
+        assert json.loads(marker.read_text())["gptSha256"] == "ignored"
+        current = json.loads((result / ".sakura-complete.json").read_text())
+        assert current["gptSource"]["path"] == str(alternate.resolve())
+        assert "gptSha256" not in current and "sovitsSha256" not in current
     finally:
         coordinator.close()

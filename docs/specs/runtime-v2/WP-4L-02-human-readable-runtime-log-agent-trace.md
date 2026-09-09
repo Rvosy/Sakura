@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-02
+updated: 2026-09-09
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -76,7 +76,7 @@ updated: 2026-09-02
 查看器可见；`tts.service.warmup_queued` 等仅表示内部排队的诊断事件允许保留在文本日志而不进入查看器；
 新增或改名时，完整性测试必须同时验证三处，禁止仅让事件落盘而在查看器中消失。业务失败属性使用有界、脱敏的
 `diagnostic + error_type + reason_code + stage`，并在可用时附加
-`cause_type + exception_site + failure_id`；不得重新引入裸 `error`/`reason`、绝对路径、traceback 或任意异常对象。
+`cause_type + exception_site`。不生成 `failure_id`，也不引入裸 `error`/`reason`、绝对路径、traceback 或任意异常对象。
 
 每个属于交互的事件必须尽可能携带相同 `operation_id`，文本投影为最多 8 个字符的 `op`；每次模型调用
 同时携带 Agent Trace 的 `trace` 和 `model_call`，文本投影为 `trace`、`call`。事件属性按事件专属字段顺序
@@ -154,8 +154,8 @@ Reply 顶层字段按 `type/trace/model_call/purpose/time` 输出，并保留 na
 `processing`。在解析、tone 清洗或 UI 投影前先记录 Provider 原始 message：
 
 - `content` 是合法 JSON 时解析为内部 `model_output` 嵌套值，保持对象、数组、数字、布尔和 null 类型；
-  活动文件按层级展示，数组使用有序编号，布尔显示“是/否”，null 显示“无”。记录 `raw_chars` 与
-  SHA-256，不把整段 JSON 作为转义字符串或 JSON 语法重复保存。
+  活动文件按层级展示，数组使用有序编号，布尔显示“是/否”，null 显示“无”。记录 `raw_chars`，
+  不生成摘要，也不把整段 JSON 作为转义字符串或 JSON 语法重复保存。
 - 普通非 JSON 文本使用 `raw_text` 自由文本行数组；看起来是结构化回复但 JSON 非法时同样保存
   `raw_text`，并令 `processing.parse_status` 为 `invalid_json`、记录稳定原因。完整 `json/jsonc` 代码围栏、正文中
   首个 JSON object 和确定性引号修复必须先经过共同解析层；Trace 分别记录 `raw_json_status`、
@@ -174,18 +174,21 @@ Reply 顶层字段按 `type/trace/model_call/purpose/time` 输出，并保留 na
 `ChatCompletionTurn` 必须保存原始 content、原始 Provider message、usage、解析状态和实际 runtime-context
 placement，使 request 在最终 payload 确定后记录，reply 在业务解析前记录。
 
+Prompt inspection 使用 section ID、source、cache scope、字符数和 token 估算定位内容，不输出 `static_hash`。
+Trace 使用已有 operation ID、trace/model call 序号关联记录，staging 文件名使用 trace 序号，不计算内容或 ID 摘要。
+
 ## 6. 自由文本、隐私与二进制
 
 - history 内单行短文本使用字符串，多行或长文本按约 100 个显示列拆成字符串数组；活动文件把这些值
   显示为连续正文行，不暴露内部数组语法。结构化模型回复在内部保持原字段类型，活动文件只做人类可读
   的递归投影，不改写字符串内容。
-- 单个自由文本值 UTF-8 超过 1 MiB 时保留有界头尾，附原始字符数、字节数、SHA-256 与
+- 单个自由文本值 UTF-8 超过 1 MiB 时保留有界头尾，附原始字符数、字节数与
   `truncated: true`。不得先把超大值完整复制进多个中间结构。
 - 普通用户文本、历史、实际选中记忆、动态上下文、普通工具参数/结果和模型输出不脱敏。
 - 任意层级字段名匹配 API key、Authorization、Cookie、password、secret、credential、access/refresh
   token 等凭据时删除值；URL userinfo 永久移除。即使用户正文里出现 secret-shaped 普通自然语言也不做
   泛化遮盖，只有明确的凭据键值模式和已知当前 Provider secret 才删除，避免破坏 Prompt 取证。
-- bytes、data URL、base64 图片/音频和工具二进制块只记录 mime/type、尺寸、字节数和 SHA-256；正文在
+- bytes、data URL、base64 图片/音频和工具二进制块只记录 mime/type、尺寸和字节数；正文在
   活动 trace、staging 和 Runtime 日志均必须零命中。
 
 ## 7. 设置与故障隔离

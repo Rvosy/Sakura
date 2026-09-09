@@ -124,7 +124,7 @@ fn validate_management_result(value: &Value) -> Result<(), String> {
             && (value.get("desiredSaved").and_then(Value::as_bool) != Some(true)
                 || !matches!(
                     value.get("applicationState").and_then(Value::as_str),
-                    Some("applied")
+                    Some("applied" | "error")
                 )
                 || !valid_reason(value.get("applicationReasonCode"))))
     {
@@ -535,9 +535,12 @@ fn valid_settings_display_value(kind: &str, value: Option<&Value>, action_ids: &
 
 fn valid_install_id(value: Option<&Value>) -> bool {
     value.and_then(Value::as_str).is_some_and(|text| {
-        text.len() == 27
-            && text.starts_with("pi_")
-            && text[3..]
+        let Some(directory) = text.strip_prefix("pi_user_").or_else(|| text.strip_prefix("pi_bundled_")) else {
+            return false;
+        };
+        (2..=2048).contains(&directory.len())
+            && directory.len() % 2 == 0
+            && directory
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     })
@@ -945,7 +948,7 @@ mod tests {
             "state": "ready",
             "reasonCode": "READY",
             "plugins": [{
-                "installId": "pi_0123456789abcdef01234567",
+                "installId": "pi_bundled_666978747572655f706c7567696e",
                 "pluginId": "fixture_plugin", "name": "Fixture", "version": "1.0.0",
                 "author": "Tests", "description": "Fixture", "enabled": true,
                 "required": false, "supported": true, "state": "active", "reasonCode": "ACTIVE",
@@ -955,6 +958,19 @@ mod tests {
                 "sections": []
             }]
         })
+    }
+
+    #[test]
+    fn encoded_install_ids_remain_bounded_across_the_desktop_boundary() {
+        let mut value = snapshot();
+        value["plugins"][0]["installId"] = json!(format!("pi_bundled_{}", "e8a792e889b2".repeat(35)));
+        assert!(validate_snapshot(&value).is_ok());
+        for invalid in ["pi_user_", "pi_user_a", "pi_other_6162", "pi_user_../a"] {
+            value["plugins"][0]["installId"] = json!(invalid);
+            assert!(validate_snapshot(&value).is_err());
+        }
+        value["plugins"][0]["installId"] = json!(format!("pi_user_{}", "aa".repeat(1025)));
+        assert!(validate_snapshot(&value).is_err());
     }
 
     #[test]
@@ -995,10 +1011,31 @@ mod tests {
     }
 
     #[test]
+    fn failed_plugin_enable_preserves_the_committed_management_snapshot() {
+        let mut result = snapshot();
+        result["revision"] = json!("1111111111111111");
+        result["plugins"][0]["state"] = json!("failed");
+        result["plugins"][0]["reasonCode"] = json!("MISSING_SERVICE");
+        result["managementAction"] = json!("enabled_changed");
+        result["installId"] = result["plugins"][0]["installId"].clone();
+        result["pluginId"] = result["plugins"][0]["pluginId"].clone();
+        result["desiredSaved"] = json!(true);
+        result["applicationState"] = json!("error");
+        result["applicationReasonCode"] = json!("MISSING_SERVICE");
+        assert!(validate_management_result(&result).is_ok());
+
+        result["applicationState"] = json!("pending");
+        assert!(validate_management_result(&result).is_err());
+        result["applicationState"] = json!("error");
+        result["desiredSaved"] = json!(false);
+        assert!(validate_management_result(&result).is_err());
+    }
+
+    #[test]
     fn local_plugin_management_results_are_exact_and_source_bounded() {
         let mut installed = snapshot();
         installed["managementAction"] = json!("installed");
-        installed["installId"] = json!("pi_0123456789abcdef01234567");
+        installed["installId"] = json!("pi_bundled_666978747572655f706c7567696e");
         installed["pluginId"] = json!("fixture_plugin");
         assert!(validate_management_result(&installed).is_ok());
         installed["plugins"][0]["source"] = json!("user");

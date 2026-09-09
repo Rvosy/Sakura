@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,17 @@ from app.legacy_import.incremental import (
 )
 from app.legacy_import.transaction import commit_payload, finalize_commit
 from app.storage.timeline import TimelineStore
+
+
+@pytest.fixture(autouse=True)
+def _isolated_preview_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tempfile
+
+    directory = tmp_path / "system-temp"
+    directory.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(directory))
+    monkeypatch.setenv("TMP", str(directory))
+    monkeypatch.setenv("TEMP", str(directory))
 
 
 def _source(tmp_path: Path) -> Path:
@@ -36,6 +49,195 @@ def _write_history(path: Path, records: list[dict[str, str]], *, tail: bytes = b
         for record in records
     )
     path.write_bytes(payload + tail)
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_preview_refuses_precreated_token_directory(tmp_path: Path, linked: bool) -> None:
+    plan = legacy_incremental._Plan("fixture", comparison_items=["private-preview-content"])
+    path = legacy_incremental._plan_path(plan.token)
+    destination = tmp_path / "precreated"
+    destination.mkdir()
+    if linked:
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(path.parent), str(destination)],
+                capture_output=True, check=True,
+            )
+        else:
+            path.parent.symlink_to(destination, target_is_directory=True)
+    else:
+        path.parent.mkdir()
+    with pytest.raises(FileExistsError):
+        legacy_incremental._save_plan(plan, tmp_path, tmp_path, tmp_path)
+    assert not path.exists()
+    assert list(destination.iterdir()) == []
+
+
+def test_preview_cleanup_does_not_follow_links_or_recurse(tmp_path: Path) -> None:
+    path = legacy_incremental._plan_path("a" * 32)
+    path.parent.mkdir(mode=0o700)
+    path.write_text("preview", encoding="utf-8")
+    extra = path.parent / "unrelated" / "keep.txt"
+    extra.parent.mkdir()
+    extra.write_text("keep", encoding="utf-8")
+    legacy_incremental._remove_plan(path)
+    assert extra.read_text(encoding="utf-8") == "keep"
+    assert not path.exists()
+
+    link = legacy_incremental._plan_path("b" * 32)
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link.parent), str(path.parent)],
+            capture_output=True, check=True,
+        )
+    else:
+        link.parent.symlink_to(path.parent, target_is_directory=True)
+    path.write_text("private-preview", encoding="utf-8")
+    legacy_incremental._remove_plan(link)
+    assert path.read_text(encoding="utf-8") == "private-preview"
+    assert link.parent.exists()
+
+
+def test_preview_cleanup_rejects_other_uid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = legacy_incremental._plan_path("c" * 32)
+    path.parent.mkdir(mode=0o700)
+    path.write_text("other-user-preview", encoding="utf-8")
+    monkeypatch.setattr(os, "getuid", lambda: path.parent.lstat().st_uid + 1, raising=False)
+    legacy_incremental._remove_plan(path)
+    assert path.read_text(encoding="utf-8") == "other-user-preview"
+
+
+def test_preview_pruning_removes_only_old_owned_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(legacy_incremental, "_MAX_PENDING_PLANS", 1)
+    first = legacy_incremental._Plan("first")
+    second = legacy_incremental._Plan("second")
+    legacy_incremental._save_plan(first, tmp_path, tmp_path, tmp_path)
+    first_path = legacy_incremental._plan_path(first.token)
+    os.utime(first_path.parent, (1, 1))
+    legacy_incremental._save_plan(second, tmp_path, tmp_path, tmp_path)
+    assert not first_path.parent.exists()
+    assert legacy_incremental._plan_path(second.token).is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+def test_preview_permissions_are_private_and_relaxed_directory_is_rejected(tmp_path: Path) -> None:
+    import stat
+
+    previous_umask = os.umask(0)
+    try:
+        plan = legacy_incremental._Plan("fixture", comparison_items=["private-preview-content"])
+        legacy_incremental._save_plan(plan, tmp_path, tmp_path, tmp_path)
+    finally:
+        os.umask(previous_umask)
+    path = legacy_incremental._plan_path(plan.token)
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    path.parent.chmod(0o755)
+    assert not legacy_incremental._private_plan_directory(path.parent)
+    legacy_incremental._remove_plan(path)
+    assert path.is_file()
+
+
+def test_incremental_plan_survives_cli_process_exit(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_history(
+        source / "data/chat_history/Sakura.jsonl",
+        [_record("2026-01-01T00:00:00+08:00", "user", "private source text")],
+    )
+    command = [sys.executable, "-m", "app.legacy_import"]
+    scope = ["--source", str(source), "--target", str(target)]
+    inspected = subprocess.run(
+        [*command, "inspect-data", *scope], capture_output=True, text=True,
+        encoding="utf-8", check=True, timeout=60,
+    )
+    plan = json.loads(inspected.stdout)["plan"]
+    assert "private source text" not in inspected.stdout
+    applied = subprocess.run(
+        [*command, "apply-data", *scope, "--import-id", "cross-process",
+         "--plan-token", plan["planToken"]],
+        capture_output=True, text=True, encoding="utf-8", check=True, timeout=60,
+    )
+    assert json.loads(applied.stdout)["type"] == "data-import-result"
+    assert "private source text" not in applied.stdout
+    assert not legacy_incremental._plan_path(plan["planToken"]).parent.exists()
+    from app.legacy_import.transaction import PendingCommit
+    finalize_commit(PendingCommit("cross-process", target))
+    repeated = inspect_character_data_import(source, target)
+    assert repeated["totals"]["historyIdentical"] == 1
+    assert repeated["totals"]["historyNew"] == 0
+
+
+def test_pre_registry_ids_are_reused_and_mapping_preserves_conflict_identity(
+    tmp_path: Path,
+) -> None:
+    from app.storage.timeline import NewTimelineEntry, TimelineKind
+
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    history = source / "data/chat_history/Sakura.jsonl"
+    timestamp = "2026-01-01T00:00:00+08:00"
+    records = [_record(timestamp, "user", "first"), _record(timestamp, "user", "second")]
+    _write_history(history, records)
+    store = TimelineStore(target / "data/chat_history/timeline.sqlite3")
+    store.initialize()
+    # Old stored identifiers are opaque fixtures; no legacy digest is computed.
+    old_ids = ["legacy-human-" + "a" * 32, "legacy-human-" + "b" * 32]
+    old_turns = ["legacy-turn-" + "c" * 32, "legacy-turn-" + "d" * 32]
+    for index, record in enumerate(records):
+        store.append(NewTimelineEntry(
+            entry_id=old_ids[index], turn_id=old_turns[index], character_id="Sakura",
+            kind=TimelineKind.HUMAN, origin="chat", created_at=timestamp,
+            payload={"text": record["content"]},
+        ))
+    plan = inspect_character_data_import(source, target)
+    assert plan["totals"]["historyIdentical"] == 2
+    assert plan["totals"]["historyNew"] == 0
+    _, pending = run_character_data_import(
+        source, target, plan_token=plan["planToken"], overwrite_conflicts=False,
+    )
+    finalize_commit(pending)
+    records[1]["content"] = "edited"
+    _write_history(history, records)
+    conflict = inspect_character_data_import(source, target)
+    assert conflict["totals"]["historyIdentical"] == 1
+    assert conflict["totals"]["historyConflicts"] == 1
+    _, pending = run_character_data_import(
+        source, target, plan_token=conflict["planToken"], overwrite_conflicts=True,
+    )
+    finalize_commit(pending)
+    entries = store.read_all("Sakura")
+    assert [entry.entry_id for entry in entries] == old_ids
+    assert [entry.turn_id for entry in entries] == old_turns
+    assert [entry.payload["text"] for entry in entries] == ["first", "edited"]
+
+
+def test_incremental_plan_rejects_same_size_source_change_and_missing_preview(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    history = source / "data/chat_history/Sakura.jsonl"
+    records = [_record("2026-01-01T00:00:00+08:00", "user", "before")]
+    _write_history(history, records)
+    plan = inspect_character_data_import(source, target)
+    stat = history.stat()
+    records[0]["content"] = "after!"
+    _write_history(history, records)
+    os.utime(history, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_IMPORT_PLAN_STALE"):
+        run_character_data_import(
+            source, target, plan_token=plan["planToken"], overwrite_conflicts=True,
+        )
+    legacy_incremental._plan_path(plan["planToken"]).unlink()
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_IMPORT_PLAN_STALE"):
+        run_character_data_import(
+            source, target, plan_token=plan["planToken"], overwrite_conflicts=True,
+        )
+    assert not list(target.glob(".legacy-import-*"))
 
 
 def test_incremental_history_salvages_dirty_rows_skips_identical_and_prompts_on_conflict(

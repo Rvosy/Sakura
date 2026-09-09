@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -89,7 +88,6 @@ def prepare(repo: Path, python: Path) -> None:
             marker = {
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
             (dependency_root / ".sakura-dependencies.json").write_text(

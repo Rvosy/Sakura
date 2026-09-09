@@ -262,7 +262,7 @@ def test_app_logging_handler_never_formats_message_or_traceback() -> None:
     }
 
 
-def test_exception_diagnostics_add_safe_root_cause_location_and_failure_id() -> None:
+def test_exception_diagnostics_add_safe_root_cause_location() -> None:
     try:
         try:
             raise OSError(PRIVATE_CHAT)
@@ -277,11 +277,9 @@ def test_exception_diagnostics_add_safe_root_cause_location_and_failure_id() -> 
 
     assert attributes["error_type"] == "RuntimeError"
     assert attributes["cause_type"] == "OSError"
-    assert ":test_exception_diagnostics_add_safe_root_cause_location_and_failure_id:" in attributes["exception_site"]
-    assert len(attributes["failure_id"]) == 10
-    assert attributes["failure_id"].isalnum()
+    assert ":test_exception_diagnostics_add_safe_root_cause_location:" in attributes["exception_site"]
+    assert "failure_id" not in attributes
     assert PRIVATE_CHAT not in str(attributes["exception_site"])
-    assert PRIVATE_SECRET not in str(attributes["failure_id"])
 
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
@@ -298,7 +296,7 @@ def test_exception_diagnostics_add_safe_root_cause_location_and_failure_id() -> 
     forwarded = _records(stream)[0]["attributes"]
     assert forwarded["cause_type"] == "OSError"
     assert forwarded["exception_site"] == attributes["exception_site"]
-    assert forwarded["failure_id"] == attributes["failure_id"]
+    assert "failure_id" not in forwarded
     assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
     assert PRIVATE_SECRET not in stream.getvalue().decode("utf-8")
 

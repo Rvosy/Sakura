@@ -26,7 +26,6 @@ def _manifest() -> dict[str, object]:
         "portable": {
             "windows-x86_64": {
                 "url": "https://github.com/Rvosy/Sakura/releases/download/v1.0.3/Sakura-1.0.3-windows-x64-portable.zip",
-                "sha256": "a" * 64,
             }
         },
     }
@@ -46,7 +45,7 @@ def test_gitcode_manifest_changes_only_download_urls(tmp_path: Path) -> None:
     assert mirrored["pub_date"] == original["pub_date"]
     assert mirrored["platforms"]["windows-x86_64"]["signature"] == "windows-signature"
     assert mirrored["platforms"]["darwin-aarch64"]["signature"] == "mac-signature"
-    assert mirrored["portable"]["windows-x86_64"]["sha256"] == "a" * 64
+    assert set(mirrored["portable"]["windows-x86_64"]) == {"url"}
     assert mirrored["platforms"]["windows-x86_64"]["url"] == (
         "https://api.gitcode.com/api/v5/repos/Rvosy/Sakura/releases/v1.0.3/"
         "attach_files/Sakura-1.0.3-windows-x64-setup.exe/download"

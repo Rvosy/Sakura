@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import threading
@@ -1457,17 +1456,14 @@ def test_modelscope_download_uses_pinned_revision_and_flattens_onnx_data(
         "config.json": (
             "config.json",
             len(payloads["config.json"]),
-            hashlib.sha256(payloads["config.json"]).hexdigest(),
         ),
         "model.onnx": (
             "onnx/model.onnx",
             len(payloads["onnx/model.onnx"]),
-            hashlib.sha256(payloads["onnx/model.onnx"]).hexdigest(),
         ),
         "model.onnx_data": (
             "onnx/model.onnx_data",
             len(payloads["onnx/model.onnx_data"]),
-            hashlib.sha256(payloads["onnx/model.onnx_data"]).hexdigest(),
         ),
     }
     requested: list[str] = []
@@ -1523,3 +1519,28 @@ def test_model_import_rejects_bad_onnx_artifacts_and_keeps_previous_cache(
 
     assert (cache / "old.bin").read_bytes() == b"previous-readable-cache"
     assert not list(cache.parent.glob(".memory_model_import_*"))
+
+
+def test_fixed_model_snapshot_checks_sizes_without_reading_weights(tmp_path: Path, monkeypatch) -> None:
+    snapshot = (tmp_path / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME / "snapshots"
+                / memory_module.DEFAULT_EMBEDDING_ARTIFACT_REVISION)
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.onnx").write_bytes(b"model")
+    (snapshot / "config.json").write_bytes(b"{}")
+    monkeypatch.setattr(memory_module, "DEFAULT_EMBEDDING_MODEL_ARTIFACTS", {"model.onnx": 5, "config.json": 2})
+    monkeypatch.delenv("FASTEMBED_CACHE_PATH", raising=False)
+    original_open = Path.open
+
+    def no_content_scan(path, *args, **kwargs):
+        if path.parent == snapshot:
+            pytest.fail("Snapshot availability must not scan model content")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", no_content_scan)
+    assert memory_module._embedding_model_snapshot(memory_module.DEFAULT_EMBEDDING_MODEL, cache_dir=tmp_path) == snapshot
+    memory_module._validate_fastembed_snapshot_artifacts(snapshot)
+    (snapshot / "model.onnx").unlink()
+    assert memory_module._embedding_model_snapshot(memory_module.DEFAULT_EMBEDDING_MODEL, cache_dir=tmp_path) is None
+    with pytest.raises(memory_module.MemoryModelImportError) as raised:
+        memory_module._validate_fastembed_snapshot_artifacts(snapshot)
+    assert raised.value.code == "DOWNLOAD_SIZE_MISMATCH"

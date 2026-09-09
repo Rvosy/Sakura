@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import builtins
-import hashlib
 import http.client
 import os
 import socket
@@ -77,7 +76,6 @@ def _snapshot(root: Path) -> dict[str, dict[str, object]]:
             "bytes": content,
             "size": metadata.st_size,
             "mtime_ns": metadata.st_mtime_ns,
-            "sha256": hashlib.sha256(content).hexdigest(),
             "mode": stat.S_IMODE(metadata.st_mode),
             "bak_absent": not Path(f"{path}.bak").exists(),
         }

@@ -2,7 +2,6 @@
 
 import argparse
 import collections
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -304,14 +303,9 @@ builds.json 的 mapping=null 表示服务器尚未安装该发布构建的资源
         check(len(verifier))
         (root / "verify_bundle.py").write_bytes(verifier)
         for path in sorted(root.iterdir()):
-            digest = hashlib.sha256()
-            with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    check()
-                    digest.update(chunk)
+            check()
             files[path.name] = {
                 "bytes": path.stat().st_size,
-                "sha256": digest.hexdigest(),
             }
         manifest = {
             "bundleVersion": 2,

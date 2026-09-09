@@ -44,7 +44,7 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
 
     unsupported = _preview_plugin(
         InstalledPluginRecord(
-            "pi_0123456789abcdef01234567", "bundled", "legacy", "legacy",
+            "pi_bundled_666978747572655f706c7567696e", "bundled", "legacy", "legacy",
             "Legacy", "", "", "1.0.0", 2, "plugin:Legacy", False, False,
             ("com.example.legacy",), ("sakura.host.settings",),
             "API_VERSION_UNSUPPORTED", False, False,
@@ -54,14 +54,14 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
     assert unsupported["supported"] is False
     assert unsupported["state"] == "failed"
     assert unsupported["reasonCode"] == "API_VERSION_UNSUPPORTED"
-    assert unsupported["installId"] == "pi_0123456789abcdef01234567"
+    assert unsupported["installId"] == "pi_bundled_666978747572655f706c7567696e"
     assert unsupported["provides"] == ["com.example.legacy"]
     assert unsupported["requires"] == ["sakura.host.settings"]
     assert unsupported["missingServices"] == []
 
     required = _preview_plugin(
         InstalledPluginRecord(
-            "pi_111111111111111111111111", "bundled", "required", "required",
+            "pi_user_6c6f63616c", "bundled", "required", "required",
             "Required", "", "", "1.0.0", 4, "plugin:Required", True, True,
             (), (), "READY", True, True,
         )
@@ -72,7 +72,7 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
 
     invalid_user_required = _preview_plugin(
         InstalledPluginRecord(
-            "pi_222222222222222222222222", "user", "broken", None,
+            "pi_user_62726f6b656e", "user", "broken", None,
             "Invalid plugin", "", "", "0.0.0", None, "", False, False,
             (), (), "PLUGIN_MANIFEST_INVALID", False, False,
         )

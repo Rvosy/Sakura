@@ -43,6 +43,7 @@ def _packet(value: str, *, length: int, code: str) -> bytes:
 def _artifact_message(path: Path, *, prehashed: bool) -> bytes:
     if not prehashed:
         return path.read_bytes()
+    # Tauri/minisign ED signatures require this prehash as part of their wire format.
     digest = hashlib.blake2b(digest_size=64)
     with path.open("rb") as artifact:
         while chunk := artifact.read(1024 * 1024):

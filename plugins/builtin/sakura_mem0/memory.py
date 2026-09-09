@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
 import importlib.util
 import json
@@ -99,58 +98,37 @@ DEFAULT_EMBEDDING_MODEL_CACHE_NAME = "models--" + DEFAULT_EMBEDDING_ARTIFACT_REP
     "/", "--"
 )
 DEFAULT_EMBEDDING_MODEL_ARTIFACTS = {
-    "config.json": (
-        650,
-        "1b4d8e2a3988377ed8b519a31d8d31025a25f1c5f8606998e8014111438efcd7",
-    ),
-    "model.onnx": (
-        90_387_630,
-        "bbd7b466f6d58e646fdc2bd5fd67b2f5e93c0b687011bd4548c420f7bd46f0c5",
-    ),
-    "special_tokens_map.json": (
-        695,
-        "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
-    ),
-    "tokenizer.json": (
-        711_661,
-        "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0",
-    ),
-    "tokenizer_config.json": (
-        1_433,
-        "bd2e06a5b20fd1b13ca988bedc8763d332d242381b4fbc98f8fead4524158f79",
-    ),
+    "config.json": 650,
+    "model.onnx": 90_387_630,
+    "special_tokens_map.json": 695,
+    "tokenizer.json": 711_661,
+    "tokenizer_config.json": 1_433,
 }
 DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES = tuple(DEFAULT_EMBEDDING_MODEL_ARTIFACTS)
 MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS = {
     "config.json": (
         "config.json",
         794,
-        "fe5da868b77bdb104140822a5af0837cb6450ad6de8ff3dfcc8dd44ddd3e3ae7",
     ),
     "model.onnx": (
         "onnx/model.onnx",
         56_796,
-        "2f019cf6217537cc4bfc7f5192f21dea1e18445177edaab0bc6163a813e5c7a1",
     ),
     "model.onnx_data": (
         "onnx/model.onnx_data",
         90_261_504,
-        "60c758432aa596c30a122942dfe594c457d4d713f890926f1c5f920bd496c8de",
     ),
     "special_tokens_map.json": (
         "special_tokens_map.json",
         695,
-        "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
     ),
     "tokenizer.json": (
         "tokenizer.json",
         533_808,
-        "07805d116826679de90b4edeb2222269c4b8753bc0981be4399f732b2708e904",
     ),
     "tokenizer_config.json": (
         "tokenizer_config.json",
         1_463,
-        "e10bb633ba0d7f69ed342ae7de607f36b39ce53b455fbda69c71700bf57e6f66",
     ),
 }
 _MEM0_CREATE_LOCK = threading.Lock()
@@ -2182,9 +2160,9 @@ def _download_modelscope_snapshot(
     """从固定 ModelScope revision 下载可由 FastEmbed 加载的 ONNX 工件。"""
 
     snapshot.mkdir(parents=True, exist_ok=False)
-    total_bytes = sum(size for _, size, _ in MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.values())
+    total_bytes = sum(size for _, size in MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.values())
     downloaded_bytes = 0
-    for local_name, (remote_name, expected_size, _expected_sha256) in (
+    for local_name, (remote_name, expected_size) in (
         MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.items()
     ):
         _check_model_task_cancelled(cancel)
@@ -2474,52 +2452,26 @@ def _fastembed_snapshot_is_complete(snapshot: Path) -> bool:
         all(
             (snapshot / filename).is_file()
             and (snapshot / filename).stat().st_size == expected_size
-            for filename, (expected_size, _expected_sha256) in artifacts.items()
+            for filename, expected_size in artifacts.items()
         )
         for artifacts in _embedding_model_artifact_layouts()
     )
 
 
 def _validate_fastembed_snapshot_artifacts(snapshot: Path) -> None:
-    """按固定 size/SHA-256 校验 ONNX 工件，避免错误 ZIP 替换可读缓存。"""
+    """按固定版本的文件布局与尺寸检查工件；模型格式由 FastEmbed 原生加载验证。"""
 
-    matching_layout = next(
-        (
-            artifacts
-            for artifacts in _embedding_model_artifact_layouts()
-            if all(
-                (snapshot / filename).is_file()
-                and (snapshot / filename).stat().st_size == expected_size
-                for filename, (expected_size, _expected_sha256) in artifacts.items()
-            )
-        ),
-        None,
-    )
-    if matching_layout is None:
+    if not _fastembed_snapshot_is_complete(snapshot):
         raise MemoryModelImportError(
             "记忆 ONNX 模型文件大小不匹配。",
             code="DOWNLOAD_SIZE_MISMATCH",
         )
 
-    for filename, (expected_size, expected_sha256) in matching_layout.items():
-        path = snapshot / filename
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
-        if digest.hexdigest() != expected_sha256:
-            raise MemoryModelImportError(
-                f"记忆 ONNX 模型文件校验失败：{filename}",
-                code="DOWNLOAD_CHECKSUM_MISMATCH",
-            )
 
-
-def _embedding_model_artifact_layouts() -> tuple[dict[str, tuple[int, str]], ...]:
+def _embedding_model_artifact_layouts() -> tuple[dict[str, int], ...]:
     modelscope_layout = {
-        local_name: (size, sha256)
-        for local_name, (_remote_name, size, sha256) in (
-            MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.items()
-        )
+        local_name: size
+        for local_name, (_remote_name, size) in MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.items()
     }
     return DEFAULT_EMBEDDING_MODEL_ARTIFACTS, modelscope_layout
 

@@ -18,16 +18,32 @@ from app.llm.prompts.runtime import (
     ContextBudget,
     ContextPolicy,
     ContextWindowExceededError,
+    PromptRuntime,
     calculate_context_budget,
     estimate_context_runtime_tokens,
     estimate_prompt_tokens,
     truncate_to_token_budget,
 )
-from app.llm.prompts.types import ContextFragment, ContextRequest, ContextTurn
+from app.llm.prompts.types import ContextFragment, ContextRequest, ContextTurn, PromptRecipe, PromptSection
 from app.llm.token_estimation import (
     estimate_message_image_tokens,
     estimate_message_tokens,
 )
+
+
+def test_prompt_inspection_exposes_section_metadata_without_content_digest() -> None:
+    result = PromptRuntime().build(PromptRecipe(
+        "fixture", [PromptSection("persona.character", "private character text", source="character")],
+    ))
+    inspection = result.inspection.to_dict()
+    section = inspection["sections"][0]
+    assert result.system_prompt == "private character text"
+    assert section["section_id"] == "persona.character"
+    assert section["source"] == "character"
+    assert section["chars"] == len(result.system_prompt)
+    assert section["estimated_tokens"] == estimate_prompt_tokens(result.system_prompt)
+    assert "static_hash" not in section
+    assert "private character text" not in str(inspection)
 
 
 def _history(turns: int, *, chars: int = 120) -> list[dict[str, object]]:

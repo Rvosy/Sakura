@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 import shutil
@@ -32,7 +31,7 @@ from app.legacy_import.files import (
     copy_tree_checked,
     copy_tree_fast_checked,
 )
-from app.legacy_import.history import import_history
+from app.legacy_import.history import import_history, read_history_identities, write_history_identities
 from app.legacy_import.importer import (
     _build_artifact_manifest,
     _copy_memory,
@@ -53,6 +52,17 @@ from app.storage.timeline import MAX_SEGMENTS, NewTimelineEntry, TimelineKind, T
 
 
 _REAL_PREPARE_MEMORY_MODEL = legacy_importer._prepare_memory_model
+
+
+@pytest.fixture(autouse=True)
+def _isolated_preview_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tempfile
+
+    directory = tmp_path / "system-temp"
+    directory.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(directory))
+    monkeypatch.setenv("TMP", str(directory))
+    monkeypatch.setenv("TEMP", str(directory))
 
 
 @pytest.fixture(autouse=True)
@@ -364,9 +374,7 @@ def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
     }
     providers = service.load_api_profiles()
     selection = service.load_model_selection()
-    assert hashlib.sha256(providers[0].api_key.encode()).digest() == hashlib.sha256(
-        b"fixture-yaml-credential"
-    ).digest()
+    assert providers[0].api_key == "fixture-yaml-credential"
     assert providers[0].base_url == "https://yaml.example/v1"
     assert selection.chat.model == "yaml-model"
 
@@ -440,9 +448,7 @@ def test_configuration_import_converts_pr110_selection_without_model_slots(
     loaded_providers = service.load_api_profiles()
     selection = service.load_model_selection()
     assert loaded_providers[0].models == (expected_text_model, expected_vision_model)
-    assert hashlib.sha256(loaded_providers[0].api_key.encode()).digest() == hashlib.sha256(
-        b"text-provider-secret"
-    ).digest()
+    assert loaded_providers[0].api_key == "text-provider-secret"
     assert selection.chat.profile_id == "text-provider"
     assert selection.chat.model == expected_text_model
     assert selection.vision_chat is not None
@@ -522,14 +528,14 @@ def _macos_legacy_fixture(tmp_path: Path) -> Path:
     return root
 
 
-def _tree_state(root: Path) -> dict[str, tuple[int, int, str]]:
-    state: dict[str, tuple[int, int, str]] = {}
+def _tree_state(root: Path) -> dict[str, tuple[int, int, bytes]]:
+    state: dict[str, tuple[int, int, bytes]] = {}
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         stat = path.stat()
         state[path.relative_to(root).as_posix()] = (
             stat.st_size,
             stat.st_mtime_ns,
-            hashlib.sha256(path.read_bytes()).hexdigest(),
+            path.read_bytes(),
         )
     return state
 
@@ -1076,7 +1082,8 @@ servers:
     report_payload = json.loads(report_text)
     assert report_payload["artifacts"]
     assert all(
-        len(artifact["sha256"]) == 64 and not Path(artifact["id"]).is_absolute()
+        set(artifact) == {"domain", "id", "bytes"}
+        and not Path(artifact["id"]).is_absolute()
         for artifact in report_payload["artifacts"]
     )
     assert not (target / "data/memory/curation_state").exists()
@@ -1299,6 +1306,8 @@ def test_first_import_never_overwrites_cross_role_timeline_identity(
             payload={"text": "beta owns this identity"},
         )
     )
+    with sqlite3.connect(timeline.path) as connection:
+        write_history_identities(connection, read_history_identities(converted))
     before = _tree_state(target)
     monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
 
@@ -1742,7 +1751,9 @@ def test_large_history_streams_binary_lines_with_stable_chunks_and_raw_quarantin
     second = tmp_path / "second"
 
     first_stats = import_history(source, first, character_ids=("Sakura",))
-    second_stats = import_history(source, second, character_ids=("Sakura",))
+    second_stats = import_history(
+        source, second, character_ids=("Sakura",), identity_root=first
+    )
 
     first_entries = TimelineStore(first / "data/chat_history/timeline.sqlite3").read_all(
         "Sakura"

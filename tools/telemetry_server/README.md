@@ -1,6 +1,6 @@
 # Sakura Telemetry v2 服务器与分析包
 
-本目录包含遥测服务器、后台与分析包导出源码。基础文件取自核对后的线上 BaoTa 服务，哈希见 `baseline.json`；旧 Phase 2 目录不再作为部署来源。
+本目录包含遥测服务器、后台与分析包导出源码。基础文件取自核对后的线上 BaoTa 服务；旧 Phase 2 目录不再作为部署来源。
 客户端、服务端与后台必须按协议顺序上线。后端继续使用 FastAPI、Pydantic、SQLite；React 页面保留在 `dashboard/`，没有新增账号系统或消息队列。
 
 ## 本地隔离运行
@@ -35,11 +35,11 @@ python verify_bundle.py /private/report.zip
 其他筛选参数：version、installation、run、generation、operation、group、component、reason、severity、platform。`--include-test` 明确纳入开发及验收样本。
 CLI 输出由调用者保管；后台临时文件保留一小时。超出 5 分钟或 1 GiB 未压缩内容会失败并清理，不能拿到静默截断的包。
 
-每个包包含 README、protocol.json、schema.json、manifest 和标准库校验器。先核对哈希/行数，再查看 groups.json；同一 run 按 occurred_ms 排序。
+每个包包含 README、protocol.json、schema.json、manifest 和标准库校验器。先核对必需文件、大小和行数，再查看 groups.json；同一 run 按 occurred_ms 排序。
 发生次数是累计最大值，不能把重复摘要求和。received_at_iso 明确为 +08:00；旧 received_at 没有被移动。没有终态、没有原因和没有位置都保留未知。
 
 将发行产物中的 `diagnostic-build-<target>.json` 核对后按其中 buildId 放入服务器 `builds/<buildId>.json`。缺少映射会在 builds.json 明确显示 mapping=null。
-正式打包时 Rust 会校验源码和资源哈希；工作区修改的包标为 development，避免污染正式版本统计。
+正式打包时 Rust 会核对构建 ID、环境和映射文件是否存在；每次准备发行资源生成独立的构建 ID。工作区修改的包标为 development，避免污染正式版本统计。
 
 ## 验收入口
 
@@ -64,9 +64,9 @@ python tools/telemetry_server/tests/verify_captured_wire.py /tmp/http-wire.json
 
 ## 生产部署与回退
 
-生产部署和客户端发布分别需要授权，服务端上线不代表客户端已完成发布包验收。每次部署保存实际文件哈希、备份位置和公网检查结果。
+生产部署和客户端发布分别需要授权，服务端上线不代表客户端已完成发布包验收。每次部署保存版本、文件清单、备份位置和公网检查结果。`package_release.py` 生成的 `release-manifest.json` 使用 format 3，文件条目只记录字节数。
 
-1. 用 SSH skill 的 `macmini` 别名重新核实平台、BaoTa 项目、Python 版本、文件哈希和 Nginx 路由。首次从 v1 升级时对线上目录运行 `check_baseline.py`；后续部署对比上一次的 `release-manifest.json` 和 Nginx 哈希。任一哈希变化都重新对比，不能直接覆盖。
+1. 用 SSH skill 的 `macmini` 别名重新核实平台、BaoTa 项目、Python 版本、部署版本和 Nginx 路由。对比线上代码与上一次部署备份，核对 `release-manifest.json` 中的文件清单和大小，确认本次待替换内容。
 2. 在站点目录外、仅维护者可读的目录备份代码。用 SQLite backup API 备份一致性数据库；不要复制活跃 WAL 数据库单文件，不把含用户数据的备份提交仓库。
 3. 在隔离复制数据库中安装依赖并启动新后端，验证增量迁移、v1/v2、后台查询与 ZIP。核对实际 BaoTa Python 兼容性，再通过现有项目发布。
 4. Nginx 保留 Basic Auth、Origin Secret 和 Host 隔离。遥测域名只允许 `/health` 与 `/v[12]/errors|events|model-calls`，不得转发 `/admin`；Admin vhost 的鉴权覆盖全部 `/admin/api/v2/exports` 与下载路径。后台 ZIP 不能用 alias 暴露。
@@ -79,4 +79,4 @@ python tools/telemetry_server/tests/verify_captured_wire.py /tmp/http-wire.json
 如果宝塔自带 Python 的 HTTPS 检查提示缺少证书信任链，可指定服务器系统 CA 文件（例如 `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`）。不能通过关闭证书校验代替公网 TLS 验收。
 
 回退先暂停新版客户端发布，保留新增列和 v2 接收模块；可以回退页面或关闭有问题的查询入口。不得用旧数据库覆盖新上报，也不能把 v1-only 旧服务替回已有 v2 客户端使用的服务器。
-`baseline.json` 只用于部署前漂移检查，不是数据库回退点；生产备份由维护者在服务器私有目录管理。
+生产备份由维护者在服务器私有目录管理。

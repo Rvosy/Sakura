@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 from app.core_host.plugin_settings import _preview_plugin
-from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
+from app.plugins.inventory import INSTALL_ID_PATTERN, PluginDesiredStateStore, PluginInventory, RuntimePluginSpec
 
 
 def _plugin(
@@ -98,7 +97,7 @@ def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_
         assert record.plugin_id is None
         assert record.reason_code == "PLUGIN_MANIFEST_INVALID"
         assert record.runtime_eligible is False
-        assert re.fullmatch(r"pi_[0-9a-f]{24}", record.install_id)
+        assert INSTALL_ID_PATTERN.fullmatch(record.install_id)
 
 
 def test_inventory_ignores_non_plugin_directories_in_bundled_python_package(
@@ -209,7 +208,7 @@ def test_management_write_rejects_retired_fields_without_rewriting(
     assert store.path.read_bytes() == before
 
 
-def test_inventory_install_id_is_stable_opaque_and_public_preview_has_no_path(
+def test_inventory_install_id_is_stable_and_public_preview_has_no_absolute_path(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "private-app-root"
@@ -247,6 +246,49 @@ def test_inventory_rejects_linked_plugin_directories(tmp_path: Path) -> None:
     assert records["linked"].plugin_id is None
     assert records["linked"].reason_code == "PLUGIN_MANIFEST_INVALID"
     assert records["linked"].can_uninstall is True
+
+
+def test_revision_compares_structured_state_across_instances_without_reusing_old_tokens(tmp_path: Path) -> None:
+    plugin = _plugin(tmp_path, "fixture", "example.fixture")
+    desired = PluginDesiredStateStore(tmp_path)
+    desired.set("example.fixture", True)
+    inventory = PluginInventory(tmp_path)
+    first = inventory.scan()
+    assert PluginInventory(tmp_path).scan().revision == first.revision
+    manifest = plugin / "plugin.yaml"
+    content = manifest.read_text(encoding="utf-8")
+    manifest.write_bytes(("# comment\n" + content).replace("\n", "\r\n").encode())
+    desired.path.write_text("# comment\n- {enabled: true, id: example.fixture}\n", encoding="utf-8")
+    assert inventory.scan().revision == first.revision
+    manifest.write_text(content.replace("version: 1.0.0", "version: 2.0.0"), encoding="utf-8")
+    changed = PluginInventory(tmp_path).scan()
+    assert changed.revision != first.revision
+    assert inventory.scan().revision == changed.revision
+    manifest.write_text(content, encoding="utf-8")
+    restored = inventory.scan()
+    assert restored.records == first.records
+    assert restored.revision not in {first.revision, changed.revision}
+    desired.set("example.fixture", False)
+    disabled = PluginInventory(tmp_path).scan()
+    assert disabled.revision != restored.revision
+    assert not disabled.records[0].desired_enabled
+
+
+def test_install_id_encoding_separates_sources_and_roundtrips_long_unicode_dto(tmp_path: Path) -> None:
+    from app.core_host.plugin_settings import _install_identifier
+
+    directory = "角色.插件_" + "长" * 35
+    _plugin(tmp_path, directory, "example.bundled")
+    user = _plugin(tmp_path, directory, "example.user", source="user")
+    first = PluginInventory(tmp_path).scan()
+    assert len({record.install_id for record in first.records}) == 2
+    for spec in first.runtime_specs:
+        assert _install_identifier(spec.install_id) == spec.install_id
+        assert RuntimePluginSpec.from_private_dict(spec.private_dict()) == spec
+    assert [record.install_id for record in PluginInventory(tmp_path).scan().records] == [record.install_id for record in first.records]
+    old_user_id = next(record.install_id for record in first.records if record.source == "user")
+    user.rename(user.with_name("renamed"))
+    assert PluginInventory(tmp_path).scan().record(old_user_id) is None
 
 
 def test_new_user_plugin_defaults_disable_only_requested_plugins_and_keep_existing_choices(tmp_path: Path) -> None:

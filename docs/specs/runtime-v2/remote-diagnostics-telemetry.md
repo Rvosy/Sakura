@@ -185,8 +185,8 @@ v2 事件增加 `shell.ready/core.ready/chat.ready/chat.finished/tts.finished/mi
 旧 `app.ready` 的语义是 Shell 初始化完成。Core 初始化请求成功产生 core.ready；只有 readiness=ready 产生 chat.ready。
 聊天、语音和修复分别记录终态。Memory 的生产埋点位于内置 mem0 的 recall；插件功能覆盖在 Plugin Runtime v4 真正激活成功后产生。
 
-发布准备生成 `diagnostic-build.json` 和 `diagnostic-build-id.txt`。ID 包含 commit、目标平台和资源摘要；保留应用源码与发行资源的 SHA-256。
-正式构建必须读取该映射，编译前逐文件检查哈希，资源变化后须重新准备。带工作区修改的打包明确标为 development。
+发布准备生成 `diagnostic-build.json`（schemaVersion 3）和 `diagnostic-build-id.txt`。ID 包含 commit、目标平台和本次打包的随机 UUID；映射保留源码路径、发行资源路径及大小，不生成内容摘要。旧映射须重新 staging 后才能用于正式构建。
+正式构建读取该映射，核对构建 ID、环境和文件是否存在。重新准备发行资源会生成新的构建 ID；带工作区修改的打包明确标为 development。
 CI 随发行产物保留映射；服务器 `builds/<buildId>.json` 安装对应文件。没有映射时导出明确标为缺失，不能借用其他构建源码。
 
 ## 管理查询与分析包
@@ -203,7 +203,7 @@ v2 列表在 SQL 中执行时间、构建、版本、平台、组件、原因、
 
 ZIP 包含三张规范化 JSONL、问题组、时间线、质量统计、数据库 schema、协议 JSON Schema、字段说明、构建映射、脱敏记录、manifest 和离线校验器。
 stack/breadcrumbs 为数组，保留数据库行 ID 和 reportId。接收时间保留现有北京时间原值，并添加带 `+08:00` 的 ISO 时间；迁移不移动旧时间。
-manifest 包含筛选、快照时间、各表源/匹配/导出/扩展/排除数量、各文件哈希、导出器版本和缺失/脱敏/截断状态。
+manifest 包含筛选、快照时间、各表源/匹配/导出/扩展/排除数量、各文件字节数、导出器版本和缺失/脱敏/截断状态。离线校验器检查必需文件、大小、行数和重复 ID，不生成或验证内容摘要。
 
 导出最多 5 分钟、1 GiB 未压缩内容，超限明确失败并删除临时内容，不能返回部分成功 ZIP。任务文件在站点目录外，目录 0700、ZIP 0600。
 完成一小时后清理；启动清理遗留任务。下载不经过公开静态路径或遥测公网域名。数据库原始数据仍按 90 天保留。

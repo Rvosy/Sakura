@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import io
 import json
@@ -366,7 +365,6 @@ class Plugin:
             {
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
         ),
@@ -387,6 +385,45 @@ class Plugin:
         ) == "private-pywin32"
     finally:
         manager.close()
+
+
+def test_failed_enable_returns_saved_revision_for_subsequent_toggles(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    plugin_id = "fixture.missing-service"
+    _plugin_source(
+        roots.distribution_root / "plugins/builtin",
+        plugin_id,
+        "fixture.consumer",
+        requires=("fixture.absent",),
+        body=_simple_service_body("fixture.consumer", "ready"),
+    )
+    PluginDesiredStateStore(roots.user_root).set(plugin_id, False)
+    application = PluginApplicationHost(roots, "generation-failed-enable", ToolRegistry())
+    boundary = PluginSettingsBoundary(
+        "generation-failed-enable", "credential", roots,
+        application_provider=lambda: application,
+    )
+    try:
+        application.start()
+        initial = boundary.snapshot()
+        install_id = initial["plugins"][0]["installId"]
+        failed = boundary.set_enabled(initial["revision"], install_id, True)
+        assert failed["desiredSaved"] is True
+        assert failed["applicationState"] == "error"
+        assert failed["applicationReasonCode"] == "MISSING_SERVICE"
+        assert failed["plugins"][0]["state"] == "failed"
+        assert failed["revision"] != initial["revision"]
+        assert failed["revision"] == boundary.snapshot()["revision"]
+        assert PluginDesiredStateStore(roots.user_root).read()[plugin_id] is True
+
+        disabled = boundary.set_enabled(failed["revision"], install_id, False)
+        assert disabled["applicationState"] == "applied"
+        assert disabled["plugins"][0]["state"] == "disabled"
+        retried = boundary.set_enabled(disabled["revision"], install_id, True)
+        assert retried["applicationReasonCode"] == "MISSING_SERVICE"
+        assert retried["revision"] == boundary.snapshot()["revision"]
+    finally:
+        application.close()
 
 
 def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stable(
@@ -566,7 +603,6 @@ def test_bundled_v4_plugin_uses_distribution_dependency_root_offline(
             {
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
         ),

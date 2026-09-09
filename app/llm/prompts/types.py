@@ -154,7 +154,6 @@ class PromptSectionInspection:
     included: bool
     truncated: bool = False
     drop_reason: str = ""
-    static_hash: str = ""
 
 
 @dataclass(frozen=True)

@@ -20,15 +20,16 @@ from the MIT SenseVoice code and Apache-2.0 sherpa-onnx runtime. Retain the mode
 license and conversion notice with any offline model distribution.
 
 Silero VAD is MIT licensed by the Silero Team. This provider uses the
-[sherpa-onnx ONNX release artifact](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx),
-SHA256 `9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6`.
+[sherpa-onnx ONNX release artifact](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx).
 See the [Silero source and license](https://github.com/snakers4/silero-vad).
 
-All model sizes and SHA256 digests are pinned in `_resources.py`. Installation is
-an explicit Settings action. It downloads individual files, validates every file,
-and only then publishes a complete directory. Startup/status/warmup never download.
-An offline preinstallation must have the same files and `complete.json` marker;
-warmup hashes the actual files again before loading native inference.
+The resource version and required file sizes are fixed in `_resources.py`.
+Installation is an explicit Settings action. It checks download lengths before
+atomically publishing the complete directory. Startup/status/warmup never download.
+An offline preinstallation needs the matching files and a `complete.json` marker
+with the resource version. Legacy digest fields are ignored; native inference
+validates model loading without a separate content scan. The existing version
+label and cache directory remain unchanged for installed resources.
 
 The five upstream `test_wavs` files were used as public validation inputs. They
 are not bundled with this plugin. No user recordings are included in tests.

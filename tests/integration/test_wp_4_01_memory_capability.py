@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import sys
@@ -35,7 +34,6 @@ def _install_official_mem0(distribution_root: Path) -> None:
         plugin_root / "sakura_mem0",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    requirements = plugin_root / "sakura_mem0" / "requirements.txt"
     dependency_root = (
         distribution_root / "plugins" / "dependencies" / "sakura.memory.mem0"
     )
@@ -45,7 +43,6 @@ def _install_official_mem0(distribution_root: Path) -> None:
             {
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             },
             ensure_ascii=False,
@@ -55,12 +52,11 @@ def _install_official_mem0(distribution_root: Path) -> None:
     )
 
 
-def _fingerprint(paths: list[Path]) -> dict[str, tuple[int, str]]:
+def _file_contents(paths: list[Path]) -> dict[str, bytes]:
     return {
-        str(path): (len(data), hashlib.sha256(data).hexdigest())
+        str(path): path.read_bytes()
         for path in paths
         if path.is_file()
-        for data in [path.read_bytes()]
     }
 
 
@@ -137,7 +133,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
     protected[2].write_text("{}", encoding="utf-8")
     protected[3].write_bytes(b"existing-onnx-cache")
     protected[4].write_bytes(b"existing-pytorch-cache")
-    protected_before = _fingerprint(protected)
+    protected_before = _file_contents(protected)
     isolated_cache = tmp_path / "isolated-fastembed-cache"
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(isolated_cache))
     process = _start_host(app_root, distribution_root=distribution_root)
@@ -196,7 +192,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
             ),
         )
         assert recall["payload"] == {"items": [], "nextCursor": None, "total": 0}
-        assert _fingerprint(protected) == protected_before
+        assert _file_contents(protected) == protected_before
         plugin_data = app_root / "data" / "plugins" / "sakura.memory.mem0"
         assert not any(plugin_data.iterdir())
         assert api_path.read_bytes() == api_before
@@ -216,7 +212,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
         assert len(_ProviderHandler.requests) == 1
         assert api_path.read_bytes() == api_before
         assert system_path.read_bytes() == system_before
-        assert _fingerprint(protected) == protected_before
+        assert _file_contents(protected) == protected_before
         shutdown = _exchange(process, _request("memory-shutdown", "system.shutdown", {}))
         assert shutdown["payload"]["accepted"] is True
         process.wait(timeout=5)

@@ -348,10 +348,27 @@ waiting、self-healing 或复杂调和状态机。
 
 发行集合和两根存储所有权见[发行与存储合同](release-distribution-and-storage.md)。预装插件的已解析环境位于
 只读的 `distribution_root/plugins/dependencies/<plugin-id>/`；普通用户插件环境位于可写的
-`user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用同一声明 fingerprint 与 Python ABI marker，
+`user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用相同格式的已安装 marker，
 Runner 接收的仍只是当前插件自己的 dependency root。
 
+`.sakura-dependencies.json` 保持 `schemaVersion: 1`，新标记只写入版本、声明类型 `kind` 和 Python
+主次版本 `python`。启动检查标记可读、schema、声明类型及 Python ABI；不匹配返回
+`PLUGIN_DEPENDENCIES_STALE`，标记缺失或不可读返回 `PLUGIN_DEPENDENCIES_MISSING`。
+旧标记的 `fingerprint` 直接忽略，不重算或改写。依赖声明内容或换行变化不再使已安装环境失效；
+需要更新依赖时执行显式安装或更新，入口导入与运行错误仍按原有路径报告。
+
 ## 10. 插件管理与设置窗口
+
+`installId` 为 `pi_<source>_<directory-encoding>`：来源为 `user` 或 `bundled`，目录名使用 UTF-8
+字节的可逆小写十六进制编码（保留文件系统代理字符），最多 1024 字节。不包含绝对路径，不使用内容摘要。
+同一来源和目录在不同 Inventory 实例、Core 重启后保持相同身份；目录重命名后身份改变。
+桌面端将其作为不透明字符串传回 Core，Core 只按清单记录匹配，不将请求 ID 解码成操作路径。
+旧摘要 ID 不持久化迁移；升级后重新读取清单，开关配置仍按 `pluginId` 保存。
+
+inventory `revision` 直接比较安装记录和结构化开关配置，状态改变时生成新的进程内随机 token。
+相同运行根的不同 Inventory 实例共享最新状态；无变化的扫描返回同一 token。token 保持 16 位小写
+十六进制格式，只用于相等比较；Core 重启后重新获取。配置注释、换行和等价 YAML 格式不产生新版本，
+可观察状态从 A 变成 B 再变回 A 时使用新的 token，旧请求仍判为版本冲突。
 
 插件页按功能扩展、功能引擎和系统组件分组。顶部分类切换与名称、作者、ID、简介搜索同排，空间不足时换行；不再提供领域、来源和运行状态筛选面板。
 三个分组在同一个列表中显示，以图标、浅色标签、数量和细分隔线区分；系统组件不再使用底部固定入口或折叠展开，异常数量仍显示在该组标题旁。

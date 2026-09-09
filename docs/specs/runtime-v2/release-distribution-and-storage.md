@@ -102,6 +102,8 @@ Runner 校验；普通启动只读取并验证，不把预装环境复制到 use
 下降取决于预装插件集合；当前直接减少来自 Playwright 可选化，后续收益是增删插件不再改变 Core 依赖集合。
 
 Windows 生成 Setup 与带 `portable.flag` 的 ZIP；前者使用 Tauri Updater，后者只检查并下载新版 ZIP。
+发行资源清单 `release-inventory.json` 使用 schemaVersion 2，记录路径、大小与汇总，不生成逐文件内容摘要。
+Windows 签名的 `digestAlgorithm: sha256`、Tauri updater 签名算法和 pip/uv 上游锁文件哈希继续保留。
 macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名，开发 staging 可以无签名。macOS Release
 还发布独立的 `Sakura-<version>-macos-open-help.html`，并把同一说明放在 `.app.zip` 根目录，与 `.app` 并列。
 Tauri 生成的 DMG 不在签名或公证后重打包；外部说明不得改变 `.app`、DMG 或 updater artifact 的签名字节。
@@ -129,7 +131,7 @@ ZIP 只含程序域、`portable.flag` 和当前 `sakura.exe`，不得携带任�
 
 正式发行不等待 Windows Portable 打包：Windows Setup 与 macOS 安装类资产完成后立即创建 Release，并先发布
 不含 `portable` 字段的 `latest.json`；独立 Portable job 复用已经编译和签名链路验证过的 Windows Shell，完成后
-把 ZIP 追加到同一 Release，并用包含 Portable URL 与 SHA-256 的最终 `latest.json` 覆盖初始清单。Portable 失败
+把 ZIP 追加到同一 Release，并用包含 Portable URL 的最终 `latest.json` 覆盖初始清单。Portable 条目不生成内容摘要。Portable 失败
 不得撤回已经发布的安装版资产；失败必须在 workflow 中明确可见，维护者修复后重新运行完整发行流程。
 
 稳定版的 Portable 与最终 `latest.json` 发布完成后，发行 workflow 必须把控制面版本元数据推送到
@@ -189,8 +191,8 @@ Portable 模式只显示清单中固定 HTTPS 资产的“下载新版 ZIP”。
 真实升级门禁必须在发布机上使用签名产物验收；单元测试或开发包不能替代：
 
 - Windows 在 1920×1080、125% 与 150% DPI 下，从 1.0.0 分别执行同身份 Setup 直接覆盖和内置 Updater；
-  更新前后对全部用户域 marker/hash，确认首次设置标记不变，应用可启动，旧 Python 缓存和退役 builtin 已清除。
+  更新前后直接比较隔离用户域夹具内容，确认首次设置标记不变，应用可启动，旧 Python 缓存和退役 builtin 已清除。
 - Windows Portable 在 1.0.0 原目录覆盖解压新版 ZIP；确认 ZIP 内程序文件更新，全部用户域及默认/外置 TTS
-  marker/hash 不变，应用可启动。
+  夹具内容不变，应用可启动。
 - macOS 从已签名的 1.0.0 `.app` 经 Updater 替换；确认 codesign/notarization、退出和替换完成，
-  `Application Support/Sakura` 与外置 TTS marker/hash 不变，应用可重新启动。
+  `Application Support/Sakura` 与外置 TTS 夹具内容不变，应用可重新启动。

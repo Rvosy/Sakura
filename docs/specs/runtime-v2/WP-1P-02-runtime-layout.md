@@ -30,17 +30,17 @@ updated: 2026-07-31
 
 ## 2. 精确 source manifest
 
-权威 manifest 位于 `desktop/src-tauri/runtime-layouts/<platform-id>/runtime-manifest.json`。三个 manifest 都固定 CPython 3.12.8、精确 asset、长度、SHA-256、归档根和 extraction strip count。
+权威 manifest 位于 `desktop/src-tauri/runtime-layouts/<platform-id>/runtime-manifest.json`。三个 manifest 都固定 CPython 3.12.8、精确 asset、长度、归档根和 extraction strip count，不包含内容摘要。
 
-| Platform | Archive | Bytes | SHA-256 |
-|---|---|---:|---|
-| `windows-x64` | `python-3.12.8-embed-amd64.zip` | 11,094,114 | `8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb` |
-| `macos-arm64` | `cpython-3.12.8+20250106-aarch64-apple-darwin-install_only.tar.gz` | 15,676,873 | `5dfd4d81ad8ea0407e6153ed998a5fba332275c60ece81c6db2b58e443de60b9` |
-| `linux-x64` | `cpython-3.12.8+20250106-x86_64-unknown-linux-gnu-install_only.tar.gz` | 67,062,562 | `c8032747c8e44ce0164236fa70a6b767a43ef778dc51b99bd18f25984f8cba3b` |
+| Platform | Archive | Bytes |
+|---|---|---:|
+| `windows-x64` | `python-3.12.8-embed-amd64.zip` | 11,094,114 |
+| `macos-arm64` | `cpython-3.12.8+20250106-aarch64-apple-darwin-install_only.tar.gz` | 15,676,873 |
+| `linux-x64` | `cpython-3.12.8+20250106-x86_64-unknown-linux-gnu-install_only.tar.gz` | 67,062,562 |
 
-校验值来自 2026-07-22 对三个固定 HTTPS 工件的完整下载和 SHA-256 计算；临时归档计算后已删除，没有进入工作区。build/CI 下载器要求 HTTPS、精确 byte length 和 SHA-256 同时匹配，使用 `.partial-<pid>` 后再原子改名；失败不留下可被误用的目标归档。
+build/CI 下载器要求 HTTPS、精确 byte length 和可解析的非空归档，使用 `.partial-<pid>` 下载，检查通过后再原子改名；失败不留下可被误用的目标归档。已有缓存也必须通过同样的大小和归档结构检查。
 
-Assistant Core 既有的 PyYAML 依赖不安装进上述冻结 CPython，也不另建 requirements manifest。三个 target 的 `runtime-manifest.json` 另行固定 PyYAML 6.0.2 原生 wheel 的 PyPI HTTPS URL、文件名、byte length、SHA-256，以及 development/packaged 相对路径。build/CI 只下载并校验该不可变 import artifact；`RuntimeLocator` 在 Core spawn 前再次校验 regular-file、size 和 SHA-256，并把 canonical wheel 路径作为只读 Python path entry 交给 bootstrap。packaged staging 复制同一已校验 wheel，验收阶段不得执行 pip、改写 Runtime site-packages 或 `_pth`。
+Assistant Core 依赖由发行依赖锁文件安装到目标 Python 的原生 site-packages；当前 Runtime manifest 不再单列 PyYAML wheel。`RuntimeLocator` 检查 manifest 版本、平台、受控相对路径以及 Python 二进制架构，返回对应的 site-packages 路径。pip/uv 锁文件中的上游包哈希继续由安装工具处理，应用启动不执行自设内容摘要校验，也不安装或修复依赖。
 
 禁止用 release API 中“名称包含 `cpython-3.12`”的第一个结果、`latest` tag 或可漂移 URL 替代 manifest。更新任一 source 必须单独审查三个 target，并同时更新 manifest、本规范和 CI evidence。
 
