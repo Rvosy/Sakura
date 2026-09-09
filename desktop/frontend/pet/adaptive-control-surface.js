@@ -230,8 +230,7 @@ function measuredControlHeights({
   getStyle,
 }) {
   const visibleInputOverflow = input.dataset.overflow;
-  const voiceActive = composer.dataset.voiceActive === "true";
-  const currentExpanded = !voiceActive && composer.dataset.inputExpanded === "true";
+  const currentExpanded = composer.dataset.inputExpanded === "true";
   let naturalTextMeasurement = naturalTextareaMeasurement({
     composer,
     input,
@@ -243,13 +242,13 @@ function measuredControlHeights({
 
   const composerStyle = getStyle(composer);
   const metrics = (measurement, expanded) => composerInputMetrics({
-    value: voiceActive ? "" : input.value,
+    value: input.value,
     ...measurement,
     frameHeight: frameHeight(composerStyle),
     expanded,
     expandedRows: Number.parseInt(composer.dataset.inputState?.split("-").at(-1), 10),
     composing: composer.dataset.composing === "true",
-    attachmentCount: voiceActive ? 0 : Number.parseInt(composer.dataset.attachmentCount || "0", 10),
+    attachmentCount: Number.parseInt(composer.dataset.attachmentCount || "0", 10),
     minExpandedRows: contract.controlPanel.inputExpandedMinRows,
     maxRows: contract.controlPanel.inputMaxRows,
     toolbarHeight: contract.controlPanel.inputToolbarHeight,

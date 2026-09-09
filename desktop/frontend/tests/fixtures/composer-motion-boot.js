@@ -29,7 +29,7 @@ const writes = [], errors = [];
 let version = 0, prepareResolve, pendingPoll, response, context = 'test-generation', recordingId;
 function layout() {
   // This host fixture supplies geometry; the real native transaction has its own journey.
-  const expanded = composer.dataset.voiceActive !== 'true' && input.value.includes('\n');
+  const expanded = input.value.includes('\n');
   composer.dataset.inputExpanded = String(expanded);
   composer.style.setProperty('--input-text-height', `${Math.min(3, input.value.split('\n').length) * parseFloat(getComputedStyle(input).lineHeight)}px`);
   input.style.height = expanded ? composer.style.getPropertyValue('--input-text-height') : '40px';

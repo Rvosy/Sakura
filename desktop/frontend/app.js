@@ -1038,7 +1038,7 @@ async function commitSurfaceVisibility(kind, key, visible, revision) {
 }
 
 async function applySurfaceVisibility(kind, visible) {
-  if (kind === "input" && !visible) void asrController?.cancel({ restore: false });
+  // Surface suspension during a pet drag is presentation-only; the window and ASR context live on.
   const key = surfaceVisibilityKey(kind);
   const next = Boolean(visible);
   const revision = ++surfaceVisibilityRevision[kind];

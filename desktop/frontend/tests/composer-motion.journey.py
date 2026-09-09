@@ -11,6 +11,7 @@ from playwright.sync_api import sync_playwright
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--browser', choices=['chromium', 'webkit'], default='chromium')
+parser.add_argument('--channel', default=None, help='Use an installed browser, e.g. msedge')
 args = parser.parse_args()
 frontend = Path(__file__).resolve().parents[1]
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -19,11 +20,11 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(QuietHandler, directory=str(frontend)))
 threading.Thread(target=server.serve_forever, daemon=True).start()
 url = f'http://127.0.0.1:{server.server_port}'
-boot = (frontend / 'tests/fixtures/composer-motion-boot.js').read_text()
+boot = (frontend / 'tests/fixtures/composer-motion-boot.js').read_text(encoding='utf-8')
 output = Path(tempfile.mkdtemp(prefix=f'sakura-motion-{args.browser}-'))
 try:
     with sync_playwright() as p:
-        browser = getattr(p, args.browser).launch()
+        browser = getattr(p, args.browser).launch(channel=args.channel)
         page = browser.new_page(viewport={'width': 900, 'height': 800}, reduced_motion='reduce')
         failures = []
         page.on('pageerror', lambda error: (failures.append(str(error)), print('PAGE ERROR:', error, flush=True)))
@@ -79,6 +80,33 @@ try:
             rect = page.locator(selector).bounding_box()
             assert form['y'] <= rect['y'] and rect['y'] + rect['height'] <= form['y'] + form['height'] + 1
         page.screenshot(path=str(output / 'expanded.png'))
+        # Voice feedback occupies the bottom toolbar without collapsing or covering the draft.
+        draft = page.locator('#composer-input').bounding_box()
+        page.evaluate('motionJourney.start()')
+        page.wait_for_timeout(300)
+        assert page.locator('#composer').bounding_box() == form
+        assert page.locator('#composer-input').bounding_box() == draft
+        assert page.locator('#composer-input').evaluate('(el) => getComputedStyle(el).opacity === "1"')
+        for phase, selector in [('preparing', '#voice-status'), ('recording', '#voice-recording'), ('recognizing', '#voice-status')]:
+            if phase == 'recording':
+                page.evaluate('motionJourney.ready()')
+                page.wait_for_function('motionJourney.state() === "recording"')
+                for level in [.2, .4, .7, .3, .5, .75, .25]:
+                    page.evaluate('(level) => motionJourney.level(level)', level)
+                    page.wait_for_timeout(85)
+            elif phase == 'recognizing':
+                page.evaluate('motionJourney.stop()')
+            page.wait_for_timeout(300)
+            feedback = page.locator(selector).bounding_box()
+            stop = page.locator('#voice-mic').bounding_box()
+            assert feedback['y'] >= draft['y'] + draft['height'], 'voice feedback must stay below text'
+            assert abs(feedback['y'] + feedback['height'] / 2 - stop['y'] - stop['height'] / 2) <= 2
+            assert feedback['x'] + feedback['width'] <= stop['x'], 'waveform must not overlap stop'
+            assert page.locator('#composer').bounding_box() == form
+            page.screenshot(path=str(output / f'expanded-{phase}.png'))
+        page.evaluate('motionJourney.cancel()')
+        page.wait_for_timeout(300)
+        assert page.locator('#composer-input').input_value() == '第一行\n第二行\n第三行'
         page.locator('#composer-send').click()
         send = page.locator('#composer-send .sakura-morph-icon')
         assert send.get_attribute('data-icon') == 'loader-circle'

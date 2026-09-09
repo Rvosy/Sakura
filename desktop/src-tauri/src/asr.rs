@@ -837,7 +837,9 @@ impl Samples {
             let rms = (self.energy / self.window_count as f64).sqrt() as f32;
             // A decibel scale preserves useful feedback for a quiet microphone.
             let normalized = ((20.0 * rms.max(0.000_01).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
-            self.level = 0.65 * self.level + 0.35 * normalized;
+            // Follow syllable attacks and pauses without smearing several audio windows together.
+            let response = if normalized > self.level { 0.85 } else { 0.65 };
+            self.level += response * (normalized - self.level);
             self.sequence += 1;
             self.energy = 0.0;
             self.window_count = 0;
@@ -1308,6 +1310,30 @@ mod tests {
         // A subsequent open proves the first stream released the input handle.
         drop(open_input(selected).unwrap());
     }
+    #[test]
+    fn microphone_level_follows_syllables_and_pauses() {
+        let mut samples = Samples::new(16_000);
+        for _ in 0..800 {
+            samples.push(0.1);
+        }
+        let attack = samples.level;
+        assert!(
+            attack > 0.5,
+            "one syllable should register without a long fade-in"
+        );
+        for _ in 0..800 {
+            samples.push(0.0);
+        }
+        assert!(
+            samples.level < attack * 0.4,
+            "a pause should separate syllables"
+        );
+        for _ in 0..800 {
+            samples.push(0.03);
+        }
+        assert!(samples.level > 0.35 && samples.level < attack);
+    }
+
     #[test]
     fn microphone_rms_is_real_bounded_and_monotonic() {
         let mut samples = Samples::new(16_000);
