@@ -1,0 +1,140 @@
+.visual-choice-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: clamp(340px, 42vw, 520px);
+}
+.visual-choice-controls .custom-select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+.visual-choice-controls > select {
+  min-width: 240px;
+}
+.visual-choice-controls button {
+  white-space: nowrap;
+}
+.visual-status-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid
+    color-mix(in srgb, var(--sakura-accent) 32%, var(--sakura-border));
+  border-radius: 9px;
+  margin: 3px 0 12px;
+  background: color-mix(
+    in srgb,
+    var(--sakura-accent) 5%,
+    var(--sakura-input-bg)
+  );
+  font-size: 13px;
+}
+.visual-status-row span {
+  flex: 1;
+}
+.visual-status-row button {
+  flex-shrink: 0;
+}
+.visual-status-row[hidden] {
+  display: none;
+}
+.demo-dialog {
+  width: min(520px, calc(100vw - 40px));
+  max-height: 85vh;
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--sakura-border);
+  border-radius: 16px;
+  color: var(--sakura-text);
+  background: var(--sakura-page-bg);
+  font: inherit;
+  box-shadow: 0 20px 70px #193c5930;
+}
+.demo-dialog::backdrop {
+  background: #27445a38;
+  backdrop-filter: blur(3px);
+}
+.demo-dialog h2 {
+  font-size: 20px;
+  margin: 0 0 20px;
+}
+.demo-dialog p {
+  line-height: 1.8;
+  margin: 0 0 18px;
+}
+.demo-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+.demo-dialog .demo-fields {
+  display: grid;
+  gap: 16px;
+}
+.demo-dialog .demo-fields label {
+  display: grid;
+  gap: 7px;
+}
+.demo-dialog input,
+.demo-dialog select {
+  width: 100%;
+}
+.demo-dialog .mini-note {
+  font-size: 12px;
+  color: var(--sakura-secondary-text);
+  margin-top: 12px;
+}
+.demo-plugin-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 18px;
+}
+.demo-plugin-state:before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  background: var(--sakura-accent);
+  border-radius: 50%;
+}
+@media (max-width: 760px) {
+  .settings-shell {
+    grid-template-columns: 145px minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px;
+  }
+  .setting-row {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+  .character-select-controls,
+  .visual-choice-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .visual-choice-controls .select-control {
+    min-width: 100px;
+  }
+  .nav-card {
+    padding: 12px 8px;
+  }
+  .nav-item {
+    padding-inline: 8px;
+  }
+  .page-head {
+    padding-inline: 15px;
+  }
+  .page-scroll {
+    padding-inline: 15px;
+  }
+  .visual-status-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+}

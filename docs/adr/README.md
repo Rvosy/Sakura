@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-08
+updated: 2026-09-10
 ---
 
 # Architecture Decision Records
@@ -54,6 +54,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0043：Telemetry Edge 使用 CDN 后的单机 FastAPI 与 SQLite](0043-vps-fastapi-sqlite-telemetry-edge.md)
 - [ADR-0044：角色工坊使用主 Tauri 应用内的独立窗口](0044-character-studio-same-app-window.md)
 - [ADR-0045：ASR Hub、可替换识别引擎与宿主录音](0045-asr-hub-and-host-audio-input.md)
+- [ADR-0046：先将立绘及配套能力拆为插件](0046-composable-character-resources-and-renderer-host.md)（提案，尚未实施）
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
