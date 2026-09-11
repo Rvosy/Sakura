@@ -10,12 +10,12 @@ updated: 2026-09-11
 
 ## 状态
 
-决策已接受，尚未实施。本次只确定能力归属、兼容边界和验收要求，不表示当前安装包已经提供联网插件。
-现行 MCP 和 Plugin API v4 Spec 继续描述已实现行为，实施时同步更新相关契约与用户文档。
+决策已接受，实现已落地。当前行为见[联网插件 Spec](../specs/runtime-v2/web-plugin.md)。
+插件提供搜索与网页读取两个工具，调用由模型决定；没有搜索引擎或其他自定义设置，启停沿用插件页。
 
 ## 背景
 
-当前网页搜索和网页抓取实现在 `app/agent/mcp/web_search_server.py`，经本地 MCP Server 注册为
+改造前，网页搜索和网页抓取实现在 `app/agent/mcp/web_search_server.py`，经本地 MCP Server 注册为
 `web__web_search` 与 `web__fetch_url`。Assistant 的工具路由仍引用这两个名字。
 
 当前 MCP Spec 明确规定不内置、不发行 MCP Server，缺少 `user_root/config/mcp.yaml` 时禁用 MCP。

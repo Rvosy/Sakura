@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Sakura Plugin Runtime v4
@@ -285,6 +285,11 @@ Tools、Context contributors、Timeline observers、Settings sections 和模型�
 注册，可以由多个插件同时贡献。它们按现有 descriptor、Effect cleanup、数量和 payload 上限管理，不创建
 一个强制唯一的总 Service。
 
+工具 descriptor 可指定 `timeoutSeconds`（有限正数，最大 120 秒），省略时使用原有的 15 秒回调期限。
+该字段用于执行期限，不提供给模型作为工具参数。插件和 MCP 工具登记必须原子拒绝同名覆盖并报告
+`TOOL_NAME_CONFLICT`。插件返回含 `isError=true` 的对象时，ToolRegistry 将调用标记为失败，保留结果给模型，
+`reasonCode` 仅接受有界 ASCII 原因码后进入日志；正文与参数继续脱敏。
+
 Memory 默认采用 Contribution 组合。官方 Mem0 可同时提供 Timeline 消费、Context、Tools、Settings 和
 model slot；替代插件可以提供相同或部分贡献。用户既可以关闭 Mem0 完整替换，也可以启用多个不同 Memory
 插件共同工作。Runtime 不预设唯一 `sakura.memory` Store/Search/Recall 协议。
@@ -306,8 +311,8 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
 `bundled` 可以让安装器拥有插件文件并禁止卸载，但不能隐含 privileged API。默认领域插件必须允许停用，以便
 替代实现接管能力；插件关闭后保留文件用于恢复默认是允许的。
 
-当前迁移范围中的预装默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie` 和
-`sakura_gpt_sovits`。新用户默认关闭 Genie、GPT-SoVITS 和 Sakura Mobile；已有用户的显式开关和沿用清单的
+预装插件包括 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
+`sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie、GPT-SoVITS 和 Sakura Mobile；已有用户的显式开关和沿用清单的
 隐式启用状态保持不变，初始化规则见[发行与存储](release-distribution-and-storage.md)。`playwright_browser` 改为可选插件，不进入主安装包。
 
 ## 8. 生命周期、失败与恢复

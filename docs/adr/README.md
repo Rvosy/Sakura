@@ -55,7 +55,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0044：角色工坊使用主 Tauri 应用内的独立窗口](0044-character-studio-same-app-window.md)
 - [ADR-0045：ASR Hub、可替换识别引擎与宿主录音](0045-asr-hub-and-host-audio-input.md)
 
-- [ADR-0047：联网搜索与网页抓取由内置插件提供](0047-bundled-web-search-plugin.md)（决策已接受，尚未实施）
+- [ADR-0047：联网搜索与网页抓取由内置插件提供](0047-bundled-web-search-plugin.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

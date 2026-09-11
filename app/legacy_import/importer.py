@@ -308,7 +308,7 @@ def run_legacy_import(
         progress("staging", 55, "正在导入配置")
         try:
             configuration_counts = migrate_configuration(
-                source, payload, new_tts_root=target / "tts"
+                source, payload, new_tts_root=target / "tts", existing_user_root=target,
             )
             report.counts.update(configuration_counts)
             _validate_optional_tts_configuration(
@@ -354,6 +354,14 @@ def run_legacy_import(
             if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
                 raise
             shutil.rmtree(payload / "config", ignore_errors=True)
+            from app.plugins.inventory import PluginDesiredStateStore
+            from app.config.web_plugin_migration import PLUGIN_ID
+
+            # Configuration quarantine must not turn an unreadable old MCP
+            # switch into a fresh-install default on the next Core startup.
+            existing_switches = PluginDesiredStateStore(target).read()
+            web_enabled = existing_switches.get(PLUGIN_ID, not (source / "data/config/mcp.yaml").exists())
+            PluginDesiredStateStore(payload).set(PLUGIN_ID, web_enabled)
             quarantine = (
                 payload
                 / "data"

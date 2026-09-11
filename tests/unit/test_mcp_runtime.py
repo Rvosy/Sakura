@@ -160,26 +160,6 @@ def test_mcp_bridge_timeout_replaces_polluted_event_loop(
     bridge.close()
 
 
-def test_mcp_bridge_lists_tools_from_real_stdio_server(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PYTHONIOENCODING", "cp936")
-    server = Path(__file__).resolve().parents[2] / "app/agent/mcp/web_search_server.py"
-    bridge = MCPBridge(
-        MCPServerConfig(
-            name="web",
-            transport="stdio",
-            command=sys.executable,
-            args=[str(server)],
-        ),
-        default_call_timeout=5,
-    )
-
-    try:
-        assert [tool.name for tool in bridge.list_tools()] == ["web_search", "fetch_url"]
-    finally:
-        bridge.close()
-
 
 def test_mcp_provider_close_unregisters_tools_and_handlers_fail_closed() -> None:
     tool_registry = ToolRegistry()

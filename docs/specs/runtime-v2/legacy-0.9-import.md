@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Sakura 0.9.x 到 Runtime v2 数据迁移合同
@@ -122,8 +122,9 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   字符串模型列表转为当前形态。已存在的未知 Provider、模型和 slot 扩展字段继续保留。可修复的 MCP timeout、非字符串
   当前角色选择和当前模型槽标量使用安全默认或字符串投影，并以 `LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED` warning
   记录修复数量；这些可重建兼容字段不得导致整棵配置被隔离。
-  旧屏幕感知的 `enabled` 与 `screen_context_enabled` 合并为当前单一 `enabled` 字段；打包内置 Web MCP
-  使用 `{core_root}` 定位 `core/app`，不得把发行根误当作 Python Core 根。
+  旧屏幕感知的 `enabled` 与 `screen_context_enabled` 合并为当前单一 `enabled` 字段。
+  已确认来源的旧内置 Web MCP 按[联网插件](web-plugin.md)合同迁移，保留关闭选择和工具限制，停用旧项。
+  源 MCP 缺失时不生成禁用空配置；导入目标已有的联网插件开关优先。自定义脚本不按路径后缀替换。
 - Timeline和长期记忆必须先于其他域迁移。二者的角色身份来自旧聊天 scope、curation scope 和当前角色 ID；角色包
   只参与可唯一确定的大小写规范化，不拥有聊天或记忆。角色包随后尝试完整复制并由当前 `CharacterRegistry` 校验；
   复制、转换或校验失败时清除 staged `characters/`、确认该目录已不存在后记录

@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # 用户文档
@@ -17,5 +17,6 @@ updated: 2026-09-09
 - [窗口交互](RUNTIME_V2_WINDOW_INTERACTION.md)
 - [外观设置](RUNTIME_V2_APPEARANCE.md)
 - [MCP 工具](RUNTIME_V2_MCP.md)
+- [联网搜索与网页读取](WEB_SEARCH.md)
 - [Python 插件](RUNTIME_V2_PLUGINS.md)
 - [运行日志与故障排查](RUNTIME_LOG_TROUBLESHOOTING.md)
