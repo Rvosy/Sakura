@@ -315,6 +315,9 @@ def test_tts_bundle_default_provider_uses_standard_when_both_installed(monkeypat
 
 
 def test_tts_bundle_rejects_incompatible_platform_before_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    # platform caches its result while sys.platform is temporarily overridden.
+    monkeypatch.setattr(tts_bundle.platform, "_uname_cache", None)
+    monkeypatch.setattr(tts_bundle.platform, "_platform_cache", {})
     monkeypatch.setattr(tts_bundle.sys, "platform", "darwin")
     root = _runtime_root("bundle_incompatible_platform")
 

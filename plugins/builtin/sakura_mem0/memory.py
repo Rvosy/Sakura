@@ -22,6 +22,8 @@ from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any, Callable, Iterable
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 try:
     from .support import (
         ResourceRegistry,
@@ -2177,7 +2179,7 @@ def _download_modelscope_snapshot(
         )
         target = snapshot / local_name
         try:
-            with urllib.request.urlopen(request, timeout=600) as response, target.open("wb") as output:
+            with urlopen_current_proxy(request, timeout=600) as response, target.open("wb") as output:
                 written = 0
                 while chunk := response.read(512 * 1024):
                     output.write(chunk)

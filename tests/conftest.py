@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
 
+
+# Mirror the public SDK import path supplied by the isolated plugin runner.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app" / "plugin_sdk"))
 
 _ORIGINAL_PATH_MKDIR = Path.mkdir
 _PYTEST_BASETEMP = (Path.cwd() / ".pytest-basetemp").resolve()

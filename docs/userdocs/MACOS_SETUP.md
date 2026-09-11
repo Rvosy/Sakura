@@ -74,6 +74,10 @@ macOS 可以连接外置 GPT-SoVITS 或 Genie 服务：
 
 Apple Silicon 上的本地语音服务应尽量使用 arm64 Python 和原生依赖。Sakura 自身与语音服务可以使用不同 Python 环境，只要通过 HTTP 接口通信。
 
+GPT-SoVITS 源码安装脚本默认从 ModelScope 下载模型、从阿里云安装普通 Python 包，并用清华 Conda 镜像解析
+`conda-forge`。已有 `PIP_INDEX_URL`、`CONDARC` 或 `CONDA_CHANNEL_ALIAS` 配置优先；上游指定的设备专用
+PyTorch 源保持不变。Miniforge 安装器与 GPT-SoVITS 源码仍从 GitHub 获取，源码只拉取指定版本的一层历史。
+
 ## MCP、插件和角色工作室
 
 普通 MCP Server 和 Python 插件的使用方式与其他平台相同。Sakura 不内置桌面控制 Server。

@@ -70,6 +70,9 @@ New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $env:PIP_CACHE_DIR = Join-Path $cacheRoot "pip"
 $env:UV_CACHE_DIR = Join-Path $cacheRoot "uv"
+if (-not $env:PIP_INDEX_URL) {
+    $env:PIP_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple"
+}
 $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
 $env:PYTHONUTF8 = "1"
 if ($Updater -and $UpdaterArtifacts) {

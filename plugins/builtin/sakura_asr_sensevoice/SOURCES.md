@@ -8,6 +8,10 @@ SenseVoiceSmall INT8 and its vocabulary are converted ONNX artifacts published b
 the sherpa-onnx maintainer `csukuangfj`:
 
 - [Pinned conversion repository](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tree/2365baeacb507f821a0c8120fcee3d484dba7a07)
+- [Download mirror on ModelScope](https://www.modelscope.cn/models/gomodels/sherpa/files?Revision=590473aaa26eed19b270a424cb641972ae56482d):
+  `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx` and `tokens.txt`.
+  The fixed mirror revision retains the existing file sizes and vocabulary;
+  the mirrored INT8 model was verified with native sherpa-onnx Chinese inference.
 - [Upstream SenseVoice code and model information](https://github.com/FunAudioLLM/SenseVoice)
 - [Conversion repository license notice](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/blob/2365baeacb507f821a0c8120fcee3d484dba7a07/LICENSE)
 
@@ -22,6 +26,9 @@ license and conversion notice with any offline model distribution.
 Silero VAD is MIT licensed by the Silero Team. This provider uses the
 [sherpa-onnx ONNX release artifact](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx).
 See the [Silero source and license](https://github.com/snakers4/silero-vad).
+The Silero files found in the ModelScope mirrors have different sizes/versions,
+so its original release URL remains in use. Each new file request reads the
+current system proxy; an already open download is not interrupted by changes.
 
 The resource version and required file sizes are fixed in `_resources.py`.
 Installation is an explicit Settings action. It checks download lengths before

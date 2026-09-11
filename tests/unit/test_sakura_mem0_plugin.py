@@ -49,7 +49,7 @@ def test_mem0_api_client_normalizes_google_openai_url_without_replay(
         captured.append((request.full_url, json.loads(request.data)))
         return Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.api_client.urlopen_current_proxy", fake_urlopen)
     client = OpenAICompatibleClient(
         ApiSettings(
             base_url="https://generativelanguage.googleapis.com/v1beta",
@@ -103,7 +103,7 @@ def test_mem0_api_client_caps_each_curation_job_at_two_http_requests(
         calls += 1
         return Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.api_client.urlopen_current_proxy", fake_urlopen)
     client = OpenAICompatibleClient(
         ApiSettings(
             base_url="https://api.example.com/v1",

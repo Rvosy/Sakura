@@ -2,73 +2,17 @@
 
 from __future__ import annotations
 
-import ipaddress
 import socket
 import threading
 import urllib.request
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
 
 from app.core.cancellation import CancelChecker, check_cancelled
+from app.plugin_sdk.sakura_http import is_loopback_url, urlopen_direct_for_loopback
 
-_LOOPBACK_PROXY_BYPASS_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _CANCEL_POLL_SECONDS = 0.05
 _READ_CHUNK_SIZE = 64 * 1024
-
-
-def is_loopback_url(url: str) -> bool:
-    """Return True when *url* targets this machine's loopback interface."""
-
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
-
-    normalized_host = host.rstrip(".").casefold()
-    if normalized_host == "localhost":
-        return True
-
-    try:
-        return ipaddress.ip_address(normalized_host).is_loopback
-    except ValueError:
-        return False
-
-
-def urlopen_direct_for_loopback(
-    url: str | urllib.request.Request,
-    data: bytes | None = None,
-    timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
-):
-    """Open loopback URLs without urllib's environment/system proxy handlers.
-
-    Remote URLs rebuild their proxy handler for every attempt so system proxy
-    changes take effect without restarting the process.
-    """
-
-    if is_loopback_url(_request_url(url)):
-        if data is None:
-            return _LOOPBACK_PROXY_BYPASS_OPENER.open(url, timeout=timeout)
-        return _LOOPBACK_PROXY_BYPASS_OPENER.open(url, data=data, timeout=timeout)
-    return _urlopen_with_current_proxy(url, data=data, timeout=timeout)
-
-
-def _urlopen_with_current_proxy(
-    url: str | urllib.request.Request,
-    data: bytes | None = None,
-    timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
-):
-    """Open a remote URL with the proxy configuration visible for this attempt."""
-
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler(urllib.request.getproxies())
-    )
-    if data is None:
-        return opener.open(url, timeout=timeout)
-    return opener.open(url, data=data, timeout=timeout)
 
 
 def read_url_cancellable(
@@ -132,13 +76,6 @@ def read_url_cancellable(
     if isinstance(error, BaseException):
         raise error
     return bytes(state.get("body", b"")), state.get("status")
-
-
-def _request_url(url: str | urllib.request.Request) -> str:
-    full_url = getattr(url, "full_url", None)
-    if isinstance(full_url, str):
-        return full_url
-    return str(url)
 
 
 def _abort_response(response: Any) -> None:

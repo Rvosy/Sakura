@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 try:
     from ._runtime_profile import managed_profile_path, prepare_managed_profile
 except ImportError:  # pragma: no cover - loose plugin execution
@@ -212,7 +214,7 @@ def _download(
         headers = {"User-Agent": "Sakura-Desktop-Pet/1.0"}
         if offset:
             headers["Range"] = f"bytes={offset}-"
-        with urllib.request.urlopen(urllib.request.Request(entry.download_url, headers=headers), timeout=600) as response:
+        with urlopen_current_proxy(urllib.request.Request(entry.download_url, headers=headers), timeout=600) as response:
             if offset and getattr(response, "status", None) != 206:
                 offset = 0
                 downloaded = 0
