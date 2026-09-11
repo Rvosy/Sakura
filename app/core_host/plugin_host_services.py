@@ -87,6 +87,10 @@ _PLUGIN_DIAGNOSTIC_ATTRIBUTES = frozenset(
         "probe_outcome",
         "source_file",
         "source_line",
+        "diagnostic",
+        "cause_type",
+        "exception_chain",
+        "exception_stack",
     }
 )
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
@@ -100,7 +104,7 @@ class HostServiceError(RuntimeError):
 
 
 class _DiagnosticsHostService:
-    """Allow plugins to emit only fixed, content-free Runtime diagnostics."""
+    """Accept fixed events and bounded, redacted local exception diagnostics."""
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         if method != "emit" or len(args) != 2:
@@ -121,7 +125,13 @@ class _DiagnosticsHostService:
             raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
         attributes: dict[str, object] = {"component": plugin_id}
         for key, value in raw_attributes.items():
-            if key in {"elapsed_ms", "timeout_ms", "exit_code", "source_line"}:
+            if key in {"diagnostic", "exception_chain", "exception_stack"}:
+                from app.core.diagnostics import safe_diagnostic_text
+
+                if not isinstance(value, str):
+                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+                value = safe_diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
+            elif key in {"elapsed_ms", "timeout_ms", "exit_code", "source_line"}:
                 if isinstance(value, str) and _ELAPSED_MS.fullmatch(value):
                     value = round(float(value))
                 low = (

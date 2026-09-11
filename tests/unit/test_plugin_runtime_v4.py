@@ -932,6 +932,11 @@ class Plugin:
         with pytest.raises(PluginRuntimeError) as failed:
             manager.call_service("fixture.facade", "fail")
         assert failed.value.code == "PLUGIN_CALL_FAILED"
+        from app.core.diagnostics import exception_diagnostics
+        fields = exception_diagnostics(failed.value, reason_code=failed.value.code, stage="plugin_call")
+        assert "boom" in fields["diagnostic"]
+        assert "fail:" in fields["exception_stack"]
+        assert fields["cause_type"] == "RuntimeError"
         with pytest.raises(PluginRuntimeError) as hidden:
             manager.call_service("fixture.echo", "missing")
         assert hidden.value.code == "SERVICE_METHOD_NOT_EXPORTED"

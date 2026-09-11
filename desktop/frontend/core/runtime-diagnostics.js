@@ -3,38 +3,6 @@ const BATCH_LIMIT = 64;
 const PENDING_LIMIT = 256;
 const FLUSH_DELAY_MS = 100;
 const LEVELS = new Set(["trace", "debug", "info", "warn", "warning", "error"]);
-const DIAGNOSTIC_CODES = new Set([
-  "REQUEST_DEADLINE_EXCEEDED",
-  "REQUEST_CANCELLED",
-  "GENERATION_INVALIDATED",
-  "SETTINGS_CORE_GENERATION_MISMATCH",
-  "SETTINGS_CORE_UNAVAILABLE",
-  "SETTINGS_TRANSPORT_UNAVAILABLE",
-  "TRANSPORT_UNAVAILABLE",
-  "RESPONSE_INVALID",
-  "PROTOCOL_ERROR",
-  "CORE_CRASHED",
-  "INVALID_REQUEST",
-  "PLUGIN_SETTINGS_NOT_READY",
-  "PLUGIN_COLLECTION_REQUEST_INVALID",
-  "PLUGIN_COLLECTION_RESPONSE_INVALID",
-  "SETTINGS_COLLECTION_FAILED",
-  "SETTINGS_COLLECTION_UNAVAILABLE",
-  "SETTINGS_COLLECTION_INVALID",
-  "SETTINGS_COLLECTION_QUERY_INVALID",
-  "SETTINGS_COLLECTION_VALUES_INVALID",
-  "SETTINGS_COLLECTION_OPERATION_UNAVAILABLE",
-  "SETTINGS_COLLECTION_OPERATION_INVALID",
-  "SETTINGS_COLLECTION_RESULT_INVALID",
-  "SETTINGS_COLLECTION_ITEM_INVALID",
-  "PLUGIN_CALLBACK_TIMEOUT",
-  "PLUGIN_CALLBACK_DATA_INVALID",
-  "PLUGIN_CALLBACK_IO_FAILED",
-  "PLUGIN_CALLBACK_FAILED",
-  "PLUGIN_DEPENDENCY_UNAVAILABLE",
-  "CHARACTER_PRESENTATION_NOT_READY",
-  "CHARACTER_PRESENTATION_UNAVAILABLE",
-]);
 const EVENTS = new Set([
   "webview.lifecycle.ready",
   "webview.lifecycle.unloading",
@@ -63,28 +31,37 @@ function stableCode(value) {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(value);
 }
 
+function safeErrorText(value, maximum = 4096) {
+  let text = String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  text = text
+    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi, "$1=[REDACTED]")
+    .replace(/\bbearer\s+[^\s,;}]+/gi, "Bearer [REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9._-]{6,}/gi, "[REDACTED]");
+  const urls = [];
+  text = text.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi, value => {
+    try { const url = new URL(value); url.username = ""; url.password = ""; url.search = ""; url.hash = ""; urls.push(url.protocol === "file:" ? `<路径>/${url.pathname.split("/").at(-1)}` : url.href); }
+    catch { urls.push("[URL]"); }
+    return `<url-${urls.length - 1}>`;
+  });
+  const path = value => `<路径>/${value.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || ""}`;
+  text = text.replace(/(["'])((?:[a-z]:[\\/]|\/|\\\\)[^\r\n]*?)\1/gi, (_, quote, value) => quote + path(value) + quote)
+    .replace(/(?:[a-z]:[\\/]|\\\\)[^\s"'<>|,;]*/gi, path)
+    .replace(/(^|[\s(\[])\/[^\s"'<>|,;]*/g, value => (value.match(/^[\s(\[]/)?.[0] || "") + path(value.trim()))
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+  urls.forEach((url, index) => { text = text.replaceAll(`<url-${index}>`, url); });
+  return text.length <= maximum ? text : text.slice(0, maximum - 48) + `\n[truncated: ${text.length} characters]`;
+}
+
 function safeDiagnostic(error) {
-  const source = typeof error === "string"
-    ? error
-    : typeof error?.message === "string"
-      ? error.message
-      : "";
-  const publicError = source.match(/^([A-Z][A-Z0-9_]{2,63})\|[^\r\n|]{0,120}\|[^\r\n|]{0,120}\|[^\r\n]{0,240}$/);
-  if (publicError) {
-    return DIAGNOSTIC_CODES.has(publicError[1])
-      ? Object.freeze({ code: publicError[1], diagnostic: publicError[1] })
-      : null;
-  }
-  const match = source.match(/^([A-Z][A-Z0-9_]{2,63})(?::\s*([^\r\n]{1,240}))?$/);
-  if (!match || !DIAGNOSTIC_CODES.has(match[1])) return null;
-  let detail = match[2] || "";
-  detail = detail
-    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, "$1=[REDACTED]")
-    .replace(/\bbearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(/\bsk-[A-Za-z0-9._-]{6,}/gi, "[REDACTED]")
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1[REDACTED]@")
-    .trim();
-  return Object.freeze({ code: match[1], diagnostic: detail || match[1] });
+  const source = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : "";
+  const publicError = source.match(/^([A-Z][A-Z0-9_]{0,63})\|[^|\r\n]*\|[^|\r\n]*\|([\s\S]*)$/);
+  const coded = source.match(/^([A-Z][A-Z0-9_]{0,63})(?::\s*([\s\S]*))?$/);
+  const code = stableCode(error?.code) ? error.code : publicError?.[1] || coded?.[1] || "INVOKE_FAILED";
+  const raw = publicError?.[2] || coded?.[2] || source;
+  const prefix = !publicError && !coded && typeof error?.name === "string" ? `${error.name}: ` : "";
+  const diagnostic = safeErrorText(prefix + raw) || "未记录底层原因";
+  const stack = typeof error?.stack === "string" ? safeErrorText(error.stack.split("\n").slice(0, 33).join("\n"), 8192) : "";
+  return {code, diagnostic, ...(stack ? {exceptionStack: stack} : {})};
 }
 
 function logText(value, maximum) {
@@ -204,10 +181,14 @@ function controlledEntry(input) {
   if (input.operationId !== undefined) entry.operationId = input.operationId;
   if (input.revision !== undefined) entry.revision = input.revision;
   if (input.diagnostic !== undefined) {
-    if (typeof input.diagnostic !== "string" || input.diagnostic.length > 240 || /[\r\n]/.test(input.diagnostic)) {
+    if (typeof input.diagnostic !== "string" || input.diagnostic.length > 4096) {
       return null;
     }
     entry.diagnostic = input.diagnostic;
+  }
+  if (input.exceptionStack !== undefined) {
+    if (typeof input.exceptionStack !== "string" || input.exceptionStack.length > 8192) return null;
+    entry.exceptionStack = input.exceptionStack;
   }
   return Object.freeze(entry);
 }
@@ -311,7 +292,7 @@ export function createRuntimeDiagnostics({
           command,
           outcome: "failed",
           code: diagnostic?.code || "INVOKE_FAILED",
-          ...(diagnostic ? { diagnostic: diagnostic.diagnostic } : {}),
+          ...diagnostic,
           elapsedMs: Math.max(0, now() - started),
         });
       }
@@ -320,6 +301,7 @@ export function createRuntimeDiagnostics({
   }
 
   const onError = (event) => record({
+    ...safeDiagnostic(event?.error || event?.message),
     details: exceptionDetails(event),
     level: "error",
     event: "webview.error.unhandled",
@@ -327,6 +309,7 @@ export function createRuntimeDiagnostics({
     code: "WEBVIEW_UNHANDLED_ERROR",
   });
   const onUnhandledRejection = (event) => record({
+    ...safeDiagnostic(event?.reason),
     details: exceptionDetails(event, true),
     level: "error",
     event: "webview.error.unhandled",

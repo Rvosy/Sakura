@@ -41,7 +41,7 @@ const MIN_PROTOCOL_MINOR: u64 = 0;
 const GENERATION_CREDENTIAL_BYTES: usize = 16;
 const STDERR_READ_CHUNK_SIZE: usize = 4 * 1024;
 const STDERR_READ_SLICE: Duration = Duration::from_millis(10);
-const STDERR_RECORD_LIMIT: usize = 4 * 1024;
+const STDERR_RECORD_LIMIT: usize = 32 * 1024;
 const STDERR_TELEMETRY_RECORD_LIMIT: usize = 8 * 1024 + TELEMETRY_CORE_BRIDGE_PREFIX.len();
 const STDERR_CACHE_LIMIT: usize = 64 * 1024;
 const CHARACTER_SUMMARY_KEYS: [&str; 5] = [
@@ -719,28 +719,7 @@ impl StderrRedactor {
 }
 
 fn stderr_diagnostic_summary(text: &str) -> String {
-    text.split_whitespace()
-        .map(|part| {
-            let unquoted = part.trim_matches(['\'', '"', '(', ')', '[', ']', '{', '}', ',', ';']);
-            let bytes = unquoted.as_bytes();
-            let windows_path = bytes.windows(3).any(|window| {
-                window[0].is_ascii_alphabetic()
-                    && window[1] == b':'
-                    && matches!(window[2], b'/' | b'\\')
-            });
-            if unquoted.contains("://") {
-                "[URL]"
-            } else if windows_path || unquoted.starts_with('/') || unquoted.starts_with("\\\\") {
-                "[PATH]"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(320)
-        .collect()
+    crate::runtime_log::sanitize_diagnostic(text, &[], 4096)
 }
 
 fn drain_stderr(
@@ -1096,7 +1075,7 @@ fn push_stderr_text(
             return;
         };
         state.stats.ordinary_records = state.stats.ordinary_records.saturating_add(1);
-        if !state.ordinary_warning_emitted {
+        if !state.ordinary_warning_emitted || !rejected_structured_record {
             state.ordinary_warning_emitted = true;
             if let Some(sink) = log_sink {
                 let diagnostic = if rejected_structured_record {
@@ -1297,6 +1276,7 @@ impl ConcurrentRequestHandle {
             0,
             None,
             Some(deadline.as_millis()),
+            None,
         );
         let result = self.router.request(
             json!({
@@ -1361,8 +1341,12 @@ impl ConcurrentRequestHandle {
                     if cancelled { "cancelled" } else { "failed" },
                     Some(code),
                     elapsed_ms,
-                    None,
+                    response
+                        .pointer("/error/details/diagnostics/diagnostic")
+                        .and_then(Value::as_str)
+                        .or_else(|| response.pointer("/error/message").and_then(Value::as_str)),
                     Some(deadline.as_millis()),
+                    response.pointer("/error/details/diagnostics"),
                 );
             }
             Ok(_) => self.log_request(
@@ -1376,6 +1360,7 @@ impl ConcurrentRequestHandle {
                 elapsed_ms,
                 None,
                 Some(deadline.as_millis()),
+                None,
             ),
             Err(error) => self.log_request(
                 if error.contains("CANCEL") {
@@ -1402,8 +1387,9 @@ impl ConcurrentRequestHandle {
                 },
                 Some(stable_error_code(error)),
                 elapsed_ms,
-                Some(stable_error_diagnostic(error)),
+                Some(error),
                 Some(deadline.as_millis()),
+                None,
             ),
         }
     }
@@ -1419,8 +1405,9 @@ impl ConcurrentRequestHandle {
         outcome: &'static str,
         code: Option<&str>,
         elapsed_ms: u128,
-        diagnostic: Option<&'static str>,
+        diagnostic: Option<&str>,
         deadline_ms: Option<u128>,
+        failure_details: Option<&Value>,
     ) {
         let Some(runtime_log) = self.runtime_log.as_ref() else {
             return;
@@ -1441,6 +1428,25 @@ impl ConcurrentRequestHandle {
             "outcome": outcome,
             "elapsed_ms": elapsed_ms,
         });
+        if let Some(details) = failure_details.and_then(Value::as_object) {
+            for key in [
+                "diagnostic",
+                "error_type",
+                "cause_type",
+                "exception_site",
+                "exception_chain",
+                "exception_stack",
+                "recovery_diagnostic",
+                "errno",
+                "winerror",
+                "stage",
+                "reason_code",
+            ] {
+                if let Some(value) = details.get(key) {
+                    attributes[key] = value.clone();
+                }
+            }
+        }
         if let (Some(target), Some(code)) = (attributes.as_object_mut(), code) {
             target.insert("code".to_string(), Value::String(code.to_string()));
         }
@@ -1479,20 +1485,6 @@ fn stable_error_code(error: &str) -> &'static str {
         "TRANSPORT_UNAVAILABLE"
     } else {
         "REQUEST_FAILED"
-    }
-}
-
-fn stable_error_diagnostic(error: &str) -> &'static str {
-    if error.contains("DEADLINE") || error.contains("TIMEOUT") {
-        "等待 Core Host 响应超过请求期限；底层任务可能仍在结束"
-    } else if error.contains("GENERATION") {
-        "请求所属 Core generation 已失效，通常发生在设置保存或 Core 重启期间"
-    } else if error.contains("TRANSPORT") || error.contains("ROUTER") {
-        "Core Host 传输已关闭或不可用，请检查相邻的 Core 重启和异常记录"
-    } else if error.contains("CANCEL") {
-        "请求已由用户或上层生命周期取消"
-    } else {
-        "Core Host 请求失败；请结合相同 op/request 的相邻日志定位阶段"
     }
 }
 
@@ -4024,10 +4016,12 @@ mod tests {
 
         let contents = fs::read_to_string(&path).unwrap();
         let lines = contents.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert!(lines[0].contains("[CORE]"));
-        assert!(lines[0].contains("outcome=detected diagnostic=ordinary one"));
+        assert!(lines[0].contains("outcome=detected"));
+        assert!(lines[0].contains("diagnostic=ordinary one"));
         assert!(lines[1].contains("[AGENT]"));
+        assert!(lines[2].contains("diagnostic=ordinary two"));
         assert!(!contents.contains(CORE_BRIDGE_PREFIX));
         assert!(!contents.contains(credential));
         let _ = fs::remove_dir_all(root);
@@ -4038,7 +4032,10 @@ mod tests {
         let summary = stderr_diagnostic_summary(
             "File C:\\private\\bridge.py failed while requesting https://user:pass@example.test/path",
         );
-        assert_eq!(summary, "File [PATH] failed while requesting [URL]");
+        assert_eq!(
+            summary,
+            "File <路径>/bridge.py failed while requesting https://example.test/path"
+        );
         assert!(!summary.contains("private"));
         assert!(!summary.contains("user:pass"));
     }
@@ -4456,6 +4453,7 @@ mod tests {
                     1,
                     None,
                     Some(500),
+                    None,
                 );
             }
             let rejected = handle
@@ -4501,6 +4499,49 @@ mod tests {
                 .iter()
                 .all(|record| record.event_code == "ipc.request.cancelled"
                     && record.severity == "info"));
+            handle.log_request_result(
+                "character-import-original-error",
+                "settings.character.import",
+                &Ok(json!({"ok": false, "error": {
+                    "code": "CHARACTER_IMPORT_FAILED", "message": "角色导入失败",
+                    "details": {"diagnostics": {
+                        "diagnostic": "File is not a zip file: token=private-fixture-key",
+                        "cause_type": "BadZipFile",
+                        "exception_chain": "RuntimeError: import failed\nCaused by: BadZipFile: File is not a zip file",
+                        "exception_stack": "BadZipFile: File is not a zip file\n  at zipfile:open:1369",
+                        "recovery_diagnostic": "PermissionError: rollback directory is locked",
+                        "errno": 13,
+                        "winerror": 5,
+                        "stage": "character_import"
+                    }}
+                }})),
+                3,
+                Duration::from_secs(1),
+            );
+            let original = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+            assert!(original
+                .details
+                .iter()
+                .any(|detail| detail.label == "诊断"
+                    && detail.value.contains("File is not a zip file")));
+            assert!(original.details.iter().any(
+                |detail| detail.label == "调用栈" && detail.value.contains("zipfile:open:1369")
+            ));
+            assert!(original
+                .details
+                .iter()
+                .any(|detail| detail.label == "异常链"
+                    && detail.value.contains("Caused by: BadZipFile")));
+            assert!(original
+                .details
+                .iter()
+                .any(|detail| detail.label == "回滚报错"
+                    && detail.value.contains("directory is locked")));
+            assert!(original
+                .details
+                .iter()
+                .any(|detail| detail.label == "请求编号"
+                    && detail.value == "character-import-original-error"));
             host.shutdown().unwrap();
             log.drain_and_shutdown_for_test();
             let text = fs::read_to_string(&path).unwrap();
@@ -4508,6 +4549,8 @@ mod tests {
                 if level == Verbosity::Debug { 3 } else { 0 });
             assert!(text.contains("REQUEST_DEADLINE_EXCEEDED"));
             assert!(text.contains("ASR_RECORDING_NOT_FOUND"));
+            assert!(text.contains("File is not a zip file"));
+            assert!(!text.contains("private-fixture-key"));
         }
         fs::remove_dir_all(root).unwrap();
     }

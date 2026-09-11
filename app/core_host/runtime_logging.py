@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any, BinaryIO
+from app.core.diagnostics import DIAGNOSTIC_TEXT_KEYS, TRACE_LIMIT, exception_diagnostics, safe_diagnostic_text
 
 from app.core.runtime_log import (
     LogEvent,
@@ -26,7 +27,7 @@ from app.core.runtime_log import (
 CORE_BRIDGE_PREFIX = b"SAKURA_RUNTIME_LOG_V1\t"
 TELEMETRY_BRIDGE_PREFIX = b"SAKURA_TELEMETRY_V1\t"
 CORE_BRIDGE_QUEUE_CAPACITY = 256
-CORE_BRIDGE_MAX_LINE_BYTES = 4 * 1024
+CORE_BRIDGE_MAX_LINE_BYTES = 32 * 1024
 TELEMETRY_BRIDGE_MAX_LINE_BYTES = 8 * 1024 + len(TELEMETRY_BRIDGE_PREFIX) + 1
 CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS = 0.5
 
@@ -178,6 +179,11 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "static_prompt_tokens",
         "status",
         "exception_site",
+        "exception_chain",
+        "exception_stack",
+        "recovery_diagnostic",
+        "errno",
+        "winerror",
         "tool_name",
         "trigger_turns",
         "tree_empty",
@@ -239,7 +245,7 @@ _BODY_FREE_METRIC_KEYS = frozenset(
     }
 )
 _SAFE_DIAGNOSTIC_KEYS = frozenset(
-    {"diagnostic", "error_type", "provider_error_code", "provider_error_type", "reason_code"}
+    {*DIAGNOSTIC_TEXT_KEYS, "error_type", "provider_error_code", "provider_error_type", "reason_code"}
 )
 _CORE_CHANNELS = frozenset(
     {
@@ -395,6 +401,10 @@ class _AppLoggingHandler(logging.Handler):
         if record.exc_info and isinstance(record.exc_info[0], type):
             attributes["code"] = "PYTHON_EXCEPTION"
             attributes["category"] = _safe_category(record.exc_info[0].__name__)
+            if isinstance(record.exc_info[1], BaseException):
+                attributes.update(exception_diagnostics(record.exc_info[1], reason_code="PYTHON_EXCEPTION", stage=record.funcName))
+        elif severity in {"warning", "error"}:
+            attributes["diagnostic"] = safe_diagnostic_text(record.getMessage())
         self._bridge.emit_fixed(
             severity=severity,
             channel="python.logging",
@@ -503,15 +513,8 @@ class RuntimeLoggingBridge:
     def emit_unhandled(self, code: str, error: BaseException) -> bool:
         declared = str(getattr(error, "code", ""))
         if not _CODE_RE.fullmatch(declared):
-            prefix = str(error).partition(":")[0].strip()
+            prefix = safe_diagnostic_text(error).partition(":")[0].strip()
             declared = prefix if _CODE_RE.fullmatch(prefix) else ""
-        stable_detail = declared if _CODE_RE.fullmatch(declared) else type(error).__name__
-        diagnostic = {
-            "TRANSPORT_WRITE_FAILED": "Core 协议写入通道意外关闭",
-            "WRITER_QUEUE_CLOSED": "Core 协议写入队列已关闭",
-            "GENERATION_CREDENTIAL_MISMATCH": "Core generation 凭据握手失败",
-            "SHUTDOWN_DURING_INITIALIZE": "Assistant 后台初始化未在退出期限内结束",
-        }.get(stable_detail, f"Core 进程边界异常：{_safe_category(type(error).__name__)}")
         logged = self.emit_fixed(
             severity="error",
             channel="core.process",
@@ -519,8 +522,7 @@ class RuntimeLoggingBridge:
             attributes={
                 "code": code if _CODE_RE.fullmatch(code) else "CORE_UNHANDLED_ERROR",
                 "category": _safe_category(type(error).__name__),
-                "error_type": stable_detail,
-                "diagnostic": diagnostic,
+                **exception_diagnostics(error, reason_code=code, stage="process_boundary"),
             },
         )
         telemetry_code = code if _CODE_RE.fullmatch(code) else "CORE_UNHANDLED_ERROR"
@@ -832,6 +834,7 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     if record.custom:
         from app.plugins.sakura_plugin_sdk import prepare_log_payload
         message, safe_attributes = prepare_log_payload(record.message, attributes)
+        safe_attributes.update(_safe_attributes({key: value for key, value in attributes.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "error_type", "exception_site", "errno", "winerror"}}))
         wire.update(custom=True, message=message, event="runtime.message")
     else:
         safe_attributes = _safe_attributes(attributes)
@@ -875,8 +878,8 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
                     and len(value) <= 240
                 ):
                     safe[key] = value
-            elif key == "diagnostic":
-                diagnostic = _safe_diagnostic(value)
+            elif key in DIAGNOSTIC_TEXT_KEYS:
+                diagnostic = safe_diagnostic_text(value, TRACE_LIMIT if key != "diagnostic" else 4096)
                 if diagnostic is not None:
                     safe[key] = diagnostic
             else:
@@ -895,7 +898,14 @@ def _encode_wire_record(wire: Mapping[str, object]) -> bytes | None:
     line = _json_line(candidate)
     if len(line) <= CORE_BRIDGE_MAX_LINE_BYTES:
         return line
-    candidate["attributes"] = {"record_truncated": True}
+    # Keep the actual failure when a producer filled the frame budget. Shrink
+    # each diagnostic independently instead of discarding all attributes.
+    candidate["attributes"] = {
+        key: safe_diagnostic_text(value, 1024) if isinstance(value, str) else value
+        for key, value in dict(candidate.get("attributes") or {}).items()
+        if key in DIAGNOSTIC_TEXT_KEYS or key in {"code", "reason_code", "error_type", "cause_type", "stage", "exception_site"}
+    }
+    candidate["attributes"]["record_truncated"] = True
     line = _json_line(candidate)
     if len(line) <= CORE_BRIDGE_MAX_LINE_BYTES:
         return line
@@ -1080,26 +1090,6 @@ def _safe_token(value: object, maximum: int) -> str | None:
     ):
         return None
     return value if _TOKEN_RE.fullmatch(value) else None
-
-
-def _safe_diagnostic(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    text = re.sub(r"[\x00-\x1f\x7f]+", " ", value)
-    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [REDACTED]", text)
-    text = re.sub(
-        r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+",
-        r"\1=[REDACTED]",
-        text,
-    )
-    text = re.sub(r"(?i)\bsk-[A-Za-z0-9._-]{6,}", "[REDACTED]", text)
-    text = re.sub(
-        r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@",
-        r"\1[REDACTED]@",
-        text,
-    )
-    text = " ".join(text.split())[:320]
-    return text or None
 
 
 def _safe_core_channel(value: object) -> str:

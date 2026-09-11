@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from typing import Any, Callable
 
 from app.plugins.sakura_plugin_sdk import prepare_log_payload
 from app.storage.paths import StoragePaths
+from app.core.diagnostics import exception_diagnostics, DIAGNOSTIC_TEXT_KEYS, TRACE_LIMIT, safe_diagnostic_text
 
 
 DEBUG_KEY = "SAKURA_DEBUG"
@@ -26,7 +28,7 @@ def diagnostic_attributes(
     reason_code: str,
     stage: str,
 ) -> dict[str, object]:
-    """Build bounded diagnostics without persisting a traceback or absolute path.
+    """Build bounded local error text and traceback frames without locals or private paths.
 
     ``exception_site`` identifies the innermost Python frame as module/function/line.  It
     is intentionally derived from code metadata instead of ``co_filename`` so a
@@ -34,47 +36,7 @@ def diagnostic_attributes(
     stage and source location provide the diagnostic identity directly.
     """
 
-    attributes: dict[str, object] = {
-        "diagnostic": str(error),
-        "error_type": type(error).__name__,
-        "reason_code": reason_code,
-        "stage": stage,
-    }
-    if isinstance(error, BaseException):
-        cause = _root_exception(error)
-        if cause is not error:
-            attributes["cause_type"] = type(cause).__name__
-        source = _exception_source(cause) or _exception_source(error)
-        if source:
-            attributes["exception_site"] = source
-    return attributes
-
-
-def _root_exception(error: BaseException) -> BaseException:
-    current = error
-    seen = {id(current)}
-    while True:
-        candidate = current.__cause__
-        if candidate is None and not current.__suppress_context__:
-            candidate = current.__context__
-        if not isinstance(candidate, BaseException) or id(candidate) in seen:
-            return current
-        seen.add(id(candidate))
-        current = candidate
-
-
-def _exception_source(error: BaseException) -> str:
-    traceback = error.__traceback__
-    if traceback is None:
-        return ""
-    while traceback.tb_next is not None:
-        traceback = traceback.tb_next
-    frame = traceback.tb_frame
-    module = str(frame.f_globals.get("__name__", "unknown"))
-    function = str(frame.f_code.co_name)
-    safe_module = re.sub(r"[^A-Za-z0-9_.-]+", "_", module).strip("_") or "unknown"
-    safe_function = re.sub(r"[^A-Za-z0-9_.<>-]+", "_", function).strip("_") or "unknown"
-    return f"{safe_module}:{safe_function}:{traceback.tb_lineno}"[:120]
+    return exception_diagnostics(error, reason_code=reason_code, stage=stage)
 
 
 SEVERITY_TRACE = "trace"
@@ -356,6 +318,13 @@ def log_event(
     resolved_severity = _normalize_severity(
         severity or _infer_severity(message, attributes)
     )
+    # Like logging.exception(), capture the handled failure before its context is
+    # lost. Explicit producer diagnostics remain authoritative.
+    current_error = sys.exception()
+    if current_error is not None and resolved_severity in {"warning", "error"}:
+        fields = dict(attributes) if isinstance(attributes, dict) else {}
+        captured = diagnostic_attributes(current_error, reason_code=str(fields.get("code", event_name)), stage=str(fields.get("stage", event_name)))
+        attributes = {**captured, **fields}
     resolved_verbosity = (
         int(verbosity)
         if verbosity is not None
@@ -690,6 +659,15 @@ def log_message(
     """Submit a custom event to the same host pipeline as fixed runtime events."""
     try:
         message, attributes = prepare_log_payload(message, fields)
+        # Custom log fields normally have a small display budget. Exception
+        # diagnostics use the same dedicated, bounded path as fixed events.
+        diagnostics = {}
+        current_error = sys.exception()
+        if current_error is not None and severity in {"warning", "warn", "error"}:
+            diagnostics = diagnostic_attributes(current_error, reason_code="RUNTIME_ERROR", stage=component)
+        if isinstance(fields, dict):
+            diagnostics.update({key: value for key, value in fields.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "error_type", "exception_site", "errno", "winerror"}})
+        attributes.update({key: safe_diagnostic_text(value, TRACE_LIMIT) if isinstance(value, str) else value for key, value in diagnostics.items()})
         attributes = _attach_interaction_id(attributes)
         return submit_external_log_event(LogEvent(
             timestamp="", severity=severity, verbosity=2, channel=component,

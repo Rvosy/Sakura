@@ -434,6 +434,10 @@ class _ManagedRuntime:
         if self._diagnostic is None:
             return
         try:
+            if severity in {"warning", "error"} and self._server_process is not None:
+                from sakura_process import process_failure_diagnostics
+
+                attributes = {**attributes, **process_failure_diagnostics(self._base_dir / "gpt-sovits.log", getattr(self, "_log_start_offset", 0))}
             self._diagnostic(event, severity, attributes)
         except Exception:
             return
@@ -497,6 +501,7 @@ class _ManagedRuntime:
         log_path = self._base_dir / "gpt-sovits.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("a", encoding="utf-8")
+        self._log_start_offset = log.tell()
         numba_cache = self._base_dir / "cache" / "numba"
         numba_cache.mkdir(parents=True, exist_ok=True)
         environment = os.environ.copy()

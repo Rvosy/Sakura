@@ -137,17 +137,19 @@ test("custom messages are bounded and cleaned before IPC without changing plain 
   assert.ok(!JSON.stringify(payload).includes("private-"));
 });
 
-test("real error and rejection fields locate app code without exception bodies", async () => {
+test("real errors retain original messages and frames with credentials redacted", async () => {
   const env=harness();
-  const error=new TypeError("PRIVATE_CHAT_BODY");
+  const error=new TypeError("Cannot read properties of undefined");
   env.listeners.get("error")({error,filename:"http://tauri.localhost/settings/index.js",lineno:42,colno:7});
-  const rejection=new Error("PRIVATE_KEY_VALUE");
-  rejection.stack="Error: PRIVATE_KEY_VALUE\n at send (tauri://localhost/chat/main.js:19:5)";
+  const rejection=new Error("Connection refused token=PRIVATE_KEY_VALUE");
+  rejection.stack="Error: Connection refused token=PRIVATE_KEY_VALUE\n at send (tauri://localhost/chat/main.js:19:5)";
   env.listeners.get("unhandledrejection")({reason:rejection});
   env.listeners.get("error")({target:{src:"https://private.example/PRIVATE_PATH.js"}});
   await env.diagnostics.flush();
   const entries=env.calls.find(([c])=>c===RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
   assert.equal(entries[0].details.file,"desktop/frontend/settings/index.js");
+  assert.match(entries[0].diagnostic,/Cannot read properties of undefined/);
+  assert.match(entries[1].exceptionStack,/Connection refused/);
   assert.equal(entries[0].details.line,42);
   assert.equal(entries[0].details.causeType,"TypeError");
   assert.equal(entries[1].details.line,19);

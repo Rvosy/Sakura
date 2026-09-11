@@ -179,6 +179,7 @@ class SenseVoiceProvider:
         except Exception as error:
             code = str(getattr(error, "code", error))
             result = {"state": "failed", "errorCode": code if re.fullmatch(r"ASR_[A-Z_]{1,70}", code) else "ASR_RECOGNITION_FAILED"}
+            log_event(self.logger, "error", "asr.recognition.failed", "语音识别失败", request_id=job.request.get("requestId"), duration_ms=round((time.monotonic() - job.started_at) * 1000), error_code=result["errorCode"])
         finally:
             # Always release before making a terminal result visible, including
             # cancellation while native decoding was still using this file.
@@ -189,7 +190,8 @@ class SenseVoiceProvider:
                     pass
         with self.lock:
             job.result = {"state": "cancelled"} if job.cancel.is_set() or self.closed else result
-            log_event(self.logger, "error" if job.result["state"] == "failed" else "info", "asr.recognition." + job.result["state"], {"succeeded": "语音识别完成", "failed": "语音识别失败", "cancelled": "语音识别已取消"}[job.result["state"]], request_id=job.request.get("requestId"), duration_ms=round((time.monotonic() - job.started_at) * 1000), **({"error_code": job.result["errorCode"]} if job.result["state"] == "failed" else {}))
+            if job.result["state"] != "failed":
+                log_event(self.logger, "error" if job.result["state"] == "failed" else "info", "asr.recognition." + job.result["state"], {"succeeded": "语音识别完成", "failed": "语音识别失败", "cancelled": "语音识别已取消"}[job.result["state"]], request_id=job.request.get("requestId"), duration_ms=round((time.monotonic() - job.started_at) * 1000), **({"error_code": job.result["errorCode"]} if job.result["state"] == "failed" else {}))
 
     def _recognize(self, path, language, cancel):
         def check():

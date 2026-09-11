@@ -286,10 +286,13 @@ class SakuraTTSHub:
             terminal = dict(binding.terminal) if binding and binding.terminal else None
         if binding is None:
             return self._failed(request_id, None, "TTS_JOB_NOT_FOUND")
+        failure_reported = False
         if terminal is None:
             try:
                 result = self._provider_by_key(binding.service_key).poll(binding.job_id)
             except Exception:
+                self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code="TTS_PROVIDER_UNAVAILABLE")
+                failure_reported = True
                 result = {"state": "failed", "errorCode": "TTS_PROVIDER_UNAVAILABLE"}
         else:
             result = terminal
@@ -298,7 +301,7 @@ class SakuraTTSHub:
             with self._lock:
                 if self._jobs.get(request_id) is binding:
                     del self._jobs[request_id]
-                    if normalized["state"] == "failed":
+                    if normalized["state"] == "failed" and not failure_reported:
                         self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code=normalized["errorCode"])
         return normalized
 
