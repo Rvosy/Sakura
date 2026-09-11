@@ -12,7 +12,7 @@ Sakura 会读取用户数据目录下的 `config/mcp.yaml`，连接其中启用�
 
 ## 配置和状态
 
-Sakura 不生成默认 MCP 配置。[联网搜索与网页读取](WEB_SEARCH.md)由内置“联网”插件提供，不依赖 MCP。
+Sakura 不生成默认 MCP 配置。[联网搜索与网页读取](WEB_SEARCH.md)由内置“联网工具”插件提供，不依赖 MCP。
 Sakura 不内置桌面控制 Server，也不在设置页提供桌面 MCP 开关。运行日志中的
 稳定原因码可用于判断 Server 状态：
 

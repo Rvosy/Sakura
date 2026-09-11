@@ -1,8 +1,8 @@
 api: 4
 id: sakura.tts.genie
-name: Genie TTS Provider
-author: Sakura
-description: 使用 Genie 合成角色语音，支持外部服务。
+name: Genie 语音合成
+author: Rvosy
+description: 使用 Genie 合成角色语音。
 version: 0.1.0
 entry: plugin:GeniePlugin
 # 保留老用户未显式保存的启用状态；新用户由 Shell 的 new_user_plugins.yaml 初始化为关闭。

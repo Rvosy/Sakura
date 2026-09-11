@@ -10,7 +10,7 @@ updated: 2026-09-11
 
 ## 能力边界
 
-安装包提供 `sakura.web`（目录 `plugins/builtin/sakura_web`），新安装默认启用。插件通过 Plugin API v4
+安装包提供“联网工具”插件 `sakura.web`（目录 `plugins/builtin/sakura_web`），新安装默认启用。插件通过 Plugin API v4
 的 `sakura.host.tools` 提供搜索和网页读取，使用独立 Worker。实现只依赖标准库，不导入 `app.*`，
 不启动 MCP Server、不安装额外依赖，也不贡献自定义设置区块。启停沿用插件管理页。
 

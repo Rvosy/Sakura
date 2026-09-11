@@ -312,7 +312,7 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
 替代实现接管能力；插件关闭后保留文件用于恢复默认是允许的。
 
 预装插件包括 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
-`sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie、GPT-SoVITS 和 Sakura Mobile；已有用户的显式开关和沿用清单的
+`sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天；已有用户的显式开关和沿用清单的
 隐式启用状态保持不变，初始化规则见[发行与存储](release-distribution-and-storage.md)。`playwright_browser` 改为可选插件，不进入主安装包。
 
 ## 8. 生命周期、失败与恢复
