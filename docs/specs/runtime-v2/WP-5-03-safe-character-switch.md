@@ -17,7 +17,9 @@ Assistant Session 的热配置：它必须保存目标角色，受控停止旧 C
 generation 私有资源完成清理，再启动完整的新 generation。
 切换会立即终止旧角色正在进行的回复、TTS、Memory 整理、插件任务和异步回调；不提供桌宠右键或托盘入口。
 
-同角色选择是无写入、无重启的 `unchanged`。导入角色包只有在首次导入并自动成为当前角色时要求重启；
+同角色且显示方式不变时是无写入、无重启的 `unchanged`。仅改变当前角色显示方式时返回 `visual_rebind`，
+只更新表现绑定和控制说明，原生回执为 `restartState: not_required`，不重启 Core 或其他插件。
+导入角色包只有在首次导入并自动成为当前角色时要求重启；
 导入非当前角色不重启。
 
 设置页可以给当前已提交角色导入 `.voice`，也可以导出完整角色包、单角色包或语音包。给当前角色导入语音后必须
@@ -33,7 +35,7 @@ Python `characters.settings.select/import/import_voice` 在校验归档或目标
 {
   "schemaVersion": 1,
   "snapshot": {},
-  "changePlan": "unchanged | core_restart_required"
+  "changePlan": "unchanged | visual_rebind | core_restart_required"
 }
 ```
 
@@ -83,6 +85,10 @@ Timeline Host Service 和所有 generation 私有资源由该冻结值构建；�
 generation 隔离，但不视为角色变化。
 
 ## 4. 设置页与桌宠表现
+
+表现资源使用[表现插件合同](visual-plugin-boundary.md)的 schemaVersion 2。切换、插件重载或停用撤销旧 bindingId、
+控制与资产授权；同角色重启保留文字历史，不根据历史中的 portrait 或 control 重放画面。目标角色预览使用其自己的缩放值。
+
 
 - 当前角色有未保存的外观、语音或 Memory 新建/编辑草稿时，选择另一角色必须恢复到前一个下拉值并提示先
   保存或放弃。下拉草稿本身可反复改选；选回已提交角色即取消待切换状态。

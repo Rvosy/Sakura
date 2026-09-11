@@ -113,9 +113,6 @@ export function validateAppearanceSnapshot(snapshot) {
     || publication.schemaVersion !== 1
     || publication.coreGenerationId !== presentation.generationId
     || publication.characterId !== presentation.characterId
-    || !Array.isArray(presentation.portraitKeys)
-    || presentation.portraitKeys.length === 0
-    || !presentation.portraitKeys.every((key) => typeof presentation.portraitResourceUrls?.[key] === "string")
   ) {
     throw new Error("角色外观 identity 不一致");
   }

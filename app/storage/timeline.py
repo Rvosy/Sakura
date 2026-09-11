@@ -622,10 +622,15 @@ def _validate_payload(kind: TimelineKind, payload: dict[str, Any]) -> None:
         for segment in segments:
             if not isinstance(segment, dict):
                 raise TimelineDataError("TIMELINE_SEGMENT_INVALID")
-            _exact_keys(
-                segment,
-                {"text", "translation", "tone", "portrait", "suppressTts"},
-            )
+            required = {"text", "translation", "tone", "portrait", "suppressTts"}
+            if not required <= set(segment) or set(segment) - required - {"control"}:
+                raise TimelineDataError("TIMELINE_SEGMENT_INVALID")
+            if "control" in segment:
+                from app.llm.visual_control import validate_visual_control
+                try:
+                    validate_visual_control(segment["control"])
+                except ValueError as error:
+                    raise TimelineDataError("TIMELINE_SEGMENT_INVALID") from error
             for key in ("text", "translation", "tone", "portrait"):
                 _bounded_text(key, segment.get(key), MAX_TEXT_CHARS, allow_empty=True)
             portrait = segment["portrait"]

@@ -59,7 +59,7 @@ async function load(nextMode) {
     for (const id of ["studio", "settings"]) document.getElementById(`${id}Tab`).setAttribute("aria-pressed", String(id === mode));
     const entry = mode === "studio" ? "../../studio/" : "../../settings/";
     if (mode === "settings") previewState = makeSettingsPreview();
-    const source = await (await fetch(new URL(`${entry}index.html`, import.meta.url), { cache: "no-store" })).text();
+    const source = await (await fetch(new URL(mode === "studio" ? "./snapshot/index.html" : `${entry}index.html`, import.meta.url), { cache: "no-store" })).text();
     const doc = new DOMParser().parseFromString(source, "text/html");
     const base = doc.createElement("base"); base.href = new URL(entry, import.meta.url).href; doc.head.prepend(base);
     doc.querySelector(`script[src="./${mode === "studio" ? "studio" : "settings"}.js"]`).remove();

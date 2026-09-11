@@ -46,10 +46,13 @@ def test_character_studio_creates_imports_saves_and_exports(tmp_path: Path) -> N
     portrait_source.write_bytes(b"new portrait")
 
     created = service.create_character({"id": "new_role", "display_name": "新角色"})
-    portrait = service.import_portrait(
+    # Exercise saving an older inline-portrait draft through generic import.
+    created["doc"]["visuals"] = None
+    service.save_workspace_draft(created["workspace_id"], created["doc"])
+    portrait = service.import_visual_asset(
         created["workspace_id"],
         portrait_source,
-        label="default",
+        "portrait-default",
     )
     doc = created["doc"]
     doc["card_text"] = "system prompt"
@@ -135,9 +138,9 @@ def test_invalid_published_save_preserves_the_original_character(tmp_path: Path)
     service = CharacterStudioService(tmp_path)
     opened = service.open_character("sakura")
     doc = opened["doc"]
-    doc["default_portrait"] = "portraits/missing.png"
+    doc["visuals"] = {"resources": [{"id": "bad", "type": "fixture.model@1", "root": "../outside", "entry": "resource.json"}], "default": "bad"}
 
-    with pytest.raises(CharacterConfigError, match="默认立绘不存在"):
+    with pytest.raises(ValueError, match="VISUAL_PATH_INVALID"):
         service.save_character(doc, opened["workspace_id"])
 
     assert manifest.read_bytes() == original_manifest
@@ -807,36 +810,6 @@ def test_legacy_raw_and_new_drafts_migrate_once(tmp_path: Path) -> None:
     assert service.open_character("N.A.V.I.")["doc"]["card_text"] == "raw draft"
     assert second.open_character("legacy")["resumed"] is True
     assert len([item for item in second.list_characters() if item["id"] == "legacy"]) == 1
-
-
-def test_cancelled_folder_import_rolls_back_the_whole_batch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = CharacterStudioService(tmp_path)
-    created = service.create_character({"id": "batch", "display_name": "Batch"})
-    source = tmp_path / "portrait-source"
-    source.mkdir()
-    (source / "a.png").write_bytes(b"a")
-    (source / "b.png").write_bytes(b"b")
-    from app.config.character_studio import _copy_workspace_asset as original_copy_asset
-    copied = 0
-
-    def cancel_second(*args, **kwargs):
-        nonlocal copied
-        copied += 1
-        if copied == 2:
-            raise CharacterStudioOperationCancelled()
-        return original_copy_asset(*args, **kwargs)
-
-    monkeypatch.setattr("app.config.character_studio._copy_workspace_asset", cancel_second)
-
-    with pytest.raises(CharacterStudioOperationCancelled):
-        service.import_portrait_folder(created["workspace_id"], source)
-
-    portrait_dir = Path(created["package_dir"]) / "portraits"
-    assert list(portrait_dir.iterdir()) == []
-    assert service._read_state("batch")["imported_assets"] == []
 
 
 def test_current_role_quiesces_before_the_first_directory_rename(tmp_path: Path) -> None:

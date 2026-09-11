@@ -1512,6 +1512,7 @@ def _prepare_runtime_timeline(app_root: Path) -> TimelineStore:
 
 
 def _project_reply(reply: object) -> list[dict[str, object]]:
+    from app.llm.visual_control import validate_visual_control
     raw_segments = getattr(reply, "segments", None)
     if not isinstance(raw_segments, list):
         raise _BoundaryFailure("INVALID_CHAT_REPLY", "Assistant reply was invalid", False)
@@ -1535,6 +1536,19 @@ def _project_reply(reply: object) -> list[dict[str, object]]:
                 "suppressTts": values[4],
             }
         )
+        control = getattr(segment, "control", None)
+        if control is not None:
+            try:
+                projected[-1]["control"] = validate_visual_control(control)
+            except ValueError:
+                pass
+    # Optional controls must not make a valid text reply exceed Timeline's
+    # record limit. Prefer dropping visual data to losing the completed turn.
+    import json
+    from app.storage.timeline import MAX_PAYLOAD_BYTES
+    if len(json.dumps({"segments": projected}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_PAYLOAD_BYTES:
+        for segment in projected:
+            segment.pop("control", None)
     return projected
 
 

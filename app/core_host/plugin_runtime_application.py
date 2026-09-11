@@ -10,6 +10,7 @@ from app.core_host.plugin_artifacts import PluginArtifactStore
 from app.core_host.audio_input import AudioInputResources, HOST_AUDIO_INPUT_SERVICE
 from app.core_host.plugin_character import PluginCharacterStore
 from app.core_host.plugin_host_services import PluginHostServices
+from app.core_host.visual_host import VisualHost
 from app.core_host.mobile_host import MobileHostService
 from app.llm.prompts.types import ContextRequest
 from app.plugins.host_services import (
@@ -109,6 +110,10 @@ class PluginRuntimeApplication:
             specs,
             **manager_options,
         )
+        self.visuals = VisualHost(roots, self._manager)
+        self._visual_character = None
+        self._visual_binding = None
+        self._visual_reason = "VISUAL_NOT_BOUND"
         self.audio_input = AudioInputResources(roots.user_root, generation_id, self._manager.service_identity)
         self._manager.install_host_service(
             HOST_AUDIO_INPUT_SERVICE, self.audio_input,
@@ -219,11 +224,111 @@ class PluginRuntimeApplication:
             lambda event_name, payload: self.emit_event(event_name, payload or {})
         )
         getattr(runtime, "set_context_providers")(self._host_services.context_providers())
+        character = getattr(session, "character", None)
+        if character is not None:
+            self.bind_visual_character(character)
         self._bound.set()
 
+    def bind_visual_character(self, character) -> None:
+        from app.core_host.visual_host import VisualHostError
+        binding = None
+        reason = "VISUAL_RESOURCE_MISSING"
+        resource = AppSettingsService(self._roots.user_root).selected_visual_resource(character)
+        if resource is not None:
+            try:
+                binding = self.visuals.bind(character.id, character.package_dir, resource, provider_id=character.visual_providers.get(resource.id))
+                reason = "READY"
+            except VisualHostError as error:
+                reason = error.code
+        if binding is None:
+            self.visuals.clear()
+        self._visual_character = character
+        self._visual_binding = binding
+        self._visual_reason = reason
+        update = getattr(self._runtime, "set_visual_binding", None)
+        if callable(update):
+            update(self._visual_binding)
+
+    def visual_presentation(self):
+        from app.core_host.character_presentation import project_character_presentation
+        from app.core_host.visual_host import VisualHostError
+        if self._visual_character is None:
+            return None
+        visual = None
+        reason = self._visual_reason
+        try:
+            visual = self.visuals.presentation()
+        except VisualHostError as error:
+            reason = error.code
+        return project_character_presentation(self._visual_character, visual, reason_code=reason)
+
+    def preview_character_presentation(self, character):
+        from app.core_host.character_presentation import project_character_presentation
+        from app.core_host.visual_host import VisualHost, VisualHostError
+        previous = getattr(self, "_preview_visuals", None)
+        if previous is not None:
+            previous.close()
+        host = VisualHost(self._roots, self._manager)
+        self._preview_visuals = host
+        visual, reason = None, "VISUAL_RESOURCE_MISSING"
+        resource = AppSettingsService(self._roots.user_root).selected_visual_resource(character)
+        if resource is not None:
+            try:
+                visual = host.bind(character.id, character.package_dir, resource, provider_id=character.visual_providers.get(resource.id)).presentation()
+                reason = "READY"
+            except VisualHostError as error:
+                reason = error.code
+        return project_character_presentation(character, visual, reason_code=reason)
+
+    def validate_visual_choice(self, character, resource):
+        host = VisualHost(self._roots, self._manager)
+        try:
+            host.bind(character.id, character.package_dir, resource, provider_id=character.visual_providers.get(resource.id))
+        finally:
+            host.close()
+
+    def validate_visual_draft(self, character):
+        from app.core_host.visual_host import VisualHostError
+        for resource in character.visual_resources:
+            try:
+                record, capability = self.visuals._select(resource.type, character.visual_providers.get(resource.id))
+            except VisualHostError as error:
+                if error.code in {"VISUAL_PROVIDER_MISSING", "PLUGIN_DISABLED", "VISUAL_PROVIDER_SELECTION_REQUIRED", "VISUAL_SERVICE_UNAVAILABLE", "VISUAL_CONTRACT_UNSUPPORTED", "API_VERSION_UNSUPPORTED"}:
+                    continue
+                raise
+            token = self._host_services.grant_visual_workspace(record.plugin_id, character.package_dir)
+            try:
+                binding = self.visuals._describe(record, capability, {"characterId": token, "resource": resource.to_mapping()}, character.package_dir)
+                binding.close()
+            finally:
+                self._host_services.revoke_visual_workspace(token)
+
+    def export_visual_resource(self, character, resource):
+        import json
+        from app.plugins.visuals import resolve_resource_path
+        record, capability = self.visuals._select(resource.type, character.visual_providers.get(resource.id))
+        token = self._host_services.grant_visual_workspace(record.plugin_id, character.package_dir)
+        try:
+            request = {"characterId": token, "resource": resource.to_mapping()}
+            binding = self.visuals._describe(record, capability, request, character.package_dir)
+            raw = json.loads((resolve_resource_path(character.package_dir, resource.root) / resource.entry).read_text(encoding="utf-8"))
+            result = self._manager.call_service(capability.service, "exportResource", resource.to_mapping(), raw)
+            result["assets"] = binding.description.get("assets", {})
+            binding.close()
+            return result
+        finally:
+            self._host_services.revoke_visual_workspace(token)
+
     def unbind_session(self) -> None:
+        character = self._visual_character
+        self.visuals.clear()
+        self._visual_binding = None
+        self._visual_character = None
         registry = self._tool_registry
         runtime = self._runtime
+        update_visual = getattr(runtime, "set_visual_binding", None)
+        if callable(update_visual):
+            update_visual(None)
         self._runtime = None
         self._session = None
         self._bound.clear()
@@ -237,6 +342,11 @@ class PluginRuntimeApplication:
             except (AttributeError, TypeError):
                 pass
 
+        # A missing model configuration removes chat, not the character window.
+        # Revoke in-flight controls while issuing an independent display binding.
+        if character is not None and not self._closed:
+            self.bind_visual_character(character)
+
     def wait_until_bound(self, *, timeout: float = 8.0) -> bool:
         return self._bound.wait(max(0.0, timeout)) and not self._closed
 
@@ -244,16 +354,34 @@ class PluginRuntimeApplication:
         self._chat_boundary = boundary
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
-        return self._manager.set_enabled(plugin_id, enabled)
+        result = self._manager.set_enabled(plugin_id, enabled)
+        self._refresh_visual_provider(plugin_id)
+        return result
 
     def install_plugin(self, spec: RuntimePluginSpec) -> dict[str, Any]:
-        return self._manager.install_plugin(spec)
+        result = self._manager.install_plugin(spec)
+        self._refresh_visual_provider(spec.plugin_id)
+        return result
 
     def uninstall_plugin(self, plugin_id: str) -> dict[str, Any]:
-        return self._manager.uninstall_plugin(plugin_id)
+        result = self._manager.uninstall_plugin(plugin_id)
+        self._refresh_visual_provider(plugin_id)
+        return result
 
     def reload_plugin(self, plugin_id: str) -> dict[str, Any]:
-        return self._manager.reload_plugin(plugin_id)
+        result = self._manager.reload_plugin(plugin_id)
+        self._refresh_visual_provider(plugin_id)
+        return result
+
+    def _refresh_visual_provider(self, plugin_id: str) -> None:
+        character = self._visual_character
+        resource = AppSettingsService(self._roots.user_root).selected_visual_resource(character) if character is not None else None
+        if resource is None:
+            return
+        binding = self._visual_binding
+        if (binding is not None and binding.provider_id == plugin_id
+            or any(item["pluginId"] == plugin_id for item in self.visuals.candidates(resource.type))):
+            self.bind_visual_character(character)
 
     def apply_config(self, plugin_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
         return self._manager.apply_config(plugin_id, values)
@@ -268,7 +396,7 @@ class PluginRuntimeApplication:
         if not handled:
             raise PluginRuntimeError("SETTINGS_ID_INVALID", plugin_id=plugin_id)
         if isinstance(result, Mapping) and result.get("applicationState") == "restart_required":
-            self._manager.reload_plugin(plugin_id)
+            self.reload_plugin(plugin_id)
             applied = dict(result)
             applied["applicationState"] = "applied"
             applied["reasonCode"] = "READY"
@@ -336,6 +464,10 @@ class PluginRuntimeApplication:
         if self._closed:
             return
         self._closed = True
+        self.visuals.close()
+        preview = getattr(self, "_preview_visuals", None)
+        if preview is not None:
+            preview.close()
         self.unbind_session()
         self._manager.close()
         self.audio_input.close()

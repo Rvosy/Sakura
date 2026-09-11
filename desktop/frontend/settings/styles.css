@@ -8,6 +8,7 @@
 @import url("../assets/fonts/fonts.css");
 @import url("../core/icons.css");
 @import url("../core/selection.css");
+@import url("./visual-settings.css");
 @import url("../core/tooltip.css");
 
 :root {
@@ -1599,10 +1600,6 @@ textarea:disabled {
 .custom-select__option.is-disabled:hover {
   background: transparent;
   color: var(--sakura-muted-text);
-}
-
-.custom-select__option.is-selected {
-  font-weight: var(--font-weight-semibold);
 }
 
 .custom-select__option.is-selected:not(.is-disabled)::after {

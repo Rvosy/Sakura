@@ -86,7 +86,7 @@ def project_current_character_summary(profile: CharacterProfile) -> dict[str, ob
         "displayName": profile.display_name,
         "initialMessage": profile.initial_message,
         "replyTones": [*profile.reply_tones],
-        "portraitChoices": [*profile.portrait_choices],
+        "portraitChoices": [],
     }
 
 
@@ -207,7 +207,6 @@ class AssistantAdapter:
                 provider,
                 system_prompt,
                 reply_tones=profile.reply_tones,
-                reply_portraits=profile.portrait_choices,
                 tools=self._application_tools,
                 character_id=profile.id,
                 character_name=profile.display_name,

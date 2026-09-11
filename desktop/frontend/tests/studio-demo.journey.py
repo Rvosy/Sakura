@@ -1,5 +1,7 @@
 """Opt-in browser regression against the real Studio controller and the Demo bridge."""
 import functools
+import os
+import sys
 import http.server
 import threading
 from pathlib import Path
@@ -19,7 +21,7 @@ server = http.server.ThreadingHTTPServer(
 threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(channel=os.environ.get("SAKURA_BROWSER_CHANNEL") or ("msedge" if sys.platform == "win32" else None))
         page = browser.new_page(viewport={"width": 1100, "height": 900})
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))

@@ -15,6 +15,7 @@ from app.config.models import (
 from app.core.runtime_log import log_event
 from app.llm.prompt_templates import with_desktop_pet_context
 from app.storage.paths import sanitize_file_stem
+from app.config.character_resources import CharacterVisualResource, character_visual_resources
 
 DEFAULT_TONES = ["中性", "不满", "害羞", "请求", "困惑", "惊讶"]
 THEME_SOURCE_PACKAGE = "package"
@@ -51,8 +52,9 @@ class CharacterProfile:
     package_dir: Path
     card_path: Path
     initial_message: str
-    default_portrait_path: Path
-    expression_portraits: dict[str, Path] = field(default_factory=dict)
+    visual_resources: tuple[CharacterVisualResource, ...] = ()
+    default_visual_id: str | None = None
+    visual_providers: dict[str, str] = field(default_factory=dict)
     voice: CharacterVoice | None = None
     # 接话模板清单路径(可选,缺省即该角色 opt-out)。此处只解析路径不校验存在,
     # 文件缺失/非法由 manifest 加载方降级处理,不应让整个角色包加载失败。
@@ -68,20 +70,8 @@ class CharacterProfile:
             object.__setattr__(self, "theme_settings", _default_theme_settings())
 
     @property
-    def portrait_choices(self) -> list[str]:
-        return list(self.expression_portraits)
-
-    def portrait_for_tone(self, tone: str | None) -> Path:
-        tone_key = (tone or "").strip()
-        if tone_key and tone_key in self.expression_portraits:
-            return self.expression_portraits[tone_key]
-        return self.default_portrait_path
-
-    def portrait_for_segment(self, portrait: str | None, tone: str | None = None) -> Path:
-        portrait_key = (portrait or "").strip()
-        if portrait_key and portrait_key in self.expression_portraits:
-            return self.expression_portraits[portrait_key]
-        return self.portrait_for_tone(tone)
+    def current_visual_resource(self) -> CharacterVisualResource | None:
+        return next((item for item in self.visual_resources if item.id == self.default_visual_id), None)
 
 
 class CharacterRegistry:
@@ -176,13 +166,10 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
     initial_message = _optional_text(raw_data, "initial_message", "……起動した。用事があるなら、呼んで。")
     card_path = _resolve_required_file(package_dir, _required_text(raw_data, "card", manifest_path), "角色卡")
 
-    portrait_data = _required_dict(raw_data, "portrait", manifest_path)
-    default_portrait = _resolve_required_file(
-        package_dir,
-        _required_text(portrait_data, "default", manifest_path),
-        "默认立绘",
-    )
-    expression_portraits = _load_expression_portraits(package_dir, portrait_data)
+    try:
+        visual_resources, default_visual_id = character_visual_resources(raw_data, package_dir)
+    except ValueError as error:
+        raise CharacterConfigError("角色表现资源引用无效。") from error
 
     reply_data = raw_data.get("reply")
     reply_tones = _load_reply_tones(reply_data)
@@ -199,8 +186,9 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
         package_dir=package_dir,
         card_path=card_path,
         initial_message=initial_message,
-        default_portrait_path=default_portrait,
-        expression_portraits=expression_portraits,
+        visual_resources=visual_resources,
+        default_visual_id=default_visual_id,
+        visual_providers=dict(raw_data.get("visuals", {}).get("providers", {})),
         voice=voice,
         backchannel_manifest_path=backchannel_manifest_path,
         reply_tones=reply_tones,
@@ -243,21 +231,6 @@ def save_character_theme(
     if not isinstance(raw_data, dict):
         raise CharacterConfigError(f"角色清单必须是 JSON 对象：{manifest_path}")
     _write_character_theme_manifest(manifest_path, raw_data, settings, source=source)
-
-
-def _load_expression_portraits(package_dir: Path, portrait_data: dict[str, Any]) -> dict[str, Path]:
-    expressions = portrait_data.get("expressions", {})
-    if expressions is None:
-        return {}
-    if not isinstance(expressions, dict):
-        raise CharacterConfigError("portrait.expressions 必须是对象。")
-
-    result: dict[str, Path] = {}
-    for tone, path_text in expressions.items():
-        if not isinstance(tone, str) or not isinstance(path_text, str):
-            raise CharacterConfigError("portrait.expressions 的键和值都必须是字符串。")
-        result[tone.strip()] = _resolve_required_file(package_dir, path_text, f"{tone} 表情立绘")
-    return {tone: path for tone, path in result.items() if tone}
 
 
 def _load_reply_tones(reply_data: Any) -> list[str]:

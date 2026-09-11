@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,7 @@ from app.agent.trace import TRACE_PROVENANCE_KEY, MessageProvenance, message_pro
 from app.core.cancellation import CancelChecker
 from app.core.interaction import get_interaction_id
 from app.core.runtime_log import diagnostic_attributes, log_event, summarize_messages
+from app.llm.chat_reply import ChatReply
 
 if TYPE_CHECKING:
     from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
@@ -40,6 +42,7 @@ class ChatPipeline:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
+        binding = getattr(self.agent_runtime, "visual_binding", None)
         log_event(
             "ChatWorker",
             "开始处理用户消息",
@@ -52,11 +55,12 @@ class ChatPipeline:
         result = self._run_traced(
             lambda: self.agent_runtime.handle_user_message(
                 messages,
-                progress_callback=progress_callback,
+                progress_callback=_visual_progress(progress_callback, binding),
                 cancel_checker=cancel_checker,
             ),
             operation_id=_messages_trace_operation_id(messages),
         )
+        result = replace(result, reply=_visual_reply(result.reply, binding))
         self._record_visual_observation_from_result(
             "ChatWorker",
             visual_observation_jobs or [],
@@ -72,6 +76,7 @@ class ChatPipeline:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
+        binding = getattr(self.agent_runtime, "visual_binding", None)
         log_event(
             "EventWorker",
             "开始处理主动事件",
@@ -83,10 +88,11 @@ class ChatPipeline:
         result = self._run_traced(
             lambda: self.agent_runtime.handle_event(
                 event,
-                progress_callback=progress_callback,
+                progress_callback=_visual_progress(progress_callback, binding),
                 cancel_checker=cancel_checker,
             ),
         )
+        result = replace(result, reply=_visual_reply(result.reply, binding))
         self._record_visual_observation_from_result(
             "EventWorker",
             visual_observation_jobs or [],
@@ -175,6 +181,29 @@ class ChatPipeline:
                 "sensitive_redacted": record.sensitive_redacted,
             },
         )
+
+
+def _visual_reply(reply: ChatReply, binding: object | None) -> ChatReply:
+    segments = []
+    for segment in reply.segments:
+        control = None
+        if binding is not None:
+            result = binding.parse_control(
+                segment.control,
+                legacy={"portrait": segment.portrait, "tone": segment.tone},
+                segment={"tone": segment.tone},
+            )
+            control = result.control
+            if result.reason_code != "READY":
+                log_event("Visual", "表现控制未应用", {"reason_code": result.reason_code})
+        segments.append(replace(segment, control=control))
+    return ChatReply(segments)
+
+
+def _visual_progress(callback, binding):
+    if callback is None:
+        return None
+    return lambda progress: callback(replace(progress, reply=_visual_reply(progress.reply, binding)))
 
 
 def _bind_continuation_trace_operation(result: AgentResult, operation_id: str) -> None:

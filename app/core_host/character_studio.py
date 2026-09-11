@@ -22,6 +22,13 @@ from app.core_host.protocol import error_payload, response
 CHARACTER_STUDIO_REQUEST_NAMES = frozenset(
     {
         "studio.bootstrap",
+        "studio.character.presentation",
+        "studio.visual.catalog",
+        "studio.visual.previews",
+        "studio.visual.open",
+        "studio.visual.create",
+        "studio.visual.export",
+        "studio.visual.import",
         "studio.character.open",
         "studio.character.create",
         "studio.character.publish",
@@ -46,6 +53,8 @@ _DOC_FIELDS = frozenset(
         "theme",
         "voice",
         "referenceAudios",
+        "visuals",
+        "visualData",
     }
 )
 _VOICE_FIELDS = frozenset(
@@ -94,6 +103,7 @@ class CharacterStudioBoundary:
         user_root: Path,
         *,
         quiesce_generation: Callable[[], None] | None = None,
+        plugin_application_provider: Callable[[], object | None] = lambda: None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
@@ -106,6 +116,7 @@ class CharacterStudioBoundary:
         self._active_operation: _StudioOperation | None = None
         self._quiesce_generation = quiesce_generation
         self._generation_invalidated = False
+        self._plugin_application_provider = plugin_application_provider
 
     @property
     def _service(self) -> CharacterStudioService:
@@ -115,9 +126,14 @@ class CharacterStudioBoundary:
         with self._service_init_lock:
             service = self._service_instance
             if service is None:
-                service = CharacterStudioService(self._user_root)
+                service = CharacterStudioService(self._user_root, validate_visuals=self._validate_visuals)
                 self._service_instance = service
             return service
+
+    def _validate_visuals(self, character):
+        application = self._plugin_application_provider()
+        if application is not None:
+            application.application.validate_visual_draft(character)
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -179,6 +195,15 @@ class CharacterStudioBoundary:
 
     def _dispatch(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         current = self._current_character_id()
+        if name.startswith("studio.visual."):
+            return self._visual_request(name, payload)
+        if name == "studio.character.presentation":
+            self._keys(payload, required={"characterId"})
+            application = self._plugin_application_provider()
+            if application is None:
+                raise CharacterStudioError("STUDIO_CORE_UNAVAILABLE", "角色表现暂不可用。")
+            result = application.preview_character_presentation(self._text(payload["characterId"]))
+            return {**result, "generationId": self._generation_id}
         if name == "studio.bootstrap":
             self._keys(payload, optional={"initialCharacterId"})
             characters = self._service.list_characters(current_character_id=current)
@@ -320,11 +345,134 @@ class CharacterStudioBoundary:
                 return {"schemaVersion": 1, "cancelled": True, "state": "cancel_requested"}
         raise CharacterStudioError("STUDIO_COMMAND_UNKNOWN", "不支持的角色工坊命令。")
 
+    def _visual_request(self, name, payload):
+        operation = self._begin_operation(payload) if name in {"studio.visual.import", "studio.visual.export"} else None
+        try:
+            return self._visual_request_impl(name, payload, operation)
+        finally:
+            self._finish_operation(operation)
+
+    def _visual_request_impl(self, name, payload, operation):
+        import uuid
+        from app.config.character_resources import CharacterVisualResource, character_visual_resources
+        from app.config.character_studio import CharacterStudioDoc
+        from app.core_host.character_presentation import project_character_presentation
+        from app.plugins.visuals import resolve_resource_path
+        application = self._plugin_application_provider()
+        if application is None:
+            raise CharacterStudioError("STUDIO_CORE_UNAVAILABLE", "表现插件暂不可用。")
+        host = application.application.visuals
+        if name == "studio.visual.catalog":
+            self._keys(payload)
+            return {"schemaVersion": 1, "items": host.catalog()}
+        self._keys(payload, required={"workspaceId"}, optional={"resourceId", "type", "providerId", "path", "operationId", "relativePath", "name"})
+        workspace = self._text(payload["workspaceId"])
+        with self._mutation_lock:
+            state = self._service._require_state(workspace)
+            doc = CharacterStudioDoc.from_payload(state["doc"])
+            package = self._service._workspace_package(workspace)
+            resources, selected = character_visual_resources(doc.to_manifest(), package)
+            if name == "studio.visual.previews":
+                from app.core_host.visual_host import VisualHostError
+                from app.plugins.runtime_v4 import PluginRuntimeError
+                items = []
+                for resource in resources:
+                    item = {"resourceId": resource.id, "relativePath": None}
+                    try:
+                        editor_resource, raw = self._visual_editor_input(package, doc, resource)
+                        relative = host.preview_image(editor_resource, raw, (doc.visuals or {}).get("providers", {}).get(resource.id))
+                        if relative:
+                            path = resolve_resource_path(resolve_resource_path(package, resource.root), relative)
+                            media_type = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}.get(path.suffix.lower())
+                            size = path.stat().st_size
+                            if path.is_file() and media_type and 0 < size <= 20 * 1024 * 1024:
+                                item.update(relativePath=relative, sourcePath=str(path), mediaType=media_type, byteLength=size)
+                    except (VisualHostError, PluginRuntimeError, ValueError, OSError):
+                        # Covers are optional; one unavailable provider or image
+                        # must not hide the other cards or block their editors.
+                        pass
+                    items.append(item)
+                return {"schemaVersion": 1, "items": items}
+            if name == "studio.visual.import":
+                import shutil
+                from app.config.visual_archive import import_visual_archive
+                resource = import_visual_archive(Path(self._text(payload.get("path"))), package, cancel_check=self._cancel_check(operation), commit_started=self._commit_started(operation))
+                try:
+                    visual_config = dict(doc.visuals or {})
+                    visual_config.update({"resources": [item.to_mapping() for item in (*resources, resource)], "default": resource.id})
+                    doc.visuals = visual_config
+                    return _draft_to_public(self._service.save_workspace_draft(workspace, doc.to_payload()))
+                except BaseException:
+                    shutil.rmtree(package / resource.root)
+                    raise
+            if name == "studio.visual.create":
+                resource_id = "visual-" + uuid.uuid4().hex[:12]
+                resource = CharacterVisualResource.from_mapping({"id": resource_id, "type": self._text(payload.get("type")), "root": f"visuals/{resource_id}", "entry": "resource.json", "name": payload.get("name", "")})
+                initial = host.editor(resource, {}, payload.get("providerId"))
+                resources = (*resources, resource)
+                from app.config.character_studio import _resolve_workspace_path
+                target = _resolve_workspace_path(package, resource.root, "表现资源")
+                target.mkdir(parents=True, exist_ok=False)
+                try:
+                    (target / resource.entry).write_text("{}", encoding="utf-8")
+                    doc.visuals = {**(doc.visuals or {}), "resources": [item.to_mapping() for item in resources], "default": selected or resource_id}
+                    doc.visuals.setdefault("providers", {})[resource_id] = initial["visual"]["providerId"]
+                    doc.visual_data[resource_id] = initial["data"]
+                    return _draft_to_public(self._service.save_workspace_draft(workspace, doc.to_payload()))
+                except BaseException:
+                    import shutil
+                    shutil.rmtree(target)
+                    raise
+            resource_id = self._text(payload.get("resourceId"))
+            resource = next((item for item in resources if item.id == resource_id), None)
+            if resource is None:
+                raise CharacterStudioError("VISUAL_RESOURCE_MISSING", "没有找到所选表现资源。")
+            if name == "studio.visual.export":
+                from dataclasses import replace
+                from app.config.character_loader import _load_profile
+                from app.config.character_studio import _write_visual_draft
+                from app.config.visual_archive import export_visual_archive
+                _write_visual_draft(package, doc)
+                resources, selected = character_visual_resources(doc.to_manifest(), package)
+                character = replace(_load_profile(package / "character.json"), visual_resources=resources, default_visual_id=selected, visual_providers=(doc.visuals or {}).get("providers", {}))
+                resource = next(item for item in character.visual_resources if item.id == resource_id)
+                projection = application.application.export_visual_resource(character, resource)
+                path = export_visual_archive(package, resource, projection, Path(self._text(payload.get("path"))), cancel_check=self._cancel_check(operation), commit_started=self._commit_started(operation))
+                return {"schemaVersion": 1, "outputPath": str(path)}
+            editor_resource, raw = self._visual_editor_input(package, doc, resource)
+            result = host.editor(editor_resource, raw, payload.get("providerId") or (doc.visuals or {}).get("providers", {}).get(resource_id))
+            from types import SimpleNamespace
+            character = SimpleNamespace(id=doc.id, display_name=doc.display_name, initial_message=doc.initial_message or "你好", theme_settings=doc.theme)
+            presentation = project_character_presentation(character, result["visual"], reason_code="READY")
+            return {"schemaVersion": 1, "presentation": {**presentation, "generationId": self._generation_id}, "providerScopeId": result["providerScopeId"], "data": result["data"], "resource": resource.to_mapping(),
+                "assetRootPath": str(resolve_resource_path(package, resource.root))}
+
+    @staticmethod
+    def _visual_editor_input(package, doc, resource):
+        import json
+        from app.config.character_resources import CharacterVisualResource
+        from app.config.character_studio import _resolve_workspace_path
+        if resource.id in doc.visual_data:
+            editor_resource = resource
+            # The saved draft already contains the plugin's private projection.
+            if resource.root == "." and resource.entry == "character.json":
+                editor_resource = CharacterVisualResource(resource.id, resource.type, ".", f"visuals/{resource.id}.json")
+            return editor_resource, doc.visual_data[resource.id]
+        relative = resource.entry if resource.root == "." else f"{resource.root}/{resource.entry}"
+        path = _resolve_workspace_path(package, relative, "表现入口")
+        raw = None
+        if path.is_file() and path.stat().st_size <= 256 * 1024:
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (UnicodeError, ValueError):
+                pass
+        return resource, raw
+
     def _import_asset(self, payload: dict[str, Any], current: str) -> dict[str, Any]:
         self._keys(
             payload,
             required={"workspaceId", "kind", "path"},
-            optional={"label", "refLang", "operationId"},
+            optional={"label", "refLang", "operationId", "resourceId"},
         )
         workspace_id = self._text(payload["workspaceId"])
         kind = self._text(payload["kind"])
@@ -334,21 +482,8 @@ class CharacterStudioBoundary:
         try:
             with self._mutation_lock:
                 commit_started = self._commit_started(operation)
-                if kind == "portrait":
-                    result = self._service.import_portrait(
-                        workspace_id,
-                        path,
-                        label=self._text(payload.get("label"), required=False) or "portrait",
-                        cancel_check=cancel_check,
-                        commit_started=commit_started,
-                    )
-                elif kind == "portraitFolder":
-                    result = self._service.import_portrait_folder(
-                        workspace_id,
-                        path,
-                        cancel_check=cancel_check,
-                        commit_started=commit_started,
-                    )
+                if kind in {"visual", "visualFolder"}:
+                    result = self._service.import_visual_asset(workspace_id, path, self._text(payload.get("resourceId")), cancel_check=cancel_check, commit_started=commit_started)
                 elif kind in {"gptModel", "sovitsModel"}:
                     result = self._service.import_voice_model(
                         workspace_id,
@@ -491,7 +626,7 @@ def _camel_to_snake(key: str) -> str:
 
 def _keys_to_camel(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {_snake_to_camel(str(key)): _keys_to_camel(item) for key, item in value.items()}
+        return {_snake_to_camel(str(key)): item if key in {"visual_data", "visuals", "data"} else _keys_to_camel(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_keys_to_camel(item) for item in value]
     return value
@@ -527,7 +662,10 @@ def _doc_to_internal(value: Mapping[str, Any]) -> dict[str, Any]:
                 "referenceAudios 字段无效。",
                 field="referenceAudios",
             )
-    return _mapping_to_internal(value)
+    result = _mapping_to_internal({key: item for key, item in value.items() if key not in {"visualData", "visuals"}})
+    if "visualData" in value: result["visual_data"] = value["visualData"]
+    if "visuals" in value: result["visuals"] = value["visuals"]
+    return result
 
 
 def _mapping_to_internal(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -569,7 +707,7 @@ def _opened_to_public(value: Mapping[str, Any], current: str) -> dict[str, Any]:
         "source": str(value.get("source") or "draft"),
         "resumed": bool(value.get("resumed")),
         "isDirty": bool(value.get("is_dirty")),
-        "doc": _keys_to_camel(value.get("doc") or {}),
+        "doc": _public_doc(value.get("doc") or {}),
         "modelFiles": _keys_to_camel(value.get("model_files") or []),
         "characters": characters,
         "currentCharacterId": current or None,
@@ -580,11 +718,23 @@ def _draft_to_public(value: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schemaVersion": 1,
         "workspaceId": str(value.get("workspace_id") or ""),
-        "doc": _keys_to_camel(value.get("doc") or {}),
+        "doc": _public_doc(value.get("doc") or {}),
         "isDirty": bool(value.get("is_dirty")),
         "savedAt": int(value.get("saved_at") or 0),
         "modelFiles": _keys_to_camel(value.get("model_files") or []),
     }
+
+
+def _public_doc(value):
+    from app.config.character_resources import CharacterVisualResource, legacy_portrait_resource
+    doc = _keys_to_camel(value)
+    # Named legacy projection at the old document boundary only.
+    if doc.get("visuals") is None:
+        resources = [legacy_portrait_resource().to_mapping()] if doc.get("defaultPortrait") else []
+        doc["visuals"] = {"resources": resources, "default": resources[0]["id"] if resources else None}
+    else:
+        doc["visuals"]["resources"] = [CharacterVisualResource.from_mapping(item).to_mapping() for item in doc["visuals"]["resources"]]
+    return doc
 
 
 __all__ = [

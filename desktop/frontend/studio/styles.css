@@ -1,5 +1,6 @@
 /* 角色工坊直接沿用设置页的主题令牌、布局、控件和反馈样式。 */
 @import url("../settings/styles.css");
+@import url("./visual-editor.css");
 
 :root {
   --studio-dirty-dot-size: 7px;

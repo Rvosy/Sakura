@@ -43,8 +43,9 @@ def test_character_archive_export_then_import_roundtrip() -> None:
     assert imported.display_name == "Demo（1）"
     assert imported.initial_message == "hello"
     assert imported.card_path.read_text(encoding="utf-8") == "system prompt"
-    assert imported.default_portrait_path.name == "default.png"
-    assert imported.expression_portraits["开心"].name == "happy.png"
+    assert imported.current_visual_resource.type == "sakura.visual.portrait@1"
+    assert (imported.package_dir / "portraits/default.png").is_file()
+    assert (imported.package_dir / "portraits/happy.png").is_file()
     assert imported.reply_tones == ["中性", "开心"]
     assert imported.voice is not None
     assert imported.voice.gpt_model_path is not None

@@ -11,7 +11,7 @@ createStudioBridge(review.state, {
 window.addEventListener("error", event => review.failed(`工坊载入失败：${event.message}`));
 window.addEventListener("unhandledrejection", event => review.failed(`工坊操作失败：${String(event.reason)}`));
 const path = new URL("../../studio/studio.js", import.meta.url);
-let source = await (await fetch(path, { cache: "no-store" })).text();
+let source = await (await fetch(new URL("./snapshot/studio.js", import.meta.url), { cache: "no-store" })).text();
 source = source.replace(/(["'])(\.\.?\/[^"'\n]+)\1/g, (_match, quote, value) => quote + new URL(value, path).href + quote);
 function replaceOnce(from, to) {
   if (!source.includes(from)) throw Error(`工坊 Demo 接入点已变化：${from}`);

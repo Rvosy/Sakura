@@ -79,6 +79,18 @@ class PluginApplicationHost:
             session=session,
         )
 
+    def bind_character_presentation(self, character_id: str) -> None:
+        from app.config.character_loader import CharacterRegistry
+        character = CharacterRegistry(self._user_root).get(character_id)
+        self._application.bind_visual_character(character)
+
+    def visual_presentation(self):
+        return self._application.visual_presentation()
+
+    def preview_character_presentation(self, character_id):
+        from app.config.character_loader import CharacterRegistry
+        return self._application.preview_character_presentation(CharacterRegistry(self._user_root).get(character_id))
+
     def unbind_session(self) -> None:
         with self._lock:
             if self._session is None:

@@ -115,7 +115,7 @@ async function characterSettings(options = {}) {
   };
   const feature = createCharacterSettingsFeature({
     document,
-    window: { setTimeout: (callback) => setTimeout(callback, 0) },
+    window: Object.assign(new EventTarget(), { setTimeout: (callback) => setTimeout(callback, 0) }),
     invoke: async (command, args) => {
       calls.push([command, args]);
       assert.ok(handlers[command], `unexpected command ${command}`);

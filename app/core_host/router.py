@@ -43,6 +43,7 @@ def _request_interaction_context(
 @dataclass
 class _Ticket:
     request: dict[str, Any]
+    received_at: float = dataclass_field(default_factory=monotonic)
     done: threading.Event = dataclass_field(default_factory=threading.Event)
     error: BaseException | None = None
 
@@ -75,7 +76,6 @@ class ConcurrentHostRouter:
         self._read_frame = read_frame_fn
         self._dispatch: queue.Queue[_Ticket | object] = queue.Queue(maxsize=DISPATCH_QUEUE_LIMIT)
         self._fixtures: queue.Queue[_Ticket | object] = queue.Queue(maxsize=FIXTURE_QUEUE_LIMIT)
-        self._fixture_slots = threading.BoundedSemaphore(FIXTURE_WORKER_COUNT)
         self._stop = threading.Event()
         self._events_closing = threading.Event()
         self._closed = False
@@ -131,21 +131,30 @@ class ConcurrentHostRouter:
             self.close()
 
     def close(self) -> None:
-        invalidate = getattr(self._dispatcher, "invalidate_generation_work", None)
-        if not callable(invalidate):
-            invalidate = getattr(self._dispatcher, "invalidate_chat_generation", None)
-        if callable(invalidate):
-            invalidate()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             self._stop.set()
+        invalidate = getattr(self._dispatcher, "invalidate_generation_work", None)
+        if not callable(invalidate):
+            invalidate = getattr(self._dispatcher, "invalidate_chat_generation", None)
+        if callable(invalidate):
+            invalidate()
         self._put_stop(self._dispatch)
         self._put_stop(self._fixtures)
         deadline = monotonic() + ROUTER_CLOSE_TIMEOUT_SECONDS
         for thread in self._threads:
             thread.join(timeout=max(0.0, deadline - monotonic()))
+        while True:
+            try:
+                queued = self._fixtures.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(queued, _Ticket):
+                self._abandon_fixture(queued.request)
+                queued.done.set()
+            self._fixtures.task_done()
         drain_error: BaseException | None = None
         drain = getattr(self._dispatcher, "drain_generation_work", None)
         if callable(drain):
@@ -169,10 +178,7 @@ class ConcurrentHostRouter:
     def _start_threads(self) -> None:
         specs = (
             ("sakura-core-host-dispatcher", self._dispatch_loop),
-            ("sakura-core-host-fixture-0", self._fixture_loop),
-            ("sakura-core-host-fixture-1", self._fixture_loop),
-            ("sakura-core-host-fixture-2", self._fixture_loop),
-            ("sakura-core-host-fixture-3", self._fixture_loop),
+            *((f"sakura-core-host-fixture-{index}", self._fixture_loop) for index in range(FIXTURE_WORKER_COUNT)),
         )
         for name, target in specs:
             thread = threading.Thread(target=target, name=name)
@@ -200,9 +206,9 @@ class ConcurrentHostRouter:
                 assert isinstance(item, _Ticket)
                 request = item.request
                 if self._is_fixture(request):
-                    if not self._fixture_slots.acquire(blocking=False):
-                        self._send_overload(request, item)
-                        continue
+                    # Workers bound execution; the queue absorbs short bursts
+                    # from settings, Studio and chat instead of rejecting a
+                    # fifth request while its waiting queue is still empty.
                     fixture_owner = getattr(self._fixture_handler, "__self__", None)
                     reserve = getattr(fixture_owner, "reserve_send", None)
                     abandon = getattr(fixture_owner, "abandon_send", None)
@@ -213,12 +219,10 @@ class ConcurrentHostRouter:
                     except (ValueError, RuntimeError) as error:
                         if callable(abandon):
                             abandon(request)
-                        self._fixture_slots.release()
                         self._send_fixture_rejection(request, item, error)
                     except queue.Full:
                         if callable(abandon):
                             abandon(request)
-                        self._fixture_slots.release()
                         self._send_overload(request, item)
                     continue
                 message, should_stop = self._dispatcher.dispatch(request)
@@ -246,6 +250,22 @@ class ConcurrentHostRouter:
                 if item is _STOP:
                     return
                 assert isinstance(item, _Ticket)
+                if self._stop.is_set():
+                    self._abandon_fixture(item.request)
+                    item.done.set()
+                    return
+                deadline_ms = item.request.get("deadlineMs")
+                if isinstance(deadline_ms, int) and (monotonic() - item.received_at) * 1000 >= deadline_ms:
+                    self._abandon_fixture(item.request)
+                    self._send(response(
+                        item.request,
+                        generation_id=str(item.request["generationId"]),
+                        generation_credential=str(item.request["generationCredential"]),
+                        protocol_minor=int(item.request["protocolMinor"]),
+                        error={"code": "REQUEST_DEADLINE_EXCEEDED", "message": "请求等待超时，请重试。", "retryable": True, "details": {}},
+                    ))
+                    item.done.set()
+                    continue
                 try:
                     with _request_interaction_context(item.request):
                         result = self._fixture_handler(item.request)  # type: ignore[misc]
@@ -258,9 +278,13 @@ class ConcurrentHostRouter:
                     item.done.set()
                 self._set_fatal(error)
             finally:
-                if item is not _STOP:
-                    self._fixture_slots.release()
                 self._fixtures.task_done()
+
+    def _abandon_fixture(self, request: dict[str, Any]) -> None:
+        owner = getattr(self._fixture_handler, "__self__", None)
+        abandon = getattr(owner, "abandon_send", None)
+        if callable(abandon):
+            abandon(request)
 
     def _is_fixture(self, request: Mapping[str, Any]) -> bool:
         name = request.get("name")
@@ -276,7 +300,7 @@ class ConcurrentHostRouter:
             protocol_minor=int(request["protocolMinor"]),
             error={
                 "code": "ROUTER_QUEUE_FULL",
-                "message": "bounded fixture execution capacity is full",
+                "message": "当前任务较多，请稍后重试。",
                 "retryable": True,
                 "details": {},
             },

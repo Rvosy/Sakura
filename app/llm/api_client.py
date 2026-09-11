@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import http.client
 import json
 import re
@@ -264,13 +266,13 @@ class OpenAICompatibleClient:
         system_prompt: str,
         messages: list[ChatMessage],
         reply_tones: list[str] | None = None,
-        reply_portraits: list[str] | None = None,
+        reply_visual: Mapping[str, Any] | None = None,
         *,
         cancel_checker: CancelChecker | None = None,
         runtime_context: str = "",
         trace_metadata: PromptTraceMetadata | None = None,
     ) -> ChatReply:
-        segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_portraits)
+        segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_visual)
         temperature, extra_params = self.resolve_dialogue_params()
         content = self.complete_raw(
             f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
@@ -1018,9 +1020,9 @@ class OpenAICompatibleClient:
 
 def _build_segmented_reply_instruction(
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None = None,
+    reply_visual: Mapping[str, Any] | None = None,
 ) -> str:
-    return build_segmented_reply_instruction(reply_tones, reply_portraits)
+    return build_segmented_reply_instruction(reply_tones, reply_visual)
 
 
 def _parse_model_ids(data: dict[str, Any]) -> list[str]:
@@ -1507,6 +1509,7 @@ def _chat_reply_trace_mapping(reply: ChatReply) -> dict[str, Any]:
                 "zh": segment.translation,
                 "tone": segment.tone,
                 "portrait": segment.portrait,
+                **({"control": segment.control} if segment.control is not None else {}),
             }
             for segment in reply.segments
         ]

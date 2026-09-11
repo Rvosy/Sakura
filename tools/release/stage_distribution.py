@@ -16,6 +16,7 @@ from pathlib import Path
 
 TARGETS = {"windows-x64", "macos-arm64", "linux-x64"}
 BUILTIN_PLUGINS = {
+    "sakura_portrait",
     "sakura_mem0",
     "sakura_mobile",
     "sakura_tts_hub",

@@ -1,6 +1,9 @@
 import { createBridge } from "./bridge.js";
 import { createSurface } from "./surface.js";
 const review = parent.__SAKURA_SETTINGS_REVIEW__;
+// This comparison keeps the reviewed selector and its in-memory draft model.
+document.getElementById("visualSetting")?.remove();
+document.getElementById("visualStatus")?.remove();
 const state = review.state;
 const surface = createSurface(window, state, review.version);
 window.__DEMO_SURFACE__ = surface;
@@ -24,6 +27,7 @@ window.addEventListener("unhandledrejection", (event) =>
 let source = await (
   await fetch(new URL("../../settings/settings.js", import.meta.url))
 ).text();
+source = source.replace(/\r\n/g, "\n");
 const path = new URL("../../settings/settings.js", import.meta.url);
 source = source.replace(
   /(["'])(\.\.?\/[^"'\n]+)\1/g,
@@ -50,8 +54,10 @@ replaceOnce(
   "      discard: async () => {",
   "      discard: async () => {\n        window.__DEMO_SURFACE__.discard();",
 );
-source +=
-  "\nwindow.__DEMO_SURFACE__.attach({refreshDirty,showPage,notify,refreshPlugins:()=>runtimePluginController?.refreshCurrent()});\n";
+replaceOnce(
+  "startSettingsFrontend()\n  .then(async () => {",
+  "startSettingsFrontend()\n  .then(async () => {\n    window.__DEMO_SURFACE__.attach({refreshDirty,showPage,notify,refreshPlugins:()=>runtimePluginController?.refreshCurrent()});",
+);
 const blob = URL.createObjectURL(
   new Blob([source], { type: "text/javascript" }),
 );
@@ -60,7 +66,8 @@ URL.revokeObjectURL(blob);
 const observer = new MutationObserver(() => {
   if (
     document.getElementById("pluginList")?.children.length &&
-    document.getElementById("ttsProvider")?.children.length
+    document.getElementById("ttsProvider")?.children.length &&
+    (review.version === "original" || document.getElementById("visualSelect"))
   ) {
     observer.disconnect();
     surface.render();

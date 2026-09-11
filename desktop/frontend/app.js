@@ -19,7 +19,6 @@ import { applyTheme } from "./core/theme.js";
 import {
   appearanceChanges,
   applyAppearanceVariables,
-  constrainedPortraitScale,
   createAppearanceMutationGuard,
   validateAppearancePublication,
 } from "./pet/appearance.js";
@@ -33,15 +32,13 @@ import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { createControlSurfaceTransactions } from "./pet/control-surface-transactions.js";
 import {
   loadCurrentCharacterPresentation,
-  portraitSequence,
   validateCharacterPresentation,
 } from "./pet/character-presentation.js";
-import { rebindCharacterPresentation } from "./pet/character-generation.js";
+import { isNewCharacterGeneration, rebindCharacterPresentation } from "./pet/character-generation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
 import {
   classifyPointerHit,
   clearTextSelection,
-  computeHitRegions,
   shouldOpenProductMenu,
   shouldStartNativeDrag,
 } from "./pet/hit-regions.js";
@@ -70,10 +67,10 @@ import {
 } from "./pet/layout.js";
 import {
   createCharacterVisualPreviewSessionController,
-  restoreCommittedCharacterVisual,
 } from "./pet/character-visual-preview.js";
 import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
-import { createPortraitController } from "./pet/portrait-controller.js";
+import { createRendererHost } from "./pet/renderer-host.js";
+import { applyVisualSurfaceAppearance } from "./pet/visual-surface.js";
 import {
   createSurfaceHoverTracker,
   createSurfaceVisibilityController,
@@ -151,8 +148,8 @@ const attachmentMenu = document.querySelector("#composer-tool-dock");
 const composerToolList = document.querySelector("#composer-tool-list");
 const captureScreen = document.querySelector("#capture-screen");
 const portrait = document.querySelector("#portrait");
-const portraitCurrent = document.querySelector("#portrait-current");
-const portraitNext = document.querySelector("#portrait-next");
+const visualContainer = document.querySelector("#visual-renderer");
+let currentSurface = { width: 320, height: 480, assetKey: null, assetId: null };
 const portraitFallback = document.querySelector("#portrait-fallback");
 const portraitFallbackName = document.querySelector("#portrait-fallback-name");
 const contextMenuElement = document.querySelector("#pet-context-menu");
@@ -365,10 +362,7 @@ const layoutController = createLayoutController({
     }
     interactionLatencyTrace.mark("layout.css-commit", metadata.interactionTrace);
     scheduleInteractionPaintProbe("layout", metadata.interactionTrace);
-    currentHitRegions = computeHitRegions(layout, {
-      portraitSourceSize: currentPortraitSourceSize,
-      portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
-    });
+    currentHitRegions = applyVisualSurfaceAppearance(stage, layout, currentSurface, activeAppearance?.portraitScalePercent ?? 100);
   },
   commitLayout: (layout, result, metadata = {}) => {
     stage.dataset.nativeViewport = String(result.backendMode === "macos_cursor_router");
@@ -380,10 +374,7 @@ const layoutController = createLayoutController({
     applyPetLayout(stage, layout, contentScale, activeBounds);
     interactionLatencyTrace.mark("layout.native-css-commit", metadata.interactionTrace);
     scheduleInteractionPaintProbe("layout", metadata.interactionTrace);
-    currentHitRegions = computeHitRegions(layout, {
-      portraitSourceSize: currentPortraitSourceSize,
-      portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
-    });
+    currentHitRegions = applyVisualSurfaceAppearance(stage, layout, currentSurface, activeAppearance?.portraitScalePercent ?? 100);
     if (!layoutInitialized) {
       layoutInitialized = true;
       inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
@@ -405,10 +396,7 @@ if (initialLayout.degraded) {
   activeBounds = [...bootstrap.activeBounds];
   activeSurfaceRevision = bootstrap.revision;
   activePortraitAnchor = diagnostics.globalAnchor;
-  currentHitRegions = computeHitRegions(productLayout, {
-    portraitSourceSize: currentPortraitSourceSize,
-    portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
-  });
+  currentHitRegions = applyVisualSurfaceAppearance(stage, productLayout, currentSurface, activeAppearance?.portraitScalePercent ?? 100);
   layoutInitialized = true;
   inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
   layoutDegraded = true;
@@ -438,25 +426,17 @@ try {
   });
 } catch {
   presentationUnavailable = true;
-  showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
+  if (!sessionBlockedAtStartup) showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
   characterPresentation = Object.freeze({
     generationId: "unavailable",
     characterId: "unavailable",
     displayName: "当前角色",
     initialMessage: "当前角色表现暂时不可用。",
     themeTokens: Object.freeze({}),
-    defaultPortraitKey: "__default__",
-    portraitKeys: Object.freeze(["__default__"]),
-    portraitResourceUrls: Object.freeze({
-      __default__: "http://sakura-character.localhost/v1/00/character-v1-00-portrait-00",
-    }),
-    portraitMetadata: Object.freeze({
-      __default__: Object.freeze({ width: 1, height: 1, byteLength: 1 }),
-    }),
+    schemaVersion: 2, visual: null, visualReasonCode: "VISUAL_NOT_BOUND",
   });
 }
 
-let portraits = portraitSequence(characterPresentation);
 activeAppearance = Object.freeze({
   portraitScalePercent: 100,
   controlPanelWidth: 640,
@@ -479,6 +459,7 @@ try {
   // Package theme/default sizes remain a complete safe baseline.
 }
 let characterVisualPreviewActive = false;
+let visualScalePercent = activeAppearance.portraitScalePercent;
 const characterVisualPreviewSessions = createCharacterVisualPreviewSessionController({
   currentCoreGenerationId: () => characterPresentation.generationId,
   blocked: () => disposed || Boolean(coreRebindTarget),
@@ -490,45 +471,9 @@ characterName.textContent = characterPresentation.displayName;
 input.placeholder = composerPlaceholder(characterPresentation.displayName, "ready");
 portraitFallbackName.textContent = characterPresentation.displayName;
 portrait.setAttribute("aria-label", `${characterPresentation.displayName} 的立绘，可拖动窗口`);
-portraitCurrent.alt = `${characterPresentation.displayName} 立绘`;
 if (!presentationUnavailable && !inputVisualEffectFallbackActive) clearRecoverableError();
 
-function expectedPortraitsByUrl(presentation) {
-  return new Map(
-    presentation.portraitKeys.map((key) => [
-      presentation.portraitResourceUrls[key],
-      presentation.portraitMetadata[key],
-    ]),
-  );
-}
-
-function loadImage(source, expectedByUrl) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.decoding = "async";
-    image.addEventListener(
-      "load",
-      async () => {
-        try {
-          if (typeof image.decode === "function") await image.decode();
-          const expected = expectedByUrl.get(source);
-          if (!expected || image.naturalWidth !== expected.width || image.naturalHeight !== expected.height) {
-            throw new Error("PORTRAIT_DIMENSION_MISMATCH");
-          }
-          resolve(Object.freeze({ width: image.naturalWidth, height: image.naturalHeight }));
-        } catch (error) {
-          reject(error);
-        }
-      },
-      { once: true },
-    );
-    image.addEventListener("error", () => reject(new Error("PORTRAIT_LOAD_FAILED")), { once: true });
-    image.src = source;
-  });
-}
-
 let portraitHitRevision = 0;
-let portraitTransitionPending = false;
 let portraitSurfaceMutationDepth = 0;
 let portraitScaleGestureActive = false;
 let portraitScaleGestureReady = Promise.resolve(null);
@@ -769,23 +714,10 @@ function syncPortraitAppearance(
   portraitScalePercent = activeAppearance.portraitScalePercent,
   traceContext = null,
 ) {
-  const metadata = presentation.portraitMetadata[key]
-    || presentation.portraitMetadata[presentation.defaultPortraitKey];
-  const portraitSourceSize = [metadata.width, metadata.height];
-  currentPortraitSourceSize = portraitSourceSize;
-  const scale = constrainedPortraitScale({
-    requestedPercent: portraitScalePercent,
-    sourceSize: portraitSourceSize,
-    portraitRect: productLayout.portraitRect,
-    windowSize: productLayout.windowSize,
-  });
-  stage.style.setProperty("--portrait-render-scale", String(scale));
+  currentPortraitSourceSize = [currentSurface.width, currentSurface.height];
+  currentHitRegions = applyVisualSurfaceAppearance(stage, productLayout, currentSurface, portraitScalePercent);
   interactionLatencyTrace.mark("portrait.css-commit", traceContext);
   scheduleInteractionPaintProbe("portrait", traceContext);
-  currentHitRegions = computeHitRegions(productLayout, {
-    portraitSourceSize,
-    portraitScalePercent,
-  });
 }
 
 function commitSurfaceApplication(surface) {
@@ -828,6 +760,7 @@ function activatePortraitHitTest(
     portraitScalePercent = activeAppearance.portraitScalePercent,
     portraitResourceId = null,
     reportError = true,
+    surface = currentSurface,
   } = {},
 ) {
   return tracedInteractionInvoke(
@@ -836,7 +769,7 @@ function activatePortraitHitTest(
       portraitKey: key,
       revision,
       portraitScalePercent,
-      ...(portraitResourceId ? { portraitResourceId } : {}),
+      ...(portraitResourceId || surface.assetId ? { portraitResourceId: portraitResourceId || surface.assetId } : { surfaceSize: [surface.width, surface.height] }),
     },
     traceContext,
     "portrait.activate-hit-test",
@@ -895,78 +828,65 @@ async function previewPortraitScale(key) {
   });
 }
 
-function buildPortraitController(boundPresentation, {
-  preserveFrameOnFailure = false,
-  getPortraitScalePercent = () => activeAppearance.portraitScalePercent,
-} = {}) {
-  const expectedByUrl = expectedPortraitsByUrl(boundPresentation);
-  return createPortraitController({
-    assets: boundPresentation.portraitResourceUrls,
-    defaultKey: boundPresentation.defaultPortraitKey,
-    loadImage: (source) => loadImage(source, expectedByUrl),
-    preview: async ({ key, source }) => {
-      const revision = ++portraitHitRevision;
-      const surface = await runPortraitSurfaceMutation(
-        () => invoke("prepare_portrait_transition", { portraitKey: key, revision }),
-      );
-      if (!surface) return;
-      portraitTransitionPending = true;
-      commitSurfaceApplication(surface);
-      portrait.classList.remove("is-transitioning");
-      portraitNext.src = source;
-      void portrait.offsetWidth;
-      portrait.classList.add("is-transitioning");
-    },
-    cancelPreview: () => {
-      portraitTransitionPending = false;
-      portrait.classList.remove("is-transitioning");
-      portraitNext.removeAttribute("src");
-    },
-    commit: async ({ key, source }) => {
-      const revision = ++portraitHitRevision;
-      const portraitScalePercent = getPortraitScalePercent();
-      const surface = await runPortraitSurfaceMutation(
-        () => activatePortraitHitTest(key, revision, null, {
-          portraitScalePercent,
-        }),
-      );
-      if (!surface || revision !== portraitHitRevision) return;
-      portraitCurrent.src = source;
-      portrait.classList.remove("is-transitioning");
-      portraitNext.removeAttribute("src");
-      portraitFallback.hidden = true;
-      syncPortraitAppearance(key, boundPresentation, portraitScalePercent);
-      const transitionPending = portraitTransitionPending;
-      portraitTransitionPending = false;
-      if (transitionPending) {
-        await waitForPortraitPaint();
-        if (revision !== portraitHitRevision) return;
-        await runPortraitSurfaceMutation(
-          () => invoke("commit_portrait_transition", { revision }),
-        );
-      }
-      if (!presentationUnavailable) clearRecoverableError();
-    },
-    showFallback: () => {
-      if (preserveFrameOnFailure) return;
-      portrait.classList.remove("is-transitioning");
-      portraitFallback.hidden = false;
-    },
-    reportError: ({ code }) => {
-      if (!presentationUnavailable) {
-        showRecoverableError(code === "PORTRAIT_KEY_UNKNOWN" ? "没有找到对应的表情，已换回默认立绘。" : "立绘图片加载失败，你仍可以继续聊天。");
-      }
-    },
-  });
+function reportVisualError(code) {
+  runtimeDiagnostics.record({ level: "warn", event: "webview.command.failed", command: "visual_control", outcome: "failed", code: /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "VISUAL_CONTROL_FAILED" });
 }
 
-let portraitController = buildPortraitController(characterPresentation);
+function visualUnavailable(code) {
+  portraitFallback.hidden = false;
+  currentSurface = { width: 320, height: 480, assetKey: null, assetId: null };
+  renderedPortrait = "";
+  void activatePortraitHitTest("").then(() => syncPortraitAppearance("")).catch(() => {});
+  showRecoverableError("角色表现暂不可用，你仍可以继续聊天。", { autoHide: true });
+  runtimeDiagnostics.record({ level: "warn", event: "webview.command.failed", command: "visual_renderer", outcome: "failed", code: /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "VISUAL_RENDERER_FAILED" });
+}
+
+const rendererHost = createRendererHost({
+  container: visualContainer,
+  onUnavailable: visualUnavailable,
+  onError: reportVisualError,
+  services: {
+    unavailable: visualUnavailable,
+    reportError: reportVisualError,
+    cancelSurface() {
+      void activatePortraitHitTest(currentSurface.assetKey || "", ++portraitHitRevision, null, { portraitScalePercent: visualScalePercent }).catch(() => {});
+    },
+    async prepareSurface({ assetKey }, { signal }) {
+      const revision = ++portraitHitRevision;
+      const surface = await runPortraitSurfaceMutation(() => invoke("prepare_portrait_transition", { portraitKey: assetKey, revision }));
+      if (signal.aborted || revision !== portraitHitRevision) return false;
+      if (surface) commitSurfaceApplication(surface);
+      return true;
+    },
+    async setSurface({ assetKey = null, width, height }, { signal, operationSignal, visual }) {
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192) throw new Error("SURFACE_SIZE_INVALID");
+      const url = assetKey ? visual.assets[assetKey] : null;
+      if (assetKey && !url) throw new Error("VISUAL_ASSET_UNKNOWN");
+      const surface = { width, height, assetKey, assetId: url ? url.split("/").at(-1) : null };
+      const revision = ++portraitHitRevision;
+      const applied = await runPortraitSurfaceMutation(() => {
+        if (signal.aborted || operationSignal?.aborted || revision !== portraitHitRevision) return false;
+        return activatePortraitHitTest(assetKey || "", revision, null, { surface, portraitScalePercent: visualScalePercent });
+      });
+      if (signal.aborted || operationSignal?.aborted || revision !== portraitHitRevision || !applied) return false;
+      currentSurface = surface;
+      renderedPortrait = assetKey || "";
+      syncPortraitAppearance(renderedPortrait, characterPresentation, visualScalePercent);
+      portraitFallback.hidden = true;
+      return true;
+    },
+    async finishSurface(_context) {
+      const revision = portraitHitRevision;
+      await waitForPortraitPaint();
+      if (revision !== portraitHitRevision || _context.signal.aborted) return false;
+      await runPortraitSurfaceMutation(() => invoke("commit_portrait_transition", { revision }));
+      return true;
+    },
+  },
+});
 
 let presentation = createChatPresentationReducer({
   initialMessage: characterPresentation.initialMessage,
-  defaultPortraitKey: portraits.default,
-  thinkingPortraitKey: portraits.thinking,
-  concernedPortraitKey: portraits.concerned,
 });
 let pendingCharacterGreeting = false;
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
@@ -1328,25 +1248,16 @@ const typewriter = createTypewriter({
   onSegment: (segment, index) => {
     const state = presentation.current();
     if (state.phase === "typing" && state.segments[index] === segment) {
-      // Decode the current segment portrait before requesting TTS and keep preparation
-      // off-screen, so the visible transition can start at playback-start.
-      const portraitReady = portraitController.preload(
-        segment.portrait || state.portrait,
-        { generation: state.generationId },
-      );
-      const nextPortrait = state.segments[index + 1]?.portrait;
-      if (nextPortrait) {
-        void portraitController.preload(nextPortrait, { generation: state.generationId });
-      }
-      // TTS playback-start is the shared segment boundary. The started hook launches the
-      // portrait transition, then typewriter begins the first glyph
-      // when the same gate resolves. Portrait commit itself remains asynchronous and native-safe.
-      const subtitleReady = portraitReady.then(() => ttsController.beforeSegment(segment, index, {
+      const subtitleReady = ttsController.beforeSegment(segment, index, {
         onStarted: () => {
+          if (presentation.current().operationId !== state.operationId) return;
           const result = presentation.setTypingSegment(segment, index);
-          if (result.applied) void render(result.state);
+          if (result.applied) {
+            void rendererHost.play(segment.control, state.operationId, index);
+            void render(result.state);
+          }
         },
-      }));
+      });
       return index === 0
         ? waitingIndicator.stopWhenSettled(subtitleReady)
         : subtitleReady;
@@ -1367,9 +1278,8 @@ const waitingIndicator = createWaitingIndicator({
   },
 });
 
-function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {}) {
+function render(state, bubbleUpdate = {}) {
   surfaceVisibilityController?.setPhase(state.phase);
-  const portraitChanged = renderedPortrait !== state.portrait;
   let bubbleCommitted = false;
   const commitBubble = () => {
     if (bubbleCommitted) return;
@@ -1378,7 +1288,7 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
     adaptiveSurface.schedule();
   };
   chatPhase.textContent = phaseLabels[state.phase] || "在线";
-  if (!characterVisualPreviewActive && (!syncBubbleWithPortrait || !portraitChanged)) {
+  if (!characterVisualPreviewActive) {
     commitBubble();
   }
   input.placeholder = composerPlaceholder(characterPresentation.displayName, state.phase);
@@ -1395,18 +1305,7 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   replyHistoryNext.disabled = !state.canReviewNext;
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
-  if (portraitChanged) {
-    renderedPortrait = state.portrait;
-    if (characterVisualPreviewActive) {
-      return Promise.resolve({ applied: false, key: state.portrait, visualPreview: true });
-    }
-    return portraitController.show(state.portrait, {
-      immediate: portraitCurrent.getAttribute("src") === null,
-      generation: state.generationId,
-      onVisualReady: commitBubble,
-    });
-  }
-  return Promise.resolve({ applied: false, key: state.portrait });
+  return Promise.resolve({ applied: true });
 }
 
 function handleCoreEvent(event) {
@@ -1422,7 +1321,7 @@ function handleCoreEvent(event) {
     });
   }
   const before = presentation.current();
-  if (event.type === "lifecycle" && event.generationId !== before.generationId) {
+  if (event.type === "lifecycle" && isNewCharacterGeneration(before.generationId, event.generationId)) {
     void asrController?.cancel({ restore: false });
     asrPresentation.reset();
     composerActionIndicator.reset();
@@ -1432,11 +1331,13 @@ function handleCoreEvent(event) {
     screenAwareness.generationChanged(event.generationId);
     updateAnnouncement.generationChanged();
     composerToolRegistry.invalidate();
-    portraitController.beginGeneration(event.generationId);
-    renderedPortrait = null;
+    rendererHost.freeze("generation_changed");
   }
+  if (event.type === "lifecycle" && event.generationId === characterPresentation.generationId && event.revision !== before.revision) void rebindCoreGeneration(event.generationId, { refresh: true });
   const result = presentation.reduce(event);
   if (!result.applied) return;
+  if (event.type === "chat.started") rendererHost.begin(event.operationId);
+  if (["chat.failed", "chat.cancelled"].includes(event.type) || (event.type === "lifecycle" && !isChatReadyLifecycle(event.status))) rendererHost.cancel("interrupted");
   const waitingForFirstSegment = event.type === "chat.completed" && result.state.phase === "typing";
   if (before.phase === "thinking" && result.state.phase !== "thinking" && !waitingForFirstSegment) {
     waitingIndicator.stop();
@@ -1461,6 +1362,7 @@ function handleCoreEvent(event) {
   if (event.type === "chat.started" && result.state.phase === "thinking") waitingIndicator.start();
   if (event.type === "chat.started" && result.state.phase === "thinking") ttsController.cancel();
   if (event.type === "chat.completed" && result.state.phase === "typing") {
+    rendererHost.begin(event.operationId);
     ttsController.beginReply(event.operationId, result.state.segments);
     typewriter.start(result.state.segments);
   }
@@ -1532,6 +1434,7 @@ async function submitMessage({ text }) {
   screenAwareness.noteManualSend();
   typewriter.cancel("");
   ttsController.cancel();
+  rendererHost.cancel("interrupted");
   const submittedDraft = input.value;
   const submittedAttachmentId = screenAttachment.attachmentId();
   if (submittedAttachmentId) screenAttachment.setSubmitting(true);
@@ -1725,195 +1628,69 @@ await listenAppEvent("sakura://subtitle-language-changed", (event) => {
 let coreRebindRevision = 0;
 let coreRebindTarget = "";
 
-async function rebindCoreGeneration(generationId) {
-  if (generationId === characterPresentation.generationId) return true;
-  void asrController?.cancel({ restore: false });
-  if (
-    disposed
-    || !generationId
-    || generationId === coreRebindTarget
-  ) return false;
-
+async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
+  if (!refresh && generationId === characterPresentation.generationId) return true;
+  if (disposed || !generationId || coreRebindTarget) return false;
   const revision = ++coreRebindRevision;
   coreRebindTarget = generationId;
-  characterVisualPreviewSessions.invalidate();
-  characterVisualPreviewActive = false;
-  let candidateController = null;
   try {
-    const nextPresentation = await loadCurrentCharacterPresentation({
-      invoke,
-      expectedGenerationId: generationId,
-    });
+    const next = await loadCurrentCharacterPresentation({ invoke, expectedGenerationId: generationId });
     if (disposed || revision !== coreRebindRevision) return false;
-
-    const visiblePortrait = renderedPortrait && nextPresentation.portraitKeys.includes(renderedPortrait)
-      ? renderedPortrait
-      : nextPresentation.defaultPortraitKey;
-    const expectedByUrl = expectedPortraitsByUrl(nextPresentation);
-
-    // Keep the decoded old frame on screen until the replacement resource is ready.
-    await loadImage(nextPresentation.portraitResourceUrls[visiblePortrait], expectedByUrl);
-    if (disposed || revision !== coreRebindRevision) return false;
-
-    let nextAppearance = activeAppearance;
-    try {
-      nextAppearance = validateAppearancePublication(
-        await invoke("current_character_appearance"),
-        nextPresentation,
-      );
-    } catch {
-      // Retain the last valid visual settings; a later appearance publication can update them.
-    }
-
-    candidateController = buildPortraitController(nextPresentation, {
-      preserveFrameOnFailure: true,
-      getPortraitScalePercent: () => nextAppearance.portraitScalePercent,
-    });
-    const visualGeneration = generationId;
-    candidateController.beginGeneration(visualGeneration);
-    const shown = await candidateController.show(visiblePortrait, {
-      immediate: true,
-      generation: visualGeneration,
-    });
-    if (!shown.applied) throw new Error("CORE_GENERATION_PORTRAIT_REBIND_FAILED");
-    if (disposed || revision !== coreRebindRevision) {
-      candidateController.dispose();
-      return false;
-    }
-
-    const previousController = portraitController;
+    if (next.generationId === characterPresentation.generationId && next.characterId === characterPresentation.characterId
+      && next.visual?.bindingId === characterPresentation.visual?.bindingId && next.visualReasonCode === characterPresentation.visualReasonCode
+      && (!next.visual || rendererHost.current()?.bindingId === next.visual.bindingId)) return true;
+    characterVisualPreviewSessions.invalidate();
     characterVisualPreviewActive = false;
-    const changes = appearanceChanges(activeAppearance, nextAppearance);
-    const presentationRebind = rebindCharacterPresentation({
-      currentCharacterId: characterPresentation.characterId,
-      nextPresentation,
-      currentReducer: presentation,
-    });
-    if (presentationRebind.characterChanged) {
-      waitingIndicator.stop();
-      typewriter.cancel("");
-      ttsController.cancel();
+    ++portraitHitRevision;
+    const rebound = rebindCharacterPresentation({ currentCharacterId: characterPresentation.characterId, nextPresentation: next, currentReducer: presentation });
+    if (rebound.characterChanged || next.generationId !== characterPresentation.generationId) {
+      waitingIndicator.stop(); typewriter.cancel(""); ttsController.cancel();
     }
-    presentation = presentationRebind.reducer;
-    pendingCharacterGreeting = presentationRebind.greetingPending;
-    characterPresentation = nextPresentation;
-    portraits = portraitSequence(nextPresentation);
-    activeAppearance = nextAppearance;
-    portraitController = candidateController;
-    candidateController = null;
-    renderedPortrait = shown.key;
+    presentation = rebound.reducer;
+    pendingCharacterGreeting = rebound.greetingPending;
+    characterPresentation = next;
+    try { activeAppearance = validateAppearancePublication(await invoke("current_character_appearance"), next); } catch { /* retain valid appearance */ }
+    if (disposed || revision !== coreRebindRevision) return false;
+    visualScalePercent = activeAppearance.portraitScalePercent;
+    await rendererHost.bind(next);
+    if (disposed || revision !== coreRebindRevision) return false;
     presentationUnavailable = false;
-
-    characterName.textContent = nextPresentation.displayName;
-    input.placeholder = `和${nextPresentation.displayName}说点什么……`;
-    portraitFallbackName.textContent = nextPresentation.displayName;
-    portrait.setAttribute("aria-label", `${nextPresentation.displayName} 的立绘，可拖动窗口`);
-    portraitCurrent.alt = `${nextPresentation.displayName} 立绘`;
-    if (changes.theme) applyTheme(activeAppearance.themeTokens);
-    if (changes.fonts) applyAppearanceVariables(activeAppearance);
-    if (changes.theme || changes.visualEffect) await applyInputVisualEffect(activeAppearance);
-    if (changes.layout || changes.fonts) adaptiveSurface.invalidate();
-    syncPortraitAppearance(renderedPortrait, nextPresentation);
-    previousController.dispose();
-    if (!inputVisualEffectFallbackActive) clearRecoverableError();
+    characterName.textContent = next.displayName;
+    portraitFallbackName.textContent = next.displayName;
+    portrait.setAttribute("aria-label", `${next.displayName}，可拖动窗口`);
+    applyTheme(activeAppearance.themeTokens);
+    applyAppearanceVariables(activeAppearance);
+    adaptiveSurface.invalidate();
     render(presentation.current());
     return true;
-  } catch {
-    candidateController?.dispose();
-    if (!disposed && revision === coreRebindRevision) {
-      showRecoverableError("角色资源加载失败，请稍后重试。");
-    }
-    return false;
-  } finally {
-    if (revision === coreRebindRevision) coreRebindTarget = "";
-  }
+  } catch { showRecoverableError("角色资源加载失败，请稍后重试。"); return false; }
+  finally { if (revision === coreRebindRevision) coreRebindTarget = ""; }
 }
 
 await listenAppEvent("sakura://character-visual-preview", async (event) => {
   try {
     const publication = event?.payload;
-    const previewToken = characterVisualPreviewSessions.begin(publication);
-    if (!previewToken) return;
-    const previewRevision = previewToken.revision;
-    const previewWindowGeneration = previewToken.windowGeneration;
-    const previewCoreGeneration = previewToken.coreGenerationId;
-    const previewPresentation = validateCharacterPresentation(publication.presentation);
-    if (previewPresentation.generationId !== previewCoreGeneration) return;
-    const previewAppearance = validateAppearancePublication(
-      publication.appearance,
-      previewPresentation,
-    );
-    const restoringCurrent = previewPresentation.characterId === characterPresentation.characterId;
-    const key = restoringCurrent && previewPresentation.portraitKeys.includes(renderedPortrait)
-      ? renderedPortrait
-      : previewPresentation.defaultPortraitKey;
-    const source = previewPresentation.portraitResourceUrls[key];
-    await loadImage(source, expectedPortraitsByUrl(previewPresentation));
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-    ) return;
+    const token = characterVisualPreviewSessions.begin(publication);
+    if (!token) return;
+    const next = validateCharacterPresentation(publication.presentation);
+    const appearance = validateAppearancePublication(publication.appearance, next);
+    if (next.generationId !== token.coreGenerationId) return;
     await screenAttachment.close();
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-    ) return;
-    const nativeRevision = ++portraitHitRevision;
-    const preview = await runPortraitSurfaceMutation(
-      () => invoke("begin_portrait_scale_preview", { revision: nativeRevision }),
-    );
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-      || nativeRevision !== portraitHitRevision
-    ) return;
-    const hitRevision = ++portraitHitRevision;
-    const previewSurface = await runPortraitSurfaceMutation(
-      () => activatePortraitHitTest(key, hitRevision, null, {
-        portraitScalePercent: previewAppearance.portraitScalePercent,
-        portraitResourceId: previewPresentation.portraitResourceIds[key],
-      }),
-    );
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-      || hitRevision !== portraitHitRevision
-    ) return;
-    portraitController.beginGeneration(
-      `visual-preview:${previewWindowGeneration}:${previewRevision}`,
-    );
+    if (!characterVisualPreviewSessions.isCurrent(token)) return;
+    ++portraitHitRevision;
     characterVisualPreviewActive = true;
-    if (preview?.application) commitSurfaceApplication(preview.application);
-    if (previewSurface) commitSurfaceApplication(previewSurface);
-    portrait.classList.remove("is-transitioning");
-    portraitNext.removeAttribute("src");
-    portraitCurrent.src = source;
-    portraitFallback.hidden = true;
-    bubbleScroll.updateText(previewPresentation.initialMessage, { forceEnd: true });
-    adaptiveSurface.schedule();
-    syncPortraitAppearance(
-      key,
-      previewPresentation,
-      previewAppearance.portraitScalePercent,
-    );
-    applyTheme(previewAppearance.themeTokens);
-    await applyInputVisualEffect({
-      ...activeAppearance,
-      themeTokens: previewAppearance.themeTokens,
-    });
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-    ) return;
-    if (restoringCurrent) {
-      syncPortraitAppearance(key, characterPresentation, activeAppearance.portraitScalePercent);
-      portraitController.beginGeneration(characterPresentation.generationId);
+    visualScalePercent = appearance.portraitScalePercent;
+    await rendererHost.bind(next);
+    if (!characterVisualPreviewSessions.isCurrent(token)) return;
+    bubbleScroll.updateText(next.initialMessage, { forceEnd: true });
+    applyTheme(appearance.themeTokens);
+    if (next.characterId === characterPresentation.characterId) {
+      visualScalePercent = activeAppearance.portraitScalePercent;
+      await rendererHost.bind(characterPresentation);
       characterVisualPreviewActive = false;
-      await restoreCommittedCharacterVisual({
-        currentState: () => presentation.current(),
-        resetRenderedPortrait: () => { renderedPortrait = null; },
-        render: (state) => render(state, { forceEnd: true }),
-      });
-      if (!characterVisualPreviewSessions.isCurrent(previewToken)) return;
+      render(presentation.current());
     }
-  } catch {
-    showRecoverableError("角色预览失败。");
-  }
+  } catch { showRecoverableError("角色预览失败。"); }
 });
 
 await listenAppEvent("sakura://control-surface-frame", async (event) => {
@@ -1992,6 +1769,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     // Event callbacks are ordered, but their asynchronous preparation is not. Publish the values
     // before waiting so a newer slider frame can supersede them without a late full-object write.
     activeAppearance = nextAppearance;
+    visualScalePercent = nextAppearance.portraitScalePercent;
     if (changes.layout || changes.fonts || changes.theme) {
       surfaceVisibilityController?.previewBubble();
     }
@@ -2021,9 +1799,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     }
     else if (changes.fonts) adaptiveSurface.invalidate();
     if (changes.portrait) {
-      const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
-        ? renderedPortrait
-        : characterPresentation.defaultPortraitKey;
+      const key = currentSurface.assetKey || "";
       if (portraitScaleGestureActive) {
         const preview = await portraitScaleGestureReady;
         if (disposed || !preview) return;
@@ -2102,9 +1878,7 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
     || !portraitScaleGestureActive
     || ready !== portraitScaleGestureReady
   ) return;
-  const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
-    ? renderedPortrait
-    : characterPresentation.defaultPortraitKey;
+  const key = currentSurface.assetKey || "";
   if (preview.deferredNative) {
     const deferredSurface = preview.deferredSurface;
     if (deferredSurface) {
@@ -2209,9 +1983,7 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
       await preview.deferredSurface.ready.catch(() => null);
     }
     if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
-    const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
-      ? renderedPortrait
-      : characterPresentation.defaultPortraitKey;
+    const key = currentSurface.assetKey || "";
     await runPortraitSurfaceMutation(
       () => activatePortraitHitTest(key, revision, endTrace),
     );
@@ -2392,7 +2164,7 @@ function dispose() {
   surfaceHoverProbe?.dispose();
   surfaceHoverTracker?.dispose();
   surfaceVisibilityController?.dispose();
-  portraitController.dispose();
+  rendererHost.destroy();
   chatClient.dispose();
   contextMenu.dispose();
   composerToolRegistry.dispose();
@@ -2403,17 +2175,8 @@ function dispose() {
 
 window.addEventListener("beforeunload", dispose, { once: true });
 
-portraitController.beginGeneration(characterPresentation.generationId);
-renderedPortrait = characterPresentation.defaultPortraitKey;
-if (presentationUnavailable) {
-  portraitFallback.hidden = false;
-  syncPortraitAppearance(characterPresentation.defaultPortraitKey);
-} else {
-  await portraitController.show(characterPresentation.defaultPortraitKey, {
-    immediate: true,
-    generation: characterPresentation.generationId,
-  });
-}
+++portraitHitRevision;
+await rendererHost.bind(characterPresentation);
 surfaceVisibilityController?.start(presentation.current().phase);
 render(presentation.current());
 await chatClient.start();

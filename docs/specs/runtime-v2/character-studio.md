@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-12
 ---
 
 # Runtime v2 角色工坊
@@ -15,7 +15,7 @@ updated: 2026-09-09
 添加成功提示为“角色已添加到列表”，不附加本地保存的解释。内部 publish 事务名称保持不变，不表示在线发布，
 也不自动切换桌宠。已有角色放弃操作明确为“放弃草稿修改”；删除新角色草稿仍提示不可恢复。
 
-角色工坊保留 0.9.10 已有的本地编辑能力：新建和编辑角色、草稿自动保存、角色卡、立绘与表情、主题颜色、
+角色工坊保留 0.9.10 已有的本地编辑能力：新建和编辑角色、草稿自动保存、角色卡、插件表现资源、主题颜色、
 GPT-SoVITS 模型、参考语音试听、发布、放弃草稿和 `.char` 导出。本轮不增加角色删除、复制、在线发布或把
 未发布草稿直接投影到桌宠。
 
@@ -58,9 +58,14 @@ studio.asset.import
 studio.reference.preview
 studio.archive.export
 studio.operation.cancel
+studio.visual.catalog
+studio.visual.open
+studio.visual.create
+studio.visual.import
+studio.visual.export
 ```
 
-请求与响应字段使用 camelCase，未知字段返回 `STUDIO_REQUEST_INVALID`。公开 DTO 不含 `packageDir`、角色绝对
+请求与响应公共字段使用 camelCase，`visuals`、`visualData` 和插件 `data` 的内部键原样传递；未知公共字段返回 `STUDIO_REQUEST_INVALID`。公开 DTO 不含 `packageDir`、角色绝对
 路径和音频 `data:` 内容。工作区用 `workspaceId` 标识；资源使用角色包内逻辑路径。Rust 可以接收 Core 私有的
 试听源描述，但向 WebView 返回的只有 `previewUrl`、MIME 和字节数。
 
@@ -79,10 +84,10 @@ studio.operation.cancel
 保证 Windows 与旧草稿兼容。
 
 每个角色复用一个草稿目录。自动保存只更新 `draft.json`，不复制整个包，也不创建历史备份；已导入且不再被
-表单引用的资源按原有规则清理。未发布修改必须跨重启保留；关闭窗口时可以释放 clean 工作区。
+语音表单引用的导入资源按原有规则清理。表现资源引用由插件解释，普通保存不推测删除其私有文件。未发布修改必须跨重启保留；关闭窗口时可以释放 clean 工作区。
 
-导入类型固定为 `portrait`、`portraitFolder`、`gptModel`、`sovitsModel`、`referenceAudio` 和
-`referenceAudioFolder`。大文件复制和重复文件比较都要分块检查取消。文件夹导入在全部文件复制完成后一次
+通用表现导入使用 `visual` 或 `visualFolder`，绑定 workspaceId 与 resourceId。立绘标签和说明文件由插件解释；
+语音继续使用 `gptModel`、`sovitsModel`、`referenceAudio` 和 `referenceAudioFolder`。大文件复制和重复文件比较都要分块检查取消。文件夹导入在全部文件复制完成后一次
 登记；任一文件失败或用户取消时，只删除本批新建的资源，不改动此前已有的同名文件。
 
 Managed Genie 未显式配置的共享语音字段在运行时继承 GPT-SoVITS extension，再兼容旧 `voice`；Studio
@@ -99,6 +104,27 @@ extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Run
 或关闭语音时仍可查看。打开、草稿保存和发布响应通过只读 `modelFiles` 返回 `relativePath`、`byteLength`，
 切换角色、导入模型和清理草稿资源后同步刷新。枚举只读取文件元数据，不读取模型内容、不跟随符号链接或
 目录联接，也不把模型列表写入角色配置。下方编辑区明确标为 GPT-SoVITS 配置，查看文件不会切换 Provider。
+
+## 表现编辑与组件
+
+公共页面管理资源列表、默认项、提供者、添加、移除和保存。专属编辑区加载安装内的插件模块，立绘标签、默认图片、
+PNG 导入和标签文件解释由内置立绘插件提供。私有草稿以 `visualData[resourceId]` 保存；资源引用格式及方法签名见
+[表现插件合同](visual-plugin-boundary.md)。缺失入口可以由 editorData 的默认配置修复；插件停用、缺失或不兼容时，
+公共资料仍可保存并保留原资源。编辑器进程 scope 改变后，模块授权及前端实例均撤销。
+
+“角色形态”页以卡片显示包内形态，提供名称编辑和“添加形态”弹窗。当前编辑项与包默认项分开；设置页的
+个人“显示方式”选择也不改包默认。立绘编辑器提供缩略图、大图预览、标签、默认图片、替换和移除。
+卡片封面由插件的可选静态预览接口提供，打开列表就加载所有已有封面；未选中的形态无需挂载编辑器或渲染器。
+立绘使用默认图，模型插件可提供包内截图，没有预览图时显示占位图标。切换编辑器保留同一封面的图片节点，
+更换封面先完成新图解码，保存或切换期间不先清空旧图。
+自动保存后仍可继续改名；暂时空白或重复的表情标签按完整行保存草稿，切换或重开后继续编辑，不能静默合并或删除。
+
+显示新角色表单时先完整填充参考语音和主题，再打开表现编辑器，不能在半成品表单上自动保存。添加和导入资源期间
+禁止切换工作区；回包必须核对工作区和编辑器修订。关闭或替换编辑器中止 signal，旧模块不能继续写新草稿。
+
+完整 `.char` 保持旧 version 1 读取；通用资源包使用 version 2、kind character。单独表现组件为 version 2、kind resource，
+由插件投影入口和资产，宿主完成容器、路径、复制、取消和提交。组件导入生成新资源 ID，仅加入目标草稿并设为默认，
+保留其人格、voice、角色 ID 与已安装包；可以放弃草稿撤销。详见表现插件合同的文件交换部分。
 
 ## 发布、导出与取消
 
@@ -152,6 +178,10 @@ Rust 随后只发起一次现有 Core restart，并关闭旧音频状态。停�
 发布非当前角色后立即发送 `sakura://character-catalog-changed`，设置页重新读取角色列表。发布当前角色时，
 事件必须等新 generation 就绪后发送，并携带新 generation ID；设置页先重绑定运行态控制器，再刷新角色列表。
 旧 generation 的迟到事件不能覆盖新状态或显示 `Router closed`。工坊关闭本身不触发目录刷新。
+工坊保存前冻结旧表现编辑器并保留静态内容；当前角色需要重启时，先等待 `sakura://studio-runtime-reload` 的结果，
+再刷新表现插件目录，待新编辑器就绪后替换。保存回包之前到达的就绪事件也有效。失败时保留已保存的数据并提示重启。
+图片与模型文件在打开形态时一次授权资源根，随后由原生协议直接读取，不经 Core 逐文件请求或草稿写锁。
+重复点击当前形态保留编辑器；临时插件状态查询失败不能销毁编辑区。
 
 `.char` 角色包和 `.voice` 独立语音包导入允许单个文件最大 8 GiB、解压后总量最大 32 GiB，
 大小按 ZIP 中的未压缩字节数计算，上限值本身允许导入。仍限制 ZIP 成员不超过 4096 个，
@@ -170,7 +200,9 @@ GPT-SoVITS、Genie extension 引用的模型、参考表和参考音频；导入
 
 自动入口是 `python -m harness run journey-character-studio`，覆盖 Core schema、旧草稿恢复、资源导入、试听
 描述、发布与二次恢复、整批取消清理、归档字段和资源 round-trip、Rust 临时资源和取色会话，以及前端 DTO、
-同角色历史和立绘归一化。
+同角色文字历史；过期表现控制只保留为数据，不重新执行。
+`journey-visuals-browser` 另以正式工坊和插件模块验证形态卡片、名称、添加、默认项、草稿恢复与窄窗口布局。
+其中保存回归使用正式桌面 CSP 和真实有界 Core 路由，覆盖多图预览及重启期间的编辑器挂载顺序。
 
 发布前还要通过 `journey-character-switch`、`runtime-v2-shell` 和 `release-distribution`。Windows x64 与 macOS
 arm64 必须实机检查当前/非当前角色发布、跨重启草稿、带语音导出、取消大文件、多显示器取色和安装包入口。

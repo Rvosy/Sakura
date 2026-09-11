@@ -154,6 +154,7 @@ impl CharacterStudioWindowState {
             || !matches!(
                 media_type,
                 "audio/flac" | "audio/mpeg" | "audio/ogg" | "audio/wav"
+                    | "image/png" | "image/jpeg" | "image/webp" | "image/gif"
             )
         {
             return Err("STUDIO_PREVIEW_DESCRIPTOR_INVALID".to_string());

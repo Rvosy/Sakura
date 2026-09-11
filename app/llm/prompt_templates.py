@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from app.llm.prompts.blocks import (
     AGENT_REPLY_FORMAT,
-    DEFAULT_REPLY_PORTRAITS,
     DEFAULT_REPLY_TONES,
     DESKTOP_PET_CONTEXT,
     JSON_ONLY_INSTRUCTION,
@@ -32,7 +31,6 @@ from app.llm.prompts.recipes import (
 
 __all__ = [
     "AGENT_REPLY_FORMAT",
-    "DEFAULT_REPLY_PORTRAITS",
     "DEFAULT_REPLY_TONES",
     "DESKTOP_PET_CONTEXT",
     "JSON_ONLY_INSTRUCTION",

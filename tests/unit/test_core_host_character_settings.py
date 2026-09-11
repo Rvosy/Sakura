@@ -298,7 +298,7 @@ def test_select_save_failure_keeps_existing_character_config(
 
     monkeypatch.setattr(
         type(boundary._settings),  # noqa: SLF001
-        "save_current_character_id",
+        "save_character_selection",
         fail_save,
     )
     result = boundary.handle(

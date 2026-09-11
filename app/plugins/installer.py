@@ -412,7 +412,9 @@ class LocalPluginInstaller:
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         self._validate_manifest_shape(raw)
         spec = plugin_spec_from_manifest(raw, plugin_root, source="user")
-        if spec is None or spec.api_version != PLUGIN_API_V4_VERSION:
+        if spec is None:
+            raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        if spec.api_version != PLUGIN_API_V4_VERSION:
             raise PluginInstallError("API_VERSION_UNSUPPORTED")
         if (
             not _PLUGIN_ID.fullmatch(spec.plugin_id)

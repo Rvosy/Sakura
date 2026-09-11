@@ -8,7 +8,7 @@ from app.config.character_loader import CharacterProfile
 from app.config.models import DEFAULT_THEME_SETTINGS, theme_colors_to_mapping
 
 
-PRESENTATION_SCHEMA_VERSION: Final = 1
+PRESENTATION_SCHEMA_VERSION: Final = 2
 DEFAULT_PORTRAIT_KEY: Final = "__default__"
 
 _THEME_TOKEN_NAMES: Final = {
@@ -34,11 +34,9 @@ def portrait_resource_id(character_id: str, portrait_key: str) -> str:
     return f"character-v1-{character_hex}-portrait-{key_hex}"
 
 
-def project_character_presentation(profile: CharacterProfile) -> dict[str, object]:
+def project_character_presentation(profile: CharacterProfile, visual: dict | None = None, *, reason_code: str = "VISUAL_NOT_BOUND") -> dict[str, object]:
     """Project the current package into the path-free Runtime v2 UI contract."""
 
-    expression_keys = sorted(profile.expression_portraits)
-    portrait_keys = [DEFAULT_PORTRAIT_KEY, *expression_keys]
     theme = theme_colors_to_mapping(profile.theme_settings or DEFAULT_THEME_SETTINGS)
     return {
         "schemaVersion": PRESENTATION_SCHEMA_VERSION,
@@ -49,9 +47,6 @@ def project_character_presentation(profile: CharacterProfile) -> dict[str, objec
             public_name: theme[source_name]
             for source_name, public_name in _THEME_TOKEN_NAMES.items()
         },
-        "defaultPortraitKey": DEFAULT_PORTRAIT_KEY,
-        "portraitKeys": portrait_keys,
-        "portraitResourceIds": {
-            key: portrait_resource_id(profile.id, key) for key in portrait_keys
-        },
+        "visual": visual,
+        "visualReasonCode": "READY" if visual is not None else reason_code,
     }

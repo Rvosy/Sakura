@@ -297,6 +297,8 @@ function setSubmissionBusy(busy) {
       submissionDisabledStates.delete(control);
     }
   });
+  runtimeCharacterFeature?.syncControls();
+  if (!submissionBusy) refreshDirty();
 }
 
 async function closeSettingsWindow() {
@@ -741,6 +743,7 @@ function showPage(page) {
   runtimeProviderFeature?.onPageChanged(page);
   runtimePluginController?.onPageChanged(page);
   runtimeAsrController?.onPageChanged(page);
+  runtimeCharacterFeature?.onPageChanged(page);
 }
 
 function syncEnabledState() {
@@ -1765,6 +1768,7 @@ async function startSettingsFrontend() {
     rebindSettings: rebindSettingsAfterCharacterSwitch,
     clearCharacterState: () => runtimePluginController?.clearCharacterState(),
     renderMemorySurface: () => runtimePluginController?.renderMemorySurface(),
+    openPlugin: (installId, configure) => { showPage("plugins"); runtimePluginController?.openPlugin(installId, configure); },
   });
   window.__TAURI__?.event?.listen?.("sakura://character-catalog-changed", ({ payload } = {}) => {
     if (settingsWindowClosing) return;

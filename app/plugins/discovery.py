@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from app.plugins.models import PluginSpec
+from app.plugins.visuals import visual_capabilities_from_manifest
 from app.plugins.inventory import PluginDesiredStateStore
 from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.paths import StoragePaths
@@ -112,6 +113,11 @@ def plugin_spec_from_manifest(
     entry = _string_value(raw.get("entry"))
     if not plugin_id or not entry:
         return None
+    provides = _service_keys_value(raw.get("provides"))
+    try:
+        visuals = visual_capabilities_from_manifest(raw.get("visuals", []), provides, plugin_root=plugin_root)
+    except ValueError:
+        return None
     return PluginSpec(
         entry=entry,
         plugin_id=plugin_id,
@@ -124,10 +130,11 @@ def plugin_spec_from_manifest(
         priority=_int_value(raw.get("priority"), 100),
         required=_bool_value(raw.get("required"), False),
         permissions=_permissions_value(raw.get("permissions")),
-        provides=_service_keys_value(raw.get("provides")),
+        provides=provides,
         requires=_service_keys_value(raw.get("requires")),
         plugin_root=plugin_root,
         source=source,
+        visuals=visuals,
     )
 
 

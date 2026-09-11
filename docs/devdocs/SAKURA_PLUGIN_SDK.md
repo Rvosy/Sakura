@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-09
+updated: 2026-09-12
 ---
 
 # 编写 Sakura 插件
@@ -14,9 +14,27 @@ updated: 2026-09-09
 希望通过 AI 开发插件时，可以复制[插件开发 AI 提示词](SAKURA_PLUGIN_AI_PROMPT.md)，填入需求并附上本指南。
 已有插件升级时，先看本文末尾的[插件管理与日志适配清单](#插件管理与日志适配清单)。
 
-先说明最容易产生误解的一点：Sakura 不会加载插件自己的 HTML、JavaScript 或 CSS。插件贡献的是结构化
-数据，页面和控件由 Sakura 渲染。这样做少了一些前端自由度，但插件停用、重载或崩溃时，宿主能完整撤销
-它留下的页面、回调和资源。
+当前设置与工具页面消费插件贡献的结构化数据，页面和控件由 Sakura 渲染。表现插件新增的 `visuals` 声明可以
+携带预构建渲染与工坊编辑模块。后端通过普通 Service 绑定资源、贡献控制说明并解析专属载荷；前端按播放时机执行状态与动作。
+扩展范围是角色表现与工坊专属编辑区。具体边界见[表现插件合同](../specs/runtime-v2/visual-plugin-boundary.md)。
+
+表现插件同时导出 `describe(request)`、`parseControl(request, parserData, payload, legacy)`，有编辑器时另导出
+`editorData(resource, raw)` 和 `exportResource(resource, raw)`。资源文件由 `sakura.host.character.resolve_resource`
+读取；编辑器通过受控文件选择与 `host.changed(data)` 更新私有草稿，不直接写角色包。私有 JSON 字段名不做大小写转换。
+前端入口分别为 `mount({container,resource,host,signal})` 与 `mountEditor({container,data,host,signal})`。
+Service 可另导出 `previewImage(resource, raw)`，返回资源根内的静态图片相对路径或 null。工坊打开列表时就获取
+所有形态封面，不为此启动编辑器或渲染器。支持 PNG、JPEG、WebP、GIF，单图最多 20 MiB；没有该方法或没有图片
+时显示占位图标。立绘插件提供默认图，Live2D、3D 插件可提供包内模型截图。
+编辑器可调用 `host.previewImage(relativePath)` 更新当前封面，传 null 清除；宿主隔离过期回包并保留路径未变的图片。
+`host.changed(data)` 必须完整保留未完成的编辑数据，不能因空白或重复的输入丢掉资源行；正式保存前再校验。
+桌面 CSP 禁止动态内联 `<style>`；插件样式可通过 `CSSStyleSheet.replaceSync` 和 `document.adoptedStyleSheets`
+安装，选择器应限制在自身容器内，并在销毁时移除。中止时停止异步工作，保留静态画面供宿主切换。
+`host.assetUrl` 在已授权资源根内生成并复用 URL，图片和模型文件由原生协议直接读取，不经过 Core 请求队列。
+目录导入保留文件名和子目录关系；模型纹理、动作等资源可通过相同接口读取。
+渲染器响应 `applyState`、可选 `perform/cancel` 和 `destroy`；编辑器提供 `collect/validate/destroy`，可用 `ready` Promise
+表示初始内容已准备完成。宿主保留旧内容至新实例就绪。异步操作复核 signal，
+并回收动画和监听。可直接参考[内置立绘插件](../../plugins/builtin/sakura_portrait/plugin.py)及
+[无图片数值插件夹具](../../tests/fixtures/visual_numeric/plugin.py)的配套 frontend 文件。
 
 插件是可信的本地 Python 代码，不是安全沙箱。它以当前用户权限运行，可以访问文件和网络。不要在插件中
 导入 `app.*`、Core bootstrap 或其他插件源码；需要宿主能力时，通过 `context` 和 `sakura.host.*` Service

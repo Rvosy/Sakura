@@ -10,7 +10,7 @@ class PromptContext:
 
     character_prompt: str = ""
     reply_tones: list[str] | None = None
-    reply_portraits: list[str] | None = None
+    reply_visual: Mapping[str, Any] | None = None
     memory_summary: str = ""
     current_time: str = ""
     step_index: int = 0

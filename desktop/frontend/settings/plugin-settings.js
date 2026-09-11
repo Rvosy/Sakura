@@ -2640,6 +2640,14 @@ export function createPluginSettingsFeature({
 
   return Object.freeze({
     initialize: runtimePluginController.initialize,
+    openPlugin(installId, configure = false) {
+      const plugin = pluginView.items.find(item => item.id === installId);
+      showPage("plugins");
+      if (!plugin) return;
+      pluginState.selectedId = installId;
+      renderPluginPage();
+      if (configure && pluginSettingsSections(plugin).some(section => section.surface !== "memory")) openPluginSettingsDialog(plugin);
+    },
     isDirty: () => runtimePluginController.isDirty() || hasCollectionDrafts(),
     hasCollectionDrafts,
     async save() {

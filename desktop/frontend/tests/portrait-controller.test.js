@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createPortraitController } from "../pet/portrait-controller.js";
+import { createPortraitController } from "../../../plugins/builtin/sakura_portrait/frontend/renderer.js";
 
 function deferred() {
   let resolve;
