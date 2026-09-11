@@ -14,6 +14,7 @@ import re
 import os
 import queue
 import struct
+import sys
 import threading
 import time
 import uuid
@@ -28,6 +29,12 @@ _SECRET = re.compile(r"(?i)(?:bearer\s+\S+|sk-[\w.-]{6,}|(?:api[_-]?key|authoriz
 _PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|(?<![\w:])/(?!/))[^\s\"'<>|]*")
 _URL = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>]+")
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_DIAGNOSTIC_KEYS = frozenset({"diagnostic", "exception_chain", "exception_stack", "recovery_diagnostic"})
+
+
+def _diagnostic_text(value: str, maximum: int = 8192) -> str:
+    text = "\n".join(safe_text(line, maximum) for line in value.splitlines())
+    return text if len(text) <= maximum else text[:maximum - 14] + "\n[truncated]"
 
 
 def safe_text(value: str, maximum: int = 1024) -> str:
@@ -80,13 +87,17 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
         # Do not stringify arbitrary objects (exceptions can contain private data).
         return "[unsupported]"
 
-    result = visit(fields or {}, 0)
+    diagnostics = {key: _diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
+                   for key, value in (fields or {}).items()
+                   if key in _DIAGNOSTIC_KEYS and isinstance(value, str)}
+    result = visit({key: value for key, value in (fields or {}).items() if key not in _DIAGNOSTIC_KEYS}, 0)
     assert isinstance(result, dict)
     while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 1800:
         result.pop(next(reversed(result)))
         truncated = True
     if truncated:
         result["record_truncated"] = True
+    result.update(diagnostics)
     return safe_text(message), result
 
 
@@ -103,11 +114,56 @@ class PluginApiError(RuntimeError):
         *,
         plugin_id: str = "",
         service_key: str = "",
+        diagnostics: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(message or code)
         self.code = code
         self.plugin_id = plugin_id
         self.service_key = service_key
+        self.diagnostics = {
+            key: _diagnostic_text(value)
+            for key, value in (diagnostics or {}).items()
+            if key in {"diagnostic", "cause_type", "exception_chain", "exception_stack"} and isinstance(value, str)
+        }
+
+
+def _safe_exception_message(error: BaseException) -> str:
+    try:
+        return _diagnostic_text(str(error), 4096)
+    except Exception:
+        return f"{type(error).__name__}: exception message could not be formatted"
+
+
+def _exception_diagnostics(error: BaseException) -> dict[str, str]:
+    """Stdlib-only worker diagnostics; never serialize exception objects/locals."""
+    chain, stacks, seen = [], [], set()
+    current = error
+    while id(current) not in seen and len(chain) < 16:
+        seen.add(id(current))
+        text = _safe_exception_message(current)
+        chain.append(f"{type(current).__name__}: {text}")
+        frames = []
+        tb = current.__traceback__
+        while tb is not None:
+            module = str(tb.tb_frame.f_globals.get("__name__", "unknown"))
+            frames.append(safe_text(f"  at {module}:{tb.tb_frame.f_code.co_name}:{tb.tb_lineno}", 256))
+            tb = tb.tb_next
+        stacks.append(chain[-1] + "\n" + "\n".join(frames[-32:]))
+        cause = current.__cause__ if current.__cause__ is not None else (None if current.__suppress_context__ else current.__context__)
+        if cause is None:
+            break
+        current = cause
+    result = {"diagnostic": _safe_exception_message(current), "cause_type": type(current).__name__,
+              "exception_chain": _diagnostic_text("\nCaused by: ".join(chain)), "exception_stack": _diagnostic_text("\n\n".join(stacks))}
+    remote = getattr(current, "diagnostics", None)
+    if isinstance(remote, Mapping):
+        for key in ("diagnostic", "cause_type"):
+            if isinstance(remote.get(key), str):
+                result[key] = _diagnostic_text(remote[key])
+        for key in ("exception_chain", "exception_stack"):
+            if isinstance(remote.get(key), str):
+                result[key] = _diagnostic_text(result[key] + "\nRemote:\n" + remote[key])
+    return result
 
 
 def json_value(value: object) -> object:
@@ -287,6 +343,7 @@ class RpcPeer:
                 "message": str(error),
                 "pluginId": error.plugin_id,
                 "serviceKey": error.service_key,
+                "diagnostics": error.diagnostics or _exception_diagnostics(error),
             }
         self._write(value)
 
@@ -364,6 +421,7 @@ class RpcPeer:
                         str(raw.get("message") or raw.get("code") or "PLUGIN_CALL_FAILED"),
                         plugin_id=str(raw.get("pluginId") or ""),
                         service_key=str(raw.get("serviceKey") or ""),
+                        diagnostics=raw.get("diagnostics") if isinstance(raw.get("diagnostics"), Mapping) else None,
                     )
             pending.done.set()
             return
@@ -403,8 +461,9 @@ class RpcPeer:
                     request_id,
                     error=PluginApiError(
                         "PLUGIN_CALL_FAILED",
-                        type(error).__name__,
+                        _safe_exception_message(error),
                         plugin_id=self._plugin_id,
+                        diagnostics=_exception_diagnostics(error),
                     ),
                 )
             except PluginApiError:
@@ -818,6 +877,9 @@ class _LoggingProxy:
 
     def _emit(self, severity: str, message: object, fields: object) -> bool:
         try:
+            current_error = sys.exception()
+            if severity in {"warning", "error"} and current_error is not None:
+                fields = {**(fields or {}), **_exception_diagnostics(current_error)}
             message, fields = prepare_log_payload(message, fields)
             with self._condition:
                 if self._stopping:
@@ -875,6 +937,9 @@ class _DiagnosticsProxy:
                 "DIAGNOSTIC_DESCRIPTOR_INVALID",
                 plugin_id=self._context.plugin_id,
             )
+        current_error = sys.exception()
+        if descriptor.get("severity") in {"warning", "error"} and current_error is not None:
+            descriptor = {**descriptor, "attributes": {**descriptor.get("attributes", {}), **_exception_diagnostics(current_error)}}
         result = self._context._remote_call(
             "sakura.host.diagnostics",
             "emit",

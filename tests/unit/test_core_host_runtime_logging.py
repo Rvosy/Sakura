@@ -239,33 +239,32 @@ def test_router_chat_operation_context_is_scoped_and_content_derived_events_are_
     assert record["operation_id"] == "operation-router-1"
 
 
-def test_app_logging_handler_never_formats_message_or_traceback() -> None:
+def test_app_logging_handler_preserves_error_and_redacts_credentials() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     logger = logging.getLogger("app.core.private_boundary")
     try:
         try:
-            raise RuntimeError(PRIVATE_CHAT)
+            raise RuntimeError("original filesystem error")
         except RuntimeError:
-            logger.exception("%s %s", PRIVATE_CHAT, PRIVATE_SECRET)
+            logger.exception("%s %s", "original filesystem error", PRIVATE_SECRET)
     finally:
         bridge.close()
 
     serialized = stream.getvalue().decode("utf-8")
-    assert PRIVATE_CHAT not in serialized
+    assert "original filesystem error" in serialized
     assert PRIVATE_SECRET not in serialized
     event = next(record for record in _records(stream) if record["event"] == "python.logging.error")
     assert event["message"] == "Python application error"
-    assert event["attributes"] == {
-        "category": "RuntimeError",
-        "code": "PYTHON_EXCEPTION",
-    }
+    assert event["attributes"]["category"] == "RuntimeError"
+    assert event["attributes"]["code"] == "PYTHON_EXCEPTION"
+    assert "exception_stack" in event["attributes"]
 
 
 def test_exception_diagnostics_add_safe_root_cause_location() -> None:
     try:
         try:
-            raise OSError(PRIVATE_CHAT)
+            raise OSError("original filesystem error")
         except OSError as cause:
             raise RuntimeError(PRIVATE_SECRET) from cause
     except RuntimeError as error:
@@ -279,7 +278,7 @@ def test_exception_diagnostics_add_safe_root_cause_location() -> None:
     assert attributes["cause_type"] == "OSError"
     assert ":test_exception_diagnostics_add_safe_root_cause_location:" in attributes["exception_site"]
     assert "failure_id" not in attributes
-    assert PRIVATE_CHAT not in str(attributes["exception_site"])
+    assert "original filesystem error" not in str(attributes["exception_site"])
 
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
@@ -297,7 +296,7 @@ def test_exception_diagnostics_add_safe_root_cause_location() -> None:
     assert forwarded["cause_type"] == "OSError"
     assert forwarded["exception_site"] == attributes["exception_site"]
     assert "failure_id" not in forwarded
-    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+    assert "original filesystem error" in stream.getvalue().decode("utf-8")
     assert PRIVATE_SECRET not in stream.getvalue().decode("utf-8")
 
 
@@ -309,19 +308,16 @@ def test_unhandled_transport_error_uses_only_stable_safe_diagnostic() -> None:
     try:
         bridge.emit_unhandled(
             "CORE_HOST_TRANSPORT_ERROR",
-            WriterError("TRANSPORT_WRITE_FAILED", PRIVATE_CHAT),
+            WriterError("TRANSPORT_WRITE_FAILED", "original filesystem error"),
         )
     finally:
         bridge.close()
 
     event = _records(stream)[0]
-    assert event["attributes"] == {
-        "code": "CORE_HOST_TRANSPORT_ERROR",
-        "category": "WriterError",
-        "error_type": "TRANSPORT_WRITE_FAILED",
-        "diagnostic": "Core 协议写入通道意外关闭",
-    }
-    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+    assert event["attributes"]["code"] == "CORE_HOST_TRANSPORT_ERROR"
+    assert event["attributes"]["cause_type"] == "WriterError"
+    assert "original filesystem error" in event["attributes"]["diagnostic"]
+    assert "original filesystem error" in stream.getvalue().decode("utf-8")
 
 
 def test_unhandled_transport_error_can_recover_only_a_stable_code_prefix() -> None:
@@ -330,15 +326,15 @@ def test_unhandled_transport_error_can_recover_only_a_stable_code_prefix() -> No
     try:
         bridge.emit_unhandled(
             "CORE_HOST_TRANSPORT_ERROR",
-            RuntimeError(f"SHUTDOWN_DURING_INITIALIZE: {PRIVATE_CHAT}"),
+            RuntimeError("SHUTDOWN_DURING_INITIALIZE: original filesystem error"),
         )
     finally:
         bridge.close()
 
     event = _records(stream)[0]
-    assert event["attributes"]["error_type"] == "SHUTDOWN_DURING_INITIALIZE"
-    assert event["attributes"]["diagnostic"] == "Assistant 后台初始化未在退出期限内结束"
-    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+    assert event["attributes"]["error_type"] == "RuntimeError"
+    assert "SHUTDOWN_DURING_INITIALIZE: original filesystem error" in event["attributes"]["diagnostic"]
+    assert "original filesystem error" in stream.getvalue().decode("utf-8")
 
 
 def test_bridge_queue_evicts_low_priority_and_aggregates_drops() -> None:
@@ -562,7 +558,7 @@ def test_forwarded_worker_record_uses_only_active_sink_and_reapplies_safety(
         assert not forward_runtime_log_record({**forwarded, "unexpected": True})
         assert not forward_runtime_log_record({**forwarded, "severity": []})
         assert not forward_runtime_log_record(
-            {**forwarded, "attributes": {"diagnostic": "x" * 4096}}
+            {**forwarded, "attributes": {"diagnostic": "x" * CORE_BRIDGE_MAX_LINE_BYTES}}
         )
     finally:
         bridge.close()

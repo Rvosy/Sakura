@@ -263,7 +263,7 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
         _request("incomplete", "settings.provider_model.save", {"draft": draft})
     )
     assert incomplete["error"]["code"] == "MODEL_SLOT_INCOMPLETE"
-    assert incomplete["error"]["details"] == {
+    assert {key: incomplete["error"]["details"][key] for key in ("feature", "field")} == {
         "feature": "model.slots",
         "field": "plugin:com.example.second:second",
     }

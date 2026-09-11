@@ -57,6 +57,13 @@ class ProviderSettingsBoundary:
             self._enabled = True
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
+        from app.core.diagnostics import diagnostic_secret_scope, register_diagnostic_secret
+
+        with diagnostic_secret_scope():
+            register_diagnostic_secret(self._generation_credential)
+            return self._handle(request)
+
+    def _handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied_credential = request.get("generationCredential")
         if (
             request.get("generationId") != self._generation_id
@@ -507,6 +514,9 @@ class ProviderSettingsBoundary:
                 raw["profile"],
                 require_model=require_model,
             )
+            from app.core.diagnostics import register_diagnostic_secret
+
+            register_diagnostic_secret(secret)
             # 探测只发送一次，给生成请求完整预算；避免短超时重复中断慢模型。
             client = OpenAICompatibleClient(
                 ApiSettings(

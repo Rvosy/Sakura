@@ -66,7 +66,7 @@ export function validateViewerRecord(value) {
   ) {
     throw viewerError();
   }
-  if (!Array.isArray(value.details) || value.details.length > 28 || value.details.some((detail) => (
+  if (!Array.isArray(value.details) || value.details.length > 12 || value.details.some((detail) => (
     !isObject(detail)
     || !exactKeys(detail, ["label", "value"])
     || typeof detail.label !== "string"
@@ -213,26 +213,12 @@ export function viewerCopyText(item) {
   ];
   lines.push(`来源：${record.source}`);
   if (record.pluginId) lines.push(`插件：${viewerPluginName(record)}`, `插件标识：${record.pluginId}`);
-  const failure = viewerFailureText(record);
-  if (failure) lines.push(`原始报错：${failure}`);
-  else if (record.description) lines.push(`说明：${record.description}`);
+  if (record.description) lines.push(`说明：${record.description}`);
   lines.push(`事件代码：${record.eventCode}`);
-  for (const detail of record.details) {
-    if (failure && ["诊断", "原始报错"].includes(detail.label)) continue;
-    lines.push(`${detail.label}：${detail.value}`);
-  }
+  for (const detail of record.details) lines.push(`${detail.label}：${detail.value}`);
   if (record.correlationId) lines.push(`关联编号：${record.correlationId}`);
   if (repeatCount > 1) lines.push(`连续重复：${repeatCount} 次`);
   return lines.join("\n");
-}
-
-export function viewerFailureText(record) {
-  if (!["warning", "error"].includes(record.severity)) return "";
-  const diagnostic = record.details.find(detail => ["诊断", "原始报错"].includes(detail.label))?.value;
-  if (!diagnostic) return "未记录底层原因";
-  const type = record.details.find(detail => detail.label === "根因类型")?.value
-    || record.details.find(detail => detail.label === "类型")?.value;
-  return type && !diagnostic.startsWith(`${type}:`) && diagnostic !== type ? `${type}: ${diagnostic}` : diagnostic;
 }
 
 

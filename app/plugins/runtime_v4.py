@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import codecs
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -187,6 +188,7 @@ class _PluginProcess:
         self._peer: RpcPeer | None = None
         self._windows_job: int | None = None
         self._watcher: threading.Thread | None = None
+        self._stderr_reader: threading.Thread | None = None
         self._closing = False
         self._exit_reported = False
         self._spawn_lock = threading.Lock()
@@ -237,7 +239,7 @@ class _PluginProcess:
                     command,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     # Keep the process working directory outside plugin code.
                     # Windows cannot atomically quarantine an installed plugin
                     # while a live or recently stopped process has that code
@@ -295,6 +297,11 @@ class _PluginProcess:
                 self._windows_job = windows_job
                 self._watcher = watcher
             peer.start(thread_name=f"sakura-plugin-{self._spec.plugin_id}-core-reader")
+            self._stderr_reader = threading.Thread(
+                target=self._drain_stderr, args=(process,),
+                name=f"sakura-plugin-{self._spec.plugin_id}-stderr", daemon=True,
+            )
+            self._stderr_reader.start()
             watcher.start()
         try:
             result = peer.request(
@@ -309,6 +316,39 @@ class _PluginProcess:
             self.close()
             raise PluginRuntimeError("PLUGIN_RESPONSE_INVALID", plugin_id=self._spec.plugin_id)
         return dict(result)
+
+    def _drain_stderr(self, process: subprocess.Popen[bytes]) -> None:
+        """Always drain the pipe; the bounded log queue owns downstream drops."""
+        from app.core.runtime_log import log_message
+        from app.core.diagnostics import safe_diagnostic_text
+
+        stream = process.stderr
+        if stream is None:
+            return
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
+
+        def emit(text: str) -> None:
+            if text.strip():
+                log_message("warning", "插件进程标准错误输出", component="plugin",
+                    plugin_id=self._spec.plugin_id,
+                    fields={"event": "plugin.process.stderr", "stage": "stderr",
+                            "diagnostic": safe_diagnostic_text(text)})
+
+        try:
+            while chunk := stream.read(4096):
+                pending += decoder.decode(chunk)
+                if "\n" in pending:
+                    complete, _, pending = pending.rpartition("\n")
+                    emit(complete)
+                if len(pending) >= 4096:
+                    emit(pending)
+                    pending = ""
+            emit(pending + decoder.decode(b"", final=True))
+        except (OSError, ValueError):
+            pass
+        finally:
+            stream.close()
 
     def _wait_for_process_exit(self, process: subprocess.Popen[bytes]) -> None:
         try:
@@ -438,6 +478,8 @@ class _PluginProcess:
             if process.poll() is None:
                 self._terminate_owned_descendants(process, deadline=close_deadline)
         self._close_windows_job()
+        if self._stderr_reader is not None:
+            self._stderr_reader.join(timeout=0.3)
         for stream in (process.stdout if process is not None else None,):
             try:
                 if stream is not None:

@@ -127,11 +127,12 @@ test("consecutive duplicate rows collapse and copied errors retain support detai
   assert.equal(collapsed[0].repeatCount, 2);
   const copied = viewerCopyText(collapsed[0]);
   assert.match(copied, /\[错误\] 模型请求失败/);
-  assert.match(copied, /说明：模型服务没有接受当前凭据，这次回复无法生成。/);
+  assert.match(copied, /原始报错：身份验证失败/);
+  assert.ok(!copied.includes("说明："));
   assert.match(copied, /事件代码：api\.request\.failed/);
   assert.match(copied, /关联编号：op:12345678/);
   assert.match(copied, /连续重复：2 次/);
-  assert.ok(copied.indexOf("诊断：") < copied.indexOf("错误码："));
+  assert.ok(copied.indexOf("原始报错：") < copied.indexOf("错误码："));
   assert.ok(copied.indexOf("错误码：") < copied.indexOf("关联编号："));
 });
 

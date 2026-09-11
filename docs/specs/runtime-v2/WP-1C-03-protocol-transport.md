@@ -102,6 +102,11 @@ cleanup。stderr EOF 是可观测终止事实，不单独改变 Supervisor 状�
 平台原生错误只在 platform backend 映射为既有稳定 `PlatformError`；公共 IPC DTO 不暴露 native
 handle/fd/signal/PID/PGID。错误 message、details、Debug 和测试断言均不得包含 credential 或 secret。
 
+失败响应允许在 `error.details.diagnostics` 携带本地诊断：原始错误、异常类型、异常链、调用栈、阶段、代码位置和系统错误码。
+字段均为经过脱敏的有界标量，预算遵循 [本地运行日志](WP-4L-02-human-readable-runtime-log-agent-trace.md)。
+业务 `error.code/message/retryable` 与 feature/field 不变，Rust 在投影日志时读取诊断；成功响应不附加当前异常。
+接收端允许字段缺省，无原始异常时不得根据业务码伪造根因。诊断不携带任意异常对象、locals、凭据或完整请求/回复正文。
+
 ## 6. Timeout、资源上限与三平台责任
 
 - hello 3 秒；initialize 接受 5 秒；readiness watchdog 30 秒；shutdown 3 秒；完整树停止 5 秒。
