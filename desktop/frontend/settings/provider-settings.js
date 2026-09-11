@@ -98,6 +98,13 @@ export function createProviderSettingsFeature({
       host: "api.deepseek.com",
       iconUrl: "./assets/providers/deepseek.svg",
     },
+    {
+      key: "google",
+      label: "Google 官方",
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+      host: "generativelanguage.googleapis.com",
+      iconUrl: "./assets/providers/google.svg",
+    },
   ];
 
   function initializeProviderState() {

@@ -376,6 +376,36 @@ test("provider chooser, search and manual model events edit the same draft consu
   });
 });
 
+test("Google preset discovers and probes the selected model with the official endpoint", async () => {
+  const ui = featureFixture(snapshot(), (command, args) => {
+    if (command !== "settings_provider_model_probe") return undefined;
+    return args.kind === "list_models"
+      ? { models: ["gemini-fixture"] }
+      : { message: "OK" };
+  });
+  await ui.feature.initialize();
+  await ui.control("addProviderButton").fire("click");
+  await ui.button("Google 官方", ui.document.querySelector(".provider-add-dialog")).fire("click");
+  assert.equal(ui.field("base_url").value, "https://generativelanguage.googleapis.com/v1beta/openai");
+  assert.equal(ui.field("api_key").value, "");
+  ui.field("api_key").value = "fixture-google-key";
+  await ui.field("api_key").fire("input");
+  await ui.button("获取模型列表").fire("click");
+  await ui.button("添加", ui.document.querySelector(".model-picker-dialog")).fire("click");
+  await ui.button("测试连接").fire("click");
+  const probes = ui.calls.filter(([command]) => command === "settings_provider_model_probe");
+  assert.deepEqual(probes.map(([, args]) => args.kind), ["list_models", "test_connection"]);
+  for (const [, args] of probes) {
+    assert.equal(args.profile.base_url, "https://generativelanguage.googleapis.com/v1beta/openai");
+    assert.deepEqual(args.profile.credential, { action: "replace", value: "fixture-google-key" });
+  }
+  assert.equal(probes[1][1].profile.model, "gemini-fixture");
+  await ui.feature.save();
+  const draft = ui.calls.find(([command]) => command === "settings_provider_model_save")[1].draft;
+  assert.equal(draft.providers[1].base_url, probes[1][1].profile.base_url);
+  assert.deepEqual(draft.providers[1].models, ["gemini-fixture"]);
+});
+
 test("model discovery adds only selected new models and connection testing reports the actual probe result", async () => {
   let failure = false;
   const ui = featureFixture(snapshot(), (command, args) => {
