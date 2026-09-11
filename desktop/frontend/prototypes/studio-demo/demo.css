@@ -1,0 +1,3 @@
+.demo-stage { max-width: 1600px; }
+.demo-brand span { white-space: nowrap; }
+.closed-state { display: grid; justify-items: center; gap: 12px; }

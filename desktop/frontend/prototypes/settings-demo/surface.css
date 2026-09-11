@@ -1,21 +1,14 @@
-.visual-choice-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  width: clamp(340px, 42vw, 520px);
+#page-character .setting-row {
+  grid-template-columns: clamp(132px, 18vw, 160px) minmax(0, 1fr);
+  gap: 10px 16px;
 }
-.visual-choice-controls .custom-select {
+#page-character .setting-row > .character-select-controls,
+#page-character .setting-row > .slider-control {
   width: 100%;
-  min-width: 0;
   max-width: none;
 }
-.visual-choice-controls > select {
-  min-width: 240px;
-}
-.visual-choice-controls button {
-  white-space: nowrap;
+#page-character .layout-slider {
+  min-width: 0;
 }
 .visual-status-row {
   display: flex;
@@ -109,18 +102,6 @@
     gap: 8px;
     padding: 8px;
   }
-  .setting-row {
-    grid-template-columns: 1fr !important;
-    gap: 8px !important;
-  }
-  .character-select-controls,
-  .visual-choice-controls {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-  .visual-choice-controls .select-control {
-    min-width: 100px;
-  }
   .nav-card {
     padding: 12px 8px;
   }
@@ -136,5 +117,23 @@
   .visual-status-row {
     align-items: flex-start;
     flex-wrap: wrap;
+  }
+}
+@media (max-width: 600px) {
+  #page-character .setting-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  #page-character .setting-row > .archive-controls,
+  #page-character .setting-row > .setting-toggle {
+    justify-self: start;
+  }
+  .detail-card > footer {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .detail-card > footer > button {
+    min-width: 0;
+    padding-inline: 12px;
   }
 }

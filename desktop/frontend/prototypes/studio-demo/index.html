@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura 角色工坊 Demo</title>
+    <link rel="stylesheet" href="../settings-demo/demo.css" />
+    <link rel="stylesheet" href="./demo.css" />
+  </head>
+  <body>
+    <header class="demo-bar">
+      <div class="demo-brand"><strong>Sakura</strong><span>角色工坊 Demo</span></div>
+      <div class="demo-controls">
+        <div class="demo-tabs" role="group" aria-label="演示页面">
+          <button id="studioTab" class="selected" aria-pressed="true">角色工坊</button>
+          <button id="settingsTab" aria-pressed="false">设置预览</button>
+        </div>
+        <label for="pluginScenario" class="scenario-label">可用插件</label>
+        <select id="pluginScenario">
+          <option value="portrait">立绘</option>
+          <option value="live2d" selected>立绘 + Live2D</option>
+          <option value="all">立绘 + Live2D + 3D</option>
+        </select>
+        <button id="resetDemo">重置演示</button>
+      </div>
+      <span class="demo-note">演示数据 · 不连接程序</span>
+    </header>
+    <main class="demo-stage">
+      <iframe id="settings" title="Sakura 角色工坊" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"></iframe>
+      <div id="loading" role="status">正在载入角色工坊…</div>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

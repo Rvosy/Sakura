@@ -450,6 +450,9 @@ function enhanceSelect(select) {
   }
 
   function closeMenu() {
+    if (!wrapper.classList.contains("is-open")) {
+      return;
+    }
     wrapper.classList.remove("is-open");
     trigger.setAttribute("aria-expanded", "false");
     menu.classList.remove("is-open");

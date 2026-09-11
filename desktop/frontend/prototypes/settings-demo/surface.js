@@ -14,17 +14,15 @@ export function createSurface(win, state, version) {
       (c) => c.id === ($("characterSelect")?.value || state.current),
     ) || state.characters[0];
   const choice = (c = current()) =>
-    drafts[c.id] ?? state.visuals[c.id] ?? "inherit";
+    drafts[c.id] ?? state.visuals[c.id] ?? c.defaultVisual;
   const resource = (c = current()) =>
-    c.visuals.find(
-      (v) => v.id === (choice(c) === "inherit" ? c.defaultVisual : choice(c)),
-    );
+    c.visuals.find((v) => v.id === choice(c));
   const dependency = (r = resource()) =>
     state.plugins.find((p) => p.pluginId === r?.pluginId);
   const isDirty = () =>
     version !== "original" &&
-    Object.keys(drafts).some(
-      (id) => drafts[id] !== (state.visuals[id] ?? "inherit"),
+    state.characters.some(
+      (c) => choice(c) !== (state.visuals[c.id] ?? c.defaultVisual),
     );
   function dialog(title, body, buttons = [{ label: "关闭" }]) {
     const el = doc.createElement("dialog");
@@ -76,28 +74,19 @@ export function createSurface(win, state, version) {
     const c = current(),
       selected = choice(c);
     control.replaceChildren();
-    const add = (value, label) => {
+    for (const visual of c.visuals) {
       const o = doc.createElement("option");
-      o.value = value;
-      o.textContent = label;
+      o.value = visual.id;
+      o.textContent = visual.label;
       control.append(o);
-    };
-    add(
-      "inherit",
-      c.visuals.length === 1
-        ? c.visuals[0].label
-        : "跟随角色包（" +
-            (c.visuals.find((v) => v.id === c.defaultVisual)?.label || "立绘") +
-            "）",
-    );
-    if (c.visuals.length > 1) c.visuals.forEach((v) => add(v.id, v.label));
+    }
     control.value = selected;
     refreshSelect(control);
     const r = resource(),
       p = dependency(r);
     status.hidden = !!p?.enabled;
     $("visualStatusText").textContent = !p
-      ? "使用" + (r?.label || "此表现") + "需要安装对应插件。"
+      ? "使用" + (r?.label || "此显示方式") + "需要安装对应插件。"
       : p.enabled
         ? ""
         : p.name + "插件尚未启用。";
@@ -107,8 +96,7 @@ export function createSurface(win, state, version) {
     const scaleLabel = doc.querySelector(
       'label[for="portraitScale"] .setting-title',
     );
-    if (scaleLabel)
-      scaleLabel.textContent = r?.type === "portrait" ? "立绘大小" : "角色大小";
+    if (scaleLabel) scaleLabel.textContent = "角色大小";
   }
   async function ensurePlugin() {
     const r = resource(),
@@ -159,13 +147,15 @@ export function createSurface(win, state, version) {
     doc.querySelector("#pluginDetail .plugin-configure")?.click();
   }
   function studio(characterId) {
+    if (typeof win.parent.__SAKURA_SETTINGS_REVIEW__?.openStudio === "function") {
+      win.parent.__SAKURA_SETTINGS_REVIEW__.openStudio(characterId);
+      return;
+    }
     const c = state.characters.find((c) => c.id === characterId) || current();
-    info(
-      "角色工坊",
-      "正式程序会在这里打开“" +
-        c.name +
-        "”的角色工坊。本次演示用于评审设置界面，工坊页面留待后续。",
-    );
+    win.parent.location.href = new URL(
+      "../studio-demo/?character=" + encodeURIComponent(c.id),
+      win.parent.location.href,
+    ).href;
   }
   function attach(next) {
     api = next;
@@ -174,7 +164,7 @@ export function createSurface(win, state, version) {
     row.className = "setting-row";
     row.id = "visualSetting";
     row.innerHTML =
-      '<label class="setting-row-text" for="visualSelect"><span class="setting-title">表现形式</span></label><div class="character-select-controls visual-choice-controls"><select id="visualSelect"></select><button id="visualConfigure" class="secondary-button" type="button">设置</button></div>';
+      '<label class="setting-row-text" for="visualSelect"><span class="setting-title">显示方式</span></label><div class="character-select-controls visual-choice-controls"><select id="visualSelect"></select><button id="visualConfigure" class="secondary-button" type="button">设置</button></div>';
     $("characterSelect").closest(".setting-row").after(row);
     status = doc.createElement("div");
     status.className = "visual-status-row";
@@ -205,8 +195,8 @@ export function createSurface(win, state, version) {
     if (!p?.enabled)
       throw Error(
         p
-          ? "请先启用" + p.name + "插件，或选择其他表现形式。"
-          : "请先安装所需插件，或选择其他表现形式。",
+          ? "请先启用" + p.name + "插件，或选择其他显示方式。"
+          : "请先安装所需插件，或选择其他显示方式。",
       );
   }
   async function save() {
