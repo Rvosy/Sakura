@@ -8,6 +8,10 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     const timer = setTimeout(() => reject(new Error("VISUAL_EDITOR_TIMEOUT")), timeoutMs);
     Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timer));
   });
+  function cleanup(target) {
+    const failed = error => { if (error?.name !== "AbortError") onError(error, "studio.visual.destroy"); };
+    try { Promise.resolve(target?.destroy?.()).catch(failed); } catch (error) { failed(error); }
+  }
   function freeze() {
     revision += 1;
     lifetime?.abort();
@@ -17,7 +21,7 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
   }
   function clear() {
     freeze();
-    try { Promise.resolve(instance?.destroy?.()).catch(() => {}); } catch { /* always detach old controls */ }
+    cleanup(instance);
     instance = null;
     container.replaceChildren();
   }
@@ -48,13 +52,15 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     target.className = instance ? "visual-editor-staging" : "";
     staged = target;
     container.append(target);
+    let stage = "studio.visual.module";
     try {
     const module = await bounded(loadModule(descriptor.presentation.visual.editor));
     if (signal.aborted) return false;
     if (typeof module.mountEditor !== "function") throw new Error("VISUAL_EDITOR_INVALID");
+    stage = "studio.visual.mount";
     const pending = Promise.resolve(module.mountEditor({ container: target, data: structuredClone(descriptor.data), signal, host: {
       changed(data) { if (!signal.aborted && revision === current) onChange(structuredClone(data)); },
-      error(error) { if (!signal.aborted) onError(String(error?.message || error)); },
+      error(error, stage = "studio.visual.editor") { if (!signal.aborted) onError(error, stage); },
       async importFiles(options = {}) {
         if (signal.aborted) return [];
         const files = await importFiles(options, { signal });
@@ -67,10 +73,12 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
         try {
           const url = path ? await loadAsset(path) : null;
           if (!signal.aborted && revision === current && preview === previewRevision) onPreview(url, descriptor.presentation.visual.resourceId, path || null);
-        } catch { /* A missing optional thumbnail does not block editing. */ }
+        } catch (error) {
+          if (!signal.aborted && revision === current && preview === previewRevision) onError(error, "studio.visual.preview");
+        }
       },
     } }));
-    pending.then((late) => { if (signal.aborted) late?.destroy?.(); }, () => {}).catch(() => {});
+    pending.then((late) => { if (signal.aborted) cleanup(late); }, () => {});
     const candidate = await bounded(pending);
     if (signal.aborted) return false;
     if (!candidate || typeof candidate.collect !== "function" || typeof candidate.validate !== "function" || typeof candidate.destroy !== "function") throw new Error("VISUAL_EDITOR_INVALID");
@@ -78,13 +86,14 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     const retire = () => {
       if (retired) return;
       retired = true;
-      try { Promise.resolve(candidate.destroy()).catch(() => {}); } catch { /* always detach */ }
+      cleanup(candidate);
     };
     signal.addEventListener("abort", retire, { once: true });
+    stage = "studio.visual.ready";
     await bounded(candidate.ready);
     if (signal.aborted) return false;
     signal.removeEventListener("abort", retire);
-    try { Promise.resolve(instance?.destroy?.()).catch(() => {}); } catch { /* replacement is ready */ }
+    cleanup(instance);
     instance = candidate;
     target.className = target.className.replace("visual-editor-staging", "").trim();
     container.replaceChildren(target);
@@ -94,6 +103,7 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     } catch (error) {
       if (current !== revision) return false;
       clear();
+      onError(error, stage);
       throw error;
     }
   }

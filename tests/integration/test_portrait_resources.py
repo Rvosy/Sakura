@@ -107,3 +107,30 @@ def test_portrait_editor_and_component_preserve_target_identity_and_voice(tmp_pa
         assert (user / "characters/b/character.json").read_bytes() == before
     finally:
         application.close()
+
+
+def test_portrait_decode_error_uses_plugin_logging_with_original_cause(tmp_path):
+    import io
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+    distribution, user = tmp_path / "distribution", tmp_path / "user"
+    shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_portrait", distribution / "plugins/builtin/sakura_portrait")
+    package = user / "characters/demo"
+    (package / "visual").mkdir(parents=True)
+    (package / "card.md").write_text("demo", encoding="utf-8")
+    (package / "character.json").write_text(json.dumps({"id": "demo", "display_name": "Demo", "card": "card.md", "visuals": {"resources": [{"id": "portrait", "type": "sakura.visual.portrait@1", "root": "visual", "entry": "resource.json"}], "default": "portrait"}}), encoding="utf-8")
+    (package / "visual/resource.json").write_text("{broken json", encoding="utf-8")
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    application = PluginApplicationHost(RuntimeRoots(distribution, user), "g", ToolRegistry())
+    try:
+        application.start()
+        application.application.bind_visual_character(CharacterRegistry(user).get("demo"))
+        assert application.application.visual_presentation()["visualReasonCode"] == "VISUAL_RESOURCE_INVALID"
+    finally:
+        application.close()
+        bridge.close()
+    records = [json.loads(line[len(CORE_BRIDGE_PREFIX):]) for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    record = next(record for record in records if record.get("plugin_id") == "sakura.portrait" and record.get("attributes", {}).get("stage") == "visual.describe")
+    assert "JSONDecodeError" in record["attributes"]["exception_chain"]
+    assert "Expecting property name" in record["attributes"]["diagnostic"]
+    assert "_describe" in record["attributes"]["exception_stack"]

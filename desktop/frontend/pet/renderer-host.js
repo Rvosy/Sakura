@@ -8,7 +8,11 @@ export function createRendererHost({ container, loadModule = (url) => import(url
   let ready = Promise.resolve(false);
   let epoch = 0;
   let staged = null;
-  const report = (code) => onUnavailable(code);
+  const report = (code, error, stage) => onUnavailable(code, error, stage);
+  function cleanup(target, method, ...args) {
+    const failed = error => { if (error?.name !== "AbortError") onError("VISUAL_RENDERER_CLEANUP_FAILED", error, `visual.renderer.${method}`); };
+    try { Promise.resolve(target?.[method]?.(...args)).catch(failed); } catch (error) { failed(error); }
+  }
   const bounded = (promise) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("VISUAL_RENDERER_TIMEOUT")), timeoutMs);
     Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timer));
@@ -18,22 +22,23 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     operation?.abort.abort();
     operation = null;
     if (hadOperation) services.cancelSurface?.();
-    try { if (hadOperation) Promise.resolve(instance?.cancel?.({ reason })).catch(() => {}); } catch { /* display remains optional */ }
+    if (hadOperation) cleanup(instance, "cancel", { reason });
   }
   function freeze(reason = "unbound") {
     epoch += 1;
+    const hadOperation = operation !== null;
     cancel(reason);
     lifetime?.abort();
     lifetime = null;
     staged?.remove();
     staged = null;
-    try { Promise.resolve(instance?.cancel?.({ reason })).catch(() => {}); } catch { /* frozen display is optional */ }
+    if (!hadOperation) cleanup(instance, "cancel", { reason });
     binding = null;
     ready = Promise.resolve(false);
   }
   function clear(reason = "unbound") {
     freeze(reason);
-    try { Promise.resolve(instance?.destroy?.()).catch(() => {}); } catch { /* detach even after plugin failure */ }
+    cleanup(instance, "destroy");
     instance = null;
     binding = null;
     container.replaceChildren();
@@ -61,12 +66,14 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     }]));
     ready = (async () => {
       let candidate;
+      let stage = "visual.renderer.module";
       try {
         const module = await bounded(loadModule(target.renderer));
         if (signal.aborted) return false;
         if (typeof module.mount !== "function") throw new Error("VISUAL_RENDERER_INVALID");
+        stage = "visual.renderer.mount";
         const pending = Promise.resolve(module.mount({ container: surface, resource: structuredClone(target), host: guarded, signal }));
-        pending.then((late) => { if (signal.aborted) late?.destroy?.(); }, () => {}).catch(() => {});
+        pending.then((late) => { if (signal.aborted) cleanup(late, "destroy"); }, () => {});
         candidate = await bounded(pending);
         if (signal.aborted) return false;
         if (!candidate || typeof candidate.applyState !== "function" || typeof candidate.destroy !== "function") throw new Error("VISUAL_RENDERER_INVALID");
@@ -74,20 +81,21 @@ export function createRendererHost({ container, loadModule = (url) => import(url
         const retire = () => {
           if (retired) return;
           retired = true;
-          try { Promise.resolve(candidate.destroy()).catch(() => {}); } catch { /* always detach */ }
+          cleanup(candidate, "destroy");
         };
         signal.addEventListener("abort", retire, { once: true });
+        stage = "visual.renderer.ready";
         await bounded(candidate.ready);
         if (signal.aborted) return false;
         signal.removeEventListener("abort", retire);
-        try { Promise.resolve(instance?.destroy?.()).catch(() => {}); } catch { /* replacement is ready */ }
+        cleanup(instance, "destroy");
         instance = candidate;
         surface.className = "visual-renderer-surface";
         container.replaceChildren(surface);
         staged = null;
         return true;
       } catch (error) {
-        if (epoch === current) { clear("renderer_failed"); report(String(error?.message || "VISUAL_RENDERER_FAILED")); }
+        if (epoch === current) { clear("renderer_failed"); report("VISUAL_RENDERER_FAILED", error, stage); }
         return false;
       }
     })();
@@ -115,8 +123,8 @@ export function createRendererHost({ container, loadModule = (url) => import(url
         await instance.perform?.(action, context);
       }
       return true;
-    } catch {
-      if (current === operation && !current.abort.signal.aborted && target === binding) onError("VISUAL_CONTROL_EXECUTION_FAILED");
+    } catch (error) {
+      if (current === operation && !current.abort.signal.aborted && target === binding) onError("VISUAL_CONTROL_EXECUTION_FAILED", error, "visual.control.execute");
       return false;
     }
   }

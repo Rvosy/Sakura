@@ -119,3 +119,24 @@ test("timed-out editor releases the container and revokes its services", async (
   assert.equal(destroyed, 1);
   assert.deepEqual(root.children, []);
 });
+
+
+test("editor errors and optional cover failures preserve the exception without blocking editing", async () => {
+  const errors = [];
+  const failure = new TypeError("preview decoder unavailable");
+  let scoped;
+  const host = createVisualEditorHost({ container: container(), onError: (...args) => errors.push(args),
+    assetUrl: async () => { throw failure; },
+    loadModule: async () => ({ mountEditor: ({ host }) => { scoped = host; return { collect: () => ({ angle: 20 }), validate() { return true; }, destroy() {} }; } }),
+  });
+  await host.open(descriptor);
+  scoped.error(failure);
+  await scoped.previewImage("model.png");
+  assert.equal(errors[0][0], failure);
+  assert.equal(errors[1][0], failure);
+  assert.equal(errors[1][1], "studio.visual.preview");
+  assert.deepEqual(host.collect(), { angle: 20 });
+  host.clear();
+  scoped.error(failure);
+  assert.equal(errors.length, 2);
+});

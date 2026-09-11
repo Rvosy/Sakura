@@ -263,7 +263,7 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
         _request("incomplete", "settings.provider_model.save", {"draft": draft})
     )
     assert incomplete["error"]["code"] == "MODEL_SLOT_INCOMPLETE"
-    assert incomplete["error"]["details"] == {
+    assert {key: incomplete["error"]["details"][key] for key in ("feature", "field")} == {
         "feature": "model.slots",
         "field": "plugin:com.example.second:second",
     }
@@ -917,3 +917,41 @@ def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
     finally:
         controller.close()
     assert mcp.close_count == 1
+
+
+@pytest.mark.parametrize("kind", ["list_models", "test_connection"])
+@pytest.mark.parametrize("latency", [8, 16])
+def test_google_probe_uses_full_timeout_without_restarting_request(
+    tmp_path: Path, monkeypatch, kind: str, latency: int,
+) -> None:
+    boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
+    boundary.enable()
+    calls = []
+
+    def read_response(_opener, request, *, timeout, cancel_checker):
+        calls.append(request)
+        cancel_checker()
+        # 用虚拟供应商耗时复现：8 秒生成应落在 15 秒预算内，不应被缩成 5 秒。
+        if latency > timeout:
+            raise TimeoutError()
+        assert request.get_header("Authorization") == f"Bearer {SECRET}"
+        if kind == "list_models":
+            assert request.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/models"
+            return b'{"data":[{"id":"gemini-2.5-flash"}]}', 200
+        assert request.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        payload = json.loads(request.data)
+        assert payload == {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Reply with only OK."}]}
+        return b'{"choices":[{"message":{"content":"OK"}}]}', 200
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    profile = _profile("google-probe")
+    profile["profile"].update(base_url="https://generativelanguage.googleapis.com/v1", model="gemini-2.5-flash", timeout_seconds=15)
+    result = boundary.handle(_request("google-probe", f"settings.provider_model.{kind}", profile))
+    assert len(calls) == 1
+    assert result["ok"] is (latency <= 15)
+    if latency > 15:
+        assert result["error"]["code"] == "PROVIDER_TIMEOUT"
+    elif kind == "list_models":
+        assert result["payload"]["models"] == ["gemini-2.5-flash"]
+    else:
+        assert result["payload"]["message"] == "OK"

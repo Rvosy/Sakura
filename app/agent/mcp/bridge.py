@@ -180,6 +180,8 @@ class MCPBridge:
                 )
                 read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
             elif self.config.transport == "sse":
+                from app.core.httpx_client import create_mcp_http_client
+
                 if not self.config.url:
                     raise ValueError(f"MCP Server {self.config.name} 缺少 url。")
                 read_stream, write_stream = await stack.enter_async_context(
@@ -187,6 +189,7 @@ class MCPBridge:
                         self.config.url,
                         headers=self.config.headers or None,
                         timeout=self.config.effective_call_timeout(self.default_call_timeout),
+                        httpx_client_factory=create_mcp_http_client,
                     )
                 )
             else:

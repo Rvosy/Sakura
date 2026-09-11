@@ -137,21 +137,53 @@ test("custom messages are bounded and cleaned before IPC without changing plain 
   assert.ok(!JSON.stringify(payload).includes("private-"));
 });
 
-test("real error and rejection fields locate app code without exception bodies", async () => {
+test("real errors retain original messages and frames with credentials redacted", async () => {
   const env=harness();
-  const error=new TypeError("PRIVATE_CHAT_BODY");
+  const error=new TypeError("Cannot read properties of undefined");
   env.listeners.get("error")({error,filename:"http://tauri.localhost/settings/index.js",lineno:42,colno:7});
-  const rejection=new Error("PRIVATE_KEY_VALUE");
-  rejection.stack="Error: PRIVATE_KEY_VALUE\n at send (tauri://localhost/chat/main.js:19:5)";
+  const rejection=new Error("Connection refused token=PRIVATE_KEY_VALUE");
+  rejection.stack="Error: Connection refused token=PRIVATE_KEY_VALUE\n at send (tauri://localhost/chat/main.js:19:5)";
   env.listeners.get("unhandledrejection")({reason:rejection});
   env.listeners.get("error")({target:{src:"https://private.example/PRIVATE_PATH.js"}});
   await env.diagnostics.flush();
   const entries=env.calls.find(([c])=>c===RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
   assert.equal(entries[0].details.file,"desktop/frontend/settings/index.js");
+  assert.match(entries[0].diagnostic,/Cannot read properties of undefined/);
+  assert.match(entries[1].exceptionStack,/Connection refused/);
   assert.equal(entries[0].details.line,42);
   assert.equal(entries[0].details.causeType,"TypeError");
   assert.equal(entries[1].details.line,19);
   assert.equal(entries[2].details.stage,"resource");
   assert.equal(entries[2].details.file,undefined);
   assert.equal(JSON.stringify(entries).includes("PRIVATE"),false);
+});
+
+
+test("caught plugin exceptions retain causes and stages through the shared diagnostic transport", async () => {
+  const env = harness();
+  const cause = new TypeError("model shader failed token=private-value at C:\\Users\\private\\model.bin");
+  const failure = new Error("renderer mount failed", { cause });
+  assert.equal(env.diagnostics.reportError(failure, { command: "visual_renderer", stage: "visual.renderer.ready", code: "VISUAL_RENDERER_FAILED" }), true);
+  assert.equal(env.diagnostics.reportError(failure, { command: "visual_renderer" }), false);
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].stage, "visual.renderer.ready");
+  assert.equal(entries[0].code, "VISUAL_RENDERER_FAILED");
+  assert.match(entries[0].diagnostic, /model shader failed/);
+  assert.match(entries[0].exceptionStack, /Caused by:/);
+  assert.doesNotMatch(JSON.stringify(entries), /private-value|Users/);
+});
+
+test("Studio polling remains debug and failed calls keep the method without request contents", async () => {
+  let failed = false;
+  const env = harness(async () => { if (failed) throw new Error("worker went away"); return {}; });
+  await env.diagnostics.invoke("studio_request", { method: "studio.visual.catalog", params: { private: "private-body" } });
+  failed = true;
+  await assert.rejects(env.diagnostics.invoke("studio_request", { method: "studio.visual.open", params: { private: "private-body" } }));
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.ok(entries.filter(entry => entry.command === "studio.visual.catalog").every(entry => entry.level === "debug"));
+  assert.match(entries.find(entry => entry.outcome === "failed").diagnostic, /worker went away/);
+  assert.doesNotMatch(JSON.stringify(entries), /private-body/);
 });

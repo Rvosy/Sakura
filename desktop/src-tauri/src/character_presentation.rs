@@ -64,7 +64,7 @@ pub(crate) fn inspect_png(path: &Path, byte_length: u64) -> Result<PortraitMetad
     let mut header = [0_u8; 33];
     File::open(path)
         .and_then(|mut file| file.read_exact(&mut header))
-        .map_err(|_| "CHARACTER_RESOURCE_DECODE_REJECTED".to_string())?;
+        .map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_DECODE_REJECTED", error))?;
     png_metadata(&header, byte_length)
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn decode_png_alpha_mask(
     decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::STRIP_16);
     let mut reader = decoder
         .read_info()
-        .map_err(|_| "CHARACTER_RESOURCE_DECODE_REJECTED".to_string())?;
+        .map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_DECODE_REJECTED", error))?;
     let output_size = reader
         .output_buffer_size()
         .filter(|size| *size <= MAX_DECODE_BYTES)
@@ -116,7 +116,7 @@ pub(crate) fn decode_png_alpha_mask(
     let mut decoded = vec![0_u8; output_size];
     let info = reader
         .next_frame(&mut decoded)
-        .map_err(|_| "CHARACTER_RESOURCE_DECODE_REJECTED".to_string())?;
+        .map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_DECODE_REJECTED", error))?;
     if info.width != expected.width
         || info.height != expected.height
         || info.bit_depth != png::BitDepth::Eight
@@ -129,7 +129,7 @@ pub(crate) fn decode_png_alpha_mask(
     }
     let channels = info.color_type.samples();
     let pixel_count = usize::try_from(u64::from(info.width) * u64::from(info.height))
-        .map_err(|_| "CHARACTER_RESOURCE_DECODE_REJECTED".to_string())?;
+        .map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_DECODE_REJECTED", error))?;
     let frame = &decoded[..info.buffer_size()];
     if frame.len() != pixel_count.saturating_mul(channels) {
         return Err("CHARACTER_RESOURCE_DECODE_REJECTED".to_string());

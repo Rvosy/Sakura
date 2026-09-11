@@ -76,7 +76,7 @@ TTS 返回 `TTS_STORAGE_UNAVAILABLE`，设置快照通过 `TTS_ROOT_MISSING`、`
 
 随主安装包预装的五个官方默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、
 `sakura_genie` 和 `sakura_gpt_sovits`。它们允许禁用、不可卸载；不可卸载只表示文件由安装器拥有，不赋予私有 API 或实现优先级。
-新用户默认关闭 Genie、GPT-SoVITS 和 Sakura Mobile，其余插件沿用各自默认状态。
+新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天，其余插件沿用各自默认状态。
 Shell 首次创建用户配置目录时，将这三个关闭状态写入 `config/plugins.yaml`。已有配置目录不补写或覆盖，
 包括尚未生成 `plugins.yaml`、一直沿用清单默认启用状态的老用户。清单保留原启用默认值用于升级兼容，
 用户之后手动启用或关闭的状态优先。初始化默认清单位于 `desktop/src-tauri/src/new_user_plugins.yaml`。
@@ -157,7 +157,8 @@ prerelease；客户端不调用 GitHub Releases API，也不自行比较版本�
 Updater 负责 SemVer 比较、签名下载包选择和安装前验签。
 
 Updater 网络请求同时遵循 Windows/macOS 系统代理和标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、
-`NO_PROXY` 环境变量。检查、下载、验签和安装的开始、完成及失败阶段写入 `sakura-runtime.log`；失败记录保留
+`NO_PROXY` 环境变量。每次检查更新和开始下载安装包分别创建客户端，读取当时的代理；已开始的下载不换连接。
+诊断上报每个新批次也重新创建客户端，不缓存启动时的代理。检查、下载、验签和安装的开始、完成及失败阶段写入 `sakura-runtime.log`；失败记录保留
 稳定错误码、脱敏后的底层诊断和代理来源是否已配置，但不得记录代理地址、凭据、签名密钥或带查询参数的下载
 地址。版本清单检查整体超时为 10 秒；用户明确开始安装后，签名安装包下载整体超时为 30 分钟，不能把清单
 检查的短超时复用于大文件下载。

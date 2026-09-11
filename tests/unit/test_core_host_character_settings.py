@@ -5,11 +5,34 @@ import zipfile
 from pathlib import Path
 
 import yaml
+import pytest
 
 from app.core_host.character_settings import CharacterSettingsBoundary
 
 GENERATION = "generation-character-settings"
 CREDENTIAL = "0123456789abcdef0123456789abcdef"
+
+
+@pytest.mark.parametrize("failure", ["missing", "zip", "permission"])
+def test_import_failure_keeps_original_cause_in_response(tmp_path, monkeypatch, failure):
+    archive = tmp_path / "broken.char"
+    if failure == "zip":
+        archive.write_bytes(b"this is not a zip archive")
+    elif failure == "permission":
+        def denied(*args):
+            raise PermissionError(13, "Permission denied", str(archive))
+        monkeypatch.setattr("app.core_host.character_settings.import_character_archive", denied)
+    response = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path).handle(
+        _request("characters.settings.import", {"path": str(archive)})
+    )
+    assert response["error"]["code"] == "CHARACTER_IMPORT_FAILED"
+    diagnostic = response["error"]["details"]["diagnostics"]
+    expected = {"missing": "FileNotFoundError", "zip": "BadZipFile", "permission": "PermissionError"}[failure]
+    assert diagnostic["cause_type"] == expected
+    assert expected in diagnostic["exception_chain"]
+    assert " at " in diagnostic["exception_stack"]
+    assert str(tmp_path) not in json.dumps(diagnostic)
+    assert CREDENTIAL not in json.dumps(diagnostic)
 
 
 def _request(name: str, payload: dict[str, object]) -> dict[str, object]:

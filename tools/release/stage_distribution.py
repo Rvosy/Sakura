@@ -10,13 +10,17 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app/plugin_sdk"))
+from sakura_downloads import uv_download_environment
 
 TARGETS = {"windows-x64", "macos-arm64", "linux-x64"}
 BUILTIN_PLUGINS = {
     "sakura_portrait",
+    "sakura_web",
     "sakura_mem0",
     "sakura_mobile",
     "sakura_tts_hub",
@@ -179,7 +183,7 @@ def stage_bundled_dependencies(stage: Path, target: str) -> None:
             ],
             check=True,
             cwd=plugin_root,
-            env=environment,
+            env=uv_download_environment(plugin_root, environment),
             timeout=600,
         )
         marker = {

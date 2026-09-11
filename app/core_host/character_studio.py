@@ -17,6 +17,10 @@ from app.config.character_studio import (
 from app.config.models import DEFAULT_THEME_SETTINGS, THEME_COLOR_FIELDS, theme_to_mapping
 from app.config.settings_service import AppSettingsService
 from app.core_host.protocol import error_payload, response
+from app.core.diagnostics import exception_diagnostics
+from app.core.runtime_log import log_event
+from app.core_host.visual_host import VisualHostError, VISUAL_INACTIVE_REASONS
+from app.plugins.runtime_v4 import PluginRuntimeError
 
 
 CHARACTER_STUDIO_REQUEST_NAMES = frozenset(
@@ -177,6 +181,15 @@ class CharacterStudioBoundary:
                     "STUDIO_OPERATION_CANCELLED",
                     "操作已取消，临时文件已清理。",
                 ).public_error(),
+            )
+        except (VisualHostError, PluginRuntimeError) as error:
+            public_error = CharacterStudioError(error.code, "表现资源操作失败，请查看运行日志。").public_error()
+            if self._generation_invalidated:
+                public_error["details"]["generationInvalidated"] = True
+            return response(
+                request, generation_id=self._generation_id,
+                generation_credential=self._generation_credential, protocol_minor=2,
+                error=public_error,
             )
         except (CharacterConfigError, OSError, ValueError) as error:
             public_error = CharacterStudioError(
@@ -387,10 +400,14 @@ class CharacterStudioBoundary:
                             size = path.stat().st_size
                             if path.is_file() and media_type and 0 < size <= 20 * 1024 * 1024:
                                 item.update(relativePath=relative, sourcePath=str(path), mediaType=media_type, byteLength=size)
-                    except (VisualHostError, PluginRuntimeError, ValueError, OSError):
+                    except (VisualHostError, PluginRuntimeError, ValueError, OSError) as error:
                         # Covers are optional; one unavailable provider or image
                         # must not hide the other cards or block their editors.
-                        pass
+                        code = getattr(error, "code", "VISUAL_PREVIEW_FAILED")
+                        if code not in VISUAL_INACTIVE_REASONS:
+                            log_event("Visual", "形态封面加载失败", exception_diagnostics(
+                                error, reason_code=code, stage="studio.visual.previews",
+                            ), event="visual.preview.failed", severity="warning")
                     items.append(item)
                 return {"schemaVersion": 1, "items": items}
             if name == "studio.visual.import":
@@ -402,8 +419,11 @@ class CharacterStudioBoundary:
                     visual_config.update({"resources": [item.to_mapping() for item in (*resources, resource)], "default": resource.id})
                     doc.visuals = visual_config
                     return _draft_to_public(self._service.save_workspace_draft(workspace, doc.to_payload()))
-                except BaseException:
-                    shutil.rmtree(package / resource.root)
+                except BaseException as error:
+                    try:
+                        shutil.rmtree(package / resource.root)
+                    except OSError as recovery:
+                        error.recovery_error = recovery
                     raise
             if name == "studio.visual.create":
                 resource_id = "visual-" + uuid.uuid4().hex[:12]
@@ -419,9 +439,12 @@ class CharacterStudioBoundary:
                     doc.visuals.setdefault("providers", {})[resource_id] = initial["visual"]["providerId"]
                     doc.visual_data[resource_id] = initial["data"]
                     return _draft_to_public(self._service.save_workspace_draft(workspace, doc.to_payload()))
-                except BaseException:
+                except BaseException as error:
                     import shutil
-                    shutil.rmtree(target)
+                    try:
+                        shutil.rmtree(target)
+                    except OSError as recovery:
+                        error.recovery_error = recovery
                     raise
             resource_id = self._text(payload.get("resourceId"))
             resource = next((item for item in resources if item.id == resource_id), None)

@@ -10,6 +10,7 @@ provides:
   - sakura.visual.portrait
 requires:
   - sakura.host.character
+  - sakura.host.logging
 presentation:
   kind: provider
   category: model

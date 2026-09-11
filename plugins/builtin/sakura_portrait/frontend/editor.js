@@ -59,7 +59,10 @@ export function mountEditor({ container, data, host, signal }) {
       if (signal.aborted || view.source !== source) return false;
       view.preview.src = url;
       return true;
-    }).catch(() => false);
+    }).catch(error => {
+      if (!signal.aborted && view.source === source) host.error(error, "studio.visual.thumbnail.decode");
+      return false;
+    });
     return view.ready;
   }
   function render() {

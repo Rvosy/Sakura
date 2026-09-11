@@ -45,11 +45,12 @@ _PLUGIN_STATES = frozenset(
 
 
 class PluginSettingsError(ValueError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(self, code: str, message: str, *, retryable: bool = False, recovery_error: BaseException | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.recovery_error = recovery_error
 
     def public_error(self) -> dict[str, object]:
         return {
@@ -312,6 +313,7 @@ class PluginSettingsBoundary:
                 raise PluginSettingsError(
                     code,
                     "插件安装未能应用到当前运行时。",
+                    recovery_error=rollback_error,
                 ) from apply_error
         result = self.snapshot()
         result.update(
@@ -360,6 +362,7 @@ class PluginSettingsBoundary:
                 raise PluginSettingsError(
                     code,
                     "插件卸载未能应用到当前运行时。",
+                    recovery_error=rollback_error,
                 ) from apply_error
             try:
                 installer.commit_uninstall(pending)

@@ -194,8 +194,12 @@ def _visual_reply(reply: ChatReply, binding: object | None) -> ChatReply:
                 segment={"tone": segment.tone},
             )
             control = result.control
-            if result.reason_code != "READY":
-                log_event("Visual", "表现控制未应用", {"reason_code": result.reason_code})
+            if result.reason_code not in {"READY", "VISUAL_BINDING_EXPIRED"}:
+                from app.core.diagnostics import exception_diagnostics
+                log_event("Visual", "表现控制未应用", exception_diagnostics(
+                    result.error or result.reason_code,
+                    reason_code=result.reason_code, stage="visual.parse_control",
+                ), event="visual.control.failed", severity="warning", plugin_id=binding.provider_id)
         segments.append(replace(segment, control=control))
     return ChatReply(segments)
 

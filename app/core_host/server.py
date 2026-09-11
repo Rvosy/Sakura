@@ -488,6 +488,10 @@ class ReadinessController:
 
                 application_tools = ToolRegistry([])
             application_mcp: MCPToolProvider | None = None
+            if plugins_enabled:
+                from app.config.web_plugin_migration import prepare_bundled_web_plugin
+
+                prepare_bundled_web_plugin(self._config.roots)
             if mcp_enabled:
                 from app.agent.mcp.provider import start_mcp_tools_from_config
 

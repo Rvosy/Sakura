@@ -59,7 +59,7 @@ pub struct CharacterPresentationState {
 
 impl CharacterPresentation {
     pub fn from_value(value: &Value, generation: &str) -> Result<Self, String> {
-        let result: Self = serde_json::from_value(value.clone()).map_err(|_| "CHARACTER_PRESENTATION_INVALID")?;
+        let result: Self = serde_json::from_value(value.clone()).map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_PRESENTATION_INVALID", error))?;
         result.validate(generation)?;
         Ok(result)
     }
@@ -133,8 +133,8 @@ impl CharacterPresentationState {
         if scope_id.is_empty() { return Err("VISUAL_EDITOR_INVALID".into()); }
         if presentation.visual.as_ref().is_none_or(|v| !v.assets.is_empty() || v.editor.is_none()) { return Err("VISUAL_EDITOR_INVALID".into()); }
         let (public, mut active) = self.prepare(presentation, generation)?;
-        let root = asset_root.canonicalize().map_err(|_| "VISUAL_EDITOR_ROOT_INVALID")?;
-        let workspaces = self.user_root.join("data/character_studio/drafts").canonicalize().map_err(|_| "VISUAL_EDITOR_ROOT_INVALID")?;
+        let root = asset_root.canonicalize().map_err(|error| crate::runtime_log::diagnostic_error("VISUAL_EDITOR_ROOT_INVALID", error))?;
+        let workspaces = self.user_root.join("data/character_studio/drafts").canonicalize().map_err(|error| crate::runtime_log::diagnostic_error("VISUAL_EDITOR_ROOT_INVALID", error))?;
         if !root.starts_with(workspaces) || !root.is_dir() { return Err("VISUAL_EDITOR_ROOT_INVALID".into()); }
         active.root = Some(root);
         let mut editors = self.editors.lock().map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?;
@@ -207,7 +207,7 @@ impl CharacterPresentationState {
         let binding = resource_id.and_then(|id| id.split_once('-').map(|(binding, _)| binding));
         let active = self.target(binding, generation)?;
         let path = asset_path(&active, key)?;
-        let file = path.metadata().map_err(|_| "CHARACTER_RESOURCE_MISSING")?;
+        let file = path.metadata().map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_MISSING", error))?;
         let modified = file.modified().ok();
         let size = file.len();
         {
@@ -235,11 +235,11 @@ fn asset_path(active: &Active, key: &str) -> Result<PathBuf, String> {
     resolve(active.root.as_ref().ok_or("CHARACTER_ROOT_UNAVAILABLE")?, relative)
 }
 fn find_package(user: &Path, id: &str) -> Result<PathBuf, String> {
-    let base = user.join("characters").canonicalize().map_err(|_| "CHARACTER_ROOT_UNAVAILABLE")?;
-    for entry in fs::read_dir(&base).map_err(|_| "CHARACTER_ROOT_UNAVAILABLE")? {
-        let entry = entry.map_err(|_| "CHARACTER_ROOT_UNAVAILABLE")?;
-        if !entry.file_type().map_err(|_| "CHARACTER_ROOT_UNAVAILABLE")?.is_dir() { continue; }
-        let root = entry.path().canonicalize().map_err(|_| "CHARACTER_ROOT_UNAVAILABLE")?;
+    let base = user.join("characters").canonicalize().map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_ROOT_UNAVAILABLE", error))?;
+    for entry in fs::read_dir(&base).map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_ROOT_UNAVAILABLE", error))? {
+        let entry = entry.map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_ROOT_UNAVAILABLE", error))?;
+        if !entry.file_type().map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_ROOT_UNAVAILABLE", error))?.is_dir() { continue; }
+        let root = entry.path().canonicalize().map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_ROOT_UNAVAILABLE", error))?;
         if !root.starts_with(&base) { continue; }
         let Ok(path) = resolve(&root, "character.json") else { continue };
         let Ok(bytes) = read_bounded(&path, 256 * 1024) else { continue };
@@ -249,8 +249,8 @@ fn find_package(user: &Path, id: &str) -> Result<PathBuf, String> {
     Err("CHARACTER_MANIFEST_NOT_FOUND".into())
 }
 fn resolve_directory(base: &Path, name: &str) -> Result<PathBuf, String> {
-    let base = base.canonicalize().map_err(|_| "VISUAL_INSTALL_INVALID")?;
-    let root = base.join(name).canonicalize().map_err(|_| "VISUAL_INSTALL_INVALID")?;
+    let base = base.canonicalize().map_err(|error| crate::runtime_log::diagnostic_error("VISUAL_INSTALL_INVALID", error))?;
+    let root = base.join(name).canonicalize().map_err(|error| crate::runtime_log::diagnostic_error("VISUAL_INSTALL_INVALID", error))?;
     if !root.starts_with(base) || !root.is_dir() { return Err("VISUAL_INSTALL_INVALID".into()); }
     Ok(root)
 }
@@ -260,15 +260,15 @@ fn safe_relative(value: &str) -> Result<&Path, String> {
     Ok(path)
 }
 fn resolve(root: &Path, value: &str) -> Result<PathBuf, String> {
-    let path = root.join(safe_relative(value)?).canonicalize().map_err(|_| "CHARACTER_RESOURCE_MISSING")?;
+    let path = root.join(safe_relative(value)?).canonicalize().map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_MISSING", error))?;
     if !path.starts_with(root) || !path.is_file() { return Err("CHARACTER_RESOURCE_PATH_REJECTED".into()); }
     Ok(path)
 }
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let file = fs::File::open(path).map_err(|_| "CHARACTER_RESOURCE_READ_FAILED")?;
+    let file = fs::File::open(path).map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_READ_FAILED", error))?;
     let mut bytes = Vec::new();
-    file.take(limit + 1).read_to_end(&mut bytes).map_err(|_| "CHARACTER_RESOURCE_READ_FAILED")?;
+    file.take(limit + 1).read_to_end(&mut bytes).map_err(|error| crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_READ_FAILED", error))?;
     if bytes.len() as u64 > limit { return Err("CHARACTER_RESOURCE_SIZE_REJECTED".into()); }
     Ok(bytes)
 }
@@ -313,6 +313,19 @@ mod tests {
             visual: Some(VisualPresentation { binding_id: "a".repeat(32), resource_id: "model-1".into(), r#type: "fixture.numeric@1".into(), provider_id: "fixture.numeric".into(), install_id: format!("pi_bundled_{}", hex_text("numeric")), renderer: "frontend/renderer.js".into(), editor: None, data: serde_json::json!({"maxAngle":30}), assets: BTreeMap::from([("model".into(), "assets/model.json".into())]) }),
         }
     }
+    #[test]
+    fn resource_io_failure_preserves_system_error_without_a_private_path() {
+        let dir = Fixture::new();
+        let state = CharacterPresentationState::new(dir.path().into());
+        state.activate(fixture(dir.path()), "g").unwrap();
+        fs::remove_file(dir.path().join("characters/model/assets/model.json")).unwrap();
+        let error = state.load_resource("67", &format!("{}-{}", "a".repeat(32), hex_text("model")), "g").err().unwrap();
+        let source = fs::canonicalize(dir.path().join("characters/model/assets/model.json")).unwrap_err();
+        assert!(error.starts_with("CHARACTER_RESOURCE_MISSING: "));
+        assert!(error.contains(&source.to_string()));
+        assert!(!error.contains(dir.path().to_str().unwrap()));
+    }
+
     #[test]
     fn numeric_assets_and_installed_modules_are_scoped_and_old_tokens_expire() {
         let dir = Fixture::new();

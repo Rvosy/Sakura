@@ -127,12 +127,12 @@ export function createPortraitController({
               currentKey = key;
               resolve(Object.freeze({ applied: true, key, recoveredUnknownKey: !known }));
             };
-            const failed = () => {
+            const failed = (error) => {
               if (requestToken !== token || generation !== generationId) {
                 return resolve(Object.freeze({ applied: false, key, staleGeneration: true }));
               }
               cancelPreview();
-              reportError({ code: "PORTRAIT_COMMIT_FAILED", requestedKey: key });
+              reportError({ code: "PORTRAIT_COMMIT_FAILED", requestedKey: key, error });
               resolve(Object.freeze({ applied: false, key, failed: true }));
             };
             try {
@@ -142,17 +142,17 @@ export function createPortraitController({
               } else {
                 complete(commitResult);
               }
-            } catch {
-              failed();
+            } catch (error) {
+              failed(error);
             }
           }, Math.max(0, transitionMs));
         });
-      } catch {
+      } catch (error) {
         if (requestToken !== token || generation !== generationId) {
           return Object.freeze({ applied: false, key, staleGeneration: true });
         }
         if (failureCode !== "PORTRAIT_DECODE_FAILED") cancelPreview();
-        reportError({ code: failureCode, requestedKey: key });
+        reportError({ code: failureCode, requestedKey: key, error });
         if (currentKey === null) showFallback({ key, source });
         notifyVisualReady();
         return Object.freeze({ applied: false, key, failed: true });
@@ -171,11 +171,11 @@ export function createPortraitController({
           return Object.freeze({ loaded: false, key, staleGeneration: true });
         }
         return Object.freeze({ loaded: true, key, recoveredUnknownKey: !known });
-      } catch {
+      } catch (error) {
         if (generation !== generationId) {
           return Object.freeze({ loaded: false, key, staleGeneration: true });
         }
-        reportError({ code: "PORTRAIT_DECODE_FAILED", requestedKey: key });
+        reportError({ code: "PORTRAIT_DECODE_FAILED", requestedKey: key, error });
         return Object.freeze({ loaded: false, key, failed: true });
       }
     },
@@ -207,6 +207,7 @@ export function mount({ container, resource, host, signal }) {
   for (const image of [current, next]) { image.draggable = false; image.alt = ""; }
   frame.append(current, next);
   root.append(frame);
+  let loadError;
   const assets = resource.assets;
   const data = resource.data;
   let transition = false;
@@ -251,16 +252,16 @@ export function mount({ container, resource, host, signal }) {
       if (transition) {
         transition = false;
         try { await host.finishSurface(); }
-        catch { host.reportError("PORTRAIT_SURFACE_FINISH_FAILED"); }
+        catch (error) { host.reportError("PORTRAIT_SURFACE_FINISH_FAILED", error); }
       }
       return true;
     },
     showFallback: () => host.unavailable("PORTRAIT_DECODE_FAILED"),
-    reportError: ({ code }) => host.reportError(code),
+    reportError: ({ code, error }) => { loadError = error; host.reportError(code, error); },
   });
   controller.beginGeneration(String(generation));
   const ready = controller.show(data.defaultKey, { immediate: true, generation: String(generation) }).then((result) => {
-    if (!result.applied && !signal.aborted) throw new Error("PORTRAIT_DECODE_FAILED");
+    if (!result.applied && !signal.aborted) throw loadError || new Error("PORTRAIT_DECODE_FAILED");
   });
   return {
     ready,

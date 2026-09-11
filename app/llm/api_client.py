@@ -119,8 +119,10 @@ class OpenAICompatibleClient:
         *,
         agent_trace_recorder: AgentTraceRecorder | None = None,
         app_version: str | None = None,
+        retry_requests: bool = True,
     ) -> None:
         self.settings = settings
+        self._request_attempts = MAX_AUTO_RETRY_ATTEMPTS if retry_requests else 1
         resolved_version = app_version or read_app_version(Path(__file__).resolve().parents[2])
         self._app_version = resolved_version.strip().removeprefix("v")
         self._unsupported_chat_params: set[str] = set()
@@ -195,7 +197,7 @@ class OpenAICompatibleClient:
         self._ensure_chat_config("缺少 API_KEY。请在设置中填写 API Key。")
 
         # 连通性检测只需验证 Base URL / API Key / 模型可用，不发送 temperature：
-        # 部分模型（如 o1/o3/gpt-5 等推理模型）只接受默认温度，显式传值会直接报错。
+        # 部分推理模型只接受默认温度；也不限制输出 token，避免挤占思考预算。
         payload = {
             "model": self.settings.model,
             "messages": [
@@ -204,7 +206,6 @@ class OpenAICompatibleClient:
                     "content": "Reply with only OK.",
                 },
             ],
-            "max_tokens": 8,
         }
         data = self._post_chat_completions_with_compatibility_fallbacks(
             payload,
@@ -860,7 +861,7 @@ class OpenAICompatibleClient:
         cancel_checker: CancelChecker | None = None,
     ) -> str:
         last_error: BaseException | None = None
-        for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
+        for attempt in range(1, self._request_attempts + 1):
             check_cancelled(cancel_checker)
             self._trace_local.request_diagnostic = {
                 **getattr(self._trace_local, "request_diagnostic", {}),
@@ -926,7 +927,7 @@ class OpenAICompatibleClient:
                     severity="warning",
                     verbosity=0,
                 )
-                if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                if exc.code not in {429, 500, 502, 503, 504} or attempt == self._request_attempts:
                     raise ApiRequestError(
                         _format_api_http_error(
                             exc.code,
@@ -946,7 +947,7 @@ class OpenAICompatibleClient:
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "retryable": attempt < self._request_attempts,
                         "error_type": type(exc.reason).__name__,
                         "reason_code": "NETWORK_UNAVAILABLE",
                         "stage": "provider_request",
@@ -956,7 +957,7 @@ class OpenAICompatibleClient:
                     severity="warning",
                     verbosity=0,
                 )
-                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                if attempt == self._request_attempts:
                     raise ApiRequestError(f"API 请求失败：{exc.reason}") from exc
                 last_error = exc
             except TimeoutError as exc:
@@ -968,7 +969,7 @@ class OpenAICompatibleClient:
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "retryable": attempt < self._request_attempts,
                         "error_type": type(exc).__name__,
                         "diagnostic": f"Provider 在 {self.settings.timeout_seconds}s 内未返回响应",
                     },
@@ -976,7 +977,7 @@ class OpenAICompatibleClient:
                     severity="warning",
                     verbosity=0,
                 )
-                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                if attempt == self._request_attempts:
                     raise ApiRequestError("API 请求超时。") from exc
                 last_error = exc
             except (ssl.SSLError, ConnectionError, http.client.RemoteDisconnected) as exc:
@@ -989,7 +990,7 @@ class OpenAICompatibleClient:
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "retryable": attempt < self._request_attempts,
                         "error_type": type(exc).__name__,
                         "reason_code": "CONNECTION_INTERRUPTED",
                         "stage": "provider_request",
@@ -999,7 +1000,7 @@ class OpenAICompatibleClient:
                     severity="warning",
                     verbosity=0,
                 )
-                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                if attempt == self._request_attempts:
                     raise ApiRequestError(f"API 连接中断：{exc}") from exc
                 last_error = exc
 
@@ -1008,7 +1009,7 @@ class OpenAICompatibleClient:
                 "准备重试请求",
                 {
                     "attempt": attempt,
-                    "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                    "max_attempts": self._request_attempts,
                     "delay_seconds": API_RETRY_DELAY_SECONDS * attempt,
                     "last_error": str(last_error),
                 },
@@ -1049,9 +1050,8 @@ def _normalize_openai_base_url(base_url: str) -> str:
     if parsed.netloc.lower() != "generativelanguage.googleapis.com":
         return normalized
     parts = [part for part in parsed.path.split("/") if part]
-    if parts and parts[0] in {"v1", "v1beta"} and "openai" not in parts:
-        parts.append("openai")
-        return urlunparse(parsed._replace(path="/" + "/".join(parts))).rstrip("/")
+    if parts in ([], ["v1"], ["v1beta"], ["v1", "openai"], ["v1beta", "openai"]):
+        return urlunparse(parsed._replace(path="/v1beta/openai")).rstrip("/")
     return normalized
 
 

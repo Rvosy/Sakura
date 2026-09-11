@@ -70,6 +70,10 @@ capability dependency；Python distribution dependency 单独通过 `pyproject.t
 - 只有用户发起安装、更新或重试时才允许解析和下载依赖。
 - 同一个分发包在目标 CPython ABI 或平台没有可用 wheel 时明确失败，不尝试污染主 Runtime 作为回退。
 - uv cache 可以共享下载文件并使用 hardlink/clone；每个插件的 import 可见集合仍然独立。
+- 未指定软件包源时，插件安装、源码依赖准备和本地发行 staging 默认使用阿里云 PyPI 镜像。
+  `UV_*` 源配置、uv 配置文件和插件 requirements 中的源声明优先；没有 uv 源配置时，沿用显式的
+  `PIP_INDEX_URL`。不改写锁文件、直接下载 URL 或 uv 的索引选择策略，也不混用多个默认镜像。
+  海外 GitHub Actions 打包任务显式使用官方 PyPI。镜像缺包或不可用时明确报错，用户可指定其他源后重试。
 
 标准 venv 与 `uv pip --target` 都可以作为 dependency root 的内部实现候选。实现选择不得改变插件包、SDK、
 进程启动和故障 DTO；PoC 必须覆盖 console scripts、native wheels、卸载和三平台路径后再冻结一种。
@@ -118,6 +122,11 @@ Python 标准库
 SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`。允许因跨进程而收紧参数、返回值和 cleanup
 合同，但不把 RPC client、PID、pipe、模块名或进程地址暴露给插件作者。
 
+SDK 提供不依赖 Core 的 `sakura_http.urlopen_direct_for_loopback` 和 `proxy_for_url`。内置插件的 HTTP API
+与资源下载使用前者；每次请求、重试和重定向读取当前代理，本地回环直连，已开始的传输不换连接。
+其他 HTTP 客户端可通过后者取得单次请求的代理。插件自带的外部程序不受 Python SDK 接管；宿主启动
+`uv` 依赖下载任务时将当时的系统代理传入该子进程，运行中的安装任务保留启动时的配置。
+
 插件不得从 `data_path()` 的物理位置反推 `user_root`。确需继续拥有现有共享用户数据的插件通过通用
 `sakura.host.storage` 取得有界的 data/cache 目录 descriptor；当前角色及角色卡正文通过
 `sakura.host.character.current()` 取得；Provider 目录、对话模型继承和调用凭据通过
@@ -150,7 +159,7 @@ Core 从当前 RPC 调用上下文绑定插件身份，不信任插件传入的 
 Core 补齐交互关联编号，Rust 注入本次运行、generation 与 Core PID。插件不能选择文件路径或目标来源。
 
 消息最多 1024 UTF-8 字节，字段字符串最多 256 字节；字段最多 3 层、每层 8 项、总遍历预算 32 项，
-字段编码预算 1800 字节。超限明确标记 `truncated`，桥接整行连同前缀和换行最多 4 KiB。
+普通字段编码预算 1800 字节。原始错误使用独立预算：`diagnostic` 4096 字符，异常链和调用栈各 8192 字符。超限明确标记 `truncated`，桥接整行连同前缀和换行最多 32 KiB。
 凭据、敏感内容字段和绝对路径在传出插件进程前清洗，Rust 在文件与 UI 投影前再次清洗。
 自定义文本不是私密 Trace：插件作者不得主动记录对话正文、模型内容、环境变量或原始异常对象，
 文本清洗无法保证识别任意私密内容。UI 按纯文本显示，复制使用同一份清洗结果。
@@ -166,7 +175,8 @@ Rust 依据可信来源分流：插件主动记录写入 `sakura-plugins.log`，
 插件名称用于筛选项和日志行展示，插件 ID 保留在详情和复制文本中。
 ASR Hub 和语音输入 Provider 的记录归入“插件”页，按各自插件名称筛选，同样写入 `sakura-plugins.log`。
 Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接入宿主日志。
-不自动捕获插件标准 `logging`、`print`、stderr 或外部程序输出。Agent Trace 的实现保持独立。
+插件进程 stderr（包括 runner 重定向的 stdout）由 Core 持续、有界读取并清洗后记录；不拦截标准 `logging` 配置。Agent Trace 的实现保持独立。
+SDK 的 warning/error 和固定诊断入口在异常处理期间自动附加原文及调用栈。Service RPC error 通过可选 `diagnostics` 保留跨插件异常链，宿主再次清洗。
 
 
 ### 4.2 内置及随附插件的日志分级
@@ -187,9 +197,9 @@ Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接�
 | 手机端 | 服务启动/停止、监听失败、请求拒绝/失败 | TCP 连接、正常请求、状态刷新、客户端断开 |
 | Playwright | 工具及页面就绪、配置变化、停止、操作失败、关闭超时/失败 | 成功的读取及页面操作 |
 
-插件错误记录使用操作名、稳定错误码和异常类型，不写入原始异常正文、浏览器参数、请求头、客户端地址或聊天内容。
+插件错误记录保留操作名、稳定错误码、异常类型及脱敏后的错误原文与调用栈；不主动写入浏览器参数、请求头或聊天内容。
 手机端停止写入 `mobile-server.log`，已有文件保留。语音引擎与转换器原有外部进程输出文件继续保留，
-不自动转发到统一日志窗口；其启动、就绪和失败由插件主动报告。日志队列拥塞及传输中断由接入层汇总丢弃数量，
+失败时从本次启动的输出中提取有界错误或 traceback 片段进入日志窗口，不转发完整输出；其启动、就绪和失败由插件主动报告。日志队列拥塞及传输中断由接入层汇总丢弃数量，
 Core 接收后的丢弃由 Core 汇总，SDK 不重复累计下游丢弃。
 
 
@@ -293,6 +303,11 @@ Tools、Context contributors、Timeline observers、Settings sections 和模型�
 注册，可以由多个插件同时贡献。它们按现有 descriptor、Effect cleanup、数量和 payload 上限管理，不创建
 一个强制唯一的总 Service。
 
+工具 descriptor 可指定 `timeoutSeconds`（有限正数，最大 120 秒），省略时使用原有的 15 秒回调期限。
+该字段用于执行期限，不提供给模型作为工具参数。插件和 MCP 工具登记必须原子拒绝同名覆盖并报告
+`TOOL_NAME_CONFLICT`。插件返回含 `isError=true` 的对象时，ToolRegistry 将调用标记为失败，保留结果给模型，
+`reasonCode` 仅接受有界 ASCII 原因码后进入日志；正文与参数继续脱敏。
+
 Memory 默认采用 Contribution 组合。官方 Mem0 可同时提供 Timeline 消费、Context、Tools、Settings 和
 model slot；替代插件可以提供相同或部分贡献。用户既可以关闭 Mem0 完整替换，也可以启用多个不同 Memory
 插件共同工作。Runtime 不预设唯一 `sakura.memory` Store/Search/Recall 协议。
@@ -314,8 +329,8 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
 `bundled` 可以让安装器拥有插件文件并禁止卸载，但不能隐含 privileged API。默认领域插件必须允许停用，以便
 替代实现接管能力；插件关闭后保留文件用于恢复默认是允许的。
 
-当前迁移范围中的预装默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie` 和
-`sakura_gpt_sovits`。新用户默认关闭 Genie、GPT-SoVITS 和 Sakura Mobile；已有用户的显式开关和沿用清单的
+预装插件包括 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
+`sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天；已有用户的显式开关和沿用清单的
 隐式启用状态保持不变，初始化规则见[发行与存储](release-distribution-and-storage.md)。`playwright_browser` 改为可选插件，不进入主安装包。
 
 ## 8. 生命周期、失败与恢复

@@ -48,6 +48,9 @@ bash scripts/start.sh
 
 `scripts/start.bat` 和 `scripts/start.sh` 都会增量编译并启动 debug 开发版。
 
+源码安装脚本和 Windows 本地打包默认使用阿里云 PyPI 镜像。可通过 `PIP_INDEX_URL` 指定其他源；插件依赖
+安装也支持 `UV_DEFAULT_INDEX`。这些设置只影响本次启动的安装进程，不写入系统 pip 配置。
+
 ### Windows 本地生成安装包
 
 仓库已准备好 `runtime/`、Rust 和 Node.js 后，在根目录执行：

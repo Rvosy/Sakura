@@ -13,7 +13,7 @@ from typing import Callable, Mapping
 
 from app.core_host.audio_input import AudioInputError
 from app.config.settings_service import AppSettingsService
-from app.core.runtime_log import log_message
+from app.core.runtime_log import log_message, diagnostic_attributes
 from app.core_host.protocol import error_payload, response
 
 ASR_REQUEST_NAMES = frozenset({
@@ -47,6 +47,7 @@ class _Input:
     path: str = ""
     text: str = ""
     error_code: str = ""
+    diagnostics: dict = field(default_factory=dict)
     submitted: bool = False
     capture_started: float | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
@@ -291,10 +292,12 @@ class ASRBoundary:
         except Exception as error:
             with self._lock:
                 if task.state not in {"cancelled", "consumed", "failed"}:
+                    failed_stage = task.state
                     task.state = "failed"
                     task.error_code = getattr(error, "code", "ASR_PROVIDER_UNAVAILABLE")
                     if not isinstance(task.error_code, str) or not re.fullmatch(r"[A-Z0-9_]{1,80}", task.error_code):
                         task.error_code = "ASR_PROVIDER_UNAVAILABLE"
+                    task.diagnostics = diagnostic_attributes(error, reason_code=task.error_code, stage=failed_stage)
         finally:
             with self._lock:
                 if "succeeded" not in task.logged_states:
@@ -394,6 +397,7 @@ class ASRBoundary:
                   "elapsed_ms": max(0, round((monotonic() - task.started) * 1000))}
         if state == "failed":
             fields["reason_code"] = task.error_code
+            fields.update(task.diagnostics)
         log_message("warning" if state == "failed" else "info", messages[state], fields=fields, component="core")
 
     def _require_binding(self, task: _Input) -> None:

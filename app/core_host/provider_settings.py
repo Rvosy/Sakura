@@ -13,7 +13,6 @@ from app.config.provider_model_settings import (
     ProviderModelSettingsRepository,
 )
 from app.core.cancellation import CancellationToken, OperationCancelled
-from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.llm.api_client import ApiConfigError, ApiRequestError, ApiSettings, OpenAICompatibleClient
 from app.llm.provider_errors import provider_http_status, public_provider_http_message
 
@@ -58,6 +57,13 @@ class ProviderSettingsBoundary:
             self._enabled = True
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
+        from app.core.diagnostics import diagnostic_secret_scope, register_diagnostic_secret
+
+        with diagnostic_secret_scope():
+            register_diagnostic_secret(self._generation_credential)
+            return self._handle(request)
+
+    def _handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied_credential = request.get("generationCredential")
         if (
             request.get("generationId") != self._generation_id
@@ -508,18 +514,19 @@ class ProviderSettingsBoundary:
                 raw["profile"],
                 require_model=require_model,
             )
-            # The shared client retries each HTTP request. Treat the setting as
-            # a total probe budget so the Rust-side 65 second deadline remains
-            # strictly larger than the worst-case three attempts plus backoff.
-            per_attempt_timeout = max(1, timeout // MAX_AUTO_RETRY_ATTEMPTS)
+            from app.core.diagnostics import register_diagnostic_secret
+
+            register_diagnostic_secret(secret)
+            # 探测只发送一次，给生成请求完整预算；避免短超时重复中断慢模型。
             client = OpenAICompatibleClient(
                 ApiSettings(
                     base_url=base_url,
                     api_key=secret,
                     model=model,
-                    timeout_seconds=per_attempt_timeout,
+                    timeout_seconds=timeout,
                 ),
                 app_version=self._app_version,
+                retry_requests=False,
             )
             # Core stdout is reserved for framed protocol bytes.  The shared
             # client emits normal runtime logs to stdout, so probe traffic must

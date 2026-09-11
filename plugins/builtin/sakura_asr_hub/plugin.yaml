@@ -1,7 +1,7 @@
 api: 4
 id: sakura.asr
-name: Sakura ASR Hub
-author: Sakura
+name: 语音输入
+author: Rvosy
 description: 选择语音输入引擎。
 version: 0.1.0
 entry: plugin:SakuraASRHubPlugin

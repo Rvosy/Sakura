@@ -216,6 +216,7 @@ class _Coordinator:
         self._config = config
         self._cache_root = cache_root
         self._log_path = log_path
+        self._log_start_offset = 0
         self._diagnostic = diagnostic
         self._queue: queue.Queue[_Job | _Warmup | object] = queue.Queue(maxsize=16)
         self._closed = threading.Event()
@@ -348,6 +349,7 @@ class _Coordinator:
             job.cancel()
             job.fail("TTS_SYNTHESIS_CANCELLED")
         except Exception as error:
+            self._report("tts.synthesis.failed", "error", {"reason_code": _stable_error_code(error), "error_type": type(error).__name__})
             job.fail(getattr(error, "code", str(error)))
         finally:
             if source is not None:
@@ -516,13 +518,22 @@ class _Coordinator:
             job.check_cancelled()
             exit_code = process.poll()
             if exit_code is not None:
-                raise RuntimeError("TTS_RUNTIME_EXITED")
+                raise self._process_failure("TTS_RUNTIME_EXITED", self._log_path, self._log_start_offset)
             if _probe_genie_api_url(self._config.api_url, 1):
                 self._endpoint_ready = True
                 self._report("tts.service.ready", "info", {})
                 return
             job.wait_or_cancel(0.05)
-        raise RuntimeError("TTS_RUNTIME_TIMEOUT")
+        raise self._process_failure("TTS_RUNTIME_TIMEOUT", self._log_path, self._log_start_offset)
+
+    @staticmethod
+    def _process_failure(code: str, path: Path, start_offset: int = 0) -> RuntimeError:
+        from sakura_process import process_failure_diagnostics
+
+        error = RuntimeError(code)
+        error.code = code
+        error.diagnostics = process_failure_diagnostics(path, start_offset)
+        return error
 
     def _start_managed_runtime(self, host: str, port: int) -> None:
         work_dir = self._config.work_dir
@@ -533,6 +544,7 @@ class _Coordinator:
             raise RuntimeError("TTS_RUNTIME_INVALID")
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         log_handle = self._log_path.open("a", encoding="utf-8")
+        self._log_start_offset = log_handle.tell()
         kwargs: dict[str, object] = {
             "cwd": _subprocess_path(work_dir),
             "env": _local_tts_subprocess_env(python_exe),
@@ -706,7 +718,7 @@ class _Coordinator:
                         })
                         next_report = now + _CONVERSION_LOG_INTERVAL_SECONDS
                 if process.returncode != 0:
-                    raise RuntimeError("TTS_ONNX_CONVERSION_FAILED")
+                    raise self._process_failure("TTS_ONNX_CONVERSION_FAILED", self._log_path.with_name("genie-converter.log"))
             finally:
                 with self._lock:
                     if self._conversion_process is process:

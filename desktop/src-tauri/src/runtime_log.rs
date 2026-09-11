@@ -15,7 +15,7 @@ use crate::telemetry::TelemetryService;
 
 pub const CORE_BRIDGE_PREFIX: &str = "SAKURA_RUNTIME_LOG_V1\t";
 pub const PRODUCTION_QUEUE_CAPACITY: usize = 1024;
-pub const PRODUCTION_MAX_RECORD_BYTES: usize = 4 * 1024;
+pub const PRODUCTION_MAX_RECORD_BYTES: usize = 32 * 1024;
 pub const PRODUCTION_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const PRODUCTION_BACKUP_COUNT: usize = 5;
 pub const PRODUCTION_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
@@ -405,7 +405,11 @@ pub struct WebviewDiagnosticEntry {
     #[serde(default)]
     code: Option<String>,
     #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
     diagnostic: Option<String>,
+    #[serde(default)]
+    exception_stack: Option<String>,
     #[serde(default)]
     elapsed_ms: Option<f64>,
     #[serde(default)]
@@ -705,7 +709,7 @@ impl RuntimeLogService {
         window_label: &str,
         entry: WebviewDiagnosticEntry,
     ) -> Result<RuntimeLogEvent, &'static str> {
-        if !matches!(window_label, "main" | "settings") {
+        if !matches!(window_label, "main" | "settings" | "studio") {
             return Err("RUNTIME_DIAGNOSTIC_WINDOW_INVALID");
         }
         let submitted_severity = match entry.level.as_str() {
@@ -760,7 +764,7 @@ impl RuntimeLogService {
         };
         if entry.command.as_deref().is_some_and(|value| {
             normalize_token(value, 96).is_none() || value == "record_runtime_diagnostics"
-        }) || entry
+        }) || entry.stage.as_deref().is_some_and(|value| normalize_token(value, 96).is_none()) || entry
             .outcome
             .as_deref()
             .is_some_and(|value| !matches!(value, "started" | "completed" | "failed" | "cancelled"))
@@ -778,18 +782,14 @@ impl RuntimeLogService {
                 .operation_id
                 .as_deref()
                 .is_some_and(|value| valid_id(value, 128).is_none())
-            || entry.diagnostic.as_deref().is_some_and(|value| {
-                value.is_empty()
-                    || value.chars().count() > 240
-                    || value.chars().any(char::is_control)
-                    || value.contains("://")
-                    || looks_secret_shaped(value)
-                    || self
-                        .inner
-                        .secrets
-                        .iter()
-                        .any(|secret| value.contains(secret))
-            })
+            || entry
+                .diagnostic
+                .as_deref()
+                .is_some_and(|value| value.is_empty() || value.chars().count() > 4096)
+            || entry
+                .exception_stack
+                .as_ref()
+                .is_some_and(|value| value.len() > 32768)
         {
             return Err("RUNTIME_DIAGNOSTIC_FIELDS_INVALID");
         }
@@ -816,8 +816,14 @@ impl RuntimeLogService {
         if let Some(code) = entry.code {
             attributes.insert("code".to_string(), Value::String(code));
         }
+        if let Some(stage) = entry.stage {
+            attributes.insert("stage".to_string(), Value::String(stage));
+        }
         if let Some(diagnostic) = entry.diagnostic {
             attributes.insert("diagnostic".to_string(), Value::String(diagnostic));
+        }
+        if let Some(stack) = entry.exception_stack {
+            attributes.insert("exception_stack".to_string(), Value::String(stack));
         }
         if let Some(elapsed_ms) = entry.elapsed_ms {
             if let Some(value) = serde_json::Number::from_f64(elapsed_ms) {
@@ -935,12 +941,32 @@ impl RuntimeLogService {
                 attributes: event.attributes.as_ref().and_then(|value| {
                     if event.custom {
                         let mut budget = 32;
-                        Some(sanitize_log_fields(
-                            value,
-                            &self.inner.secrets,
-                            0,
-                            &mut budget,
-                        ))
+                        let mut fields =
+                            sanitize_log_fields(value, &self.inner.secrets, 0, &mut budget);
+                        if let (Some(target), Some(safe)) = (
+                            fields.as_object_mut(),
+                            sanitize_attributes(value, &self.inner.secrets),
+                        ) {
+                            if let Some(safe) = safe.as_object() {
+                                for (key, value) in safe {
+                                    if matches!(
+                                        key.as_str(),
+                                        "diagnostic"
+                                            | "exception_chain"
+                                            | "exception_stack"
+                                            | "recovery_diagnostic"
+                                            | "cause_type"
+                                            | "error_type"
+                                            | "exception_site"
+                                            | "errno"
+                                            | "winerror"
+                                    ) {
+                                        target.insert(key.clone(), value.clone());
+                                    }
+                                }
+                            }
+                        }
+                        Some(fields)
                     } else {
                         sanitize_attributes(value, &self.inner.secrets)
                     }
@@ -1105,9 +1131,24 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
         .as_ref()
         .and_then(Value::as_object)
         .into_iter()
-        .flat_map(|fields| fields.iter().take(9))
+        .flat_map(|fields| fields.iter().take(24))
         .map(|(key, value)| RuntimeLogViewerDetail {
-            label: key.clone(),
+            label: if matches!(
+                key.as_str(),
+                "diagnostic"
+                    | "exception_chain"
+                    | "exception_stack"
+                    | "recovery_diagnostic"
+                    | "cause_type"
+                    | "error_type"
+                    | "exception_site"
+                    | "errno"
+                    | "winerror"
+            ) {
+                viewer_detail_label(key).to_string()
+            } else {
+                key.clone()
+            },
             value: value
                 .as_str()
                 .filter(|text| !text.is_empty())
@@ -1333,7 +1374,13 @@ fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>>
     let attribute_summary = if record.custom {
         custom_viewer_details(record)
             .into_iter()
-            .map(|d| format!("{}={}", d.label, d.value))
+            .map(|d| {
+                format!(
+                    "{}={}",
+                    d.label,
+                    d.value.replace('\n', " \\n ").replace('\r', "")
+                )
+            })
             .collect::<Vec<_>>()
             .join(" ")
     } else {
@@ -1391,10 +1438,30 @@ fn project_viewer_record(
             viewer_record_message(record, severity)
         },
         description: viewer_problem_description(record, severity).map(str::to_string),
-        details: if record.custom {
-            custom_viewer_details(record)
-        } else {
-            viewer_details(record)
+        details: {
+            let mut details = if record.custom {
+                custom_viewer_details(record)
+            } else {
+                viewer_details(record)
+            };
+            if matches!(severity, Severity::Warning | Severity::Error) {
+                details.push(RuntimeLogViewerDetail {
+                    label: "应用版本".into(),
+                    value: env!("CARGO_PKG_VERSION").into(),
+                });
+                for (label, value) in [
+                    ("请求编号", &record.request_id),
+                    ("操作编号", &record.operation_id),
+                ] {
+                    if let Some(value) = value {
+                        details.push(RuntimeLogViewerDetail {
+                            label: label.into(),
+                            value: value.clone(),
+                        });
+                    }
+                }
+            }
+            details
         },
         correlation_id: viewer_correlation(record),
     })
@@ -1459,10 +1526,10 @@ fn viewer_record_default_message(record: &RuntimeLogRecord, severity: Severity) 
 
 fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
     let suffix = match record.event.as_str() {
-        "ipc.request.started" => "中",
-        "ipc.request.completed" => "完成",
-        "ipc.request.cancelled" => "已取消",
-        "ipc.request.failed" => "失败",
+        "ipc.request.started" | "webview.command.started" => "中",
+        "ipc.request.completed" | "webview.command.completed" => "完成",
+        "ipc.request.cancelled" | "webview.command.cancelled" => "已取消",
+        "ipc.request.failed" | "webview.command.failed" => "失败",
         _ => return None,
     };
     let command = viewer_attribute_strings(record, &["command"]).next()?;
@@ -1502,6 +1569,23 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "tts.playback.observe" => "更新语音播放状态",
         "screen_awareness.settings.get" => "读取屏幕感知设置",
         "screen_awareness.settings.save" => "保存屏幕感知设置",
+        "studio.bootstrap" => "打开角色工坊",
+        "studio.character.open" => "打开角色草稿",
+        "studio.character.create" => "新建角色",
+        "studio.character.publish" => "保存角色",
+        "studio.draft.save" => "保存角色草稿",
+        "studio.visual.catalog" => "读取形态插件目录",
+        "studio.visual.open" | "studio_visual_open" | "studio_visual_editor" => "打开形态编辑器",
+        "studio.visual.previews" | "studio_visual_previews" | "studio_visual_cover" => "加载形态封面",
+        "studio.visual.create" => "添加形态",
+        "studio.visual.import" => "导入形态",
+        "studio.visual.export" => "导出形态",
+        "studio.asset.import" => "导入角色资源",
+        "characters.visuals.get" | "settings_character_visuals_get" => "读取角色形态",
+        "visual_renderer" | "visual_startup" => "加载角色表现",
+        "visual_control" => "执行表现控制",
+        "visual_preview" => "预览角色",
+        "visual_rebind" => "切换角色表现",
         "characters.settings.get" => "读取角色设置",
         "characters.settings.import" => "导入角色",
         "characters.settings.import_voice" => "导入角色语音",
@@ -1513,7 +1597,7 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "ui.history.page" => "读取对话记录",
         _ => return None,
     };
-    Some(if record.event == "ipc.request.started" {
+    Some(if matches!(record.event.as_str(), "ipc.request.started" | "webview.command.started") {
         format!("正在{action}")
     } else {
         format!("{action}{suffix}")
@@ -1786,8 +1870,13 @@ fn viewer_http_status(record: &RuntimeLogRecord) -> Option<u16> {
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 62] = [
+    const PRIORITY: [&str; 67] = [
         "diagnostic",
+        "exception_chain",
+        "exception_stack",
+        "recovery_diagnostic",
+        "errno",
+        "winerror",
         "context_window_tokens",
         "context_window_source",
         "input_target",
@@ -1893,7 +1982,7 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
                 rendered
             },
         });
-        if details.len() >= 12 {
+        if details.len() >= 24 {
             break;
         }
     }
@@ -1954,6 +2043,11 @@ fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> 
 fn viewer_detail_label(key: &str) -> &'static str {
     match key {
         "diagnostic" => "诊断",
+        "exception_chain" => "异常链",
+        "exception_stack" => "调用栈",
+        "recovery_diagnostic" => "回滚报错",
+        "errno" => "系统错误码",
+        "winerror" => "Windows 错误码",
         "context_window_tokens" => "模型上下文窗口",
         "context_window_source" => "窗口来源",
         "input_target" => "输入预算",
@@ -2001,7 +2095,7 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "return_code" => "返回码",
         "copy_method" => "复制方式",
         "detected_version" => "检测到的版本",
-        "errno" | "winerror" | "sqlite_errorcode" => "系统错误码",
+        "sqlite_errorcode" => "系统错误码",
         "sqlite_errorname" => "SQLite 错误",
         "lines" => "行数",
         "items" => "项目数",
@@ -2084,6 +2178,10 @@ fn business_message(event: &str) -> Option<&'static str> {
         "reply.processing.failed" => "模型回复处理失败",
         "reply.display.completed" => "回复已显示",
         "reply.display.failed" => "回复显示失败",
+        "visual.binding.failed" => "角色表现加载失败",
+        "visual.control.failed" => "表现控制未应用",
+        "visual.preview.failed" => "角色预览加载失败",
+        "visual.resource.failed" => "角色表现资源加载失败",
         "tool.execution.started" => "正在执行工具",
         "tool.execution.finished" => "工具执行完成",
         "tool.execution.waiting_confirmation" => "工具正在等待确认",
@@ -2275,6 +2373,10 @@ fn viewer_message(event: &str, severity: Severity) -> &'static str {
         "reply.processing.failed" => "模型回复处理失败",
         "reply.display.completed" => "回复已显示",
         "reply.display.failed" => "回复显示失败",
+        "visual.binding.failed" => "角色表现加载失败",
+        "visual.control.failed" => "表现控制未应用",
+        "visual.preview.failed" => "角色预览加载失败",
+        "visual.resource.failed" => "角色表现资源加载失败",
         "tool.execution.started" => "正在执行工具",
         "tool.execution.finished" => "工具执行完成",
         "tool.execution.waiting_confirmation" => "工具正在等待确认",
@@ -2633,8 +2735,13 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "reason_code",
         "error_type",
     ];
-    const FAILURE_DETAIL_PRIORITY: [&str; 7] = [
+    const FAILURE_DETAIL_PRIORITY: [&str; 12] = [
         "diagnostic",
+        "exception_chain",
+        "exception_stack",
+        "recovery_diagnostic",
+        "errno",
+        "winerror",
         "code",
         "reason_code",
         "stage",
@@ -2679,11 +2786,12 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
     };
     let mut parts = Vec::new();
     let mut seen = Vec::new();
-    for wanted in priority
-        .iter()
-        .copied()
-        .chain(FAILURE_DETAIL_PRIORITY.into_iter())
-    {
+    let (first, second): (&[&str], &[&str]) = if object.contains_key("diagnostic") {
+        (&FAILURE_DETAIL_PRIORITY, priority)
+    } else {
+        (priority, &FAILURE_DETAIL_PRIORITY)
+    };
+    for wanted in first.iter().copied().chain(second.iter().copied()) {
         if seen.contains(&wanted) {
             continue;
         }
@@ -2694,7 +2802,10 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         else {
             continue;
         };
-        let rendered = render_human_scalar(wanted, value);
+        let rendered = render_human_scalar(wanted, value)
+            .replace('\r', "")
+            .replace('\n', " \\n ")
+            .replace('│', "|");
         let suffix = if wanted.ends_with("_ms") { "ms" } else { "" };
         let display_key = match wanted {
             "model_call" => "call",
@@ -2704,7 +2815,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
             other => other,
         };
         parts.push(format!("{display_key}={rendered}{suffix}"));
-        if parts.len() >= 12 {
+        if parts.len() >= 24 {
             break;
         }
     }
@@ -2849,18 +2960,19 @@ fn sanitize_attribute_string(
     if matches!(normalized_key, "error" | "reason" | "message") {
         return None;
     }
-    let stripped = strip_ansi(value);
-    if normalized_key == "diagnostic" {
-        if stripped.is_empty()
-            || looks_absolute_path(&stripped)
-            || stripped.contains("://")
-            || looks_secret_shaped(&stripped)
-            || secrets.iter().any(|secret| stripped.contains(secret))
-        {
-            return None;
-        }
-        return Some(stripped.chars().take(320).collect());
+    if matches!(
+        normalized_key,
+        "diagnostic" | "exception_chain" | "exception_stack" | "recovery_diagnostic"
+    ) {
+        let maximum = if normalized_key == "diagnostic" {
+            4096
+        } else {
+            8192
+        };
+        let cleaned = sanitize_diagnostic(value, secrets, maximum);
+        return (!cleaned.is_empty()).then_some(cleaned);
     }
+    let stripped = strip_ansi(value);
     if stripped.is_empty()
         || looks_absolute_path(&stripped)
         || stripped.contains("://")
@@ -2873,6 +2985,12 @@ fn sanitize_attribute_string(
 }
 
 fn forbidden_key(key: &str) -> bool {
+    if matches!(
+        key,
+        "exception_chain" | "exception_stack" | "recovery_diagnostic" | "errno" | "winerror"
+    ) {
+        return false;
+    }
     if matches!(
         key,
         "diagnostic"
@@ -2926,6 +3044,12 @@ fn forbidden_key(key: &str) -> bool {
 }
 
 fn allowed_attribute_key(key: &str) -> bool {
+    if matches!(
+        key,
+        "exception_chain" | "exception_stack" | "recovery_diagnostic" | "errno" | "winerror"
+    ) {
+        return true;
+    }
     matches!(
         key,
         "source_file"
@@ -3135,6 +3259,9 @@ fn normalize_key(value: &str) -> String {
         .replace("errortype", "error_type")
         .replace("causetype", "cause_type")
         .replace("exceptionsite", "exception_site")
+        .replace("exceptionchain", "exception_chain")
+        .replace("exceptionstack", "exception_stack")
+        .replace("recoverydiagnostic", "recovery_diagnostic")
         .replace("expectedbytes", "expected_bytes")
         .replace("expectedfiles", "expected_files")
         .replace("finalreplyelapsedms", "final_reply_elapsed_ms")
@@ -3237,6 +3364,92 @@ fn sanitize_fixed_message(value: &str) -> String {
         return "Runtime event".to_string();
     }
     stripped.chars().take(192).collect()
+}
+
+/// Preserve the failure text while redacting just credentials and private paths.
+/// Multiline diagnostics stay multiline in the viewer; the text writer escapes them.
+pub(crate) fn diagnostic_error(code: &str, error: impl std::fmt::Display) -> String {
+    format!("{code}: {}", sanitize_diagnostic(&error.to_string(), &[], 4096))
+}
+
+pub(crate) fn sanitize_diagnostic(value: &str, secrets: &[String], maximum: usize) -> String {
+    use regex::{Captures, Regex};
+    use std::sync::LazyLock;
+    static SECRET: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+        r#"(?i)\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)|\bbearer\s+[^\s,;}]+|\bsk-[\w.-]{6,}"#
+    ).expect("diagnostic credential pattern")
+    });
+    static URL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>"']+"#).unwrap());
+    static QUOTED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"["']((?:[A-Za-z]:[\\/]|/|\\\\)[^\r\n"']*)["']"#).unwrap());
+    static PATH: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>|,;]*|(?:^|[\s(\[])/[^\s"'<>|,;]*"#).unwrap()
+    });
+    fn path(value: &str) -> String {
+        let normalized = value.replace('\\', "/");
+        let name = normalized
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("");
+        format!("<路径>/{name}")
+    }
+    let mut text = strip_ansi(value);
+    for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
+        text = text.replace(secret, "[REDACTED]");
+    }
+    text = SECRET.replace_all(&text, "[REDACTED]").into_owned();
+    let mut urls = Vec::new();
+    text = URL
+        .replace_all(&text, |capture: &Captures<'_>| {
+            let safe = reqwest::Url::parse(&capture[0])
+                .map(|mut url| {
+                    let _ = url.set_username("");
+                    let _ = url.set_password(None);
+                    url.set_query(None);
+                    url.set_fragment(None);
+                    if url.scheme() == "file" {
+                        path(url.path())
+                    } else {
+                        url.to_string()
+                    }
+                })
+                .unwrap_or_else(|_| "[URL]".to_string());
+            urls.push(safe);
+            format!("<url-{}>", urls.len() - 1)
+        })
+        .into_owned();
+    text = QUOTED
+        .replace_all(&text, |capture: &Captures<'_>| {
+            format!("'{}'", path(&capture[1]))
+        })
+        .into_owned();
+    text = PATH
+        .replace_all(&text, |capture: &Captures<'_>| {
+            let value = &capture[0];
+            let prefix = value
+                .chars()
+                .next()
+                .filter(|c| c.is_whitespace() || matches!(c, '(' | '['));
+            format!(
+                "{}{}",
+                prefix.map(|c| c.to_string()).unwrap_or_default(),
+                path(value.trim_start_matches([' ', '\n', '\t', '(', '[']))
+            )
+        })
+        .into_owned();
+    for (index, url) in urls.into_iter().enumerate() {
+        text = text.replace(&format!("<url-{index}>"), &url);
+    }
+    text = text.trim().to_string();
+    if text.chars().count() > maximum {
+        let total = text.chars().count();
+        text = text.chars().take(maximum.saturating_sub(48)).collect();
+        text.push_str(&format!("\n[truncated: {total} characters]"));
+    }
+    text
 }
 
 fn strip_ansi(value: &str) -> String {
@@ -3803,7 +4016,9 @@ mod tests {
         log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.contains("[API]"));
-        assert!(line.contains("trace=17 call=2 status=401"));
+        for field in ["trace=17", "call=2", "status=401"] {
+            assert!(line.contains(field));
+        }
         assert!(line.contains("provider_error_type=authentication_error"));
         assert!(line.contains("provider_error_code=invalid_api_key"));
         assert!(line.contains("diagnostic=Invalid authentication credentials"));
@@ -4362,6 +4577,28 @@ mod tests {
     }
 
     #[test]
+    fn visual_webview_failure_reaches_viewer_with_stage_and_redacted_stack() {
+        let root = temp_root("visual-diagnostics");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let entry: WebviewDiagnosticEntry = serde_json::from_value(json!({
+            "level": "warn", "event": "webview.command.failed", "command": "studio_visual_editor",
+            "outcome": "failed", "code": "VISUAL_EDITOR_FAILED", "stage": "studio.visual.ready",
+            "diagnostic": "TypeError: texture decode failed token=private-value",
+            "exceptionStack": "TypeError: texture decode failed\n at mount (C:/Users/private/renderer.js:12:3)"
+        })).unwrap();
+        let event = log.prepare_webview(crate::character_studio_window::STUDIO_WINDOW_LABEL, entry).unwrap();
+        assert!(log.submit(event));
+        let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+        let text = serde_json::to_string(&record).unwrap();
+        assert!(text.contains("texture decode failed"));
+        assert!(text.contains("studio.visual.ready"));
+        assert!(text.contains("renderer.js"));
+        assert!(!text.contains("private-value"));
+        assert!(!text.contains("Users/private"));
+        assert!(log.shutdown(Duration::from_secs(2)));
+    }
+
+    #[test]
     fn wp_5_06_viewer_projects_safe_ordered_error_details() {
         let root = temp_root("viewer-error");
         let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
@@ -4398,7 +4635,9 @@ mod tests {
                 "类型",
                 "根因类型",
                 "代码位置",
-                "耗时"
+                "耗时",
+                "应用版本",
+                "操作编号"
             ]
         );
         let serialized = serde_json::to_string(&record).unwrap();
@@ -4449,6 +4688,10 @@ mod tests {
                 ("输出预留", "131072 tokens"),
                 ("安全余量", "6554 tokens"),
                 ("错误码", "CONTEXT_WINDOW_EXCEEDED"),
+                ("原因码", "CONTEXT_WINDOW_EXCEEDED"),
+                ("阶段", "window_capacity"),
+                ("应用版本", env!("CARGO_PKG_VERSION")),
+                ("操作编号", "chat-context-budget-1"),
             ]
         );
         log.drain_and_shutdown_for_test();

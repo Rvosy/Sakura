@@ -891,3 +891,12 @@ class TestAgentRuntimeBasics:
             )
 
         assert executed == []
+
+
+def test_tool_prompt_does_not_advertise_unavailable_web_tools() -> None:
+    from app.llm.prompts.blocks import screen_awareness_web_research_rules_block
+    runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
+    prompt = runtime._build_tool_system_prompt()
+    for name in ("web__web_search", "web__fetch_url"):
+        assert name not in prompt
+        assert name not in str(screen_awareness_web_research_rules_block())

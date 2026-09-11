@@ -1,0 +1,15 @@
+api: 4
+id: sakura.web
+name: 联网工具
+author: Rvosy
+description: 搜索公开网页和读取链接内容。
+version: 1.0.0
+entry: plugin:WebPlugin
+enabled: true
+provides: []
+requires:
+  - sakura.host.tools
+presentation:
+  kind: extension
+  category: tools
+  icon: globe

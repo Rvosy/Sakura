@@ -1600,7 +1600,7 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
 
 def _safe_diagnostic(error: BaseException, *, code: str, message: str) -> None:
     try:
-        from app.core.runtime_log import external_runtime_sink_active, log_event
+        from app.core.runtime_log import external_runtime_sink_active, log_event, diagnostic_attributes
         from app.llm.prompts.runtime import ContextWindowExceededError
 
         if external_runtime_sink_active():
@@ -1608,7 +1608,7 @@ def _safe_diagnostic(error: BaseException, *, code: str, message: str) -> None:
                 "code": code,
                 "reason_code": code,
                 "error_type": type(error).__name__,
-                "diagnostic": message,
+                **diagnostic_attributes(error, reason_code=code, stage="chat"),
             }
             if isinstance(error, ContextWindowExceededError):
                 attributes.update(error.log_attributes())

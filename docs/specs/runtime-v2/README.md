@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-08
+updated: 2026-09-11
 ---
 
 # Runtime v2 Specs
@@ -20,6 +20,7 @@ updated: 2026-09-08
 - [设置功能增量迁移规范](settings-incremental-migration.md)
 - [Sakura Plugin Runtime v4](sakura-plugin-runtime-v4.md)
 - [表现插件：资源、编辑、控制与渲染](visual-plugin-boundary.md)
+- [联网插件](web-plugin.md)
 - [ASR Hub 与点击式语音输入](asr-voice-input.md)
 - [Sakura Plugin API v3（已取代）](sakura-plugin-kernel-v3.md)
 - [Runtime v2 热应用规范](runtime-hot-application.md)

@@ -224,7 +224,7 @@ def test_safe_stack_keeps_sixteen_frames_within_local_bridge_limit() -> None:
     }
     line = runtime_logging._encode_telemetry_record("error", long_candidate)  # noqa: SLF001
     assert line is not None
-    assert len(line) > runtime_logging.CORE_BRIDGE_MAX_LINE_BYTES
+    assert len(line) > 4096  # Telemetry has its own budget, independent of local diagnostic records.
     assert len(line) <= runtime_logging.TELEMETRY_BRIDGE_MAX_LINE_BYTES
 
 

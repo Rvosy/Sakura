@@ -1754,6 +1754,7 @@ async function startSettingsFrontend() {
   let manifest = await invoke("settings_capability_manifest");
   const { createCharacterSettingsFeature } = await import("./character-settings.js");
   runtimeCharacterFeature = createCharacterSettingsFeature({
+    reportError: (...args) => runtimeDiagnostics.reportError(...args),
     document,
     window,
     invoke,

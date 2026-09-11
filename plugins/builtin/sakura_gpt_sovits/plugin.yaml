@@ -1,8 +1,8 @@
 api: 4
 id: sakura.tts.gpt-sovits
-name: GPT-SoVITS Provider
-author: Sakura
-description: 让角色使用 GPT-SoVITS 说话。
+name: GPT-SoVITS 语音合成
+author: Rvosy
+description: 使用 GPT-SoVITS 合成角色语音。
 version: 0.1.0
 entry: plugin:GPTSoVITSPlugin
 # 保留老用户未显式保存的启用状态；新用户由 Shell 的 new_user_plugins.yaml 初始化为关闭。

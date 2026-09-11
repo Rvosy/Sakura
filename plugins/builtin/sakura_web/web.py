@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import html
 import http.client
-import json
 import socket
 import ssl
-import sys
 import base64
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -13,9 +11,12 @@ from ipaddress import ip_address
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 
+try:
+    from sakura_http import proxy_for_url
+except ImportError:
+    from app.plugin_sdk.sakura_http import proxy_for_url
 
-SERVER_NAME = "sakura-web-search"
-SERVER_VERSION = "0.1.0"
+
 DEFAULT_TIMEOUT_SECONDS = 12
 MAX_REDIRECTS = 5
 USER_AGENT = (
@@ -29,6 +30,12 @@ class SearchResult:
     title: str
     url: str
     snippet: str = ""
+
+
+class WebError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -79,128 +86,6 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def main() -> int:
-    _configure_stdio_utf8()
-    try:
-        _run_fastmcp_server()
-        return 0
-    except ImportError:
-        # 测试环境或未安装 mcp 时保留轻量 JSON-RPC fallback，正式运行应使用 FastMCP。
-        pass
-
-    for raw_line in sys.stdin:
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-            response = handle_message(message)
-        except Exception as exc:  # MCP Server 不能因为单条坏消息退出。
-            response = _error_response(None, -32603, f"内部错误：{exc}")
-        if response is not None:
-            _write_message(response)
-    return 0
-
-
-def _configure_stdio_utf8() -> None:
-    """Keep MCP JSON-RPC UTF-8 even on Windows legacy code pages."""
-
-    for stream in (sys.stdin, sys.stdout):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
-            reconfigure(encoding="utf-8", errors="strict")
-
-
-def _run_fastmcp_server() -> None:
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP(SERVER_NAME, log_level="ERROR")
-
-    @mcp.tool(
-        name="web_search",
-        description="搜索公开网页，并返回标题、链接和简短摘要。适合查询最新信息、资料来源和网页入口。",
-        structured_output=True,
-    )
-    def web_search_tool(query: str, max_results: int = 5) -> dict[str, Any]:
-        """搜索公开网页。"""
-
-        return search_web(
-            query=query,
-            max_results=_clamp_int(max_results, default=5, minimum=1, maximum=10),
-        )
-
-    @mcp.tool(
-        name="fetch_url",
-        description="读取一个公开 http/https 网页，抽取标题、正文文本和页面链接。",
-        structured_output=True,
-    )
-    def fetch_url_tool(url: str, max_chars: int = 6000) -> dict[str, Any]:
-        """读取公开网页正文。"""
-
-        return fetch_url(
-            url=url,
-            max_chars=_clamp_int(max_chars, default=6000, minimum=500, maximum=20000),
-        )
-
-    mcp.run("stdio")
-
-
-def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
-    request_id = message.get("id")
-    method = str(message.get("method") or "")
-    params = message.get("params") if isinstance(message.get("params"), dict) else {}
-
-    if request_id is None:
-        return None
-    if method == "initialize":
-        requested_version = str(params.get("protocolVersion") or "2024-11-05")
-        return _result_response(
-            request_id,
-            {
-                "protocolVersion": requested_version,
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-            },
-        )
-    if method == "ping":
-        return _result_response(request_id, {})
-    if method == "tools/list":
-        return _result_response(request_id, {"tools": TOOLS})
-    if method == "tools/call":
-        return _handle_tool_call(request_id, params)
-    if method == "resources/list":
-        return _result_response(request_id, {"resources": []})
-    if method == "prompts/list":
-        return _result_response(request_id, {"prompts": []})
-    return _error_response(request_id, -32601, f"不支持的方法：{method}")
-
-
-def _handle_tool_call(request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
-    name = str(params.get("name") or "")
-    arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-    try:
-        if name == "web_search":
-            payload = search_web(
-                query=_required_string(arguments, "query"),
-                max_results=_clamp_int(arguments.get("max_results"), default=5, minimum=1, maximum=10),
-            )
-        elif name == "fetch_url":
-            payload = fetch_url(
-                url=_required_string(arguments, "url"),
-                max_chars=_clamp_int(arguments.get("max_chars"), default=6000, minimum=500, maximum=20000),
-            )
-        else:
-            return _error_response(request_id, -32602, f"未知工具：{name}")
-    except Exception as exc:
-        return _result_response(
-            request_id,
-            {
-                "content": [{"type": "text", "text": str(exc)}],
-                "isError": True,
-            },
-        )
-    return _tool_result_response(request_id, payload)
-
 
 def search_web(query: str, max_results: int = 5) -> dict[str, Any]:
     query = query.strip()
@@ -212,6 +97,8 @@ def search_web(query: str, max_results: int = 5) -> dict[str, Any]:
     parser = BingSearchParser()
     parser.feed(html_text)
     results = _dedupe_results(parser.results)[:max_results]
+    if not results and not parser.no_results:
+        raise WebError("WEB_SEARCH_RESPONSE_INVALID", "搜索服务未返回可识别的结果，可能需要验证或页面格式已变化。")
     return {
         "query": query,
         "source": "Bing",
@@ -224,7 +111,7 @@ def search_web(query: str, max_results: int = 5) -> dict[str, Any]:
 
 def fetch_url(url: str, max_chars: int = 6000) -> dict[str, Any]:
     normalized_url = _validate_public_http_url(url)
-    raw_text, content_type, final_url = _read_url_text_with_metadata(
+    raw_text, content_type, final_url, response_truncated = _read_url_text_with_metadata(
         normalized_url,
         max_bytes=max(256_000, min(max_chars * 8, 1_500_000)),
     )
@@ -233,8 +120,14 @@ def fetch_url(url: str, max_chars: int = 6000) -> dict[str, Any]:
         parser.feed(raw_text)
         text = _normalize_space(parser.text)
         title = _normalize_space(parser.title)
-        links = parser.links[:30]
+        links = [
+            {"text": item["text"], "url": urljoin(final_url, item["url"])}
+            for item in parser.links[:30]
+            if urlparse(urljoin(final_url, item["url"])).scheme in {"http", "https"}
+        ]
     else:
+        if not (content_type.lower().startswith("text/") or "json" in content_type.lower() or "xml" in content_type.lower()):
+            raise WebError("WEB_CONTENT_UNSUPPORTED", "该链接不是可读取的网页或文本。")
         text = _normalize_space(raw_text)
         title = ""
         links = []
@@ -243,7 +136,7 @@ def fetch_url(url: str, max_chars: int = 6000) -> dict[str, Any]:
         "content_type": content_type,
         "title": title,
         "text": text[:max_chars],
-        "truncated": len(text) > max_chars,
+        "truncated": response_truncated or len(text) > max_chars,
         "links": links,
     }
 
@@ -260,17 +153,23 @@ class BingSearchParser(HTMLParser):
         self._active_href = ""
         self._active_text: list[str] = []
         self._snippet_parts: list[str] = []
+        self.no_results = False
+        self._in_heading = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_map = {key.lower(): value or "" for key, value in attrs}
         classes = set(attrs_map.get("class", "").split())
+        if "b_no" in classes:
+            self.no_results = True
         if tag == "li" and "b_algo" in classes:
             self._result_depth = 1
             self._snippet_parts = []
             return
-        if self._result_depth:
+        if self._result_depth and tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
             self._result_depth += 1
-        if self._result_depth and tag == "a":
+        if self._result_depth and tag == "h2":
+            self._in_heading = True
+        if self._result_depth and self._in_heading and tag == "a":
             href = _normalize_result_href(attrs_map.get("href", ""))
             if href:
                 self._active_href = href
@@ -287,10 +186,12 @@ class BingSearchParser(HTMLParser):
             self._snippet_parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "h2":
+            self._in_heading = False
         if tag == "a" and self._in_title_link:
             title = _normalize_space("".join(self._active_text))
             if title and _looks_like_result_url(self._active_href):
-                self.results.append(SearchResult(title=title, url=self._active_href))
+                self.results.append(SearchResult(title=title[:500], url=self._active_href[:8192]))
             self._active_href = ""
             self._active_text = []
             self._in_title_link = False
@@ -334,7 +235,7 @@ class PageTextParser(HTMLParser):
             self._in_title = True
         if tag == "a":
             href = attrs_map.get("href", "")
-            if href.startswith(("http://", "https://")):
+            if href and urlparse(href).scheme in {"", "http", "https"}:
                 self._active_link = href
                 self._active_link_text = []
         if tag in {"p", "div", "section", "article", "br", "li", "h1", "h2", "h3"}:
@@ -360,43 +261,44 @@ class PageTextParser(HTMLParser):
         elif tag == "a" and self._active_link is not None:
             text = _normalize_space("".join(self._active_link_text))
             if text:
-                self.links.append({"text": text[:120], "url": self._active_link})
+                self.links.append({"text": text[:120], "url": self._active_link[:8192]})
             self._active_link = None
             self._active_link_text = []
 
 
 def _read_url_text(url: str, max_bytes: int) -> str:
-    text, _content_type, _final_url = _read_url_text_with_metadata(url, max_bytes)
+    text, _content_type, _final_url, _truncated = _read_url_text_with_metadata(url, max_bytes)
     return text
 
 
-def _read_url_text_with_metadata(url: str, max_bytes: int) -> tuple[str, str, str]:
+def _read_url_text_with_metadata(url: str, max_bytes: int) -> tuple[str, str, str, bool]:
     current_url = _validate_public_http_url(url)
     for redirect_count in range(MAX_REDIRECTS + 1):
         status, reason, headers, body = _request_public_url_once(current_url, max_bytes + 1)
         if status in {301, 302, 303, 307, 308}:
             location = headers.get("Location", "").strip()
             if not location:
-                raise RuntimeError(f"HTTP {status}: 重定向缺少 Location。")
+                raise WebError("WEB_REDIRECT_INVALID", f"HTTP {status}: 重定向缺少 Location。")
             if redirect_count >= MAX_REDIRECTS:
-                raise RuntimeError("网页重定向次数过多。")
+                raise WebError("WEB_REDIRECT_LIMIT", "网页重定向次数过多。")
             current_url = _validate_public_http_url(urljoin(current_url, location))
             continue
         if status >= 400:
-            raise RuntimeError(f"HTTP {status}: {reason}")
+            raise WebError("WEB_HTTP_ERROR", f"网站返回 HTTP {status}。")
         content_type = headers.get("Content-Type", "")
         final_url = current_url
         break
     else:  # pragma: no cover - 循环上界保护
-        raise RuntimeError("网页重定向次数过多。")
+        raise WebError("WEB_REDIRECT_LIMIT", "网页重定向次数过多。")
 
     charset = _charset_from_content_type(content_type)
-    if len(body) > max_bytes:
+    truncated = len(body) > max_bytes
+    if truncated:
         body = body[:max_bytes]
     try:
-        return body.decode(charset, errors="replace"), content_type, final_url
+        return body.decode(charset, errors="replace"), content_type, final_url, truncated
     except LookupError:
-        return body.decode("utf-8", errors="replace"), content_type, final_url
+        return body.decode("utf-8", errors="replace"), content_type, final_url, truncated
 
 
 def _request_public_url_once(
@@ -413,11 +315,19 @@ def _request_public_url_once(
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/json,text/plain",
+        "Accept-Encoding": "identity",
         "Host": host if parsed.port is None else f"{host}:{port}",
         "Connection": "close",
     }
     last_error: OSError | None = None
     for address in addresses:
+        proxy = proxy_for_url(url)
+        if proxy:
+            try:
+                return _request_through_proxy(url, address, proxy, headers, max_bytes)
+            except OSError as exc:
+                last_error = exc
+                continue
         connection: http.client.HTTPConnection
         if parsed.scheme == "https":
             connection = _PinnedHTTPSConnection(host, port, address, timeout=DEFAULT_TIMEOUT_SECONDS)
@@ -432,7 +342,36 @@ def _request_public_url_once(
             last_error = exc
         finally:
             connection.close()
-    raise RuntimeError(f"网络请求失败：{last_error or '无法连接目标地址'}")
+    if isinstance(last_error, TimeoutError):
+        raise WebError("WEB_TIMEOUT", "网页请求超时。")
+    raise WebError("WEB_NETWORK_ERROR", "无法连接目标网站。")
+
+
+def _request_through_proxy(url, address, proxy, headers, max_bytes):
+    import httpx
+
+    parsed = urlparse(url)
+    # The proxy connects to the validated public IP, not a second DNS result.
+    # Keep the original Host and TLS SNI/certificate name for virtual hosting.
+    target = httpx.URL(url).copy_with(host=address)
+    try:
+        with httpx.Client(proxy=proxy, timeout=DEFAULT_TIMEOUT_SECONDS) as client:
+            with client.stream(
+                "GET", target, headers=headers,
+                extensions={"sni_hostname": parsed.hostname},
+            ) as response:
+                message = http.client.HTTPMessage()
+                for key, value in response.headers.multi_items():
+                    message[key] = value
+                body = bytearray()
+                for chunk in response.iter_raw(chunk_size=min(max_bytes, 64 * 1024)):
+                    body.extend(chunk[:max_bytes - len(body)])
+                    if len(body) >= max_bytes:
+                        break
+                return response.status_code, response.reason_phrase, message, bytes(body)
+    except httpx.HTTPError as exc:
+        # Do not echo proxy URLs or authentication details into tool output.
+        raise OSError("代理连接失败") from exc
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -466,7 +405,7 @@ def _resolve_public_addresses(host: str, port: int) -> list[str]:
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
-        raise ValueError(f"域名解析失败：{host}") from exc
+        raise WebError("WEB_DNS_ERROR", "目标网站域名解析失败。") from exc
     addresses: list[str] = []
     for info in infos:
         address = str(info[4][0]).split("%", 1)[0]
@@ -594,32 +533,3 @@ def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
 def _normalize_space(value: str) -> str:
     lines = [" ".join(line.split()) for line in html.unescape(value).splitlines()]
     return "\n".join(line for line in lines if line)
-
-
-def _tool_result_response(request_id: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    return _result_response(
-        request_id,
-        {
-            "content": [{"type": "text", "text": text}],
-            "structuredContent": payload,
-            "isError": False,
-        },
-    )
-
-
-def _result_response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "result": result}
-
-
-def _error_response(request_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
-
-
-def _write_message(message: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

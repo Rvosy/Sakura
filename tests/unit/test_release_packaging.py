@@ -447,6 +447,7 @@ def _minimal_stage(root: Path, target: str) -> Path:
     (stage / "plugins/builtin/__init__.py").write_text("", encoding="utf-8")
     plugin_ids = {
         "sakura_portrait": "sakura.portrait",
+        "sakura_web": "sakura.web",
         "sakura_mem0": "sakura.memory.mem0",
         "sakura_mobile": "sakura.mobile",
         "sakura_tts_hub": "sakura.tts",

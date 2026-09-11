@@ -600,6 +600,7 @@
         "tests/unit/test_visual_capabilities.py",
         "tests/integration/test_visual_plugin_boundary.py",
         "tests/integration/test_portrait_resources.py",
+        "tests/unit/test_web_plugin.py",
         "tests/unit/test_playwright_browser_plugin_v4.py",
         "tests/unit/test_sakura_mobile_plugin_v4.py",
         "tests/unit/test_mobile_runtime_v4.py",

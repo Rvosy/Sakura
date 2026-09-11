@@ -282,6 +282,11 @@ Rust 录音期间通过只读 `capture_status` 观察任务失效，该接口不
 旧 `complete.json` 的 SHA 字段直接忽略；现有版本目录保持可读，不因字段退役要求重装或下载。
 分发需记录代码、权重和 ONNX 转换产物各自的来源与许可。
 
+SenseVoice INT8 与词表从 ModelScope 的 `gomodels/sherpa` 固定版本 `590473aaa26eed19b270a424cb641972ae56482d` 下载，使用同一
+`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` 转换产物。Silero VAD 保留原 sherpa-onnx Release
+地址与尺寸，不能用名字相同但版本不同的镜像文件替换。换源不改变资源版本目录，已安装模型无需重新下载。
+每个文件开始请求时读取当前系统代理，文件传输中不切换连接。
+
 逐插件依赖隔离不解决基础 CPython ABI、平台 wheel、系统库或驱动兼容。默认引擎在目标 bundled Runtime 验证
 导入、模型加载和短句识别；依赖失败归因于该插件，不安装到 Core，也不引入系统 Python 回退。
 

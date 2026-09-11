@@ -36,6 +36,7 @@ _BUILTIN_PLUGIN_ALIASES = {
     "sakura_genie": "sakura.tts.genie",
     "sakura.memory.mem0": "sakura.memory.mem0",
     "sakura_mem0": "sakura.memory.mem0",
+    "sakura.web": "sakura.web",
 }
 _PR110_DEFAULT_TEXT_MODEL = "gpt-4.1-mini"
 _PR110_DEFAULT_VISION_MODEL = "gpt-4o"
@@ -54,7 +55,9 @@ _LEGACY_ENV_TO_LLM_FIELD = {
 }
 
 
-def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> dict[str, int]:
+def migrate_configuration(
+    source: Path, staged: Path, *, new_tts_root: Path, existing_user_root: Path | None = None,
+) -> dict[str, int]:
     legacy_config = source / "data" / "config"
     target_config = staged / "config"
     target_config.mkdir(parents=True, exist_ok=True)
@@ -100,13 +103,38 @@ def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> 
         legacy_config / "mcp.yaml",
         metadata=mcp_metadata,
     )
-    _write_yaml(target_config / "mcp.yaml", mcp)
+    if (legacy_config / "mcp.yaml").exists():
+        _write_yaml(target_config / "mcp.yaml", mcp)
     counts["mcpServersQuarantined"] = dropped_servers
     compatibility_fallbacks += mcp_metadata.get("fallbacks", 0)
 
     tts_provider = _legacy_tts_provider(tts)
     plugins = _migrate_plugins(legacy_config / "plugins.yaml", tts_provider=tts_provider)
+    from app.config.web_plugin_migration import PLUGIN_ID, migrate_web_configuration
+    from app.plugins.inventory import PluginDesiredStateStore
+
+    if existing_user_root is not None:
+        existing = PluginDesiredStateStore(existing_user_root).read()
+        if PLUGIN_ID in existing:
+            plugins = [item for item in plugins if item["id"] != PLUGIN_ID]
+            plugins.append({"id": PLUGIN_ID, "enabled": existing[PLUGIN_ID]})
+            old_config = existing_user_root / "data/plugins" / PLUGIN_ID / "config.json"
+            if old_config.is_file():
+                destination = staged / "data/plugins" / PLUGIN_ID / "config.json"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(old_config.read_bytes())
     _write_yaml(target_config / "plugins.yaml", plugins)
+    migrate_web_configuration(staged)
+    if mcp_metadata.get("webBlocked"):
+        # A source-bound Web command could not be carried over. Keep the
+        # original source untouched and do not silently activate a replacement.
+        if not any(item["id"] == PLUGIN_ID for item in plugins):
+            PluginDesiredStateStore(staged).set(PLUGIN_ID, False)
+        destination = staged / "data/plugins" / PLUGIN_ID / "config.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        values = json.loads(destination.read_text(encoding="utf-8")) if destination.exists() else {}
+        values["migration_error"] = "WEB_MIGRATION_CUSTOM_BEHAVIOR"
+        destination.write_text(json.dumps(values) + "\n", encoding="utf-8")
 
     ui = _migrate_ui(system)
     (target_config / "ui.json").write_text(
@@ -537,14 +565,23 @@ def _migrate_mcp(
             dropped += 1
             continue
         server = _strip_deprecated_mcp_fields(raw)
-        if not isinstance(server, Mapping) or _mcp_server_references_source(server, source):
+        if not isinstance(server, Mapping):
             dropped += 1
             continue
         args = server.get("args")
+        known_web = isinstance(args, list) and any(
+            isinstance(item, str) and (
+                _is_legacy_web_search_path(item)
+                or _normalize_mcp_path(item) == _normalize_mcp_path(str(source / "app/agent/mcp/web_search_server.py"))
+            ) for item in args
+        )
         if isinstance(args, list):
             server["args"] = [
                 "{core_root}/app/agent/mcp/web_search_server.py"
-                if isinstance(item, str) and _is_legacy_web_search_path(item)
+                if isinstance(item, str) and (
+                    _is_legacy_web_search_path(item)
+                    or _normalize_mcp_path(item) == _normalize_mcp_path(str(source / "app/agent/mcp/web_search_server.py"))
+                )
                 else item
                 for item in args
             ]
@@ -554,6 +591,11 @@ def _migrate_mcp(
             and command.replace("\\", "/").casefold() == "{base_dir}/runtime/python.exe"
         ):
             server["command"] = "{python}"
+        if _mcp_server_references_source(server, source):
+            if known_web and metadata is not None:
+                metadata["webBlocked"] = 1
+            dropped += 1
+            continue
         kept[name] = server
     raw_timeout = value.get("default_call_timeout", 20)
     timeout = _bounded_timeout(raw_timeout, default=20)
@@ -682,7 +724,10 @@ def _mcp_match_is_http_authority(value: str, index: int) -> bool:
 
 
 def _is_legacy_web_search_path(value: str) -> bool:
-    return _normalize_mcp_path(value).endswith("/app/agent/mcp/web_search_server.py")
+    return _normalize_mcp_path(value) in {
+        f"{{{root}}}/app/agent/mcp/web_search_server.py"
+        for root in ("base_dir", "core_root", "distribution_root")
+    }
 
 
 def _strip_deprecated_mcp_fields(value: object) -> object:

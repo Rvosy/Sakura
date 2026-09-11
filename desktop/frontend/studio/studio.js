@@ -21,7 +21,11 @@ import {
 } from "../settings/theme-color-picker.js";
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 
-const invoke = window.__TAURI__.core.invoke;
+import { createRuntimeDiagnostics } from "../core/runtime-diagnostics.js";
+
+const runtimeDiagnostics = createRuntimeDiagnostics({ invoke: window.__TAURI__.core.invoke });
+const invoke = runtimeDiagnostics.invoke;
+window.addEventListener("beforeunload", () => runtimeDiagnostics.dispose(), { once: true });
 
 const studioMethodMap = Object.freeze({
   "studio.open_character": "studio.character.open",
@@ -786,7 +790,10 @@ let visualSelectionRevision = 0;
 let visualEditorScope = null;
 const visualEditor = createVisualEditorHost({
   container: fields.expressionList,
-  onError: setError,
+  onError(error, stage) {
+    runtimeDiagnostics.reportError(error, { command: "studio_visual_editor", stage, code: "VISUAL_EDITOR_FAILED" });
+    if (stage === "studio.visual.editor") setError("形态编辑失败，请查看运行日志。");
+  },
   onPreview: updateVisualPreview,
   onChange(data) {
     if (!currentDoc || !selectedVisualId) return;
@@ -842,7 +849,10 @@ async function loadVisualPreviews() {
       if (visualPreviews.get(item.resourceId) !== previous.get(item.resourceId)) continue;
       if (visualReferences().resources.some(resource => resource.id === item.resourceId)) updateVisualPreview(item.previewUrl || null, item.resourceId, item.relativePath);
     }
-  } catch { /* An optional cover never prevents opening the editor. */ }
+  } catch (error) {
+    if (workspaceId === currentWorkspaceId && revision === visualEditorRevision)
+      runtimeDiagnostics.reportError(error, { command: "studio_visual_previews", code: "VISUAL_PREVIEW_FAILED" });
+  }
 }
 function fillVisualCover(cover, resourceId) {
   const url = visualPreviews.get(resourceId)?.url;
@@ -850,7 +860,10 @@ function fillVisualCover(cover, resourceId) {
   cover.dataset.url = url || "";
   if (url) {
     const img = document.createElement("img"); img.src = url; img.alt = "";
-    void img.decode().then(() => { if (cover.dataset.url === url) cover.replaceChildren(img); }).catch(() => {});
+    void img.decode().then(() => { if (cover.dataset.url === url) cover.replaceChildren(img); }).catch(error => {
+      if (cover.isConnected && cover.dataset.url === url)
+        runtimeDiagnostics.reportError(error, { command: "studio_visual_cover", stage: "studio.visual.cover.decode", code: "VISUAL_PREVIEW_FAILED" });
+    });
   }
   else cover.replaceChildren(createIcon(document, "images"));
 }
@@ -971,7 +984,8 @@ async function openVisualEditor(resource, revision = visualEditorRevision, { flu
     visualEditor.clear();
     const text = document.createElement("p"); text.textContent = "此表现暂时无法编辑。保存其他修改会保留原有资源。";
     fields.expressionList.append(text);
-    setError(String(error));
+    runtimeDiagnostics.reportError(error, { command: "studio_visual_open", code: "VISUAL_EDITOR_FAILED" });
+    setError("形态编辑器加载失败，请查看运行日志。");
   }
 }
 async function addVisualResource() {
@@ -2049,6 +2063,7 @@ async function runBusy(action) {
   try {
     await action();
   } catch (error) {
+    runtimeDiagnostics.reportError(error, { command: "studio_action", code: "STUDIO_OPERATION_FAILED" });
     setError(String(error));
   } finally {
     busy = false;
@@ -2270,6 +2285,7 @@ async function startStudio() {
     setError(String(error));
   }
   await invoke("show_studio");
+  runtimeDiagnostics.markReady();
 }
 
 startStudio().catch((error) => setError(String(error)));

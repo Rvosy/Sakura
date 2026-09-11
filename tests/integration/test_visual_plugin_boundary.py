@@ -411,3 +411,64 @@ def test_missing_provider_and_unknown_resource_keep_files_and_never_activate_fal
     assert binding.parse_control(_control(resource, {})).reason_code == "VISUAL_BINDING_EXPIRED"
     with pytest.raises(VisualHostError, match="VISUAL_BINDING_EXPIRED"):
         host.bind("character", package, resource)
+
+
+@pytest.mark.parametrize("method,signature,stage", [
+    ("describe", "request", "visual.bind"),
+    ("parseControl", "request, config, payload, legacy", "visual.parse_control"),
+    ("editorData", "resource, raw", "studio.visual.open"),
+    ("previewImage", "resource, raw", "studio.visual.previews"),
+])
+def test_visual_plugin_failures_retain_remote_diagnostics(tmp_path, method, signature, stage):
+    import io
+    from app.config.character_loader import CharacterRegistry
+    from app.core.chat_pipeline import _visual_reply
+    from app.core_host.character_studio import CharacterStudioBoundary
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+    from app.llm.chat_reply import ChatReply, ChatSegment
+
+    code = _PLUGIN
+    if method == "previewImage":
+        code = code.replace("            def describe(self, request):", "            def previewImage(self, resource, raw):\n                return None\n\n            def describe(self, request):")
+        code = code.replace('"exportResource"))', '"exportResource", "previewImage"))')
+    declaration = f"            def {method}(self, {signature}):\n"
+    code = code.replace(declaration, declaration + '                raise TypeError("visual model decoder failed token=private-value")\n')
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    diagnostic = None
+    try:
+        with numeric_application(tmp_path, code) as (application, package, resource):
+            profile = CharacterRegistry(package.parents[1]).get("character")
+            boundary = CharacterStudioBoundary("g", "0123456789abcdef0123456789abcdef", package.parents[1], plugin_application_provider=lambda: application)
+            if method == "describe":
+                application.application.bind_visual_character(profile)
+                for _ in range(3):
+                    assert application.application.visual_presentation()["visual"] is None
+            elif method == "parseControl":
+                binding = application.application.visuals.bind(profile.id, package, resource)
+                reply = _visual_reply(ChatReply([ChatSegment(text="still chatting", translation="", tone="", control=_control(resource, {"angle": 1}))]), binding)
+                assert reply.segments[0].text == "still chatting"
+                assert reply.segments[0].control is None
+                binding.close()
+                _visual_reply(reply, binding)  # Expired results stay quiet.
+            else:
+                boundary._dispatch("studio.character.open", {"characterId": "character"})
+                if method == "previewImage":
+                    assert boundary._dispatch("studio.visual.previews", {"workspaceId": "character"})["items"] == [{"resourceId": resource.id, "relativePath": None}]
+                else:
+                    result = boundary.handle({"protocolMajor": 2, "protocolMinor": 2, "kind": "request", "id": "test-editor", "name": "studio.visual.open", "generationId": "g", "generationCredential": "0123456789abcdef0123456789abcdef", "priority": "interactive", "deadlineMs": 3000, "payload": {"workspaceId": "character", "resourceId": resource.id}})
+                    assert not result["ok"]
+                    diagnostic = result["error"]["details"]["diagnostics"]
+    finally:
+        bridge.close()
+    if diagnostic is None:
+        records = [json.loads(line[len(CORE_BRIDGE_PREFIX):]) for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+        failures = [record for record in records if record.get("attributes", {}).get("stage") == stage]
+        assert len(failures) == 1
+        diagnostic = failures[0]["attributes"]
+    assert diagnostic["cause_type"] == "TypeError"
+    assert diagnostic["stage"] == stage
+    assert "visual model decoder failed" in diagnostic["diagnostic"]
+    assert "Remote:" in diagnostic["exception_stack"]
+    assert method in diagnostic["exception_stack"]
+    assert "private-value" not in json.dumps(diagnostic)

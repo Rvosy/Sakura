@@ -275,7 +275,7 @@ def test_quiesce_failure_is_public_and_still_marks_generation_invalidated(
     )
 
     def fail_quiesce() -> None:
-        raise RuntimeError("private close failure")
+        raise RuntimeError("close failed: token=quiesce-test-secret")
 
     boundary = CharacterStudioBoundary(
         GENERATION,
@@ -298,7 +298,11 @@ def test_quiesce_failure_is_public_and_still_marks_generation_invalidated(
     assert result["error"]["code"] == "STUDIO_OPERATION_FAILED"
     assert result["error"]["message"] == "停止当前角色的运行任务失败。"
     assert result["error"]["details"]["generationInvalidated"] is True
-    assert "private close failure" not in json.dumps(result)
+    diagnostics = result["error"]["details"]["diagnostics"]
+    assert "close failed" in diagnostics["diagnostic"]
+    assert "RuntimeError" in diagnostics["exception_chain"]
+    assert "fail_quiesce" in diagnostics["exception_stack"]
+    assert "quiesce-test-secret" not in json.dumps(result)
 
 
 def test_boundary_rejects_unknown_dto_fields_and_generation(tmp_path: Path) -> None:

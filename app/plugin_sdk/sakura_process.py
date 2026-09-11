@@ -7,8 +7,40 @@ import signal
 import subprocess
 import sys
 import time
+import re
+from pathlib import Path
 from collections.abc import Sequence
 from typing import Protocol
+
+
+def process_failure_diagnostics(path: Path, start_offset: int = 0) -> dict[str, str]:
+    """Read a bounded error excerpt from this launch, for host-side redaction.
+
+    Never forward normal synthesis output or a previous launch's traceback.
+    The caller must send these fields through the host diagnostic service.
+    """
+    try:
+        with path.open("rb") as stream:
+            end = stream.seek(0, os.SEEK_END)
+            start = max(start_offset, end - 16384)
+            if start >= end:
+                return {}
+            stream.seek(start)
+            text = stream.read(16384).decode("utf-8", errors="replace")
+        trace = text.rfind("Traceback (most recent call last):")
+        if trace >= 0:
+            text = text[trace:]
+        else:
+            text = "\n".join(line for line in text.splitlines() if re.search(r"\b(?:\w*(?:Error|Exception)|fatal|failed)\b", line, re.I))
+        if not text.strip():
+            return {}
+        lines = text.strip().splitlines()
+        return {
+            "diagnostic": ("[earlier text omitted] " if len(lines[-1]) > 4000 else "") + lines[-1][-4000:],
+            "exception_stack": ("[earlier output omitted]\n" if start > start_offset or len(text) > 8000 else "") + text[-8000:],
+        }
+    except (OSError, ValueError):
+        return {}
 
 
 class ProcessHandle(Protocol):

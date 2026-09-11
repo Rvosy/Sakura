@@ -424,7 +424,8 @@ try {
     invoke,
     attempts: sessionBlockedAtStartup ? 1 : 160,
   });
-} catch {
+} catch (error) {
+  if (!sessionBlockedAtStartup) runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
   presentationUnavailable = true;
   if (!sessionBlockedAtStartup) showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
   characterPresentation = Object.freeze({
@@ -828,17 +829,20 @@ async function previewPortraitScale(key) {
   });
 }
 
-function reportVisualError(code) {
-  runtimeDiagnostics.record({ level: "warn", event: "webview.command.failed", command: "visual_control", outcome: "failed", code: /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "VISUAL_CONTROL_FAILED" });
+function reportVisualError(code, error, stage) {
+  runtimeDiagnostics.reportError(error || code, { command: "visual_control", code,
+    stage: typeof stage === "string" ? stage : "visual.control" });
 }
 
-function visualUnavailable(code) {
+function visualUnavailable(code, error, stage) {
   portraitFallback.hidden = false;
   currentSurface = { width: 320, height: 480, assetKey: null, assetId: null };
   renderedPortrait = "";
   void activatePortraitHitTest("").then(() => syncPortraitAppearance("")).catch(() => {});
   showRecoverableError("角色表现暂不可用，你仍可以继续聊天。", { autoHide: true });
-  runtimeDiagnostics.record({ level: "warn", event: "webview.command.failed", command: "visual_renderer", outcome: "failed", code: /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "VISUAL_RENDERER_FAILED" });
+  // Core already recorded failed binds. Here only the renderer owns an exception.
+  if (error) runtimeDiagnostics.reportError(error, { command: "visual_renderer", code,
+    stage: typeof stage === "string" ? stage : "visual.renderer" });
 }
 
 const rendererHost = createRendererHost({
@@ -1663,7 +1667,13 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
     adaptiveSurface.invalidate();
     render(presentation.current());
     return true;
-  } catch { showRecoverableError("角色资源加载失败，请稍后重试。"); return false; }
+  } catch (error) {
+    if (!disposed && revision === coreRebindRevision) {
+      runtimeDiagnostics.reportError(error, { command: "visual_rebind", code: "VISUAL_REBIND_FAILED" });
+      showRecoverableError("角色资源加载失败，请稍后重试。");
+    }
+    return false;
+  }
   finally { if (revision === coreRebindRevision) coreRebindTarget = ""; }
 }
 
@@ -1690,7 +1700,10 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
       characterVisualPreviewActive = false;
       render(presentation.current());
     }
-  } catch { showRecoverableError("角色预览失败。"); }
+  } catch (error) {
+    runtimeDiagnostics.reportError(error, { command: "visual_preview", code: "VISUAL_PREVIEW_FAILED" });
+    showRecoverableError("角色预览失败。");
+  }
 });
 
 await listenAppEvent("sakura://control-surface-frame", async (event) => {

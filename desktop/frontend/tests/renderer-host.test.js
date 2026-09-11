@@ -109,7 +109,7 @@ test("a rejected control preserves the renderer and reports a recoverable diagno
   const unavailable = [];
   let destroyed = false;
   let angle = 0;
-  const host = createRendererHost({ container: container(), onError: (code) => errors.push(code), onUnavailable: (code) => unavailable.push(code),
+  const host = createRendererHost({ container: container(), onError: (code, error, stage) => errors.push({ code, error, stage }), onUnavailable: (code) => unavailable.push(code),
     loadModule: async () => ({ mount: () => ({
       applyState(state) { if (state.angle < 0) throw new Error("invalid state"); angle = state.angle; },
       destroy() { destroyed = true; },
@@ -122,8 +122,32 @@ test("a rejected control preserves the renderer and reports a recoverable diagno
   assert.equal(angle, 12);
   assert.equal(destroyed, false);
   assert.deepEqual(unavailable, []);
-  assert.deepEqual(errors, ["VISUAL_CONTROL_EXECUTION_FAILED"]);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, "VISUAL_CONTROL_EXECUTION_FAILED");
+  assert.equal(errors[0].stage, "visual.control.execute");
+  assert.match(errors[0].error.stack, /invalid state/);
   assert.equal(await host.play({ ...control(), state: { angle: 20 } }, "op", 2), true);
   assert.equal(angle, 20);
   host.destroy();
+});
+
+
+test("renderer startup keeps the original failure and stale failures stay silent", async () => {
+  const errors = [];
+  const failure = new TypeError("renderer shader missing");
+  let reject;
+  const host = createRendererHost({ container: container(), onUnavailable: (...args) => errors.push(args),
+    loadModule: async () => ({ mount: () => ({ applyState() {}, destroy() {}, ready: Promise.reject(failure) }) }),
+  });
+  assert.equal(await host.bind(binding()), false);
+  assert.equal(errors[0][1], failure);
+  assert.equal(errors[0][2], "visual.renderer.ready");
+  const late = createRendererHost({ container: container(), onUnavailable: (...args) => errors.push(args),
+    loadModule: () => new Promise((_, fail) => { reject = fail; }),
+  });
+  const opening = late.bind(binding());
+  late.clear();
+  reject(failure);
+  assert.equal(await opening, false);
+  assert.equal(errors.length, 1);
 });

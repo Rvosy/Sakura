@@ -16,6 +16,7 @@ from typing import Any, Callable, Protocol
 
 from app.storage.atomic import rename_with_retry, replace_with_retry
 from app.storage.paths import StoragePaths, user_facing_path
+from app.plugin_sdk.sakura_http import urlopen_direct_for_loopback
 from app.voice.runtime_compat import current_platform_label, current_system_name, find_usable_runtime_python
 
 
@@ -369,7 +370,7 @@ def install_tts_bundle(
     on_progress: ProgressCallback | None = None,
     on_status: StatusCallback | None = None,
     on_download_progress: DownloadProgressCallback | None = None,
-    urlopen: UrlOpenCallable = urllib.request.urlopen,
+    urlopen: UrlOpenCallable = urlopen_direct_for_loopback,
     extractor: Callable[[Path, Path], str | None] | None = None,
 ) -> TTSBundleInstallResult:
     if entry.install_method == "archive":
@@ -403,7 +404,7 @@ def download_and_extract_bundle(
     on_progress: ProgressCallback | None = None,
     on_status: StatusCallback | None = None,
     on_download_progress: DownloadProgressCallback | None = None,
-    urlopen: UrlOpenCallable = urllib.request.urlopen,
+    urlopen: UrlOpenCallable = urlopen_direct_for_loopback,
     extractor: Callable[[Path, Path], str | None] | None = None,
 ) -> Path:
     if entry.install_method != "archive":

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-07
+updated: 2026-09-11
 ---
 
 # WP-4-03 MCP 生命周期与工具调用等价规范
@@ -25,6 +25,9 @@ TTS、截图 resource token、浏览器、主动调度、提醒或通用 worker 
 方向，不新增 ADR。MCP 是当前 Core generation 的领域资源，不成为第二个生命周期根。
 
 ## 2. 配置、凭据与状态边界
+
+公开网页搜索与读取由[联网插件](web-plugin.md)贡献。Core 在启动工具提供者前完成旧内置 Web MCP 的
+配置交接；不再发行内置 Web Server 或生成默认 Web MCP 配置。MCP 状态仅描述外部工具接入。
 
 - 高级配置源为 `user_root/config/mcp.yaml`；缺失文件等价于 MCP 禁用。配置支持
   总开关、默认调用超时、server 启停、`stdio`/`sse`、command/args/env、URL/headers、工具名前缀、

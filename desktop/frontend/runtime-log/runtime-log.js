@@ -15,6 +15,7 @@ import {
   viewerScopeCounts,
   viewerPluginName,
   viewerPluginOptions,
+  viewerFailureText,
 } from "./runtime-log-presentation.js";
 
 installDevtoolsShortcutGuard();
@@ -83,8 +84,10 @@ function detailsPanel(item) {
     ...(item.record.correlationId ? [["关联编号", item.record.correlationId]] : []),
   ];
   for (const [label, value] of pairs) {
+    if (viewerFailureText(item.record) && ["诊断", "原始报错"].includes(label)) continue;
     const row = document.createElement("div");
     row.className = "detail-row";
+    if (["异常链", "调用栈", "回滚报错", "代码位置"].includes(label)) row.classList.add("detail-wide");
     const term = document.createElement("dt");
     term.textContent = label;
     const description = document.createElement("dd");
@@ -111,7 +114,23 @@ function fillRecordMain(main, item) {
   if (inline) appendText(headline, "record-inline", inline);
   if (item.repeatCount > 1) appendText(headline, "record-repeat", `×${item.repeatCount}`);
   main.append(headline);
-  if (item.record.description) appendText(main, "record-description", item.record.description);
+  const failure = viewerFailureText(item.record);
+  if (failure) {
+    appendFailure(main, failure, failure === "未记录底层原因");
+    const recovery = item.record.details.find(detail => detail.label === "回滚报错");
+    if (recovery) appendFailure(main, `回滚也失败：${recovery.value}`);
+  } else if (item.record.description) appendText(main, "record-description", item.record.description);
+}
+
+function appendFailure(parent, text, missing = false) {
+  const element = document.createElement("span");
+  element.className = `record-raw${missing ? " is-missing" : ""}`;
+  const type = text.match(/^([A-Za-z_][A-Za-z0-9_.]*:)(?=\s)/);
+  if (type) {
+    appendText(element, "record-raw-type", type[1]);
+    element.append(document.createTextNode(text.slice(type[1].length)));
+  } else element.textContent = text;
+  parent.append(element);
 }
 
 function recordMain(item, hasDetails = false) {

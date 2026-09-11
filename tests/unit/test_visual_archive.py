@@ -77,3 +77,21 @@ def test_component_roundtrip_keeps_name_and_private_data(tmp_path, name):
     assert imported.id != resource.id
     assert imported.type == resource.type
     assert json.loads((target / imported.root / imported.entry).read_text(encoding="utf-8")) == data
+
+
+def test_component_rollback_keeps_primary_and_cleanup_errors(tmp_path, monkeypatch):
+    from app.core.diagnostics import exception_diagnostics
+    package = tmp_path / "package"
+    package.mkdir()
+    primary = OSError(28, "disk full while committing")
+    def commit():
+        raise primary
+    def cleanup(_path):
+        raise PermissionError(13, "cleanup denied")
+    monkeypatch.setattr("app.config.visual_archive.shutil.rmtree", cleanup)
+    with pytest.raises(OSError) as failure:
+        import_visual_archive(component(tmp_path / "valid.char"), package, commit_started=commit)
+    assert failure.value is primary
+    diagnostics = exception_diagnostics(failure.value, reason_code="IMPORT_FAILED", stage="studio.visual.import")
+    assert "disk full" in diagnostics["diagnostic"]
+    assert "cleanup denied" in diagnostics["recovery_diagnostic"]

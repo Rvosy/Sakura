@@ -7084,6 +7084,15 @@ fn close_character_studio_for_exit(
         .map_err(|error| error.to_string())
 }
 
+fn log_visual_resource_error(log: &RuntimeLogService, stage: &str, error: &str) {
+    let code = error.split_once(':').map_or(error, |(code, _)| code);
+    if matches!(code, "CHARACTER_RESOURCE_GENERATION_STALE" | "CHARACTER_PRESENTATION_GENERATION_STALE"
+        | "VISUAL_BINDING_EXPIRED" | "CHARACTER_RESOURCE_ID_UNKNOWN" | "STUDIO_PREVIEW_GENERATION_STALE")
+        || error == "STUDIO_PREVIEW_NOT_FOUND" { return; }
+    let _ = log.submit(RuntimeLogEvent::rust(Severity::Warning, "visual", "visual.resource.failed", "角色表现资源加载失败")
+        .attributes(json!({"code": code, "stage": stage, "diagnostic": error})));
+}
+
 fn studio_preview_protocol_response(
     context: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
@@ -7130,7 +7139,10 @@ fn studio_preview_protocol_response(
             .header("X-Content-Type-Options", "nosniff")
             .body(resource.bytes)
             .expect("validated studio preview response"),
-        Err(code) => fail(
+        Err(error) => {
+            log_visual_resource_error(&lifecycle.runtime_log, "studio.preview.read", &error);
+            let code = error.split_once(':').map_or(error.as_str(), |(code, _)| code);
+            fail(
             if code.contains("STALE") {
                 StatusCode::GONE
             } else if code.contains("NOT_FOUND") {
@@ -7138,8 +7150,9 @@ fn studio_preview_protocol_response(
             } else {
                 StatusCode::UNPROCESSABLE_ENTITY
             },
-            &code,
-        ),
+            code,
+        )
+        },
     }
 }
 
@@ -7193,7 +7206,8 @@ fn character_protocol_response(
     // same-generation plugin restart/disable must revoke the old token too.
     if let Ok(Some(value)) = handle.character_presentation() {
         if let Ok(presentation) = character_presentation::CharacterPresentation::from_value(&value, &current_generation) {
-            if resources.activate(presentation, &current_generation).is_err() {
+            if let Err(error) = resources.activate(presentation, &current_generation) {
+                log_visual_resource_error(&lifecycle.runtime_log, "visual.resources.activate", &error);
                 return fail(StatusCode::GONE, "VISUAL_BINDING_EXPIRED");
             }
         }
@@ -7216,7 +7230,10 @@ fn character_protocol_response(
             .header("X-Content-Type-Options", "nosniff")
             .body(resource.bytes)
             .expect("validated character resource response"),
-        Err(code) => {
+        Err(error) => {
+            let stage = match segments[0] { "module" => "visual.module.read", "editor-assets" => "studio.visual.asset.read", _ => "visual.asset.read" };
+            log_visual_resource_error(&lifecycle.runtime_log, stage, &error);
+            let code = error.split_once(':').map_or(error.as_str(), |(code, _)| code);
             let status = if code.contains("GENERATION") {
                 StatusCode::GONE
             } else if code.contains("UNKNOWN") || code.contains("NOT_FOUND") {

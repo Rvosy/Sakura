@@ -28,6 +28,7 @@ export function createCharacterSettingsFeature({
   clearCharacterState,
   renderMemorySurface,
   openPlugin = () => {},
+  reportError = () => {},
 }) {
   const rootSettingsClient = createRootSettingsClient({ invoke });
   const fields = {
@@ -58,7 +59,7 @@ export function createCharacterSettingsFeature({
   let closeExportKindDialog = null;
   let disposed = false;
   const listeners = [];
-  const visualSettings = createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty: refreshDirty, openPlugin });
+  const visualSettings = createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty: refreshDirty, openPlugin, reportError });
 
   const characterExportOptions = [
     {

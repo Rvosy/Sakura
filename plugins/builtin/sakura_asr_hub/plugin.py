@@ -177,6 +177,7 @@ class SakuraASRHub:
                     raise ValueError(job_id.get("errorCode", "ASR_JOB_INVALID") if isinstance(job_id, Mapping) else "ASR_JOB_INVALID")
                 binding.job_id = job_id
             except Exception as error:
+                self._log("asr.recognition.failed", "语音识别启动失败", "error", request_id=request_id, provider_id=provider_id)
                 code = str(getattr(error, "code", error))
                 if request_id in self.jobs:
                     self.jobs[request_id].terminal = self._failed(code)
@@ -191,6 +192,7 @@ class SakuraASRHub:
             if binding is None:
                 return self._failed("ASR_JOB_NOT_FOUND")
             if binding.terminal is None:
+                failure_reported = False
                 try:
                     self._proxy(binding.descriptor)  # A restarted scope must never receive an old job.
                     value = binding.proxy.poll(binding.job_id)
@@ -202,11 +204,14 @@ class SakuraASRHub:
                     else:
                         result = self._failed(value.get("errorCode", "ASR_JOB_RESULT_INVALID") if isinstance(value, Mapping) else "ASR_JOB_RESULT_INVALID")
                 except Exception:
+                    self._log("asr.request.failed", "语音识别请求失败", "error", request_id=request_id, provider_id=binding.descriptor["providerId"], error_code="ASR_PROVIDER_UNAVAILABLE")
+                    failure_reported = True
                     result = self._failed("ASR_PROVIDER_UNAVAILABLE")
                 if result["state"] != "running":
                     binding.terminal = result
                     self.audio.revoke(binding.resource_id)
-                    self._log("asr.request." + result["state"], {"succeeded": "语音识别请求完成", "failed": "语音识别请求失败", "cancelled": "语音识别请求已取消"}[result["state"]], "error" if result["state"] == "failed" else "info", request_id=request_id, provider_id=binding.descriptor["providerId"], duration_ms=round((time.monotonic() - binding.started_at) * 1000), **({"error_code": result["errorCode"]} if result["state"] == "failed" else {}))
+                    if not failure_reported:
+                        self._log("asr.request." + result["state"], {"succeeded": "语音识别请求完成", "failed": "语音识别请求失败", "cancelled": "语音识别请求已取消"}[result["state"]], "error" if result["state"] == "failed" else "info", request_id=request_id, provider_id=binding.descriptor["providerId"], duration_ms=round((time.monotonic() - binding.started_at) * 1000), **({"error_code": result["errorCode"]} if result["state"] == "failed" else {}))
             result = binding.terminal or {"state": "running"}
             if binding.terminal:
                 binding.consumed = True

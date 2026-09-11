@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 import secrets
 import threading
@@ -86,6 +87,10 @@ _PLUGIN_DIAGNOSTIC_ATTRIBUTES = frozenset(
         "probe_outcome",
         "source_file",
         "source_line",
+        "diagnostic",
+        "cause_type",
+        "exception_chain",
+        "exception_stack",
     }
 )
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
@@ -99,7 +104,7 @@ class HostServiceError(RuntimeError):
 
 
 class _DiagnosticsHostService:
-    """Allow plugins to emit only fixed, content-free Runtime diagnostics."""
+    """Accept fixed events and bounded, redacted local exception diagnostics."""
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         if method != "emit" or len(args) != 2:
@@ -120,7 +125,13 @@ class _DiagnosticsHostService:
             raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
         attributes: dict[str, object] = {"component": plugin_id}
         for key, value in raw_attributes.items():
-            if key in {"elapsed_ms", "timeout_ms", "exit_code", "source_line"}:
+            if key in {"diagnostic", "exception_chain", "exception_stack"}:
+                from app.core.diagnostics import safe_diagnostic_text
+
+                if not isinstance(value, str):
+                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+                value = safe_diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
+            elif key in {"elapsed_ms", "timeout_ms", "exit_code", "source_line"}:
                 if isinstance(value, str) and _ELAPSED_MS.fullmatch(value):
                     value = round(float(value))
                 low = (
@@ -505,6 +516,12 @@ class _ToolsHostService:
         name = descriptor.get("name")
         description = descriptor.get("description")
         parameters = descriptor.get("parameters", {})
+        timeout = descriptor.get("timeoutSeconds", _TOOL_CALLBACK_TIMEOUT_SECONDS)
+        if (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or not 0 < timeout <= 120
+        ):
+            raise HostServiceError("TOOL_DESCRIPTOR_INVALID")
         if (
             not isinstance(name, str)
             or not _TOOL_NAME.fullmatch(name)
@@ -534,7 +551,7 @@ class _ToolsHostService:
                     handle,
                     "tools.handler",
                     arguments,
-                    timeout=_TOOL_CALLBACK_TIMEOUT_SECONDS,
+                    timeout=float(timeout),
                 )
             )
 
@@ -549,7 +566,10 @@ class _ToolsHostService:
             source="plugin",
         )
         registration_id = _new_registration_id(self._registrations)
-        getattr(self._tool_registry, "register")(tool)
+        try:
+            getattr(self._tool_registry, "register")(tool, replace=False)
+        except ValueError as error:
+            raise HostServiceError("TOOL_NAME_CONFLICT") from error
         self._registrations[registration_id] = _ToolRegistration(name, tool)
         return {"registrationId": registration_id}
 

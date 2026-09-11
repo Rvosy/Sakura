@@ -161,7 +161,7 @@ impl CharacterStudioWindowState {
         }
         let metadata = path
             .metadata()
-            .map_err(|_| "STUDIO_PREVIEW_DESCRIPTOR_INVALID".to_string())?;
+            .map_err(|error| crate::runtime_log::diagnostic_error("STUDIO_PREVIEW_DESCRIPTOR_INVALID", error))?;
         if metadata.len() != byte_length {
             return Err("STUDIO_PREVIEW_DESCRIPTOR_INVALID".to_string());
         }
@@ -206,12 +206,12 @@ impl CharacterStudioWindowState {
         let metadata = resource
             .path
             .metadata()
-            .map_err(|_| "STUDIO_PREVIEW_NOT_FOUND".to_string())?;
+            .map_err(|error| crate::runtime_log::diagnostic_error("STUDIO_PREVIEW_NOT_FOUND", error))?;
         if metadata.len() != resource.byte_length || metadata.len() > PREVIEW_LIMIT {
             return Err("STUDIO_PREVIEW_CHANGED".to_string());
         }
         let bytes =
-            fs::read(&resource.path).map_err(|_| "STUDIO_PREVIEW_READ_FAILED".to_string())?;
+            fs::read(&resource.path).map_err(|error| crate::runtime_log::diagnostic_error("STUDIO_PREVIEW_READ_FAILED", error))?;
         Ok(LoadedPreview {
             bytes,
             media_type: resource.media_type.clone(),

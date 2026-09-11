@@ -10,7 +10,9 @@ from app.core_host.plugin_artifacts import PluginArtifactStore
 from app.core_host.audio_input import AudioInputResources, HOST_AUDIO_INPUT_SERVICE
 from app.core_host.plugin_character import PluginCharacterStore
 from app.core_host.plugin_host_services import PluginHostServices
-from app.core_host.visual_host import VisualHost
+from app.core_host.visual_host import VisualHost, VISUAL_INACTIVE_REASONS
+from app.core.runtime_log import log_event
+from app.core.diagnostics import exception_diagnostics
 from app.core_host.mobile_host import MobileHostService
 from app.llm.prompts.types import ContextRequest
 from app.plugins.host_services import (
@@ -240,6 +242,10 @@ class PluginRuntimeApplication:
                 reason = "READY"
             except VisualHostError as error:
                 reason = error.code
+                if reason not in VISUAL_INACTIVE_REASONS:
+                    log_event("Visual", "角色表现加载失败", exception_diagnostics(
+                        error, reason_code=reason, stage="visual.bind",
+                    ), event="visual.binding.failed", severity="warning")
         if binding is None:
             self.visuals.clear()
         self._visual_character = character
@@ -278,6 +284,10 @@ class PluginRuntimeApplication:
                 reason = "READY"
             except VisualHostError as error:
                 reason = error.code
+                if reason not in VISUAL_INACTIVE_REASONS:
+                    log_event("Visual", "角色预览加载失败", exception_diagnostics(
+                        error, reason_code=reason, stage="visual.preview",
+                    ), event="visual.preview.failed", severity="warning")
         return project_character_presentation(character, visual, reason_code=reason)
 
     def validate_visual_choice(self, character, resource):

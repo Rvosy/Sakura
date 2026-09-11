@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -32,6 +32,14 @@ class VisualHostError(ValueError):
         self.code = code
 
 
+# These are availability states, not failed resource/plugin executions.
+VISUAL_INACTIVE_REASONS = frozenset({
+    "VISUAL_NOT_BOUND", "VISUAL_BINDING_EXPIRED", "VISUAL_RESOURCE_MISSING",
+    "VISUAL_PROVIDER_MISSING", "PLUGIN_DISABLED", "VISUAL_PROVIDER_SELECTION_REQUIRED",
+    "VISUAL_SERVICE_UNAVAILABLE", "VISUAL_CONTRACT_UNSUPPORTED", "API_VERSION_UNSUPPORTED",
+})
+
+
 def _json_copy(value: object, *, code: str = "VISUAL_CONTROL_INVALID") -> Any:
     try:
         encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
@@ -46,6 +54,7 @@ def _json_copy(value: object, *, code: str = "VISUAL_CONTROL_INVALID") -> Any:
 class VisualControlResult:
     control: dict[str, Any] | None
     reason_code: str = "READY"
+    error: BaseException | None = field(default=None, repr=False, compare=False)
 
 
 class VisualBinding:
@@ -160,9 +169,9 @@ class VisualBinding:
                 **parsed,
             })
         except VisualHostError as error:
-            return VisualControlResult(None, error.code)
-        except PluginRuntimeError:
-            return VisualControlResult(None, "VISUAL_CONTROL_REJECTED")
+            return VisualControlResult(None, error.code, error)
+        except PluginRuntimeError as error:
+            return VisualControlResult(None, "VISUAL_CONTROL_REJECTED", error)
 
 
 class VisualHost:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import uuid
 import zipfile
 from pathlib import Path
@@ -52,7 +53,13 @@ def export_visual_archive(package: Path, resource: CharacterVisualResource, proj
         _check(commit_started)
         temporary.replace(destination)
     finally:
-        temporary.unlink(missing_ok=True)
+        primary = sys.exception()
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as recovery:
+            if primary is None:
+                raise
+            primary.recovery_error = recovery
     return destination
 
 
@@ -103,5 +110,11 @@ def import_visual_archive(archive_path: Path, package: Path, *, cancel_check=Non
             staging.rename(target)
             return resource
     finally:
-        if staging.exists():
-            shutil.rmtree(staging)
+        primary = sys.exception()
+        try:
+            if staging.exists():
+                shutil.rmtree(staging)
+        except OSError as recovery:
+            if primary is None:
+                raise
+            primary.recovery_error = recovery

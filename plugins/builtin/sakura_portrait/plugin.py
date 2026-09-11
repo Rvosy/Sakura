@@ -61,13 +61,15 @@ def inspect_png(path):
 
 
 class PortraitService:
-    def __init__(self, character):
+    def __init__(self, character, logger):
         self.character = character
+        self.logger = logger
 
     def describe(self, request):
         try:
             return self._describe(request)
         except (ValueError, OSError, RuntimeError):
+            self.logger.warning("立绘资源无法加载", fields={"reason_code": "VISUAL_RESOURCE_INVALID", "stage": "visual.describe"})
             return {"error": "VISUAL_RESOURCE_INVALID"}
 
     def _describe(self, request):
@@ -136,4 +138,4 @@ class PortraitService:
 
 class PortraitPlugin:
     def setup(self, context):
-        context.provide("sakura.visual.portrait", PortraitService(context.get("sakura.host.character")), exports=("describe", "parseControl", "editorData", "exportResource", "previewImage"))
+        context.provide("sakura.visual.portrait", PortraitService(context.get("sakura.host.character"), context.get("sakura.host.logging")), exports=("describe", "parseControl", "editorData", "exportResource", "previewImage"))

@@ -34,7 +34,6 @@ require_command() {
 
 require_command curl
 require_command git
-require_command shasum
 
 INSTALL_PARENT="$(dirname "$INSTALL_ROOT")"
 mkdir -p "$INSTALL_PARENT"
@@ -53,7 +52,13 @@ INFER_DEVICE="${GPT_SOVITS_INFER_DEVICE:-cpu}"
 CONFIG_PATH="$GPT_DIR/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml"
 MINIFORGE_VERSION="26.3.2-3"
 MINIFORGE_FILENAME="Miniforge3-$MINIFORGE_VERSION-MacOSX-$ARCH.sh"
-MINIFORGE_URL="https://github.com/conda-forge/miniforge/releases/download/$MINIFORGE_VERSION/$MINIFORGE_FILENAME"
+MINIFORGE_URL="${GPT_SOVITS_MINIFORGE_URL:-https://github.com/conda-forge/miniforge/releases/download/$MINIFORGE_VERSION/$MINIFORGE_FILENAME}"
+
+# Keep caller overrides and upstream device-specific wheel indexes.
+export PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
+if [ -z "${CONDARC:-}" ] && [ -z "${CONDA_CHANNEL_ALIAS:-}" ]; then
+    export CONDA_CHANNEL_ALIAS="https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud"
+fi
 case "$ARCH" in
 arm64)
     MINIFORGE_SIZE=53402258
@@ -121,12 +126,13 @@ conda install -y -c conda-forge wget
 if [ ! -d "$GPT_DIR/.git" ]; then
     progress download 45
     rm -rf "$GPT_DIR"
-    git clone "$GPT_REPO" "$GPT_DIR"
+    git init "$GPT_DIR"
+    git -C "$GPT_DIR" remote add origin "$GPT_REPO"
 fi
 
 progress install 55
-git -C "$GPT_DIR" fetch --tags origin
-git -C "$GPT_DIR" checkout "$GPT_REF"
+git -C "$GPT_DIR" fetch --depth 1 origin "$GPT_REF"
+git -C "$GPT_DIR" checkout --detach FETCH_HEAD
 
 if [ ! -f "$GPT_DIR/install.sh" ]; then
     echo "GPT-SoVITS install.sh not found: $GPT_DIR"

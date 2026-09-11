@@ -1,7 +1,7 @@
 api: 4
 id: sakura.tts
-name: Sakura TTS Hub
-author: Sakura
+name: 语音输出
+author: Rvosy
 description: 为角色选择语音输出引擎。
 version: 0.1.0
 entry: plugin:SakuraTTSHubPlugin

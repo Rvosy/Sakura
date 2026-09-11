@@ -1,6 +1,6 @@
 import { normalizeVisualSettings } from "./visual-settings-runtime.js";
 
-export function createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty, openPlugin }) {
+export function createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty, openPlugin, reportError = () => {} }) {
   const select = document.getElementById("visualSelect");
   if (!select) return { refresh: async () => {}, sync() {}, discard() {}, isDirty: () => false, selections: () => ({}), committed() {}, dispose() {} };
   const status = document.getElementById("visualStatus");
@@ -57,7 +57,12 @@ export function createCharacterVisualSettings({ document, invoke, refreshSelect,
       const snapshot = await pending;
       if (disposed || current !== revision) return;
       snapshots.set(characterId, snapshot);
-    } catch { if (current === revision) error = "显示方式读取失败，请重新打开设置。"; }
+    } catch (failure) {
+      if (!disposed && current === revision) {
+        reportError(failure, { command: "settings_character_visuals_get", stage: "visual.settings.read", code: "VISUAL_SETTINGS_INVALID" });
+        error = "显示方式读取失败，请重新打开设置。";
+      }
+    }
     finally { if (!disposed && current === revision) { busy = false; render(); onDirty(); } }
   }
   const resource = () => { const snapshot = snapshots.get(characterId); return snapshot?.resources.find(item => item.id === (preference() || snapshot.defaultResourceId)); };

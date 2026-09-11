@@ -305,6 +305,32 @@ h1 {
   line-height: 1.45;
   white-space: normal;
 }
+.record-raw {
+  display: block;
+  margin-top: 5px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--input-background) 58%, transparent);
+  color: var(--text);
+  font: 12px/1.75 Consolas, "Sakura Noto Sans SC", "Microsoft YaHei UI", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.record-raw-type { font-weight: 700; }
+.record-raw.is-missing {
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--secondary-text);
+  font-family: inherit;
+}
+.record-details .detail-wide { grid-column: 1 / -1; }
+.record-details dd { white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
+.severity-warning .record-disclosure > summary::after,
+.severity-error .record-disclosure > summary::after { top: 18px; }
 .record-disclosure > summary {
   position: relative;
   padding-right: 32px;

@@ -426,6 +426,7 @@ class _Coordinator:
             job.cancel()
             job.fail("TTS_SYNTHESIS_CANCELLED")
         except Exception as error:
+            self._report("tts.synthesis.failed", "error", {"reason_code": _stable_error_code(error), "error_type": type(error).__name__})
             job.fail(getattr(error, "code", str(error)))
         finally:
             if source is not None:

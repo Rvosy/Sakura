@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -37,17 +37,24 @@ updated: 2026-09-09
   自定义字段以有界 JSON 值展开，仍使用同一文本 writer。字段使用空格分隔；没有属性时省略 ` │ `。换行、控制字符、ANSI 和分隔符必须规范化，单行保持有界。
 - polling、heartbeat、所有通用 WebView command 成功和高频进度事件为 debug/trace；失败、降级、重启、退出异常和用户需要
   关注的状态使用 info/warning/error。已登记业务事件继续使用固定中文，自定义消息采用 `runtime.message`。失败事件必须保留稳定错误码、异常类型、
-  阶段和经过凭据/控制字符清洗且限长的 `diagnostic`；不得把完整 traceback、请求/回复正文或任意异常对象落盘。
+  阶段和清洗后的原始 `diagnostic`。本地日志允许保存有界异常链和调用栈，不记录 locals、请求/回复正文或异常对象。
 - `elapsed_ms` 等耗时最多显示两位小数并移除末尾零，不得把 JavaScript 浮点误差直接写入文本日志。
 - 首次启动发现活动文件或 `.1` 至 `.5` 的任意一行仍是旧 JSON 记录（包括纯文本后混入 JSON）时，把
   整组文件原样移动到带时间戳的 `sakura-runtime-jsonl-archive-*` 归档名，再创建纯文本活动文件；不得
   解析、重写、截断或继续混写。
 - 保留 ADR-0012 的 1024 有界队列、优先级淘汰、丢弃摘要、250 ms 刷新、warning/error 即时刷新、
   500 ms shutdown 和写入故障隔离。两个普通日志文件各按 10 MiB、5 个备份轮转。一个文件失败不影响另一文件或 UI 缓冲。
-- Python 异常进入固定业务失败事件时，除诊断、错误码、原因码和阶段外，还应尽可能记录最底层异常类型、
-  `模块:函数:行号` 形式的代码位置和 10 位稳定问题编号。位置不得使用文件系统路径；问题编号只由稳定错误
-  分类和代码位置生成，不得混入异常消息、用户正文、凭据或 traceback。缺少 traceback 的合成异常允许省略
-  位置和问题编号。
+- Python warning/error 在异常处理期间自动提取原始错误、异常链和调用栈；异步任务在捕获处记录或保存诊断，
+  不等到只剩业务错误码时再推测原因。失败响应通过 `error.details.diagnostics` 传给 Rust，稳定业务错误码不变。
+- `diagnostic` 最多 4096 字符，`exception_chain`、`exception_stack` 和 `recovery_diagnostic` 最多 8192 字符；
+  Python 最多提取 16 层异常及每层最后 32 帧，代码位置使用 `模块:函数:行号`。保留 `errno`、`winerror`，
+  回滚失败与首次失败分别记录。超限必须显示截断标记，不生成问题哈希或 `failure_id`。
+- 普通 bridge、stderr 单条和文本事件上限为 32 KiB。多行诊断在查看器中保留换行，写入文本文件时将换行转义，
+  仍保持一个事件一行。桥接超限时缩短诊断并标记 `record_truncated`，不直接丢掉所有诊断字段。
+- 原文只进入本地日志。凭据按已知值和常见格式局部替换；URL 去掉认证信息、查询串及 fragment，绝对路径只留文件名。
+  Provider 响应仅提取错误字段，不把整个响应中的模型输出写入普通日志。远程 telemetry 继续使用独立白名单投影和预算。
+- Core 与插件进程的 stderr 经有界读取和脱敏进入日志，不能只保留第一行而丢掉后续异常。日志拥塞继续按现有队列策略
+  丢弃并计数，不能阻塞业务进程。无底层异常的业务拒绝保留原有错误码，不伪造调用栈。
 
 ### 2.1 用户可观察事件目录与关联字段
 
@@ -76,7 +83,7 @@ updated: 2026-09-09
 查看器可见；`tts.service.warmup_queued` 等仅表示内部排队的诊断事件允许保留在文本日志而不进入查看器；
 新增或改名时，完整性测试必须同时验证三处，禁止仅让事件落盘而在查看器中消失。业务失败属性使用有界、脱敏的
 `diagnostic + error_type + reason_code + stage`，并在可用时附加
-`cause_type + exception_site`。不生成 `failure_id`，也不引入裸 `error`/`reason`、绝对路径、traceback 或任意异常对象。
+`cause_type + exception_site`。不生成 `failure_id`，也不引入裸 `error`/`reason`、绝对路径或任意异常对象；调用栈走上述专用诊断字段。
 
 每个属于交互的事件必须尽可能携带相同 `operation_id`，文本投影为最多 8 个字符的 `op`；每次模型调用
 同时携带 Agent Trace 的 `trace` 和 `model_call`，文本投影为 `trace`、`call`。事件属性按事件专属字段顺序

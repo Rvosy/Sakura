@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse, urlunparse
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 try:
     from ._runtime_profile import RuntimeProfileError, prepare_managed_profile
 except ImportError:  # pragma: no cover - loose plugin execution
@@ -29,7 +31,6 @@ except ImportError:  # pragma: no cover - loose plugin execution
 DEFAULT_TONE = "中性"
 DEFAULT_GPT_SOVITS_BASE_URL = "http://127.0.0.1:9880"
 DEFAULT_GPT_SOVITS_TTS_PATH = "/tts"
-_LOOPBACK_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _LATIN = re.compile(r"[A-Za-z]")
 
 
@@ -117,10 +118,7 @@ def _open_url(
     *,
     timeout: float,
 ) -> object:
-    target = str(getattr(url, "full_url", url))
-    if is_loopback_base_url(target):
-        return _LOOPBACK_OPENER.open(url, timeout=timeout)
-    return urllib.request.urlopen(url, timeout=timeout)
+    return urlopen_current_proxy(url, timeout=timeout)
 
 
 def _read_url(
@@ -436,6 +434,10 @@ class _ManagedRuntime:
         if self._diagnostic is None:
             return
         try:
+            if severity in {"warning", "error"} and self._server_process is not None:
+                from sakura_process import process_failure_diagnostics
+
+                attributes = {**attributes, **process_failure_diagnostics(self._base_dir / "gpt-sovits.log", getattr(self, "_log_start_offset", 0))}
             self._diagnostic(event, severity, attributes)
         except Exception:
             return
@@ -499,6 +501,7 @@ class _ManagedRuntime:
         log_path = self._base_dir / "gpt-sovits.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("a", encoding="utf-8")
+        self._log_start_offset = log.tell()
         numba_cache = self._base_dir / "cache" / "numba"
         numba_cache.mkdir(parents=True, exist_ok=True)
         environment = os.environ.copy()

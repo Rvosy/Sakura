@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # WP-3S-01：供应商与模型设置纵向链
@@ -34,9 +34,16 @@ Runtime v2 canonical 设置页完成 Provider 公开读取、
 ## 契约
 
 - 用户界面统一使用“模型服务”“API 地址”“获取模型列表”；协议字段和命令名称不变。
+- 添加模型服务提供 DeepSeek、Google 官方和自定义入口。Google 官方预填
+  `https://generativelanguage.googleapis.com/v1beta/openai`，不预填密钥或固定模型；用户填写 API Key 后获取并选择模型。
 - 连接测试请求列表中的第一个模型，成功反馈包含该模型名称，不以获取目录或端点可达代替模型测试。
   已知验证失败、拒绝访问和超时使用简短提示，清洗后的 HTTP 信息和稳定错误码放在可展开的“错误详情”中。
   新一次探测清除旧详情，失效请求不能向已切换的模型服务填入错误详情。
+- 模型探测使用完整的 `timeout_seconds` 作为单次 HTTP 超时，不自动重试网络请求；普通聊天保留原重试策略。
+  连接测试只发送模型与最小用户消息，不指定温度或输出 token 上限，避免与推理模型参数限制冲突。
+- Google 官方域名的根地址、`/v1`、`/v1beta` 和 `/v1/openai` 统一使用 `/v1beta/openai`；
+  模型发现和聊天均使用 Bearer API Key，模型 ID 原样传递。其他域名及自定义路径不改写。
+  接口依据：[Google OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)。
 - capability schema v1 以 section + feature 表达 `available/read_only/unavailable`；其他 schema 直接拒绝。
 - Provider DTO 包含 `id/alias/baseUrl/configured/models`；credential action 仅为 `keep/replace/clear`。
 - `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；任一错误不修改文件或运行态。
