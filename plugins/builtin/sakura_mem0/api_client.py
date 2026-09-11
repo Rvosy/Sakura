@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 try:
     from .support import CancelChecker, check_cancelled
 except ImportError:
@@ -83,7 +85,7 @@ class OpenAICompatibleClient:
         # Reserve the request before urlopen: timeouts and transport failures may
         # still consume provider quota and must count against the job fuse.
         self._requests_sent += 1
-        with urllib.request.urlopen(
+        with urlopen_current_proxy(
             request,
             timeout=max(1, int(self._settings.timeout_seconds)),
         ) as response:

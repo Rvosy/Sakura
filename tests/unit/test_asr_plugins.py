@@ -111,7 +111,7 @@ def test_broken_optional_logger_cannot_prevent_recognition_or_model_install(tmp_
     resources = _resources.ModelResources(tmp_path / "models", logger=logger)
     content = b"test model"
     monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content)),))
-    monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *_a, **_k: io.BytesIO(content))
+    monkeypatch.setattr(_resources, "urlopen_current_proxy", lambda *_a, **_k: io.BytesIO(content))
     resources.start()
     resources.thread.join(2)
     assert resources.state == "succeeded"
@@ -125,7 +125,7 @@ def test_model_install_failure_logs_stable_code_without_source_url_or_path(tmp_p
     def failed_download(*_args, **_kwargs):
         raise OSError("credential secret C:/private/model")
 
-    monkeypatch.setattr(_resources.urllib.request, "urlopen", failed_download)
+    monkeypatch.setattr(_resources, "urlopen_current_proxy", failed_download)
     resources.start()
     resources.thread.join(2)
     assert [item["fields"]["event"] for item in logger.records] == ["asr.model.install.started", "asr.model.install.failed"]
@@ -205,7 +205,7 @@ def test_models_status_and_warmup_do_not_download_and_failed_install_preserves_o
     (resources.path / "model").write_bytes(content)
     (resources.path / "complete.json").write_text(json.dumps({"version": _resources.VERSION, "sha256": {"model": "legacy-unused-digest"}}))
     requests = []
-    monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *a, **k: (requests.append(a) or io.BytesIO(b"bad")))
+    monkeypatch.setattr(_resources, "urlopen_current_proxy", lambda *a, **k: (requests.append(a) or io.BytesIO(b"bad")))
     assert resources.load()["models"]["ready"]
     resources.verify()
     assert requests == []
@@ -250,7 +250,7 @@ def test_registration_and_unregister_require_the_authenticated_provider_caller(c
 def test_missing_models_status_and_warmup_never_start_a_download(tmp_path, monkeypatch):
     resources = _resources.ModelResources(tmp_path)
     logger = CaptureLogger()
-    monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *_a, **_k: pytest.fail("Implicit model download"))
+    monkeypatch.setattr(_resources, "urlopen_current_proxy", lambda *_a, **_k: pytest.fail("Implicit model download"))
     provider = SenseVoiceProvider(SimpleNamespace(get=lambda key: logger if key == "sakura.host.logging" else None), resources)
     for _ in range(30):
         assert provider.status()["errorCode"] == "ASR_MODEL_MISSING"
@@ -285,7 +285,7 @@ def test_failed_publish_and_failed_restore_keep_the_previous_models(tmp_path, mo
     resources = _resources.ModelResources(tmp_path)
     resources.path.mkdir()
     (resources.path / "model").write_bytes(b"previous usable version")
-    monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *_a, **_k: io.BytesIO(content))
+    monkeypatch.setattr(_resources, "urlopen_current_proxy", lambda *_a, **_k: io.BytesIO(content))
     replace = _resources.os.replace
 
     def failing_replace(source, target):
@@ -328,7 +328,7 @@ def test_same_size_corrupt_model_exposes_explicit_retry_and_recovers(tmp_path, m
     state = resources.load()["models"]
     assert not state["ready"]
     assert state["availableActionIds"] == ["retryModels"]
-    monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *_a, **_k: io.BytesIO(content))
+    monkeypatch.setattr(_resources, "urlopen_current_proxy", lambda *_a, **_k: io.BytesIO(content))
     previous_version = provider.config_version
     provider.install_models()
     resources.thread.join(3)
@@ -542,7 +542,7 @@ def test_legacy_model_marker_reuses_installed_files_without_content_scan(tmp_pat
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", open_without_model_scan)
-    monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *_a, **_k: pytest.fail("Installed models must not download"))
+    monkeypatch.setattr(_resources, "urlopen_current_proxy", lambda *_a, **_k: pytest.fail("Installed models must not download"))
     assert resources.ready()
     resources.verify()
     resources.start()

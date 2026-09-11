@@ -9,10 +9,12 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from app.plugin_sdk.sakura_downloads import uv_download_environment
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import DistributionPaths
@@ -113,7 +115,7 @@ class PluginDependencyRoots:
             result = subprocess.run(
                 command,
                 cwd=Path(plugin_root),
-                env=self._uv_environment(),
+                env=self._uv_environment(plugin_root),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -225,7 +227,7 @@ class PluginDependencyRoots:
                     str(exported),
                 ],
                 cwd=declaration.path.parent,
-                env=self._uv_environment(),
+                env=self._uv_environment(declaration.path.parent),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -251,8 +253,14 @@ class PluginDependencyRoots:
             return [executable]
         return [str(self._python), "-m", "uv"]
 
-    def _uv_environment(self) -> dict[str, str]:
-        environment = os.environ.copy()
+    def _uv_environment(self, directory: Path | None = None) -> dict[str, str]:
+        environment = uv_download_environment(directory or Path.cwd())
+        # uv consumes environment proxies. Snapshot the current system settings
+        # when starting this download job, not when Sakura starts.
+        for scheme, proxy in urllib.request.getproxies().items():
+            if scheme in {"http", "https", "all", "no"}:
+                environment[f"{scheme.upper()}_PROXY"] = proxy
+                environment[f"{scheme}_proxy"] = proxy
         environment["UV_CACHE_DIR"] = str(self._paths.uv_cache_dir)
         environment["UV_PYTHON_DOWNLOADS"] = "never"
         return environment

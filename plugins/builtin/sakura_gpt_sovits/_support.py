@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse, urlunparse
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 try:
     from ._runtime_profile import RuntimeProfileError, prepare_managed_profile
 except ImportError:  # pragma: no cover - loose plugin execution
@@ -29,7 +31,6 @@ except ImportError:  # pragma: no cover - loose plugin execution
 DEFAULT_TONE = "中性"
 DEFAULT_GPT_SOVITS_BASE_URL = "http://127.0.0.1:9880"
 DEFAULT_GPT_SOVITS_TTS_PATH = "/tts"
-_LOOPBACK_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _LATIN = re.compile(r"[A-Za-z]")
 
 
@@ -117,10 +118,7 @@ def _open_url(
     *,
     timeout: float,
 ) -> object:
-    target = str(getattr(url, "full_url", url))
-    if is_loopback_base_url(target):
-        return _LOOPBACK_OPENER.open(url, timeout=timeout)
-    return urllib.request.urlopen(url, timeout=timeout)
+    return urlopen_current_proxy(url, timeout=timeout)
 
 
 def _read_url(

@@ -1286,7 +1286,7 @@ def test_chunk_loop_cannot_bypass_curation_http_request_limit(
         calls += 1
         return Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.api_client.urlopen_current_proxy", fake_urlopen)
     client = OpenAICompatibleClient(
         ApiSettings(
             base_url="https://api.example.com/v1",
@@ -1475,7 +1475,7 @@ def test_modelscope_download_uses_pinned_revision_and_flattens_onnx_data(
         return io.BytesIO(payloads[remote_name])
 
     monkeypatch.setattr(memory_module, "MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS", artifacts)
-    monkeypatch.setattr(memory_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(memory_module, "urlopen_current_proxy", fake_urlopen)
     progress: list[tuple[str, int]] = []
     snapshot = tmp_path / "snapshot"
 

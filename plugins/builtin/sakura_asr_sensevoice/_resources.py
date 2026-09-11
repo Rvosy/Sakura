@@ -10,8 +10,10 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 VERSION = "sensevoice-2024-07-17-int8-silero-9e2449e1"
-_BASE = "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/"
+_BASE = "https://www.modelscope.cn/models/gomodels/sherpa/resolve/590473aaa26eed19b270a424cb641972ae56482d/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/"
 FILES = (
     ("model.int8.onnx", _BASE + "model.int8.onnx", 239233841),
     ("tokens.txt", _BASE + "tokens.txt", 315894),
@@ -119,7 +121,7 @@ class ModelResources:
                 target = staging / name
                 received = 0
                 request = urllib.request.Request(url, headers={"User-Agent": "Sakura-ASR/1"})
-                with urllib.request.urlopen(request, timeout=20) as source, target.open("wb") as output:
+                with urlopen_current_proxy(request, timeout=20) as source, target.open("wb") as output:
                     while chunk := source.read(256 * 1024):
                         self.check()
                         received += len(chunk)

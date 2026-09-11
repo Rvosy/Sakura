@@ -11,6 +11,11 @@ from ipaddress import ip_address
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 
+try:
+    from sakura_http import proxy_for_url
+except ImportError:
+    from app.plugin_sdk.sakura_http import proxy_for_url
+
 
 DEFAULT_TIMEOUT_SECONDS = 12
 MAX_REDIRECTS = 5
@@ -310,11 +315,19 @@ def _request_public_url_once(
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/json,text/plain",
+        "Accept-Encoding": "identity",
         "Host": host if parsed.port is None else f"{host}:{port}",
         "Connection": "close",
     }
     last_error: OSError | None = None
     for address in addresses:
+        proxy = proxy_for_url(url)
+        if proxy:
+            try:
+                return _request_through_proxy(url, address, proxy, headers, max_bytes)
+            except OSError as exc:
+                last_error = exc
+                continue
         connection: http.client.HTTPConnection
         if parsed.scheme == "https":
             connection = _PinnedHTTPSConnection(host, port, address, timeout=DEFAULT_TIMEOUT_SECONDS)
@@ -332,6 +345,33 @@ def _request_public_url_once(
     if isinstance(last_error, TimeoutError):
         raise WebError("WEB_TIMEOUT", "网页请求超时。")
     raise WebError("WEB_NETWORK_ERROR", "无法连接目标网站。")
+
+
+def _request_through_proxy(url, address, proxy, headers, max_bytes):
+    import httpx
+
+    parsed = urlparse(url)
+    # The proxy connects to the validated public IP, not a second DNS result.
+    # Keep the original Host and TLS SNI/certificate name for virtual hosting.
+    target = httpx.URL(url).copy_with(host=address)
+    try:
+        with httpx.Client(proxy=proxy, timeout=DEFAULT_TIMEOUT_SECONDS) as client:
+            with client.stream(
+                "GET", target, headers=headers,
+                extensions={"sni_hostname": parsed.hostname},
+            ) as response:
+                message = http.client.HTTPMessage()
+                for key, value in response.headers.multi_items():
+                    message[key] = value
+                body = bytearray()
+                for chunk in response.iter_raw(chunk_size=min(max_bytes, 64 * 1024)):
+                    body.extend(chunk[:max_bytes - len(body)])
+                    if len(body) >= max_bytes:
+                        break
+                return response.status_code, response.reason_phrase, message, bytes(body)
+    except httpx.HTTPError as exc:
+        # Do not echo proxy URLs or authentication details into tool output.
+        raise OSError("代理连接失败") from exc
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):

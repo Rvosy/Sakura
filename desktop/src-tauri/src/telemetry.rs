@@ -1106,13 +1106,6 @@ async fn sender_loop(
     mut receiver: mpsc::Receiver<QueuedRecord>,
     mut control: watch::Receiver<u64>,
 ) {
-    let client = match reqwest::Client::builder()
-        .timeout(inner.http_timeout)
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return,
-    };
     let mut deferred = VecDeque::new();
     while !inner.stopping.load(Ordering::Acquire)
         || (inner.started_at.elapsed().as_millis() as u64)
@@ -1187,7 +1180,19 @@ async fn sender_loop(
                 continue;
             }
         };
-        let request_client = client.clone();
+        // A new batch observes proxy changes without restarting the sender.
+        let request_client = match reqwest::Client::builder()
+            .timeout(inner.http_timeout)
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => {
+                if let Ok(mut diagnostics) = inner.diagnostics.lock() {
+                    diagnostics.failed = diagnostics.failed.saturating_add(records.len() as u64);
+                }
+                continue;
+            }
+        };
         let request_url = format!("{}{endpoint}", inner.endpoint);
         let request = tokio::spawn(async move {
             request_client

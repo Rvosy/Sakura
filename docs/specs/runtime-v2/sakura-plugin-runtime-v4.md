@@ -70,6 +70,10 @@ capability dependency；Python distribution dependency 单独通过 `pyproject.t
 - 只有用户发起安装、更新或重试时才允许解析和下载依赖。
 - 同一个分发包在目标 CPython ABI 或平台没有可用 wheel 时明确失败，不尝试污染主 Runtime 作为回退。
 - uv cache 可以共享下载文件并使用 hardlink/clone；每个插件的 import 可见集合仍然独立。
+- 未指定软件包源时，插件安装、源码依赖准备和本地发行 staging 默认使用阿里云 PyPI 镜像。
+  `UV_*` 源配置、uv 配置文件和插件 requirements 中的源声明优先；没有 uv 源配置时，沿用显式的
+  `PIP_INDEX_URL`。不改写锁文件、直接下载 URL 或 uv 的索引选择策略，也不混用多个默认镜像。
+  海外 GitHub Actions 打包任务显式使用官方 PyPI。镜像缺包或不可用时明确报错，用户可指定其他源后重试。
 
 标准 venv 与 `uv pip --target` 都可以作为 dependency root 的内部实现候选。实现选择不得改变插件包、SDK、
 进程启动和故障 DTO；PoC 必须覆盖 console scripts、native wheels、卸载和三平台路径后再冻结一种。
@@ -109,6 +113,11 @@ Python 标准库
 
 SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`。允许因跨进程而收紧参数、返回值和 cleanup
 合同，但不把 RPC client、PID、pipe、模块名或进程地址暴露给插件作者。
+
+SDK 提供不依赖 Core 的 `sakura_http.urlopen_direct_for_loopback` 和 `proxy_for_url`。内置插件的 HTTP API
+与资源下载使用前者；每次请求、重试和重定向读取当前代理，本地回环直连，已开始的传输不换连接。
+其他 HTTP 客户端可通过后者取得单次请求的代理。插件自带的外部程序不受 Python SDK 接管；宿主启动
+`uv` 依赖下载任务时将当时的系统代理传入该子进程，运行中的安装任务保留启动时的配置。
 
 插件不得从 `data_path()` 的物理位置反推 `user_root`。确需继续拥有现有共享用户数据的插件通过通用
 `sakura.host.storage` 取得有界的 data/cache 目录 descriptor；当前角色及角色卡正文通过

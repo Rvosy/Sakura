@@ -24,6 +24,9 @@ Sakura 只安装 `api: 4` 插件。安装包不能包含符号链接、路径逃
 插件声明的 Python 依赖解析到该插件自己的目录；失败不会改写 Core Runtime 或其他插件环境。普通启动不会
 联网安装或修复依赖。
 
+未指定软件包源时，Python 依赖默认从阿里云 PyPI 镜像下载，并复用已有下载缓存；用户或插件指定的源优先。
+镜像缺少某个版本时，可在启动 Sakura 前设置 `UV_DEFAULT_INDEX=https://pypi.org/simple`，再重试安装。
+
 ```text
 data/user_plugins/<plugin_id>/                         用户插件代码
 data/plugins/<plugin_id>/                              插件配置和数据

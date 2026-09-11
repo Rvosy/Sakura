@@ -41,6 +41,7 @@ echo "Installing dependencies..."
 echo ""
 
 cd "$PROJECT_ROOT"
+export PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 "$PYTHON_EXE" -m pip install -r requirements.txt --no-warn-script-location
 
 echo ""

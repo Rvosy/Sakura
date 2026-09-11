@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +129,7 @@ def _download(
         if offset:
             headers["Range"] = f"bytes={offset}-"
         request = urllib.request.Request(entry.download_url, headers=headers)
-        with urllib.request.urlopen(request, timeout=600) as response:
+        with urlopen_current_proxy(request, timeout=600) as response:
             status = getattr(response, "status", None)
             if offset and status != 206:
                 offset = 0

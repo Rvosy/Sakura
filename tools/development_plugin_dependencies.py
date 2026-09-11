@@ -15,6 +15,8 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app/plugin_sdk"))
+from sakura_downloads import uv_download_environment
 
 PLUGIN_DIRECTORIES = ("sakura_genie", "sakura_gpt_sovits", "sakura_mem0", "sakura_asr_sensevoice")
 _PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -82,7 +84,7 @@ def prepare(repo: Path, python: Path) -> None:
                 ],
                 check=True,
                 cwd=plugin_root,
-                env=environment,
+                env=uv_download_environment(plugin_root, environment),
                 timeout=600,
             )
             marker = {

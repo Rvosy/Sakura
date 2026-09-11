@@ -18,10 +18,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse, urlunparse
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 
 DEFAULT_TONE = "中性"
 DEFAULT_GENIE_TTS_API_URL = "http://127.0.0.1:9881/"
-_LOOPBACK_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class OperationCancelled(RuntimeError):
@@ -59,11 +60,7 @@ def urlopen_direct_for_loopback(
     data: bytes | None = None,
     timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
 ) -> object:
-    target = getattr(url, "full_url", str(url))
-    opener = _LOOPBACK_OPENER.open if is_loopback_base_url(str(target)) else urllib.request.urlopen
-    if data is None:
-        return opener(url, timeout=timeout)
-    return opener(url, data=data, timeout=timeout)
+    return urlopen_current_proxy(url, data=data, timeout=timeout)
 
 
 def read_url_cancellable(

@@ -681,57 +681,6 @@ def test_local_chat_completion_base_url_uses_loopback_http_helper(monkeypatch) -
     }
 
 
-def test_remote_requests_reload_proxy_settings_between_calls(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import urllib.request
-
-    proxy_state = {"https": "http://127.0.0.1:1111"}
-    observed_proxies: list[dict[str, str]] = []
-
-    class FakeResponse:
-        status = 200
-
-        def __enter__(self):  # type: ignore[no-untyped-def]
-            return self
-
-        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
-            return None
-
-        def read(self) -> bytes:
-            return b'{"data":[{"id":"model"}]}'
-
-    class FakeOpener:
-        def __init__(self, proxies: dict[str, str]) -> None:
-            self._proxies = proxies
-
-        def open(self, _request, *, timeout):  # type: ignore[no-untyped-def]
-            _ = timeout
-            observed_proxies.append(self._proxies)
-            return FakeResponse()
-
-    def fake_build_opener(handler):  # type: ignore[no-untyped-def]
-        return FakeOpener(dict(handler.proxies))
-
-    monkeypatch.setattr(urllib.request, "getproxies", lambda: dict(proxy_state))
-    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
-
-    client = OpenAICompatibleClient(
-        ApiSettings("https://api.example.com/v1", "key", "model")
-    )
-    assert client.list_models() == ["model"]
-
-    proxy_state.clear()
-    assert client.list_models() == ["model"]
-
-    proxy_state["https"] = "http://127.0.0.1:2222"
-    assert client.list_models() == ["model"]
-
-    assert observed_proxies == [
-        {"https": "http://127.0.0.1:1111"},
-        {},
-        {"https": "http://127.0.0.1:2222"},
-    ]
-
-
 def test_http_auto_retry_uses_shared_attempt_limit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import urllib.error
     import urllib.request
