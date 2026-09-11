@@ -1,4 +1,4 @@
-# Sakura Mobile 手机网页端插件
+# 手机聊天插件
 
 `sakura_mobile` 是 Plugin API v4 插件，用于把手机浏览器接入桌面端 Sakura 的同一条聊天、历史和角色链。
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.config.app_version import read_app_version
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.agent.trace import AgentTraceRecorder
@@ -573,11 +575,12 @@ def test_list_models_normalizes_google_ai_studio_base_url(monkeypatch) -> None: 
     assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/models"
 
 
-def test_chat_completions_normalizes_google_ai_studio_base_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("base_path", ["", "/v1", "/v1/", "/v1beta", "/v1/openai", "/v1beta/openai/"])
+def test_chat_completions_normalizes_google_ai_studio_base_url(monkeypatch, base_path: str) -> None:  # type: ignore[no-untyped-def]
     captured: dict[str, Any] = {}
     client = OpenAICompatibleClient(
         ApiSettings(
-            base_url="https://generativelanguage.googleapis.com/v1",
+            base_url=f"https://generativelanguage.googleapis.com{base_path}",
             api_key="key",
             model="gemini-2.5-flash",
         )
@@ -604,7 +607,7 @@ def test_chat_completions_normalizes_google_ai_studio_base_url(monkeypatch) -> N
     monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     assert client.test_connection() == "OK"
-    assert captured["url"] == "https://generativelanguage.googleapis.com/v1/openai/chat/completions"
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     assert captured["user_agent"] == f"Sakura/{read_app_version(REPO_ROOT)}"
     assert not captured["user_agent"].startswith("Python-urllib/")
 
@@ -639,6 +642,8 @@ def test_connection_omits_temperature(monkeypatch) -> None:  # type: ignore[no-u
     # 只接受默认温度的模型在检测阶段不应被显式 temperature 拒绝。
     assert client.test_connection() == "OK"
     assert "temperature" not in captured["payload"]
+    assert "max_tokens" not in captured["payload"]
+    assert "max_completion_tokens" not in captured["payload"]
 
 
 def test_local_chat_completion_base_url_uses_loopback_http_helper(monkeypatch) -> None:  # type: ignore[no-untyped-def]

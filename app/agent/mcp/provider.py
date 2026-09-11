@@ -180,9 +180,11 @@ class MCPToolProvider:
                 continue
 
             server_registered = 0
+            conflict = False
             for tool_spec in tool_specs:
                 internal_name = _build_internal_tool_name(server, tool_spec.name)
                 if registry.get(internal_name) is not None:
+                    conflict = True
                     log_event("MCP", "工具名冲突，已跳过", {"reason_code": "TOOL_NAME_CONFLICT"})
                     continue
                 tool = Tool(
@@ -197,7 +199,12 @@ class MCPToolProvider:
                 with self._lock:
                     if self._closed:
                         break
-                    registry.register(tool)
+                    try:
+                        registry.register(tool, replace=False)
+                    except ValueError:
+                        conflict = True
+                        log_event("MCP", "工具名冲突，已跳过", {"reason_code": "TOOL_NAME_CONFLICT"})
+                        continue
                     self._registered_tools[internal_name] = tool
                     self._tool_targets[internal_name] = (bridge, tool_spec.name)
                 registered += 1
@@ -222,8 +229,8 @@ class MCPToolProvider:
                         status = self._server_status.get(server.name)
                         if status is not None:
                             status.update(
-                                state="ready",
-                                reasonCode="READY",
+                                state="degraded" if conflict else "ready",
+                                reasonCode="TOOL_NAME_CONFLICT" if conflict else "READY",
                                 toolCount=server_registered,
                             )
                         keep_bridge = True
@@ -232,7 +239,7 @@ class MCPToolProvider:
                     break
             else:
                 _close_quietly(bridge)
-                self._set_server_status(server, "degraded", "NO_TOOLS", 0)
+                self._set_server_status(server, "degraded", "TOOL_NAME_CONFLICT" if conflict else "NO_TOOLS", 0)
 
         with self._lock:
             if self._closed:

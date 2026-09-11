@@ -1,7 +1,7 @@
 api: 4
 id: sakura.memory.mem0
-name: Sakura Mem0 Memory
-author: Sakura
+name: Mem0 长期记忆
+author: Rvosy
 description: 让 Sakura 记住长期信息，并在需要时回想起来。
 version: 0.1.0
 entry: plugin:SakuraMem0Plugin

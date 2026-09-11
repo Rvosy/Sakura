@@ -138,6 +138,7 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
         "sakura.tts",
         "sakura.tts.genie",
         "sakura.tts.gpt-sovits",
+        "sakura.web",
         "sakura_mobile",
     }
     assert all(spec.api_version == 4 for spec in bundled)

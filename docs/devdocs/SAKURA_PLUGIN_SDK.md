@@ -1107,8 +1107,8 @@ runtime\python.exe -m harness run docs
 
 可直接参考这些现有插件：
 
-- [Playwright Browser](../../plugins/optional/playwright_browser/plugin.py)：工具、Artifact、配置和普通设置；
-- [Sakura Mobile](../../plugins/builtin/sakura_mobile/plugin.py)：事件、线程清理、配置热应用和只读状态；
+- [Playwright 浏览器](../../plugins/optional/playwright_browser/plugin.py)：工具、Artifact、配置和普通设置；
+- [手机聊天](../../plugins/builtin/sakura_mobile/plugin.py)：事件、线程清理、配置热应用和只读状态；
 - [Sakura Mem0](../../plugins/builtin/sakura_mem0/plugin.py)：上下文、工具、surface、Collection 和模型槽位；
 - [GPT-SoVITS](../../plugins/builtin/sakura_gpt_sovits/plugin.py)：跨插件 Service、角色资源、资源 Action 和语音页面。
 

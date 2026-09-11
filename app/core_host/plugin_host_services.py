@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 import secrets
 import threading
@@ -496,6 +497,12 @@ class _ToolsHostService:
         name = descriptor.get("name")
         description = descriptor.get("description")
         parameters = descriptor.get("parameters", {})
+        timeout = descriptor.get("timeoutSeconds", _TOOL_CALLBACK_TIMEOUT_SECONDS)
+        if (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or not 0 < timeout <= 120
+        ):
+            raise HostServiceError("TOOL_DESCRIPTOR_INVALID")
         if (
             not isinstance(name, str)
             or not _TOOL_NAME.fullmatch(name)
@@ -525,7 +532,7 @@ class _ToolsHostService:
                     handle,
                     "tools.handler",
                     arguments,
-                    timeout=_TOOL_CALLBACK_TIMEOUT_SECONDS,
+                    timeout=float(timeout),
                 )
             )
 
@@ -540,7 +547,10 @@ class _ToolsHostService:
             source="plugin",
         )
         registration_id = _new_registration_id(self._registrations)
-        getattr(self._tool_registry, "register")(tool)
+        try:
+            getattr(self._tool_registry, "register")(tool, replace=False)
+        except ValueError as error:
+            raise HostServiceError("TOOL_NAME_CONFLICT") from error
         self._registrations[registration_id] = _ToolRegistration(name, tool)
         return {"registrationId": registration_id}
 

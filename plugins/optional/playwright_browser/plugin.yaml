@@ -1,6 +1,6 @@
 api: 4
 id: playwright_browser
-name: Playwright Browser
+name: Playwright 浏览器
 author: Chihiro
 description: 让 Sakura 打开和操作网页，也能搜索、读取内容和截图。
 version: 1.0.0
