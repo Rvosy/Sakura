@@ -145,7 +145,7 @@ def test_mcp_client_refreshes_proxy_per_request_with_open_stream(proxy_state):
 
 
 def test_search_proxy_pins_public_ip_and_preserves_host(proxy_state, monkeypatch):
-    from app.agent.mcp import web_search_server as web
+    from plugins.builtin.sakura_web import web
 
     monkeypatch.setattr(web, "_resolve_public_addresses", lambda *_: ["93.184.216.34"])
     with endpoint("a") as (a, requests_a), endpoint("b") as (b, requests_b):
@@ -160,7 +160,7 @@ def test_search_proxy_pins_public_ip_and_preserves_host(proxy_state, monkeypatch
 
 
 def test_search_rejects_private_destination_even_with_proxy(proxy_state):
-    from app.agent.mcp import web_search_server as web
+    from plugins.builtin.sakura_web import web
 
     with endpoint("proxy") as (proxy, requests):
         proxy_state["http"] = proxy

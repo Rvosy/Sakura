@@ -11,13 +11,10 @@ from ipaddress import ip_address
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 
-if __package__:
-    from app.plugin_sdk.sakura_http import proxy_for_url
-else:
-    # This server is also launched directly as an MCP stdio script.
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plugin_sdk"))
+try:
     from sakura_http import proxy_for_url
+except ImportError:
+    from app.plugin_sdk.sakura_http import proxy_for_url
 
 
 DEFAULT_TIMEOUT_SECONDS = 12
