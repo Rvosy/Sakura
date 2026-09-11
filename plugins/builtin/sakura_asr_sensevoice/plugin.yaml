@@ -1,7 +1,7 @@
 api: 4
 id: sakura.asr.sensevoice
-name: SenseVoice ASR Provider
-author: Sakura
+name: SenseVoice 语音识别
+author: Rvosy
 description: 使用 SenseVoice 在本机识别语音。
 version: 0.1.0
 entry: plugin:SenseVoicePlugin

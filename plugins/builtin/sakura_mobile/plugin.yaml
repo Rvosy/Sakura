@@ -1,6 +1,6 @@
 api: 4
 id: sakura_mobile
-name: Sakura Mobile
+name: 手机聊天
 author: pa1n9
 description: 在局域网或 Tailscale 中，用手机网页和 Sakura 聊天。
 version: 1.0.0
