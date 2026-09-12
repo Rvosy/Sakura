@@ -83,6 +83,7 @@ import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
 const LAYOUT_DEGRADED_NOTICE = "窗口布局异常，已临时重置。";
+const PORTRAIT_HIT_TEST_NOTICE = "桌宠透明区域穿透暂时不可用。";
 
 installDevtoolsShortcutGuard();
 
@@ -762,8 +763,12 @@ function activatePortraitHitTest(
     portraitResourceId = null,
     reportError = true,
     surface = currentSurface,
+    signal = null,
+    operationSignal = null,
   } = {},
 ) {
+  const isCurrent = () => !disposed && revision === portraitHitRevision
+    && !signal?.aborted && !operationSignal?.aborted;
   return tracedInteractionInvoke(
     "activate_portrait_hit_test",
     {
@@ -775,12 +780,14 @@ function activatePortraitHitTest(
     traceContext,
     "portrait.activate-hit-test",
   ).then((surface) => {
-    if (!surface || revision !== portraitHitRevision) return null;
+    if (!surface || !isCurrent()) return null;
     commitSurfaceApplication(surface);
+    if (presentationError.textContent === PORTRAIT_HIT_TEST_NOTICE) clearRecoverableError();
     return surface;
   }).catch((error) => {
+    if (!isCurrent()) return null;
     if (reportError) {
-      showRecoverableError("桌宠透明区域穿透暂时不可用。", { autoHide: true });
+      showRecoverableError(PORTRAIT_HIT_TEST_NOTICE);
     }
     throw error;
   });
@@ -870,7 +877,9 @@ const rendererHost = createRendererHost({
       const revision = ++portraitHitRevision;
       const applied = await runPortraitSurfaceMutation(() => {
         if (signal.aborted || operationSignal?.aborted || revision !== portraitHitRevision) return false;
-        return activatePortraitHitTest(assetKey || "", revision, null, { surface, portraitScalePercent: visualScalePercent });
+        return activatePortraitHitTest(assetKey || "", revision, null, {
+          surface, portraitScalePercent: visualScalePercent, signal, operationSignal,
+        });
       });
       if (signal.aborted || operationSignal?.aborted || revision !== portraitHitRevision || !applied) return false;
       currentSurface = surface;
@@ -1335,6 +1344,7 @@ function handleCoreEvent(event) {
     screenAwareness.generationChanged(event.generationId);
     updateAnnouncement.generationChanged();
     composerToolRegistry.invalidate();
+    ++portraitHitRevision;
     rendererHost.freeze("generation_changed");
   }
   if (event.type === "lifecycle" && isChatReadyLifecycle(event.status) && event.generationId === characterPresentation.generationId && event.revision !== before.revision) void rebindCoreGeneration(event.generationId, { refresh: true });
