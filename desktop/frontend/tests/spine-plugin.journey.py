@@ -21,8 +21,6 @@ from app.agent.tools import ToolRegistry
 from app.config.character_resources import CharacterVisualResource
 from app.core_host.character_studio import CharacterStudioBoundary
 from app.core_host.plugin_application import PluginApplicationHost
-from app.plugins.installer import LocalPluginInstaller
-from app.plugins.inventory import PluginDesiredStateStore
 from app.storage.runtime_roots import RuntimeRoots
 from tools.spine_preview import export_components, prepare
 
@@ -68,6 +66,44 @@ def fixture(root):
     return root / 'components'
 
 
+def choose_themed_option(page, label, value, screenshot=None):
+    select = page.locator(f'.spine-editor select[aria-label="{label}"]')
+    name = select.locator(f'option[value="{value}"]').text_content()
+    page.get_by_role('combobox', name=label, exact=True).click()
+    menu = page.get_by_role('listbox', name=label, exact=True)
+    expect(menu).to_be_visible()
+    if screenshot:
+        page.screenshot(path=str(screenshot), animations='disabled')
+    menu.get_by_role('option', name=name, exact=True).click()
+    expect(menu).to_have_count(0)
+
+
+def verify_render_resolution(page):
+    # CSS transforms do not trigger ResizeObserver. Change only an ancestor's
+    # scale, then change only DPR, as when the desktop pet crosses monitors.
+    page.set_viewport_size({'width': 640, 'height': 640})
+    session = page.context.new_cdp_session(page)
+    page.evaluate("alphaRenderer.setPaused(false)")
+    for dpr, scale in [(1, 1.5), (1.25, 1.5), (3, 1.5), (3, 0.75)]:
+        session.send('Emulation.setDeviceMetricsOverride', {
+            'width': 640, 'height': 640, 'deviceScaleFactor': dpr, 'mobile': False,
+        })
+        result = page.evaluate("""async ({scale}) => {
+            document.body.style.transform = `scale(${scale})`;
+            document.body.style.transformOrigin = 'top left';
+            const canvas = document.querySelector('canvas');
+            // Wait for rendering, not for an arbitrary wall-clock delay.
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const rect = canvas.getBoundingClientRect(), gl = canvas.getContext('webgl');
+            return {actual: [gl.drawingBufferWidth, gl.drawingBufferHeight],
+                expected: [Math.ceil(rect.width * devicePixelRatio), Math.ceil(rect.height * devicePixelRatio)],
+                logical: [canvas.clientWidth, canvas.clientHeight]};
+        }""", {'scale': scale})
+        assert result['actual'] == result['expected'], (dpr, scale, result)
+        assert result['logical'] == [160, 160], result
+    session.detach()
+
+
 def verify_alpha_compositing(browser, origin, root):
     from PIL import Image
     from io import BytesIO
@@ -88,7 +124,7 @@ def verify_alpha_compositing(browser, origin, root):
         page.evaluate("""async ({assets,pma}) => {
             document.body.replaceChildren(); Object.assign(document.body.style,{margin:'0',background:'#19262a'});
             const container=document.createElement('div');Object.assign(container.style,{width:'160px',height:'160px'});document.body.append(container);
-            const {createRenderer}=await import('/plugins/optional/sakura_spine/renderer.mjs');
+            const {createRenderer}=await import('/plugins/builtin/sakura_spine/renderer.mjs');
             window.alphaRenderer=await createRenderer({container,rendererData:{runtimeVersion:'3.6.53',textures:{'texture.png':'texture.png'},
               config:{skeleton:'skeleton.json',atlas:'skeleton.atlas',defaultSkin:'default',defaultAnimation:'idle',speed:1,premultipliedAlpha:pma}},
               bindingId:'alpha',resourceId:'alpha',signal:new AbortController().signal,resolveAssetUrl:path=>assets[path]});
@@ -99,6 +135,8 @@ def verify_alpha_compositing(browser, origin, root):
         expected = (157, 85, 48)
         assert all(abs(actual-wanted) <= 3 for actual,wanted in zip(sample, expected)), (pma, sample)
         samples.append(sample)
+        if pma:
+            verify_render_resolution(page)
         page.evaluate('alphaRenderer.dispose()')
     assert all(abs(a-b) <= 2 for a,b in zip(*samples)), samples
     page.close()
@@ -125,8 +163,7 @@ def run(components=None):
             (package / 'card.md').write_text('隔离验证角色')
             (package / 'character.json').write_text(json.dumps({'id': 'sample', 'display_name': 'Spine 验证',
                 'card': 'card.md', 'portrait': {'default': 'default.png'}}))
-            LocalPluginInstaller(roots).install(ROOT / 'plugins/optional/sakura_spine', 'folder')
-            PluginDesiredStateStore(roots.user_root).set('sakura.visual.spine', True)
+            shutil.copytree(ROOT / 'plugins/builtin/sakura_spine', roots.distribution_root / 'plugins/builtin/sakura_spine')
             application = PluginApplicationHost(roots, 'spine-browser', ToolRegistry())
             application.start()
             try:
@@ -139,9 +176,9 @@ def run(components=None):
                     if command == 'studio_choose_source': return str(chosen)
                     if command != 'studio_request': raise ValueError(command)
                     result = boundary._dispatch(params['method'], params['params'])
-                    if params['method'] == 'studio.visual.open':
+                    if params['method'] in ('studio.visual.open', 'studio.visual.thumbnail'):
                         visual = result['presentation']['visual']
-                        plugin = 'optional/sakura_spine/editor.mjs' if visual['providerId'] == 'sakura.visual.spine' else 'builtin/sakura_portrait/frontend/editor.js'
+                        plugin = 'builtin/sakura_spine/editor.mjs' if visual['providerId'] == 'sakura.visual.spine' else 'builtin/sakura_portrait/frontend/editor.js'
                         visual['editor'] = origin + '/plugins/' + plugin
                         prefix = '/preview/' + visual['bindingId']
                         Handler.assets[prefix] = Path(result.pop('assetRootPath'))
@@ -162,7 +199,7 @@ def run(components=None):
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.on('console', lambda msg: errors.append(msg.text) if 'Content Security Policy' in msg.text else None)
                 page.expose_function('nativeInvoke', invoke)
-                page.add_init_script("window.__TAURI__={core:{invoke:window.nativeInvoke},event:{listen:async()=>()=>{}}};")
+                page.add_init_script("window.thumbnailRequests=0; window.__TAURI__={core:{invoke:(command,params)=>{if(params?.method==='studio.visual.thumbnail') window.thumbnailRequests++; return window.nativeInvoke(command,params);}},event:{listen:async()=>()=>{}}};")
                 page.goto(origin + '/desktop/frontend/studio/')
                 expect(page.locator('#displayName')).to_have_value('Spine 验证')
                 page.get_by_role('button', name='角色形态', exact=True).click()
@@ -174,11 +211,37 @@ def run(components=None):
                     speed = page.get_by_role('slider', name='播放速度', exact=True)
                     expect(speed).to_be_visible(timeout=20000)
                     expect(page.locator('canvas.spine-canvas')).to_be_visible()
+                    if index == 0:
+                        preview = page.locator('.spine-studio-preview')
+                        canvas = preview.locator('canvas')
+                        zoom = page.get_by_role('slider', name='预览缩放', exact=True)
+                        original_box = canvas.bounding_box()
+                        zoom.fill('200')
+                        assert abs(canvas.bounding_box()['width'] - original_box['width'] * 2) < 1
+                        page.locator('.spine-choices button[value="smile"]').click()
+                        expect(zoom).to_have_value('200')
+                        box = preview.bounding_box()
+                        x, y = box['x'] + box['width'] / 2, box['y'] + box['height'] / 2
+                        before_drag = canvas.bounding_box()
+                        page.mouse.move(x, y); page.mouse.down(); page.mouse.move(x + 40, y + 150, steps=4); page.mouse.up()
+                        assert abs(canvas.bounding_box()['x'] - before_drag['x'] - 40) < 1
+                        assert abs(canvas.bounding_box()['y'] - before_drag['y'] - 150) < 1
+                        page.mouse.wheel(0, -180)
+                        page.wait_for_function("""Number(document.querySelector('[aria-label="预览缩放"]').value) > 200""")
+                        page.mouse.move(x, y); page.mouse.down(); page.mouse.move(x, y + 160, steps=4); page.mouse.up()
+                        zoomed_box = canvas.bounding_box()
+                        for skin in ['normal', 'smile']:
+                            page.locator(f'.spine-choices button[value="{skin}"]').click()
+                            assert canvas.bounding_box() == zoomed_box
+                        page.screenshot(path=str(output / 'studio-inline-zoom.png'))
+                        page.get_by_role('button', name='重置预览', exact=True).click()
+                        expect(zoom).to_have_value('100')
+                        assert abs(canvas.bounding_box()['width'] - original_box['width']) < 1
                     page.locator('.spine-choices button[value="smile"]').click()
                     speed.fill('1.5')
                     source_resource = catalog['models'][index]['resource']
                     source_config = json.loads((components / source_resource['root'] / source_resource['entry']).read_text())
-                    default_skin = page.get_by_role('combobox', name='默认表情', exact=True)
+                    default_skin = page.locator('.spine-editor select[aria-label="默认表情"]')
                     expect(default_skin).to_have_value(source_config['defaultSkin'])
                     skin_name = page.get_by_role('textbox', name='当前表情名称', exact=True)
                     expect(skin_name).to_have_value(source_config.get('skinLabels', {}).get('smile', '微笑'))
@@ -193,8 +256,9 @@ def run(components=None):
                     expect(default_skin).to_have_value(source_config['defaultSkin'])
                     expect(default_skin.locator('option[value="smile"]')).to_have_text('开心')
                     expect(default_skin.locator('option[value="normal"]')).to_have_text('认真')
-                    default_skin.select_option('smile')
-                    alpha = page.get_by_role('combobox', name='贴图透明方式', exact=True)
+                    choose_themed_option(page, '默认表情', 'smile', output / 'studio-default-menu.png')
+                    expect(page.get_by_role('combobox', name='默认表情', exact=True)).to_have_text('开心')
+                    alpha = page.locator('.spine-editor select[aria-label="贴图透明方式"]')
                     original_alpha = str(source_config['premultipliedAlpha']).lower()
                     expect(alpha).to_have_value(original_alpha)
                     if 'selectableSkins' in source_config:
@@ -204,7 +268,7 @@ def run(components=None):
                     saved_alpha = original_alpha if real_components else 'true'
                     for value in (['false' if original_alpha == 'true' else 'true', saved_alpha] if real_components else [saved_alpha]):
                         previous = page.locator('canvas.spine-canvas').element_handle()
-                        alpha.select_option(value)
+                        choose_themed_option(page, '贴图透明方式', value, output / 'studio-alpha-menu.png')
                         page.wait_for_function('(canvas) => !canvas.isConnected', arg=previous)
                         expect(alpha).to_have_value(value)
                         expect(speed).to_have_value('1.5')
@@ -258,7 +322,7 @@ def run(components=None):
                     binding = application.application.visuals.bind('sample', package, resource)
                     assert json.loads(binding.description['prompt'].split('\n', 1)[1])['skinLabels']['smile'] == '开心'
                     visual = binding.presentation()
-                    visual['renderer'] = origin + '/plugins/optional/sakura_spine/renderer.mjs'
+                    visual['renderer'] = origin + '/plugins/builtin/sakura_spine/renderer.mjs'
                     prefix = '/runtime/' + binding.id; Handler.assets[prefix] = package
                     visual['assets'] = {key: origin + prefix + '/' + path.encode().hex() for key, path in visual['assets'].items()}
                     control = binding.parse_control({'version': 1, 'resourceId': resource.id, 'payload': {'skin': 'normal'}}).control
@@ -319,11 +383,39 @@ def run(components=None):
                 saved = json.loads((package / 'character.json').read_text())
                 imported = next(item for item in saved['visuals']['resources'] if item.get('name') == '目录导入')
                 config = json.loads((package / imported['root'] / imported['entry']).read_text())
-                assert config['skeleton'].endswith('model/skeleton.json')
-                assert (package / imported['root'] / config['skeleton']).is_file()
+                original = json.loads((chosen / catalog['models'][0]['resource']['entry']).read_text())
+                assert json.loads((package / imported['root'] / config['skeleton']).read_text()) == json.loads(
+                    (chosen / original['skeleton']).read_text())
                 # Saving reopens the visual editor; finish that transition before closing the bridge.
                 page.wait_for_function("!document.querySelector('#expressionList').inert")
                 expect(page.locator('canvas.spine-canvas')).to_be_visible(timeout=20000)
+                # Reopening must populate unselected model cards too, without
+                # mounting an editor or a permanent WebGL canvas for each card.
+                page.reload()
+                page.get_by_role('button', name='角色形态', exact=True).click()
+                page.wait_for_function("""() => {
+                    const cards = [...document.querySelectorAll('.form-card')];
+                    return cards.length >= 3 && cards.every(card => card.querySelector('.form-card-cover img')?.naturalWidth > 0);
+                }""")
+                assert page.locator('canvas.spine-canvas').count() == 1
+                expect(page.locator('.spine-studio-preview canvas')).to_be_visible()
+                page.screenshot(path=str(output / 'studio-thumbnails.png'), animations='disabled')
+                page.evaluate("window.coverNodes = [...document.querySelectorAll('.form-card-cover img')]; window.coverSources = coverNodes.map(img => img.src); window.thumbnailRequestsBeforeSave = thumbnailRequests")
+                zoom = page.get_by_role('slider', name='预览缩放', exact=True)
+                zoom.fill('270')
+                preview = page.locator('.spine-studio-preview')
+                preview.scroll_into_view_if_needed()
+                box = preview.bounding_box()
+                x, y = box['x'] + box['width'] / 2, box['y'] + box['height'] / 2
+                page.mouse.move(x, y); page.mouse.down(); page.mouse.move(x + 30, y + 70, steps=3); page.mouse.up()
+                view_before_save = preview.locator('canvas').evaluate('canvas => canvas.style.transform')
+                page.locator('#saveButton').click()
+                expect(page.locator('#saveButton')).to_be_enabled(timeout=20000)
+                page.wait_for_function("!document.querySelector('#expressionList').inert")
+                assert page.evaluate("coverNodes.every((img,i) => img.isConnected && img.src === coverSources[i])")
+                expect(zoom).to_have_value('270')
+                assert preview.locator('canvas').evaluate('canvas => canvas.style.transform') == view_before_save
+                assert page.evaluate("thumbnailRequests === thumbnailRequestsBeforeSave")
                 assert not errors, errors
                 browser.close()
                 print(f'PASS: {len(archives)} Spine components: real Studio import/edit/save/reopen + RendererHost lifecycle under desktop CSP')

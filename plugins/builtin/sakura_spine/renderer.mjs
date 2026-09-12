@@ -87,22 +87,45 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
     painter.premultipliedAlpha = true;
     const matrix = new spine.webgl.Matrix4();
     const centerX = offset.x + size.x / 2, centerY = offset.y + size.y / 2;
-    function resize() {
-      if (disposed) return;
+    const maxViewport = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+    const maxBuffer = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE);
+    let layoutWidth, layoutHeight;
+    function updateSize() {
       const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight);
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(width * pixelRatio);
-      canvas.height = Math.round(height * pixelRatio);
-      const scale = Math.max(size.x / width, size.y / height) * 1.16;
-      const worldWidth = width * scale, worldHeight = height * scale;
-      matrix.ortho2d(centerX - worldWidth / 2, centerY - worldHeight / 2, worldWidth, worldHeight);
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      onLayout({ width, height, bounds: { x: (width - size.x / scale) / 2, y: (height - size.y / scale) / 2,
-        width: size.x / scale, height: size.y / scale } });
+      // The host scales the surface and its ancestors with CSS transforms.
+      // ResizeObserver sees only layout size; sample the displayed size and DPR
+      // before drawing so zoom and monitor changes cannot stretch a stale buffer.
+      const rect = canvas.getBoundingClientRect();
+      const pixelRatio = window.devicePixelRatio || 1;
+      const desiredWidth = Math.max(1, Math.ceil(rect.width * pixelRatio));
+      const desiredHeight = Math.max(1, Math.ceil(rect.height * pixelRatio));
+      // Bound GPU allocation for unusually large windows without imposing a
+      // fixed DPR ceiling on ordinary high-density displays.
+      const limit = Math.min(1, maxViewport[0] / desiredWidth, maxViewport[1] / desiredHeight,
+        maxBuffer / desiredWidth, maxBuffer / desiredHeight,
+        Math.sqrt(16_777_216 / (desiredWidth * desiredHeight)));
+      const bufferWidth = Math.max(1, Math.floor(desiredWidth * limit));
+      const bufferHeight = Math.max(1, Math.floor(desiredHeight * limit));
+      if (canvas.width !== bufferWidth || canvas.height !== bufferHeight) {
+        if (canvas.width !== bufferWidth) canvas.width = bufferWidth;
+        if (canvas.height !== bufferHeight) canvas.height = bufferHeight;
+        gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+      }
+      if (layoutWidth !== width || layoutHeight !== height) {
+        layoutWidth = width; layoutHeight = height;
+        const scale = Math.max(size.x / width, size.y / height) * 1.16;
+        const worldWidth = width * scale, worldHeight = height * scale;
+        matrix.ortho2d(centerX - worldWidth / 2, centerY - worldHeight / 2, worldWidth, worldHeight);
+        onLayout({ width, height, bounds: { x: (width - size.x / scale) / 2, y: (height - size.y / scale) / 2,
+          width: size.x / scale, height: size.y / scale } });
+      }
+    }
+    function resize() {
       draw?.();
     }
     draw = () => {
       if (disposed) return;
+      updateSize();
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       shader.bind();
@@ -140,6 +163,16 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
         if (!paused) frame = requestAnimationFrame(tick);
       },
       snapshot: () => controller.snapshot(),
+      capture() {
+        if (disposed || signal?.aborted) return null;
+        draw();
+        const image = document.createElement('canvas');
+        const ratio = Math.min(1, 256 / Math.max(canvas.width, canvas.height));
+        image.width = Math.max(1, Math.round(canvas.width * ratio));
+        image.height = Math.max(1, Math.round(canvas.height * ratio));
+        image.getContext('2d').drawImage(canvas, 0, 0, image.width, image.height);
+        return image.toDataURL('image/png');
+      },
       dispose,
     };
   } catch (error) { dispose(); throw error; }

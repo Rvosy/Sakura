@@ -43,6 +43,7 @@
   .form-card { min-height: 86px; gap: 10px; }
 }
 .visual-editor-staging { position: absolute; visibility: hidden; pointer-events: none; }
+#expressionList .custom-select { max-width: none; min-width: 0; }
 
 .form-meta-actions .form-default-state:disabled {
   display: inline-flex; align-items: center; gap: 6px; opacity: 1;

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from plugins.optional.sakura_spine.plugin import (
+from plugins.builtin.sakura_spine.plugin import (
     SpineService, atlas_pages, describe_resource, parse_control, parse_preview_control,
 )
 from tools.spine_preview import export_components, prepare, resolve_inside
@@ -157,12 +157,11 @@ def test_preparation_keeps_source_and_copies_only_component_dependencies(spine_r
         prepare(root, output)
 
 
-def test_installed_spine_runs_through_real_v4_host_and_expires_on_disable(spine_resource, tmp_path):
+def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_resource, tmp_path):
     from app.agent.tools import ToolRegistry
     from app.config.character_resources import CharacterVisualResource
     from app.core_host.plugin_application import PluginApplicationHost
-    from app.plugins.installer import LocalPluginInstaller
-    from app.plugins.inventory import PluginDesiredStateStore
+    from app.plugins.inventory import PluginInventory
     from app.storage.runtime_roots import RuntimeRoots
 
     source, _, _ = spine_resource
@@ -175,9 +174,12 @@ def test_installed_spine_runs_through_real_v4_host_and_expires_on_disable(spine_
     (package / 'character.json').write_text(json.dumps({
         'id': 'alice', 'display_name': 'Alice', 'card': 'card.md', 'portrait': {'default': 'default.png'},
     }), encoding='utf-8')
-    plugin = Path(__file__).resolve().parents[2] / 'plugins/optional/sakura_spine'
-    installed = LocalPluginInstaller(roots).install(plugin, 'folder')
-    PluginDesiredStateStore(roots.user_root).set('sakura.visual.spine', True)
+    plugin = Path(__file__).resolve().parents[2] / 'plugins/builtin/sakura_spine'
+    shutil.copytree(plugin, roots.distribution_root / 'plugins/builtin/sakura_spine')
+    installed = next(record for record in PluginInventory(roots).scan().records
+                     if record.plugin_id == 'sakura.visual.spine')
+    assert installed.source == 'bundled'
+    assert installed.desired_enabled
     application = PluginApplicationHost(roots, 'spine-test', ToolRegistry())
     try:
         application.start()

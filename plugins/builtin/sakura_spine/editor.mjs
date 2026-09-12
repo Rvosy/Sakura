@@ -96,6 +96,7 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   const loopLabel = doc.createElement('label');
   loopLabel.className = 'spine-field'; loopLabel.textContent = '循环动画';
   const select = doc.createElement('select');
+  select.setAttribute('aria-label', '循环动画');
   for (const name of rendererData.animations) {
     const option = doc.createElement('option'); option.value = name; option.textContent = labelFor(name, 'animation'); select.append(option);
   }
@@ -103,24 +104,6 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   select.addEventListener('change', () => { draft.defaultAnimation = select.value; changed(); void preview({ animation: select.value }); }, { signal: events.signal });
   loopLabel.append(select);
   if (rendererData.animations.length > 1) root.append(loopLabel);
-  const speedLabel = doc.createElement('label');
-  speedLabel.className = 'spine-field';
-  const speedText = doc.createElement('span');
-  speedText.textContent = `播放速度 · ${draft.speed.toFixed(1)}×`;
-  const speed = doc.createElement('input');
-  Object.assign(speed, { type: 'range', min: '0.1', max: '3', step: '0.1', value: String(draft.speed) });
-  speed.className = 'layout-slider';
-  speed.setAttribute('aria-label', '播放速度');
-  speed.addEventListener('input', () => { draft.speed = Number(speed.value); speedText.textContent = `播放速度 · ${draft.speed.toFixed(1)}×`; changed(); void preview({ speed: draft.speed }); }, { signal: events.signal });
-  speedLabel.append(speedText, speed); root.append(speedLabel);
-  if (rendererData.animations.length > 1) heading('动作');
-  const actions = doc.createElement('div'); actions.className = 'spine-choices';
-  for (const name of rendererData.animations) {
-    const button = doc.createElement('button'); button.type = 'button'; button.className = 'secondary-button compact-button'; button.textContent = labelFor(name, 'animation');
-    button.addEventListener('click', () => { void preview({ action: name }); }, { signal: events.signal });
-    actions.append(button);
-  }
-  if (rendererData.animations.length > 1) root.append(actions);
   const alphaLabel = doc.createElement('label');
   alphaLabel.className = 'spine-field';
   alphaLabel.textContent = '贴图透明方式';
@@ -137,10 +120,28 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
     });
   }, { signal: events.signal });
   alphaLabel.append(alpha); root.append(alphaLabel);
+  if (rendererData.animations.length > 1) heading('动作');
+  const actions = doc.createElement('div'); actions.className = 'spine-choices';
+  for (const name of rendererData.animations) {
+    const button = doc.createElement('button'); button.type = 'button'; button.className = 'secondary-button compact-button'; button.textContent = labelFor(name, 'animation');
+    button.addEventListener('click', () => { void preview({ action: name }); }, { signal: events.signal });
+    actions.append(button);
+  }
+  if (rendererData.animations.length > 1) root.append(actions);
+  const speedLabel = doc.createElement('label');
+  speedLabel.className = 'spine-field';
+  const speedText = doc.createElement('span');
+  speedText.textContent = `播放速度 · ${draft.speed.toFixed(1)}×`;
+  const speed = doc.createElement('input');
+  Object.assign(speed, { type: 'range', min: '0.1', max: '3', step: '0.1', value: String(draft.speed) });
+  speed.className = 'layout-slider';
+  speed.setAttribute('aria-label', '播放速度');
+  speed.addEventListener('input', () => { draft.speed = Number(speed.value); speedText.textContent = `播放速度 · ${draft.speed.toFixed(1)}×`; changed(); void preview({ speed: draft.speed }); }, { signal: events.signal });
+  speedLabel.append(speedText, speed); root.append(speedLabel);
   root.append(error);
   container.append(element);
   return { getDraft: () => structuredClone(draft), freeze() { events.abort(); element.inert = true; },
     dispose() { disposed = true; events.abort(); element.remove(); doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter(sheet => sheet !== style); } };
 }
 
-export { mountEditor } from './studio.mjs';
+export { mountEditor, renderThumbnail } from './studio.mjs';

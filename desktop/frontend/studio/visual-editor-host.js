@@ -4,6 +4,8 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
   let lifetime = null;
   let revision = 0;
   let staged = null;
+  let viewKey = null;
+  const views = new Map();
   const bounded = (promise) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("VISUAL_EDITOR_TIMEOUT")), timeoutMs);
     Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timer));
@@ -13,6 +15,10 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     try { Promise.resolve(target?.destroy?.()).catch(failed); } catch (error) { failed(error); }
   }
   function freeze() {
+    if (viewKey && typeof instance?.snapshotView === 'function') {
+      try { views.set(viewKey, structuredClone(instance.snapshotView())); }
+      catch (error) { onError(error, 'studio.visual.view.snapshot'); }
+    }
     revision += 1;
     lifetime?.abort();
     staged?.remove();
@@ -23,11 +29,14 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     freeze();
     cleanup(instance);
     instance = null;
+    viewKey = null;
+    views.clear();
     container.replaceChildren();
   }
   async function open(descriptor) {
     freeze();
     const current = revision;
+    const nextViewKey = JSON.stringify([descriptor.presentation.visual.providerId, descriptor.presentation.visual.resourceId]);
     lifetime = new AbortController();
     const signal = lifetime.signal;
     let previewRevision = 0;
@@ -92,9 +101,14 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     stage = "studio.visual.ready";
     await bounded(candidate.ready);
     if (signal.aborted) return false;
+    if (views.has(nextViewKey) && typeof candidate.restoreView === 'function') {
+      try { candidate.restoreView(structuredClone(views.get(nextViewKey))); }
+      catch (error) { onError(error, 'studio.visual.view.restore'); }
+    }
     signal.removeEventListener("abort", retire);
     cleanup(instance);
     instance = candidate;
+    viewKey = nextViewKey;
     target.className = target.className.replace("visual-editor-staging", "").trim();
     container.replaceChildren(target);
     container.inert = false;
@@ -108,4 +122,29 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     }
   }
   return { open, freeze, clear, validate: () => instance?.validate?.() ?? true, collect: () => instance?.collect?.() };
+}
+
+function validateThumbnail(url) {
+  if (typeof url !== 'string' || !url.startsWith('data:image/png;base64,') || url.length > 2 * 1024 * 1024) throw new Error('VISUAL_PREVIEW_INVALID');
+  return url;
+}
+
+export async function renderVisualThumbnail(descriptor, signal, doc = document) {
+  const abort = new AbortController();
+  const cancel = () => abort.abort();
+  signal.addEventListener('abort', cancel, { once: true });
+  const timer = setTimeout(cancel, 10000);
+  const container = doc.createElement('div');
+  Object.assign(container.style, { position: 'fixed', left: '-10000px', width: '192px', height: '256px', visibility: 'hidden', pointerEvents: 'none' });
+  doc.body.append(container);
+  try {
+    if (signal.aborted) return null;
+    const module = await import(descriptor.presentation.visual.editor);
+    if (abort.signal.aborted || typeof module.renderThumbnail !== 'function') return null;
+    const url = await module.renderThumbnail({ container, data: structuredClone(descriptor.data), signal: abort.signal,
+      host: { assetUrl: path => descriptor.assetBaseUrl + Array.from(new TextEncoder().encode(path), byte => byte.toString(16).padStart(2, '0')).join('') } });
+    return abort.signal.aborted || url === null ? null : validateThumbnail(url);
+  } finally {
+    abort.abort(); clearTimeout(timer); signal.removeEventListener('abort', cancel); container.remove();
+  }
 }

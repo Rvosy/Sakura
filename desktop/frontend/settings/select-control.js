@@ -160,3 +160,29 @@ window.addEventListener("resize", () => closeSelects());
 
 export function refreshSelect(select) { selects.get(select)?.refresh(); }
 export function focusSelect(select) { (selects.get(select)?.trigger || select)?.focus({ preventScroll: true }); }
+
+// Plugin editors mount and replace controls asynchronously. Keep native select
+// elements as the value source, while the host supplies the themed popup.
+export function observeSelects(root) {
+  const sync = (select) => { enhanceSelect(select); refreshSelect(select); };
+  root.querySelectorAll('select').forEach(sync);
+  const observer = new MutationObserver(records => {
+    const changed = new Set();
+    for (const record of records) {
+      const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+      const select = target?.closest('select');
+      if (select) changed.add(select);
+      if (record.type === 'attributes' && record.attributeName === 'inert' && target.inert) closeSelects(target);
+      for (const node of record.removedNodes) closeSelects(node);
+      for (const node of record.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.matches('select')) changed.add(node);
+        node.querySelectorAll('select').forEach(select => changed.add(select));
+      }
+    }
+    for (const select of changed) if (root.contains(select)) sync(select);
+  });
+  observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true,
+    attributeFilter: ['disabled', 'label', 'value', 'inert'] });
+  return () => { observer.disconnect(); closeSelects(root); };
+}

@@ -205,16 +205,24 @@ export function mountEditor({ container, data, host, signal }) {
 ```
 
 私有 data 不经过 snake/camel 转换。编辑器通过 `host.changed(data)` 更新该资源草稿，`host.error(error)` 显示错误，
+可选的 `snapshotView()` / `restoreView(value)` 用于保存缩放、平移等临时视图状态。宿主按提供方和资源 ID 缓存，
+保存后重新挂载或切回该形态时恢复；清空编辑器或切换工作区时清除，不写入资源配置。
 `host.importFiles({multiple?,folder?})` 使用宿主文件选择和复制，`host.assetUrl(relativePath)` 获取资源文件 URL，可供图片或模型文件读取。
 工坊打开资源列表时，通过 `studio.visual.previews` 一次获取各插件可选的 `previewImage(resource, raw)` 结果，
 不需要先打开各形态的编辑器，也不调用 describe 或挂载渲染器。参数与 editorData 相同；结果是资源根内的
 PNG、JPEG、WebP、GIF 相对路径或 null，单图上限 20 MiB。未导出该方法、图片缺失或插件不可用时显示占位图标，
 不影响其他形态。Core 校验路径，Rust 复用工坊媒体预览协议注册图片，绝对路径不传入 WebView。
-立绘插件返回默认图；Live2D、3D 等插件可以返回包内模型截图，不要求宿主实时生成模型快照。
+立绘插件返回默认图；Live2D、3D 等插件可以返回包内模型截图。没有静态图片时，工坊按顺序调用
+`studio.visual.thumbnail` 获取资源的只读编辑描述，再调用编辑器模块可选的
+`renderThumbnail({container,data,host,signal})`。插件可通过 `host.assetUrl` 读取资源，返回 PNG data URL 或 null；
+未导出该函数时保留占位图。每次只生成一张缩略图，插件在完成或取消时销毁临时渲染器，不持续播放卡片动画。
+PNG data URL 上限 2 MiB，仅图片 CSP 允许 data URL，脚本授权不变。
 编辑期间可调用 `host.previewImage(relativePath或null)` 更新当前卡片；只接受本编辑器最后一次请求的结果，
 跨编辑器或工作区的旧回包不能更新封面。同资源的封面路径未变时保留已加载的图片节点，不因编辑器地址换绑而重载；
 封面变化时先解码新图片，再替换旧图。异步初始列表不能覆盖编辑期间的新封面。
-打开编辑器时，Core 将草稿资源根交给 Rust；Rust 校验其位于草稿目录内，再向前端返回绑定范围内的 `assetBaseUrl`。
+打开编辑器或请求缩略图描述时，Core 将草稿资源根交给 Rust；Rust 校验其位于草稿目录内，再向前端返回绑定范围内的 `assetBaseUrl`。
+选中编辑器与缩略图任务各保留一个独立授权槽；替换缩略图不撤销编辑器，替换编辑器不打断缩略图。
+关闭工坊或提供方失效时一并撤销两者。生成结果仅保存在当前工作区的前端缓存，不写入角色资源或草稿。保存或切换选中项时复用已有缩略图和图片节点；资源配置实际变化后才重新生成，生成期间保留旧图。缩略图使用固定视口，不从正在缩放或重新布局的编辑器画布截取。
 `host.assetUrl` 在本地生成稳定 URL 并复用同路径结果，图片和模型文件直接经原生资源协议读取，不逐张请求 Core，
 也不占用草稿写锁。协议复核 generation、编辑器授权和路径包含关系，单文件上限 64 MiB。
 路径编码为 `/editor-assets/{hexGeneration}/{bindingId}/{hexUtf8RelativePath}`；JSON 返回 application/json，

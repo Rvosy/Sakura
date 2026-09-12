@@ -6736,6 +6736,7 @@ fn studio_method_name(method: &str) -> Result<&'static str, String> {
         "studio.visual.catalog" => Ok("studio.visual.catalog"),
         "studio.visual.previews" => Ok("studio.visual.previews"),
         "studio.visual.open" => Ok("studio.visual.open"),
+        "studio.visual.thumbnail" => Ok("studio.visual.thumbnail"),
         "studio.visual.create" => Ok("studio.visual.create"),
         "studio.visual.export" => Ok("studio.visual.export"),
         "studio.visual.import" => Ok("studio.visual.import"),
@@ -6917,7 +6918,7 @@ async fn studio_request(
     }
     let mut payload = settings_response_payload(response)?;
 
-    if name == "studio.visual.open" {
+    if name == "studio.visual.open" || name == "studio.visual.thumbnail" {
         let presentation = character_presentation::CharacterPresentation::from_value(
             &payload["presentation"],
             &previous_generation_id,
@@ -6937,7 +6938,12 @@ async fn studio_request(
             .ok_or("VISUAL_EDITOR_INVALID")?
             .binding_id
             .clone();
-        payload["presentation"] = serde_json::to_value(resources.authorize_editor(
+        let authorize = if name == "studio.visual.thumbnail" {
+            character_presentation::CharacterPresentationState::authorize_thumbnail
+        } else {
+            character_presentation::CharacterPresentationState::authorize_editor
+        };
+        payload["presentation"] = serde_json::to_value(authorize(&resources,
             presentation,
             &previous_generation_id,
             &scope_id,

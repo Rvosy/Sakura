@@ -41,19 +41,31 @@ export function mountEditor({ container, data, host, signal }) {
   const style = new doc.defaultView.CSSStyleSheet();
   style.replaceSync(`
     .spine-studio { display:block; min-width:0; }
-    .spine-studio-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(180px,1fr); gap:20px; margin-top:16px; align-items:start; }
-    .spine-studio-preview { height:420px; min-width:0; position:sticky; top:0; }
+    .spine-studio-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(180px,1fr); gap:20px; align-items:start; }
+    .spine-studio-layout:empty, .spine-studio-error:empty { display:none; }
+    .spine-studio-preview { height:420px; min-width:0; position:relative; overflow:hidden; border:1px solid var(--sakura-border); border-radius:12px; background:var(--sakura-panel-bg); cursor:grab; touch-action:none; }
+    .spine-studio-preview.is-dragging { cursor:grabbing; }
     .spine-studio-error { color:var(--sakura-accent); }
-    @media(max-width:800px) { .spine-studio-layout { grid-template-columns:1fr; } .spine-studio-preview { height:320px; position:static; } }
+    .spine-preview-pane { min-width:0; position:sticky; top:0; }
+    .spine-preview-controls { display:flex; align-items:center; gap:12px; margin-top:12px; }
+    .spine-preview-controls label { flex:1; display:flex; align-items:center; gap:10px; min-width:0; }
+    .spine-preview-controls input { flex:1; min-width:40px; }
+    .spine-preview-controls output { min-width:4ch; text-align:right; }
+    .spine-studio-import { display:flex; justify-content:flex-end; margin-top:16px; }
+    .spine-studio > .spine-studio-import { justify-content:flex-start; margin-top:0; }
+    @media(max-width:800px) { .spine-studio-layout { grid-template-columns:1fr; } .spine-studio-preview { height:320px; } .spine-preview-pane { position:static; } }
   `);
   doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, style];
   const button = doc.createElement('button');
   button.type = 'button'; button.className = 'secondary-button'; button.textContent = '导入模型目录';
   const error = doc.createElement('p'); error.className = 'spine-studio-error'; error.setAttribute('role', 'alert');
   const layout = doc.createElement('div'); layout.className = 'spine-studio-layout';
-  root.append(button, error, layout); container.append(element);
+  const importActions = doc.createElement('div'); importActions.className = 'spine-studio-import'; importActions.append(button);
+  root.append(error, layout, importActions); container.append(element);
   let draft = structuredClone(data || {}), editor, renderer, loading, valid = false, revision = 0, disposed = false;
   const events = new AbortController();
+  const view = { zoom: 1, x: 0, y: 0 };
+  let refreshView = () => {};
   function freeze() { events.abort(); loading?.abort(); editor?.freeze(); element.inert = true; }
   signal.addEventListener('abort', freeze, { once: true });
   async function read(path, method, activeSignal = signal) {
@@ -72,7 +84,49 @@ export function mountEditor({ container, data, host, signal }) {
     let candidate, controls;
     const stage = doc.createElement('div'); stage.className = 'spine-studio-layout';
     const preview = doc.createElement('div'); preview.className = 'spine-studio-preview';
-    const panel = doc.createElement('div'); stage.append(preview, panel);
+    const pane = doc.createElement('div'); pane.className = 'spine-preview-pane';
+    const bar = doc.createElement('div'); bar.className = 'spine-preview-controls';
+    const label = doc.createElement('label'); label.textContent = '缩放';
+    const zoom = doc.createElement('input'); zoom.type = 'range'; zoom.className = 'layout-slider'; zoom.min = '50'; zoom.max = '400'; zoom.step = '1'; zoom.setAttribute('aria-label', '预览缩放');
+    const value = doc.createElement('output');
+    const reset = doc.createElement('button'); reset.type = 'button'; reset.className = 'secondary-button'; reset.textContent = '重置'; reset.setAttribute('aria-label', '重置预览');
+    label.append(zoom, value); bar.append(label, reset); pane.append(preview, bar);
+    const panel = doc.createElement('div'); stage.append(pane, panel);
+    const applyView = () => {
+      zoom.value = String(Math.round(view.zoom * 100)); value.textContent = `${zoom.value}%`;
+      const canvas = preview.querySelector('canvas');
+      if (canvas) canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
+      candidate?.resize();
+    };
+    const setZoom = (percent, x = 0, y = 0) => {
+      const next = Math.max(50, Math.min(400, Math.round(percent))) / 100;
+      const ratio = next / view.zoom;
+      view.x = x - (x - view.x) * ratio; view.y = y - (y - view.y) * ratio; view.zoom = next;
+      applyView();
+    };
+    zoom.addEventListener('input', () => setZoom(Number(zoom.value)), { signal: active });
+    reset.addEventListener('click', () => { Object.assign(view, { zoom: 1, x: 0, y: 0 }); applyView(); }, { signal: active });
+    preview.addEventListener('wheel', event => {
+      event.preventDefault();
+      const rect = preview.getBoundingClientRect();
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1);
+      setZoom(view.zoom * 100 * Math.exp(-delta / 500), event.clientX - rect.left - rect.width / 2, event.clientY - rect.top - rect.height / 2);
+    }, { signal: active, passive: false });
+    let drag;
+    preview.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      preview.setPointerCapture(event.pointerId); preview.classList.add('is-dragging');
+    }, { signal: active });
+    preview.addEventListener('pointermove', event => {
+      if (!drag || drag.id !== event.pointerId) return;
+      view.x += event.clientX - drag.x; view.y += event.clientY - drag.y;
+      drag.x = event.clientX; drag.y = event.clientY; applyView();
+    }, { signal: active });
+    const stopDrag = () => { if (drag && preview.hasPointerCapture(drag.id)) preview.releasePointerCapture(drag.id); drag = null; preview.classList.remove('is-dragging'); };
+    for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) preview.addEventListener(event, stopDrag, { signal: active });
+    active.addEventListener('abort', stopDrag, { once: true });
     try {
       const rendererData = await readEditorResource(config, (path, method) => read(path, method, active));
       if (signal.aborted || active.aborted) return;
@@ -94,7 +148,10 @@ export function mountEditor({ container, data, host, signal }) {
       editor?.dispose(); renderer?.dispose();
       editor = controls; renderer = candidate; layout.replaceChildren(stage); stage.className = '';
       stage.style.display = 'contents';
+      panel.append(importActions);
       draft = rendererData.config; valid = true; error.textContent = '';
+      refreshView = applyView;
+      applyView();
       if (changed) host.changed(draft);
     } catch (failure) {
       candidate?.dispose(); controls?.dispose(); stage.remove();
@@ -135,10 +192,31 @@ export function mountEditor({ container, data, host, signal }) {
   const ready = draft.skeleton && draft.atlas ? load(draft) : Promise.resolve();
   if (signal.aborted) freeze();
   return { ready, collect: () => structuredClone(draft), validate: () => valid,
+    snapshotView: () => ({ ...view }),
+    restoreView(value) {
+      if (signal.aborted || !value || ![value.zoom, value.x, value.y].every(Number.isFinite)
+        || value.zoom < 0.5 || value.zoom > 4) return;
+      Object.assign(view, { zoom: value.zoom, x: value.x, y: value.y }); refreshView();
+    },
     destroy() {
       if (disposed) return;
       disposed = true; freeze(); signal.removeEventListener('abort', freeze);
       editor?.dispose(); renderer?.dispose(); element.remove();
       doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter(sheet => sheet !== style);
     } };
+}
+
+export async function renderThumbnail({ container, data, host, signal }) {
+  const rendererData = await readEditorResource(data, async (path, method) => {
+    const response = await fetch(await host.assetUrl(path), { signal });
+    if (!response.ok) throw new Error('SPINE_ASSET_LOAD_FAILED');
+    return response[method]();
+  });
+  let renderer;
+  try {
+    renderer = await createRenderer({ container, rendererData, resolveAssetUrl: host.assetUrl,
+      bindingId: 'thumbnail', resourceId: 'thumbnail', signal });
+    renderer.setPaused(true);
+    return renderer.capture();
+  } finally { renderer?.dispose(); }
 }

@@ -1,11 +1,11 @@
 # Spine
 
-Sakura 的可选表现插件，支持 Spine 3.6 JSON 骨骼、文本图集和 PNG/JPEG 贴图。
+Sakura 的内置表现插件，支持 Spine 3.6 JSON 骨骼、文本图集和 PNG/JPEG 贴图。
 插件提供资源校验、实际皮肤与动画候选、提示词贡献、控制解析、WebGL 渲染和编辑模块。
 插件使用正式 RendererHost 和工坊编辑器接口，也保留独立预览入口。
 
 插件 ID 为 `sakura.visual.spine`，资源类型为 `spine.json@1`。后端使用现有 v4 Service，
-无需额外 Python 依赖。插件安装后按现有流程启用；仅安装插件不会改变当前角色的显示方式。
+无需额外 Python 依赖，随应用提供并默认启用。添加形态后需选择显示方式，内置插件不会自动改变当前角色。
 
 ## 本地预览
 
@@ -79,12 +79,12 @@ model/room.png           # 保留图集引用的贴图名称
 runtime/bin/python -m tools.spine_preview export artifacts/spine/my-character artifacts/spine/importable
 ```
 
-在插件设置中从本仓库的 `plugins/optional/sakura_spine` 安装并启用 Spine，然后进入
-“角色工坊 → 角色形态 → 导入形态”选择输出的 `.visual`。完整角色包继续用 `.char`，语音包用 `.voice`；旧版 `.char` 形态组件仍可导入。
+Spine 已内置，可直接进入“角色工坊 → 角色形态 → 导入形态”选择输出的 `.visual`。
+完整角色包继续用 `.char`，语音包用 `.voice`；旧版 `.char` 形态组件仍可导入。
 也可以“添加形态 → Spine”，再在编辑器中“导入模型目录”，选择一套组件目录或仅包含一套完整骨骼的素材目录。
 导入文件写入工坊草稿；修改表情、速度后按“保存”。工坊的“导出形态”保留本次保存的配置与全部依赖。
-尚未安装支持 `spine.json@1` 的插件时仍可导入和保存，工坊提示缺少插件，暂不能编辑或显示该形态。
-导入会把它设为包默认；可先改用已有形态，安装并启用插件后再选择它，无需重新导入。组件声明所需的 `spine.json@1` 格式，并建议安装 `sakura.visual.spine`；其他声明兼容该格式的插件也可满足需求。
+如果 Spine 被禁用，仍可导入和保存组件，启用插件后再编辑或显示，无需重新导入。
+导入会把它设为包默认。组件保留 `spine.json@1` 格式要求及 `sakura.visual.spine` 提供方信息，其他声明兼容该格式的插件也可满足需求。
 
 ## 控制和前端接入
 

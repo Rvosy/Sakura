@@ -31,6 +31,7 @@ CHARACTER_STUDIO_REQUEST_NAMES = frozenset(
         "studio.visual.catalog",
         "studio.visual.previews",
         "studio.visual.open",
+        "studio.visual.thumbnail",
         "studio.visual.create",
         "studio.visual.export",
         "studio.visual.import",

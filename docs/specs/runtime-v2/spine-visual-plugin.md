@@ -10,10 +10,15 @@ updated: 2026-09-12
 
 ## 范围
 
-`plugins/optional/sakura_spine` 实现 Spine 3.6 JSON 表现，插件 ID 与 Service 均为 `sakura.visual.spine`，
+`plugins/builtin/sakura_spine` 实现 Spine 3.6 JSON 表现，插件 ID 与 Service 均为 `sakura.visual.spine`，
 资源类型为 `spine.json@1`。后端遵循[表现插件边界](visual-plugin-boundary.md)，前端模块可由本地预览工具调用。
 插件使用公共 `mount` / `mountEditor` 接口接入桌面渲染器和角色工坊；独立预览与正式挂载复用同一运行库。
-安装插件后仍需添加形态组件并选择显示方式，不自动改变当前角色。
+插件随应用内置并默认启用，无需单独安装。用户仍需添加形态组件并选择显示方式，不自动改变当前角色。
+
+工坊的模型预览在角色下方提供 50%–400% 缩放滑条，预览区域支持围绕鼠标位置滚轮缩放、拖动平移和重置视图。
+放大时仍可使用右侧表情按钮；切换表情保持缩放和位置，不重启动画，也不把视图状态写入模型配置。
+同一工作区内保存或切换形态时，宿主保留并恢复各形态的缩放和拖动位置；关闭工作区后清除。
+形态卡片使用默认状态的静态 PNG 快照；重新打开工作区时可生成未选中形态的缩略图，生成后释放临时渲染器。
 
 ## 资源配置
 
@@ -166,13 +171,13 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 准备后的组件独立声明 `spine-resource.json`，骨骼和图集统一为 `model/skeleton.json`、`model/skeleton.atlas`，
 贴图位于 `model/` 并保留图集引用的名称，原文件内容不变。`catalog.json` 只供开发预览选择组件。
 `tools.spine_preview export` 将准备目录中的配置及依赖交给公共归档写入器，生成 version 2、kind `resource`
-的 `.visual` 形态组件，包含名称、类型、入口，以及建议安装 `sakura.visual.spine` 的 `resource.pluginRequirements`；不携带人格和语音。正式工坊可导入、编辑、保存和再次导出，仍可读取旧版 `.char` 形态组件。
-未安装 Spine 或其他兼容 `spine.json@1` 的插件时，导入和保存保留资源，编辑区提示缺少插件；安装并启用后可使用原资源。
+的 `.visual` 形态组件，包含名称、类型、入口，以及声明 `sakura.visual.spine` 提供方的 `resource.pluginRequirements`；不携带人格和语音。正式工坊可导入、编辑、保存和再次导出，仍可读取旧版 `.char` 形态组件。
+Spine 默认由内置插件提供。插件被禁用或旧版应用缺少兼容提供方时，导入和保存仍保留资源；恢复可用的提供方后可使用原资源，无需重新导入。
 
-[Python 测试](../../../tests/unit/test_spine_plugin.py)覆盖复制、资源安全、参数快照和生产 v4 安装/进程调用；
+[Python 测试](../../../tests/unit/test_spine_plugin.py)覆盖复制、资源安全、参数快照和内置插件的生产 v4 发现/进程调用；
 [Node 测试](../../../desktop/frontend/tests/spine-plugin.test.js)使用真实 Spine 动画状态和骨骼验证动作、恢复和生命周期。
 浏览器画面与原生窗口是不同证据层，浏览器通过不代表 Tauri 窗口和完整聊天链路已验收。
 [Spine 浏览器 journey](../../../desktop/frontend/tests/spine-plugin.journey.py)使用隔离角色、真实插件进程和正式工坊，
 覆盖组件与目录导入、表情速度保存重开，以及公共 RendererHost 的播放、去重、冻结和销毁；可传入实际组件目录。
 
-运行库来源与许可见[运行库说明](../../../plugins/optional/sakura_spine/vendor/README.md)。
+运行库来源与许可见[运行库说明](../../../plugins/builtin/sakura_spine/vendor/README.md)。
