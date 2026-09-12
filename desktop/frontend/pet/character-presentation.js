@@ -27,7 +27,9 @@ export async function loadCurrentCharacterPresentation({
     try {
       const presentation = validateCharacterPresentation(await invoke("current_character_presentation"));
       if (expectedGenerationId && presentation.generationId !== expectedGenerationId) {
-        throw new Error("CHARACTER_PRESENTATION_GENERATION_STALE");
+        // The native command returns the current Core's publication. The requested
+        // generation has been replaced; waiting cannot bring its resources back.
+        return null;
       }
       if (!presentation.visual && presentation.visualReasonCode === "VISUAL_NOT_BOUND") {
         // Core publishes character identity before the plugin finishes binding.

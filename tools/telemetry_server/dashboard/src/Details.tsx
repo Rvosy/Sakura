@@ -191,6 +191,8 @@ export function ReportDrawer({ route }: { route: Route }) {
   );
 }
 function ReportContent({ d }: { d: Row }) {
+  const [copied, setCopied] = useState("");
+  const evidence = d.evidence || {};
   return (
     <>
       <div className="report-summary">
@@ -202,6 +204,51 @@ function ReportContent({ d }: { d: Row }) {
         <time>{d.receivedAt} · 北京时间</time>
         <Id value={d.reportId} compact={false} />
       </div>
+      <section aria-label="原始错误" className="diagnostic-evidence">
+        <h3>原始错误</h3>
+        {evidence.diagnostic ? (
+          <pre>{evidence.diagnostic}</pre>
+        ) : (
+          <p>这份记录未采集原始错误。</p>
+        )}
+        {[
+          ["调用栈", evidence.exception_stack],
+          ["异常链", evidence.exception_chain],
+          ["恢复错误", evidence.recovery_diagnostic],
+          ["子进程 stderr", evidence.stderr],
+        ].map(([label, text]) =>
+          text ? (
+            <div key={label}>
+              <h4>{label}</h4>
+              <pre>{text}</pre>
+            </div>
+          ) : null,
+        )}
+        {Object.keys(evidence).length > 0 && (
+          <details>
+            <summary>现场字段</summary>
+            <pre>{JSON.stringify(evidence, null, 2)}</pre>
+          </details>
+        )}
+        <div className="report-copy-actions">
+          <button
+            className="btn"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(
+                  JSON.stringify(d.rawReport || d, null, 2),
+                );
+                setCopied("已复制");
+              } catch {
+                setCopied("复制失败，请下载报告");
+              }
+            }}
+          >
+            复制完整报告
+          </button>
+          {copied && <span role="status">{copied}</span>}
+        </div>
+      </section>
       <ExportButton report={d.reportId} filters={{ report: d.reportId }} />
       <div className="report-links">
         <a
@@ -270,7 +317,9 @@ function ReportContent({ d }: { d: Row }) {
             ].map(([label, v]) => (
               <div key={label}>
                 <dt>{label}</dt>
-                <dd>{typeof v === "boolean" ? (v ? "是" : "否") : v ?? "未知"}</dd>
+                <dd>
+                  {typeof v === "boolean" ? (v ? "是" : "否") : (v ?? "未知")}
+                </dd>
               </div>
             ))}
             {[

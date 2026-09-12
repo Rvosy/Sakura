@@ -1891,11 +1891,206 @@ code {
   }
 }
 
-.export-controls { display:flex; flex-wrap:wrap; gap:10px; margin-block:16px; }
-.export-controls .form-select { width:auto; }
-.diagnostic-filters { flex-wrap:wrap; align-items:end; }
-.diagnostic-filters label { flex:1 1 200px; }
-.diagnostic-table { overflow:auto; }
-.diagnostic-table small { display:block; opacity:.75; }
-.diagnostic-table td { max-width:360px; overflow-wrap:anywhere; }
-.diagnostic-table pre { max-height:400px; white-space:pre-wrap; }
+/* Diagnostic workspace shares the panel's inset and spacing rhythm. */
+.diagnostic-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 18px 20px;
+  padding: 4px 22px 22px;
+}
+.diagnostic-filters > label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  color: var(--sakura-secondary-text);
+}
+.diagnostic-filters input {
+  min-width: 0;
+  width: 100%;
+}
+.diagnostic-filter-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-top: 4px;
+}
+.diagnostic-test-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.diagnostic-test-toggle input {
+  width: auto;
+  margin: 0;
+}
+.diagnostic-export {
+  padding: 18px 22px;
+  border-top: 1px solid var(--line);
+}
+.export-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.export-controls .form-select {
+  width: auto;
+  max-width: 100%;
+}
+.export-controls p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.diagnostic-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 20px;
+}
+.diagnostic-tabs .btn[aria-pressed="true"] {
+  color: var(--sakura-primary-hover);
+  background: var(--tint-soft);
+  border-color: var(--sakura-primary);
+}
+.diagnostic-panel > p,
+.diagnostic-panel > details {
+  margin: 0;
+  padding: 0 22px 20px;
+}
+.diagnostic-panel .records-count {
+  padding: 0 22px 16px;
+  margin: 0;
+  color: var(--muted);
+}
+.diagnostic-panel .records-empty {
+  padding: 32px 22px;
+  margin: 0;
+  color: var(--muted);
+}
+.diagnostic-table {
+  overflow: auto;
+}
+.diagnostic-table .table {
+  margin: 0;
+}
+.diagnostic-table th,
+.diagnostic-table td {
+  padding: 14px 18px;
+  vertical-align: top;
+}
+.diagnostic-table th:first-child,
+.diagnostic-table td:first-child {
+  padding-left: 22px;
+}
+.diagnostic-table th:last-child,
+.diagnostic-table td:last-child {
+  padding-right: 22px;
+}
+.diagnostic-table small {
+  display: block;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.diagnostic-table td {
+  min-width: 150px;
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+.diagnostic-table td .btn,
+.diagnostic-table details {
+  margin-top: 8px;
+}
+.diagnostic-table td > .btn:first-child {
+  margin-top: 0;
+}
+.diagnostic-pagination {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 18px 22px;
+  border-top: 1px solid var(--line);
+}
+.diagnostic-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin: 24px 0;
+}
+.diagnostic-evidence h3,
+.diagnostic-evidence h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.diagnostic-evidence > h3 {
+  margin-bottom: -10px;
+}
+.diagnostic-evidence pre,
+.diagnostic-table pre,
+.diagnostic-panel > details pre {
+  color: var(--ink);
+  background: var(--surface-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 32rem;
+  overflow: auto;
+  padding: 16px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  line-height: 1.7;
+}
+.diagnostic-evidence summary,
+.diagnostic-table summary,
+.diagnostic-panel > details summary {
+  cursor: pointer;
+}
+.diagnostic-evidence details[open] summary,
+.diagnostic-table details[open] summary,
+.diagnostic-panel > details[open] summary {
+  margin-bottom: 12px;
+}
+.report-copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.report-copy-actions [role="status"] {
+  color: var(--muted);
+}
+.report-links {
+  flex-wrap: wrap;
+}
+@media (max-width: 600px) {
+  .diagnostic-filters {
+    padding-inline: 15px;
+    gap: 16px;
+  }
+  .diagnostic-export,
+  .diagnostic-pagination {
+    padding: 16px 15px;
+  }
+  .diagnostic-panel > p,
+  .diagnostic-panel > details,
+  .diagnostic-panel .records-count,
+  .diagnostic-panel .records-empty {
+    padding-inline: 15px;
+  }
+  .diagnostic-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .diagnostic-filter-actions > .btn {
+    width: 100%;
+  }
+  .export-controls > .form-select {
+    width: 100%;
+  }
+  .diagnostic-evidence pre {
+    padding: 12px;
+  }
+}

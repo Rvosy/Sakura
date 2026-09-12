@@ -28,7 +28,7 @@ CORE_BRIDGE_PREFIX = b"SAKURA_RUNTIME_LOG_V1\t"
 TELEMETRY_BRIDGE_PREFIX = b"SAKURA_TELEMETRY_V1\t"
 CORE_BRIDGE_QUEUE_CAPACITY = 256
 CORE_BRIDGE_MAX_LINE_BYTES = 32 * 1024
-TELEMETRY_BRIDGE_MAX_LINE_BYTES = 8 * 1024 + len(TELEMETRY_BRIDGE_PREFIX) + 1
+TELEMETRY_BRIDGE_MAX_LINE_BYTES = 128 * 1024 + len(TELEMETRY_BRIDGE_PREFIX) + 1
 CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS = 0.5
 
 _ACTIVE_BRIDGE_LOCK = threading.Lock()
@@ -63,6 +63,7 @@ _FORBIDDEN_KEY_MARKERS = (
 )
 _SAFE_ATTRIBUTE_KEYS = frozenset(
     {
+        "endpoint", "url", "path", "stderr",
         "source_file",
         "source_line",
         "timeout_ms",
@@ -274,6 +275,7 @@ _FIXED_MESSAGES = {
     "agent.turn.finished": "Assistant turn finished",
     "chat.request.received": "Chat request received",
     "chat.request.completed": "Chat request completed",
+    "chat.finished": "Chat finished",
     "chat.request.cancelled": "Chat request cancelled",
     "chat.request.failed": "Chat request failed",
     "memory.recall.started": "Memory recall started",
@@ -515,6 +517,7 @@ class RuntimeLoggingBridge:
         if not _CODE_RE.fullmatch(declared):
             prefix = safe_diagnostic_text(error).partition(":")[0].strip()
             declared = prefix if _CODE_RE.fullmatch(prefix) else ""
+        evidence = exception_diagnostics(error, reason_code=code, stage="process_boundary")
         logged = self.emit_fixed(
             severity="error",
             channel="core.process",
@@ -522,14 +525,15 @@ class RuntimeLoggingBridge:
             attributes={
                 "code": code if _CODE_RE.fullmatch(code) else "CORE_UNHANDLED_ERROR",
                 "category": _safe_category(type(error).__name__),
-                **exception_diagnostics(error, reason_code=code, stage="process_boundary"),
+                **evidence,
             },
         )
         telemetry_code = code if _CODE_RE.fullmatch(code) else "CORE_UNHANDLED_ERROR"
         self._enqueue_telemetry(
             "error",
             {
-                "schema": 2,
+                "schema": 3,
+                "evidence": evidence,
                 "details": {
                     "severity": "error",
                     "impact": "unavailable",
@@ -853,7 +857,7 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
             key in _CORRELATION_KEYS
             or key not in _SAFE_ATTRIBUTE_KEYS
             or (
-                key not in {*_SAFE_DIAGNOSTIC_KEYS, *_BODY_FREE_METRIC_KEYS}
+                key not in {*_SAFE_DIAGNOSTIC_KEYS, *_BODY_FREE_METRIC_KEYS, "endpoint", "url", "path", "stderr"}
                 and any(marker in key for marker in _FORBIDDEN_KEY_MARKERS)
             )
         ):
@@ -878,7 +882,7 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
                     and len(value) <= 240
                 ):
                     safe[key] = value
-            elif key in DIAGNOSTIC_TEXT_KEYS:
+            elif key in DIAGNOSTIC_TEXT_KEYS or key in {"endpoint", "url", "path", "stderr", "model", "provider"}:
                 diagnostic = safe_diagnostic_text(value, TRACE_LIMIT if key != "diagnostic" else 4096)
                 if diagnostic is not None:
                     safe[key] = diagnostic
@@ -922,7 +926,7 @@ def _encode_telemetry_record(kind: str, payload: Mapping[str, object]) -> bytes 
     try:
         encoded = json.dumps(
             {"kind": kind, key: dict(payload)},
-            ensure_ascii=True,
+            ensure_ascii=False,
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")

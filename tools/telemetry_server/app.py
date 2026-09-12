@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
+from v3_models import ErrorReportV3
 from v2_models import ErrorReportV2, EventBatchV2, ModelBatchV2
 from v2_db import initialize_v2, insert_v2
 
@@ -159,6 +160,11 @@ async def _ingest_v2(request, kind, model, limit):
 @app.post("/v2/errors", status_code=202)
 async def post_error_v2(request: Request):
     return await _ingest_v2(request, "errors", ErrorReportV2, 32 * 1024)
+
+
+@app.post("/v3/errors", status_code=202)
+async def post_error_v3(request: Request):
+    return await _ingest_v2(request, "errors", ErrorReportV3, 128 * 1024)
 
 
 @app.post("/v2/events", status_code=202)

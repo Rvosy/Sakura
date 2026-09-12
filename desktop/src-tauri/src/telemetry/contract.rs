@@ -78,7 +78,7 @@ pub(crate) struct RequestDiagnostic {
     pub compatibility_fallback: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct DiagnosticContext {
     pub build_id: String,

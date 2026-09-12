@@ -25,9 +25,11 @@ from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
 
 
 _PRIVATE = re.compile(r"authorization|cookie|credential|api.?key|secret|password|token|body|content|prompt|messages|payload|arguments|environment", re.I)
-_SECRET = re.compile(r"(?i)(?:bearer\s+\S+|sk-[\w.-]{6,}|(?:api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+))")
-_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|(?<![\w:])/(?!/))[^\s\"'<>|]*")
-_URL = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>]+")
+_SECRET = re.compile(r'''(?ix)
+    (\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
+    ["']?\s*[:=]\s*(?:bearer\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
+    |(\bbearer\s+)[^\s,;}&]+|\bsk-[\w.-]{6,}
+''')
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _DIAGNOSTIC_KEYS = frozenset({"diagnostic", "exception_chain", "exception_stack", "recovery_diagnostic"})
 
@@ -39,9 +41,8 @@ def _diagnostic_text(value: str, maximum: int = 8192) -> str:
 
 def safe_text(value: str, maximum: int = 1024) -> str:
     value = _ANSI.sub("", value)
-    value = _SECRET.sub("[REDACTED]", value)
-    value = _URL.sub("[URL]", value)
-    value = _PATH.sub("[PATH]", value)
+    value = _SECRET.sub(lambda m: (m[1] or m[2] or "") + "[REDACTED]", value)
+    value = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@", r"\1[REDACTED]@", value)
     value = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", value).split())
     raw = value.encode("utf-8")
     return value if len(raw) <= maximum else raw[:maximum - 16].decode("utf-8", errors="ignore") + " [truncated]"
@@ -146,7 +147,7 @@ def _exception_diagnostics(error: BaseException) -> dict[str, str]:
         tb = current.__traceback__
         while tb is not None:
             module = str(tb.tb_frame.f_globals.get("__name__", "unknown"))
-            frames.append(safe_text(f"  at {module}:{tb.tb_frame.f_code.co_name}:{tb.tb_lineno}", 256))
+            frames.append(safe_text(f"  at {module}:{tb.tb_frame.f_code.co_name}:{tb.tb_lineno} ({tb.tb_frame.f_code.co_filename})", 256))
             tb = tb.tb_next
         stacks.append(chain[-1] + "\n" + "\n".join(frames[-32:]))
         cause = current.__cause__ if current.__cause__ is not None else (None if current.__suppress_context__ else current.__context__)

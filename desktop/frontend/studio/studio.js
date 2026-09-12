@@ -1,3 +1,4 @@
+import { requirementMessage } from "../core/plugin-requirements.js";
 import { createVisualEditorHost } from "./visual-editor-host.js";
 import { createIcon } from "../core/icons.js";
 import {
@@ -77,8 +78,6 @@ const fields = {
   expressionList: document.getElementById("expressionList"),
   addExpressionButton: document.getElementById("addExpressionButton"),
   visualResourceList: document.getElementById("visualResourceList"),
-  voiceEnabled: document.getElementById("voiceEnabled"),
-  voiceEnabledLabel: document.getElementById("voiceEnabledLabel"),
   voiceModelFields: document.getElementById("voiceModelFields"),
   modelFileList: document.getElementById("modelFileList"),
   gptModelPath: document.getElementById("gptModelPath"),
@@ -597,8 +596,8 @@ function collectDoc() {
     theme[input.dataset.themeField] = input.value.trim();
   });
   const referenceAudios = collectReferenceAudios();
-  const voiceEnabled = fields.voiceEnabled.checked;
-  const replyTones = voiceEnabled ? uniqueReplyTones(referenceAudios) : [];
+  const hasVoiceResources = Boolean(currentDoc?.voice || fields.gptModelPath.value || fields.sovitsModelPath.value || referenceAudios.length);
+  const replyTones = uniqueReplyTones(referenceAudios);
   return {
     ...(currentDoc || {}),
     id: fields.characterId.value.trim(),
@@ -606,14 +605,14 @@ function collectDoc() {
     initial_message: fields.initialMessage.value,
     card_text: fields.cardText.value,
     reply_tones: replyTones,
-    voice: voiceEnabled ? {
+    voice: hasVoiceResources ? {
       tone_refs: "voice/refs/ref.txt",
       gpt_model: fields.gptModelPath.value.trim(),
       sovits_model: fields.sovitsModelPath.value.trim(),
       ref_lang: fields.defaultRefLang.value.trim() || "ja",
       text_lang: fields.textLang.value.trim() || "ja",
     } : null,
-    reference_audios: voiceEnabled ? referenceAudios : [],
+    reference_audios: referenceAudios,
     theme,
   };
 }
@@ -695,6 +694,7 @@ async function flushDraftAutosave() {
     }
     renderCharacterOptions();
     baseline = savedSnapshot;
+    void refreshPluginRequirements();
     refreshDirty();
     if (hasUnsavedEditorChanges(savedSnapshot, editorSnapshot())) {
       scheduleDraftAutosave();
@@ -726,6 +726,28 @@ function setCurrentDoc(payload, draftCharacter = null, options = {}) {
   }
 }
 
+let requirementsRevision = 0;
+async function refreshPluginRequirements() {
+  const panel = document.getElementById("pluginRequirementsPanel");
+  const list = document.getElementById("pluginRequirementsList");
+  const workspaceId = currentWorkspaceId, revision = ++requirementsRevision;
+  if (!workspaceId) { panel.hidden = true; return; }
+  try {
+    const result = await invoke("studio_request", { method: "studio.plugin.requirements", params: { workspaceId } });
+    if (revision !== requirementsRevision || workspaceId !== currentWorkspaceId) return;
+    list.replaceChildren();
+    for (const item of result.items) {
+      const row = document.createElement("li"); row.textContent = requirementMessage(item); list.append(row);
+    }
+    panel.hidden = !result.items.length;
+  } catch (error) {
+    if (revision !== requirementsRevision || workspaceId !== currentWorkspaceId) return;
+    const row = document.createElement("li"); row.textContent = "插件需求读取失败，请重新打开角色。";
+    list.replaceChildren(row); panel.hidden = false;
+    runtimeDiagnostics.reportError(error, { command: "studio.plugin.requirements", code: "PLUGIN_REQUIREMENTS_FAILED" });
+  }
+}
+
 function renderEditor({ openVisuals = true } = {}) {
   renderingEditor = true;
   const doc = currentDoc || {};
@@ -734,7 +756,6 @@ function renderEditor({ openVisuals = true } = {}) {
   fields.displayName.value = doc.display_name || "";
   fields.initialMessage.value = doc.initial_message || "";
   fields.cardText.value = doc.card_text || "";
-  fields.voiceEnabled.checked = Boolean(doc.voice);
   fields.gptModelPath.value = doc.voice?.gpt_model || "";
   fields.sovitsModelPath.value = doc.voice?.sovits_model || "";
   fields.defaultRefLang.value = doc.voice?.ref_lang || "ja";
@@ -745,9 +766,9 @@ function renderEditor({ openVisuals = true } = {}) {
     ...(doc.theme || {}),
   };
   renderTheme(theme);
-  syncVoiceEnabledState();
   refreshControls();
   renderingEditor = false;
+  void refreshPluginRequirements();
   if (openVisuals) return renderVisualResources({ flush: false });
 }
 
@@ -982,6 +1003,18 @@ async function openVisualEditor(resource, revision = visualEditorRevision, { flu
   } catch (error) {
     if (revision !== visualEditorRevision || selection !== visualSelectionRevision) return;
     visualEditor.clear();
+    const inactive = String(error).match(/VISUAL_PROVIDER_MISSING|PLUGIN_DISABLED/);
+    if (inactive) {
+      const text = document.createElement("p");
+      text.textContent = inactive[0] === "VISUAL_PROVIDER_MISSING"
+        ? "尚未安装支持此形态的插件。资源会随角色保存，安装并启用插件后可编辑和显示。"
+        : "所需插件尚未启用。资源会随角色保存，启用插件后可编辑和显示。";
+      const hints = (resource.pluginRequirements || []).flatMap(item => item.plugins || []);
+      if (inactive[0] === "VISUAL_PROVIDER_MISSING" && hints.length) text.textContent += " 可安装：" + hints.map(item => item.name || item.id).join(" 或 ") + "。";
+      fields.expressionList.append(text);
+      refreshControls();
+      return;
+    }
     const text = document.createElement("p"); text.textContent = "此表现暂时无法编辑。保存其他修改会保留原有资源。";
     fields.expressionList.append(text);
     runtimeDiagnostics.reportError(error, { command: "studio_visual_open", code: "VISUAL_EDITOR_FAILED" });
@@ -1063,7 +1096,7 @@ window.addEventListener("pagehide", () => { window.clearInterval(visualStatusTim
 
 async function exportVisualComponent(resourceId) {
   await flushDraftAutosave();
-  const path = await invoke("studio_choose_export", { defaultName: `${resourceId}.char` });
+  const path = await invoke("studio_choose_export", { defaultName: `${resourceId}.visual` });
   if (!path) return;
   await runBusy(() => invokeStudio("studio.visual.export", { workspaceId: currentWorkspaceId, resourceId, path }, "正在导出表现组件…"));
 }
@@ -1187,13 +1220,6 @@ function stopReferenceAudioPreview() {
   previewAudio.pause();
   previewAudio.currentTime = 0;
   previewAudio = null;
-}
-
-function syncVoiceEnabledState() {
-  const enabled = fields.voiceEnabled.checked;
-  fields.voiceEnabledLabel.textContent = enabled ? "已启用" : "未启用";
-  fields.voiceModelFields.classList.toggle("is-disabled", !enabled);
-  document.getElementById("page-reference-audio")?.classList.toggle("is-voice-disabled", !enabled);
 }
 
 function themeFieldInput(id) {
@@ -1767,9 +1793,7 @@ async function importVoiceModel(modelType) {
       path,
       model_type: modelType,
     });
-    fields.voiceEnabled.checked = true;
     (isGpt ? fields.gptModelPath : fields.sovitsModelPath).value = result.relative_path;
-    syncVoiceEnabledState();
     handleEditorChanged();
     await flushDraftAutosave();
   });
@@ -1786,8 +1810,6 @@ async function importReferenceAudio(targetRow = null) {
     return;
   }
   await runBusy(async () => {
-    fields.voiceEnabled.checked = true;
-    syncVoiceEnabledState();
     for (const path of paths) {
       const result = await hostCall("studio.import_reference_audio", {
         workspace_id: currentWorkspaceId,
@@ -1825,8 +1847,6 @@ async function importReferenceAudioFolder() {
       path,
       ref_lang: fields.defaultRefLang.value.trim() || "JA",
     });
-    fields.voiceEnabled.checked = true;
-    syncVoiceEnabledState();
     (result.items || []).forEach((item) => addReferenceAudioRow(item));
     if (!result.items?.length) {
       notify("所选文件夹中没有支持的音频文件。", "info");
@@ -1878,9 +1898,6 @@ function validateVoiceInputs() {
     fields.sovitsModelPath,
     ...fields.referenceAudioList.querySelectorAll("input"),
   ].forEach((input) => input.classList.remove("is-invalid"));
-  if (!fields.voiceEnabled.checked) {
-    return true;
-  }
   const modelChecks = [
     [fields.gptModelPath, ".ckpt", "GPT 模型"],
     [fields.sovitsModelPath, ".pth", "SoVITS 模型"],
@@ -1896,12 +1913,6 @@ function validateVoiceInputs() {
     }
   }
   const rows = Array.from(fields.referenceAudioList.querySelectorAll(".reference-audio-row"));
-  if (!rows.length) {
-    switchPage("reference-audio");
-    fields.addReferenceAudioButton.focus();
-    setError("启用语音后至少需要一条完整参考语音。");
-    return false;
-  }
   const audioPattern = /\.(wav|mp3|ogg|flac)$/i;
   for (const [index, row] of rows.entries()) {
     const inputs = [
@@ -2073,7 +2084,6 @@ async function runBusy(action) {
 
 function refreshControls() {
   const hasDoc = Boolean(currentDoc);
-  const voiceEnabled = hasDoc && fields.voiceEnabled.checked;
   const currentEntry = currentCharacterEntry();
   const published = isPublishedCharacter(currentEntry);
   const workspace = hasDoc && !published;
@@ -2114,17 +2124,16 @@ function refreshControls() {
   document.getElementById("visualMeta").querySelectorAll("input, button, select").forEach(element => {
     element.disabled = busy || !hasDoc || (element.id === "defaultVisualButton" && selectedVisualId === visualReferences().default);
   });
-  fields.voiceEnabled.disabled = busy || !hasDoc;
   fields.voiceModelFields.querySelectorAll("input, button").forEach((element) => {
-    element.disabled = busy || !voiceEnabled;
+    element.disabled = busy || !hasDoc;
   });
-  fields.addReferenceAudioButton.disabled = busy || !voiceEnabled;
-  fields.importReferenceAudioFolderButton.disabled = busy || !voiceEnabled;
+  fields.addReferenceAudioButton.disabled = busy || !hasDoc;
+  fields.importReferenceAudioFolderButton.disabled = busy || !hasDoc;
   fields.referenceAudioList.querySelectorAll("input, button").forEach((element) => {
-    element.disabled = busy || !voiceEnabled;
+    element.disabled = busy || !hasDoc;
   });
-  fields.clearGptModelButton.disabled = busy || !voiceEnabled || !fields.gptModelPath.value;
-  fields.clearSovitsModelButton.disabled = busy || !voiceEnabled || !fields.sovitsModelPath.value;
+  fields.clearGptModelButton.disabled = busy || !hasDoc || !fields.gptModelPath.value;
+  fields.clearSovitsModelButton.disabled = busy || !hasDoc || !fields.sovitsModelPath.value;
   fields.themeFields.querySelectorAll("input, button").forEach((element) => {
     element.disabled = busy || !hasDoc;
   });
@@ -2227,21 +2236,6 @@ fields.clearGptModelButton.addEventListener("click", () => {
 });
 fields.clearSovitsModelButton.addEventListener("click", () => {
   fields.sovitsModelPath.value = "";
-  handleEditorChanged();
-  refreshControls();
-});
-fields.voiceEnabled.addEventListener("change", () => {
-  if (!fields.voiceEnabled.checked) {
-    const hasVoiceAssets = Boolean(
-      fields.gptModelPath.value
-      || fields.sovitsModelPath.value
-      || fields.referenceAudioList.querySelector(".reference-audio-row")
-    );
-    if (hasVoiceAssets && !window.confirm("关闭语音并保存后，将移除语音配置和参考语音关联。是否继续？")) {
-      fields.voiceEnabled.checked = true;
-    }
-  }
-  syncVoiceEnabledState();
   handleEditorChanged();
   refreshControls();
 });

@@ -524,7 +524,7 @@ def test_probe_http_errors_keep_status_and_provider_details_after_redaction(
     )
     assert result["error"]["details"]["feature"] == "providers.list_models"
     assert SECRET not in repr(result)
-    assert "PRIVATE_PROVIDER_FAILURE" not in repr(result)
+    assert "Invalid credential PRIVATE_PROVIDER_FAILURE" in result["error"]["details"]["diagnostics"]["diagnostic"]
 
 
 @pytest.mark.parametrize(

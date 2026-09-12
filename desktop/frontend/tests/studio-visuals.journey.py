@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -49,7 +50,7 @@ def run():
             source = root / "additional.png"
             shutil.copyfile(package / "portraits/neutral.png", source)
             (package / "card.md").write_text("示例角色的人设", encoding="utf-8")
-            (package / "character.json").write_text(json.dumps({"id": "sample", "display_name": "示例角色", "card": "card.md", "portrait": {"default": "portraits/neutral.png", "expressions": {"中性": "portraits/neutral.png", "开心": "portraits/happy.png"}}}), encoding="utf-8")
+            (package / "character.json").write_text(json.dumps({"id": "sample", "display_name": "示例角色", "card": "card.md", "portrait": {"default": "portraits/neutral.png", "expressions": {"默认": "portraits/happy.png"}}}), encoding="utf-8")
             application = PluginApplicationHost(RuntimeRoots(distribution, user), "g", ToolRegistry())
             application.start()
             try:
@@ -87,13 +88,36 @@ def run():
                 page.get_by_role("button", name="角色形态", exact=True).click()
                 expect(page.locator(".portrait-plugin .expression-row")).to_have_count(2)
                 page.wait_for_function("[...document.querySelectorAll('.expression-thumbnail img')].every(image=>image.naturalWidth>0)")
+                # A legacy expression named 默认 may refer to a different PNG
+                # than the default image. Edit only the generated row, publish
+                # and reopen, retaining the original label and both paths.
+                labels = page.get_by_role("textbox", name="表情标签", exact=True)
+                assert len(set(labels.evaluate_all("items => items.map(item => item.value)"))) == 2
+                expect(labels.nth(1)).to_have_value("默认")
+                default_label = labels.first.input_value() + "（补充）"
+                labels.first.fill(default_label)
+                page.locator("#visualName").fill("兼容立绘")
+                page.locator("#saveButton").click()
+                expect(page.locator("#saveButton")).to_be_enabled()
+                saved = json.loads((package / "character.json").read_text(encoding="utf-8"))
+                resource = saved["visuals"]["resources"][0]
+                portrait_data = json.loads((package / resource["root"] / resource["entry"]).read_text(encoding="utf-8"))
+                assert "expressionRows" not in portrait_data
+                assert portrait_data["default"] == "portraits/neutral.png"
+                assert portrait_data["expressions"]["默认"] == "portraits/happy.png"
+                page.reload()
+                expect(page.locator("#displayName")).to_have_value("示例角色")
+                page.get_by_role("button", name="角色形态", exact=True).click()
+                expect(labels).to_have_count(2)
+                expect(labels.first).to_have_value(default_label)
+                expect(labels.nth(1)).to_have_value("默认")
                 page.locator("#visualName").fill("第一次改名")
                 page.wait_for_function("!document.body.classList.contains('is-dirty')")
                 page.locator("#visualName").fill("日常立绘")
                 page.wait_for_function("!document.body.classList.contains('is-dirty')")
                 expect(page.locator(".form-card strong")).to_have_text("日常立绘")
                 labels = page.get_by_role("textbox", name="表情标签", exact=True)
-                for unfinished in ["", "中性"]:
+                for unfinished in ["", default_label]:
                     labels.nth(1).fill(unfinished)
                     page.wait_for_function("!document.body.classList.contains('is-dirty')")
                     page.locator(".form-card").filter(has_text="日常立绘").click()
@@ -103,7 +127,7 @@ def run():
                 expect(page.locator("#displayName")).to_have_value("示例角色")
                 page.get_by_role("button", name="角色形态", exact=True).click()
                 expect(labels).to_have_count(2)
-                expect(labels.nth(1)).to_have_value("中性")
+                expect(labels.nth(1)).to_have_value(default_label)
                 page.locator("#saveButton").click()
                 expect(page.locator("#errorText")).to_contain_text("表情标签")
                 labels.nth(1).fill("开心")
@@ -146,6 +170,24 @@ def run():
                 portrait_data = json.loads((package / resources[0]["root"] / resources[0]["entry"]).read_text(encoding="utf-8"))
                 assert "expressionRows" not in portrait_data
                 assert set(portrait_data["expressions"]) == {"平静", "开心"}
+                source = root / "missing.visual"
+                with zipfile.ZipFile(source, "w") as archive:
+                    archive.writestr("manifest.json", json.dumps({"format": "sakura.character.archive", "version": 2, "kind": "resource", "resource": {"type": "fixture.missing@1", "entry": "resource.json", "name": "缺少插件的形态", "pluginRequirements": [{"kind": "visual", "type": "fixture.missing@1", "plugins": [{"id": "fixture.visual", "name": "示例形态插件"}]}]}}))
+                    archive.writestr("resource/resource.json", '{"private":true}')
+                page.get_by_role("button", name="导入形态", exact=True).click()
+                page.locator(".form-card").filter(has_text="缺少插件的形态").click()
+                expect(page.locator("#expressionList")).to_contain_text("尚未安装支持此形态的插件")
+                expect(page.locator("#errorText")).to_be_empty()
+                page.locator("#saveButton").click()
+                expect(page.locator("#saveButton")).to_be_enabled()
+                saved = json.loads((package / "character.json").read_text())
+                missing = next(item for item in saved["visuals"]["resources"] if item["type"] == "fixture.missing@1")
+                assert saved["visuals"]["default"] == missing["id"]
+                assert json.loads((package / missing["root"] / missing["entry"]).read_text()) == {"private": True}
+                page.get_by_role("button", name="基础信息", exact=True).click()
+                expect(page.locator("#pluginRequirementsList")).to_contain_text("示例形态插件")
+                expect(page.locator("#pluginRequirementsList")).to_contain_text("尚未安装兼容插件")
+                assert saved["pluginRequirements"][-1]["plugins"][0]["id"] == "fixture.visual"
                 assert not errors, errors
                 browser.close()
                 print("PASS: Studio cards/name/default/add -> portrait preview/edit/import -> save/reopen; visual QA at 1274, 820 and 680 px")

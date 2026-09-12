@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-12
 ---
 
 # WP-1P-06：三平台最小 Shell + Core lifecycle 总门
@@ -39,8 +39,10 @@ shared lock -> explicit RuntimeLocator -> controlled Core tree -> hello
 后代存活、旧 generation barrier、app shutdown during spawn/initialize、Tauri 强杀、锁释放
 后立即重新获取，以及 pipe/fd/handle/进程树/临时目录/隔离清单零残留。
 
-Linux 安装依赖、下载、构建和测试均使用分钟级 timeout 与有界重试；concurrency 必须取消旧
-run。diagnostics 记录 CI session/compositor 元数据，但不把 Xvfb 当真实设备验收。
+Linux 安装依赖、下载、构建和测试均设置有界 timeout；仅已确认的外部瞬时故障允许有界恢复重试并保留
+失败证据。编译错误、测试失败和原因未明的超时不得自动重试到成功，处理规则见
+[项目约束](../../../AGENTS.md#ci-偶发失败必须闭环)。concurrency 必须取消旧 run。
+diagnostics 记录 CI session/compositor 元数据，但不把 Xvfb 当真实设备验收。
 
 ## 4. 退出条件
 

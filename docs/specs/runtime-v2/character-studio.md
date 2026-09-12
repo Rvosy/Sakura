@@ -79,6 +79,10 @@ studio.visual.export
 `runtime/character-studio/workspace/characters` 中未发布的新角色也要迁移；使用原始角色 ID 命名的草稿目录
 在启动时迁移到可移植目录名，重复启动不得生成第二份草稿。
 
+恢复 1.1.0 及更早的内联立绘草稿时，封面、插件编辑器、组件导出和发布都以 `draft.json` 中尚未发布的默认图、
+表情映射为准，不能使用草稿包 `character.json` 中的旧副本覆盖。公共表单自动保存为 `visuals` 引用后，
+只要该引用仍指向内联立绘，就继续保留这些待发布修改；独立表现入口和已有 `visualData` 使用各自的数据。
+
 表单修改先保存到草稿。切换角色、新建角色和关闭窗口前必须等待自动保存完成。角色 ID、工作区、包内资源
 路径和导入源都要检查路径穿越；角色包或草稿资源不能经过符号链接。尾点角色 ID 继续通过可移植目录名保存，
 保证 Windows 与旧草稿兼容。
@@ -92,18 +96,22 @@ studio.visual.export
 
 Managed Genie 未显式配置的共享语音字段在运行时继承 GPT-SoVITS extension，再兼容旧 `voice`；Studio
 不向 Genie 复制模型路径。这样源权重编辑可在下一次 Genie 预热或合成时生效，同时保留用户的 Genie 覆盖值。
-独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，保留当前引擎选择、Genie 覆盖值与未知字段。
+独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，保留 Genie 覆盖值与未知字段。
 
 Studio 只拥有表单明确编辑的 manifest 字段。`renderer`、`backchannel`、未知顶层或嵌套字段和其他插件
-extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Runtime v2 extension，保存时同步
-`voice`、`sakura.tts` 和 `sakura.tts.gpt-sovits`。Genie 等非 Studio 管理的语音 Provider 不能因为普通
-主题保存而被切换或禁用。
+extension 必须原样保留，已废弃的 `sakura.tts` 运行选择除外。语音资源读取兼容 `voice` 与资源 extension，
+保存时同步 `voice` 和 `sakura.tts.gpt-sovits`，不写入引擎选择或启用状态。
+
+工坊不提供语音启用开关。模型、参考音频、文本、标签和语言始终可以编辑；允许先保存模型，稍后再补参考语音。
+已有参考语音行必须完整，缺少合成必需资源时由实际语音请求报错。外部语音开关或引擎选择不影响资源展示、编辑、
+保存和导出；关闭语音不删除资源配置或引用。启用状态和引擎选择只由应用语音设置管理，见
+[语音合同](WP-4-05-tts-playback-audio-device-gate.md)与 [ADR-0048](../../adr/0048-voice-resources-and-local-selection.md)。
 
 “语音模型”页独立列出当前编辑副本中可读取元数据的 `.ckpt`、`.pth` 和 `.onnx` 文件，显示文件名、大小及
-角色包内相对路径。列表不依赖 GPT-SoVITS 是否启用，也不要求文件已经登记到 Provider 配置；使用 Genie
+角色包内相对路径。列表不依赖语音是否启用，也不要求文件已经登记到 Provider 配置；使用 Genie
 或关闭语音时仍可查看。打开、草稿保存和发布响应通过只读 `modelFiles` 返回 `relativePath`、`byteLength`，
 切换角色、导入模型和清理草稿资源后同步刷新。枚举只读取文件元数据，不读取模型内容、不跟随符号链接或
-目录联接，也不把模型列表写入角色配置。下方编辑区明确标为 GPT-SoVITS 配置，查看文件不会切换 Provider。
+目录联接，也不把模型列表写入角色配置。下方编辑区为语音资源配置，查看和编辑文件不会切换 Provider。
 
 ## 表现编辑与组件
 
@@ -122,9 +130,14 @@ PNG 导入和标签文件解释由内置立绘插件提供。私有草稿以 `vi
 显示新角色表单时先完整填充参考语音和主题，再打开表现编辑器，不能在半成品表单上自动保存。添加和导入资源期间
 禁止切换工作区；回包必须核对工作区和编辑器修订。关闭或替换编辑器中止 signal，旧模块不能继续写新草稿。
 
-完整 `.char` 保持旧 version 1 读取；通用资源包使用 version 2、kind character。单独表现组件为 version 2、kind resource，
-由插件投影入口和资产，宿主完成容器、路径、复制、取消和提交。组件导入生成新资源 ID，仅加入目标草稿并设为默认，
+完整 `.char` 保持旧 version 1 读取；通用角色包使用 version 2、kind character。单独形态组件使用 `.visual`，为 version 2、kind resource，
+由插件投影入口和资产，宿主完成容器、路径、复制、取消和提交。旧版 `.char` 形态组件仍可导入，新导出统一使用 `.visual`。
+组件导入生成新资源 ID，仅加入目标草稿并设为默认，
 保留其人格、voice、角色 ID 与已安装包；可以放弃草稿撤销。详见表现插件合同的文件交换部分。
+
+基础信息中的“所需插件”根据当前草稿显示形态与 TTS 资源的兼容状态，保存草稿后刷新。
+缺少插件时仍可保存资源；插件安装建议和实际引擎选择分开。包声明及 Genie 转换兼容规则见
+[角色包插件需求](visual-plugin-boundary.md#角色包插件需求)。
 
 ## 发布、导出与取消
 

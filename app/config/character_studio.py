@@ -45,7 +45,6 @@ _REFERENCE_AUDIO_MIME_TYPES = {
     ".wav": "audio/wav",
 }
 _COPY_CHUNK_SIZE = 1024 * 1024
-_TTS_HUB_EXTENSION = "sakura.tts"
 _GPT_SOVITS_EXTENSION = "sakura.tts.gpt-sovits"
 
 
@@ -128,7 +127,14 @@ class CharacterStudioDoc:
             ),
         }
         if self.visuals is not None:
-            manifest.pop("portrait", None)
+            # A resumed pre-visuals draft still owns the pending inline portrait
+            # until the plugin editor has written a separate resource entry.
+            if not any(
+                item.get("type") == "sakura.visual.portrait@1"
+                and item.get("root") == "." and item.get("entry") == "character.json"
+                for item in self.visuals.get("resources", [])
+            ):
+                manifest.pop("portrait", None)
             manifest["visuals"] = json.loads(json.dumps(self.visuals, ensure_ascii=False, allow_nan=False))
         if self.initial_message.strip():
             manifest["initial_message"] = self.initial_message.strip()
@@ -412,11 +418,6 @@ class CharacterStudioService:
         package_dir = self._workspace_package(package_dir)
         workspace_id = self._workspace_id_for_package(package_dir)
         state = self._read_state(workspace_id)
-        previous_doc = (
-            CharacterStudioDoc.from_payload(state["doc"])
-            if state is not None and isinstance(state.get("doc"), dict)
-            else None
-        )
         doc = CharacterStudioDoc.from_payload(doc_payload)
         _validate_character_id(doc.id)
         if doc.id != workspace_id:
@@ -429,15 +430,7 @@ class CharacterStudioService:
             _write_reference_audios(package_dir, doc.reference_audios)
         (package_dir / CARD_FILENAME).write_text(doc.card_text, encoding="utf-8")
         _write_visual_draft(package_dir, doc)
-        manifest = _merge_character_manifest(
-            package_dir,
-            doc,
-            disable_voice=(
-                previous_doc is not None
-                and previous_doc.voice is not None
-                and doc.voice is None
-            ),
-        )
+        manifest = _merge_character_manifest(package_dir, doc)
         atomic_write_text(
             package_dir / "character.json",
             json.dumps(manifest, ensure_ascii=False, indent=2),
@@ -1586,8 +1579,6 @@ def _document_asset_paths(doc: CharacterStudioDoc) -> set[str]:
 def _merge_character_manifest(
     package_dir: Path,
     doc: CharacterStudioDoc,
-    *,
-    disable_voice: bool = False,
 ) -> dict[str, Any]:
     path = Path(package_dir) / "character.json"
     try:
@@ -1608,7 +1599,7 @@ def _merge_character_manifest(
 
     if "visuals" in generated:
         manifest["visuals"] = generated["visuals"]
-    else:
+    if "portrait" in generated:
         portrait = dict(manifest.get("portrait")) if isinstance(manifest.get("portrait"), dict) else {}
         portrait.update(generated["portrait"])
         manifest["portrait"] = portrait
@@ -1624,7 +1615,6 @@ def _merge_character_manifest(
         else:
             manifest.pop("reply", None)
 
-    had_voice = isinstance(manifest.get("voice"), dict)
     if "voice" in generated:
         voice = dict(manifest.get("voice")) if isinstance(manifest.get("voice"), dict) else {}
         voice.update(generated["voice"])
@@ -1632,34 +1622,19 @@ def _merge_character_manifest(
             if optional not in generated["voice"]:
                 voice.pop(optional, None)
         manifest["voice"] = voice
-    elif disable_voice:
-        manifest.pop("voice", None)
-    extensions = _sync_voice_extensions(
-        manifest.get("extensions"),
-        doc.voice,
-        had_voice=had_voice,
-        disable_voice=disable_voice,
-    )
+    extensions = _sync_voice_extensions(manifest.get("extensions"), doc.voice)
     if extensions:
         manifest["extensions"] = extensions
     else:
         manifest.pop("extensions", None)
+    from app.config.plugin_requirements import requirements_for_manifest
+    manifest["pluginRequirements"] = requirements_for_manifest(manifest)
     return manifest
 
 
 def _voice_draft_from_manifest(manifest: dict[str, Any]) -> VoiceDraft | None:
     extensions = manifest.get("extensions")
     extension_map = extensions if isinstance(extensions, dict) else {}
-    hub = extension_map.get(_TTS_HUB_EXTENSION)
-    if isinstance(hub, dict) and hub.get("enabled") is False:
-        return None
-    if (
-        isinstance(hub, dict)
-        and hub.get("enabled") is True
-        and isinstance(hub.get("provider"), str)
-        and hub.get("provider") != _GPT_SOVITS_EXTENSION
-    ):
-        return None
     provider = extension_map.get(_GPT_SOVITS_EXTENSION)
     legacy = manifest.get("voice")
     legacy_map = legacy if isinstance(legacy, dict) else {}
@@ -1688,28 +1663,14 @@ def _voice_draft_from_manifest(manifest: dict[str, Any]) -> VoiceDraft | None:
 def _sync_voice_extensions(
     raw_extensions: object,
     voice: VoiceDraft | None,
-    *,
-    had_voice: bool,
-    disable_voice: bool,
 ) -> dict[str, Any]:
     extensions = dict(raw_extensions) if isinstance(raw_extensions, dict) else {}
-    existing_hub = extensions.get(_TTS_HUB_EXTENSION)
-    hub = dict(existing_hub) if isinstance(existing_hub, dict) else {}
+    extensions.pop("sakura.tts", None)
     existing_provider = extensions.get(_GPT_SOVITS_EXTENSION)
     provider = dict(existing_provider) if isinstance(existing_provider, dict) else {}
     if voice is None:
-        if disable_voice and (had_voice or hub or provider):
-            hub["enabled"] = False
-            extensions[_TTS_HUB_EXTENSION] = hub
-            for key in ("toneRefs", "gptModel", "sovitsModel", "refLang", "textLang"):
-                provider.pop(key, None)
-            if provider:
-                extensions[_GPT_SOVITS_EXTENSION] = provider
-            else:
-                extensions.pop(_GPT_SOVITS_EXTENSION, None)
         return extensions
 
-    hub.update({"enabled": True, "provider": _GPT_SOVITS_EXTENSION})
     provider.update(
         {
             "toneRefs": voice.tone_refs,
@@ -1725,7 +1686,6 @@ def _sync_voice_extensions(
             provider[target_key] = source_value
         else:
             provider.pop(target_key, None)
-    extensions[_TTS_HUB_EXTENSION] = hub
     extensions[_GPT_SOVITS_EXTENSION] = provider
     return extensions
 
@@ -1774,8 +1734,6 @@ def _reference_tones(references: list[ReferenceAudioDraft]) -> list[str]:
 
 
 def _validate_reference_audios(package_dir: Path, references: list[ReferenceAudioDraft]) -> None:
-    if not references:
-        raise ValueError("启用语音后至少需要一条完整参考语音。")
     for index, item in enumerate(references, start=1):
         fields = (item.audio_path, item.ref_lang, item.ref_text, item.tone)
         if not all(value.strip() for value in fields):

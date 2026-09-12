@@ -14,6 +14,8 @@ COMMON = {
 EXTRA = {
     "error_events": {
         "fingerprint_version": "INTEGER",
+        "report_json": "TEXT",
+        "group_key": "TEXT",
         "stage": "TEXT",
         "reason_code": "TEXT",
         "impact": "TEXT",
@@ -58,7 +60,7 @@ def initialize_v2():
         c.execute(
             "CREATE INDEX IF NOT EXISTS ix_error_build_time ON error_events(build_id,received_at,id)"
         )
-        c.execute("PRAGMA user_version=2")
+        c.execute("PRAGMA user_version=3")
 
 
 def common(item, received):
@@ -68,7 +70,7 @@ def common(item, received):
         installation_id=item.installation_id,
         run_id=item.run_id,
         operation_id=item.operation_id,
-        schema_version=2,
+        schema_version=getattr(item, "schema_version", 2),
         build_id=d.build_id,
         environment=d.environment,
         generation=d.generation,
@@ -119,6 +121,15 @@ def insert_v2(kind, payload):
                 [x.model_dump(by_alias=True, exclude_none=True) for x in r.breadcrumbs]
             ),
         )
+        if r.schema_version == 3:
+            row["report_json"] = encoded(r)
+            row["group_key"] = json.dumps([
+                r.error.component, r.error.event, r.error.code,
+                r.details.reason_code, r.details.stage,
+                r.evidence.get("diagnostic"), r.evidence.get("exception_stack"),
+                r.evidence.get("exception_chain"),
+                [frame.model_dump(exclude_none=True) for frame in r.stack],
+            ], ensure_ascii=False, separators=(",", ":"))
         rows.append(row)
         table = "error_events"
     elif kind == "events":

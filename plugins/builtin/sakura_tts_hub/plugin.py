@@ -35,10 +35,10 @@ class _Selection:
 class SakuraTTSHub:
     """Select one descriptor-backed Provider without engine-specific branches."""
 
-    def __init__(self, context: object, character: object, logger: Any = None) -> None:
+    def __init__(self, context: object, config: object, logger: Any = None) -> None:
         self._logger = logger
         self._context = context
-        self._character = character
+        self._config = config
         self._providers: dict[str, _ProviderDescriptor] = {}
         self._jobs: dict[str, _JobBinding] = {}
         self._lock = threading.RLock()
@@ -127,10 +127,10 @@ class SakuraTTSHub:
             raise ValueError("TTS_SELECTION_INVALID")
         if enabled and provider_id is None:
             raise ValueError("TTS_PROVIDER_NOT_SELECTED")
-        getattr(self._character, "update")(
-            character_id,
-            {"enabled": enabled, "provider": provider_id},
-        )
+        with self._lock:
+            selections = dict(self._config.get().get("selections", {}))
+            selections[character_id] = {"enabled": enabled, "provider": provider_id}
+            self._config.update({"selections": selections})
         return self.status(character_id)
 
     def warmup(self, character_id: str) -> dict[str, Any]:
@@ -369,9 +369,10 @@ class SakuraTTSHub:
         }
 
     def _selection(self, character_id: str) -> _Selection:
-        extension = getattr(self._character, "get")(character_id)
-        enabled = extension.get("enabled") if isinstance(extension, Mapping) else None
-        provider_id = extension.get("provider") if isinstance(extension, Mapping) else None
+        with self._lock:
+            selection = self._config.get().get("selections", {}).get(character_id, {})
+        enabled = selection.get("enabled")
+        provider_id = selection.get("provider")
         return _Selection(
             enabled=enabled if isinstance(enabled, bool) else False,
             provider_id=provider_id if self._valid_identifier(provider_id) else None,
@@ -444,10 +445,9 @@ class SakuraTTSHub:
 
 class SakuraTTSHubPlugin:
     def setup(self, context: object) -> None:
-        character = getattr(context, "get")("sakura.host.character")
         getattr(context, "provide")(
             "sakura.tts",
-            SakuraTTSHub(context, character, getattr(context, "get")("sakura.host.logging")),
+            SakuraTTSHub(context, context.config, getattr(context, "get")("sakura.host.logging")),
             exports=(
                 "registerProvider",
                 "unregisterProvider",

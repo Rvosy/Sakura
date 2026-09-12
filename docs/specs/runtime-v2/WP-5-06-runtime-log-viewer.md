@@ -30,8 +30,8 @@ updated: 2026-09-11
   稳定事件代码、固定中文消息或已清洗的自定义消息、兼容保留的固定中文说明、最多 28 项安全详情和最多一个 8 字符
   关联编号。固定事件的详情使用中文标签；原始错误、异常链和调用栈使用专用详情字段。兼容说明不作为错误主体。
   IPC 事件按稳定的 `command` 显示具体中文动作，例如“读取运行状态完成”和“读取插件设置完成”；未知命令
-  使用通用请求文案。原始 `command` 保留为“请求”详情，方便排查。不得包含正文、Prompt、Memory、工具
-  参数/结果、绝对路径、环境变量、凭据或原始异常对象。
+  使用通用请求文案。原始 `command` 保留为“请求”详情，方便排查。不主动采集正文、Prompt、Memory、工具参数/结果、环境变量或异常对象。原始错误字段保留实际路径和失败片段，
+  只替换具体凭据，规则与 [远程诊断](remote-diagnostics-telemetry.md) 一致。
 - 窗口只通过 `runtime_log_viewer_bootstrap` 和带 `afterSequence` 的
   `runtime_log_viewer_snapshot` 增量读取。游标落后于已淘汰记录时返回完整当前缓冲及 `resetRequired=true`。
   两个 command 必须校验调用窗口标签为 `runtime-log`。快照新增 `failedFiles`，只允许 runtime/plugins 标识，

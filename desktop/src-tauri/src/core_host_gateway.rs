@@ -486,10 +486,14 @@ fn validate_chat_reply(reply: Option<&Value>) -> Result<(), String> {
             .ok_or_else(|| "INVALID_CHAT_EVENT: completed segment is invalid".to_string())?;
         // Visual controls are optional opaque data. The renderer boundary drops
         // invalid controls without rejecting an otherwise valid text reply.
-        if segment.keys().any(|key| !matches!(key.as_str(), "text" | "translation" | "tone" | "portrait" | "suppressTts" | "control"))
-            || !["text", "translation", "tone", "portrait"]
-                .iter()
-                .all(|key| segment.get(*key).is_some_and(Value::is_string))
+        if segment.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "text" | "translation" | "tone" | "portrait" | "suppressTts" | "control"
+            )
+        }) || !["text", "translation", "tone", "portrait"]
+            .iter()
+            .all(|key| segment.get(*key).is_some_and(Value::is_string))
             || !segment.get("suppressTts").is_some_and(Value::is_boolean)
         {
             return Err("INVALID_CHAT_EVENT: completed segment shape is invalid".to_string());

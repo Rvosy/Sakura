@@ -17,19 +17,21 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     const timer = setTimeout(() => reject(new Error("VISUAL_RENDERER_TIMEOUT")), timeoutMs);
     Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timer));
   });
-  function cancel(reason = "interrupted") {
+  function cancel(reason = "interrupted", { restoreSurface = true } = {}) {
     const hadOperation = operation !== null;
     operation?.abort.abort();
     operation = null;
-    if (hadOperation) services.cancelSurface?.();
+    if (hadOperation && restoreSurface) services.cancelSurface?.();
     if (hadOperation) cleanup(instance, "cancel", { reason });
   }
   function freeze(reason = "unbound") {
     epoch += 1;
     const hadOperation = operation !== null;
-    cancel(reason);
     lifetime?.abort();
     lifetime = null;
+    // Keep the committed native surface until the replacement is ready. Its old
+    // resource may already be revoked when a binding or Core generation changes.
+    cancel(reason, { restoreSurface: false });
     staged?.remove();
     staged = null;
     if (!hadOperation) cleanup(instance, "cancel", { reason });

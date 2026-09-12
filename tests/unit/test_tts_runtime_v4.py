@@ -128,6 +128,12 @@ def _runtime_root(
         }),
         encoding="utf-8",
     )
+    selection_dir = user / "data/plugins/sakura.tts"
+    selection_dir.mkdir(parents=True)
+    (selection_dir / "config.json").write_text(json.dumps({"selections": {
+        "genie-character": {"enabled": True, "provider": "sakura.tts.genie"},
+        "gpt-character": {"enabled": True, "provider": "sakura.tts.gpt-sovits"},
+    }}), encoding="utf-8")
     _write_genie_character(user, "genie-character")
     _write_gpt_character(user, "gpt-character")
     return RuntimeRoots(distribution, user)
@@ -153,14 +159,12 @@ def _write_base_character(user: Path, character_id: str, extensions: dict[str, o
 
 def _write_genie_character(user: Path, character_id: str) -> None:
     _write_base_character(user, character_id, {
-        "sakura.tts": {"enabled": True, "provider": "sakura.tts.genie"},
         "sakura.tts.genie": {"remoteCharacterName": "remote-genie"},
     })
 
 
 def _write_gpt_character(user: Path, character_id: str) -> None:
     root = _write_base_character(user, character_id, {
-        "sakura.tts": {"enabled": True, "provider": "sakura.tts.gpt-sovits"},
         "sakura.tts.gpt-sovits": {
             "toneRefs": "voice/refs/ref.txt",
             "refLang": "ja",

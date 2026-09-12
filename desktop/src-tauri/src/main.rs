@@ -6,7 +6,6 @@ mod autostart_settings;
 mod capture;
 mod character_appearance;
 mod character_presentation;
-mod visual_resources;
 mod character_studio_window;
 mod chat_bridge;
 mod chat_settings;
@@ -38,6 +37,7 @@ mod telemetry;
 mod tool_settings;
 mod ui_config;
 mod update_settings;
+mod visual_resources;
 mod window_geometry;
 mod window_interaction;
 #[cfg(windows)]
@@ -339,8 +339,9 @@ fn install_runtime_panic_hook(runtime_log: RuntimeLogService) {
                 "Unhandled Rust error",
             )
             .attributes({
-                let mut value =
-                    json!({"code": "RUST_PANIC", "category": "panic", "stage": "panic"});
+                let mut value = json!({"code": "RUST_PANIC", "category": "panic", "stage": "panic",
+                        "diagnostic": panic_info.to_string(),
+                        "exception_stack": std::backtrace::Backtrace::force_capture().to_string()});
                 if let Some(location) = panic_info.location() {
                     let file = location.file().replace('\\', "/");
                     let relative = file
@@ -4140,14 +4141,20 @@ async fn settings_character_visual_preview(
         .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-    let reply = dispatch_settings_request(settings_core_handle(&lifecycle)?, None, "studio.character.presentation", json!({"characterId": character_id.trim()}), std::time::Duration::from_secs(15)).await?;
-    let source = character_presentation::CharacterPresentation::from_value(&settings_response_payload(reply)?, &generation_id)?;
-    let (presentation, accepted) = resources.preview_character(
-        source,
+    let reply = dispatch_settings_request(
+        settings_core_handle(&lifecycle)?,
+        None,
+        "studio.character.presentation",
+        json!({"characterId": character_id.trim()}),
+        std::time::Duration::from_secs(15),
+    )
+    .await?;
+    let source = character_presentation::CharacterPresentation::from_value(
+        &settings_response_payload(reply)?,
         &generation_id,
-        window_generation,
-        revision,
     )?;
+    let (presentation, accepted) =
+        resources.preview_character(source, &generation_id, window_generation, revision)?;
     let appearance = appearance.persisted(&presentation.presentation)?;
     let publication = CharacterVisualPreviewPublication {
         schema_version: 1,
@@ -4516,12 +4523,43 @@ fn validate_character_export_receipt(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_character_settings_change(value: Value) -> Result<(Value, String), String> {
+fn validate_character_settings_change(value: Value) -> Result<(Value, String, Value), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
     let expected = ["schemaVersion", "snapshot", "changePlan"];
-    if object.len() != expected.len()
+    let requirements = object
+        .get("pluginRequirements")
+        .cloned()
+        .unwrap_or(json!([]));
+    if !requirements.as_array().is_some_and(|items| {
+        items.len() <= 64
+            && items.iter().all(|item| {
+                matches!(
+                    item.get("kind").and_then(Value::as_str),
+                    Some("visual" | "tts")
+                ) && item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                    && matches!(
+                        item.get("reasonCode").and_then(Value::as_str),
+                        Some(
+                            "COMPATIBLE"
+                                | "PLUGIN_DISABLED"
+                                | "PLUGIN_INCOMPATIBLE"
+                                | "PLUGIN_MISSING"
+                        )
+                    )
+                    && item.get("plugins").is_some_and(Value::is_array)
+                    && item.get("candidates").is_some_and(Value::is_array)
+            })
+    }) {
+        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
+    }
+    if object
+        .keys()
+        .any(|key| !expected.contains(&key.as_str()) && key != "pluginRequirements")
         || expected.iter().any(|key| !object.contains_key(*key))
         || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
     {
@@ -4535,10 +4573,15 @@ fn validate_character_settings_change(value: Value) -> Result<(Value, String), S
     let change_plan = object
         .get("changePlan")
         .and_then(Value::as_str)
-        .filter(|value| matches!(*value, "unchanged" | "core_restart_required" | "visual_rebind"))
+        .filter(|value| {
+            matches!(
+                *value,
+                "unchanged" | "core_restart_required" | "visual_rebind"
+            )
+        })
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?
         .to_string();
-    Ok((snapshot, change_plan))
+    Ok((snapshot, change_plan, requirements))
 }
 
 fn character_restart_target(snapshot: &Value, change_plan: &str) -> Result<Option<String>, String> {
@@ -4737,6 +4780,7 @@ async fn character_settings_change_request(
         String,
         u64,
         Option<String>,
+        Value,
     ),
     String,
 > {
@@ -4753,7 +4797,7 @@ async fn character_settings_change_request(
     let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
     let change = settings_response_payload(response)?;
-    let (snapshot, change_plan) = validate_character_settings_change(change)?;
+    let (snapshot, change_plan, requirements) = validate_character_settings_change(change)?;
     // Resolve every restart identity before the caller can enqueue any
     // lifecycle side effect.
     let target_character_id = character_restart_target(&snapshot, &change_plan)?;
@@ -4764,6 +4808,7 @@ async fn character_settings_change_request(
         core_generation_id,
         core_generation_number,
         target_character_id,
+        requirements,
     ))
 }
 
@@ -4833,9 +4878,14 @@ async fn settings_character_visuals_get(
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     let (snapshot, _) = character_settings_payload_request(
-        &window, &shell, &lifecycle, "characters.visuals.get",
-        json!({"characterId": character_id}), std::time::Duration::from_secs(5),
-    ).await?;
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.visuals.get",
+        json!({"characterId": character_id}),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
     validate_character_visuals_snapshot(&snapshot, &character_id)?;
     Ok(snapshot)
 }
@@ -4843,21 +4893,49 @@ async fn settings_character_visuals_get(
 fn validate_character_visuals_snapshot(value: &Value, character_id: &str) -> Result<(), String> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct Choice { id: String, name: String, provider_id: Option<String>, install_id: Option<String>, reason_code: String }
+    struct Choice {
+        id: String,
+        name: String,
+        provider_id: Option<String>,
+        install_id: Option<String>,
+        reason_code: String,
+    }
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct Snapshot { schema_version: u32, character_id: String, default_resource_id: Option<String>, preference_resource_id: Option<String>, resources: Vec<Choice> }
+    struct Snapshot {
+        schema_version: u32,
+        character_id: String,
+        default_resource_id: Option<String>,
+        preference_resource_id: Option<String>,
+        resources: Vec<Choice>,
+    }
     let invalid = || "CHARACTER_VISUAL_SETTINGS_INVALID".to_string();
     let parsed: Snapshot = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
     let bounded = |text: &str, limit| !text.is_empty() && text.len() <= limit;
     let mut ids = std::collections::HashSet::new();
-    if parsed.schema_version != 1 || parsed.character_id != character_id || parsed.resources.len() > 32
-        || parsed.resources.iter().any(|item| !bounded(&item.id, 128) || !ids.insert(item.id.clone())
-            || !bounded(&item.name, 768) || !bounded(&item.reason_code, 128)
-            || item.provider_id.as_ref().is_some_and(|id| !bounded(id, 128))
-            || item.install_id.as_ref().is_some_and(|id| !bounded(id, 1024)))
-        || [&parsed.default_resource_id, &parsed.preference_resource_id].iter().any(|id| id.as_ref().is_some_and(|id| !ids.contains(id)))
-    { return Err(invalid()); }
+    if parsed.schema_version != 1
+        || parsed.character_id != character_id
+        || parsed.resources.len() > 32
+        || parsed.resources.iter().any(|item| {
+            !bounded(&item.id, 128)
+                || !ids.insert(item.id.clone())
+                || !bounded(&item.name, 768)
+                || !bounded(&item.reason_code, 128)
+                || item
+                    .provider_id
+                    .as_ref()
+                    .is_some_and(|id| !bounded(id, 128))
+                || item
+                    .install_id
+                    .as_ref()
+                    .is_some_and(|id| !bounded(id, 1024))
+        })
+        || [&parsed.default_resource_id, &parsed.preference_resource_id]
+            .iter()
+            .any(|id| id.as_ref().is_some_and(|id| !ids.contains(id)))
+    {
+        return Err(invalid());
+    }
     Ok(())
 }
 
@@ -4959,6 +5037,7 @@ async fn settings_character_import(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
+        requirements,
     ) = character_settings_change_request(
         &window,
         &shell,
@@ -4968,7 +5047,7 @@ async fn settings_character_import(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    finish_character_settings_change(
+    let mut receipt = finish_character_settings_change(
         app_handle,
         &audio_state,
         snapshot,
@@ -4976,7 +5055,9 @@ async fn settings_character_import(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
-    )
+    )?;
+    receipt["pluginRequirements"] = requirements;
+    Ok(receipt)
 }
 
 #[tauri::command]
@@ -4996,6 +5077,7 @@ async fn settings_character_import_voice(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
+        requirements,
     ) = character_settings_change_request(
         &window,
         &shell,
@@ -5005,7 +5087,7 @@ async fn settings_character_import_voice(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    finish_character_settings_change(
+    let mut receipt = finish_character_settings_change(
         app_handle,
         &audio_state,
         snapshot,
@@ -5013,7 +5095,9 @@ async fn settings_character_import_voice(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
-    )
+    )?;
+    receipt["pluginRequirements"] = requirements;
+    Ok(receipt)
 }
 
 #[tauri::command]
@@ -5049,7 +5133,9 @@ async fn settings_character_select(
     audio_state: State<'_, audio::AudioState>,
 ) -> Result<Value, String> {
     let mut payload = json!({"characterId": character_id});
-    if let Some(selections) = visual_selections { payload["visualSelections"] = selections; }
+    if let Some(selections) = visual_selections {
+        payload["visualSelections"] = selections;
+    }
     let (
         snapshot,
         _change_plan,
@@ -5057,6 +5143,7 @@ async fn settings_character_select(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
+        _requirements,
     ) = character_settings_change_request(
         &window,
         &shell,
@@ -6253,7 +6340,8 @@ fn activate_portrait_hit_test(
         }
         geometry.require_context_menu_closed()?;
         let transition_pending = cfg!(target_os = "macos") && geometry.portrait_transition_active;
-        let cache_matches = surface_size.is_none() && same_generation
+        let cache_matches = surface_size.is_none()
+            && same_generation
             && geometry.portrait_hit_key.as_deref() == Some(portrait_key.as_str())
             && geometry.portrait_hit_resource_id.as_deref() == portrait_resource_id.as_deref()
             && geometry.portrait_alpha_mask.is_some();
@@ -6266,9 +6354,26 @@ fn activate_portrait_hit_test(
             drop(geometry);
             let mask_started = std::time::Instant::now();
             let alpha_mask = if let Some([width, height]) = surface_size {
-                if width == 0 || height == 0 || width > 8192 || height > 8192 || u64::from(width) * u64::from(height) > 40_000_000 { return Err("SURFACE_SIZE_INVALID".into()); }
-                character_presentation::PortraitAlphaMask::new(width, height, vec![255; (width * height) as usize])
-            } else { resources.portrait_alpha_mask(&portrait_key, portrait_resource_id.as_deref(), &generation_id)? };
+                if width == 0
+                    || height == 0
+                    || width > 8192
+                    || height > 8192
+                    || u64::from(width) * u64::from(height) > 40_000_000
+                {
+                    return Err("SURFACE_SIZE_INVALID".into());
+                }
+                character_presentation::PortraitAlphaMask::new(
+                    width,
+                    height,
+                    vec![255; (width * height) as usize],
+                )
+            } else {
+                resources.portrait_alpha_mask(
+                    &portrait_key,
+                    portrait_resource_id.as_deref(),
+                    &generation_id,
+                )?
+            };
             interaction_latency::stage_elapsed("portrait-mask-loaded", mask_started);
             geometry = interaction_latency::lock(
                 geometry_state.inner(),
@@ -6627,6 +6732,7 @@ fn record_runtime_diagnostics(
 fn studio_method_name(method: &str) -> Result<&'static str, String> {
     match method {
         "studio.bootstrap" => Ok("studio.bootstrap"),
+        "studio.plugin.requirements" => Ok("studio.plugin.requirements"),
         "studio.visual.catalog" => Ok("studio.visual.catalog"),
         "studio.visual.previews" => Ok("studio.visual.previews"),
         "studio.visual.open" => Ok("studio.visual.open"),
@@ -6654,7 +6760,9 @@ fn validate_studio_payload(payload: &Value) -> Result<(), String> {
     fn contains_private_path(value: &Value) -> bool {
         match value {
             Value::Object(object) => object.iter().any(|(key, item)| {
-                matches!(key.as_str(), "packageDir" | "sourcePath") || (!matches!(key.as_str(), "data" | "visualData") && contains_private_path(item))
+                matches!(key.as_str(), "packageDir" | "sourcePath")
+                    || (!matches!(key.as_str(), "data" | "visualData")
+                        && contains_private_path(item))
             }),
             Value::Array(items) => items.iter().any(contains_private_path),
             _ => false,
@@ -6767,7 +6875,11 @@ async fn studio_request(
     state.bind_generation(&previous_generation_id)?;
     let deadline = if matches!(
         name,
-        "studio.character.publish" | "studio.asset.import" | "studio.archive.export" | "studio.visual.import" | "studio.visual.export"
+        "studio.character.publish"
+            | "studio.asset.import"
+            | "studio.archive.export"
+            | "studio.visual.import"
+            | "studio.visual.export"
     ) {
         std::time::Duration::from_secs(30 * 60)
     } else {
@@ -6806,32 +6918,76 @@ async fn studio_request(
     let mut payload = settings_response_payload(response)?;
 
     if name == "studio.visual.open" {
-        let presentation = character_presentation::CharacterPresentation::from_value(&payload["presentation"], &previous_generation_id)?;
-        let scope_id = payload["providerScopeId"].as_str().ok_or("VISUAL_EDITOR_INVALID")?.to_owned();
-        let root = payload.as_object_mut().and_then(|value| value.remove("assetRootPath"))
-            .and_then(|value| value.as_str().map(ToOwned::to_owned)).ok_or("VISUAL_EDITOR_ROOT_INVALID")?;
-        let binding = presentation.visual.as_ref().ok_or("VISUAL_EDITOR_INVALID")?.binding_id.clone();
-        payload["presentation"] = serde_json::to_value(resources.authorize_editor(presentation, &previous_generation_id, &scope_id, std::path::Path::new(&root))?).map_err(|_| "VISUAL_EDITOR_INVALID")?;
-        payload["assetBaseUrl"] = json!(resources.editor_asset_base(&previous_generation_id, &binding));
+        let presentation = character_presentation::CharacterPresentation::from_value(
+            &payload["presentation"],
+            &previous_generation_id,
+        )?;
+        let scope_id = payload["providerScopeId"]
+            .as_str()
+            .ok_or("VISUAL_EDITOR_INVALID")?
+            .to_owned();
+        let root = payload
+            .as_object_mut()
+            .and_then(|value| value.remove("assetRootPath"))
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or("VISUAL_EDITOR_ROOT_INVALID")?;
+        let binding = presentation
+            .visual
+            .as_ref()
+            .ok_or("VISUAL_EDITOR_INVALID")?
+            .binding_id
+            .clone();
+        payload["presentation"] = serde_json::to_value(resources.authorize_editor(
+            presentation,
+            &previous_generation_id,
+            &scope_id,
+            std::path::Path::new(&root),
+        )?)
+        .map_err(|_| "VISUAL_EDITOR_INVALID")?;
+        payload["assetBaseUrl"] =
+            json!(resources.editor_asset_base(&previous_generation_id, &binding));
     }
     if name == "studio.visual.catalog" {
-        if let Some(items) = payload["items"].as_array() { resources.retain_editor_catalog(items); }
+        if let Some(items) = payload["items"].as_array() {
+            resources.retain_editor_catalog(items);
+        }
     }
     if name == "studio.visual.previews" {
-        let items = payload["items"].as_array_mut().ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
+        let items = payload["items"]
+            .as_array_mut()
+            .ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
         for item in items {
-            let source = item.as_object_mut().and_then(|item| item.remove("sourcePath"));
+            let source = item
+                .as_object_mut()
+                .and_then(|item| item.remove("sourcePath"));
             item["previewUrl"] = Value::Null;
             if let Some(source) = source.and_then(|value| value.as_str().map(ToOwned::to_owned)) {
-                let media_type = item["mediaType"].as_str().ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
-                let size = item["byteLength"].as_u64().ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
-                if let Ok(preview) = state.register_preview(std::path::Path::new(&source), media_type, size, &previous_generation_id) {
+                let media_type = item["mediaType"]
+                    .as_str()
+                    .ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
+                let size = item["byteLength"]
+                    .as_u64()
+                    .ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
+                if let Ok(preview) = state.register_preview(
+                    std::path::Path::new(&source),
+                    media_type,
+                    size,
+                    &previous_generation_id,
+                ) {
                     item["previewUrl"] = json!(preview.preview_url);
                 }
             }
         }
     }
-    if matches!(name, "studio.character.open" | "studio.character.create" | "studio.draft.discard" | "studio.workspace.release") { resources.clear_editors(); }
+    if matches!(
+        name,
+        "studio.character.open"
+            | "studio.character.create"
+            | "studio.draft.discard"
+            | "studio.workspace.release"
+    ) {
+        resources.clear_editors();
+    }
 
     if name == "studio.reference.preview" {
         let object = payload
@@ -6919,9 +7075,24 @@ async fn studio_choose_source(
 ) -> Result<Value, String> {
     character_studio_window::validate_studio_window(&window)?;
     let dialog = rfd::AsyncFileDialog::new().set_title("选择角色工坊资源");
+    let dialog = if kind == "resourceArchive" {
+        dialog
+            .add_filter("Sakura 形态包", &["visual"])
+            .add_filter("旧版形态组件", &["char"])
+    } else {
+        dialog
+    };
     let selected = match kind.as_str() {
         "visual" | "resourceArchive" => {
-            if multiple { return Ok(json!(dialog.pick_files().await.unwrap_or_default().iter().map(|file| file.path().to_string_lossy().to_string()).collect::<Vec<_>>())); }
+            if multiple {
+                return Ok(json!(dialog
+                    .pick_files()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|file| file.path().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()));
+            }
             dialog.pick_file().await
         }
         "gptModel" => dialog.add_filter("GPT 模型", &["ckpt"]).pick_file().await,
@@ -6958,10 +7129,19 @@ async fn studio_choose_export(
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("character.char");
+    let (title, filter_name, extension) = if std::path::Path::new(safe_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("visual"))
+    {
+        ("导出 Sakura 形态包", "Sakura 形态包", "visual")
+    } else {
+        ("导出 Sakura 角色包", "Sakura 角色包", "char")
+    };
     Ok(rfd::AsyncFileDialog::new()
-        .set_title("导出 Sakura 角色包")
+        .set_title(title)
         .set_file_name(safe_name)
-        .add_filter("Sakura 角色包", &["char"])
+        .add_filter(filter_name, &[extension])
         .save_file()
         .await
         .map(|file| file.path().to_string_lossy().to_string()))
@@ -7086,11 +7266,26 @@ fn close_character_studio_for_exit(
 
 fn log_visual_resource_error(log: &RuntimeLogService, stage: &str, error: &str) {
     let code = error.split_once(':').map_or(error, |(code, _)| code);
-    if matches!(code, "CHARACTER_RESOURCE_GENERATION_STALE" | "CHARACTER_PRESENTATION_GENERATION_STALE"
-        | "VISUAL_BINDING_EXPIRED" | "CHARACTER_RESOURCE_ID_UNKNOWN" | "STUDIO_PREVIEW_GENERATION_STALE")
-        || error == "STUDIO_PREVIEW_NOT_FOUND" { return; }
-    let _ = log.submit(RuntimeLogEvent::rust(Severity::Warning, "visual", "visual.resource.failed", "角色表现资源加载失败")
-        .attributes(json!({"code": code, "stage": stage, "diagnostic": error})));
+    if matches!(
+        code,
+        "CHARACTER_RESOURCE_GENERATION_STALE"
+            | "CHARACTER_PRESENTATION_GENERATION_STALE"
+            | "VISUAL_BINDING_EXPIRED"
+            | "CHARACTER_RESOURCE_ID_UNKNOWN"
+            | "STUDIO_PREVIEW_GENERATION_STALE"
+    ) || error == "STUDIO_PREVIEW_NOT_FOUND"
+    {
+        return;
+    }
+    let _ = log.submit(
+        RuntimeLogEvent::rust(
+            Severity::Warning,
+            "visual",
+            "visual.resource.failed",
+            "角色表现资源加载失败",
+        )
+        .attributes(json!({"code": code, "stage": stage, "diagnostic": error})),
+    );
 }
 
 fn studio_preview_protocol_response(
@@ -7141,18 +7336,20 @@ fn studio_preview_protocol_response(
             .expect("validated studio preview response"),
         Err(error) => {
             log_visual_resource_error(&lifecycle.runtime_log, "studio.preview.read", &error);
-            let code = error.split_once(':').map_or(error.as_str(), |(code, _)| code);
+            let code = error
+                .split_once(':')
+                .map_or(error.as_str(), |(code, _)| code);
             fail(
-            if code.contains("STALE") {
-                StatusCode::GONE
-            } else if code.contains("NOT_FOUND") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::UNPROCESSABLE_ENTITY
-            },
-            code,
-        )
-        },
+                if code.contains("STALE") {
+                    StatusCode::GONE
+                } else if code.contains("NOT_FOUND") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                },
+                code,
+            )
+        }
     }
 }
 
@@ -7178,7 +7375,9 @@ fn character_protocol_response(
         );
     }
     let segments: Vec<_> = request.uri().path().trim_matches('/').split('/').collect();
-    if !((segments.len() == 3 && segments[0] == "v1") || (segments.len() >= 4 && segments[0] == "module") || (segments.len() == 4 && segments[0] == "editor-assets"))
+    if !((segments.len() == 3 && segments[0] == "v1")
+        || (segments.len() >= 4 && segments[0] == "module")
+        || (segments.len() == 4 && segments[0] == "editor-assets"))
         || segments[1].is_empty()
         || segments[2].is_empty()
         || segments.iter().any(|segment| segment.contains('%'))
@@ -7205,35 +7404,51 @@ fn character_protocol_response(
     // Read the current Core binding before granting code or asset access. A
     // same-generation plugin restart/disable must revoke the old token too.
     if let Ok(Some(value)) = handle.character_presentation() {
-        if let Ok(presentation) = character_presentation::CharacterPresentation::from_value(&value, &current_generation) {
+        if let Ok(presentation) =
+            character_presentation::CharacterPresentation::from_value(&value, &current_generation)
+        {
             if let Err(error) = resources.activate(presentation, &current_generation) {
-                log_visual_resource_error(&lifecycle.runtime_log, "visual.resources.activate", &error);
+                log_visual_resource_error(
+                    &lifecycle.runtime_log,
+                    "visual.resources.activate",
+                    &error,
+                );
                 return fail(StatusCode::GONE, "VISUAL_BINDING_EXPIRED");
             }
         }
     }
     let loaded = if segments[0] == "module" {
-        resources.load_module(segments[1], segments[2], &segments[3..].join("/"), &current_generation)
+        resources.load_module(
+            segments[1],
+            segments[2],
+            &segments[3..].join("/"),
+            &current_generation,
+        )
     } else if segments[0] == "editor-assets" {
         resources.load_editor_asset(segments[1], segments[2], segments[3], &current_generation)
-    } else { resources.load_resource(segments[1], segments[2], &current_generation) };
+    } else {
+        resources.load_resource(segments[1], segments[2], &current_generation)
+    };
     match loaded {
         Ok(resource) => tauri::http::Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, resource.content_type)
             .header("Access-Control-Allow-Origin", "*")
-            .header(
-                header::CONTENT_LENGTH,
-                resource.bytes.len().to_string(),
-            )
+            .header(header::CONTENT_LENGTH, resource.bytes.len().to_string())
             .header(header::CACHE_CONTROL, "no-store, max-age=0")
             .header("X-Content-Type-Options", "nosniff")
             .body(resource.bytes)
             .expect("validated character resource response"),
         Err(error) => {
-            let stage = match segments[0] { "module" => "visual.module.read", "editor-assets" => "studio.visual.asset.read", _ => "visual.asset.read" };
+            let stage = match segments[0] {
+                "module" => "visual.module.read",
+                "editor-assets" => "studio.visual.asset.read",
+                _ => "visual.asset.read",
+            };
             log_visual_resource_error(&lifecycle.runtime_log, stage, &error);
-            let code = error.split_once(':').map_or(error.as_str(), |(code, _)| code);
+            let code = error
+                .split_once(':')
+                .map_or(error.as_str(), |(code, _)| code);
             let status = if code.contains("GENERATION") {
                 StatusCode::GONE
             } else if code.contains("UNKNOWN") || code.contains("NOT_FOUND") {
@@ -7794,7 +8009,10 @@ fn main() {
             .expect("WP-4-01 manual acceptance root must be isolated and complete");
     }
     let character_resource_root = runtime_request.user_root.clone();
-    let visual_distribution_root = runtime_request.explicit_development_root.clone().unwrap_or_else(|| runtime_request.resource_directory.clone());
+    let visual_distribution_root = runtime_request
+        .explicit_development_root
+        .clone()
+        .unwrap_or_else(|| runtime_request.resource_directory.clone());
     let runtime_log =
         RuntimeLogService::start(character_resource_root.join("data/logs/sakura-runtime.log"));
     let mut runtime_log_shutdown = RuntimeLogShutdown::new(runtime_log.clone());
@@ -7936,10 +8154,12 @@ fn main() {
             handle: shell_lifecycle_handle.clone(),
             runtime_log: runtime_log.clone(),
         })
-        .manage(character_presentation::CharacterPresentationState::with_distribution(
-            character_resource_root.clone(),
-            visual_distribution_root,
-        ))
+        .manage(
+            character_presentation::CharacterPresentationState::with_distribution(
+                character_resource_root.clone(),
+                visual_distribution_root,
+            ),
+        )
         .manage(character_appearance_state(ui_config_repository.clone()))
         .manage(chat_settings::ChatPresentationTimingState::new(
             ui_config_repository.clone(),
@@ -8070,7 +8290,9 @@ fn main() {
                         }
                     }
                     tauri::WindowEvent::Destroyed => {
-                        window.state::<character_presentation::CharacterPresentationState>().clear_editors();
+                        window
+                            .state::<character_presentation::CharacterPresentationState>()
+                            .clear_editors();
                         let topmost = window.state::<product_shell::PetTopmostState>();
                         if let Err(error) = character_studio_window::restore_after_destroyed(
                             window.app_handle(),
@@ -8408,14 +8630,24 @@ mod tests {
         let mut missing = snapshot.clone();
         missing["preferenceResourceId"] = json!("missing");
         let mut duplicate = snapshot.clone();
-        duplicate["resources"].as_array_mut().unwrap().push(snapshot["resources"][0].clone());
+        duplicate["resources"]
+            .as_array_mut()
+            .unwrap()
+            .push(snapshot["resources"][0].clone());
         for invalid in [private, missing, duplicate] {
-            assert_eq!(validate_character_visuals_snapshot(&invalid, "navi"), Err("CHARACTER_VISUAL_SETTINGS_INVALID".into()));
+            assert_eq!(
+                validate_character_visuals_snapshot(&invalid, "navi"),
+                Err("CHARACTER_VISUAL_SETTINGS_INVALID".into())
+            );
         }
-        assert!(validate_character_visuals_snapshot(&json!({
-            "schemaVersion": 1, "characterId": "navi", "defaultResourceId": null,
-            "preferenceResourceId": null, "resources": [],
-        }), "navi").is_ok());
+        assert!(validate_character_visuals_snapshot(
+            &json!({
+                "schemaVersion": 1, "characterId": "navi", "defaultResourceId": null,
+                "preferenceResourceId": null, "resources": [],
+            }),
+            "navi"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -8510,18 +8742,37 @@ mod tests {
                 "hasExportableVoice": false,
             }],
         });
-        let (validated, plan) = validate_character_settings_change(json!({
+        let (validated, plan, requirements) = validate_character_settings_change(json!({
             "schemaVersion": 1,
             "snapshot": snapshot.clone(),
             "changePlan": "core_restart_required",
         }))
         .unwrap();
         assert_eq!(validated, snapshot);
+        assert_eq!(requirements, json!([]));
         assert_eq!(plan, "core_restart_required");
-        let (hot_snapshot, hot_plan) = validate_character_settings_change(json!({
+        let declared = json!([{
+            "kind": "tts", "type": "gpt-sovits.models@1", "plugins": [],
+            "reasonCode": "COMPATIBLE", "candidates": [{"id": "sakura.tts.genie", "name": "Genie", "enabled": true, "compatible": true, "installId": "bundled:genie"}]
+        }]);
+        let (_, _, imported_requirements) = validate_character_settings_change(json!({
+            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
+            "pluginRequirements": declared.clone(),
+        }))
+        .unwrap();
+        assert_eq!(imported_requirements, declared);
+        assert!(validate_character_settings_change(json!({
+            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
+            "pluginRequirements": [{"kind": "tts", "type": "gpt-sovits.models@1", "reasonCode": "READY"}],
+        })).is_err());
+        let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
             "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "visual_rebind",
-        })).unwrap();
-        assert_eq!(character_restart_target(&hot_snapshot, &hot_plan).unwrap(), None);
+        }))
+        .unwrap();
+        assert_eq!(
+            character_restart_target(&hot_snapshot, &hot_plan).unwrap(),
+            None
+        );
 
         assert_eq!(
             validate_character_settings_change(json!({

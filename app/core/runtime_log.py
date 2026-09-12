@@ -28,12 +28,10 @@ def diagnostic_attributes(
     reason_code: str,
     stage: str,
 ) -> dict[str, object]:
-    """Build bounded local error text and traceback frames without locals or private paths.
+    """Build bounded original error text, exception chains and stack locations.
 
-    ``exception_site`` identifies the innermost Python frame as module/function/line.  It
-    is intentionally derived from code metadata instead of ``co_filename`` so a
-    user's installation path never enters the Runtime log. Error type, reason,
-    stage and source location provide the diagnostic identity directly.
+    ``exception_site`` retains a concise module/function/line identifier;
+    ``exception_stack`` includes actual filenames for investigation.
     """
 
     return exception_diagnostics(error, reason_code=reason_code, stage=stage)
@@ -537,7 +535,7 @@ def _default_verbosity(
         return 3
     if event_name == _LATENCY_STAGE_EVENT:
         return 3
-    if key in _KEY_EVENT_MESSAGES:
+    if key in _KEY_EVENT_MESSAGES or event_name == "chat.finished":
         return 1
     if event_name.startswith(("startup.", "crash.", "api.", "tts.", "tool.", "mcp.", "plugin.")):
         return 1

@@ -40,7 +40,7 @@ def test_import_cancel_at_commit_rolls_back_staging(tmp_path):
 def test_export_cancel_preserves_existing_destination(tmp_path):
     package = tmp_path / "package"
     package.mkdir()
-    output = tmp_path / "existing.char"
+    output = tmp_path / "existing.visual"
     output.write_bytes(b"existing archive")
     def cancel():
         raise RuntimeError("cancelled")
@@ -69,14 +69,36 @@ def test_component_roundtrip_keeps_name_and_private_data(tmp_path, name):
     source, target = tmp_path / "source", tmp_path / "target"
     source.mkdir()
     target.mkdir()
-    resource = CharacterVisualResource("numeric", "example.numeric@1", ".", "resource.json", name)
+    requirements = ({"kind": "visual", "type": "example.numeric@1", "plugins": [{"id": "example.numeric", "name": "数值形态"}]},)
+    resource = CharacterVisualResource("numeric", "example.numeric@1", ".", "resource.json", name, requirements)
     data = {"Private_Key": 12}
     output = export_visual_archive(source, resource, {"entry": "resource.json", "data": data, "assets": {}}, tmp_path / "shape.char")
+    assert output == tmp_path / "shape.visual"
     imported = import_visual_archive(output, target)
     assert imported.name == name
+    assert imported.plugin_requirements == requirements
     assert imported.id != resource.id
     assert imported.type == resource.type
     assert json.loads((target / imported.root / imported.entry).read_text(encoding="utf-8")) == data
+
+
+@pytest.mark.parametrize("suffix", [".visual", ".char"])
+def test_import_accepts_new_and_legacy_component_suffixes(tmp_path, suffix):
+    package = tmp_path / "package"
+    package.mkdir()
+    imported = import_visual_archive(component(tmp_path / ("shape" + suffix)), package)
+    assert json.loads((package / imported.root / imported.entry).read_text()) == {"Private_Key": 12}
+
+
+def test_renaming_a_full_character_does_not_make_it_a_visual_component(tmp_path):
+    package = tmp_path / "package"
+    package.mkdir()
+    path = tmp_path / "character.visual"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"format": ARCHIVE_FORMAT, "version": 2, "kind": "character"}))
+    with pytest.raises(CharacterArchiveError, match="表现组件"):
+        import_visual_archive(path, package)
+    assert not list(package.iterdir())
 
 
 def test_component_rollback_keeps_primary_and_cleanup_errors(tmp_path, monkeypatch):

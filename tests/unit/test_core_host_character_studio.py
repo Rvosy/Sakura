@@ -127,7 +127,9 @@ def test_model_inventory_is_visible_independently_of_voice_configuration(
     expected = [{"relativePath": path, "byteLength": len(content)}
                 for path, content in resources.items()]
     assert opened["modelFiles"] == expected
-    if not enabled or provider == "sakura.tts.genie":
+    if provider == "sakura.tts.gpt-sovits":
+        assert opened["doc"]["voice"]["gptModel"] == "voice/models/alpha.ckpt"
+    else:
         assert opened["doc"]["voice"] is None
     opened["doc"]["cardText"] = "edited card"
     saved = boundary.handle(_request("studio.draft.save", {
@@ -142,8 +144,10 @@ def test_model_inventory_is_visible_independently_of_voice_configuration(
     assert publish_result["ok"] is True, publish_result
     published = publish_result["payload"]
     assert published["modelFiles"] == expected
-    if provider == "sakura.tts.genie" or not enabled:
-        assert json.loads(manifest_path.read_text(encoding="utf-8")).get("extensions") == manifest.get("extensions")
+    saved_extensions = json.loads(manifest_path.read_text(encoding="utf-8")).get("extensions", {})
+    assert "sakura.tts" not in saved_extensions
+    if provider == "sakura.tts.genie":
+        assert saved_extensions[provider] == manifest["extensions"][provider]
 
 
 def test_model_inventory_updates_after_import_and_draft_asset_removal(tmp_path: Path) -> None:

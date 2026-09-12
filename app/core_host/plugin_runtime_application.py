@@ -324,6 +324,7 @@ class PluginRuntimeApplication:
             raw = json.loads((resolve_resource_path(character.package_dir, resource.root) / resource.entry).read_text(encoding="utf-8"))
             result = self._manager.call_service(capability.service, "exportResource", resource.to_mapping(), raw)
             result["assets"] = binding.description.get("assets", {})
+            result["pluginRequirements"] = list(resource.plugin_requirements) or [{"kind": "visual", "type": resource.type, "plugins": [{"id": record.plugin_id, "name": record.name}]}]
             binding.close()
             return result
         finally:

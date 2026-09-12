@@ -249,7 +249,7 @@ def test_numeric_studio_private_draft_publish_full_archive_and_component_roundtr
     imported = import_character_archive(archive, tmp_path / "imported")
     assert not (imported.package_dir / "default.png").exists()
     assert json.loads((imported.package_dir / "numeric/resource.json").read_text())["privatePascalCase"] == {"Keep_This": True}
-    component = tmp_path / "component.char"
+    component = tmp_path / "component.visual"
     opened = request("studio.character.open", {"characterId": "character"})
     request("studio.visual.export", {"workspaceId": opened["workspaceId"], "resourceId": "numeric-1", "path": str(component)})
     other = request("studio.character.create", {"doc": {"id": "other", "displayName": "另一个角色"}})
@@ -263,6 +263,56 @@ def test_numeric_studio_private_draft_publish_full_archive_and_component_roundtr
     assert "other" not in CharacterRegistry(root).profiles
     request("studio.draft.discard", {"workspaceId": "other"})
     assert "other" not in CharacterRegistry(root).profiles
+
+
+def test_missing_plugin_visual_import_survives_publish_and_later_install(visual_application, tmp_path):
+    import shutil
+    from app.config.character_loader import CharacterRegistry
+    from app.config.visual_archive import export_visual_archive
+    from app.core_host.character_studio import CharacterStudioBoundary
+    from app.plugins.installer import LocalPluginInstaller
+
+    application, package, _ = visual_application
+    root = package.parents[1]
+    source = tmp_path / "visual-source"
+    source.mkdir()
+    (source / "mesh.bin").write_bytes(b"private model data")
+    data = {"maxAngle": 35, "privateConfig": {"preserve": True}}
+    resource = CharacterVisualResource("later", "fixture.later@1", ".", "resource.json", "待安装形态")
+    archive = export_visual_archive(source, resource, {"entry": "resource.json", "data": data,
+        "assets": {"mesh": "mesh.bin"}}, tmp_path / "later.visual")
+    boundary = CharacterStudioBoundary("g", "c", root, plugin_application_provider=lambda: application)
+    boundary._dispatch("studio.character.open", {"characterId": "character"})
+    result = boundary._dispatch("studio.visual.import", {"workspaceId": "character", "path": str(archive)})
+    doc = result["doc"]
+    imported = CharacterVisualResource.from_mapping(doc["visuals"]["resources"][-1])
+    assert doc["visuals"]["default"] == imported.id
+    assert application.application.visuals.resource_choice(imported)["reasonCode"] == "VISUAL_PROVIDER_MISSING"
+    assert not application.application.visuals.candidates(imported.type)
+    with pytest.raises(VisualHostError, match="VISUAL_PROVIDER_MISSING"):
+        boundary._dispatch("studio.visual.open", {"workspaceId": "character", "resourceId": imported.id})
+    boundary._dispatch("studio.character.publish", {"workspaceId": "character", "doc": doc})
+    assert json.loads((package / imported.root / imported.entry).read_text()) == data
+    assert (package / imported.root / "mesh.bin").read_bytes() == b"private model data"
+    assert (package / "card.md").read_text() == "角色人设"
+    assert (package / "numeric/resource.json").is_file()
+    application.bind_character_presentation("character")
+    assert application.visual_presentation()["visualReasonCode"] == "VISUAL_PROVIDER_MISSING"
+    assert application.visual_presentation()["visual"] is None
+
+    plugin = tmp_path / "later-plugin"
+    shutil.copytree(tmp_path / "distribution/plugins/builtin/numeric", plugin)
+    for name in ["plugin.yaml", "plugin.py"]:
+        path = plugin / name
+        path.write_text(path.read_text().replace("fixture.numeric", "fixture.later"))
+    installed = LocalPluginInstaller(RuntimeRoots(tmp_path / "distribution", root)).install(plugin, "folder")
+    application.install_plugin(installed.install_id)
+    application.set_enabled(installed.install_id, True)
+    profile = CharacterRegistry(root).get("character")
+    binding = application.application.visuals.bind(profile.id, package, profile.current_visual_resource)
+    assert binding.description["rendererData"]["maxAngle"] == 35
+    assert binding.parse_control(_control(imported, {"angle": 30})).control["state"] == {"angle": 30}
+    assert json.loads((package / imported.root / imported.entry).read_text()) == data
 
 
 def test_unbinding_chat_keeps_a_fresh_independent_visual_presentation(visual_application):

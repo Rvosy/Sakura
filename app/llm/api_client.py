@@ -57,11 +57,6 @@ SUPPORTED_CHAT_COMPLETION_PARAMS = {
     "tool_choice",
 }
 
-_DIAGNOSTIC_CREDENTIAL_RE = re.compile(
-    r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*([^\s,;]+)"
-)
-_DIAGNOSTIC_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
-_DIAGNOSTIC_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
 
 
 class ApiConfigError(RuntimeError):
@@ -884,6 +879,8 @@ class OpenAICompatibleClient:
                         **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
+                        "endpoint": request.full_url,
+                        "model": self.last_trace_call.model if self.last_trace_call is not None else self.settings.model,
                         "status": response_status,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "response_body": response_body,
@@ -1104,16 +1101,8 @@ def _provider_error_diagnostic(error_body: str, api_key: str) -> dict[str, str]:
 
 
 def _safe_diagnostic_text(value: str, api_key: str = "") -> str:
-    text = str(value or "").replace("\r", " ").replace("\n", " ")
-    if api_key:
-        text = text.replace(api_key, "[REDACTED]")
-    text = _DIAGNOSTIC_URL_USERINFO_RE.sub(r"\1[REDACTED]@", text)
-    text = _DIAGNOSTIC_BEARER_RE.sub("Bearer [REDACTED]", text)
-    text = _DIAGNOSTIC_CREDENTIAL_RE.sub(
-        lambda match: f"{match.group(1)}=[REDACTED]", text
-    )
-    text = " ".join(text.split())
-    return text[:320]
+    from app.core.diagnostics import safe_diagnostic_text
+    return safe_diagnostic_text(value, 4096, secrets=(api_key,))
 
 
 def _looks_like_google_ai_studio_auth_error(error_body: str, url: str) -> bool:

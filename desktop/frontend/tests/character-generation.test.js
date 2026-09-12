@@ -41,6 +41,36 @@ const ready = (generationId, generationNumber) => ({
   failure: null,
 });
 
+test("a Core restart retires the pending old resource load without retrying or blocking the new generation", async () => {
+  const base = { schemaVersion: 2, generationId: "old", characterId: "sample", displayName: "角色", initialMessage: "你好", themeTokens: {}, visual: null, visualReasonCode: "VISUAL_NOT_BOUND" };
+  let current = base;
+  let resume;
+  let reads = 0;
+  const invoke = async () => { reads += 1; return current; };
+  const pending = loadCurrentCharacterPresentation({
+    invoke,
+    attempts: 2,
+    expectedGenerationId: "old",
+    setTimer: callback => { resume = callback; },
+  });
+  await Promise.resolve();
+  assert.equal(typeof resume, "function");
+  current = { ...base, generationId: "new", visualReasonCode: "PLUGIN_DISABLED" };
+  resume();
+  assert.equal(await pending, null);
+  assert.equal(reads, 2);
+  const next = await loadCurrentCharacterPresentation({ invoke, expectedGenerationId: "new" });
+  assert.equal(next.generationId, "new");
+  assert.equal(next.visualReasonCode, "PLUGIN_DISABLED");
+});
+
+test("invalid current-generation resources still fail instead of being treated as a superseded load", async () => {
+  await assert.rejects(loadCurrentCharacterPresentation({
+    invoke: async () => ({ schemaVersion: 2, generationId: "current", characterId: "sample", displayName: "角色", initialMessage: "你好", themeTokens: {}, visualReasonCode: "READY", visual: { bindingId: "invalid" } }),
+    expectedGenerationId: "current",
+  }), /VISUAL_PRESENTATION_INVALID/);
+});
+
 test("first lifecycle publication preserves the initial renderer; a later generation revokes it", () => {
   const reducer = createChatPresentationReducer({initialMessage: "你好"});
   let generation = reducer.current().generationId;
