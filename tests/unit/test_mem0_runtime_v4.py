@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import yaml
 
 from app.agent.tools import ToolRegistry
+from app.config.character_loader import CharacterRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.dependencies import PluginDependencyRoots
 from app.plugins.inventory import PluginInventory
@@ -206,7 +207,7 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
         ),
     )
     session = SimpleNamespace(
-        character=SimpleNamespace(id="sakura"),
+        character=CharacterRegistry(roots.user_root).get("sakura"),
         runtime=runtime,
     )
     application = PluginRuntimeApplication(

@@ -14,6 +14,7 @@ import psutil
 import pytest
 
 from app.agent.tools import ToolRegistry
+from app.config.character_loader import CharacterProfile
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host import plugin_host_services
 from app.core_host.plugin_settings import PluginSettingsBoundary
@@ -741,7 +742,7 @@ class Plugin:
         (),
         {
             "runtime": runtime,
-            "character": type("Character", (), {"id": "fixture"})(),
+            "character": CharacterProfile("fixture", "Fixture", tmp_path, tmp_path / "card.md", ""),
         },
     )()
     try:
