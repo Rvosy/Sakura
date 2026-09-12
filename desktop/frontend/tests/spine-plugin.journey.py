@@ -60,7 +60,11 @@ def fixture(root):
             'animations': {'idle': {'bones': {'root': {'rotate': [{'time': 0, 'angle': -2}, {'time': 1, 'angle': 2}, {'time': 2, 'angle': -2}]}}}}}
     (source / 'skeleton.json').write_text(json.dumps(data))
     (source / 'skeleton.atlas').write_text(f'texture.png\nsize: {width},{height}\nformat: RGBA8888\nfilter: Linear,Linear\nrepeat: none\nbody\n  rotate: false\n  xy: 0,0\n  size: {width},{height}\n  orig: {width},{height}\n  offset: 0,0\n  index: -1\n')
-    prepare(source, root / 'components')
+    catalog = prepare(source, root / 'components')
+    entry = root / 'components' / catalog['models'][0]['resource']['root'] / 'spine-resource.json'
+    config = json.loads(entry.read_text())
+    config['skinLabels'] = {'normal': '放松', 'smile': '友好'}
+    entry.write_text(json.dumps(config, ensure_ascii=False))
     return root / 'components'
 
 
@@ -170,10 +174,20 @@ def run(components=None):
                     speed = page.get_by_role('slider', name='播放速度', exact=True)
                     expect(speed).to_be_visible(timeout=20000)
                     expect(page.locator('canvas.spine-canvas')).to_be_visible()
-                    page.get_by_role('button', name='微笑', exact=True).click()
+                    page.locator('.spine-choices button[value="smile"]').click()
                     speed.fill('1.5')
                     source_resource = catalog['models'][index]['resource']
                     source_config = json.loads((components / source_resource['root'] / source_resource['entry']).read_text())
+                    skin_name = page.get_by_role('textbox', name='表情名称', exact=True)
+                    expect(skin_name).to_have_value(source_config.get('skinLabels', {}).get('smile', '微笑'))
+                    skin_name.fill('开心')
+                    expect(page.get_by_role('button', name='开心', exact=True)).to_be_visible()
+                    page.locator('.spine-choices button[value="normal"]').click()
+                    expect(skin_name).to_have_value(source_config.get('skinLabels', {}).get('normal', '平静'))
+                    skin_name.fill('认真')
+                    expect(page.get_by_role('button', name='认真', exact=True)).to_be_visible()
+                    page.locator('.spine-choices button[value="smile"]').click()
+                    expect(skin_name).to_have_value('开心')
                     alpha = page.get_by_role('combobox', name='贴图透明方式', exact=True)
                     original_alpha = str(source_config['premultipliedAlpha']).lower()
                     expect(alpha).to_have_value(original_alpha)
@@ -188,7 +202,8 @@ def run(components=None):
                         page.wait_for_function('(canvas) => !canvas.isConnected', arg=previous)
                         expect(alpha).to_have_value(value)
                         expect(speed).to_have_value('1.5')
-                        expect(page.get_by_role('button', name='微笑', exact=True)).to_have_attribute('aria-pressed', 'true')
+                        expect(skin_name).to_have_value('开心')
+                        expect(page.locator('.spine-choices button[value="smile"]')).to_have_attribute('aria-pressed', 'true')
                     page.locator('#saveButton').click()
                     expect(page.locator('#saveButton')).to_be_enabled(timeout=20000)
                     page.reload()
@@ -199,10 +214,23 @@ def run(components=None):
                     expect(speed).to_be_visible()
                     expect(speed).to_be_enabled()
                     expect(alpha).to_have_value(saved_alpha)
+                    expect(skin_name).to_have_value('开心')
                     page.wait_for_function("!document.querySelector('#expressionList').inert")
-                    expect(page.get_by_role('button', name='微笑', exact=True)).to_have_attribute('aria-pressed', 'true')
+                    expect(page.locator('.spine-choices button[value="smile"]')).to_have_attribute('aria-pressed', 'true')
                     page.locator('canvas.spine-canvas').scroll_into_view_if_needed()
                     page.screenshot(path=str(output / f'room-{index + 1}-studio.png'), animations='disabled')
+                    if index == 0:
+                        page.evaluate("""() => {
+                          const tokens = {'primary':'#2d9b70','primary-hover':'#3db884','text':'#e4efeb','secondary-text':'#aac9bc',
+                            'muted-text':'#83a396','page-bg':'#131e20','panel-bg':'#182728','input-bg':'#1c3030','border':'#345553'};
+                          for(const [name,value] of Object.entries(tokens)) document.documentElement.style.setProperty('--sakura-'+name,value);
+                        }""")
+                        page.screenshot(path=str(output / 'studio-dark.png'), animations='disabled')
+                        page.set_viewport_size({'width':680,'height':900})
+                        page.screenshot(path=str(output / 'studio-dark-narrow.png'), animations='disabled')
+                        assert page.evaluate("document.querySelector('.page-scroll').scrollWidth <= document.querySelector('.page-scroll').clientWidth")
+                        page.set_viewport_size({'width':1274,'height':900})
+                        page.evaluate("document.documentElement.removeAttribute('style')")
                     saved = json.loads((package / 'character.json').read_text())
                     raw_resource = next(item for item in saved['visuals']['resources'] if item.get('name') == name)
                     resource = CharacterVisualResource.from_mapping(raw_resource)
@@ -212,8 +240,11 @@ def run(components=None):
                     assert projection['data']['defaultSkin'] == 'smile' and projection['data']['speed'] == 1.5
                     assert projection['data']['premultipliedAlpha'] == (saved_alpha == 'true')
                     assert projection['data'].get('selectableSkins') == source_config.get('selectableSkins')
+                    assert projection['data']['skinLabels']['smile'] == '开心'
+                    assert projection['data']['skinLabels']['normal'] == '认真'
                     assert len(projection['assets']) >= 3
                     binding = application.application.visuals.bind('sample', package, resource)
+                    assert json.loads(binding.description['prompt'].split('\n', 1)[1])['skinLabels']['smile'] == '开心'
                     visual = binding.presentation()
                     visual['renderer'] = origin + '/plugins/optional/sakura_spine/renderer.mjs'
                     prefix = '/runtime/' + binding.id; Handler.assets[prefix] = package
@@ -263,6 +294,9 @@ def run(components=None):
                 config = json.loads((package / imported['root'] / imported['entry']).read_text())
                 assert config['skeleton'].endswith('model/skeleton.json')
                 assert (package / imported['root'] / config['skeleton']).is_file()
+                # Saving reopens the visual editor; finish that transition before closing the bridge.
+                page.wait_for_function("!document.querySelector('#expressionList').inert")
+                expect(page.locator('canvas.spine-canvas')).to_be_visible(timeout=20000)
                 assert not errors, errors
                 browser.close()
                 print(f'PASS: {len(archives)} Spine components: real Studio import/edit/save/reopen + RendererHost lifecycle under desktop CSP')

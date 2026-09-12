@@ -1,7 +1,8 @@
+@import url("/host-ui/settings/styles.css");
 :root { color-scheme:light; font-family:'Segoe UI','Microsoft YaHei UI',sans-serif; color:#373345; background:#f6f5f9;
-  --spine-border:#ddd9e7; --spine-surface:#fff; --spine-accent:#755893; }
-* { box-sizing:border-box; } body { margin:0; } button,select { font:inherit; } button { cursor:pointer; border:1px solid var(--spine-border); border-radius:8px; background:#fff; color:inherit; padding:8px 14px; }
-button:disabled,select:disabled { opacity:.45; cursor:default; } button:hover:enabled { border-color:#755893; }
+  --sakura-primary:#755893; --sakura-input-bg:#fff; --spine-border:#ddd9e7; --spine-surface:#fff; --spine-accent:#755893; }
+* { box-sizing:border-box; } body { margin:0; overflow:auto; } button:not(.spine-editor button),select { font:inherit; } button:not(.spine-editor button) { cursor:pointer; border:1px solid var(--spine-border); border-radius:8px; background:#fff; color:inherit; padding:8px 14px; }
+button:disabled,select:disabled { opacity:.45; cursor:default; } button:not(.spine-editor button):hover:enabled { border-color:#755893; }
 :focus-visible { outline:2px solid #9470b4; outline-offset:3px; }
 header { height:68px; display:flex; align-items:center; justify-content:space-between; padding:0 30px; background:#fff; border-bottom:1px solid #e7e4ec; }
 .brand { font-family:'Trebuchet MS','Segoe UI',sans-serif; font-size:22px; color:#6b587d; letter-spacing:.3px; }.brand span { margin:0 14px; color:#cdc4d6; font-weight:300; }.brand strong { color:#373345; font-size:18px; font-weight:500; }

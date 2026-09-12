@@ -26,6 +26,7 @@ updated: 2026-09-12
   "atlas": "model/skeleton.atlas",
   "defaultSkin": "normal",
   "selectableSkins": ["normal", "smile"],
+  "skinLabels": {"normal": "平静", "smile": "开心"},
   "defaultAnimation": "idle",
   "speed": 1,
   "modelControls": ["skin"],
@@ -42,6 +43,13 @@ updated: 2026-09-12
 `defaultSkin` 必须在其中。省略时使用全部皮肤。编辑器、提示词、Schema、模型解析和前端控制使用同一候选范围。
 隐藏皮肤仍保留在骨骼内，继续参与 Spine 的附件回退。例如只有基础部件的 `default` 可以隐藏，
 由 `normal` 提供正常五官；不会把多个表情叠加。界面将原始 `default` 标为“基础皮肤”。
+
+`skinLabels` 是可选的皮肤 ID 到显示名称的映射。键必须存在于骨骼中，值必须是最多 120 字符的字符串；
+允许重复名称。未设置或留空时使用插件已有名称，未知皮肤使用原始 ID。
+导入保留包内名称；工坊为当前表情提供“表情名称”输入框，修改时按钮文字同步更新。
+切换表情、草稿、保存重开和形态导出保留各自名称，隐藏皮肤的名称也不丢失。
+模型提示词提供当前可选皮肤的非空自定义名称，并将 ID 和显示名称标为资源数据；
+控制值继续使用原始皮肤 ID，改名不会修改骨骼、皮肤绑定或动画。
 
 `premultipliedAlpha` 声明输入贴图的颜色编码，已预乘的素材必须设为 `true`，不通过文件名或像素猜测。
 渲染器将普通透明输入转换为预乘纹理，已预乘输入直接上传；两者统一使用预乘颜色合成到透明画布，
@@ -124,14 +132,16 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 视口按初始动画姿态固定，动作不会驱动相机缩放。音频、交互驱动和多骨骼特效编排后续另行接入。
 
 `editor.mjs` 导出 `createEditor({container, rendererData, onChange?, onPreview?, onRenderingChange?})`，返回 `getDraft()` 和 `dispose()`。
-编辑器提供皮肤、循环动画、速度和贴图透明方式编辑，动作按钮只触发预览，不把一次动作写为默认设置。
+编辑器提供皮肤、表情名称、循环动画、速度和贴图透明方式编辑，动作按钮只触发预览，不把一次动作写为默认设置。
 `onChange` 得到独立配置副本。`onPreview(payload)` 是用户在编辑页的操作，由宿主调用插件的
 `parse_preview_control()` 校验实际资源名称和参数范围，再交给渲染器。编辑预览可调整速度，
 不扩展模型的控制范围；不能把模型产生的数据送到编辑预览入口。
 单动画资源省略动画选择和一次动作按钮，保留表情、速度与贴图透明方式编辑。
 透明方式变化通过 `onRenderingChange(config)` 重新加载预览，保留当前表情和速度；保存、重开与导出保留该配置。
 旧包可以在编辑器中修正透明方式并选择完整表情，无需重新导入。
-编辑器使用独立 DOM 区域，不执行文件操作；草稿、恢复和发布属于宿主。
+编辑器使用宿主内的普通 DOM，复用工坊的 `primary-button`、`secondary-button`、`layout-slider` 和输入框样式。
+插件样式只补充带 `spine-` 前缀的布局，随销毁移除；不使用 Shadow DOM 隔断公共控件，也不固定背景或文字颜色。
+编辑器不执行文件操作；草稿、恢复和发布属于宿主。
 
 正式编辑入口 `mountEditor({container, data, host, signal})` 返回 `ready/collect/validate/destroy`，
 通过 `host.assetUrl` 读取骨骼、图集和贴图，复用运行库预览；配置变化交给 `host.changed`。

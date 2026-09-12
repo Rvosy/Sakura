@@ -26,6 +26,9 @@ export async function readEditorResource(config, read) {
   const normalized = { version: 1, defaultSkin: skins.includes('default') ? 'default' : skins[0],
     defaultAnimation: animations.includes('idle') ? 'idle' : animations[0], speed: 1, premultipliedAlpha: false,
     modelControls: animations.length === 1 ? ['skin'] : ['skin', 'animation', 'speed', 'action'], ...config };
+  const labels = config.skinLabels ?? {};
+  if (('skinLabels' in config && config.skinLabels === null) || typeof labels !== 'object' || Array.isArray(labels)
+    || Object.entries(labels).some(([name, text]) => !allSkins.includes(name) || typeof text !== 'string' || [...text].length > 120)) throw new Error('SPINE_CONFIG_INVALID');
   if (!skins.includes(normalized.defaultSkin)) throw new Error('SPINE_DEFAULT_INVALID');
   return { runtimeVersion: skeleton.skeleton.spine, config: normalized, skins, animations, textures };
 }
@@ -33,18 +36,21 @@ export async function readEditorResource(config, read) {
 export function mountEditor({ container, data, host, signal }) {
   const doc = container.ownerDocument;
   const element = doc.createElement('div');
-  const root = element.attachShadow({ mode: 'open' });
-  const style = new CSSStyleSheet();
-  style.replaceSync(`:host{display:block;--spine-accent:var(--sakura-primary,#755893);--spine-border:var(--sakura-border,#dfe1eb);--spine-surface:var(--sakura-card-bg,#fff)}
-    button{font:inherit;font-size:13px;padding:9px 14px;cursor:pointer;border:1px solid var(--spine-border);border-radius:8px;background:var(--spine-surface);color:inherit}
-    button:hover{border-color:var(--spine-accent)}button:focus-visible{outline:2px solid var(--spine-accent);outline-offset:2px}
-    .layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,1fr);gap:20px;margin-top:16px}
-    .preview{height:420px;min-width:0}.error{color:#b43f59} @media(max-width:800px){.layout{grid-template-columns:1fr}.preview{height:320px}}`);
-  root.adoptedStyleSheets = [style];
+  element.className = 'spine-studio';
+  const root = element;
+  const style = new doc.defaultView.CSSStyleSheet();
+  style.replaceSync(`
+    .spine-studio { display:block; min-width:0; }
+    .spine-studio-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(180px,1fr); gap:20px; margin-top:16px; align-items:start; }
+    .spine-studio-preview { height:420px; min-width:0; position:sticky; top:0; }
+    .spine-studio-error { color:var(--sakura-accent); }
+    @media(max-width:800px) { .spine-studio-layout { grid-template-columns:1fr; } .spine-studio-preview { height:320px; position:static; } }
+  `);
+  doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, style];
   const button = doc.createElement('button');
-  button.type = 'button'; button.textContent = '导入模型目录';
-  const error = doc.createElement('p'); error.className = 'error'; error.setAttribute('role', 'alert');
-  const layout = doc.createElement('div'); layout.className = 'layout';
+  button.type = 'button'; button.className = 'secondary-button'; button.textContent = '导入模型目录';
+  const error = doc.createElement('p'); error.className = 'spine-studio-error'; error.setAttribute('role', 'alert');
+  const layout = doc.createElement('div'); layout.className = 'spine-studio-layout';
   root.append(button, error, layout); container.append(element);
   let draft = structuredClone(data || {}), editor, renderer, loading, valid = false, revision = 0, disposed = false;
   const events = new AbortController();
@@ -64,8 +70,8 @@ export function mountEditor({ container, data, host, signal }) {
     loading = new AbortController();
     const active = loading.signal;
     let candidate, controls;
-    const stage = doc.createElement('div'); stage.className = 'layout';
-    const preview = doc.createElement('div'); preview.className = 'preview';
+    const stage = doc.createElement('div'); stage.className = 'spine-studio-layout';
+    const preview = doc.createElement('div'); preview.className = 'spine-studio-preview';
     const panel = doc.createElement('div'); stage.append(preview, panel);
     try {
       const rendererData = await readEditorResource(config, (path, method) => read(path, method, active));
@@ -133,5 +139,6 @@ export function mountEditor({ container, data, host, signal }) {
       if (disposed) return;
       disposed = true; freeze(); signal.removeEventListener('abort', freeze);
       editor?.dispose(); renderer?.dispose(); element.remove();
+      doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter(sheet => sheet !== style);
     } };
 }

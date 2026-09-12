@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from plugins.optional.sakura_spine.plugin import (
-    _read_json, describe_resource, parse_control, parse_preview_control, relative_path, validate_config,
+    _read_json, describe_resource, parse_control, parse_preview_control, relative_path,
 )
 
 PLUGIN = Path(__file__).resolve().parents[1] / 'plugins/optional/sakura_spine'
@@ -133,7 +133,7 @@ def create_preview_server(root: Path, port: int):
         description = describe_resource(config, lambda rel: resolve_inside(model_root, rel))
         draft_path = model_root / 'spine-draft.json'
         if draft_path.is_file():
-            draft = validate_config(_read_json(draft_path, 65536), description['parserData']['animations'], description['parserData']['skins'])
+            draft = _read_json(draft_path, 65536)
             if draft['skeleton'] != config['skeleton'] or draft['atlas'] != config['atlas']:
                 raise ValueError('草稿资源路径不匹配')
             description = describe_resource(draft, lambda rel: resolve_inside(model_root, rel))
@@ -173,11 +173,15 @@ def create_preview_server(root: Path, port: int):
                         relative = route.removeprefix('/assets/')
                         # Only copied skeletons/atlases/textures and component data are served.
                         path = resolve_inside(root, relative)
+                    elif route.startswith('/host-ui/'):
+                        path = resolve_inside(Path(__file__).resolve().parents[1] / 'desktop/frontend', route.removeprefix('/host-ui/'))
+                        if path.suffix not in ('.css', '.woff2', '.svg'):
+                            raise ValueError('unsupported stylesheet asset')
                     else:
                         relative = 'preview/index.html' if route == '/' else route.removeprefix('/')
                         path = resolve_inside(PLUGIN, relative)
                     allowed = {'.mjs': 'text/javascript', '.js': 'text/javascript', '.html': 'text/html; charset=utf-8', '.css': 'text/css',
-                               '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.json': 'application/json', '.atlas': 'text/plain', '.txt': 'text/plain'}
+                               '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.json': 'application/json', '.atlas': 'text/plain', '.txt': 'text/plain'}
                     if path.suffix not in allowed:
                         raise ValueError('unsupported file')
                     self.respond(200, path.read_bytes(), allowed[path.suffix])
@@ -207,7 +211,9 @@ def create_preview_server(root: Path, port: int):
                     parsed = parse_preview_control(description['parserData'], body['payload'])
                     self.respond(200, parsed)
                 elif self.path == '/api/draft':
-                    config = validate_config(body['config'], description['parserData']['animations'], description['parserData']['skins'])
+                    model_root = resolve_inside(root, models[model_id]['resource']['root'])
+                    updated = describe_resource(body['config'], lambda rel: resolve_inside(model_root, rel))
+                    config = updated['rendererData']['config']
                     original = description['rendererData']['config']
                     if any(config[key] != original[key] for key in ('skeleton', 'atlas', 'modelControls')):
                         raise ValueError('资源绑定不可修改')
@@ -221,7 +227,7 @@ def create_preview_server(root: Path, port: int):
                         temp_path.replace(target)
                     finally:
                         temp_path.unlink(missing_ok=True)
-                    descriptions[model_id] = {**description, 'rendererData': {**description['rendererData'], 'config': config}}
+                    descriptions[model_id] = updated
                     self.respond(200, {'saved': True})
                 else:
                     self.respond(404, {'error': '请求不存在'})
