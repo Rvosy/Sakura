@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-11
+updated: 2026-09-12
 ---
 
 # Spine 表现插件
@@ -12,8 +12,8 @@ updated: 2026-09-11
 
 `plugins/optional/sakura_spine` 实现 Spine 3.6 JSON 表现，插件 ID 与 Service 均为 `sakura.visual.spine`，
 资源类型为 `spine.json@1`。后端遵循[表现插件边界](visual-plugin-boundary.md)，前端模块可由本地预览工具调用。
-本规范只定义该插件自己的数据和模块行为。正式 Assistant、桌宠、工坊尚未挂载此插件，
-这里的前端方法不提前冻结公共 RendererHost、播放协议或 `character.json` 新格式。
+插件使用公共 `mount` / `mountEditor` 接口接入桌面渲染器和角色工坊；独立预览与正式挂载复用同一运行库。
+安装插件后仍需添加形态组件并选择显示方式，不自动改变当前角色。
 
 ## 资源配置
 
@@ -22,8 +22,8 @@ updated: 2026-09-11
 ```json
 {
   "version": 1,
-  "skeleton": "room/room.json",
-  "atlas": "room/room.atlas.txt",
+  "skeleton": "model/skeleton.json",
+  "atlas": "model/skeleton.atlas",
   "defaultSkin": "normal",
   "defaultAnimation": "idle",
   "speed": 1,
@@ -51,6 +51,8 @@ Room 配置使用 `modelControls: ["skin"]`，始终循环 `defaultAnimation`，
 资源自带的 `hash` 不参与身份、缓存或完整性校验。
 
 `describe()` 返回当前资源的皮肤和动画列表、对应 JSON Schema、控制说明及相对文件引用。
+`assets` 声明骨骼、图集和所有贴图：键是资源根内路径，值是角色包根内路径。
+`editorData` 保留配置草稿，入口缺失时返回空配置供目录导入；`exportResource` 投影配置入口，附件由 `assets` 声明。
 快照不传绝对文件路径或整份骨骼 JSON，前端通过宿主授权的资源 URL 加载。插件无逐帧 Python 调用。
 
 ## 控制数据
@@ -83,6 +85,12 @@ Room 解析结果示例：
 
 ## 前端模块
 
+正式渲染入口为 `mount({container, resource, host, signal})`。它使用 `resource.data` 和 `resource.assets`，
+向宿主声明按模型比例计算的矩形表面，返回 `ready/applyState/perform/cancel/destroy`。
+公共宿主负责 operation/segment 去重，适配层为内部控制器的状态和动作调用分配递增序号。
+绑定 signal 中止时停止加载、动画与监听，保留静态 canvas，替代实例就绪后由 destroy 释放 GPU 资源。
+挂载失败和加载途中取消直接释放资源。这里的矩形表面不等于逐帧 PNG alpha 命中。
+
 `renderer.mjs` 导出异步 `createRenderer({container, rendererData, resolveAssetUrl, bindingId, resourceId,
 signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源根下的授权 URL，可返回 Promise。
 运行库在插件内离线提供，角色资源只作为数据加载。
@@ -99,7 +107,7 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 | `dispose()` | 终止加载、帧回调和监听，释放纹理、位图、shader、batcher 与 WebGL 上下文 |
 
 一个实例从挂载到销毁使用同一套序号。重复或过期序号不重放动作；序号由宿主分配，不能采用模型字段。
-取消后宿主须丢弃在途旧结果。切换资源、停用插件或结束绑定须 abort/dispose 旧实例，不能仅隐藏 canvas。
+取消后宿主须丢弃在途旧结果。切换资源、停用插件或结束绑定须 abort 旧实例，替换完成后 dispose，不能仅隐藏 canvas。
 加载失败和加载途中取消也清理已分配资源。WebGL 上下文丢失时结束实例并报告错误，由用户重新加载。
 
 `onLayout` 目前报告 CSS 像素尺寸和初始可见范围，仅供预览布局，不宣称已支持原生 alpha 命中和鼠标穿透。
@@ -113,6 +121,11 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 单动画资源省略动画选择和一次动作按钮，保留表情与速度编辑。
 编辑器使用独立 DOM 区域，不执行文件操作；草稿、恢复和发布属于宿主。
 
+正式编辑入口 `mountEditor({container, data, host, signal})` 返回 `ready/collect/validate/destroy`，
+通过 `host.assetUrl` 读取骨骼、图集和贴图，复用运行库预览；配置变化交给 `host.changed`。
+目录选择和复制交给 `host.importFiles({folder:true})`。组件目录优先读取 `spine-resource.json` 并调整导入路径前缀；
+原始目录必须恰有一套完整骨骼及同名图集，多套骨骼要求用户缩小选择范围。样式使用 adoptedStyleSheets，遵循桌面 CSP。
+
 ## 开发预览与验证
 
 `tools.spine_preview prepare` 在新目录准备组件及 `catalog.json`，原始资源保持不变。`serve` 只监听
@@ -121,8 +134,16 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 `/api/control` 使用模型解析器，`/api/preview` 使用编辑预览校验；二者不共用模型权限。
 原始游戏中独立特效的触发位置、时间和层次无法从骨骼名单推断，工具跳过没有独立布局的特效并记录原因。
 
+准备后的组件独立声明 `spine-resource.json`，骨骼和图集统一为 `model/skeleton.json`、`model/skeleton.atlas`，
+贴图位于 `model/` 并保留图集引用的名称，原文件内容不变。`catalog.json` 只供开发预览选择组件。
+`tools.spine_preview export` 将准备目录中的配置及依赖交给公共归档写入器，生成 version 2、kind `resource`
+的 `.visual` 形态组件，包含名称、类型与入口；不携带人格和语音。正式工坊可导入、编辑、保存和再次导出，仍可读取旧版 `.char` 形态组件。
+未安装 Spine 或其他兼容 `spine.json@1` 的插件时，导入和保存保留资源，编辑区提示缺少插件；安装并启用后可使用原资源。
+
 [Python 测试](../../../tests/unit/test_spine_plugin.py)覆盖复制、资源安全、参数快照和生产 v4 安装/进程调用；
 [Node 测试](../../../desktop/frontend/tests/spine-plugin.test.js)使用真实 Spine 动画状态和骨骼验证动作、恢复和生命周期。
 浏览器画面与原生窗口是不同证据层，浏览器通过不代表 Tauri 窗口和完整聊天链路已验收。
+[Spine 浏览器 journey](../../../desktop/frontend/tests/spine-plugin.journey.py)使用隔离角色、真实插件进程和正式工坊，
+覆盖组件与目录导入、表情速度保存重开，以及公共 RendererHost 的播放、去重、冻结和销毁；可传入实际组件目录。
 
 运行库来源与许可见[运行库说明](../../../plugins/optional/sakura_spine/vendor/README.md)。

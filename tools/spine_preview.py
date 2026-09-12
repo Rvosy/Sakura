@@ -64,24 +64,56 @@ def prepare(source: Path, output: Path):
         staging.mkdir()
         models = []
         for description in found:
-            config = description['rendererData']['config']
+            data = description['rendererData']
+            original = data['config']
+            config = {**original, 'skeleton': 'model/skeleton.json', 'atlas': 'model/skeleton.atlas'}
             model_id = 'spine-' + uuid.uuid4().hex
             root = staging / model_id
             root.mkdir()
-            files = {config['skeleton'], config['atlas'], *description['rendererData']['textures'].values()}
-            for relative in sorted(files):
+            files = {config['skeleton']: original['skeleton'], config['atlas']: original['atlas']}
+            files.update({'model/' + page: relative for page, relative in data['textures'].items()})
+            for relative, source_path in sorted(files.items()):
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(resolve_inside(source, relative), target)
+                shutil.copyfile(resolve_inside(source, source_path), target)
             (root / 'spine-resource.json').write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
-            path = Path(config['skeleton'])
+            path = Path(original['skeleton'])
             name = '房间' if path.stem.casefold() == 'room' else path.stem
+            if len(found) > 1 and len(path.parts) > 1:
+                name = path.parts[0] + ' · ' + name
             models.append({'name': name, 'resource': {'id': model_id, 'type': 'spine.json@1', 'root': model_id, 'entry': 'spine-resource.json'}})
-        default = next((m['resource']['id'] for m in models if m['name'] == '房间'), models[0]['resource']['id'])
+        default = next((m['resource']['id'] for m in models if m['name'] == '房间' or m['name'].endswith(' · 房间')), models[0]['resource']['id'])
         catalog = {'version': 1, 'default': default, 'models': models, 'skipped': skipped}
         (staging / 'catalog.json').write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding='utf-8')
         staging.rename(output)
     return catalog
+
+
+def export_components(root: Path, output: Path):
+    """Package prepared resources using Sakura's ordinary resource archive writer."""
+    from app.config.character_resources import CharacterVisualResource
+    from app.config.visual_archive import export_visual_archive
+
+    root = root.resolve(strict=True)
+    catalog = _read_json(root / 'catalog.json', 65536)
+    if output.exists():
+        raise ValueError('输出目录已存在，请使用新目录')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='spine-export-', dir=output.parent) as directory:
+        staging = Path(directory) / 'archives'
+        staging.mkdir()
+        for index, model in enumerate(catalog['models'], 1):
+            resource = CharacterVisualResource.from_mapping({**model['resource'], 'name': model['name']})
+            model_root = resolve_inside(root, resource.root)
+            config = _read_json(resolve_inside(model_root, resource.entry), 65536)
+            description = describe_resource(config, lambda rel: resolve_inside(model_root, rel))
+            data = description['rendererData']
+            files = {config['skeleton'], config['atlas'], *data['textures'].values()}
+            projection = {'entry': 'spine-resource.json', 'data': data['config'],
+                          'assets': {path: resource.root + '/' + path for path in files}}
+            export_visual_archive(root, resource, projection, staging / f'spine-{index}.visual')
+        staging.rename(output)
+    return sorted(output.glob('*.visual'))
 
 
 def create_preview_server(root: Path, port: int):
@@ -212,10 +244,15 @@ def main():
     preview = sub.add_parser('serve')
     preview.add_argument('root', type=Path)
     preview.add_argument('--port', type=int, default=8786)
+    export = sub.add_parser('export')
+    export.add_argument('root', type=Path)
+    export.add_argument('output', type=Path)
     args = parser.parse_args()
     if args.command == 'prepare':
         result = prepare(args.source, args.output)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == 'export':
+        print('\n'.join(str(path) for path in export_components(args.root, args.output)))
     else:
         serve(args.root, args.port)
 
