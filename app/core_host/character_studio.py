@@ -455,6 +455,13 @@ class CharacterStudioBoundary:
                 from app.config.character_loader import _load_profile
                 from app.config.character_studio import _write_visual_draft
                 from app.config.visual_archive import export_visual_archive
+                if resource.type == "sakura.visual.portrait@1" and resource.root == "." and resource.entry == "character.json" and resource.id not in doc.visual_data:
+                    import json
+                    from app.storage.atomic import atomic_write_text
+                    # Export describes files in the draft package; materialize its
+                    # pending inline portrait without publishing the installed role.
+                    _, raw = self._visual_editor_input(package, doc, resource)
+                    atomic_write_text(package / "character.json", json.dumps(raw, ensure_ascii=False, indent=2))
                 _write_visual_draft(package, doc)
                 resources, selected = character_visual_resources(doc.to_manifest(), package)
                 character = replace(_load_profile(package / "character.json"), visual_resources=resources, default_visual_id=selected, visual_providers=(doc.visuals or {}).get("providers", {}))
@@ -489,6 +496,16 @@ class CharacterStudioBoundary:
                 raw = json.loads(path.read_text(encoding="utf-8"))
             except (UnicodeError, ValueError):
                 pass
+        if resource.type == "sakura.visual.portrait@1" and resource.root == "." and resource.entry == "character.json":
+            # v1.1.0 autosave kept edits in the document, not the copied manifest.
+            # Preserve opaque fields while presenting those pending edits to the adapter.
+            raw = dict(raw) if isinstance(raw, dict) else {}
+            portrait = raw.get("portrait")
+            raw["portrait"] = {
+                **(portrait if isinstance(portrait, dict) else {}),
+                "default": doc.default_portrait,
+                "expressions": dict(doc.expressions),
+            }
         return resource, raw
 
     def _import_asset(self, payload: dict[str, Any], current: str) -> dict[str, Any]:
