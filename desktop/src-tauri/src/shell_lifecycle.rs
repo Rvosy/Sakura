@@ -1466,27 +1466,36 @@ mod tests {
         );
         assert!(first.snapshot.is_none());
 
-        handle.retry().expect("first retry enters Supervisor");
-        handle
-            .retry()
-            .expect("duplicate retry enters the same channel");
-        let second = wait_for_failed(&handle, 2);
-        assert_eq!(second.supervisor.generation_number, 2);
-        thread::sleep(Duration::from_millis(50));
-        assert_eq!(
-            handle
-                .snapshot()
-                .expect("settled lifecycle publication")
-                .supervisor
-                .generation_number,
-            2
-        );
+        // Missing Runtime can fail before a second queued Retry is received.
+        // Observe each failure before requesting a new attempt; duplicate Retry
+        // during spawning is covered by manual_retry_only_starts_once_from_failed.
+        for generation in 2..=3 {
+            handle.retry().expect("manual retry enters Supervisor");
+            let failed = wait_for_failed(&handle, generation);
+            assert_eq!(
+                failed
+                    .supervisor
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.code),
+                Some("deterministic_runtime")
+            );
+            assert!(failed.snapshot.is_none());
+        }
 
         let shutdown_started = Instant::now();
         session
             .shutdown_and_join()
             .expect("missing Runtime lifecycle should exit cleanly");
         assert!(shutdown_started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            handle
+                .snapshot()
+                .expect("joined lifecycle publication")
+                .supervisor
+                .generation_number,
+            3
+        );
         std::fs::remove_dir(&root).expect("isolated missing Runtime root should be empty");
     }
 
