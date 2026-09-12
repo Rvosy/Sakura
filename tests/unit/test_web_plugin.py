@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import importlib.util
+from importlib.metadata import distribution
 import shutil
 import sys
 import threading
@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from packaging.requirements import Requirement
 
 from app.agent.tools import Tool, ToolRegistry
 from app.config.web_plugin_migration import migrate_web_configuration
@@ -86,14 +87,28 @@ def test_proxy_fetch_in_isolated_worker(tmp_path: Path, monkeypatch) -> None:
     dependency = runtime_roots.distribution_root / "plugins/dependencies/sakura.web"
     # Copy only the client's packages into a private distribution root. The
     # Worker must never gain access to the test process's site-packages.
-    for name in ("httpx", "httpcore", "anyio", "certifi", "idna", "h11", "socksio", "sniffio", "typing_extensions"):
-        spec = importlib.util.find_spec(name)
-        assert spec is not None and spec.origin is not None, name
-        source = Path(spec.origin)
-        if spec.submodule_search_locations is not None:
-            shutil.copytree(source.parent, dependency / name, ignore=shutil.ignore_patterns("__pycache__"))
-        else:
-            shutil.copy2(source, dependency / source.name)
+    pending = [Requirement("httpx[socks]")]
+    copied = set()
+    while pending:
+        requirement = pending.pop()
+        key = (requirement.name, frozenset(requirement.extras))
+        if key in copied:
+            continue
+        copied.add(key)
+        package = distribution(requirement.name)
+        for relative in package.files or ():
+            if ".." in relative.parts or "__pycache__" in relative.parts:
+                continue
+            target = dependency / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(package.locate_file(relative), target)
+        for declaration in package.requires or ():
+            required = Requirement(declaration)
+            if required.marker is None or any(
+                required.marker.evaluate({"extra": extra})
+                for extra in {"", *requirement.extras}
+            ):
+                pending.append(required)
     plugin = runtime_roots.distribution_root / "plugins/builtin/sakura_web"
     with (plugin / "web.py").open("a", encoding="utf-8") as stream:
         # Deterministic DNS only: request selection, proxy transport and tool RPC
