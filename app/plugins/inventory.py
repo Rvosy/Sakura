@@ -18,6 +18,7 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
+from app.config.plugin_requirements import tts_resource_types
 from app.plugins.visuals import VisualCapability, visual_capabilities_from_manifest
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
@@ -193,6 +194,7 @@ class InstalledPluginRecord:
     presentation_kind: str = "extension"
     presentation_category: str = "other"
     presentation_icon: str = ""
+    tts_resources: tuple[str, ...] = ()
     visuals: tuple[VisualCapability, ...] = ()
 
     @property
@@ -434,6 +436,7 @@ class PluginInventory:
         supported = api_version == PLUGIN_API_V4_VERSION
         try:
             visuals = visual_capabilities_from_manifest(raw.get("visuals", []), services["provides"], plugin_root=directory)
+            tts_resources = tts_resource_types(raw.get("ttsResources", []))
         except ValueError:
             return replace(
                 _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
@@ -462,6 +465,7 @@ class PluginInventory:
             reason_code="READY" if supported else "API_VERSION_UNSUPPORTED",
             supported=supported,
             runtime_eligible=supported,
+            tts_resources=tts_resources,
             presentation_kind=kind if kind in ("extension", "provider", "infrastructure") else "extension",
             presentation_category=category if category in ("model", "voice", "memory", "tools", "connectivity", "other") else "other",
             presentation_icon=icon if isinstance(icon, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", icon) else "",

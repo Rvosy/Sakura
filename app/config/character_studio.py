@@ -1627,6 +1627,8 @@ def _merge_character_manifest(
         manifest["extensions"] = extensions
     else:
         manifest.pop("extensions", None)
+    from app.config.plugin_requirements import requirements_for_manifest
+    manifest["pluginRequirements"] = requirements_for_manifest(manifest)
     return manifest
 
 

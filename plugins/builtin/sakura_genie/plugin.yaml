@@ -21,3 +21,8 @@ presentation:
   kind: provider
   category: voice
   icon: audio-lines
+
+# 可读取或转换的角色语音资源格式；不表示服务已启动。
+ttsResources:
+  - gpt-sovits.models@1
+  - genie.onnx@1

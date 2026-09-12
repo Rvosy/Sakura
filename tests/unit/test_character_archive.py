@@ -878,3 +878,48 @@ def _build_character_package(root: Path):
         encoding="utf-8",
     )
     return CharacterRegistry(root).get("demo")
+
+
+def test_package_requirements_roundtrip_and_voice_scope(tmp_path):
+    from app.config.plugin_requirements import GPT_SOVITS_MODELS
+    profile = _build_character_package(tmp_path / "source")
+    manifest_path = profile.package_dir / "character.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["pluginRequirements"] = [
+        {"kind": "tts", "type": GPT_SOVITS_MODELS, "plugins": [{"id": "future.converter"}]},
+        {"kind": "tts", "type": "future.voice@1", "plugins": []},
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    for suffix, exporter in [("char", export_character_archive), ("voice", export_character_voice_archive)]:
+        archive = tmp_path / f"package.{suffix}"
+        exporter(profile, archive)
+        if suffix == "char":
+            imported = import_character_archive(archive, tmp_path / "target")
+        else:
+            target = _build_character_package(tmp_path / "voice-target")
+            imported = import_character_voice_archive(archive, tmp_path / "voice-target", target.id)
+            with zipfile.ZipFile(archive) as zf:
+                assert {r["type"] for r in json.loads(zf.read("manifest.json"))["pluginRequirements"]} == {GPT_SOVITS_MODELS}
+        result = json.loads((imported.package_dir / "character.json").read_text())
+        requirement = next(item for item in result["pluginRequirements"] if item["type"] == GPT_SOVITS_MODELS)
+        assert "future.converter" in {item["id"] for item in requirement["plugins"]}
+        if suffix == "char":
+            assert "future.voice@1" in {item["type"] for item in result["pluginRequirements"]}
+
+
+def test_invalid_voice_requirement_does_not_replace_existing_resources(tmp_path):
+    target = _build_character_package(tmp_path / "target")
+    original = (target.package_dir / "character.json").read_text()
+    source = _build_voice_archive(tmp_path)
+    with zipfile.ZipFile(source) as zf:
+        files = {name: zf.read(name) for name in zf.namelist()}
+    manifest = json.loads(files["manifest.json"])
+    manifest["pluginRequirements"] = [{"kind": "visual", "type": "other@1"}]
+    files["manifest.json"] = json.dumps(manifest).encode()
+    with zipfile.ZipFile(source, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    with pytest.raises(CharacterArchiveError, match="插件需求"):
+        import_character_voice_archive(source, tmp_path / "target", target.id)
+    assert (target.package_dir / "character.json").read_text() == original
+    assert target.voice.gpt_model_path.read_bytes() == b"gpt"

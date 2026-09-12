@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Mapping
 
 from app.plugins.visuals import RESOURCE_TYPE_PATTERN, relative_resource_path, resolve_resource_path
+from app.config.plugin_requirements import parse_requirements
 
 
 @dataclass(frozen=True)
@@ -17,10 +18,11 @@ class CharacterVisualResource:
     root: str
     entry: str
     name: str = ""
+    plugin_requirements: tuple[dict, ...] = ()
 
     @classmethod
     def from_mapping(cls, value: object) -> "CharacterVisualResource":
-        if not isinstance(value, Mapping) or not {"id", "type", "root", "entry"} <= set(value) or set(value) - {"id", "type", "root", "entry", "name"}:
+        if not isinstance(value, Mapping) or not {"id", "type", "root", "entry"} <= set(value) or set(value) - {"id", "type", "root", "entry", "name", "pluginRequirements"}:
             raise ValueError("VISUAL_RESOURCE_INVALID")
         resource_id, resource_type = value.get("id"), value.get("type")
         if (
@@ -32,6 +34,9 @@ class CharacterVisualResource:
             or len(value.get("name", "")) > 80
         ):
             raise ValueError("VISUAL_RESOURCE_INVALID")
+        requirements = parse_requirements(value.get("pluginRequirements", []))
+        if any(item["kind"] != "visual" or item["type"] != resource_type for item in requirements):
+            raise ValueError("VISUAL_RESOURCE_INVALID")
         return cls(
             resource_id,
             resource_type,
@@ -40,10 +45,11 @@ class CharacterVisualResource:
             value.get("name", "").strip() or (
                 "立绘1" if resource_id == "portrait-default" and resource_type == "sakura.visual.portrait@1" else ""
             ),
+            tuple(requirements),
         )
 
-    def to_mapping(self) -> dict[str, str]:
-        return {"id": self.id, "type": self.type, "root": self.root, "entry": self.entry, **({"name": self.name} if self.name else {})}
+    def to_mapping(self) -> dict[str, object]:
+        return {"id": self.id, "type": self.type, "root": self.root, "entry": self.entry, **({"name": self.name} if self.name else {}), **({"pluginRequirements": parse_requirements(list(self.plugin_requirements))} if self.plugin_requirements else {})}
 
     def validate_paths(self, package_dir: Path, *, require_exists: bool = True) -> None:
         # Revalidate direct Python construction as well as deserialized input.

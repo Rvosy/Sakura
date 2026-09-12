@@ -1,3 +1,4 @@
+import { requirementMessage } from "../core/plugin-requirements.js";
 import { createVisualEditorHost } from "./visual-editor-host.js";
 import { createIcon } from "../core/icons.js";
 import {
@@ -693,6 +694,7 @@ async function flushDraftAutosave() {
     }
     renderCharacterOptions();
     baseline = savedSnapshot;
+    void refreshPluginRequirements();
     refreshDirty();
     if (hasUnsavedEditorChanges(savedSnapshot, editorSnapshot())) {
       scheduleDraftAutosave();
@@ -724,6 +726,28 @@ function setCurrentDoc(payload, draftCharacter = null, options = {}) {
   }
 }
 
+let requirementsRevision = 0;
+async function refreshPluginRequirements() {
+  const panel = document.getElementById("pluginRequirementsPanel");
+  const list = document.getElementById("pluginRequirementsList");
+  const workspaceId = currentWorkspaceId, revision = ++requirementsRevision;
+  if (!workspaceId) { panel.hidden = true; return; }
+  try {
+    const result = await invoke("studio_request", { method: "studio.plugin.requirements", params: { workspaceId } });
+    if (revision !== requirementsRevision || workspaceId !== currentWorkspaceId) return;
+    list.replaceChildren();
+    for (const item of result.items) {
+      const row = document.createElement("li"); row.textContent = requirementMessage(item); list.append(row);
+    }
+    panel.hidden = !result.items.length;
+  } catch (error) {
+    if (revision !== requirementsRevision || workspaceId !== currentWorkspaceId) return;
+    const row = document.createElement("li"); row.textContent = "插件需求读取失败，请重新打开角色。";
+    list.replaceChildren(row); panel.hidden = false;
+    runtimeDiagnostics.reportError(error, { command: "studio.plugin.requirements", code: "PLUGIN_REQUIREMENTS_FAILED" });
+  }
+}
+
 function renderEditor({ openVisuals = true } = {}) {
   renderingEditor = true;
   const doc = currentDoc || {};
@@ -744,6 +768,7 @@ function renderEditor({ openVisuals = true } = {}) {
   renderTheme(theme);
   refreshControls();
   renderingEditor = false;
+  void refreshPluginRequirements();
   if (openVisuals) return renderVisualResources({ flush: false });
 }
 
@@ -984,6 +1009,8 @@ async function openVisualEditor(resource, revision = visualEditorRevision, { flu
       text.textContent = inactive[0] === "VISUAL_PROVIDER_MISSING"
         ? "尚未安装支持此形态的插件。资源会随角色保存，安装并启用插件后可编辑和显示。"
         : "所需插件尚未启用。资源会随角色保存，启用插件后可编辑和显示。";
+      const hints = (resource.pluginRequirements || []).flatMap(item => item.plugins || []);
+      if (inactive[0] === "VISUAL_PROVIDER_MISSING" && hints.length) text.textContent += " 可安装：" + hints.map(item => item.name || item.id).join(" 或 ") + "。";
       fields.expressionList.append(text);
       refreshControls();
       return;

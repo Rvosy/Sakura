@@ -33,6 +33,11 @@ updated: 2026-09-12
 [语音合同](../specs/runtime-v2/WP-4-05-tts-playback-audio-device-gate.md)和
 [工坊合同](../specs/runtime-v2/character-studio.md)。
 
+角色包的插件需求按资源格式声明，插件 ID 只作为可选安装建议。插件通过静态 `ttsResources` 声明可读取或
+转换的格式，宿主按能力匹配。这样 GPT-SoVITS 原始模型可由 Genie 转换使用，不会把资源来源误当成唯一引擎。
+需求检测不启动转换、不判断服务就绪，也不修改本机选择；后续多 TTS 可增加资源类型，无需在宿主维护提供者替代名单。
+详见[角色包插件需求](../specs/runtime-v2/visual-plugin-boundary.md#角色包插件需求)。
+
 ## 影响
 
 已有用户升级后保留明确的语音选择；新导入角色由用户在语音设置中选择引擎并启用。

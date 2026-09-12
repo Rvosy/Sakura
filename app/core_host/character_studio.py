@@ -26,6 +26,7 @@ from app.plugins.runtime_v4 import PluginRuntimeError
 CHARACTER_STUDIO_REQUEST_NAMES = frozenset(
     {
         "studio.bootstrap",
+        "studio.plugin.requirements",
         "studio.character.presentation",
         "studio.visual.catalog",
         "studio.visual.previews",
@@ -208,6 +209,19 @@ class CharacterStudioBoundary:
 
     def _dispatch(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         current = self._current_character_id()
+        if name == "studio.plugin.requirements":
+            from app.config.character_studio import CharacterStudioDoc, _merge_character_manifest
+            from app.config.plugin_requirements import requirements_for_manifest, check_requirements
+            self._keys(payload, required={"workspaceId"})
+            workspace = self._text(payload["workspaceId"])
+            with self._mutation_lock:
+                state = self._service._require_state(workspace)
+                doc = CharacterStudioDoc.from_payload(state["doc"])
+                manifest = _merge_character_manifest(self._service._workspace_package(workspace), doc)
+            application = self._plugin_application_provider()
+            if application is None:
+                raise CharacterStudioError("STUDIO_CORE_UNAVAILABLE", "插件状态暂不可用。")
+            return {"schemaVersion": 1, "items": check_requirements(requirements_for_manifest(manifest), application.inventory().records)}
         if name.startswith("studio.visual."):
             return self._visual_request(name, payload)
         if name == "studio.character.presentation":

@@ -166,6 +166,12 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
     initial_message = _optional_text(raw_data, "initial_message", "……起動した。用事があるなら、呼んで。")
     card_path = _resolve_required_file(package_dir, _required_text(raw_data, "card", manifest_path), "角色卡")
 
+    from app.config.plugin_requirements import parse_requirements
+    try:
+        parse_requirements(raw_data.get("pluginRequirements", []))
+    except ValueError as error:
+        raise CharacterConfigError("角色包的插件需求声明无效。") from error
+
     try:
         visual_resources, default_visual_id = character_visual_resources(raw_data, package_dir)
     except ValueError as error:

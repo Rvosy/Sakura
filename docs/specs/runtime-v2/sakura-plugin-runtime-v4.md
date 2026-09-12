@@ -57,6 +57,9 @@ scope；旧 generation 或已退出插件的身份立即失效。
 Host Service、应用配置和撤销 scope。不得出现 `call_tts()`、`register_memory()`、Provider ID 白名单或其他
 领域分支。
 
+插件清单还可声明静态 `ttsResources`，供角色包导入和工坊查询兼容格式。它不进入服务启动依赖，
+不会改变引擎选择；字段与状态见[角色包插件需求](visual-plugin-boundary.md#角色包插件需求)。
+
 ## 3. 插件包、Python 与 dependency root
 
 v4 插件至少包含 `plugin.yaml` 和 Python entry，manifest 使用 `api: 4`。`provides/requires` 继续只表达

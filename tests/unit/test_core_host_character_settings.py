@@ -332,3 +332,25 @@ def test_select_save_failure_keeps_existing_character_config(
     assert result["ok"] is False
     assert result["error"]["code"] == "CHARACTER_CONFIG_SAVE_FAILED"
     assert config.read_bytes() == before
+
+
+def test_import_responses_report_missing_plugins_and_genie_compatibility(tmp_path):
+    import shutil
+    from types import SimpleNamespace
+    from app.plugins.inventory import PluginInventory
+    inventory = PluginInventory(tmp_path)
+    application = SimpleNamespace(inventory=inventory.scan)
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path, plugin_application_provider=lambda: application)
+    imported = boundary.import_archive(str(_archive(tmp_path / "fixture.char")))
+    assert imported["pluginRequirements"][0]["reasonCode"] == "PLUGIN_MISSING"
+    voice = _voice_archive(tmp_path / "fixture.voice")
+    result = boundary.import_voice_archive(str(voice), "fixture")
+    assert result["pluginRequirements"][0]["reasonCode"] == "PLUGIN_MISSING"
+    plugin = tmp_path / "plugins/builtin/genie"
+    plugin.mkdir(parents=True)
+    shutil.copyfile(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_genie/plugin.yaml", plugin / "plugin.yaml")
+    (plugin / "plugin.py").write_text('raise AssertionError("no synthesis during import")')
+    result = boundary.import_voice_archive(str(voice), "fixture")
+    assert result["pluginRequirements"][0]["reasonCode"] == "COMPATIBLE"
+    manifest = json.loads((tmp_path / "characters/fixture/character.json").read_text())
+    assert "sakura.tts" not in manifest["extensions"]
