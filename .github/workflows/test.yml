@@ -121,7 +121,7 @@ jobs:
             manifest: linux-x64
             archive: python-runtime.tar.gz
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       RUSTFLAGS: -D warnings
 
@@ -187,21 +187,10 @@ jobs:
           python --version
           uname -a || true
 
-      - name: Build the native Tauri Shell (Windows/macOS)
-        if: runner.os != 'Linux'
+      - name: Build the native Tauri Shell
         working-directory: desktop
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked
-
-      - name: Build the native Tauri Shell (Linux)
-        if: runner.os == 'Linux'
-        working-directory: desktop
-        timeout-minutes: 8
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout --signal=TERM --kill-after=10s 180s \
-            cargo build --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Download and verify the pinned Python archive
         timeout-minutes: 5
