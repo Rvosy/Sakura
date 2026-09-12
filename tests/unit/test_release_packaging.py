@@ -455,7 +455,7 @@ def _minimal_stage(root: Path, target: str) -> Path:
         "sakura_genie": "sakura.tts.genie",
         "sakura_gpt_sovits": "sakura.tts.gpt-sovits",
     }
-    dependency_plugins = {"sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice"}
+    dependency_plugins = {"sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice", "sakura_web"}
     for plugin, plugin_id in plugin_ids.items():
         directory = stage / "plugins/builtin" / plugin
         directory.mkdir()
