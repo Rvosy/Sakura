@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-12
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -28,7 +28,11 @@ updated: 2026-09-09
   合成仍可再次准备并只降级字幕。Custom Endpoint 启动预热不得连接、启动、接管或探测外部服务。设置页读取
   状态不得触发服务启动、旧进程清理或全 Provider 探测。
 - Provider 列表来自 `sakura.tts` Hub，Core、Rust 和 Runtime v2 Voice 页面不得枚举具体实现 ID。角色级启用开关
-  与已选 Provider 分别保存；关闭时保留选择和 Provider 配置。
+  与已选 Provider 按角色 ID 保存在应用用户根 `data/plugins/sakura.tts/config.json` 的 `selections` 映射中，
+  每项为 `{enabled, provider}`；关闭时保留选择和 Provider 配置，不修改角色包。
+  Hub 的 `status`、`configure`、预热和合成只读取这份应用设置。未设置时禁用且不选择引擎；
+  旧角色包 `extensions.sakura.tts` 的启用与选择不再读取，不迁移或回退。角色导入、导出、工坊保存只处理资源，
+  不携带运行选择。见 [ADR-0048](../../adr/0048-voice-resources-and-local-selection.md)。
 - `sakura.tts` Hub、当前选中的 Provider 插件或角色级 TTS 开关被明确关闭时，Core 必须在段落授权阶段把
   该段投影为 `suppressTts=true`，WebView 直接走字幕且不得发起合成；插件仍启用但 Worker、Service 或
   Provider 异常时保留故障诊断，不得把运行故障伪装成用户关闭。
@@ -90,7 +94,7 @@ Settings section；角色级启用必须禁用，引擎选择仅用于切换全�
 Managed Genie 的模型路径、参考表和语言按字段读取：`sakura.tts.genie` 显式配置优先，其次是
 `sakura.tts.gpt-sovits`，最后兼容旧 `voice`。继承值只在准备语音时读取，不复制为 Genie 的持久覆盖值；
 已有 Genie 字段（包括显式空值）和其他插件配置保持不变。未配置参考表或 ONNX 目录时，分别尝试角色包内
-`voice/refs/ref.txt` 和 `voice/onnx`。角色包迁移补齐缺失扩展，已有 Hub 的启用状态和 Provider 选择不变。
+`voice/refs/ref.txt` 和 `voice/onnx`。角色包导入只补齐缺失的资源扩展，不启用语音或选择引擎。
 Studio 更新共享源权重后，Genie 下次预热或合成读取新路径；显式 Genie 路径仍由用户管理。
 
 预热与合成使用同一模型准备流程：优先复用含非空 ONNX 文件的目录；目录缺失、为空或只有零字节模型时，

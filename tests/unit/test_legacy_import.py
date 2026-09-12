@@ -1030,7 +1030,7 @@ servers:
     assert [segment["text"] for segment in entries[2].payload["segments"]] == ["a", "b"]
     assert entries[-1].origin == "proactive"
     manifest = json.loads((target / "characters/Sakura/character.json").read_text(encoding="utf-8"))
-    assert manifest["extensions"]["sakura.tts"]["provider"] == "sakura.tts.gpt-sovits"
+    assert "sakura.tts" not in manifest["extensions"]
     from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
     genie = manifest["extensions"]["sakura.tts.genie"]
     assert _effective_voice_extension(manifest, genie)["toneRefs"] == "voice/refs/ref.txt"
@@ -2201,10 +2201,7 @@ def test_genie_configuration_and_onnx_models_map_to_current_character_schema(
         "workDir": str(target / "tts/cpu"),
     }
     manifest = json.loads((target / "characters/Sakura/character.json").read_text(encoding="utf-8"))
-    assert manifest["extensions"]["sakura.tts"] == {
-        "enabled": True,
-        "provider": "sakura.tts.genie",
-    }
+    assert "sakura.tts" not in manifest["extensions"]
     assert manifest["extensions"]["sakura.tts.genie"]["onnxModelDir"] == "voice/onnx"
     assert manifest["extensions"]["sakura.tts.gpt-sovits"]["toneRefs"] == "voice/refs/ref.txt"
     assert (target / "characters/Sakura/voice/onnx/model.onnx").read_bytes() == b"onnx"

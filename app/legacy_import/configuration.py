@@ -170,6 +170,8 @@ def add_character_extensions(
         if not character_id:
             raise LegacyImportError("LEGACY_CHARACTER_MANIFEST_INVALID", "staging", relative)
         ids.append(character_id)
+        if isinstance(value.get("extensions"), dict):
+            value["extensions"].pop("sakura.tts", None)
         theme = value.get("theme")
         if isinstance(theme, dict) and theme.get("source") not in {None, "package"}:
             # 0.9.x used internal provenance labels such as ``compat_default``.
@@ -183,20 +185,13 @@ def add_character_extensions(
                 extensions = value.setdefault("extensions", {})
                 if not isinstance(extensions, dict):
                     raise LegacyImportError("LEGACY_CHARACTER_EXTENSION_INVALID", "staging", relative)
-                hub = extensions.setdefault("sakura.tts", {})
                 gpt_provider = extensions.setdefault("sakura.tts.gpt-sovits", {})
                 genie_provider = extensions.setdefault("sakura.tts.genie", {})
                 if not all(
                     isinstance(item, dict)
-                    for item in (hub, gpt_provider, genie_provider)
+                    for item in (gpt_provider, genie_provider)
                 ):
                     raise LegacyImportError("LEGACY_CHARACTER_EXTENSION_INVALID", "staging", relative)
-                selected = (
-                    "sakura.tts.genie"
-                    if (staged / "data/plugins/sakura.tts.genie/config.json").is_file()
-                    else "sakura.tts.gpt-sovits"
-                )
-                hub.update({"enabled": True, "provider": selected})
                 common = {
                     "toneRefs": tone_refs,
                     "refLang": str(voice.get("ref_lang") or "ja"),

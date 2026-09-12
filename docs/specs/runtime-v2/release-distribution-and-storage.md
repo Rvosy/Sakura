@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-01
+updated: 2026-09-12
 ---
 
 # Runtime v2 发行与存储合同
@@ -50,7 +50,8 @@ arm64 wheel，首版最低系统版本冻结为 macOS 14.0。
 不可寻址目录或覆盖已有角色。Core 启动时会把历史遗留的 Windows 尾部点/空格角色目录改名到安全目录；若逻辑
 ID 已被其他可访问角色占用，则为遗留副本分配带序号的新 ID，清单写回保留备份。导入时主题颜色按包内配置
 保留，`theme.source` 仅为来源元数据并统一规范化为当前 `package`，不得因旧版内部来源标记拒绝角色。只有旧式
-`voice`、没有插件 `extensions` 的角色按旧版语义补齐并启用 GPT-SoVITS 兼容扩展；已有扩展始终原样保留。
+`voice`、没有插件资源 `extensions` 的角色补齐语音资源扩展；已有资源字段保留。此过程不启用语音或选择引擎，
+运行选择仅保存在应用用户根的 `data/plugins/sakura.tts/config.json` 中。
 不存在默认 `sakura` 角色、首角色 fallback 或默认角色 prompt。
 
 主程序自带默认浅蓝主题。当前角色携带主题时覆盖它，否则所有窗口都使用主程序默认主题。

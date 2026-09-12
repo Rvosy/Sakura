@@ -333,12 +333,6 @@
   transition: opacity var(--motion-base) var(--ease);
 }
 
-.voice-model-fields.is-disabled,
-.settings-page.is-voice-disabled .reference-audio-list,
-.settings-page.is-voice-disabled .reference-audio-intro {
-  opacity: 0.58;
-}
-
 .reference-audio-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

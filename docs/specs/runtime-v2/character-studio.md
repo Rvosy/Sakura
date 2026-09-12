@@ -92,18 +92,22 @@ studio.visual.export
 
 Managed Genie 未显式配置的共享语音字段在运行时继承 GPT-SoVITS extension，再兼容旧 `voice`；Studio
 不向 Genie 复制模型路径。这样源权重编辑可在下一次 Genie 预热或合成时生效，同时保留用户的 Genie 覆盖值。
-独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，保留当前引擎选择、Genie 覆盖值与未知字段。
+独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，保留 Genie 覆盖值与未知字段。
 
 Studio 只拥有表单明确编辑的 manifest 字段。`renderer`、`backchannel`、未知顶层或嵌套字段和其他插件
-extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Runtime v2 extension，保存时同步
-`voice`、`sakura.tts` 和 `sakura.tts.gpt-sovits`。Genie 等非 Studio 管理的语音 Provider 不能因为普通
-主题保存而被切换或禁用。
+extension 必须原样保留，已废弃的 `sakura.tts` 运行选择除外。语音资源读取兼容 `voice` 与资源 extension，
+保存时同步 `voice` 和 `sakura.tts.gpt-sovits`，不写入引擎选择或启用状态。
+
+工坊不提供语音启用开关。模型、参考音频、文本、标签和语言始终可以编辑；允许先保存模型，稍后再补参考语音。
+已有参考语音行必须完整，缺少合成必需资源时由实际语音请求报错。外部语音开关或引擎选择不影响资源展示、编辑、
+保存和导出；关闭语音不删除资源配置或引用。启用状态和引擎选择只由应用语音设置管理，见
+[语音合同](WP-4-05-tts-playback-audio-device-gate.md)与 [ADR-0048](../../adr/0048-voice-resources-and-local-selection.md)。
 
 “语音模型”页独立列出当前编辑副本中可读取元数据的 `.ckpt`、`.pth` 和 `.onnx` 文件，显示文件名、大小及
-角色包内相对路径。列表不依赖 GPT-SoVITS 是否启用，也不要求文件已经登记到 Provider 配置；使用 Genie
+角色包内相对路径。列表不依赖语音是否启用，也不要求文件已经登记到 Provider 配置；使用 Genie
 或关闭语音时仍可查看。打开、草稿保存和发布响应通过只读 `modelFiles` 返回 `relativePath`、`byteLength`，
 切换角色、导入模型和清理草稿资源后同步刷新。枚举只读取文件元数据，不读取模型内容、不跟随符号链接或
-目录联接，也不把模型列表写入角色配置。下方编辑区明确标为 GPT-SoVITS 配置，查看文件不会切换 Provider。
+目录联接，也不把模型列表写入角色配置。下方编辑区为语音资源配置，查看和编辑文件不会切换 Provider。
 
 ## 表现编辑与组件
 

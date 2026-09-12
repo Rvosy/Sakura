@@ -111,6 +111,25 @@ def test_character_studio_voice_assets_round_trip_through_the_draft(tmp_path: Pa
     assert preview["data_url"] == "data:audio/wav;base64,YXVkaW8="
 
 
+def test_studio_can_save_models_without_reference_audio_or_enabling_speech(tmp_path: Path) -> None:
+    service = CharacterStudioService(tmp_path)
+    package = _write_character(tmp_path)
+    opened = service.open_character("sakura")
+    model_source = tmp_path / "model.ckpt"
+    model_source.write_bytes(b"model")
+    imported = service.import_voice_model(opened["workspace_id"], model_source, model_type="gpt")
+    doc = opened["doc"]
+    doc["voice"] = {"gpt_model": imported["relative_path"], "ref_lang": "ja", "text_lang": "ja"}
+    doc["reference_audios"] = []
+    saved = service.save_character(doc, opened["workspace_id"])
+    reopened = service.open_character("sakura")
+    assert reopened["doc"]["voice"]["gpt_model"] == imported["relative_path"]
+    assert reopened["doc"]["reference_audios"] == []
+    manifest = json.loads((package / "character.json").read_text())
+    assert "sakura.tts" not in manifest["extensions"]
+    assert (package / imported["relative_path"]).read_bytes() == b"model"
+
+
 def test_character_studio_uses_portable_directories_for_windows_trailing_dot_id(
     tmp_path: Path,
 ) -> None:
@@ -631,7 +650,8 @@ def test_open_rejects_symlink_before_copying_formal_role(
     assert not service._draft_root("sakura").exists()
 
 
-def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) -> None:
+@pytest.mark.parametrize("old_selection", [{"enabled": False, "provider": "sakura.tts.gpt-sovits"}, {"enabled": True, "provider": "sakura.tts.genie"}])
+def test_studio_reads_and_updates_voice_resources_independent_of_old_selection(tmp_path: Path, old_selection) -> None:
     from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
     package = _write_character(tmp_path)
     (package / "voice" / "models").mkdir(parents=True)
@@ -647,7 +667,7 @@ def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) ->
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["reply"] = {"futureMode": "keep"}
     manifest["extensions"] = {
-        "sakura.tts": {"enabled": True, "provider": "sakura.tts.gpt-sovits"},
+        "sakura.tts": old_selection,
         "sakura.tts.gpt-sovits": {
             "toneRefs": "voice/refs/ref.txt",
             "gptModel": "voice/models/old.ckpt",
@@ -674,7 +694,7 @@ def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) ->
     )
 
     assert saved["reply"] == {"futureMode": "keep", "tones": ["中性"]}
-    assert saved["extensions"]["sakura.tts"]["enabled"] is True
+    assert "sakura.tts" not in saved["extensions"]
     assert "gptModel" not in saved["extensions"]["sakura.tts.gpt-sovits"]
     assert saved["extensions"]["sakura.tts.gpt-sovits"]["futureProviderField"] == 7
     assert saved["extensions"]["com.example.keep"] == {"value": True}
@@ -685,17 +705,6 @@ def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) ->
     assert effective["sovitsModel"] == "voice/models/old.pth"
     assert effective["refLang"] == "zh"
 
-    doc["voice"] = None
-    service.save_draft(doc, opened["workspace_id"])
-    disabled = json.loads(
-        (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
-    )
-    assert "voice" not in disabled
-    assert disabled["extensions"]["sakura.tts"]["enabled"] is False
-    assert disabled["extensions"]["sakura.tts.gpt-sovits"] == {
-        "futureProviderField": 7,
-    }
-    assert disabled["extensions"]["com.example.keep"] == {"value": True}
 
 
 def test_studio_preserves_future_reply_fields_when_tones_are_absent(tmp_path: Path) -> None:
@@ -738,7 +747,7 @@ def test_studio_theme_save_preserves_an_unmanaged_voice_provider(tmp_path: Path)
         (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
     )
 
-    assert saved["extensions"] == manifest["extensions"]
+    assert saved["extensions"] == {key: value for key, value in manifest["extensions"].items() if key != "sakura.tts"}
 
 
 def test_legacy_raw_and_new_drafts_migrate_once(tmp_path: Path) -> None:
