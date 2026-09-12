@@ -1337,7 +1337,7 @@ function handleCoreEvent(event) {
     composerToolRegistry.invalidate();
     rendererHost.freeze("generation_changed");
   }
-  if (event.type === "lifecycle" && event.generationId === characterPresentation.generationId && event.revision !== before.revision) void rebindCoreGeneration(event.generationId, { refresh: true });
+  if (event.type === "lifecycle" && isChatReadyLifecycle(event.status) && event.generationId === characterPresentation.generationId && event.revision !== before.revision) void rebindCoreGeneration(event.generationId, { refresh: true });
   const result = presentation.reduce(event);
   if (!result.applied) return;
   if (event.type === "chat.started") rendererHost.begin(event.operationId);
@@ -1634,12 +1634,12 @@ let coreRebindTarget = "";
 
 async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
   if (!refresh && generationId === characterPresentation.generationId) return true;
-  if (disposed || !generationId || coreRebindTarget) return false;
+  if (disposed || !generationId || coreRebindTarget === generationId) return false;
   const revision = ++coreRebindRevision;
   coreRebindTarget = generationId;
   try {
     const next = await loadCurrentCharacterPresentation({ invoke, expectedGenerationId: generationId });
-    if (disposed || revision !== coreRebindRevision) return false;
+    if (!next || disposed || revision !== coreRebindRevision) return false;
     if (next.generationId === characterPresentation.generationId && next.characterId === characterPresentation.characterId
       && next.visual?.bindingId === characterPresentation.visual?.bindingId && next.visualReasonCode === characterPresentation.visualReasonCode
       && (!next.visual || rendererHost.current()?.bindingId === next.visual.bindingId)) return true;
