@@ -127,7 +127,14 @@ class CharacterStudioDoc:
             ),
         }
         if self.visuals is not None:
-            manifest.pop("portrait", None)
+            # A resumed pre-visuals draft still owns the pending inline portrait
+            # until the plugin editor has written a separate resource entry.
+            if not any(
+                item.get("type") == "sakura.visual.portrait@1"
+                and item.get("root") == "." and item.get("entry") == "character.json"
+                for item in self.visuals.get("resources", [])
+            ):
+                manifest.pop("portrait", None)
             manifest["visuals"] = json.loads(json.dumps(self.visuals, ensure_ascii=False, allow_nan=False))
         if self.initial_message.strip():
             manifest["initial_message"] = self.initial_message.strip()
@@ -1592,7 +1599,7 @@ def _merge_character_manifest(
 
     if "visuals" in generated:
         manifest["visuals"] = generated["visuals"]
-    else:
+    if "portrait" in generated:
         portrait = dict(manifest.get("portrait")) if isinstance(manifest.get("portrait"), dict) else {}
         portrait.update(generated["portrait"])
         manifest["portrait"] = portrait
@@ -1620,6 +1627,8 @@ def _merge_character_manifest(
         manifest["extensions"] = extensions
     else:
         manifest.pop("extensions", None)
+    from app.config.plugin_requirements import requirements_for_manifest
+    manifest["pluginRequirements"] = requirements_for_manifest(manifest)
     return manifest
 
 

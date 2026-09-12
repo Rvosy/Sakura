@@ -110,7 +110,9 @@ def export_components(root: Path, output: Path):
             data = description['rendererData']
             files = {config['skeleton'], config['atlas'], *data['textures'].values()}
             projection = {'entry': 'spine-resource.json', 'data': data['config'],
-                          'assets': {path: resource.root + '/' + path for path in files}}
+                          'assets': {path: resource.root + '/' + path for path in files},
+                          'pluginRequirements': [{'kind': 'visual', 'type': 'spine.json@1',
+                                                  'plugins': [{'id': 'sakura.visual.spine', 'name': 'Spine'}]}]}
             export_visual_archive(root, resource, projection, staging / f'spine-{index}.visual')
         staging.rename(output)
     return sorted(output.glob('*.visual'))

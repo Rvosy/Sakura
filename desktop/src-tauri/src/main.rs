@@ -4523,12 +4523,43 @@ fn validate_character_export_receipt(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_character_settings_change(value: Value) -> Result<(Value, String), String> {
+fn validate_character_settings_change(value: Value) -> Result<(Value, String, Value), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
     let expected = ["schemaVersion", "snapshot", "changePlan"];
-    if object.len() != expected.len()
+    let requirements = object
+        .get("pluginRequirements")
+        .cloned()
+        .unwrap_or(json!([]));
+    if !requirements.as_array().is_some_and(|items| {
+        items.len() <= 64
+            && items.iter().all(|item| {
+                matches!(
+                    item.get("kind").and_then(Value::as_str),
+                    Some("visual" | "tts")
+                ) && item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                    && matches!(
+                        item.get("reasonCode").and_then(Value::as_str),
+                        Some(
+                            "COMPATIBLE"
+                                | "PLUGIN_DISABLED"
+                                | "PLUGIN_INCOMPATIBLE"
+                                | "PLUGIN_MISSING"
+                        )
+                    )
+                    && item.get("plugins").is_some_and(Value::is_array)
+                    && item.get("candidates").is_some_and(Value::is_array)
+            })
+    }) {
+        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
+    }
+    if object
+        .keys()
+        .any(|key| !expected.contains(&key.as_str()) && key != "pluginRequirements")
         || expected.iter().any(|key| !object.contains_key(*key))
         || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
     {
@@ -4550,7 +4581,7 @@ fn validate_character_settings_change(value: Value) -> Result<(Value, String), S
         })
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?
         .to_string();
-    Ok((snapshot, change_plan))
+    Ok((snapshot, change_plan, requirements))
 }
 
 fn character_restart_target(snapshot: &Value, change_plan: &str) -> Result<Option<String>, String> {
@@ -4749,6 +4780,7 @@ async fn character_settings_change_request(
         String,
         u64,
         Option<String>,
+        Value,
     ),
     String,
 > {
@@ -4765,7 +4797,7 @@ async fn character_settings_change_request(
     let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
     let change = settings_response_payload(response)?;
-    let (snapshot, change_plan) = validate_character_settings_change(change)?;
+    let (snapshot, change_plan, requirements) = validate_character_settings_change(change)?;
     // Resolve every restart identity before the caller can enqueue any
     // lifecycle side effect.
     let target_character_id = character_restart_target(&snapshot, &change_plan)?;
@@ -4776,6 +4808,7 @@ async fn character_settings_change_request(
         core_generation_id,
         core_generation_number,
         target_character_id,
+        requirements,
     ))
 }
 
@@ -5004,6 +5037,7 @@ async fn settings_character_import(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
+        requirements,
     ) = character_settings_change_request(
         &window,
         &shell,
@@ -5013,7 +5047,7 @@ async fn settings_character_import(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    finish_character_settings_change(
+    let mut receipt = finish_character_settings_change(
         app_handle,
         &audio_state,
         snapshot,
@@ -5021,7 +5055,9 @@ async fn settings_character_import(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
-    )
+    )?;
+    receipt["pluginRequirements"] = requirements;
+    Ok(receipt)
 }
 
 #[tauri::command]
@@ -5041,6 +5077,7 @@ async fn settings_character_import_voice(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
+        requirements,
     ) = character_settings_change_request(
         &window,
         &shell,
@@ -5050,7 +5087,7 @@ async fn settings_character_import_voice(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    finish_character_settings_change(
+    let mut receipt = finish_character_settings_change(
         app_handle,
         &audio_state,
         snapshot,
@@ -5058,7 +5095,9 @@ async fn settings_character_import_voice(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
-    )
+    )?;
+    receipt["pluginRequirements"] = requirements;
+    Ok(receipt)
 }
 
 #[tauri::command]
@@ -5104,6 +5143,7 @@ async fn settings_character_select(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
+        _requirements,
     ) = character_settings_change_request(
         &window,
         &shell,
@@ -6692,6 +6732,7 @@ fn record_runtime_diagnostics(
 fn studio_method_name(method: &str) -> Result<&'static str, String> {
     match method {
         "studio.bootstrap" => Ok("studio.bootstrap"),
+        "studio.plugin.requirements" => Ok("studio.plugin.requirements"),
         "studio.visual.catalog" => Ok("studio.visual.catalog"),
         "studio.visual.previews" => Ok("studio.visual.previews"),
         "studio.visual.open" => Ok("studio.visual.open"),
@@ -8701,15 +8742,30 @@ mod tests {
                 "hasExportableVoice": false,
             }],
         });
-        let (validated, plan) = validate_character_settings_change(json!({
+        let (validated, plan, requirements) = validate_character_settings_change(json!({
             "schemaVersion": 1,
             "snapshot": snapshot.clone(),
             "changePlan": "core_restart_required",
         }))
         .unwrap();
         assert_eq!(validated, snapshot);
+        assert_eq!(requirements, json!([]));
         assert_eq!(plan, "core_restart_required");
-        let (hot_snapshot, hot_plan) = validate_character_settings_change(json!({
+        let declared = json!([{
+            "kind": "tts", "type": "gpt-sovits.models@1", "plugins": [],
+            "reasonCode": "COMPATIBLE", "candidates": [{"id": "sakura.tts.genie", "name": "Genie", "enabled": true, "compatible": true, "installId": "bundled:genie"}]
+        }]);
+        let (_, _, imported_requirements) = validate_character_settings_change(json!({
+            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
+            "pluginRequirements": declared.clone(),
+        }))
+        .unwrap();
+        assert_eq!(imported_requirements, declared);
+        assert!(validate_character_settings_change(json!({
+            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
+            "pluginRequirements": [{"kind": "tts", "type": "gpt-sovits.models@1", "reasonCode": "READY"}],
+        })).is_err());
+        let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
             "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "visual_rebind",
         }))
         .unwrap();

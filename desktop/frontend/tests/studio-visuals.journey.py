@@ -172,7 +172,7 @@ def run():
                 assert set(portrait_data["expressions"]) == {"平静", "开心"}
                 source = root / "missing.visual"
                 with zipfile.ZipFile(source, "w") as archive:
-                    archive.writestr("manifest.json", json.dumps({"format": "sakura.character.archive", "version": 2, "kind": "resource", "resource": {"type": "fixture.missing@1", "entry": "resource.json", "name": "缺少插件的形态"}}))
+                    archive.writestr("manifest.json", json.dumps({"format": "sakura.character.archive", "version": 2, "kind": "resource", "resource": {"type": "fixture.missing@1", "entry": "resource.json", "name": "缺少插件的形态", "pluginRequirements": [{"kind": "visual", "type": "fixture.missing@1", "plugins": [{"id": "fixture.visual", "name": "示例形态插件"}]}]}}))
                     archive.writestr("resource/resource.json", '{"private":true}')
                 page.get_by_role("button", name="导入形态", exact=True).click()
                 page.locator(".form-card").filter(has_text="缺少插件的形态").click()
@@ -184,6 +184,10 @@ def run():
                 missing = next(item for item in saved["visuals"]["resources"] if item["type"] == "fixture.missing@1")
                 assert saved["visuals"]["default"] == missing["id"]
                 assert json.loads((package / missing["root"] / missing["entry"]).read_text()) == {"private": True}
+                page.get_by_role("button", name="基础信息", exact=True).click()
+                expect(page.locator("#pluginRequirementsList")).to_contain_text("示例形态插件")
+                expect(page.locator("#pluginRequirementsList")).to_contain_text("尚未安装兼容插件")
+                assert saved["pluginRequirements"][-1]["plugins"][0]["id"] == "fixture.visual"
                 assert not errors, errors
                 browser.close()
                 print("PASS: Studio cards/name/default/add -> portrait preview/edit/import -> save/reopen; visual QA at 1274, 820 and 680 px")

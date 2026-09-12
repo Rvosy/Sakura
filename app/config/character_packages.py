@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,7 +129,8 @@ def repair_character_packages(
         repairs.extend(_repair_windows_directory_names(characters_dir, issue_sink))
 
     moved_targets = {repair.target_name for repair in repairs}
-    for entry in _package_entries(characters_dir):
+    entries = _package_entries(characters_dir)
+    for entry in entries:
         if entry.data is None:
             continue
         changed = ensure_legacy_voice_extensions(entry.data, entry.path)
@@ -160,7 +162,50 @@ def repair_character_packages(
                 "reason_code": "CHARACTER_LEGACY_VOICE_UPGRADED",
             },
         )
+    _migrate_legacy_tts_selections(Path(base_dir), entries, issue_sink)
     return tuple(repairs)
+
+
+def _migrate_legacy_tts_selections(
+    base_dir: Path, entries: list[_PackageEntry], issue_sink: IssueSink,
+) -> None:
+    """Fill missing local choices before plugins and Studio can consume them."""
+    from app.config.character_loader import CharacterRegistry
+
+    choices = {}
+    for entry in entries:
+        extensions = entry.data.get("extensions") if entry.data else None
+        legacy = extensions.get("sakura.tts") if isinstance(extensions, dict) else None
+        if not isinstance(legacy, dict) or not isinstance(legacy.get("enabled"), bool):
+            continue
+        provider = legacy.get("provider")
+        if provider is not None and (not isinstance(provider, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}", provider)):
+            continue
+        if legacy["enabled"] and provider is None:
+            continue
+        choices[entry.manifest] = {"enabled": legacy["enabled"], "provider": provider}
+    if not choices:
+        return
+
+    target = base_dir / "data/plugins/sakura.tts/config.json"
+    try:
+        config = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+        if not isinstance(config, dict) or not isinstance(config.get("selections", {}), dict):
+            raise ValueError("TTS_SELECTION_CONFIG_INVALID")
+        selections = dict(config.get("selections", {}))
+        # Match the same valid role and duplicate-ID winner as normal startup.
+        for profile in CharacterRegistry(base_dir, issue_sink=issue_sink).all():
+            choice = choices.get(profile.package_dir / "character.json")
+            if choice is not None and profile.id not in selections:
+                selections[profile.id] = choice
+        if selections == config.get("selections", {}):
+            return
+        atomic_write_text(target, json.dumps({**config, "selections": selections}, ensure_ascii=False, indent=2, allow_nan=False))
+    except (OSError, UnicodeError, ValueError) as error:
+        # Keep both old manifests and the current local config for a later startup.
+        _report_repair_failure(issue_sink, "sakura.tts", error, "tts_selection")
+        return
+    issue_sink("Character", "已将旧角色语音选择保存到本机配置", {"reason_code": "CHARACTER_LEGACY_TTS_SELECTION_MIGRATED"})
 
 
 def _repair_windows_directory_names(

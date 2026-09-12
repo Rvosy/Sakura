@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.config.character_archive import ARCHIVE_FORMAT, CharacterArchiveError, _safe_archive_path, _is_zip_symlink, _validate_zip_resource_limits, _read_manifest
 from app.config.character_resources import CharacterVisualResource
+from app.config.plugin_requirements import parse_requirements
 from app.plugins.visuals import relative_resource_path, resolve_resource_path
 
 
@@ -35,6 +36,11 @@ def export_visual_archive(package: Path, resource: CharacterVisualResource, proj
             raise CharacterArchiveError("表现入口与资源文件冲突。")
         sources[target] = path
     manifest = {"format": ARCHIVE_FORMAT, "version": 2, "kind": "resource", "resource": {"type": resource.type, "entry": entry}}
+    requirements = parse_requirements(projection.get("pluginRequirements", list(resource.plugin_requirements)))
+    if any(item["kind"] != "visual" or item["type"] != resource.type for item in requirements):
+        raise CharacterArchiveError("形态插件需求与资源类型不匹配。")
+    if requirements:
+        manifest["resource"]["pluginRequirements"] = requirements
     if resource.name:
         manifest["resource"]["name"] = resource.name
     destination = Path(destination).with_suffix(".visual")
@@ -86,7 +92,7 @@ def import_visual_archive(archive_path: Path, package: Path, *, cancel_check=Non
             if manifest.get("format") != ARCHIVE_FORMAT or type(manifest.get("version")) is not int or manifest["version"] != 2 or manifest.get("kind") != "resource":
                 raise CharacterArchiveError("请选择表现组件。")
             descriptor = manifest.get("resource", {})
-            resource = CharacterVisualResource.from_mapping({"id": resource_id, "type": descriptor.get("type"), "root": resource_root, "entry": descriptor.get("entry"), "name": descriptor.get("name", "")})
+            resource = CharacterVisualResource.from_mapping({"id": resource_id, "type": descriptor.get("type"), "root": resource_root, "entry": descriptor.get("entry"), "name": descriptor.get("name", ""), "pluginRequirements": descriptor.get("pluginRequirements", [])})
             staging.mkdir(exist_ok=False)
             for info in archive.infolist():
                 _check(cancel_check)

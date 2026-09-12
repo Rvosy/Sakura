@@ -1,3 +1,4 @@
+import { requirementMessage } from "../core/plugin-requirements.js";
 import {
   createRootSettingsClient,
   normalizeCharacterSettingsSnapshot,
@@ -415,6 +416,8 @@ export function createCharacterSettingsFeature({
       const result = await rootSettingsClient.characterImport(path);
       await applyRuntimeCharacterChange(result, previousLifecycle);
       notify("角色包已导入。", "success");
+      const missing = (result.pluginRequirements || []).filter(item => item.reasonCode !== "COMPATIBLE");
+      if (missing.length) notify(missing.map(requirementMessage).join("\n"), "info");
     });
   }
 
@@ -468,6 +471,8 @@ export function createCharacterSettingsFeature({
       const result = await rootSettingsClient.characterVoiceImport(path, character.id);
       await applyRuntimeCharacterChange(result, previousLifecycle);
       notify(`已为角色「${character.display_name}」导入 TTS 模型包。`, "success");
+      const missing = (result.pluginRequirements || []).filter(item => item.reasonCode !== "COMPATIBLE");
+      if (missing.length) notify(missing.map(requirementMessage).join("\n"), "info");
     });
   }
 

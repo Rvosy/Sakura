@@ -197,7 +197,9 @@ class CharacterSettingsBoundary:
                     "角色包导入失败，现有角色保持不变。",
                 ) from error
             self._revision += 1
-            return self._change_result(change_plan)
+            result = self._change_result(change_plan)
+            result["pluginRequirements"] = self._package_requirements(imported.package_dir)
+            return result
 
     def import_voice_archive(
         self,
@@ -231,9 +233,20 @@ class CharacterSettingsBoundary:
                     field="path",
                 ) from error
             self._revision += 1
-            return self._change_result(
+            result = self._change_result(
                 "core_restart_required" if current == character_id else "unchanged"
             )
+            result["pluginRequirements"] = [item for item in self._package_requirements(registry.get(character_id).package_dir) if item["kind"] == "tts"]
+            return result
+
+    def _package_requirements(self, package_dir: Path) -> list[dict]:
+        import json
+        from app.config.plugin_requirements import requirements_for_manifest, check_requirements
+        application = self._plugin_application_provider()
+        if application is None:
+            return []
+        manifest = json.loads((package_dir / "character.json").read_text(encoding="utf-8"))
+        return check_requirements(requirements_for_manifest(manifest), application.inventory().records)
 
     def export_archive(
         self,

@@ -170,6 +170,13 @@ def import_character_voice_archive(
             manifest = _read_manifest(zf)
             voice_data = _validated_voice_data(manifest)
             normalized_voice = _normalized_voice_archive(voice_data)
+            from app.config.plugin_requirements import parse_requirements
+            try:
+                requirements = parse_requirements(manifest.get("pluginRequirements", []))
+                if any(item["kind"] != "tts" for item in requirements):
+                    raise ValueError("VOICE_PLUGIN_REQUIREMENTS_INVALID")
+            except ValueError as exc:
+                raise CharacterArchiveError("语音包插件需求声明无效。") from exc
 
             temp_root = characters_dir / f"voice_import_{uuid.uuid4().hex}"
             backup_voice_dir = temp_root / "backup_voice"
@@ -194,7 +201,7 @@ def import_character_voice_archive(
                         rename_with_retry(target_voice_dir, backup_voice_dir)
                         old_voice_moved = True
                     rename_with_retry(staging_voice_dir, target_voice_dir)
-                    _write_character_voice_manifest(target_dir, normalized_voice)
+                    _write_character_voice_manifest(target_dir, normalized_voice, requirements)
                     profile = CharacterRegistry(base_dir).get(character_id)
                 except Exception as exc:
                     recovery_errors: list[str] = []
@@ -342,6 +349,9 @@ def export_character_archive(
     elif not include_voice:
         character_manifest.pop("voice", None)
 
+    from app.config.plugin_requirements import requirements_for_manifest
+    character_manifest["pluginRequirements"] = requirements_for_manifest(character_manifest, include_tts=include_voice)
+
     archive_manifest = {
         "format": ARCHIVE_FORMAT,
         "version": 2 if "visuals" in character_manifest else ARCHIVE_VERSION,
@@ -451,7 +461,16 @@ def export_character_voice_archive(profile: CharacterProfile, output_path: Path)
     if sovits_model is not None:
         voice_manifest["sovits_model"] = sovits_model
 
+    from app.config.plugin_requirements import requirements_for_manifest
+    # Only resources actually carried by this voice archive contribute requirements.
+    source_manifest = json.loads((profile.package_dir / "character.json").read_text(encoding="utf-8"))
+    voice_requirements = requirements_for_manifest({"voice": voice_manifest})
+    resource_types = {item["type"] for item in voice_requirements}
+    declared = [item for item in requirements_for_manifest(source_manifest)
+                if item["kind"] == "tts" and item["type"] in resource_types]
+    voice_requirements = requirements_for_manifest({"voice": voice_manifest, "pluginRequirements": declared})
     archive_manifest = {
+        "pluginRequirements": voice_requirements,
         "format": VOICE_ARCHIVE_FORMAT,
         "version": VOICE_ARCHIVE_VERSION,
         "voice": voice_manifest,
@@ -626,9 +645,8 @@ def _normalized_import_character_data(
         normalized["backchannel"] = _package_path_text(
             _archive_resource_path(backchannel, "character.backchannel")
         )
-    extensions = _opaque_extensions(character_data.get("extensions"))
-    if extensions:
-        normalized["extensions"] = extensions
+    # The clone already preserved extensions and removed the package's local
+    # voice choice. Do not restore it from the original archive before startup.
     ensure_legacy_voice_extensions(normalized, package_dir)
 
     _validate_referenced_files(package_dir, normalized)
@@ -866,7 +884,7 @@ def _write_character_manifest(package_dir: Path, character_data: dict[str, Any])
     )
 
 
-def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str]) -> None:
+def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str], requirements: list[dict]) -> None:
     manifest_path = package_dir / "character.json"
     try:
         character_data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -890,6 +908,11 @@ def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str
             provider[target_key] = voice_data[source_key]
         else:
             provider.pop(target_key, None)
+    from app.config.plugin_requirements import GPT_SOVITS_MODELS, requirements_for_manifest, parse_requirements
+    preserved = [item for item in parse_requirements(character_data.get("pluginRequirements", []))
+                 if (item["kind"], item["type"]) != ("tts", GPT_SOVITS_MODELS)]
+    character_data["pluginRequirements"] = preserved + requirements
+    character_data["pluginRequirements"] = requirements_for_manifest(character_data)
     _write_character_manifest(package_dir, character_data)
 
 

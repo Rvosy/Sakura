@@ -248,16 +248,64 @@ catalog 返回编辑器提供者的 scopeId，open 返回 providerScopeId。工�
 普通保存保留未知 manifest 字段，通用清理不根据私有 JSON 猜测并删除资源文件。
 
 完整新包沿用 `.char`，manifest version 2、kind `character`；旧 version 1 继续导入。
-形态组件使用 `.visual` 后缀、version 2、kind `resource`，manifest 的 resource 为 `{type,entry,name?}`，文件在 `resource/` 下；
+形态组件使用 `.visual` 后缀、version 2、kind `resource`，manifest 的 resource 为 `{type,entry,name?,pluginRequirements?}`，文件在 `resource/` 下；
 可选名称随导出、导入保留，旧版 `.char` 形态组件仍可读取。导出统一写 `.visual`，完整角色保持 `.char`，语音包保持 `.voice`。
 原生“导入形态”选择器提供 `.visual` 与旧版 `.char` 过滤项；归档内容仍按 format/version/kind 校验，改后缀不能把完整角色变成形态组件。
 组件入口由 exportResource 投影，附件由 describe.assets 声明；导入生成新资源 ID，仅加入目标角色草稿并设为默认。
 不覆盖目标人格、voice、角色 ID 或已安装包。未知类型组件仍可保存并随完整角色包转交，缺失插件不触发隐式安装。
-当前组件未声明插件 ID 或版本依赖，宿主按 `type` 查找支持它的已安装插件；完整角色的 `visuals.providers` 可指定提供者 ID。
+组件可声明 `resource.pluginRequirements`，完整角色在 `character.pluginRequirements` 汇总需求；格式和检测规则见下节。
+宿主按资源 `type` 匹配能力，插件 ID 是安装建议；完整角色的 `visuals.providers` 仍可指定实际提供者 ID。
 缺少匹配插件时，工坊保留名称、配置和所有文件，并提示“尚未安装支持此形态的插件”；不能编辑、渲染或通过插件单独导出该形态。
 导入仍将新形态设为包默认；保存后若实际选中它，绑定返回 `VISUAL_PROVIDER_MISSING`、visual 为 null，不自动回退其他形态。
 用户可以选择已有可用形态，或安装并启用兼容插件后重新打开，无需重复导入。插件已安装但停用时单独提示未启用。
 ZIP 穿越、重复路径、符号链接与超限归档被拒绝；中途取消清理临时文件，提交前最后一次取消检查防止覆盖既有导出。
+
+## 角色包插件需求
+
+完整角色的 `character.json` 可包含 `pluginRequirements` 数组，`.char` 将它保存在 `manifest.character`。
+每项声明一种资源格式及建议安装的插件，例如：
+
+```json
+{
+  "pluginRequirements": [
+    {
+      "kind": "tts",
+      "type": "gpt-sovits.models@1",
+      "plugins": [
+        {"id": "sakura.tts.gpt-sovits", "name": "GPT-SoVITS"},
+        {"id": "sakura.tts.genie", "name": "Genie"}
+      ]
+    }
+  ]
+}
+```
+
+`kind` 为 `visual` 或 `tts`，`type` 采用与表现资源相同的 `名称@格式版本` 规则。
+每个包最多 64 项需求，每项最多 16 个插件建议；建议只含 `id` 和可选 `name`，不携带下载地址或执行指令。
+同一 kind/type 合并为一项，建议 ID 去重。不同类型分别报告，允许为后续多 TTS 资源保留声明；本次不新增多模型播放流程。
+这不是插件启动依赖列表：满足同一资源类型的任一兼容插件即可，包括未列入建议的第三方实现，无需安装全部建议插件。
+
+插件在 `plugin.yaml` 的 `ttsResources` 声明可直接读取或转换的语音格式，最多 32 项。GPT-SoVITS 声明
+`gpt-sovits.models@1`；Genie 同时声明该类型和 `genie.onnx@1`。形态继续使用已有 `visuals[].type`。
+检测只读取插件 inventory，不启动服务、不转换模型、不选择引擎，也不改变用户配置。
+
+工坊保存、包导出与需求查询会汇总顶层和形态内的声明，并从现有共享 GPT/SoVITS 模型对推导 TTS 需求。
+因此旧包没有声明时也能得到基础提示；只有 `.pth`、缺少 `.ckpt` 时不能据此推断完整模型对可用。
+显式 Genie ONNX 路径推导 `genie.onnx@1`；未知 extension 不推断为必装插件。
+`.visual` 的需求放在 `manifest.resource.pluginRequirements`，只能声明本资源的 visual/type；导入、保存与再导出均保留。
+`.voice` 的需求放在 `manifest.pluginRequirements`，只允许 TTS；当前导出仅声明实际携带的共享语音资源。
+语音导入替换共享资源需求，保留形态和其他语音资源声明；不含语音的角色导出移除 TTS 需求。
+
+`studio.plugin.requirements` 接受 `{workspaceId}`，返回 `{schemaVersion:1, items}`。
+每项带原始声明、`reasonCode` 和候选插件的 `id/name/enabled/compatible/installId`。
+状态为 `COMPATIBLE`、`PLUGIN_DISABLED`、`PLUGIN_INCOMPATIBLE` 或 `PLUGIN_MISSING`，分别表示已启用兼容插件、
+兼容插件停用、已安装候选不兼容或未安装候选。工坊基础信息显示这些状态；设置页完成角色包或语音包导入后提示未满足的需求。
+资源原样保留，缺失插件不阻止导入、保存或完整包转交。安装并启用插件后重新打开角色即可重新检查，无需重导入。
+
+`COMPATIBLE` 只说明安装的插件声明支持该格式，不保证模型文件完整、服务已就绪或转换一定成功。
+只有 GPT-SoVITS 原始 `.ckpt` + `.pth`、没有 ONNX 的角色包，在 Genie 已安装并启用时应显示兼容；
+用户选择 Genie 后，现有语音准备流程按需转换。转换依赖、模型版本、参考语音等实际问题仍在准备或合成时报告。
+形态编辑、渲染和 TTS 启用/选择继续遵循各自现有流程，需求查询不替代运行时检查。
 
 ## 失败诊断
 
