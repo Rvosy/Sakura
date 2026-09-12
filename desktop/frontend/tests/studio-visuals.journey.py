@@ -82,9 +82,48 @@ def run():
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.expose_function("nativeInvoke", invoke)
-                page.add_init_script("window.__TAURI__={core:{invoke:window.nativeInvoke},event:{listen:async()=>()=>{}}};")
+                page.add_init_script("""
+                  window.__discardRequests = 0;
+                  window.confirm = () => { throw Error('Native confirm is unavailable in this WebView'); };
+                  window.__TAURI__={core:{invoke:async (command,params)=>{
+                    if(params?.method==='studio.draft.discard') window.__discardRequests++;
+                    const result=await window.nativeInvoke(command,params);
+                    if(params?.method==='studio.draft.save' && window.__holdDraftSave) {
+                      window.__holdDraftSave=false;
+                      await new Promise(resolve=>{window.__releaseDraftSave=resolve;});
+                    }
+                    return result;
+                  }},event:{listen:async()=>()=>{}}};
+                """)
                 page.goto(origin + "/desktop/frontend/studio/")
                 expect(page.locator("#displayName")).to_have_value("示例角色")
+                output = ROOT / "temp/visual-ui"
+                output.mkdir(parents=True, exist_ok=True)
+                # The host may not implement window.confirm. Cancellation and
+                # confirmation must both work via the visible Studio dialog.
+                page.locator("#displayName").fill("保留本次编辑")
+                page.get_by_role("button", name="放弃修改", exact=True).click()
+                discard = page.get_by_role("dialog", name="放弃修改", exact=True)
+                expect(discard).to_be_visible()
+                discard.get_by_role("button", name="继续编辑", exact=True).click()
+                expect(page.locator("#displayName")).to_have_value("保留本次编辑")
+                page.evaluate("window.__holdDraftSave=true")
+                page.locator("#displayName").fill("自动保存中的修改")
+                page.wait_for_function("typeof window.__releaseDraftSave === 'function'")
+                page.locator("#displayName").fill("尚未自动保存的修改")
+                page.get_by_role("button", name="放弃修改", exact=True).click()
+                expect(discard).to_be_visible()
+                page.screenshot(path=str(output / "studio-discard.png"), animations="disabled")
+                discard.get_by_role("button", name="放弃修改", exact=True).click()
+                # Cross the pending autosave timer while the older write is held.
+                page.wait_for_timeout(750)
+                assert page.evaluate("window.__discardRequests") == 0
+                page.evaluate("window.__releaseDraftSave()")
+                expect(page.locator("#displayName")).to_have_value("示例角色")
+                expect(page.get_by_role("button", name="放弃修改", exact=True)).to_be_disabled()
+                page.reload()
+                expect(page.locator("#displayName")).to_have_value("示例角色")
+                expect(page.locator("#errorText")).to_be_empty()
                 page.get_by_role("button", name="角色形态", exact=True).click()
                 expect(page.locator(".portrait-plugin .expression-row")).to_have_count(2)
                 page.wait_for_function("[...document.querySelectorAll('.expression-thumbnail img')].every(image=>image.naturalWidth>0)")
@@ -140,7 +179,7 @@ def run():
                 add.get_by_role("textbox", name="形态名称", exact=True).fill("第二套立绘")
                 output = ROOT / "temp/visual-ui"
                 output.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(output / "studio-add.png"))
+                page.screenshot(path=str(output / "studio-add.png"), animations="disabled")
                 add.get_by_role("button", name="添加", exact=True).click()
                 expect(page.locator("#visualName")).to_have_value("第二套立绘")
                 page.get_by_role("button", name="添加图片", exact=True).click()
@@ -153,16 +192,17 @@ def run():
                 page.get_by_role("button", name="角色形态", exact=True).click()
                 expect(page.locator("#visualName")).to_have_value("第二套立绘")
                 expect(page.locator("#defaultVisualButton")).to_be_disabled()
+                page.screenshot(path=str(output / "studio-default-form.png"), animations="disabled")
                 page.locator(".form-card").filter(has_text="日常立绘").click()
                 expect(page.locator(".portrait-plugin .expression-row")).to_have_count(2)
                 expect(page.get_by_role("textbox", name="表情标签", exact=True).first).to_have_value("平静")
                 page.wait_for_function("[...document.querySelectorAll('.expression-thumbnail img')].every(image=>image.naturalWidth>0)")
-                page.screenshot(path=str(output / "studio.png"))
+                page.screenshot(path=str(output / "studio.png"), animations="disabled")
                 assert "sakura.visual.portrait@1" not in page.locator("#page-portrait").inner_text()
                 for width in [820, 680]:
                     page.set_viewport_size({"width": width, "height": 800})
                     assert page.evaluate("document.querySelector('.page-scroll').scrollWidth <= document.querySelector('.page-scroll').clientWidth"), width
-                page.screenshot(path=str(output / "studio-narrow.png"))
+                page.screenshot(path=str(output / "studio-narrow.png"), animations="disabled")
                 saved = json.loads((package / "character.json").read_text(encoding="utf-8"))
                 resources = saved["visuals"]["resources"]
                 assert [item["name"] for item in resources] == ["日常立绘", "第二套立绘"]
@@ -186,7 +226,21 @@ def run():
                 assert json.loads((package / missing["root"] / missing["entry"]).read_text()) == {"private": True}
                 page.get_by_role("button", name="基础信息", exact=True).click()
                 expect(page.locator("#pluginRequirementsList")).to_contain_text("示例形态插件")
-                expect(page.locator("#pluginRequirementsList")).to_contain_text("尚未安装兼容插件")
+                expect(page.locator("#pluginRequirementsList")).to_contain_text("未安装")
+                expect(page.locator(".plugin-requirement").filter(has_text="立绘").locator(".plugin-requirement-status")).to_have_text("已启用")
+                page.set_viewport_size({"width": 1200, "height": 800})
+                page.locator("#pluginRequirementsList").scroll_into_view_if_needed()
+                page.screenshot(path=str(output / "studio-requirements.png"), animations="disabled")
+                page.evaluate("""() => {
+                  const tokens = {'primary':'#2d9b70','primary-hover':'#3db884','text':'#e4efeb','secondary-text':'#aac9bc',
+                    'muted-text':'#83a396','page-bg':'#131e20','panel-bg':'#182728','input-bg':'#1c3030','border':'#345553'};
+                  for(const [name,value] of Object.entries(tokens)) document.documentElement.style.setProperty('--sakura-'+name,value);
+                }""")
+                page.screenshot(path=str(output / "studio-requirements-dark.png"), animations="disabled")
+                page.set_viewport_size({"width": 680, "height": 800})
+                page.locator("#pluginRequirementsList").scroll_into_view_if_needed()
+                page.screenshot(path=str(output / "studio-requirements-narrow.png"), animations="disabled")
+                assert page.evaluate("document.querySelector('.page-scroll').scrollWidth <= document.querySelector('.page-scroll').clientWidth")
                 assert saved["pluginRequirements"][-1]["plugins"][0]["id"] == "fixture.visual"
                 assert not errors, errors
                 browser.close()

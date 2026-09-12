@@ -43,3 +43,9 @@
   .form-card { min-height: 86px; gap: 10px; }
 }
 .visual-editor-staging { position: absolute; visibility: hidden; pointer-events: none; }
+
+.form-meta-actions .form-default-state:disabled {
+  display: inline-flex; align-items: center; gap: 6px; opacity: 1;
+  color: var(--sakura-primary); background: var(--tint-soft); border-color: transparent; cursor: default;
+}
+.form-default-state .sakura-icon { width: 15px; height: 15px; }
