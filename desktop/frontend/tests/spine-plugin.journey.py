@@ -152,6 +152,7 @@ def run(components=None):
                     resource = CharacterVisualResource.from_mapping(raw_resource)
                     from app.config.character_loader import _load_profile
                     projection = application.application.export_visual_resource(_load_profile(package / 'character.json'), resource)
+                    assert projection['pluginRequirements'][0]['plugins'][0]['id'] == 'sakura.visual.spine'
                     assert projection['data']['defaultSkin'] == 'smile' and projection['data']['speed'] == 1.5
                     assert len(projection['assets']) >= 3
                     binding = application.application.visuals.bind('sample', package, resource)

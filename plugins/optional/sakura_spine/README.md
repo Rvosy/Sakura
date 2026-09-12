@@ -47,7 +47,13 @@ model/room.png           # 保留图集引用的贴图名称
   "format": "sakura.character.archive",
   "version": 2,
   "kind": "resource",
-  "resource": {"name": "日常形态", "type": "spine.json@1", "entry": "spine-resource.json"}
+  "resource": {
+    "name": "日常形态", "type": "spine.json@1", "entry": "spine-resource.json",
+    "pluginRequirements": [{
+      "kind": "visual", "type": "spine.json@1",
+      "plugins": [{"id": "sakura.visual.spine", "name": "Spine"}]
+    }]
+  }
 }
 ```
 
@@ -64,7 +70,7 @@ runtime/bin/python -m tools.spine_preview export artifacts/spine/my-character ar
 也可以“添加形态 → Spine”，再在编辑器中“导入模型目录”，选择一套组件目录或仅包含一套完整骨骼的素材目录。
 导入文件写入工坊草稿；修改表情、速度后按“保存”。工坊的“导出形态”保留本次保存的配置与全部依赖。
 尚未安装支持 `spine.json@1` 的插件时仍可导入和保存，工坊提示缺少插件，暂不能编辑或显示该形态。
-导入会把它设为包默认；可先改用已有形态，安装并启用插件后再选择它，无需重新导入。组件目前声明格式类型，不携带插件 ID 或版本清单。
+导入会把它设为包默认；可先改用已有形态，安装并启用插件后再选择它，无需重新导入。组件声明所需的 `spine.json@1` 格式，并建议安装 `sakura.visual.spine`；其他声明兼容该格式的插件也可满足需求。
 
 ## 控制和前端接入
 

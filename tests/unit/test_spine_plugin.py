@@ -216,6 +216,7 @@ def test_prepared_component_roundtrips_through_production_archive(spine_resource
     package = tmp_path / 'character'
     package.mkdir()
     resource = import_visual_archive(archives[0], package)
+    assert resource.plugin_requirements == ({'kind': 'visual', 'type': 'spine.json@1', 'plugins': [{'id': 'sakura.visual.spine', 'name': 'Spine'}]},)
     config = json.loads((package / resource.root / resource.entry).read_text())
     description = describe_resource(config, lambda path: resolve_inside(package / resource.root, path))
     assert description['rendererData']['skins'] == ['default', 'normal', 'smile']

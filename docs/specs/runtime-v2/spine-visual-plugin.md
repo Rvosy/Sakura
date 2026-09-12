@@ -137,7 +137,7 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 准备后的组件独立声明 `spine-resource.json`，骨骼和图集统一为 `model/skeleton.json`、`model/skeleton.atlas`，
 贴图位于 `model/` 并保留图集引用的名称，原文件内容不变。`catalog.json` 只供开发预览选择组件。
 `tools.spine_preview export` 将准备目录中的配置及依赖交给公共归档写入器，生成 version 2、kind `resource`
-的 `.visual` 形态组件，包含名称、类型与入口；不携带人格和语音。正式工坊可导入、编辑、保存和再次导出，仍可读取旧版 `.char` 形态组件。
+的 `.visual` 形态组件，包含名称、类型、入口，以及建议安装 `sakura.visual.spine` 的 `resource.pluginRequirements`；不携带人格和语音。正式工坊可导入、编辑、保存和再次导出，仍可读取旧版 `.char` 形态组件。
 未安装 Spine 或其他兼容 `spine.json@1` 的插件时，导入和保存保留资源，编辑区提示缺少插件；安装并启用后可使用原资源。
 
 [Python 测试](../../../tests/unit/test_spine_plugin.py)覆盖复制、资源安全、参数快照和生产 v4 安装/进程调用；
