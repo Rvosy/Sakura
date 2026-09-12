@@ -95,7 +95,9 @@ def test_portrait_editor_and_component_preserve_target_identity_and_voice(tmp_pa
         editor = request("studio.visual.open", {"workspaceId": "a", "resourceId": "portrait-default"})
         assert editor["data"]["default"] == "default#1%.png"
         component = tmp_path / "portrait.char"
-        request("studio.visual.export", {"workspaceId": "a", "resourceId": "portrait-default", "path": str(component)})
+        exported = request("studio.visual.export", {"workspaceId": "a", "resourceId": "portrait-default", "path": str(component)})
+        assert Path(exported["outputPath"]) == component.with_suffix(".visual")
+        component = Path(exported["outputPath"])
         b = request("studio.character.open", {"characterId": "b"})
         after = request("studio.visual.import", {"workspaceId": "b", "path": str(component)})["doc"]
         assert after["id"] == b["doc"]["id"]
@@ -153,8 +155,9 @@ def test_v110_unpublished_portrait_draft_survives_editor_and_save(tmp_path, auto
         assert (package / "character.json").read_text(encoding="utf-8") == original
         if finish == "export":
             import zipfile
-            component = tmp_path / "pending.char"
-            request("studio.visual.export", {"workspaceId": "demo", "resourceId": "portrait-default", "path": str(component)})
+            component = tmp_path / "pending.visual"
+            exported = request("studio.visual.export", {"workspaceId": "demo", "resourceId": "portrait-default", "path": str(component)})
+            component = Path(exported["outputPath"])
             with zipfile.ZipFile(component) as archive:
                 assert json.loads(archive.read("resource/resource.json"))["default"] == "new.png"
                 assert archive.read("resource/new.png") == PNG
