@@ -136,7 +136,13 @@ Service 调用前后检查 provider 与进程 scope，清理或重启后的在�
 
 旧 `portrait` 继续作为兼容数据读取。没有新封装时交由所选插件解释；存在非法新封装时也不退回旧值。
 内置立绘插件按“显式 key/旧 portrait → 本段 tone 对应图片 → 默认图”选择。其他插件可以拒绝旧字段。
-旧历史不批量重写。历史页只投影可读文字；浏览、分页、UI 重绘和 `chat.completed` 不执行控制。
+旧历史不批量重写。历史页只投影可读文字；历史分页、UI 重绘和 `chat.completed` 不执行控制。
+桌宠气泡的上翻、下翻恢复该片段实际展示时的持续状态，不重播一次性动作、语音或打字动画。
+RendererHost 在片段状态应用后通过可选 `snapshotState()` 保存完整状态；没有控制的片段也记录当时状态，
+因此省略皮肤等字段时仍能回看实际继承的表情。快照以当前会话的片段对象关联，宿主不合并或解释插件私有字段，
+不修改 Timeline。缺少快照的片段只切换文字，不尝试重放原始控制。
+快照仅属于当前绑定；切换形态、重载插件或 Core generation 变化时失效。
+快速翻阅会中止前一次恢复；开始新回复时先恢复最新实际播放状态，避免历史预览改变后续省略字段的含义。
 
 宿主在 TTS 确认开始播放、或静音段开始展示时派发该段控制；不是合成开始时派发。同一 operation 的相同
 segmentIndex 最多执行一次。取消先中止 operation signal，再调用插件 cancel；新 generation、资源绑定、
@@ -146,13 +152,16 @@ segmentIndex 最多执行一次。取消先中止 operation signal，再调用�
 
 ```javascript
 export function mount({ container, resource, host, signal }) {
-  return { ready, applyState(state, context), perform(action, context), cancel(context), destroy() };
+  return { ready, applyState(state, context), snapshotState(), perform(action, context), cancel(context), destroy() };
 }
 ```
 
 `resource` 是当前 VisualPresentation，含 bindingId、resourceId、type、providerId、私有 data 和受控 assets URL。
 `ready` 可以是 Promise；`applyState`、`destroy` 必须存在，其他回调按需要实现。控制 context 包含
 `operationId`、`segmentIndex` 与 operation `signal`。挂载 signal 表示整份绑定的生命期。
+`snapshotState()` 同步返回可交给 `applyState` 的完整持续状态（有限 JSON，连同路由封装最多 64 KiB）。
+它不包含一次动作、计时器或 GPU 对象。未实现此方法的插件仍能播放新回复，回看只更新文字；
+快照失败不阻止本段动作执行。回看和返回实时状态的 context 使用独立 operation signal，`segmentIndex` 为 -1。
 RendererHost 限制模块加载、mount 和 ready 等待各为 10 秒，销毁迟到实例，并隔离旧回调及宿主服务调用。
 切换 generation 或形态时先撤销旧控制，保留旧实例的静态画面；新实例完成资源加载和 ready 后再替换并销毁旧实例。
 插件负责停止自己的动画、计时器、监听和资源；长异步工作在 await 后复核 signal。

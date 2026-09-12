@@ -269,6 +269,7 @@ export function mount({ container, resource, host, signal }) {
       if (signal.aborted || context.signal.aborted) return;
       return controller.show(state?.key || data.defaultKey, { generation: String(generation) });
     },
+    snapshotState: () => ({ key: controller.current() || data.defaultKey }),
     perform() {},
     cancel() { controller.beginGeneration(String(++generation)); resetPreview(); },
     destroy() { controller.dispose(); container.replaceChildren(); },

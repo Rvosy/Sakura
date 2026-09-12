@@ -8,6 +8,10 @@ export function createRendererHost({ container, loadModule = (url) => import(url
   let ready = Promise.resolve(false);
   let epoch = 0;
   let staged = null;
+  let history = new WeakMap();
+  let latestState = null;
+  let reviewing = false;
+  let reviewSequence = 0;
   const report = (code, error, stage) => onUnavailable(code, error, stage);
   function cleanup(target, method, ...args) {
     const failed = error => { if (error?.name !== "AbortError") onError("VISUAL_RENDERER_CLEANUP_FAILED", error, `visual.renderer.${method}`); };
@@ -26,6 +30,9 @@ export function createRendererHost({ container, loadModule = (url) => import(url
   }
   function freeze(reason = "unbound") {
     epoch += 1;
+    history = new WeakMap();
+    latestState = null;
+    reviewing = false;
     const hadOperation = operation !== null;
     lifetime?.abort();
     lifetime = null;
@@ -106,21 +113,69 @@ export function createRendererHost({ container, loadModule = (url) => import(url
   function begin(operationId) {
     if (!operationId || operation?.id === operationId) return;
     cancel("operation_changed");
-    operation = { id: operationId, seen: new Set(), abort: new AbortController() };
+    const current = { id: operationId, seen: new Set(), abort: new AbortController() };
+    operation = current;
+    const resume = reviewing ? latestState : null;
+    reviewing = false;
+    current.restored = !resume ? ready : (async () => {
+      if (!await ready || current !== operation || current.abort.signal.aborted) return false;
+      if (resume) await instance.applyState(structuredClone(resume.state), {
+        operationId, segmentIndex: -1, signal: current.abort.signal,
+      });
+      return current === operation && !current.abort.signal.aborted;
+    })().catch(error => {
+      if (current === operation && !current.abort.signal.aborted) onError("VISUAL_CONTROL_EXECUTION_FAILED", error, "visual.history.resume");
+      return false;
+    });
   }
-  async function play(control, operationId, segmentIndex) {
+  function remember(historyKey, target) {
+    if (typeof instance.snapshotState !== "function") return;
+    try {
+      const state = instance.snapshotState();
+      if (state === undefined) return;
+      const snapshot = normalizeVisualControl({ version: 1, bindingId: target.bindingId,
+        resourceId: target.resourceId, state });
+      if (!snapshot) return;
+      latestState = snapshot;
+      if (historyKey && typeof historyKey === "object") history.set(historyKey, snapshot);
+    } catch (error) {
+      onError("VISUAL_STATE_SNAPSHOT_FAILED", error, "visual.history.snapshot");
+    }
+  }
+
+  async function review(historyKey) {
+    const snapshot = history.get(historyKey);
+    const target = binding;
+    cancel("history");
+    if (!snapshot || !target || snapshot.bindingId !== target.bindingId || snapshot.resourceId !== target.resourceId) return false;
+    const current = { id: `history-${++reviewSequence}`, abort: new AbortController() };
+    operation = current;
+    reviewing = true;
+    if (!await ready || current !== operation || current.abort.signal.aborted || target !== binding) return false;
+    try {
+      await instance.applyState(structuredClone(snapshot.state), {
+        operationId: current.id, segmentIndex: -1, signal: current.abort.signal,
+      });
+      return current === operation && !current.abort.signal.aborted && target === binding;
+    } catch (error) {
+      if (current === operation && !current.abort.signal.aborted && target === binding) onError("VISUAL_CONTROL_EXECUTION_FAILED", error, "visual.history.review");
+      return false;
+    }
+  }
+  async function play(control, operationId, segmentIndex, historyKey) {
     const value = normalizeVisualControl(control);
     const current = operation;
     const target = binding;
-    if (!value || !target || !current || current.id !== operationId || !Number.isSafeInteger(segmentIndex) || segmentIndex < 0
-      || value.bindingId !== target.bindingId || value.resourceId !== target.resourceId || current.seen.has(segmentIndex)) return false;
+    if ((control != null && !value) || !target || !current || current.id !== operationId || !Number.isSafeInteger(segmentIndex) || segmentIndex < 0
+      || (value && (value.bindingId !== target.bindingId || value.resourceId !== target.resourceId)) || !current.seen || current.seen.has(segmentIndex)) return false;
     current.seen.add(segmentIndex);
-    if (!await ready || current !== operation || current.abort.signal.aborted || target !== binding) return false;
+    if (!await current.restored || current !== operation || current.abort.signal.aborted || target !== binding) return false;
     const context = { operationId, segmentIndex, signal: current.abort.signal };
     try {
-      if (Object.hasOwn(value, "state")) await instance.applyState(value.state, context);
+      if (value && Object.hasOwn(value, "state")) await instance.applyState(value.state, context);
       if (current !== operation || current.abort.signal.aborted || target !== binding) return false;
-      for (const action of value.actions || []) {
+      remember(historyKey, target);
+      for (const action of value?.actions || []) {
         if (current.abort.signal.aborted || current !== operation) return false;
         await instance.perform?.(action, context);
       }
@@ -130,5 +185,5 @@ export function createRendererHost({ container, loadModule = (url) => import(url
       return false;
     }
   }
-  return Object.freeze({ bind, begin, play, cancel, freeze, clear, destroy: () => clear("destroyed"), current: () => binding });
+  return Object.freeze({ bind, begin, play, review, cancel, freeze, clear, destroy: () => clear("destroyed"), current: () => binding });
 }

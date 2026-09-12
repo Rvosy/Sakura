@@ -3,7 +3,7 @@ id: sakura.visual.spine
 name: Spine
 author: Sakura
 description: Spine 3.6 角色的表情、动画和编辑。
-version: 0.2.2
+version: 0.2.3
 entry: plugin:SpinePlugin
 enabled: true
 priority: 40

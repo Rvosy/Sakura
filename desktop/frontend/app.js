@@ -1266,7 +1266,7 @@ const typewriter = createTypewriter({
           if (presentation.current().operationId !== state.operationId) return;
           const result = presentation.setTypingSegment(segment, index);
           if (result.applied) {
-            void rendererHost.play(segment.control, state.operationId, index);
+            void rendererHost.play(segment.control, state.operationId, index, segment);
             void render(result.state);
           }
         },
@@ -2131,11 +2131,8 @@ function reviewReplyBy(offset) {
   if (!segment) return;
   const result = presentation.reviewReplyAt(targetIndex, selectSegmentText(segment, subtitleLanguage));
   if (result.applied) {
-    render(
-      result.state,
-      { reason: "history", forceEnd: true },
-      { syncBubbleWithPortrait: true },
-    );
+    void rendererHost.review(segment);
+    render(result.state, { reason: "history", forceEnd: true });
   }
 }
 replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));

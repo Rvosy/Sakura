@@ -104,7 +104,9 @@ Room 解析结果示例：
 ## 前端模块
 
 正式渲染入口为 `mount({container, resource, host, signal})`。它使用 `resource.data` 和 `resource.assets`，
-向宿主声明按模型比例计算的矩形表面，返回 `ready/applyState/perform/cancel/destroy`。
+向宿主声明按模型比例计算的矩形表面，返回 `ready/applyState/snapshotState/perform/cancel/destroy`。
+`snapshotState()` 返回当前皮肤、循环动画和速度。气泡上翻、下翻恢复这些持续状态，不重播一次动作，
+也不回退动画帧位置；本段未指定表情时，快照记录实际继承的皮肤。
 公共宿主负责 operation/segment 去重，适配层为内部控制器的状态和动作调用分配递增序号。
 绑定 signal 中止时停止加载、动画与监听，保留静态 canvas，替代实例就绪后由 destroy 释放 GPU 资源。
 挂载失败和加载途中取消直接释放资源。这里的矩形表面不等于逐帧 PNG alpha 命中。

@@ -115,7 +115,7 @@ test("late mounts are destroyed and cannot invoke host services after replacemen
   assert.equal(destroyed, 1);
 });
 
-test("history browsing keeps controls as data and never invokes renderer code", () => {
+test("history reducer preserves segment identities and controls for visual review", () => {
   const reducer = createChatPresentationReducer({ initialMessage: "你好" });
   const identity = { generationId: "g", generationNumber: 1, operationId: "op" };
   reducer.reduce({ ...identity, type: "lifecycle", status: "ready", revision: 1 });
@@ -174,4 +174,114 @@ test("renderer startup keeps the original failure and stale failures stay silent
   reject(failure);
   assert.equal(await opening, false);
   assert.equal(errors.length, 1);
+});
+
+
+test("reply review restores captured state, including inherited fields, without repeating actions", async () => {
+  let current = { angle: 0, mood: "idle" }, actions = 0;
+  const host = createRendererHost({ container: container(), loadModule: async () => ({ mount: () => ({
+    applyState: state => { current = { ...current, ...state }; },
+    snapshotState: () => current,
+    perform: () => actions++,
+    cancel() {},
+    destroy() {},
+  }) }) });
+  await host.bind(binding());
+  const reducer = createChatPresentationReducer({ initialMessage: "hello" });
+  const identity = { generationId: "g", generationNumber: 1, operationId: "op" };
+  reducer.reduce({ ...identity, type: "lifecycle", status: "ready", revision: 1 });
+  reducer.reduce({ ...identity, type: "chat.started" });
+  reducer.reduce({ ...identity, type: "chat.completed", reply: { segments: [
+    { text: "first", control: { ...control(), state: { angle: 10, mood: "smile" } } },
+    { text: "inherit" },
+    { text: "last", control: { ...control(), state: { mood: "sad" } } },
+  ] } });
+  host.begin("op");
+  const segments = reducer.current().segments;
+  for (const [index, segment] of segments.entries()) {
+    await host.play(segment.control, "op", index, segment);
+    reducer.setTypingSegment(segment, index);
+  }
+  reducer.finishTyping();
+  assert.equal(actions, 2);
+  assert.deepEqual(current, { angle: 10, mood: "sad" });
+  for (const [index, mood] of [[0, "smile"], [2, "sad"], [1, "smile"], [0, "smile"]]) {
+    const result = reducer.reviewReplyAt(index, segments[index].text);
+    assert.equal(result.applied, true);
+    assert.equal(await host.review(result.state.replyHistorySegments[index]), true);
+    assert.deepEqual(current, { angle: 10, mood });
+    assert.equal(actions, 2);
+  }
+  // New live output resumes the latest live state rather than the reviewed older face.
+  host.begin("next");
+  await host.play(undefined, "next", 0, {});
+  assert.deepEqual(current, { angle: 10, mood: "sad" });
+  await host.bind(binding("b"));
+  assert.equal(await host.review(segments[0]), false);
+  assert.equal(actions, 2);
+  host.destroy();
+});
+
+test("rapid history changes and new replies abort stale restoration", async () => {
+  const entered = deferred(), pending = deferred();
+  let current = { angle: 0 }, hold = false, interrupted;
+  const host = createRendererHost({ container: container(), loadModule: async () => ({ mount: () => ({
+    async applyState(state, context) {
+      if (hold && state.angle === 10) { interrupted = context.signal; entered.resolve(); await pending.promise; }
+      if (!context.signal.aborted) current = { ...state };
+    },
+    snapshotState: () => current,
+    cancel() {}, destroy() {},
+  }) }) });
+  await host.bind(binding());
+  const first = {}, last = {};
+  host.begin("live");
+  await host.play({ ...control(), state: { angle: 10 } }, "live", 0, first);
+  await host.play({ ...control(), state: { angle: 20 } }, "live", 1, last);
+  hold = true;
+  const old = host.review(first);
+  await entered.promise;
+  assert.equal(await host.review(last), true);
+  pending.resolve();
+  assert.equal(await old, false);
+  assert.equal(interrupted.aborted, true);
+  assert.deepEqual(current, { angle: 20 });
+  host.begin("new");
+  await host.play({ ...control(), state: { angle: 30 } }, "new", 0, {});
+  assert.deepEqual(current, { angle: 30 });
+  host.destroy();
+});
+
+test("history review never replays raw control for a renderer without state snapshots", async () => {
+  let calls = 0;
+  const host = createRendererHost({ container: container(), loadModule: async () => ({ mount: () => ({
+    applyState() { calls++; }, destroy() {},
+  }) }) });
+  await host.bind(binding());
+  const segment = {};
+  host.begin("live");
+  await host.play(control(), "live", 0, segment);
+  assert.equal(await host.review(segment), false);
+  assert.equal(calls, 1);
+  host.destroy();
+});
+
+test("snapshot failures do not interrupt live actions", async () => {
+  let actions = 0;
+  const errors = [];
+  const host = createRendererHost({ container: container(), onError: code => errors.push(code),
+    loadModule: async () => ({ mount: () => ({
+      applyState() {},
+      snapshotState() { throw new Error("snapshot failed"); },
+      perform() { actions++; },
+      destroy() {},
+    }) }) });
+  await host.bind(binding());
+  host.begin("live");
+  const segment = {};
+  assert.equal(await host.play(control(), "live", 0, segment), true);
+  assert.equal(actions, 1);
+  assert.deepEqual(errors, ["VISUAL_STATE_SNAPSHOT_FAILED"]);
+  assert.equal(await host.review(segment), false);
+  host.destroy();
 });

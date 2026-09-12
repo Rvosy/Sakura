@@ -172,6 +172,10 @@ export async function mount({ container, resource, host, signal }) {
         height: Math.max(1, Math.round(renderer.size.height * ratio)) });
       if (!signal.aborted && accepted === false) throw new Error('SPINE_SURFACE_REJECTED');
     }),
+    snapshotState() {
+      const { skin, animation, speed } = renderer.snapshot();
+      return { skin, animation, speed };
+    },
     applyState: (state, context) => deliver(state, [], context),
     perform: (action, context) => deliver({}, [action], context),
     cancel() { if (!signal.aborted) renderer.cancel(); },

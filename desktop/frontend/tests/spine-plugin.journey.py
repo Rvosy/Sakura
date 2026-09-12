@@ -251,21 +251,36 @@ def run(components=None):
                     visual['assets'] = {key: origin + prefix + '/' + path.encode().hex() for key, path in visual['assets'].items()}
                     control = binding.parse_control({'version': 1, 'resourceId': resource.id, 'payload': {'skin': 'normal'}}).control
                     assert control
+                    smile_control = binding.parse_control({'version': 1, 'resourceId': resource.id, 'payload': {'skin': 'smile'}}).control
                     runtime = browser.new_page(viewport={'width': 600, 'height': 700})
                     runtime.on('pageerror', lambda error: errors.append(str(error)))
                     runtime.goto(origin + '/desktop/frontend/prototypes/asr/')
-                    result = runtime.evaluate('''async ({visual, control}) => {
+                    result = runtime.evaluate('''async ({visual, control, smileControl}) => {
                       document.body.replaceChildren();
                       const container = document.createElement('div'); container.style.width='500px'; container.style.height='600px'; document.body.append(container);
                       const {createRendererHost} = await import('/desktop/frontend/pet/renderer-host.js');
-                      const failures=[]; window.spineHost=createRendererHost({container,services:{setSurface:async size=>{window.surface=size;return true}, unavailable:(...v)=>failures.push(v)},onUnavailable:(...v)=>failures.push(v),onError:(...v)=>failures.push(v)});
+                      const failures=[];
+                      const plugin = await import(visual.renderer);
+                      window.spineHost=createRendererHost({container,loadModule:async()=>({mount:async options => {
+                        window.spineInstance = await plugin.mount(options); return spineInstance;
+                      }}),services:{setSurface:async size=>{window.surface=size;return true}, unavailable:(...v)=>failures.push(v)},onUnavailable:(...v)=>failures.push(v),onError:(...v)=>failures.push(v)});
                       if(!await spineHost.bind({visual})) throw Error(JSON.stringify(failures));
-                      spineHost.begin('reply'); const played=await spineHost.play(control,'reply',0);
-                      const duplicate=await spineHost.play(control,'reply',0);
+                      const first={},last={},inherited={};
+                      spineHost.begin('reply'); const played=await spineHost.play(control,'reply',0,first);
+                      const duplicate=await spineHost.play(control,'reply',0,first);
+                      await spineHost.play(smileControl,'reply',1,last);
+                      await spineHost.play(undefined,'reply',2,inherited);
+                      const reviewed=[];
+                      for(const item of [first,last,inherited,first]) {
+                        if(!await spineHost.review(item)) throw Error('review rejected');
+                        reviewed.push(spineInstance.snapshotState());
+                      }
                       await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-                      return {played,duplicate,failures,surface:window.surface,canvas:!!container.querySelector('canvas')};
-                    }''', {'visual': visual, 'control': control})
+                      return {played,duplicate,failures,reviewed,surface:window.surface,canvas:!!container.querySelector('canvas')};
+                    }''', {'visual': visual, 'control': control, 'smileControl': smile_control})
                     assert result['played'] and not result['duplicate'] and result['canvas'] and not result['failures'], result
+                    assert [state['skin'] for state in result['reviewed']] == ['normal', 'smile', 'smile', 'normal']
+                    assert all(state['speed'] == 1.5 and state['animation'] == 'idle' for state in result['reviewed'])
                     runtime.screenshot(path=str(output / f'room-{index + 1}-renderer.png'))
                     before = runtime.locator('canvas').screenshot()
                     runtime.evaluate('''async () => { for(let i=0;i<20;i++) await new Promise(requestAnimationFrame); }''')
