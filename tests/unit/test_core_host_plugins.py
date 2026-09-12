@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from app.config.character_loader import CharacterProfile
 from app.storage.runtime_roots import RuntimeRoots
 
 
@@ -93,7 +94,7 @@ def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> No
     application = PluginApplicationHost(_assistant_root(tmp_path), "generation-a", registry)
     session = type("Session", (), {
         "runtime": runtime,
-        "character": type("Character", (), {"id": "fixture"})(),
+        "character": CharacterProfile("fixture", "Fixture", tmp_path, tmp_path / "card.md", ""),
     })()
     try:
         application.start()

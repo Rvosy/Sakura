@@ -257,6 +257,15 @@ def _root(
     (plugin_data / "config.json").write_text(json.dumps(config), encoding="utf-8")
     _write_custom_character(root, "alpha", "remote-alpha")
     _write_custom_character(root, "beta", "remote-beta")
+    hub_data = root / "data/plugins/sakura.tts"
+    hub_data.mkdir(parents=True)
+    (hub_data / "config.json").write_text(
+        json.dumps({"selections": {
+            character_id: {"enabled": True, "provider": "sakura.tts.genie"}
+            for character_id in ("alpha", "beta")
+        }}),
+        encoding="utf-8",
+    )
     return root
 
 
@@ -273,10 +282,6 @@ def _write_custom_character(root: Path, character_id: str, remote_name: str) -> 
                 "card": "card.md",
                 "portrait": {"default": "portrait.png"},
                 "extensions": {
-                    "sakura.tts": {
-                        "enabled": True,
-                        "provider": "sakura.tts.genie",
-                    },
                     "sakura.tts.genie": {"remoteCharacterName": remote_name},
                 },
             }

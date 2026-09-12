@@ -21,10 +21,7 @@ def test_repair_character_packages_upgrades_legacy_voice_manifest(tmp_path: Path
     )
 
     manifest = json.loads((package / "character.json").read_text(encoding="utf-8"))
-    assert manifest["extensions"]["sakura.tts"] == {
-        "enabled": True,
-        "provider": "sakura.tts.gpt-sovits",
-    }
+    assert "sakura.tts" not in manifest["extensions"]
     assert manifest["extensions"]["sakura.tts.gpt-sovits"]["toneRefs"] == (
         "voice/refs/ref.txt"
     )
@@ -75,7 +72,7 @@ def test_repair_character_packages_moves_trailing_dot_and_resolves_duplicate_id(
             (characters / moved.target_name / "character.json").read_text(encoding="utf-8")
         )
         assert repaired_manifest["id"] == "N.A.V.I._2"
-        assert repaired_manifest["extensions"]["sakura.tts"]["enabled"] is True
+        assert "sakura.tts" not in repaired_manifest["extensions"]
         assert {profile.id for profile in CharacterRegistry(tmp_path).all()} == {
             "N.A.V.I.",
             "N.A.V.I._1",

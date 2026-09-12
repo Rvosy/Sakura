@@ -1050,6 +1050,12 @@ class InstantTTSPlugin:
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts"]["state"] == "active"
         assert by_id["com.example.instant-tts"]["state"] == "active"
+        manifest_before = (character_root / "character.json").read_bytes()
+        assert worker.call_service("sakura.tts", "status", "sakura")["enabled"] is False
+        worker.call_service("sakura.tts", "configure", "sakura", {"enabled": True, "provider": "com.example.instant-tts"})
+        assert (character_root / "character.json").read_bytes() == manifest_before
+        selection = json.loads((root / "data/plugins/sakura.tts/config.json").read_text())["selections"]["sakura"]
+        assert selection == {"enabled": True, "provider": "com.example.instant-tts"}
         status = worker.call_service("sakura.tts", "status", "sakura")
         assert status["enabled"] is True
         assert status["providerId"] == "com.example.instant-tts"
@@ -1518,10 +1524,9 @@ def test_plugin_cutover_never_falls_back_when_tts_is_unavailable(
 def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> None:
     from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
 
-    class Character:
-        def get(self, character_id: str):
-            assert character_id == "sakura"
-            return {"enabled": True, "provider": "com.example.provider"}
+    class Config:
+        def get(self):
+            return {"selections": {"sakura": {"enabled": True, "provider": "com.example.provider"}}}
 
     class Job:
         def __init__(self) -> None:
@@ -1544,7 +1549,7 @@ def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> 
     context = SimpleNamespace(get=lambda service_key: (
         provider if service_key == "com.example.provider.service" else None
     ))
-    hub = SakuraTTSHub(context, Character())
+    hub = SakuraTTSHub(context, Config())
     hub.registerProvider({
         "providerId": "com.example.provider",
         "serviceKey": "com.example.provider.service",
@@ -1564,20 +1569,36 @@ def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> 
     assert hub.poll("request-dispose")["errorCode"] == "TTS_JOB_NOT_FOUND"
 
 
+def test_hub_selection_is_local_persistent_and_independent_per_character(tmp_path: Path) -> None:
+    from app.plugins.sakura_plugin_sdk import PluginConfig
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+
+    config = PluginConfig("sakura.tts", tmp_path / "plugin", tmp_path / "data/plugins/sakura.tts", lambda callback: callback)
+    context = SimpleNamespace(get=lambda _key: SimpleNamespace(status=lambda: {"available": True}))
+    hub = SakuraTTSHub(context, config)
+    assert hub.status("a")["enabled"] is False
+    assert hub.status("a")["providerId"] is None
+    hub.configure("a", {"enabled": True, "provider": "example.first"})
+    hub.configure("b", {"enabled": True, "provider": "example.second"})
+    hub.configure("a", {"enabled": False, "provider": "example.first"})
+
+    restarted = SakuraTTSHub(context, PluginConfig("sakura.tts", tmp_path / "plugin", tmp_path / "data/plugins/sakura.tts", lambda callback: callback))
+    assert restarted.status("a")["enabled"] is False
+    assert restarted.status("a")["providerId"] == "example.first"
+    assert restarted.status("b")["enabled"] is True
+    assert restarted.status("b")["providerId"] == "example.second"
+
+
 def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
     from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
 
-    class Character:
+    class Config:
         enabled = True
 
-        def get(self, character_id: str):
-            assert character_id == "sakura"
-            return {
-                "enabled": self.enabled,
-                "provider": "com.example.provider",
-            }
+        def get(self):
+            return {"selections": {"sakura": {"enabled": self.enabled, "provider": "com.example.provider"}}}
 
-    character = Character()
+    config = Config()
     warmed: list[str] = []
     provider = SimpleNamespace(
         status=lambda: {"available": True},
@@ -1586,7 +1607,7 @@ def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
     context = SimpleNamespace(get=lambda service_key: (
         provider if service_key == "com.example.provider.service" else None
     ))
-    hub = SakuraTTSHub(context, character)
+    hub = SakuraTTSHub(context, config)
     hub.registerProvider({
         "providerId": "com.example.provider",
         "serviceKey": "com.example.provider.service",
@@ -1606,7 +1627,7 @@ def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
     provider.warmup = fail
     assert hub.warmup("sakura")["reasonCode"] == "TTS_ONNX_CONVERSION_UNAVAILABLE"
 
-    character.enabled = False
+    config.enabled = False
     assert hub.warmup("sakura")["reasonCode"] == "TTS_DISABLED"
     assert warmed == ["sakura"]
 
@@ -1614,12 +1635,9 @@ def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
 def test_hub_warmup_preserves_provider_readiness_diagnostic() -> None:
     from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
 
-    character = SimpleNamespace(
-        get=lambda _character_id: {
-            "enabled": True,
-            "provider": "sakura.tts.gpt-sovits",
-        }
-    )
+    config = SimpleNamespace(get=lambda: {"selections": {"sakura": {
+        "enabled": True, "provider": "sakura.tts.gpt-sovits",
+    }}})
     provider = SimpleNamespace(
         status=lambda: {
             "available": False,
@@ -1629,7 +1647,7 @@ def test_hub_warmup_preserves_provider_readiness_diagnostic() -> None:
     )
     hub = SakuraTTSHub(
         SimpleNamespace(get=lambda _service_key: provider),
-        character,
+        config,
     )
     hub.registerProvider(
         {

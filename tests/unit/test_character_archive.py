@@ -57,10 +57,7 @@ def test_character_archive_export_then_import_roundtrip() -> None:
     imported_manifest = json.loads(
         (imported.package_dir / "character.json").read_text(encoding="utf-8")
     )
-    assert imported_manifest["extensions"]["sakura.tts"] == {
-        "enabled": True,
-        "provider": "sakura.tts.gpt-sovits",
-    }
+    assert "sakura.tts" not in imported_manifest["extensions"]
     assert imported_manifest["extensions"]["sakura.tts.gpt-sovits"]["gptModel"] == (
         "voice/models/gpt.ckpt"
     )
@@ -127,12 +124,16 @@ def test_character_archive_roundtrips_opaque_plugin_extensions() -> None:
         (result.package_dir / "character.json").read_text(encoding="utf-8")
     )
     for plugin_id, value in expected.items():
-        assert imported["extensions"][plugin_id] == value
+        if plugin_id == "sakura.tts":
+            assert plugin_id not in imported["extensions"]
+        else:
+            assert imported["extensions"][plugin_id] == value
     with zipfile.ZipFile(archive_path, "r") as zf:
         public_manifest = json.loads(zf.read("manifest.json"))
         package_manifest = json.loads(zf.read("character/character.json"))
-    assert public_manifest["character"]["extensions"] == expected
-    assert package_manifest["extensions"] == expected
+    resources = {key: value for key, value in expected.items() if key != "sakura.tts"}
+    assert public_manifest["character"]["extensions"] == resources
+    assert package_manifest["extensions"] == resources
 
 
 def test_character_archive_roundtrips_runtime_fields_and_extension_voice_resources() -> None:
@@ -471,13 +472,12 @@ def test_character_voice_archive_imports_to_selected_character(existing_extensio
     assert imported.voice.tone_ref_path.read_text(encoding="utf-8").strip().endswith("|开心")
     assert manifest["voice"]["tone_refs"] == "voice/refs/ref.txt"
     assert manifest["voice"]["ref_lang"] == "ja"
-    assert manifest["extensions"]["sakura.tts"]["enabled"] is True
+    assert "sakura.tts" not in manifest["extensions"]
     assert manifest["extensions"]["sakura.tts.gpt-sovits"]["sovitsModel"] == (
         "voice/models/sovits.pth"
     )
     if existing_extensions:
         from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
-        assert manifest["extensions"]["sakura.tts"]["provider"] == "sakura.tts.genie"
         genie = manifest["extensions"]["sakura.tts.genie"]
         assert genie == {"refLang": "zh", "remoteCharacterName": "explicit"}
         assert _effective_voice_extension(manifest, genie)["gptModel"] == "voice/models/gpt.ckpt"

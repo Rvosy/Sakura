@@ -31,7 +31,12 @@ export function mountEditor({ container, data, host, signal }) {
   const toolbar = doc.createElement("div"); toolbar.className = "resource-section-actions"; toolbar.append(add, folder);
   container.append(toolbar, list);
   let rows = Array.isArray(config.expressionRows) ? config.expressionRows : Object.entries(config.expressions || {}).map(([label, path]) => ({ label, path, selected: path === config.default }));
-  if (config.default && !rows.some((row) => row.selected)) rows.unshift({ label: "默认", path: config.default, selected: true });
+  if (config.default && !rows.some((row) => row.selected)) {
+    const labels = new Set(rows.map(row => row.label.trim()));
+    let label = "默认";
+    for (let suffix = 2; labels.has(label); suffix++) label = `默认 ${suffix}`;
+    rows.unshift({ label, path: config.default, selected: true });
+  }
   function collect() {
     const { expressionRows: _draftRows, ...saved } = config;
     const labels = rows.map(row => row.label.trim());

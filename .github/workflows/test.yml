@@ -193,23 +193,15 @@ jobs:
         timeout-minutes: 8
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked
 
-      - name: Build the native Tauri Shell (Linux bounded retry)
+      - name: Build the native Tauri Shell (Linux)
         if: runner.os == 'Linux'
         working-directory: desktop
         timeout-minutes: 8
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in 1 2 3; do
-            if timeout --signal=TERM --kill-after=10s 180s \
-              cargo build --manifest-path src-tauri/Cargo.toml --locked; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              sleep $((attempt * 5))
-            fi
-          done
-          exit 1
+          timeout --signal=TERM --kill-after=10s 180s \
+            cargo build --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Download and verify the pinned Python archive
         timeout-minutes: 5

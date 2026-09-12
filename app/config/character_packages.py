@@ -94,10 +94,6 @@ def ensure_legacy_voice_extensions(
         if isinstance(value, str) and value.strip():
             gpt_provider[target_key] = value.strip()
     defaults = {
-        "sakura.tts": {
-            "enabled": True,
-            "provider": "sakura.tts.gpt-sovits",
-        },
         "sakura.tts.gpt-sovits": gpt_provider,
         # Genie inherits shared resources at read time. Copying model paths here
         # would turn them into overrides that become stale after Studio edits.

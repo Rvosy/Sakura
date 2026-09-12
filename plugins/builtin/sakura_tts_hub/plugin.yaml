@@ -10,7 +10,7 @@ priority: 100
 provides:
   - sakura.tts
 requires:
-  - sakura.host.character
+  - sakura.host.logging
 presentation:
   kind: infrastructure
   category: voice

@@ -453,7 +453,10 @@ def test_chat_boundary_preserves_pending_settings_after_hot_apply_failure(
         boundary.close()
 
 
-def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancelled: bool) -> None:
+    terminal_logs = []
+    monkeypatch.setattr("app.core.runtime_log.log_event", lambda *args, **kwargs: terminal_logs.append((args, kwargs)))
     pipeline_started = threading.Event()
     release_pipeline = threading.Event()
     events: list[dict[str, object]] = []
@@ -494,11 +497,19 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -
     assert accepted["payload"] == {"accepted": True, "operationId": "slow-accepted"}
     assert pipeline_started.wait(1)
     assert [event["name"] for event in events] == ["chat.started"]
+    if cancelled:
+        assert boundary.handle_cancel(_request("cancel-slow", "chat.cancel", {"operationId": "slow-accepted"}))["payload"]["accepted"]
     release_pipeline.set()
     deadline = time.monotonic() + 2
     while len(events) < 2 and time.monotonic() < deadline:
         time.sleep(0.005)
-    assert [event["name"] for event in events] == ["chat.started", "chat.completed"]
+    assert [event["name"] for event in events] == ["chat.started", "chat.cancelled" if cancelled else "chat.completed"]
+    finished = [(args, kw) for args, kw in terminal_logs if kw.get("event") == "chat.finished"]
+    assert len(finished) == 1
+    assert finished[0][0][2]["outcome"] == ("cancelled" if cancelled else "success")
+    assert finished[0][0][2]["operation_id"] == "slow-accepted"
+    assert finished[0][0][2]["elapsed_ms"] >= 0
+    assert finished[0][1]["severity"] == "info"
     boundary.close()
 
 
@@ -1032,8 +1043,10 @@ def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
 
 
 def test_timeline_deleted_during_runtime_fails_without_recreating_or_writing_jsonl(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    terminal_logs = []
+    monkeypatch.setattr("app.core.runtime_log.log_event", lambda *args, **kwargs: terminal_logs.append((args, kwargs)))
     pipeline_calls = 0
     events: list[dict[str, object]] = []
 
@@ -1069,6 +1082,10 @@ def test_timeline_deleted_during_runtime_fails_without_recreating_or_writing_jso
     boundary.handle_send(request)
 
     assert [event["name"] for event in events] == ["chat.started", "chat.failed"]
+    finished = [(args, kw) for args, kw in terminal_logs if kw.get("event") == "chat.finished"]
+    assert len(finished) == 1
+    assert finished[0][0][2]["outcome"] == "failed"
+    assert finished[0][0][2]["operation_id"] == "timeline-deleted"
     assert events[-1]["payload"]["error"]["code"] == "TIMELINE_READ_FAILED"  # type: ignore[index]
     assert pipeline_calls == 0
     assert not timeline.path.exists()

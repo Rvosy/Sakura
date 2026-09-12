@@ -12,6 +12,30 @@ const container = () => {
 };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test("switching a form does not restore revoked resources from the retired renderer", async () => {
+  let restores = 0;
+  const host = createRendererHost({
+    container: container(), services: { cancelSurface: () => restores++ },
+    loadModule: async () => ({ mount: ({ host: scoped }) => ({
+      applyState() {},
+      cancel() { void scoped.cancelSurface(); },
+      destroy() {},
+    }) }),
+  });
+  await host.bind(binding());
+  host.begin("old-operation");
+  await host.bind(binding("b"));
+  assert.equal(restores, 0);
+  host.begin("new-operation");
+  host.cancel();
+  assert.ok(restores > 0, "ordinary interruption still restores the current surface");
+  restores = 0;
+  host.begin("next-operation");
+  host.freeze("generation_changed");
+  assert.equal(restores, 0);
+  host.destroy();
+});
+
 test("generation changes revoke old controls but retain the surface until replacement is ready", async () => {
   const next = deferred();
   const root = container();

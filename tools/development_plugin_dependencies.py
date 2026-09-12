@@ -18,7 +18,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app/plugin_sdk"))
 from sakura_downloads import uv_download_environment
 
-PLUGIN_DIRECTORIES = ("sakura_genie", "sakura_gpt_sovits", "sakura_mem0", "sakura_asr_sensevoice")
+PLUGIN_DIRECTORIES = ("sakura_genie", "sakura_gpt_sovits", "sakura_mem0", "sakura_asr_sensevoice", "sakura_web")
 _PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 

@@ -4,8 +4,8 @@ import argparse
 import collections
 import json
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 import sqlite3
 import tempfile
 import time
@@ -16,9 +16,7 @@ from queries import TABLES, Filters, connection, where, normalize, quality
 EXPORT_VERSION = 2
 MAX_BYTES = 1024**3
 MAX_SECONDS = 300
-PRIVATE = re.compile(
-    r"(?i)(?:\bsk-[A-Za-z0-9_-]{8,}|\bBearer\s+\S+|-----BEGIN .*PRIVATE KEY|(?:https?|file)://|(?:^|\s)(?:/Users/|/home/|[A-Za-z]:[\\/])|(?:SENTINEL|PRIVATE)_(?:CHAT|PROMPT|KEY|MEMORY|TOOL|EXCEPTION|MODEL))"
-)
+
 
 
 class ExportLimitError(RuntimeError):
@@ -62,20 +60,6 @@ def _export_snapshot(
         if time.monotonic() - start > max_seconds:
             raise ExportLimitError("EXPORT_TIME_LIMIT")
 
-    def clean(value, table, row_id, field=""):
-        if isinstance(value, dict):
-            return {
-                k: clean(v, table, row_id, field + "." + k) for k, v in value.items()
-            }
-        if isinstance(value, list):
-            return [
-                clean(v, table, row_id, field + f"[{i}]") for i, v in enumerate(value)
-            ]
-        if isinstance(value, str) and PRIVATE.search(value):
-            redactions.append({"table": table, "id": row_id, "field": field})
-            return "[REDACTED]"
-        return value
-
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if destination.exists():
@@ -89,6 +73,7 @@ def _export_snapshot(
         grouped = {}
         builds = set()
         occurrences = {}
+        occurrence_groups = {}
         installs = {}
 
         def add(name, data):
@@ -139,7 +124,7 @@ def _export_snapshot(
                     n = 0
                     with (root / (table + ".jsonl")).open("wb") as output:
                         for source in c.execute(sql, [*args, *extension_args]):
-                            row = clean(normalize(source), table, source["id"])
+                            row = normalize(source)
                             raw = (
                                 json.dumps(
                                     row, ensure_ascii=False, separators=(",", ":")
@@ -184,13 +169,13 @@ def _export_snapshot(
                             if table == "error_events":
                                 key = (
                                     row.get("fingerprint_version"),
-                                    row.get("fingerprint"),
+                                    row.get("group_key") or row.get("fingerprint"),
                                 )
                                 group = grouped.setdefault(
                                     key,
                                     {
                                         "fingerprintVersion": key[0],
-                                        "fingerprint": key[1],
+                                        "fingerprint": row.get("fingerprint"),
                                         "reports": 0,
                                         "reportIds": [],
                                     },
@@ -206,6 +191,7 @@ def _export_snapshot(
                                     row.get("generation"),
                                     row.get("fingerprint"),
                                 )
+                                occurrence_groups[occurrence_key] = key
                                 occurrences[occurrence_key] = max(
                                     1, occurrences.get(occurrence_key, 0)
                                 )
@@ -248,9 +234,10 @@ def _export_snapshot(
             group["installations"] = len(installs.get(key, set()))
             group["occurrences"] = max(
                 group["reports"],
-                sum(v for k, v in occurrences.items() if k[3] == key[1]),
+                sum(v for k, v in occurrences.items() if occurrence_groups.get(k) == key),
             )
         from v2_models import ErrorReportV2, EventBatchV2, ModelBatchV2
+        from v3_models import ErrorReportV3
 
         add(
             "protocol.json",
@@ -258,6 +245,7 @@ def _export_snapshot(
                 name: model.model_json_schema(by_alias=True)
                 for name, model in [
                     ("errors", ErrorReportV2),
+                    ("originalErrors", ErrorReportV3),
                     ("events", EventBatchV2),
                     ("modelCalls", ModelBatchV2),
                 ]
@@ -287,6 +275,7 @@ def _export_snapshot(
 
 先运行 `python verify_bundle.py .` 校验所有文件，再读取 groups.json 与 quality.json。
 三张 JSONL 保留数据库行 ID，stack/breadcrumbs 已转为数组，details 是固定结构。
+v3 错误的 evidence 保留原始报错、路径和栈，report 是完整报告；从原文开始分析，不仅依赖错误码。
 按 installation_id + run_id + generation + operation_id 关联；单调时间仅在同 run 内可比较。
 timeline.jsonl 按数据源分批写出，分析时按同 run 的 occurred_ms 排序；缺失时使用接收时间并注明局限。
 received_at 是北京时间无时区旧列；received_at_iso 明确带 +08:00。
