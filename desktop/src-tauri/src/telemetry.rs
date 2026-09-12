@@ -1230,17 +1230,19 @@ async fn sender_loop(
                     && receiver.is_empty()
                 {
                     retry_at = Instant::now() + Duration::from_secs(60);
-                    let id = inner
-                        .runtime
-                        .lock()
-                        .ok()
-                        .and_then(|r| r.installation_id.clone());
                     if let Ok(outbox) = inner.outbox.lock() {
-                        for report in outbox.pending(id.as_deref()) {
-                            deferred.push_back(QueuedRecord {
-                                epoch: inner.epoch.load(Ordering::Acquire),
-                                record: TelemetryRecord::Error(report),
-                            });
+                        // Read identity and epoch together while reset cannot clear
+                        // or replace the pending files. Old reports keep this epoch.
+                        let service = TelemetryService {
+                            inner: Arc::clone(&inner),
+                        };
+                        if let Some((id, epoch)) = service.installation_context() {
+                            for report in outbox.pending(Some(&id)) {
+                                deferred.push_back(QueuedRecord {
+                                    epoch,
+                                    record: TelemetryRecord::Error(report),
+                                });
+                            }
                         }
                     }
                     if let Some(item) = deferred.pop_front() {
