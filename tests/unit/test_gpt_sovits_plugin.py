@@ -130,6 +130,15 @@ def _root(
     )
     _write_character(root, "alpha", "alpha reference")
     _write_character(root, "beta", "beta reference")
+    hub_data = root / "data/plugins/sakura.tts"
+    hub_data.mkdir(parents=True)
+    (hub_data / "config.json").write_text(
+        json.dumps({"selections": {
+            character_id: {"enabled": True, "provider": "sakura.tts.gpt-sovits"}
+            for character_id in ("alpha", "beta")
+        }}),
+        encoding="utf-8",
+    )
     return root
 
 
@@ -153,10 +162,6 @@ def _write_character(root: Path, character_id: str, prompt: str) -> None:
                 "card": "card.md",
                 "portrait": {"default": "portrait.png"},
                 "extensions": {
-                    "sakura.tts": {
-                        "enabled": True,
-                        "provider": "sakura.tts.gpt-sovits",
-                    },
                     "sakura.tts.gpt-sovits": {
                         "toneRefs": "voice/refs/ref.txt",
                         "refLang": "ja",
@@ -981,10 +986,6 @@ def test_gpt_provider_cancels_queued_job_and_rejects_character_escape(tmp_path: 
                 "card": "card.md",
                 "portrait": {"default": "portrait.png"},
                 "extensions": {
-                    "sakura.tts": {
-                        "enabled": True,
-                        "provider": "sakura.tts.gpt-sovits",
-                    },
                     "sakura.tts.gpt-sovits": {"toneRefs": "../alpha/voice/refs/ref.txt"},
                 },
             }
@@ -1035,6 +1036,10 @@ def test_gpt_provider_cancels_queued_job_and_rejects_character_escape(tmp_path: 
         assert active_cancelled["accepted"] is True
         assert _poll_terminal(worker, "active-cancel")["state"] == "cancelled"
 
+        worker.call_service(
+            "sakura.tts", "configure", "escaped",
+            {"enabled": True, "provider": "sakura.tts.gpt-sovits"},
+        )
         escaped_result = worker.call_service(
             "sakura.tts",
             "begin",
