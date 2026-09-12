@@ -1,4 +1,4 @@
-"""Resource-only .char transactions; providers supply the private resource entry."""
+"""Resource-only .visual transactions; legacy .char components remain readable."""
 from __future__ import annotations
 
 import json
@@ -37,7 +37,7 @@ def export_visual_archive(package: Path, resource: CharacterVisualResource, proj
     manifest = {"format": ARCHIVE_FORMAT, "version": 2, "kind": "resource", "resource": {"type": resource.type, "entry": entry}}
     if resource.name:
         manifest["resource"]["name"] = resource.name
-    destination = Path(destination).with_suffix(".char")
+    destination = Path(destination).with_suffix(".visual")
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.partial")
     try:
         with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:

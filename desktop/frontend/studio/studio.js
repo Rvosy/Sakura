@@ -978,6 +978,16 @@ async function openVisualEditor(resource, revision = visualEditorRevision, { flu
   } catch (error) {
     if (revision !== visualEditorRevision || selection !== visualSelectionRevision) return;
     visualEditor.clear();
+    const inactive = String(error).match(/VISUAL_PROVIDER_MISSING|PLUGIN_DISABLED/);
+    if (inactive) {
+      const text = document.createElement("p");
+      text.textContent = inactive[0] === "VISUAL_PROVIDER_MISSING"
+        ? "尚未安装支持此形态的插件。资源会随角色保存，安装并启用插件后可编辑和显示。"
+        : "所需插件尚未启用。资源会随角色保存，启用插件后可编辑和显示。";
+      fields.expressionList.append(text);
+      refreshControls();
+      return;
+    }
     const text = document.createElement("p"); text.textContent = "此表现暂时无法编辑。保存其他修改会保留原有资源。";
     fields.expressionList.append(text);
     runtimeDiagnostics.reportError(error, { command: "studio_visual_open", code: "VISUAL_EDITOR_FAILED" });
@@ -1059,7 +1069,7 @@ window.addEventListener("pagehide", () => { window.clearInterval(visualStatusTim
 
 async function exportVisualComponent(resourceId) {
   await flushDraftAutosave();
-  const path = await invoke("studio_choose_export", { defaultName: `${resourceId}.char` });
+  const path = await invoke("studio_choose_export", { defaultName: `${resourceId}.visual` });
   if (!path) return;
   await runBusy(() => invokeStudio("studio.visual.export", { workspaceId: currentWorkspaceId, resourceId, path }, "正在导出表现组件…"));
 }
