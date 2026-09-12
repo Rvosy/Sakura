@@ -764,10 +764,13 @@ impl RuntimeLogService {
         };
         if entry.command.as_deref().is_some_and(|value| {
             normalize_token(value, 96).is_none() || value == "record_runtime_diagnostics"
-        }) || entry.stage.as_deref().is_some_and(|value| normalize_token(value, 96).is_none()) || entry
-            .outcome
+        }) || entry
+            .stage
             .as_deref()
-            .is_some_and(|value| !matches!(value, "started" | "completed" | "failed" | "cancelled"))
+            .is_some_and(|value| normalize_token(value, 96).is_none())
+            || entry.outcome.as_deref().is_some_and(|value| {
+                !matches!(value, "started" | "completed" | "failed" | "cancelled")
+            })
             || entry.code.as_deref().is_some_and(|value| {
                 value.len() > 64
                     || value.is_empty()
@@ -1576,7 +1579,9 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "studio.draft.save" => "保存角色草稿",
         "studio.visual.catalog" => "读取形态插件目录",
         "studio.visual.open" | "studio_visual_open" | "studio_visual_editor" => "打开形态编辑器",
-        "studio.visual.previews" | "studio_visual_previews" | "studio_visual_cover" => "加载形态封面",
+        "studio.visual.previews" | "studio_visual_previews" | "studio_visual_cover" => {
+            "加载形态封面"
+        }
         "studio.visual.create" => "添加形态",
         "studio.visual.import" => "导入形态",
         "studio.visual.export" => "导出形态",
@@ -1597,11 +1602,16 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "ui.history.page" => "读取对话记录",
         _ => return None,
     };
-    Some(if matches!(record.event.as_str(), "ipc.request.started" | "webview.command.started") {
-        format!("正在{action}")
-    } else {
-        format!("{action}{suffix}")
-    })
+    Some(
+        if matches!(
+            record.event.as_str(),
+            "ipc.request.started" | "webview.command.started"
+        ) {
+            format!("正在{action}")
+        } else {
+            format!("{action}{suffix}")
+        },
+    )
 }
 
 fn viewer_is_gpt_sovits(record: &RuntimeLogRecord) -> bool {
@@ -3369,7 +3379,10 @@ fn sanitize_fixed_message(value: &str) -> String {
 /// Preserve the failure text while redacting just credentials and private paths.
 /// Multiline diagnostics stay multiline in the viewer; the text writer escapes them.
 pub(crate) fn diagnostic_error(code: &str, error: impl std::fmt::Display) -> String {
-    format!("{code}: {}", sanitize_diagnostic(&error.to_string(), &[], 4096))
+    format!(
+        "{code}: {}",
+        sanitize_diagnostic(&error.to_string(), &[], 4096)
+    )
 }
 
 pub(crate) fn sanitize_diagnostic(value: &str, secrets: &[String], maximum: usize) -> String {
@@ -4586,7 +4599,9 @@ mod tests {
             "diagnostic": "TypeError: texture decode failed token=private-value",
             "exceptionStack": "TypeError: texture decode failed\n at mount (C:/Users/private/renderer.js:12:3)"
         })).unwrap();
-        let event = log.prepare_webview(crate::character_studio_window::STUDIO_WINDOW_LABEL, entry).unwrap();
+        let event = log
+            .prepare_webview(crate::character_studio_window::STUDIO_WINDOW_LABEL, entry)
+            .unwrap();
         assert!(log.submit(event));
         let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
         let text = serde_json::to_string(&record).unwrap();
