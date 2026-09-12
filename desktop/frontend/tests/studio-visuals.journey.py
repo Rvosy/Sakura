@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -169,6 +170,20 @@ def run():
                 portrait_data = json.loads((package / resources[0]["root"] / resources[0]["entry"]).read_text(encoding="utf-8"))
                 assert "expressionRows" not in portrait_data
                 assert set(portrait_data["expressions"]) == {"平静", "开心"}
+                source = root / "missing.visual"
+                with zipfile.ZipFile(source, "w") as archive:
+                    archive.writestr("manifest.json", json.dumps({"format": "sakura.character.archive", "version": 2, "kind": "resource", "resource": {"type": "fixture.missing@1", "entry": "resource.json", "name": "缺少插件的形态"}}))
+                    archive.writestr("resource/resource.json", '{"private":true}')
+                page.get_by_role("button", name="导入形态", exact=True).click()
+                page.locator(".form-card").filter(has_text="缺少插件的形态").click()
+                expect(page.locator("#expressionList")).to_contain_text("尚未安装支持此形态的插件")
+                expect(page.locator("#errorText")).to_be_empty()
+                page.locator("#saveButton").click()
+                expect(page.locator("#saveButton")).to_be_enabled()
+                saved = json.loads((package / "character.json").read_text())
+                missing = next(item for item in saved["visuals"]["resources"] if item["type"] == "fixture.missing@1")
+                assert saved["visuals"]["default"] == missing["id"]
+                assert json.loads((package / missing["root"] / missing["entry"]).read_text()) == {"private": True}
                 assert not errors, errors
                 browser.close()
                 print("PASS: Studio cards/name/default/add -> portrait preview/edit/import -> save/reopen; visual QA at 1274, 820 and 680 px")

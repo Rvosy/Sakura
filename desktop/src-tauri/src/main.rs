@@ -7034,6 +7034,13 @@ async fn studio_choose_source(
 ) -> Result<Value, String> {
     character_studio_window::validate_studio_window(&window)?;
     let dialog = rfd::AsyncFileDialog::new().set_title("选择角色工坊资源");
+    let dialog = if kind == "resourceArchive" {
+        dialog
+            .add_filter("Sakura 形态包", &["visual"])
+            .add_filter("旧版形态组件", &["char"])
+    } else {
+        dialog
+    };
     let selected = match kind.as_str() {
         "visual" | "resourceArchive" => {
             if multiple {
@@ -7081,10 +7088,19 @@ async fn studio_choose_export(
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("character.char");
+    let (title, filter_name, extension) = if std::path::Path::new(safe_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("visual"))
+    {
+        ("导出 Sakura 形态包", "Sakura 形态包", "visual")
+    } else {
+        ("导出 Sakura 角色包", "Sakura 角色包", "char")
+    };
     Ok(rfd::AsyncFileDialog::new()
-        .set_title("导出 Sakura 角色包")
+        .set_title(title)
         .set_file_name(safe_name)
-        .add_filter("Sakura 角色包", &["char"])
+        .add_filter(filter_name, &[extension])
         .save_file()
         .await
         .map(|file| file.path().to_string_lossy().to_string()))

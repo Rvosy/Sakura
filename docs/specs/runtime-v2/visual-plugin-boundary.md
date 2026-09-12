@@ -248,10 +248,15 @@ catalog 返回编辑器提供者的 scopeId，open 返回 providerScopeId。工�
 普通保存保留未知 manifest 字段，通用清理不根据私有 JSON 猜测并删除资源文件。
 
 完整新包沿用 `.char`，manifest version 2、kind `character`；旧 version 1 继续导入。
-组件使用 version 2、kind `resource`，manifest 的 resource 为 `{type,entry,name?}`，文件在 `resource/` 下；
-可选名称随导出、导入保留，旧组件仍可读取。
+形态组件使用 `.visual` 后缀、version 2、kind `resource`，manifest 的 resource 为 `{type,entry,name?}`，文件在 `resource/` 下；
+可选名称随导出、导入保留，旧版 `.char` 形态组件仍可读取。导出统一写 `.visual`，完整角色保持 `.char`，语音包保持 `.voice`。
+原生“导入形态”选择器提供 `.visual` 与旧版 `.char` 过滤项；归档内容仍按 format/version/kind 校验，改后缀不能把完整角色变成形态组件。
 组件入口由 exportResource 投影，附件由 describe.assets 声明；导入生成新资源 ID，仅加入目标角色草稿并设为默认。
-不覆盖目标人格、voice、角色 ID 或已安装包。未知类型组件仍可保存和转交，缺失插件不触发隐式安装。
+不覆盖目标人格、voice、角色 ID 或已安装包。未知类型组件仍可保存并随完整角色包转交，缺失插件不触发隐式安装。
+当前组件未声明插件 ID 或版本依赖，宿主按 `type` 查找支持它的已安装插件；完整角色的 `visuals.providers` 可指定提供者 ID。
+缺少匹配插件时，工坊保留名称、配置和所有文件，并提示“尚未安装支持此形态的插件”；不能编辑、渲染或通过插件单独导出该形态。
+导入仍将新形态设为包默认；保存后若实际选中它，绑定返回 `VISUAL_PROVIDER_MISSING`、visual 为 null，不自动回退其他形态。
+用户可以选择已有可用形态，或安装并启用兼容插件后重新打开，无需重复导入。插件已安装但停用时单独提示未启用。
 ZIP 穿越、重复路径、符号链接与超限归档被拒绝；中途取消清理临时文件，提交前最后一次取消检查防止覆盖既有导出。
 
 ## 失败诊断
