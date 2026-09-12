@@ -338,8 +338,9 @@ fn install_runtime_panic_hook(runtime_log: RuntimeLogService) {
                 "Unhandled Rust error",
             )
             .attributes({
-                let mut value =
-                    json!({"code": "RUST_PANIC", "category": "panic", "stage": "panic"});
+                let mut value = json!({"code": "RUST_PANIC", "category": "panic", "stage": "panic",
+                        "diagnostic": panic_info.to_string(),
+                        "exception_stack": std::backtrace::Backtrace::force_capture().to_string()});
                 if let Some(location) = panic_info.location() {
                     let file = location.file().replace('\\', "/");
                     let relative = file

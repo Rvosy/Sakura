@@ -18,7 +18,7 @@ TABLES = {
 
 
 class Filters(StrictModel):
-    q: SafeToken | None = None
+    q: str | None = Field(default=None, max_length=512)
     start: str | None = None
     end: str | None = None
     build: SafeToken | None = None
@@ -103,18 +103,20 @@ def where(f, table, alias=""):
             ("component", "component"),
             ("reason", "reason_code"),
             ("severity", "severity"),
-            ("group", "fingerprint"),
             ("report", "report_id"),
         ]:
             value = getattr(f, key)
             if value is not None:
                 clauses.append(prefix + column + "=?")
                 args.append(value)
+        if f.group:
+            clauses.append(f"coalesce({prefix}group_key,{prefix}fingerprint) IN (SELECT coalesce(group_key,fingerprint) FROM error_events WHERE fingerprint=?)")
+            args.append(f.group)
         if f.q:
             clauses.append(
-                f"({prefix}error_code LIKE ? OR {prefix}fingerprint LIKE ? OR {prefix}event LIKE ?)"
+                f"({prefix}error_code LIKE ? OR {prefix}fingerprint LIKE ? OR {prefix}event LIKE ? OR {prefix}report_json LIKE ?)"
             )
-            args.extend(["%" + f.q + "%"] * 3)
+            args.extend(["%" + f.q + "%"] * 4)
     elif any((f.component, f.group, f.report, f.severity, f.q)):
         error_condition, error_args = where(f, "error_events", "selected")
         clauses.append(
@@ -136,6 +138,10 @@ def normalize(row):
     for name in ("stack", "breadcrumbs", "details"):
         value = row.pop(name + "_json", None)
         row[name] = json.loads(value) if value else ([] if name != "details" else None)
+    raw = row.pop("report_json", None)
+    if raw:
+        row["report"] = json.loads(raw)
+        row["evidence"] = row["report"]["evidence"]
     return row
 
 
@@ -192,7 +198,7 @@ def quality(c=None, filters=None):
         sum(severity IS NULL) AS missing_severity,
         sum(reason_code IS NULL) AS missing_reason,
         sum(operation_id IS NULL) AS missing_operation,
-        sum(json_extract(details_json,'$.file') IS NULL AND (stack_json IS NULL OR stack_json='[]')) AS missing_location
+        sum(json_extract(details_json,'$.file') IS NULL AND (stack_json IS NULL OR stack_json='[]') AND json_extract(report_json,'$.evidence.exception_stack') IS NULL) AS missing_location
         FROM error_events WHERE {condition} GROUP BY schema_version,build_id ORDER BY max(id) DESC""",
             args,
         )
@@ -209,7 +215,7 @@ def groups(filters, limit=100, offset=0):
             FROM telemetry_events WHERE event='error.repeated'
             GROUP BY installation_id,run_id,generation,fingerprint
         ), runs AS (
-            SELECT e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,
+            SELECT json_extract(e.report_json,'$.evidence.diagnostic') AS diagnostic,e.group_key,e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,
                 e.installation_id,e.run_id,e.generation,count(*) AS reports,
                 max(count(*),coalesce(max(counts.occurrences),1)) AS occurrences,
                 min(e.received_at) AS first_seen,max(e.received_at) AS last_seen
@@ -217,10 +223,10 @@ def groups(filters, limit=100, offset=0):
                 AND counts.generation IS e.generation AND counts.fingerprint=e.fingerprint
             WHERE {condition}
             GROUP BY e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,e.installation_id,e.run_id,e.generation
-        ) SELECT fingerprint,fingerprint_version,component,error_code,reason_code,stage,
+        ) SELECT min(diagnostic) AS diagnostic,min(fingerprint) AS fingerprint,fingerprint_version,component,error_code,reason_code,stage,
             sum(reports) AS reports,count(DISTINCT installation_id) AS installations,
             sum(occurrences) AS occurrences,min(first_seen) AS first_seen,max(last_seen) AS last_seen
-        FROM runs GROUP BY fingerprint,fingerprint_version,component,error_code,reason_code,stage"""
+        FROM runs GROUP BY coalesce(group_key,fingerprint),fingerprint_version,component,error_code,reason_code,stage"""
         total = c.execute("SELECT count(*) FROM (" + sql + ")", args).fetchone()[0]
         rows = [
             dict(r)

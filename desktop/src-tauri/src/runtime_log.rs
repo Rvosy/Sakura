@@ -409,6 +409,8 @@ pub struct WebviewDiagnosticEntry {
     #[serde(default)]
     exception_stack: Option<String>,
     #[serde(default)]
+    exception_chain: Option<String>,
+    #[serde(default)]
     elapsed_ms: Option<f64>,
     #[serde(default)]
     operation_id: Option<String>,
@@ -478,6 +480,33 @@ impl RuntimeLogService {
 
     pub fn submit(&self, event: RuntimeLogEvent) -> bool {
         let permitted = self.inner.config.level.permits(event.severity);
+        // Capture diagnostic evidence before the local log viewer's attribute
+        // projection. Only the known evidence fields are serialized remotely.
+        let telemetry_attributes = {
+            let mut attributes = event.attributes.clone().unwrap_or_else(|| json!({}));
+            if let Some(fields) = attributes.as_object_mut() {
+                for value in fields.values_mut() {
+                    if let Some(text) = value.as_str() {
+                        *value =
+                            Value::String(sanitize_diagnostic(text, &self.inner.secrets, 8192));
+                    }
+                }
+                if let Some(plugin) = &event.plugin_id {
+                    fields.insert("plugin_id".into(), Value::String(plugin.clone()));
+                }
+                if !fields.contains_key("diagnostic") && event.custom {
+                    fields.insert(
+                        "diagnostic".into(),
+                        Value::String(sanitize_diagnostic(
+                            &event.message,
+                            &self.inner.secrets,
+                            4096,
+                        )),
+                    );
+                }
+            }
+            attributes
+        };
         let normalized = self.normalize_event(event);
         if let Ok(telemetry) = self.inner.telemetry.lock() {
             if let Some(telemetry) = telemetry
@@ -490,7 +519,7 @@ impl RuntimeLogService {
                     &normalized.record.channel,
                     &normalized.record.event,
                     normalized.record.operation_id.as_deref(),
-                    normalized.record.attributes.as_ref(),
+                    Some(&telemetry_attributes),
                 );
             }
         }
@@ -620,10 +649,11 @@ impl RuntimeLogService {
         if line.len() > PRODUCTION_MAX_RECORD_BYTES {
             return Err(());
         }
-        if forbidden_secret.is_some_and(|secret| !secret.is_empty() && line.contains(secret)) {
-            return Err(());
-        }
-        let parsed: CoreBridgeRecord = serde_json::from_str(line).map_err(|_| ())?;
+        let cleaned = forbidden_secret
+            .filter(|s| !s.is_empty())
+            .map(|secret| line.replace(secret, "[REDACTED]"));
+        let parsed: CoreBridgeRecord =
+            serde_json::from_str(cleaned.as_deref().unwrap_or(line)).map_err(|_| ())?;
         let severity = Severity::from_wire(&parsed.severity).ok_or(())?;
         let verbosity = Verbosity::from_wire(&parsed.verbosity).ok_or(())?;
         if normalize_token(&parsed.channel, 64).is_none()
@@ -785,6 +815,10 @@ impl RuntimeLogService {
                 .as_deref()
                 .is_some_and(|value| value.is_empty() || value.chars().count() > 4096)
             || entry
+                .exception_chain
+                .as_ref()
+                .is_some_and(|value| value.chars().count() > 8192)
+            || entry
                 .exception_stack
                 .as_ref()
                 .is_some_and(|value| value.len() > 32768)
@@ -816,6 +850,9 @@ impl RuntimeLogService {
         }
         if let Some(diagnostic) = entry.diagnostic {
             attributes.insert("diagnostic".to_string(), Value::String(diagnostic));
+        }
+        if let Some(chain) = entry.exception_chain {
+            attributes.insert("exception_chain".into(), Value::String(chain));
         }
         if let Some(stack) = entry.exception_stack {
             attributes.insert("exception_stack".to_string(), Value::String(stack));
@@ -1154,49 +1191,7 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
 }
 
 fn sanitize_log_text(value: &str, secrets: &[String], maximum: usize) -> String {
-    let text = strip_ansi(value)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    // Free text cannot be proved content-free. Redact the entire value when it
-    // contains paths, URLs or credential-shaped data, before file/UI projection.
-    let lower = text.to_ascii_lowercase();
-    if looks_absolute_path(&text)
-        || text.contains("://")
-        || secrets
-            .iter()
-            .any(|secret| !secret.is_empty() && text.contains(secret))
-        || [
-            "bearer ",
-            "sk-",
-            "api_key=",
-            "api_key:",
-            "apikey=",
-            "token=",
-            "token:",
-            "password=",
-            "password:",
-            "secret=",
-            "secret:",
-            "authorization:",
-            "cookie:",
-        ]
-        .iter()
-        .any(|marker| lower.contains(marker))
-    {
-        return "[REDACTED]".to_string();
-    }
-    if text.len() > maximum {
-        let mut end = maximum.saturating_sub(16);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{} [truncated]", &text[..end])
-    } else if text.is_empty() {
-        "[empty]".to_string()
-    } else {
-        text
-    }
+    sanitize_diagnostic(value, secrets, maximum)
 }
 
 fn sanitize_log_fields(
@@ -2132,6 +2127,7 @@ fn business_message(event: &str) -> Option<&'static str> {
         "agent.turn.finished" => "Assistant 已生成回复",
         "chat.request.received" => "已收到对话请求",
         "chat.request.completed" => "对话请求已完成",
+        "chat.finished" => "对话已结束",
         "chat.request.cancelled" => "对话请求已取消",
         "chat.request.failed" => "对话请求失败",
         "memory.recall.started" => "开始召回记忆",
@@ -2338,6 +2334,7 @@ fn viewer_message(event: &str, severity: Severity) -> &'static str {
         }
         "chat.request.received" => "已收到对话请求",
         "chat.request.completed" => "对话请求已完成",
+        "chat.finished" => "对话已结束",
         "chat.request.cancelled" => "对话请求已取消",
         "chat.request.failed" => "对话请求失败",
         "api.request.started" => "正在请求模型回复",
@@ -3206,6 +3203,21 @@ fn normalize_key(value: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect::<String>()
+        .replace("diagnosticdetail", "diagnostic_detail")
+        .replace("sourcefile", "source_file")
+        .replace("sourceline", "source_line")
+        .replace("timeoutms", "timeout_ms")
+        .replace("exitcode", "exit_code")
+        .replace("childexited", "child_exited")
+        .replace("probeoutcome", "probe_outcome")
+        .replace("primarycode", "primary_code")
+        .replace("recoverycode", "recovery_code")
+        .replace("recoveryoutcome", "recovery_outcome")
+        .replace("sourceexists", "source_exists")
+        .replace("stagedexists", "staged_exists")
+        .replace("backupexists", "backup_exists")
+        .replace("repairreason", "repair_reason")
+        .replace("repairoutcome", "repair_outcome")
         .replace("actualbytes", "actual_bytes")
         .replace("actualfiles", "actual_files")
         .replace("bytedelta", "byte_delta")
@@ -3336,84 +3348,57 @@ fn sanitize_fixed_message(value: &str) -> String {
     stripped.chars().take(192).collect()
 }
 
-/// Preserve the failure text while redacting just credentials and private paths.
+/// Preserve the failure text while redacting only credential values.
 /// Multiline diagnostics stay multiline in the viewer; the text writer escapes them.
-pub(crate) fn sanitize_diagnostic(value: &str, secrets: &[String], maximum: usize) -> String {
+pub(crate) fn redact_diagnostic_credentials(value: &str, secrets: &[String]) -> String {
     use regex::{Captures, Regex};
     use std::sync::LazyLock;
     static SECRET: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-        r#"(?i)\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)|\bbearer\s+[^\s,;}]+|\bsk-[\w.-]{6,}"#
+        r#"(?i)(\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)|(\bbearer\s+)[^\s,;}&]+|\bsk-[\w.-]{6,}"#
     ).expect("diagnostic credential pattern")
     });
-    static URL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>"']+"#).unwrap());
-    static QUOTED: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"["']((?:[A-Za-z]:[\\/]|/|\\\\)[^\r\n"']*)["']"#).unwrap());
-    static PATH: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>|,;]*|(?:^|[\s(\[])/[^\s"'<>|,;]*"#).unwrap()
-    });
-    fn path(value: &str) -> String {
-        let normalized = value.replace('\\', "/");
-        let name = normalized
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or("");
-        format!("<路径>/{name}")
-    }
+    static URL_AUTH: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@").unwrap());
     let mut text = strip_ansi(value);
     for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
         text = text.replace(secret, "[REDACTED]");
     }
-    text = SECRET.replace_all(&text, "[REDACTED]").into_owned();
-    let mut urls = Vec::new();
-    text = URL
-        .replace_all(&text, |capture: &Captures<'_>| {
-            let safe = reqwest::Url::parse(&capture[0])
-                .map(|mut url| {
-                    let _ = url.set_username("");
-                    let _ = url.set_password(None);
-                    url.set_query(None);
-                    url.set_fragment(None);
-                    if url.scheme() == "file" {
-                        path(url.path())
-                    } else {
-                        url.to_string()
-                    }
-                })
-                .unwrap_or_else(|_| "[URL]".to_string());
-            urls.push(safe);
-            format!("<url-{}>", urls.len() - 1)
-        })
-        .into_owned();
-    text = QUOTED
-        .replace_all(&text, |capture: &Captures<'_>| {
-            format!("'{}'", path(&capture[1]))
-        })
-        .into_owned();
-    text = PATH
-        .replace_all(&text, |capture: &Captures<'_>| {
-            let value = &capture[0];
-            let prefix = value
-                .chars()
-                .next()
-                .filter(|c| c.is_whitespace() || matches!(c, '(' | '['));
+    text = SECRET
+        .replace_all(&text, |c: &Captures<'_>| {
             format!(
-                "{}{}",
-                prefix.map(|c| c.to_string()).unwrap_or_default(),
-                path(value.trim_start_matches([' ', '\n', '\t', '(', '[']))
+                "{}[REDACTED]",
+                c.get(1)
+                    .or_else(|| c.get(2))
+                    .map(|m| m.as_str())
+                    .unwrap_or("")
             )
         })
         .into_owned();
-    for (index, url) in urls.into_iter().enumerate() {
-        text = text.replace(&format!("<url-{index}>"), &url);
-    }
-    text = text.trim().to_string();
+    text = URL_AUTH.replace_all(&text, "${1}[REDACTED]@").into_owned();
+    text
+}
+
+pub(crate) fn sanitize_diagnostic(value: &str, secrets: &[String], maximum: usize) -> String {
+    let mut text = redact_diagnostic_credentials(value, secrets)
+        .trim()
+        .to_string();
     if text.chars().count() > maximum {
-        let total = text.chars().count();
-        text = text.chars().take(maximum.saturating_sub(48)).collect();
-        text.push_str(&format!("\n[truncated: {total} characters]"));
+        let chars: Vec<_> = text.chars().collect();
+        let marker = format!("\n[truncated: {} characters]\n", chars.len());
+        let kept = maximum.saturating_sub(marker.chars().count());
+        text = if kept == 0 {
+            marker.chars().take(maximum).collect()
+        } else {
+            format!(
+                "{}{}{}",
+                chars[..kept / 2].iter().collect::<String>(),
+                marker,
+                chars[chars.len() - (kept - kept / 2)..]
+                    .iter()
+                    .collect::<String>()
+            )
+        };
     }
     text
 }
@@ -3475,6 +3460,7 @@ fn core_message(event: &str) -> &'static str {
         "agent.turn.finished" => "模型回复已生成",
         "chat.request.received" => "对话请求已接收",
         "chat.request.completed" => "对话请求已完成",
+        "chat.finished" => "对话已结束",
         "chat.request.cancelled" => "对话请求已取消",
         "chat.request.failed" => "对话请求失败",
         "memory.recall.started" => "开始召回记忆",
@@ -3600,8 +3586,23 @@ fn webview_message(event: &str) -> &'static str {
     }
 }
 
-fn environment_secrets() -> Vec<String> {
+pub(crate) fn environment_secrets() -> Vec<String> {
     let mut values = std::env::vars_os()
+        .filter(|(key, _)| {
+            let key = key.to_string_lossy().to_ascii_lowercase();
+            [
+                "api_key",
+                "apikey",
+                "token",
+                "secret",
+                "password",
+                "credential",
+                "authorization",
+                "cookie",
+            ]
+            .iter()
+            .any(|part| key.contains(part))
+        })
         .map(|(_, value)| value.to_string_lossy().into_owned())
         .filter(|value| (8..=4096).contains(&value.len()))
         .collect::<Vec<_>>();
@@ -4390,7 +4391,7 @@ mod tests {
                 &context,
                 Some(credential),
             )
-            .is_err());
+            .is_ok());
         log.drain_and_shutdown_for_test();
         let contents = fs::read_to_string(path).unwrap();
         assert!(contents.contains("[AGENT]"));

@@ -88,8 +88,8 @@ backup 已恢复到目标但进度尚未落盘时，恢复逻辑必须识别目�
 `rolling_back`。backup、staging 或 journal 清理失败时保留 journal，下次启动只继续安全的剩余回滚或清理；末尾
 清理不得删除迁移前已存在的空 `characters/`、`tts/` 目录。
 
-报告固定为 `data/legacy-imports/<id>/report.json`，只含域、数量、大小、相对标识、稳定错误和警告。报告、
-事件和日志不得含 API Key、聊天/记忆正文、绝对源路径或旧 `.env` 内容。文件清单按相对路径排序，
+报告固定为 `data/legacy-imports/<id>/report.json`，只含域、数量、大小、相对标识、稳定错误和警告。报告和常规事件不得含 API Key、聊天/记忆正文、绝对源路径或旧 `.env` 内容。
+失败日志和遥测的原始异常、路径及栈遵循 [远程诊断](remote-diagnostics-telemetry.md)，仅替换具体凭据。文件清单按相对路径排序，
 只记录 domain、id 和 bytes，不计算或输出内容摘要；逐文件检查取消。复制时必要的相等判断直接分块比较 bytes。
 离线迁移进程不得打开或追加 `data/logs/sakura-runtime.log`，也不得接收日志文件路径。它只通过 stdout 机器协议向
 Rust 父进程提交白名单内的结构化 diagnostic；Rust 丢弃子进程自由 message，使用固定中文目录投影并由唯一 writer
@@ -98,8 +98,8 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
 事件必须丢弃，不得另建迁移日志。失败 UI 必须显示这一个统一日志的相对路径。
 每个主要阶段至少记录 started/completed，包括历史、长期记忆、配置、辅助数据、当前加载器校验、角色、TTS、清单和事务提交；
 完成事件记录计数、字节数、隔离数和兼容修复数。配置加载失败还必须记录具体 loader 名、相对配置路径、异常类型、稳定错误码，
-以及可用的 SQLite/OS/YAML 行列信息。Rust 对 diagnostic attributes 再执行标量字段白名单；自由异常消息、命令输出、嵌套对象、
-绝对路径、凭据和正文一律不进入统一日志。
+以及可用的 SQLite/OS/YAML 行列信息。Rust 对 diagnostic attributes 使用有界标量字段；原始异常、恢复失败、实际路径和调用栈保留在专用诊断字段，
+不上传完整配置、任意嵌套对象或命令输出文件。
 用户点击检查来源后，即使尚未生成 import ID，也必须以 opaque selection ID 关联 inspect started/completed/failed，记录平台、版本、
 空间、冲突数量以及稳定 blocker/warning code，不能记录所选绝对目录。
 

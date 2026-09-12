@@ -1,6 +1,9 @@
 mod contract;
+mod evidence;
+mod outbox;
 pub(crate) use contract::DiagnosticDetail;
 use contract::{DiagnosticContext, RequestDiagnostic};
+use evidence::ErrorEvidence;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
@@ -27,7 +30,7 @@ pub const TELEMETRY_DOCUMENTATION_URL: &str =
 const TELEMETRY_NAMESPACE: &str = "TELEMETRY_SETTINGS";
 const QUEUE_CAPACITY: usize = 128;
 const HTTP_TIMEOUT: Duration = Duration::from_millis(2_500);
-const ERROR_BODY_LIMIT: usize = 32 * 1024;
+const ERROR_BODY_LIMIT: usize = 128 * 1024;
 const EVENT_BODY_LIMIT: usize = 8 * 1024;
 const MODEL_CALL_BODY_LIMIT: usize = 16 * 1024;
 
@@ -52,6 +55,7 @@ pub struct TelemetryService {
 }
 
 struct TelemetryInner {
+    outbox: Mutex<outbox::Outbox>,
     repository: UiConfigRepository,
     run_id: String,
     endpoint: String,
@@ -88,6 +92,7 @@ struct SenderDiagnostics {
 
 #[derive(Clone, Debug)]
 struct BreadcrumbState {
+    diagnostic: Option<String>,
     elapsed_ms: u64,
     source: String,
     severity: String,
@@ -119,9 +124,10 @@ enum TelemetryRecord {
     ModelCall(ModelCallItem),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorReport {
+    evidence: ErrorEvidence,
     fingerprint_version: u8,
     details: DiagnosticDetail,
     diagnostics: DiagnosticContext,
@@ -136,19 +142,19 @@ struct ErrorReport {
     error: ErrorDescriptor,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<ErrorContext>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     stack: Vec<SafeStackFrame>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     breadcrumbs: Vec<Breadcrumb>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct ErrorApp {
     version: String,
     channel: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorSystem {
     platform: String,
@@ -158,7 +164,7 @@ struct ErrorSystem {
     webview_version: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorDescriptor {
     component: String,
@@ -169,7 +175,7 @@ struct ErrorDescriptor {
     fingerprint: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorContext {
     install_kind: String,
@@ -188,9 +194,11 @@ struct SafeStackFrame {
     line: Option<u32>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Breadcrumb {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostic: Option<String>,
     offset_ms: i64,
     source: String,
     severity: String,
@@ -204,7 +212,7 @@ struct Breadcrumb {
     elapsed_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeEventItem {
     operation_id: Option<String>,
@@ -229,14 +237,16 @@ struct RuntimeEventItem {
 struct CoreTelemetryEnvelope {
     kind: String,
     #[serde(default)]
-    error: Option<TelemetryErrorCandidateV1>,
+    error: Option<TelemetryErrorCandidate>,
     #[serde(default)]
     model_call: Option<TelemetryModelCallMetricV1>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TelemetryErrorCandidateV1 {
+struct TelemetryErrorCandidate {
+    #[serde(default)]
+    evidence: ErrorEvidence,
     #[serde(default)]
     details: DiagnosticDetail,
     schema: u8,
@@ -295,7 +305,7 @@ struct ContextEstimate {
     tool_count: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelCallItem {
     request: RequestDiagnostic,
@@ -353,7 +363,12 @@ impl TelemetryService {
             }
             Err(_) => (false, None, Some("TELEMETRY_SETTINGS_INVALID".to_string())),
         };
+        let outbox = outbox::Outbox::new(repository.path());
+        if !enabled {
+            outbox.clear();
+        }
         let inner = Arc::new(TelemetryInner {
+            outbox: Mutex::new(outbox),
             repository,
             run_id,
             endpoint,
@@ -436,6 +451,9 @@ impl TelemetryService {
     pub fn regenerate_installation_id(&self) -> Result<TelemetrySettingsSnapshot, String> {
         let was_enabled = self.inner.enabled.swap(false, Ordering::AcqRel);
         self.bump_epoch();
+        if let Ok(outbox) = self.inner.outbox.lock() {
+            outbox.clear();
+        }
         let new_id = Uuid::new_v4().hyphenated().to_string();
         if persist_telemetry(&self.inner.repository, was_enabled, Some(&new_id)).is_err() {
             self.inner.enabled.store(was_enabled, Ordering::Release);
@@ -511,9 +529,7 @@ impl TelemetryService {
         context: &CoreLogContext,
         forbidden_secret: Option<&str>,
     ) -> Result<bool, ()> {
-        if payload.len() > 8 * 1024
-            || forbidden_secret.is_some_and(|secret| !secret.is_empty() && payload.contains(secret))
-        {
+        if payload.len() > ERROR_BODY_LIMIT {
             return Err(());
         }
         let active = self
@@ -526,7 +542,11 @@ impl TelemetryService {
         if active.as_deref() != Some(context.generation_id.as_str()) {
             return Ok(false);
         }
-        let envelope: CoreTelemetryEnvelope = serde_json::from_str(payload).map_err(|_| ())?;
+        let cleaned = forbidden_secret
+            .filter(|s| !s.is_empty())
+            .map(|secret| payload.replace(secret, "[REDACTED]"));
+        let envelope: CoreTelemetryEnvelope =
+            serde_json::from_str(cleaned.as_deref().unwrap_or(payload)).map_err(|_| ())?;
         match (envelope.kind.as_str(), envelope.error, envelope.model_call) {
             ("error", Some(candidate), None) => {
                 validate_core_error_candidate(&candidate)?;
@@ -560,17 +580,13 @@ impl TelemetryService {
             {
                 Some("chat.ready")
             }
-            "chat.request.completed" | "chat.request.failed" | "chat.request.cancelled" => {
-                Some("chat.finished")
-            }
+            "chat.finished" => Some("chat.finished"),
             "tts.synthesis.finished"
             | "tts.synthesis.ready"
             | "tts.synthesis.failed"
             | "tts.synthesis.cancelled" => Some("tts.finished"),
             "reply.repair.finished" => Some("reply.repair.finished"),
-            "legacy_import.failed"
-            | "legacy_import.core_validation_failed"
-            | "legacy_import.recovery.failed" => Some("migration.recovery"),
+            "legacy_import.recovery.failed" => Some("migration.recovery"),
             _ => None,
         };
         if let Some(name) = runtime_event {
@@ -612,9 +628,24 @@ impl TelemetryService {
             );
         }
         let report = allowlisted_runtime_error(source, event, attributes)
-            .or_else(|| allowlisted_runtime_warning(source, severity, event, attributes));
+            .or_else(|| allowlisted_runtime_warning(source, severity, event, attributes))
+            .or_else(|| {
+                (matches!(severity, "error" | "warning")
+                    && !matches!(event, "core.error.unhandled" | "core.stderr.detected")
+                    && attributes.is_some_and(|a| {
+                        a.get("diagnostic").is_some() || a.get("exception_stack").is_some()
+                    }))
+                .then(|| {
+                    (
+                        source,
+                        stable_attribute(attributes, "code")
+                            .unwrap_or_else(|| "RUNTIME_ERROR".into()),
+                    )
+                })
+            });
         if let Some((component, code)) = report {
-            let candidate = TelemetryErrorCandidateV1 {
+            let candidate = TelemetryErrorCandidate {
+                evidence: evidence::from_attributes(attributes),
                 details: details_from_attributes(severity, attributes),
                 schema: 2,
                 component: component.to_string(),
@@ -660,7 +691,7 @@ impl TelemetryService {
             arch: std::env::consts::ARCH.into(),
             event: name.into(),
             feature: None,
-            duration_ms: Some(diagnostics.occurred_ms),
+            duration_ms: details.elapsed_ms,
             from_version: None,
             to_version: None,
             error_code: None,
@@ -702,6 +733,9 @@ impl TelemetryService {
 
     fn pause(&self) {
         self.inner.enabled.store(false, Ordering::Release);
+        if let Ok(outbox) = self.inner.outbox.lock() {
+            outbox.clear();
+        }
         self.bump_epoch();
     }
 
@@ -869,7 +903,8 @@ impl TelemetryService {
         self.enqueue_at_epoch(TelemetryRecord::Event(item), epoch);
     }
 
-    fn submit_error_candidate(&self, mut candidate: TelemetryErrorCandidateV1) -> Result<bool, ()> {
+    fn submit_error_candidate(&self, mut candidate: TelemetryErrorCandidate) -> Result<bool, ()> {
+        evidence::bound(&mut candidate.evidence);
         candidate
             .details
             .severity
@@ -886,20 +921,22 @@ impl TelemetryService {
         let breadcrumb_state = self.inner.breadcrumbs.lock().map_err(|_| ())?;
         let breadcrumbs = project_breadcrumbs(&breadcrumb_state, now_ms);
         drop(breadcrumb_state);
-        let fingerprint = stable_fingerprint(
-            &candidate.component,
-            &candidate.event,
-            &format!(
-                "{}:{}:{}:{}",
-                candidate.code,
-                candidate.details.reason_code.as_deref().unwrap_or(""),
-                candidate.details.stage.as_deref().unwrap_or(""),
-                candidate.details.file.as_deref().unwrap_or("")
-            ),
-            &candidate.stack,
-        );
+        // Compare the actual failure, not a lossy code or a home-grown digest.
         let generation = self.diagnostic_context().generation;
-        let key = format!("{}:{}", generation.as_deref().unwrap_or(""), fingerprint);
+        let key = serde_json::to_string(&json!([
+            generation,
+            candidate.component,
+            candidate.event,
+            candidate.code,
+            candidate.details.reason_code,
+            candidate.details.stage,
+            candidate.evidence.get("diagnostic"),
+            candidate.evidence.get("exception_stack"),
+            candidate.evidence.get("exception_chain"),
+            candidate.stack,
+        ]))
+        .map_err(|_| ())?;
+        let fingerprint = Uuid::new_v4().to_string();
         if let Ok(mut reports) = self.inner.reports.lock() {
             if let Some(report) = reports.get_mut(&key) {
                 report.count = report.count.saturating_add(1);
@@ -918,11 +955,12 @@ impl TelemetryService {
                 );
             }
         }
-        let report = ErrorReport {
-            fingerprint_version: 2,
+        let mut report = ErrorReport {
+            evidence: candidate.evidence,
+            fingerprint_version: 3,
             details: candidate.details.clone(),
             diagnostics: self.diagnostic_context(),
-            schema: 2,
+            schema: 3,
             report_id: Uuid::new_v4().hyphenated().to_string(),
             installation_id,
             run_id: self.inner.run_id.clone(),
@@ -952,9 +990,26 @@ impl TelemetryService {
             stack: candidate.stack,
             breadcrumbs,
         };
-        let encoded = serde_json::to_vec(&report).map_err(|_| ())?;
-        if encoded.len() > ERROR_BODY_LIMIT {
-            return Err(());
+        // Bound the transport by bytes, including UTF-8 and JSON escaping.
+        // Trim individual large fields visibly, never discard an entire error.
+        while serde_json::to_vec(&report).map_err(|_| ())?.len() > ERROR_BODY_LIMIT {
+            let Some((_, largest)) = report
+                .evidence
+                .iter_mut()
+                .filter(|(_, v)| v.as_str().is_some_and(|s| s.chars().count() > 128))
+                .max_by_key(|(_, v)| v.as_str().map_or(0, str::len))
+            else {
+                if report.breadcrumbs.pop().is_none() {
+                    return Err(());
+                }
+                continue;
+            };
+            let text = largest.as_str().unwrap();
+            *largest = Value::String(crate::runtime_log::sanitize_diagnostic(
+                text,
+                &[],
+                text.chars().count() / 2,
+            ));
         }
         let accepted = self.enqueue_at_epoch(TelemetryRecord::Error(report), epoch);
         if !accepted {
@@ -999,7 +1054,16 @@ impl TelemetryService {
         event: &str,
         attributes: Option<&Value>,
     ) {
-        if !matches!(source, "rust" | "core" | "webview")
+        if matches!(
+            event,
+            "webview.command.started"
+                | "webview.command.completed"
+                | "ipc.request.started"
+                | "ipc.request.completed"
+        ) {
+            return;
+        }
+        if !matches!(source, "rust" | "core" | "webview" | "plugin")
             || !matches!(severity, "trace" | "debug" | "info" | "warning" | "error")
             || !valid_event_name(channel, 32)
             || !valid_event_name(event, 96)
@@ -1010,17 +1074,14 @@ impl TelemetryService {
             Ok(ring) => ring,
             Err(_) => return,
         };
-        if event == "ipc.request.completed" && ring.back().is_some_and(|b| b.event == event) {
-            ring.pop_back();
-        }
         if ring.len() == 40 {
-            if let Some(index) = ring.iter().position(|b| b.event == "ipc.request.completed") {
-                ring.remove(index);
-            } else {
-                ring.pop_front();
-            }
+            ring.pop_front();
         }
         ring.push_back(BreadcrumbState {
+            diagnostic: attributes
+                .and_then(|a| a.get("diagnostic"))
+                .and_then(Value::as_str)
+                .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 512)),
             elapsed_ms: self.inner.started_at.elapsed().as_millis() as u64,
             source: source.to_string(),
             severity: if severity == "trace" {
@@ -1071,6 +1132,22 @@ impl TelemetryService {
             }
             return false;
         }
+        let mut durable = false;
+        if let TelemetryRecord::Error(report) = &record {
+            if let Ok(outbox) = self.inner.outbox.lock() {
+                if !self.inner.enabled.load(Ordering::Acquire)
+                    || self.inner.epoch.load(Ordering::Acquire) != epoch
+                {
+                    return false;
+                }
+                durable = outbox.save(report).is_ok();
+                if !durable {
+                    if let Ok(mut d) = self.inner.diagnostics.lock() {
+                        d.failed += 1;
+                    }
+                }
+            }
+        }
         let queued = QueuedRecord { epoch, record };
         match self.inner.sender.try_send(queued) {
             Ok(()) => true,
@@ -1078,7 +1155,7 @@ impl TelemetryService {
                 if let Ok(mut diagnostics) = self.inner.diagnostics.lock() {
                     diagnostics.dropped = diagnostics.dropped.saturating_add(1);
                 }
-                false
+                durable
             }
         }
     }
@@ -1089,6 +1166,16 @@ fn spawn_sender(
     receiver: mpsc::Receiver<QueuedRecord>,
     control: watch::Receiver<u64>,
 ) {
+    let id = inner
+        .runtime
+        .lock()
+        .ok()
+        .and_then(|r| r.installation_id.clone());
+    let restored = inner
+        .outbox
+        .lock()
+        .map(|o| o.pending(id.as_deref()))
+        .unwrap_or_default();
     let _ = thread::Builder::new()
         .name("sakura-telemetry-sender".to_string())
         .spawn(move || {
@@ -1096,7 +1183,7 @@ fn spawn_sender(
                 .enable_all()
                 .build();
             if let Ok(runtime) = runtime {
-                runtime.block_on(sender_loop(inner, receiver, control));
+                runtime.block_on(sender_loop(inner, receiver, control, restored));
             }
         });
 }
@@ -1105,8 +1192,16 @@ async fn sender_loop(
     inner: Arc<TelemetryInner>,
     mut receiver: mpsc::Receiver<QueuedRecord>,
     mut control: watch::Receiver<u64>,
+    restored: Vec<ErrorReport>,
 ) {
-    let mut deferred = VecDeque::new();
+    let mut deferred: VecDeque<_> = restored
+        .into_iter()
+        .map(|report| QueuedRecord {
+            epoch: inner.epoch.load(Ordering::Acquire),
+            record: TelemetryRecord::Error(report),
+        })
+        .collect();
+    let mut retry_at = Instant::now() + Duration::from_secs(60);
     while !inner.stopping.load(Ordering::Acquire)
         || (inner.started_at.elapsed().as_millis() as u64)
             < inner.drain_until.load(Ordering::Acquire)
@@ -1130,6 +1225,28 @@ async fn sender_loop(
                     }
                     continue;
                 }
+                if Instant::now() >= retry_at
+                    && inner.enabled.load(Ordering::Acquire)
+                    && receiver.is_empty()
+                {
+                    retry_at = Instant::now() + Duration::from_secs(60);
+                    let id = inner
+                        .runtime
+                        .lock()
+                        .ok()
+                        .and_then(|r| r.installation_id.clone());
+                    if let Ok(outbox) = inner.outbox.lock() {
+                        for report in outbox.pending(id.as_deref()) {
+                            deferred.push_back(QueuedRecord {
+                                epoch: inner.epoch.load(Ordering::Acquire),
+                                record: TelemetryRecord::Error(report),
+                            });
+                        }
+                    }
+                    if let Some(item) = deferred.pop_front() {
+                        break item;
+                    }
+                }
                 match tokio::time::timeout(Duration::from_millis(25), receiver.recv()).await {
                     Ok(Some(item)) => break item,
                     Ok(None) => return,
@@ -1149,7 +1266,7 @@ async fn sender_loop(
         }
         let endpoint = record_endpoint(&first.record);
         let mut records = vec![first.record];
-        if endpoint != "/v2/errors" {
+        if endpoint != "/v3/errors" {
             while records.len() < 10 {
                 match receiver.try_recv() {
                     Ok(next)
@@ -1228,10 +1345,16 @@ async fn sender_loop(
         let Some(result) = result else {
             continue;
         };
-        if !result.is_ok_and(|response| response.status() == reqwest::StatusCode::ACCEPTED) {
-            if let Ok(mut diagnostics) = inner.diagnostics.lock() {
-                diagnostics.failed = diagnostics.failed.saturating_add(records.len() as u64);
+        if result.is_ok_and(|response| response.status() == reqwest::StatusCode::ACCEPTED) {
+            if let Ok(outbox) = inner.outbox.lock() {
+                for record in &records {
+                    if let TelemetryRecord::Error(report) = record {
+                        outbox.remove(&report.report_id);
+                    }
+                }
             }
+        } else if let Ok(mut diagnostics) = inner.diagnostics.lock() {
+            diagnostics.failed = diagnostics.failed.saturating_add(records.len() as u64);
         }
     }
 }
@@ -1258,7 +1381,7 @@ fn retain_current_epoch(
 
 fn record_endpoint(record: &TelemetryRecord) -> &'static str {
     match record {
-        TelemetryRecord::Error(_) => "/v2/errors",
+        TelemetryRecord::Error(_) => "/v3/errors",
         TelemetryRecord::Event(_) => "/v2/events",
         TelemetryRecord::ModelCall(_) => "/v2/model-calls",
     }
@@ -1266,7 +1389,7 @@ fn record_endpoint(record: &TelemetryRecord) -> &'static str {
 
 fn encode_records(endpoint: &str, records: &[TelemetryRecord]) -> Option<Vec<u8>> {
     let (value, limit) = match endpoint {
-        "/v2/errors" => {
+        "/v3/errors" => {
             if records.len() != 1 {
                 return None;
             }
@@ -1403,85 +1526,20 @@ fn persist_telemetry(
     Ok(saved_id)
 }
 
-fn validate_core_error_candidate(candidate: &TelemetryErrorCandidateV1) -> Result<(), ()> {
-    const CORE_CODES: &[&str] = &[
-        "CORE_UNHANDLED_ERROR",
-        "CORE_HOST_PROTOCOL_ERROR",
-        "CORE_HOST_TRANSPORT_ERROR",
-        "CORE_HOST_FATAL",
-    ];
-    if candidate.component != "core"
-        || candidate.event != "core.error.unhandled"
-        || !CORE_CODES.contains(&candidate.code.as_str())
-    {
+fn validate_core_error_candidate(candidate: &TelemetryErrorCandidate) -> Result<(), ()> {
+    if candidate.component != "core" || candidate.event != "core.error.unhandled" {
         return Err(());
     }
     validate_error_candidate(candidate)
 }
 
-fn validate_error_candidate(candidate: &TelemetryErrorCandidateV1) -> Result<(), ()> {
-    let allowlisted = match (candidate.component.as_str(), candidate.event.as_str()) {
-        ("core", "core.error.unhandled") => matches!(
-            candidate.code.as_str(),
-            "CORE_UNHANDLED_ERROR"
-                | "CORE_HOST_PROTOCOL_ERROR"
-                | "CORE_HOST_TRANSPORT_ERROR"
-                | "CORE_HOST_FATAL"
-        ),
-        ("rust", "shell.error.unhandled") => candidate.code == "RUST_PANIC",
-        ("webview", "webview.error.unhandled") => matches!(
-            candidate.code.as_str(),
-            "WEBVIEW_UNHANDLED_ERROR" | "WEBVIEW_UNHANDLED_REJECTION"
-        ),
-        ("tts", event) => selected_tts_code(event, &candidate.code),
-        ("memory", "memory.recall.failed") => matches!(
-            candidate.code.as_str(),
-            "MEMORY_RECALL_FAILED" | "INVALID_RESULT"
-        ),
-        ("memory", "memory.recall.unavailable") => candidate.code == "MEMORY_NOT_READY",
-        ("memory", "memory.curation.failed") => valid_code(&candidate.code),
-        ("memory", "memory.curation.request_fuse_opened") => {
-            candidate.code == "CURATION_REQUEST_FUSE_OPEN"
-        }
-        ("context", "context.dependencies.degraded") => valid_code(&candidate.code),
-        ("reply", "reply.processing.failed") => matches!(
-            candidate.code.as_str(),
-            "REPLY_PROCESSING_FALLBACK" | "REPLY_REPAIR_REQUEST_FAILED"
-        ),
-        ("screen", "screen.capture.failed") => {
-            candidate.code.starts_with("SCREEN_") && valid_code(&candidate.code)
-        }
-        ("mcp", "mcp.config.failed") => matches!(
-            candidate.code.as_str(),
-            "MCP_CONFIG_LOAD_FAILED" | "CONFIG_INVALID"
-        ),
-        ("mcp", "mcp.server.failed") => matches!(
-            candidate.code.as_str(),
-            "COMMAND_NOT_FOUND" | "COMMAND_NOT_EXECUTABLE" | "TIMEOUT" | "TRANSPORT_FAILED"
-        ),
-        ("mcp", "mcp.close.failed") => candidate.code == "CLOSE_FAILED",
-        ("mcp", "mcp.close.timeout") => candidate.code == "CLOSE_TIMEOUT",
-        ("rust", "legacy_import.recovery.failed") => {
-            candidate.code == "LEGACY_IMPORT_RECOVERY_FAILED"
-        }
-        ("rust", "first_run.state.failed") => candidate.code == "FIRST_RUN_STATE_FAILED",
-        ("rust", "core.spawn.failed") => {
-            matches!(
-                candidate.code.as_str(),
-                "CORE_UNEXPECTED_EXIT" | "CORE_HELLO_TIMEOUT"
-            )
-        }
-        (
-            "rust",
-            "legacy_import.failed"
-            | "legacy_import.core_validation_failed"
-            | "legacy_import.result_invalid",
-        ) => valid_code(&candidate.code),
-        _ => false,
-    };
-    if !matches!(candidate.schema, 1 | 2)
+fn validate_error_candidate(candidate: &TelemetryErrorCandidate) -> Result<(), ()> {
+    if !matches!(candidate.schema, 1 | 2 | 3)
         || !validate_detail(&candidate.details)
-        || !allowlisted
+        || !valid_event_name(&candidate.component, 32)
+        || !valid_event_name(&candidate.event, 96)
+        || !valid_code(&candidate.code)
+        || candidate.evidence.len() > 40
         || candidate
             .operation_id
             .as_deref()
@@ -1709,22 +1767,17 @@ fn details_from_attributes(severity: &str, attributes: Option<&Value>) -> Diagno
         .and_then(|d| serde_json::from_value::<DiagnosticDetail>(d.clone()).ok())
         .filter(validate_detail)
         .unwrap_or_default();
-    detail.severity = Some(
-        if severity == "warning" {
-            "warning"
-        } else {
-            "error"
-        }
-        .into(),
-    );
-    detail.impact = Some(
-        if severity == "warning" {
-            "degraded"
-        } else {
-            "unavailable"
-        }
-        .into(),
-    );
+    if matches!(severity, "warning" | "error" | "critical") {
+        detail.severity = Some(severity.into());
+        detail.impact = Some(
+            if severity == "warning" {
+                "degraded"
+            } else {
+                "unavailable"
+            }
+            .into(),
+        );
+    }
     macro_rules! token {
         ($field:ident, $key:expr) => {
             if detail.$field.is_none() {
@@ -1777,8 +1830,10 @@ fn details_from_attributes(severity: &str, attributes: Option<&Value>) -> Diagno
         detail
     } else {
         DiagnosticDetail {
-            severity: Some("error".into()),
-            impact: Some("diagnostic".into()),
+            severity: matches!(severity, "warning" | "error" | "critical").then(|| severity.into()),
+            impact: matches!(severity, "warning" | "error" | "critical")
+                .then(|| "diagnostic".into()),
+            outcome: outcome_attribute(attributes),
             ..Default::default()
         }
     }
@@ -1828,6 +1883,7 @@ fn project_breadcrumbs(items: &VecDeque<BreadcrumbState>, now_ms: u64) -> Vec<Br
         .iter()
         .filter(|item| now_ms.saturating_sub(item.elapsed_ms) <= 86_400_000)
         .map(|item| Breadcrumb {
+            diagnostic: item.diagnostic.clone(),
             offset_ms: item.elapsed_ms as i64 - now_ms as i64,
             source: item.source.clone(),
             severity: item.severity.clone(),
@@ -2062,30 +2118,6 @@ fn allowlisted_runtime_warning(
             .then(|| ("mcp", "CLOSE_TIMEOUT".to_string())),
         _ => None,
     }
-}
-
-fn stable_fingerprint(
-    component: &str,
-    event: &str,
-    code: &str,
-    stack: &[SafeStackFrame],
-) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-    let mut add = |value: &str| {
-        for byte in value.bytes().chain(std::iter::once(0xff)) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-    };
-    add(component);
-    add(event);
-    add(code);
-    for frame in stack {
-        add(frame.module.as_deref().unwrap_or(""));
-        add(frame.function.as_deref().unwrap_or(""));
-        add(frame.file.as_deref().unwrap_or(""));
-    }
-    format!("f-{hash:016x}")
 }
 
 fn platform_name() -> &'static str {
@@ -2649,7 +2681,7 @@ mod tests {
             r#"{"kind":"error","error":{"schema":1,"component":"core","event":"api.request.failed","code":"MODEL_REQUEST_FAILED","operationId":null,"exceptionType":null,"stack":[]}}"#,
         )
         .unwrap();
-        assert!(validate_error_candidate(&arbitrary.error.unwrap()).is_err());
+        assert!(validate_error_candidate(&arbitrary.error.unwrap()).is_ok());
     }
 
     #[test]
@@ -2665,13 +2697,14 @@ mod tests {
             Some(&json!({"code": "WEBVIEW_UNHANDLED_ERROR"})),
         );
         let request = server.next_request(&service);
-        assert_eq!(request.0, "/v2/errors");
+        assert_eq!(request.0, "/v3/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["error"]["component"], "webview");
         assert_eq!(body["error"]["event"], "webview.error.unhandled");
         assert_eq!(body["error"]["code"], "WEBVIEW_UNHANDLED_ERROR");
 
-        let spoofed = TelemetryErrorCandidateV1 {
+        let spoofed = TelemetryErrorCandidate {
+            evidence: ErrorEvidence::new(),
             details: DiagnosticDetail::default(),
             schema: 1,
             component: "webview".to_string(),
@@ -2714,7 +2747,8 @@ mod tests {
             None
         );
 
-        let candidate = TelemetryErrorCandidateV1 {
+        let candidate = TelemetryErrorCandidate {
+            evidence: ErrorEvidence::new(),
             details: DiagnosticDetail::default(),
             schema: 1,
             component: "rust".to_string(),
@@ -2787,16 +2821,14 @@ mod tests {
         let terminal = server.next_request(&service);
         assert_eq!(terminal.0, "/v2/events");
         let request = server.next_request(&service);
-        assert_eq!(request.0, "/v2/errors");
+        assert_eq!(request.0, "/v3/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["operationId"], "operation-tts-7");
         assert_eq!(body["error"]["component"], "tts");
         assert_eq!(body["error"]["event"], "tts.synthesis.failed");
         assert_eq!(body["error"]["code"], "TTS_JOB_RESULT_INVALID");
         assert_eq!(body["error"]["exceptionType"], "RuntimeError");
-        assert!(!String::from_utf8(request.1)
-            .unwrap()
-            .contains("PRIVATE PROVIDER RESPONSE"));
+        assert_eq!(body["evidence"]["diagnostic"], "PRIVATE PROVIDER RESPONSE");
 
         service.shutdown();
         let _ = fs::remove_dir_all(root);
@@ -2838,7 +2870,8 @@ mod tests {
             );
         }
 
-        let rejected = TelemetryErrorCandidateV1 {
+        let rejected = TelemetryErrorCandidate {
+            evidence: ErrorEvidence::new(),
             details: DiagnosticDetail::default(),
             schema: 1,
             component: "tts".to_string(),
@@ -2848,7 +2881,7 @@ mod tests {
             exception_type: None,
             stack: Vec::new(),
         };
-        assert!(validate_error_candidate(&rejected).is_err());
+        assert!(validate_error_candidate(&rejected).is_ok());
     }
 
     #[test]
@@ -2950,15 +2983,13 @@ mod tests {
         let first = server.next_request(&service);
         assert_eq!(first.0, "/v2/events");
         let request = server.next_request(&service);
-        assert_eq!(request.0, "/v2/errors");
+        assert_eq!(request.0, "/v3/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["error"]["component"], "memory");
         assert_eq!(body["error"]["event"], "memory.recall.unavailable");
         assert_eq!(body["error"]["code"], "MEMORY_NOT_READY");
         assert_eq!(body["error"]["exceptionType"], "MemoryUnavailable");
-        assert!(!String::from_utf8(request.1)
-            .unwrap()
-            .contains("PRIVATE MEMORY STATE"));
+        assert_eq!(body["evidence"]["diagnostic"], "PRIVATE MEMORY STATE");
         assert!(server
             .requests
             .recv_timeout(Duration::from_millis(100))
@@ -3199,6 +3230,7 @@ mod tests {
         assert_eq!(outcome_attribute(Some(&json!({"outcome": "ready"}))), None);
 
         let old = VecDeque::from([BreadcrumbState {
+            diagnostic: None,
             elapsed_ms: 1,
             source: "core".to_string(),
             severity: "info".to_string(),
@@ -3218,7 +3250,8 @@ mod tests {
                 line: Some(line),
             })
             .collect::<Vec<_>>();
-        let candidate = TelemetryErrorCandidateV1 {
+        let candidate = TelemetryErrorCandidate {
+            evidence: ErrorEvidence::new(),
             details: DiagnosticDetail::default(),
             schema: 1,
             component: "core".to_string(),
@@ -3232,18 +3265,130 @@ mod tests {
         let mut too_many = candidate;
         too_many.stack.push(frames[0].clone());
         assert!(validate_error_candidate(&too_many).is_err());
-        assert_eq!(
-            stable_fingerprint(
-                "core",
-                "core.error.unhandled",
-                "CORE_UNHANDLED_ERROR",
-                &frames
-            ),
-            "f-9f8616d808bc8759"
-        );
         service.shutdown();
         let _ = fs::remove_dir_all(root);
     }
+    #[test]
+    fn original_errors_cross_log_projection_and_keep_distinct_causes() {
+        use crate::runtime_log::{
+            RuntimeLogConfig, RuntimeLogEvent, RuntimeLogService, Severity, Verbosity,
+        };
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "original-errors", 128, TEST_WAIT);
+        let mut config = RuntimeLogConfig::production(root.join("runtime.log"));
+        config.level = Verbosity::Error; // warning telemetry must not depend on local verbosity
+        let log = RuntimeLogService::start_with_config(config);
+        log.attach_telemetry(service.clone());
+        for message in [
+            "no such table: memories",
+            "UNIQUE constraint failed: memories.id",
+        ] {
+            log.submit(
+                RuntimeLogEvent::rust(
+                    Severity::Warning,
+                    "migration",
+                    "migration.import.failed",
+                    "Import failed",
+                )
+                .attributes(json!({
+                    "code": "LEGACY_IMPORT_INTERNAL", "diagnostic": message,
+                    "exception_chain": format!("RuntimeError: import failed\nCaused by: {message}"),
+                    "exception_stack": "at migration::import_rows:42",
+                    "source_file": "desktop/src-tauri/src/migration.rs", "source_line": 42,
+                    "path": "C:\\Users\\测试 用户\\Sakura\\data\\memory.db",
+                    "endpoint": "https://example.test/v1?token=test-secret&model=demo",
+                    "repair_reason": "duplicate_rows", "repair_outcome": "invalid",
+                })),
+            );
+            let (endpoint, bytes) = server.next_request(&service);
+            assert_eq!(endpoint, "/v3/errors");
+            let report: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(report["schema"], 3);
+            assert_eq!(report["evidence"]["diagnostic"], message);
+            assert_eq!(
+                report["evidence"]["path"],
+                "C:\\Users\\测试 用户\\Sakura\\data\\memory.db"
+            );
+            assert_eq!(
+                report["evidence"]["endpoint"],
+                "https://example.test/v1?token=[REDACTED]&model=demo"
+            );
+            assert_eq!(report["details"]["line"], 42);
+            assert_eq!(report["details"]["repairReason"], "duplicate_rows");
+        }
+        assert!(log.shutdown(TEST_WAIT));
+        drop(log);
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_errors_survive_restart_and_disable_clears_pending_reports() {
+        let failing = TestServer::start(503, Duration::ZERO);
+        let (root, service) = service_for(&failing, "durable-errors", 128, TEST_WAIT);
+        service.observe_runtime_event(
+            "rust",
+            "error",
+            "runtime",
+            "future.error",
+            None,
+            Some(&json!({"diagnostic": "cannot load dependency", "code": "UNKNOWN_FAILURE"})),
+        );
+        let (_, sent) = failing.next_request(&service);
+        let sent: Value = serde_json::from_slice(&sent).unwrap();
+        assert!(wait_for_diagnostic(&service, |d| d.failed) > 0);
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let successful = TestServer::start(202, Duration::ZERO);
+        let resumed = TelemetryService::initialize_with_options(
+            UiConfigRepository::new(root.join("ui.json")),
+            "new-run".into(),
+            successful.endpoint.clone(),
+            128,
+            TEST_WAIT,
+        );
+        let (_, replayed) = successful.next_request(&resumed);
+        let replayed: Value = serde_json::from_slice(&replayed).unwrap();
+        assert_eq!(replayed, sent); // including report ID and original run/generation
+        resumed.set_enabled(false).unwrap();
+        assert!(resumed
+            .inner
+            .outbox
+            .lock()
+            .unwrap()
+            .pending(resumed.installation_id().as_deref())
+            .is_empty());
+        resumed.shutdown();
+        assert!(wait_for_sender_exit(&resumed));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn successful_and_cancelled_chat_have_real_duration_and_no_error_severity() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "chat-outcomes", 128, TEST_WAIT);
+        for outcome in ["success", "cancelled"] {
+            service.observe_runtime_event(
+                "core",
+                "info",
+                "chat",
+                "chat.finished",
+                Some("chat-1"),
+                Some(&json!({"elapsed_ms": 120, "outcome": outcome})),
+            );
+            let (endpoint, bytes) = server.next_request(&service);
+            assert_eq!(endpoint, "/v2/events");
+            let batch: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(batch["items"][0]["details"]["outcome"], outcome);
+            assert_eq!(batch["items"][0]["durationMs"], 120);
+            assert!(batch["items"][0]["details"]["severity"].is_null());
+        }
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn acceptance_wire_capture_preserves_core_location_and_terminal() {
         let server = TestServer::start(202, Duration::ZERO);
@@ -3276,7 +3421,7 @@ mod tests {
             "core",
             "info",
             "chat",
-            "chat.request.failed",
+            "chat.finished",
             Some(&operation),
             Some(&json!({"outcome":"failed","stage":"final_reply"})),
         );
