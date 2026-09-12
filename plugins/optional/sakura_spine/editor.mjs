@@ -22,7 +22,8 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
     .spine-editor .spine-choices button { min-width:0; max-width:100%; overflow-wrap:anywhere; }
     .spine-editor .spine-field { display:grid; gap:9px; font-size:13px; margin:20px 0; }
     .spine-editor .spine-field select, .spine-editor .spine-field input[type="text"] { max-width:none; min-width:0; width:100%; }
-    .spine-editor .spine-expression-settings { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .spine-editor .spine-default { grid-template-columns:auto minmax(0,1fr); align-items:center; gap:16px; margin:0 0 20px; padding-bottom:20px; border-bottom:1px solid var(--sakura-border); }
+    .spine-editor .spine-default + h3 { margin-top:0; }
     .spine-editor .layout-slider { width:100%; }
     .spine-editor .spine-error { color:var(--sakura-accent); font-size:13px; }
   `);
@@ -40,7 +41,6 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   }
   function changed() { onChange(structuredClone(draft)); }
   function heading(text) { const h = doc.createElement('h3'); h.textContent = text; root.append(h); }
-  heading('表情');
   const skins = doc.createElement('div');
   skins.className = 'spine-choices';
   for (const name of rendererData.skins) {
@@ -63,11 +63,10 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
     skinName.value = draft.skinLabels?.[name] ?? labelFor(name, 'skin');
     void preview({ skin: name });
   }
-  root.append(skins);
   const nameLabel = doc.createElement('label');
-  nameLabel.className = 'spine-field'; nameLabel.textContent = '表情名称';
+  nameLabel.className = 'spine-field'; nameLabel.textContent = '当前表情名称';
   const skinName = doc.createElement('input');
-  skinName.type = 'text'; skinName.maxLength = 120; skinName.setAttribute('aria-label', '表情名称');
+  skinName.type = 'text'; skinName.maxLength = 120; skinName.setAttribute('aria-label', '当前表情名称');
   skinName.value = draft.skinLabels?.[selectedSkin] ?? labelFor(selectedSkin, 'skin');
   skinName.addEventListener('input', () => {
     draft.skinLabels = { ...draft.skinLabels, [selectedSkin]: skinName.value };
@@ -77,7 +76,7 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   }, { signal: events.signal });
   nameLabel.append(skinName);
   const defaultLabel = doc.createElement('label');
-  defaultLabel.className = 'spine-field'; defaultLabel.textContent = '默认表情';
+  defaultLabel.className = 'spine-field spine-default'; defaultLabel.textContent = '默认表情';
   const defaultSkin = doc.createElement('select');
   defaultSkin.setAttribute('aria-label', '默认表情');
   for (const name of rendererData.skins) {
@@ -91,8 +90,9 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
     changed();
   }, { signal: events.signal });
   defaultLabel.append(defaultSkin);
-  const settings = doc.createElement('div'); settings.className = 'spine-expression-settings';
-  settings.append(nameLabel, defaultLabel); root.append(settings);
+  root.append(defaultLabel);
+  heading('表情');
+  root.append(skins, nameLabel);
   const loopLabel = doc.createElement('label');
   loopLabel.className = 'spine-field'; loopLabel.textContent = '循环动画';
   const select = doc.createElement('select');
