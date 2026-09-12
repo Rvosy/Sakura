@@ -203,7 +203,17 @@ class SpineService:
             return Path(self.character.resolve_resource(request['characterId'], root + relative_path(relative)))
 
         config = _read_json(resolve(resource['entry']), 64 * 1024)
-        return describe_resource(config, resolve)
+        description = describe_resource(config, resolve)
+        data = description['rendererData']
+        files = {config['skeleton'], config['atlas'], *data['textures'].values()}
+        description['assets'] = {path: root + path for path in sorted(files)}
+        return description
+
+    def editorData(self, resource, raw):
+        return dict(raw) if isinstance(raw, dict) else {'version': 1}
+
+    def exportResource(self, resource, raw):
+        return {'entry': 'spine-resource.json', 'data': self.editorData(resource, raw)}
 
     def parseControl(self, request, snapshot, payload, legacy):
         return parse_control(snapshot, payload, legacy)
@@ -212,4 +222,4 @@ class SpineService:
 class SpinePlugin:
     def setup(self, context):
         context.provide('sakura.visual.spine', SpineService(context.get('sakura.host.character')),
-                        exports=('describe', 'parseControl'))
+                        exports=('describe', 'parseControl', 'editorData', 'exportResource'))

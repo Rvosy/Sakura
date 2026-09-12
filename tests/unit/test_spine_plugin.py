@@ -10,7 +10,7 @@ import pytest
 from plugins.optional.sakura_spine.plugin import (
     SpineService, atlas_pages, describe_resource, parse_control, parse_preview_control,
 )
-from tools.spine_preview import prepare, resolve_inside
+from tools.spine_preview import export_components, prepare, resolve_inside
 
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=')
@@ -148,7 +148,7 @@ def test_preparation_keeps_source_and_copies_only_component_dependencies(spine_r
     catalog = prepare(root, output)
     assert len(catalog['models']) == 1
     component = output / catalog['models'][0]['resource']['root']
-    assert (component / 'skeleton.json').read_bytes() == source_json
+    assert (component / 'model/skeleton.json').read_bytes() == source_json
     assert (root / 'skeleton.json').read_bytes() == source_json
     assert not (component / 'unrelated.txt').exists()
     assert not (component / 'metadata.json').exists()
@@ -172,7 +172,6 @@ def test_installed_spine_runs_through_real_v4_host_and_expires_on_disable(spine_
     shutil.copytree(source, package / 'visual')
     (package / 'card.md').write_text('测试角色', encoding='utf-8')
     (package / 'default.png').write_bytes(PNG)
-    # Current public loader still requires a portrait; the Spine provider never uses it.
     (package / 'character.json').write_text(json.dumps({
         'id': 'alice', 'display_name': 'Alice', 'card': 'card.md', 'portrait': {'default': 'default.png'},
     }), encoding='utf-8')
@@ -186,6 +185,12 @@ def test_installed_spine_runs_through_real_v4_host_and_expires_on_disable(spine_
         assert host.candidates('spine.json@1')[0]['reasonCode'] == 'READY'
         resource = CharacterVisualResource('model', 'spine.json@1', 'visual', 'spine-resource.json')
         binding = host.bind('alice', package, resource)
+        assert binding.presentation()['assets'] == {
+            'skeleton.json': 'visual/skeleton.json', 'skeleton.atlas.txt': 'visual/skeleton.atlas.txt',
+            'texture.png': 'visual/texture.png',
+        }
+        assert host.editor(resource, {'version': 1, 'skeleton': 'skeleton.json'})['data']['skeleton'] == 'skeleton.json'
+        assert host.editor(resource, None)['data'] == {'version': 1}
         assert binding.description['outputSchema']['properties']['action']['enum'] == ['idle', 'wave']
         envelope = {'version': 1, 'resourceId': 'model', 'payload': {'skin': 'smile', 'action': 'wave'}}
         result = binding.parse_control(envelope)
@@ -199,6 +204,25 @@ def test_installed_spine_runs_through_real_v4_host_and_expires_on_disable(spine_
         assert binding.parse_control(envelope).reason_code == 'VISUAL_BINDING_EXPIRED'
     finally:
         application.close()
+
+
+def test_prepared_component_roundtrips_through_production_archive(spine_resource, tmp_path):
+    from app.config.visual_archive import import_visual_archive
+
+    source, _, _ = spine_resource
+    prepared = tmp_path / 'prepared'
+    prepare(source, prepared)
+    archives = export_components(prepared, tmp_path / 'exports')
+    package = tmp_path / 'character'
+    package.mkdir()
+    resource = import_visual_archive(archives[0], package)
+    config = json.loads((package / resource.root / resource.entry).read_text())
+    description = describe_resource(config, lambda path: resolve_inside(package / resource.root, path))
+    assert description['rendererData']['skins'] == ['default', 'normal', 'smile']
+    assert description['rendererData']['config']['defaultSkin'] == 'normal'
+    assert (package / resource.root / config['skeleton']).read_bytes() == (source / 'skeleton.json').read_bytes()
+    assert (package / resource.root / config['atlas']).read_bytes() == (source / 'skeleton.atlas.txt').read_bytes()
+    assert (package / resource.root / 'model/texture.png').read_bytes() == (source / 'texture.png').read_bytes()
 
 
 def test_preview_draft_survives_reload_without_rewriting_component_or_source(spine_resource, tmp_path):

@@ -16,7 +16,7 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
     if (disposed) return;
     disposed = true;
     abort.abort();
-    signal?.removeEventListener('abort', dispose);
+    signal?.removeEventListener('abort', freeze);
     observer?.disconnect();
     cancelAnimationFrame(frame);
     canvas.removeEventListener('webglcontextlost', contextLost);
@@ -36,6 +36,12 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
   function checkActive() {
     if (disposed || signal?.aborted) throw new DOMException('Spine loading cancelled', 'AbortError');
   }
+  function freeze() {
+    abort.abort();
+    paused = true;
+    cancelAnimationFrame(frame);
+    observer?.disconnect();
+  }
   async function read(relative, method) {
     checkActive();
     const url = await resolveAssetUrl(relative);
@@ -44,7 +50,7 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
     if (!response.ok) throw new Error('SPINE_ASSET_LOAD_FAILED');
     return response[method]();
   }
-  signal?.addEventListener('abort', dispose, { once: true });
+  signal?.addEventListener('abort', freeze, { once: true });
   try {
     checkActive();
     if (!/^3\.6\.\d+$/.test(rendererData.runtimeVersion)) throw new Error('SPINE_VERSION_UNSUPPORTED');
@@ -120,11 +126,12 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
     resize();
     frame = requestAnimationFrame(tick);
     return {
+      size: { width: Math.ceil(size.x * 1.16), height: Math.ceil(size.y * 1.16) },
       applyControl(control, delivery) { const applied = controller.applyControl(control, delivery); draw(); return applied; },
       cancel() { controller.cancel(); draw(); },
       resize,
       setPaused(value) {
-        if (disposed || paused === Boolean(value)) return;
+        if (disposed || signal?.aborted || paused === Boolean(value)) return;
         paused = Boolean(value);
         cancelAnimationFrame(frame);
         lastTime = undefined;
@@ -134,4 +141,38 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
       dispose,
     };
   } catch (error) { dispose(); throw error; }
+}
+
+// Public RendererHost owns operation/segment deduplication. The private runtime
+// receives a local sequence for its separate state and action deliveries.
+export async function mount({ container, resource, host, signal }) {
+  const renderer = await createRenderer({ container, rendererData: resource.data,
+    bindingId: resource.bindingId, resourceId: resource.resourceId, signal,
+    resolveAssetUrl(path) {
+      if (!Object.hasOwn(resource.assets, path)) throw new Error('SPINE_ASSET_LOAD_FAILED');
+      return resource.assets[path];
+    },
+    onError: error => host.unavailable('SPINE_RENDERER_FAILED', error),
+  });
+  let sequence = 0;
+  const deliver = (state, actions, context) => {
+    if (signal.aborted || context.signal.aborted) return;
+    if (!renderer.applyControl({ version: 1, bindingId: resource.bindingId,
+      resourceId: resource.resourceId, state, actions }, { sequence: sequence++ })) {
+      throw new Error('SPINE_CONTROL_INVALID');
+    }
+  };
+  const ratio = Math.min(1, 8192 / Math.max(renderer.size.width, renderer.size.height));
+  return {
+    ready: Promise.resolve().then(async () => {
+      if (signal.aborted) return;
+      const accepted = await host.setSurface({ width: Math.max(1, Math.round(renderer.size.width * ratio)),
+        height: Math.max(1, Math.round(renderer.size.height * ratio)) });
+      if (!signal.aborted && accepted === false) throw new Error('SPINE_SURFACE_REJECTED');
+    }),
+    applyState: (state, context) => deliver(state, [], context),
+    perform: (action, context) => deliver({}, [action], context),
+    cancel() { if (!signal.aborted) renderer.cancel(); },
+    destroy: () => renderer.dispose(),
+  };
 }

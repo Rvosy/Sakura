@@ -6,8 +6,8 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   let draft = structuredClone(rendererData.config);
   const element = document.createElement('div');
   const root = element.attachShadow({ mode: 'open' });
-  const style = document.createElement('style');
-  style.textContent = `
+  const style = new CSSStyleSheet();
+  style.replaceSync(`
     :host { display:block; color:inherit; font:inherit; }
     * { box-sizing:border-box; } h3 { font-size:14px; margin:25px 0 12px; font-weight:600; }
     h3:first-of-type { margin-top:0; } .choices { display:flex; flex-wrap:wrap; gap:8px; }
@@ -19,8 +19,8 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
       border-radius:8px; padding:10px; background:var(--spine-surface,#fff); color:inherit; min-width:0; width:100%; }
     input[type=range] { accent-color:var(--spine-accent,#755893); width:100%; }
     .check { display:flex; align-items:center; gap:8px; } .error { color:#b43f59; font-size:13px; }
-  `;
-  root.append(style);
+  `);
+  root.adoptedStyleSheets = [style];
   const events = new AbortController();
   let disposed = false;
   const buttons = [];
@@ -80,5 +80,8 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   if (rendererData.animations.length > 1) root.append(actions);
   root.append(error);
   container.append(element);
-  return { getDraft: () => structuredClone(draft), dispose() { disposed = true; events.abort(); element.remove(); } };
+  return { getDraft: () => structuredClone(draft), freeze() { events.abort(); element.inert = true; },
+    dispose() { disposed = true; events.abort(); element.remove(); } };
 }
+
+export { mountEditor } from './studio.mjs';

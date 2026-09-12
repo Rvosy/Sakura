@@ -176,7 +176,8 @@
         "visual-plugin-browser-journey",
         "settings-visuals-browser-journey",
         "studio-visuals-browser-journey",
-        "studio-save-browser-journey"
+        "studio-save-browser-journey",
+        "spine-plugin-browser-journey"
       ]
     }
   },
@@ -1076,6 +1077,7 @@
         "-q",
         "tests/unit/test_visual_capabilities.py",
         "tests/unit/test_visual_archive.py",
+        "tests/unit/test_spine_plugin.py",
         "tests/unit/test_core_host_character_settings.py",
         "tests/integration/test_visual_plugin_boundary.py",
         "tests/integration/test_portrait_resources.py",
@@ -1100,6 +1102,7 @@
         "--test",
         "desktop/frontend/tests/renderer-host.test.js",
         "desktop/frontend/tests/visual-editor-host.test.js",
+        "desktop/frontend/tests/spine-plugin.test.js",
         "desktop/frontend/tests/portrait-controller.test.js",
         "desktop/frontend/tests/character-generation.test.js",
         "desktop/frontend/tests/chat-presentation.test.js",
@@ -1147,6 +1150,13 @@
       "id": "studio-visuals-browser-journey",
       "description": "验证形态卡片、命名、立绘草稿、添加保存与窄窗口布局",
       "argv": ["{python}", "desktop/frontend/tests/studio-visuals.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "spine-plugin-browser-journey",
+      "description": "使用隔离角色和桌面 CSP 验证 Spine 组件导入、工坊保存及 WebGL 播放",
+      "argv": ["{python}", "desktop/frontend/tests/spine-plugin.journey.py"],
       "timeout_seconds": 120,
       "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
     },
