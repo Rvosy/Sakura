@@ -1,0 +1,23 @@
+api: 4
+id: sakura.visual.spine
+name: Spine
+author: Sakura
+description: Spine 3.6 角色的表情、动画和编辑。
+version: 0.1.0
+entry: plugin:SpinePlugin
+enabled: true
+priority: 40
+provides:
+  - sakura.visual.spine
+requires:
+  - sakura.host.character
+visuals:
+  - type: spine.json@1
+    service: sakura.visual.spine
+    contract: 1
+    renderer: renderer.mjs
+    editor: editor.mjs
+presentation:
+  kind: provider
+  category: other
+  icon: person-standing
