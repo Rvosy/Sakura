@@ -8,6 +8,7 @@ export function labelFor(name, type, labels = {}) {
 
 export function createEditor({ container, rendererData, onChange = () => {}, onPreview = () => {}, onRenderingChange = () => {} }) {
   let draft = structuredClone(rendererData.config);
+  let selectedSkin = draft.defaultSkin;
   const doc = container.ownerDocument;
   const element = doc.createElement('div');
   element.className = 'spine-editor';
@@ -21,6 +22,7 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
     .spine-editor .spine-choices button { min-width:0; max-width:100%; overflow-wrap:anywhere; }
     .spine-editor .spine-field { display:grid; gap:9px; font-size:13px; margin:20px 0; }
     .spine-editor .spine-field select, .spine-editor .spine-field input[type="text"] { max-width:none; min-width:0; width:100%; }
+    .spine-editor .spine-expression-settings { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     .spine-editor .layout-slider { width:100%; }
     .spine-editor .spine-error { color:var(--sakura-accent); font-size:13px; }
   `);
@@ -44,35 +46,53 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   for (const name of rendererData.skins) {
     const button = doc.createElement('button');
     button.type = 'button';
-    button.className = name === draft.defaultSkin ? 'primary-button compact-button' : 'secondary-button compact-button';
+    button.className = name === selectedSkin ? 'primary-button compact-button' : 'secondary-button compact-button';
     button.value = name;
     button.textContent = labelFor(name, 'skin', draft.skinLabels);
-    button.setAttribute('aria-pressed', String(name === draft.defaultSkin));
-    button.addEventListener('click', () => {
-      draft.defaultSkin = name;
-      for (const [value, node] of buttons) {
-        node.setAttribute('aria-pressed', String(name === value));
-        node.className = name === value ? 'primary-button compact-button' : 'secondary-button compact-button';
-      }
-      skinName.value = draft.skinLabels?.[name] ?? labelFor(name, 'skin');
-      changed();
-      void preview({ skin: name });
-    }, { signal: events.signal });
+    button.setAttribute('aria-pressed', String(name === selectedSkin));
+    button.addEventListener('click', () => selectSkin(name), { signal: events.signal });
     buttons.push([name, button]);
     skins.append(button);
+  }
+  function selectSkin(name) {
+    selectedSkin = name;
+    for (const [value, node] of buttons) {
+      node.setAttribute('aria-pressed', String(name === value));
+      node.className = name === value ? 'primary-button compact-button' : 'secondary-button compact-button';
+    }
+    skinName.value = draft.skinLabels?.[name] ?? labelFor(name, 'skin');
+    void preview({ skin: name });
   }
   root.append(skins);
   const nameLabel = doc.createElement('label');
   nameLabel.className = 'spine-field'; nameLabel.textContent = '表情名称';
   const skinName = doc.createElement('input');
   skinName.type = 'text'; skinName.maxLength = 120; skinName.setAttribute('aria-label', '表情名称');
-  skinName.value = draft.skinLabels?.[draft.defaultSkin] ?? labelFor(draft.defaultSkin, 'skin');
+  skinName.value = draft.skinLabels?.[selectedSkin] ?? labelFor(selectedSkin, 'skin');
   skinName.addEventListener('input', () => {
-    draft.skinLabels = { ...draft.skinLabels, [draft.defaultSkin]: skinName.value };
+    draft.skinLabels = { ...draft.skinLabels, [selectedSkin]: skinName.value };
     for (const [name, button] of buttons) button.textContent = labelFor(name, 'skin', draft.skinLabels);
+    for (const option of defaultSkin.options) option.textContent = labelFor(option.value, 'skin', draft.skinLabels);
     changed();
   }, { signal: events.signal });
-  nameLabel.append(skinName); root.append(nameLabel);
+  nameLabel.append(skinName);
+  const defaultLabel = doc.createElement('label');
+  defaultLabel.className = 'spine-field'; defaultLabel.textContent = '默认表情';
+  const defaultSkin = doc.createElement('select');
+  defaultSkin.setAttribute('aria-label', '默认表情');
+  for (const name of rendererData.skins) {
+    const option = doc.createElement('option'); option.value = name;
+    option.textContent = labelFor(name, 'skin', draft.skinLabels); defaultSkin.append(option);
+  }
+  defaultSkin.value = draft.defaultSkin;
+  defaultSkin.addEventListener('change', () => {
+    draft.defaultSkin = defaultSkin.value;
+    selectSkin(draft.defaultSkin);
+    changed();
+  }, { signal: events.signal });
+  defaultLabel.append(defaultSkin);
+  const settings = doc.createElement('div'); settings.className = 'spine-expression-settings';
+  settings.append(nameLabel, defaultLabel); root.append(settings);
   const loopLabel = doc.createElement('label');
   loopLabel.className = 'spine-field'; loopLabel.textContent = '循环动画';
   const select = doc.createElement('select');

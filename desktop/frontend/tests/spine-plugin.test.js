@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spine } from '../../../plugins/optional/sakura_spine/vendor/spine-webgl.mjs';
+import { createRendererHost } from '../pet/renderer-host.js';
 import { createSpineController } from '../../../plugins/optional/sakura_spine/controller.mjs';
 
 function fixture() {
@@ -16,8 +17,8 @@ function fixture() {
     },
   });
   const skeleton = new spine.Skeleton(skeletonData);
-  const controller = createSpineController(skeleton, { defaultSkin: 'default', defaultAnimation: 'idle', speed: 1 }, { bindingId: 'binding', resourceId: 'resource' });
-  const envelope = (state = {}, actions = []) => ({ version: 1, bindingId: 'binding', resourceId: 'resource', state, actions });
+  const controller = createSpineController(skeleton, { defaultSkin: 'default', defaultAnimation: 'idle', speed: 1 }, { bindingId: 'b'.repeat(32), resourceId: 'resource' });
+  const envelope = (state = {}, actions = []) => ({ version: 1, bindingId: 'b'.repeat(32), resourceId: 'resource', state, actions });
   return { skeleton, controller, envelope };
 }
 
@@ -72,6 +73,42 @@ test('skin changes preserve loop progress and the speed selected in the editor',
   assert.ok(Math.abs(skeleton.bones[0].x - 4) < 0.001);
   assert.equal(controller.snapshot().playing, 'idle');
   assert.equal(controller.snapshot().speed, 2);
+});
+
+test('history navigation preserves the running Spine loop while restoring expressions', async () => {
+  const { skeleton, controller, envelope } = fixture();
+  const container = {
+    append() {}, replaceChildren() {},
+    ownerDocument: { createElement: () => ({ remove() {} }) },
+  };
+  let sequence = 0;
+  const host = createRendererHost({ container, loadModule: async () => ({ mount: () => ({
+    applyState: state => assert.equal(controller.applyControl(envelope(state), { sequence: sequence++ }), true),
+    snapshotState() {
+      const { skin, animation, speed } = controller.snapshot();
+      return { skin, animation, speed };
+    },
+    cancel: () => controller.cancel(), destroy: () => controller.dispose(),
+  }) }) });
+  assert.equal(await host.bind({ visual: { bindingId: 'b'.repeat(32), resourceId: 'resource', renderer: 'fixture' } }), true);
+  const first = {}, last = {};
+  host.begin('reply');
+  assert.equal(await host.play(envelope({ skin: 'default' }), 'reply', 0, first), true);
+  assert.equal(await host.play(envelope({ skin: 'smile' }), 'reply', 1, last), true);
+  controller.update(0.1);
+  let expectedX = 1;
+  for (const [segment, skin] of [[first, 'default'], [last, 'smile'], [first, 'default'], [last, 'smile']]) {
+    assert.equal(await host.review(segment), true);
+    assert.equal(skeleton.skin.name, skin);
+    assert.ok(Math.abs(skeleton.bones[0].x - expectedX) < 0.001, 'review must not rewind the loop');
+    controller.update(0.1);
+    expectedX += 1;
+    assert.ok(Math.abs(skeleton.bones[0].x - expectedX) < 0.001, 'loop continues after review');
+  }
+  host.begin('next-reply');
+  assert.equal(await host.play(null, 'next-reply', 0, {}), true);
+  assert.ok(Math.abs(skeleton.bones[0].x - expectedX) < 0.001, 'returning to live playback also preserves phase');
+  host.destroy();
 });
 
 test('expression skins retain the base body and never expose a faceless base-only skin', () => {

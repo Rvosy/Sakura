@@ -13,12 +13,12 @@ export function createSpineController(skeleton, config, { bindingId, resourceId 
     && (state.skin === undefined || Boolean(skeleton.data.findSkin(state.skin)) && (!config.selectableSkins || config.selectableSkins.includes(state.skin)))
     && (state.animation === undefined || Boolean(skeleton.data.findAnimation(state.animation)))
     && (state.speed === undefined || (Number.isFinite(state.speed) && state.speed >= 0.1 && state.speed <= 3));
-  function restore() {
+  function restore(trackTime = 0) {
     animationState.clearTracks();
     skeleton.setToSetupPose();
     skeleton.setSkinByName(current.skin);
     skeleton.setSlotsToSetupPose();
-    animationState.setAnimation(0, current.animation, true);
+    animationState.setAnimation(0, current.animation, true).trackTime = trackTime;
     animationState.apply(skeleton);
     skeleton.updateWorldTransform();
   }
@@ -56,7 +56,16 @@ export function createSpineController(skeleton, config, { bindingId, resourceId 
       animationState.apply(skeleton);
       skeleton.updateWorldTransform();
     },
-    cancel() { if (!disposed) restore(); },
+    cancel() {
+      if (disposed) return;
+      const track = animationState.getCurrent(0);
+      if (track?.loop && track.animation.name === current.animation) {
+        // Cancelling a history operation must not restart a continuing idle loop.
+        if (track.mixingFrom || track.next) restore(track.trackTime);
+        return;
+      }
+      restore();
+    },
     snapshot() {
       return { ...current, playing: animationState.getCurrent(0)?.animation.name ?? null, disposed };
     },

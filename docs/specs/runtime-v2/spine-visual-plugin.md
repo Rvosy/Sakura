@@ -120,7 +120,7 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 | 方法 | 行为 |
 |---|---|
 | `applyControl(control, {sequence})` | 接受宿主解析结果；版本、资源和绑定必须相符，序号必须是严格递增的非负安全整数 |
-| `cancel()` | 清除动作及其混合，恢复当前循环、皮肤和速度 |
+| `cancel()` | 清除动作及其混合，保留皮肤和速度；已在播放当前循环时保留动画进度，正在播放一次动作时回到循环 |
 | `setPaused(boolean)` | 暂停或恢复逐帧推进，不清除当前状态 |
 | `resize()` | 按容器尺寸适配视口 |
 | `snapshot()` | 返回当前循环、播放动画、皮肤、速度及销毁状态，供预览诊断 |
@@ -134,12 +134,15 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 视口按初始动画姿态固定，动作不会驱动相机缩放。音频、交互驱动和多骨骼特效编排后续另行接入。
 
 `editor.mjs` 导出 `createEditor({container, rendererData, onChange?, onPreview?, onRenderingChange?})`，返回 `getDraft()` 和 `dispose()`。
-编辑器提供皮肤、表情名称、循环动画、速度和贴图透明方式编辑，动作按钮只触发预览，不把一次动作写为默认设置。
+编辑器提供表情预览、表情名称、默认表情、循环动画、速度和贴图透明方式编辑。
+表情按钮只切换预览和待编辑的名称，不修改默认表情；“默认表情”选择器修改 `defaultSkin` 并预览所选表情。
+选择器使用自定义表情名称，底层仍保存皮肤 ID。导入读取包内默认值，保存、重开和导出保留用户选择。
+动作按钮只触发预览，不把一次动作写为默认设置。
 `onChange` 得到独立配置副本。`onPreview(payload)` 是用户在编辑页的操作，由宿主调用插件的
 `parse_preview_control()` 校验实际资源名称和参数范围，再交给渲染器。编辑预览可调整速度，
 不扩展模型的控制范围；不能把模型产生的数据送到编辑预览入口。
 单动画资源省略动画选择和一次动作按钮，保留表情、速度与贴图透明方式编辑。
-透明方式变化通过 `onRenderingChange(config)` 重新加载预览，保留当前表情和速度；保存、重开与导出保留该配置。
+透明方式变化通过 `onRenderingChange(config)` 重新加载预览，保留默认表情和速度，预览回到默认表情；保存、重开与导出保留该配置。
 旧包可以在编辑器中修正透明方式并选择完整表情，无需重新导入。
 编辑器使用宿主内的普通 DOM，复用工坊的 `primary-button`、`secondary-button`、`layout-slider` 和输入框样式。
 插件样式只补充带 `spine-` 前缀的布局，随销毁移除；不使用 Shadow DOM 隔断公共控件，也不固定背景或文字颜色。
