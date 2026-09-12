@@ -1,0 +1,23 @@
+api: 4
+id: sakura.portrait
+name: 立绘
+author: Sakura
+description: 显示、控制和编辑角色立绘。
+version: 1.0.0
+entry: plugin:PortraitPlugin
+enabled: true
+provides:
+  - sakura.visual.portrait
+requires:
+  - sakura.host.character
+  - sakura.host.logging
+presentation:
+  kind: provider
+  category: model
+  icon: image
+visuals:
+  - type: sakura.visual.portrait@1
+    service: sakura.visual.portrait
+    contract: 1
+    renderer: frontend/renderer.js
+    editor: frontend/editor.js

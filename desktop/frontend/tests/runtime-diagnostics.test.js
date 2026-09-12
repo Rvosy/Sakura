@@ -160,3 +160,35 @@ test("real errors retain original messages and frames with credentials redacted"
   assert.equal(entries[2].details.file,undefined);
   assert.equal(JSON.stringify(entries).includes("PRIVATE"),false);
 });
+
+
+test("caught plugin exceptions retain causes and stages through the shared diagnostic transport", async () => {
+  const env = harness();
+  const cause = new TypeError("model shader failed token=private-value at C:\\Users\\private\\model.bin");
+  const failure = new Error("renderer mount failed", { cause });
+  assert.equal(env.diagnostics.reportError(failure, { command: "visual_renderer", stage: "visual.renderer.ready", code: "VISUAL_RENDERER_FAILED" }), true);
+  assert.equal(env.diagnostics.reportError(failure, { command: "visual_renderer" }), false);
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].stage, "visual.renderer.ready");
+  assert.equal(entries[0].code, "VISUAL_RENDERER_FAILED");
+  assert.match(entries[0].diagnostic, /renderer mount failed/);
+  assert.match(entries[0].exceptionChain, /model shader failed/);
+  assert.ok(entries[0].exceptionChain.includes("C:\\Users\\private\\model.bin"));
+  assert.match(entries[0].exceptionStack, /Caused by:/);
+  assert.doesNotMatch(JSON.stringify(entries), /private-value/);
+});
+
+test("Studio polling remains debug and failed calls keep the method without request contents", async () => {
+  let failed = false;
+  const env = harness(async () => { if (failed) throw new Error("worker went away"); return {}; });
+  await env.diagnostics.invoke("studio_request", { method: "studio.visual.catalog", params: { private: "private-body" } });
+  failed = true;
+  await assert.rejects(env.diagnostics.invoke("studio_request", { method: "studio.visual.open", params: { private: "private-body" } }));
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.ok(entries.filter(entry => entry.command === "studio.visual.catalog").every(entry => entry.level === "debug"));
+  assert.match(entries.find(entry => entry.outcome === "failed").diagnostic, /worker went away/);
+  assert.doesNotMatch(JSON.stringify(entries), /private-body/);
+});

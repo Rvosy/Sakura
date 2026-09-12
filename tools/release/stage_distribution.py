@@ -19,6 +19,7 @@ from sakura_downloads import uv_download_environment
 
 TARGETS = {"windows-x64", "macos-arm64", "linux-x64"}
 BUILTIN_PLUGINS = {
+    "sakura_portrait",
     "sakura_web",
     "sakura_mem0",
     "sakura_mobile",

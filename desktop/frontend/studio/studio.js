@@ -1,3 +1,5 @@
+import { requirementMessage } from "../core/plugin-requirements.js";
+import { createVisualEditorHost } from "./visual-editor-host.js";
 import { createIcon } from "../core/icons.js";
 import {
   characterOptionGroup,
@@ -20,7 +22,11 @@ import {
 } from "../settings/theme-color-picker.js";
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 
-const invoke = window.__TAURI__.core.invoke;
+import { createRuntimeDiagnostics } from "../core/runtime-diagnostics.js";
+
+const runtimeDiagnostics = createRuntimeDiagnostics({ invoke: window.__TAURI__.core.invoke });
+const invoke = runtimeDiagnostics.invoke;
+window.addEventListener("beforeunload", () => runtimeDiagnostics.dispose(), { once: true });
 
 const studioMethodMap = Object.freeze({
   "studio.open_character": "studio.character.open",
@@ -45,7 +51,7 @@ function mapObjectKeys(value, convert) {
   if (Array.isArray(value)) return value.map((item) => mapObjectKeys(item, convert));
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-    convert(key), mapObjectKeys(item, convert),
+    convert(key), ["visual_data", "visualData", "visuals", "data"].includes(key) ? item : mapObjectKeys(item, convert),
   ]));
 }
 
@@ -71,9 +77,7 @@ const fields = {
   cardText: document.getElementById("cardText"),
   expressionList: document.getElementById("expressionList"),
   addExpressionButton: document.getElementById("addExpressionButton"),
-  importPortraitFolderButton: document.getElementById("importPortraitFolderButton"),
-  voiceEnabled: document.getElementById("voiceEnabled"),
-  voiceEnabledLabel: document.getElementById("voiceEnabledLabel"),
+  visualResourceList: document.getElementById("visualResourceList"),
   voiceModelFields: document.getElementById("voiceModelFields"),
   modelFileList: document.getElementById("modelFileList"),
   gptModelPath: document.getElementById("gptModelPath"),
@@ -109,7 +113,7 @@ const fields = {
 const pageMeta = {
   basic: { title: "基础信息" },
   card: { title: "人设卡" },
-  portrait: { title: "立绘" },
+  portrait: { title: "角色形态" },
   "voice-model": { title: "语音模型" },
   "reference-audio": { title: "参考语音" },
   theme: { title: "配色" },
@@ -133,10 +137,9 @@ let createCharacterPreviousFocus = null;
 let createDisplayNameEdited = false;
 let closingStudio = false;
 let activeOperationId = "";
+let completeStudioReload = null;
 
 const cancellableOperationLabels = Object.freeze({
-  "studio.import_portrait": "正在导入立绘…",
-  "studio.import_portrait_folder": "正在导入立绘文件夹…",
   "studio.import_voice_model": "正在复制语音模型…",
   "studio.import_reference_audio": "正在导入参考语音…",
   "studio.import_reference_audio_folder": "正在导入参考语音文件夹…",
@@ -175,8 +178,6 @@ async function hostCall(method, params = {}) {
   let mappedMethod = studioMethodMap[method];
   let mappedParams = mapObjectKeys(params, camelKey);
   const assetKinds = {
-    "studio.import_portrait": "portrait",
-    "studio.import_portrait_folder": "portraitFolder",
     "studio.import_voice_model": params.model_type === "gpt" ? "gptModel" : "sovitsModel",
     "studio.import_reference_audio": "referenceAudio",
     "studio.import_reference_audio_folder": "referenceAudioFolder",
@@ -190,22 +191,23 @@ async function hostCall(method, params = {}) {
     delete mappedParams.currentCharacterId;
   }
   if (!mappedMethod) throw new Error(`不支持的角色工坊命令：${method}`);
-  const operationLabel = cancellableOperationLabels[method];
+  const result = validateStudioResponse(await invokeStudio(mappedMethod, mappedParams, cancellableOperationLabels[method]));
+  const legacy = mapObjectKeys(result, snakeKey);
+  if (legacy.preview_url) legacy.data_url = legacy.preview_url;
+  return legacy;
+}
+
+async function invokeStudio(method, params, operationLabel) {
   if (operationLabel) {
     activeOperationId = globalThis.crypto?.randomUUID?.()
       || `studio-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    mappedParams.operationId = activeOperationId;
+    params = { ...params, operationId: activeOperationId };
     fields.operationText.textContent = operationLabel;
     fields.operationCancelButton.disabled = false;
     fields.operationStatus.hidden = false;
   }
   try {
-    const result = validateStudioResponse(
-      await invoke("studio_request", { method: mappedMethod, params: mappedParams }),
-    );
-    const legacy = mapObjectKeys(result, snakeKey);
-    if (legacy.preview_url) legacy.data_url = legacy.preview_url;
-    return legacy;
+    return await invoke("studio_request", { method, params });
   } finally {
     if (operationLabel) {
       activeOperationId = "";
@@ -450,6 +452,9 @@ function enhanceSelect(select) {
   }
 
   function closeMenu() {
+    if (!wrapper.classList.contains("is-open")) {
+      return;
+    }
     wrapper.classList.remove("is-open");
     trigger.setAttribute("aria-expanded", "false");
     menu.classList.remove("is-open");
@@ -590,21 +595,9 @@ function collectDoc() {
   fields.themeFields.querySelectorAll("[data-theme-field]").forEach((input) => {
     theme[input.dataset.themeField] = input.value.trim();
   });
-  const expressions = {};
-  let defaultPortrait = "";
-  fields.expressionList.querySelectorAll(".expression-row").forEach((row) => {
-    const label = row.querySelector("[data-expression-label]").value.trim();
-    const path = row.querySelector("[data-expression-path]").value.trim();
-    if (row.querySelector("[data-portrait-default]").checked) {
-      defaultPortrait = path;
-    }
-    if (label && path) {
-      expressions[label] = path;
-    }
-  });
   const referenceAudios = collectReferenceAudios();
-  const voiceEnabled = fields.voiceEnabled.checked;
-  const replyTones = voiceEnabled ? uniqueReplyTones(referenceAudios) : [];
+  const hasVoiceResources = Boolean(currentDoc?.voice || fields.gptModelPath.value || fields.sovitsModelPath.value || referenceAudios.length);
+  const replyTones = uniqueReplyTones(referenceAudios);
   return {
     ...(currentDoc || {}),
     id: fields.characterId.value.trim(),
@@ -612,26 +605,20 @@ function collectDoc() {
     initial_message: fields.initialMessage.value,
     card_text: fields.cardText.value,
     reply_tones: replyTones,
-    default_portrait: defaultPortrait,
-    expressions,
-    voice: voiceEnabled ? {
+    voice: hasVoiceResources ? {
       tone_refs: "voice/refs/ref.txt",
       gpt_model: fields.gptModelPath.value.trim(),
       sovits_model: fields.sovitsModelPath.value.trim(),
       ref_lang: fields.defaultRefLang.value.trim() || "ja",
       text_lang: fields.textLang.value.trim() || "ja",
     } : null,
-    reference_audios: voiceEnabled ? referenceAudios : [],
+    reference_audios: referenceAudios,
     theme,
   };
 }
 
 function editorSnapshot() {
-  const expressionRows = Array.from(fields.expressionList.querySelectorAll(".expression-row"), (row) => ({
-    label: row.querySelector("[data-expression-label]").value,
-    path: row.querySelector("[data-expression-path]").value,
-  }));
-  return JSON.stringify({ doc: collectDoc(), expressionRows });
+  return JSON.stringify({ doc: collectDoc() });
 }
 
 function markBaseline() {
@@ -667,7 +654,7 @@ function scheduleDraftAutosave() {
 async function flushDraftAutosave() {
   window.clearTimeout(draftAutosaveTimer);
   draftAutosaveTimer = null;
-  if (!currentWorkspaceId || !currentDoc || !isDirty()) {
+  if (renderingEditor || !currentWorkspaceId || !currentDoc || !isDirty()) {
     return null;
   }
   if (draftAutosavePromise) {
@@ -684,7 +671,9 @@ async function flushDraftAutosave() {
   });
   try {
     const result = await draftAutosavePromise;
-    currentDoc = result.doc || doc;
+    // Plugin editors keep their draft in memory; a completed older autosave
+    // must not overwrite edits made while that request was in flight.
+    if (savedSnapshot === editorSnapshot()) currentDoc = result.doc || doc;
     renderModelFiles(result.model_files);
     const existing = (request.characters || []).find((item) => item.id === currentDoc.id);
     if (existing) {
@@ -705,6 +694,7 @@ async function flushDraftAutosave() {
     }
     renderCharacterOptions();
     baseline = savedSnapshot;
+    void refreshPluginRequirements();
     refreshDirty();
     if (hasUnsavedEditorChanges(savedSnapshot, editorSnapshot())) {
       scheduleDraftAutosave();
@@ -736,7 +726,29 @@ function setCurrentDoc(payload, draftCharacter = null, options = {}) {
   }
 }
 
-function renderEditor() {
+let requirementsRevision = 0;
+async function refreshPluginRequirements() {
+  const panel = document.getElementById("pluginRequirementsPanel");
+  const list = document.getElementById("pluginRequirementsList");
+  const workspaceId = currentWorkspaceId, revision = ++requirementsRevision;
+  if (!workspaceId) { panel.hidden = true; return; }
+  try {
+    const result = await invoke("studio_request", { method: "studio.plugin.requirements", params: { workspaceId } });
+    if (revision !== requirementsRevision || workspaceId !== currentWorkspaceId) return;
+    list.replaceChildren();
+    for (const item of result.items) {
+      const row = document.createElement("li"); row.textContent = requirementMessage(item); list.append(row);
+    }
+    panel.hidden = !result.items.length;
+  } catch (error) {
+    if (revision !== requirementsRevision || workspaceId !== currentWorkspaceId) return;
+    const row = document.createElement("li"); row.textContent = "插件需求读取失败，请重新打开角色。";
+    list.replaceChildren(row); panel.hidden = false;
+    runtimeDiagnostics.reportError(error, { command: "studio.plugin.requirements", code: "PLUGIN_REQUIREMENTS_FAILED" });
+  }
+}
+
+function renderEditor({ openVisuals = true } = {}) {
   renderingEditor = true;
   const doc = currentDoc || {};
   fields.characterId.value = doc.id || "";
@@ -744,21 +756,20 @@ function renderEditor() {
   fields.displayName.value = doc.display_name || "";
   fields.initialMessage.value = doc.initial_message || "";
   fields.cardText.value = doc.card_text || "";
-  fields.voiceEnabled.checked = Boolean(doc.voice);
   fields.gptModelPath.value = doc.voice?.gpt_model || "";
   fields.sovitsModelPath.value = doc.voice?.sovits_model || "";
   fields.defaultRefLang.value = doc.voice?.ref_lang || "ja";
   fields.textLang.value = doc.voice?.text_lang || "ja";
-  renderExpressions(doc.expressions || {}, doc.default_portrait || "");
   renderReferenceAudios(doc.reference_audios || []);
   const theme = {
     ...(request.theme_defaults || request.theme || {}),
     ...(doc.theme || {}),
   };
   renderTheme(theme);
-  syncVoiceEnabledState();
   refreshControls();
   renderingEditor = false;
+  void refreshPluginRequirements();
+  if (openVisuals) return renderVisualResources({ flush: false });
 }
 
 function renderModelFiles(modelFiles = []) {
@@ -791,85 +802,318 @@ function renderModelFiles(modelFiles = []) {
   }
 }
 
-function renderExpressions(expressions, defaultPortrait = "") {
-  fields.expressionList.textContent = "";
-  let defaultFound = false;
-  Object.entries(expressions).forEach(([label, path]) => {
-    const isDefault = path === defaultPortrait && !defaultFound;
-    defaultFound ||= isDefault;
-    addExpressionRow(label, path, isDefault);
-  });
-  if (defaultPortrait && !defaultFound) {
-    addExpressionRow("默认", defaultPortrait, true);
-  }
-  syncExpressionEmptyState();
-}
-
-function addExpressionRow(label = "", path = "", isDefault = false) {
-  fields.expressionList.querySelector(".resource-empty")?.remove();
-  const row = document.createElement("div");
-  row.className = "expression-row";
-  const defaultLabel = document.createElement("label");
-  defaultLabel.className = "portrait-default-control";
-  const defaultInput = document.createElement("input");
-  defaultInput.type = "radio";
-  defaultInput.name = "defaultPortraitResource";
-  defaultInput.dataset.portraitDefault = "1";
-  defaultInput.checked = Boolean(isDefault);
-  const defaultText = document.createElement("span");
-  defaultText.textContent = "默认";
-  defaultLabel.append(defaultInput, defaultText);
-  const labelInput = document.createElement("input");
-  labelInput.type = "text";
-  labelInput.value = label;
-  labelInput.placeholder = "标签";
-  labelInput.dataset.expressionLabel = "1";
-  const pathInput = document.createElement("input");
-  pathInput.type = "text";
-  pathInput.readOnly = true;
-  pathInput.value = path;
-  pathInput.placeholder = "portraits/example.png";
-  pathInput.dataset.expressionPath = "1";
-  const replace = document.createElement("button");
-  replace.type = "button";
-  replace.className = "secondary-button compact-button";
-  replace.textContent = path ? "替换" : "选择";
-  replace.addEventListener("click", () => importPortrait(row));
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "secondary-button icon-button";
-  remove.append(createIcon(document, "x"));
-  remove.addEventListener("click", () => {
-    const wasDefault = defaultInput.checked;
-    row.remove();
-    if (wasDefault) {
-      fields.expressionList.querySelector("[data-portrait-default]")?.click();
-    }
-    syncExpressionEmptyState();
+let selectedVisualId = "";
+let visualWorkspace = "";
+const visualPreviews = new Map();
+let visualCatalog = [];
+let visualEditorRevision = 0;
+let visualSelectionRevision = 0;
+let visualEditorScope = null;
+const visualEditor = createVisualEditorHost({
+  container: fields.expressionList,
+  onError(error, stage) {
+    runtimeDiagnostics.reportError(error, { command: "studio_visual_editor", stage, code: "VISUAL_EDITOR_FAILED" });
+    if (stage === "studio.visual.editor") setError("形态编辑失败，请查看运行日志。");
+  },
+  onPreview: updateVisualPreview,
+  onChange(data) {
+    if (!currentDoc || !selectedVisualId) return;
+    ensureVisualReferences();
+    currentDoc.visual_data ||= {};
+    currentDoc.visual_data[selectedVisualId] = data;
     handleEditorChanged();
-  });
-  const actions = document.createElement("div");
-  actions.className = "portrait-resource-actions";
-  actions.append(replace, remove);
-  row.append(defaultLabel, labelInput, pathInput, actions);
-  row.addEventListener("input", handleEditorChanged);
-  row.addEventListener("change", handleEditorChanged);
-  fields.expressionList.append(row);
+  },
+  async importFiles(options, { signal }) {
+    const workspaceId = currentWorkspaceId;
+    const resourceId = selectedVisualId;
+    const selected = await chooseStudioSource(options.folder ? "visualFolder" : "visual", { multiple: options.multiple });
+    if (signal.aborted) return [];
+    const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+    const result = [];
+    await runBusy(async () => {
+      for (const path of paths) {
+        if (signal.aborted) break;
+        const response = await invokeStudio("studio.asset.import", { workspaceId, resourceId, kind: options.folder ? "visualFolder" : "visual", path }, "正在导入表现资源…");
+        result.push(...(response.items || [response]));
+      }
+    });
+    return result;
+  },
+});
+function visualReferences() {
+  return currentDoc?.visuals || { resources: [], default: null };
 }
+function ensureVisualReferences() { currentDoc.visuals ||= structuredClone(visualReferences()); }
+function visualProvider(resource) {
+  const preferred = visualReferences().providers?.[resource.id];
+  const matches = visualCatalog.filter(item => item.type === resource.type && (!preferred || item.pluginId === preferred));
+  return matches.length === 1 ? matches[0] : null;
+}
+function visualName(resource) { return resource.name || visualProvider(resource)?.name || "未命名形态"; }
+function updateVisualPreview(url, resourceId, path) {
+  const previous = visualPreviews.get(resourceId);
+  // Opening another editor changes its authorization URL, not this card's image.
+  if (previous?.path === path && (previous.url || !url)) return;
+  visualPreviews.set(resourceId, { path, url });
+  const cover = fields.visualResourceList.querySelector(`[data-visual-id="${CSS.escape(resourceId)}"] .form-card-cover`);
+  if (cover) fillVisualCover(cover, resourceId);
+}
+async function loadVisualPreviews() {
+  const workspaceId = currentWorkspaceId;
+  const revision = visualEditorRevision;
+  const previous = new Map(visualPreviews);
+  try {
+    const result = await invoke("studio_request", { method: "studio.visual.previews", params: { workspaceId } });
+    if (workspaceId !== currentWorkspaceId || revision !== visualEditorRevision) return;
+    for (const item of result.items) {
+      // An editor may have changed the cover while the initial list was loading.
+      if (visualPreviews.get(item.resourceId) !== previous.get(item.resourceId)) continue;
+      if (visualReferences().resources.some(resource => resource.id === item.resourceId)) updateVisualPreview(item.previewUrl || null, item.resourceId, item.relativePath);
+    }
+  } catch (error) {
+    if (workspaceId === currentWorkspaceId && revision === visualEditorRevision)
+      runtimeDiagnostics.reportError(error, { command: "studio_visual_previews", code: "VISUAL_PREVIEW_FAILED" });
+  }
+}
+function fillVisualCover(cover, resourceId) {
+  const url = visualPreviews.get(resourceId)?.url;
+  if (cover.dataset.url === (url || "")) return;
+  cover.dataset.url = url || "";
+  if (url) {
+    const img = document.createElement("img"); img.src = url; img.alt = "";
+    void img.decode().then(() => { if (cover.dataset.url === url) cover.replaceChildren(img); }).catch(error => {
+      if (cover.isConnected && cover.dataset.url === url)
+        runtimeDiagnostics.reportError(error, { command: "studio_visual_cover", stage: "studio.visual.cover.decode", code: "VISUAL_PREVIEW_FAILED" });
+    });
+  }
+  else cover.replaceChildren(createIcon(document, "images"));
+}
+function visualButton(label, action, primary = false) {
+  const button = document.createElement("button"); button.type = "button"; button.className = primary ? "primary-button" : "secondary-button";
+  button.textContent = label; button.onclick = action; return button;
+}
+function visualDialog(title) {
+  const dialog = document.createElement("dialog"); dialog.className = "studio-visual-dialog"; dialog.setAttribute("aria-label", title);
+  const heading = document.createElement("h2"); heading.textContent = title;
+  const body = document.createElement("div"); body.className = "visual-dialog-body";
+  const actions = document.createElement("div"); actions.className = "visual-dialog-actions";
+  dialog.append(heading, body, actions); document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.showModal(); return { dialog, body, actions, close: () => dialog.close() };
+}
+function renderVisualCards() {
+  const resources = visualReferences();
+  const existing = new Map([...fields.visualResourceList.children].map(card => [card.dataset.visualId, card]));
+  for (const [id, card] of existing) if (!resources.resources.some(item => item.id === id)) card.remove();
+  for (const resource of resources.resources) {
+    const card = existing.get(resource.id) || visualButton("", () => { if (!busy) void openVisualEditor(resource); }); card.className = "form-card";
+    card.onclick = () => { if (!busy) void openVisualEditor(resource); };
+    card.dataset.visualId = resource.id; card.setAttribute("aria-pressed", String(resource.id === selectedVisualId));
+    const cover = card.querySelector(".form-card-cover") || document.createElement("span"); cover.className = "form-card-cover"; fillVisualCover(cover, resource.id);
+    const text = document.createElement("span"); text.className = "form-card-text";
+    const name = document.createElement("strong"); name.textContent = visualName(resource);
+    const provider = document.createElement("span"); provider.className = "form-card-type"; provider.textContent = visualProvider(resource)?.name || "所需插件不可用";
+    const badges = document.createElement("span"); badges.className = "form-card-badges";
+    if (resources.default === resource.id) { const badge = document.createElement("span"); badge.className = "form-default-badge"; badge.textContent = "默认"; badges.append(badge); }
+    if (visualProvider(resource)?.reasonCode !== "READY") { const badge = document.createElement("span"); badge.className = "form-missing-badge"; badge.textContent = "插件不可用"; badges.append(badge); }
+    text.append(name, provider, badges);
+    card.querySelector(".form-card-text")?.remove();
+    if (!cover.parentElement) card.append(cover);
+    card.append(text);
+    if (!card.parentElement) fields.visualResourceList.append(card);
+  }
+}
+function renderVisualMeta(resource) {
+  resource = visualReferences().resources.find(item => item.id === resource?.id);
+  const meta = document.getElementById("visualMeta"); meta.hidden = !resource; meta.replaceChildren();
+  document.getElementById("visualEmpty").hidden = Boolean(resource);
+  document.getElementById("visualEditorPanel").hidden = !resource;
+  if (!resource) return;
+  document.getElementById("visualEditorTitle").textContent = visualProvider(resource)?.name || "形态编辑";
+  const field = document.createElement("label"); field.className = "form-name-field"; field.htmlFor = "visualName";
+  const label = document.createElement("span"); label.textContent = "形态名称";
+  const name = document.createElement("input"); name.type = "text"; name.id = "visualName"; name.maxLength = 80; name.value = visualName(resource);
+  name.oninput = () => {
+    const current = visualReferences().resources.find(item => item.id === resource.id);
+    if (!current) return;
+    current.name = name.value; handleEditorChanged(); renderVisualCards();
+  };
+  field.append(label, name);
+  const actions = document.createElement("div"); actions.className = "form-meta-actions";
+  const candidates = visualCatalog.filter(item => item.type === resource.type);
+  if (candidates.length > 1) {
+    const provider = document.createElement("select"); provider.setAttribute("aria-label", "表现插件");
+    provider.append(new Option("选择插件", ""));
+    for (const item of candidates) provider.append(new Option(item.name, item.pluginId));
+    provider.value = visualReferences().providers?.[resource.id] || "";
+    provider.onchange = () => { ensureVisualReferences(); currentDoc.visuals.providers ||= {}; if (provider.value) currentDoc.visuals.providers[resource.id] = provider.value; else delete currentDoc.visuals.providers[resource.id]; handleEditorChanged(); void openVisualEditor(resource, visualEditorRevision, { force: true }); };
+    actions.append(provider); enhanceSelect(provider);
+  }
+  const makeDefault = visualButton(visualReferences().default === resource.id ? "默认形态" : "设为默认", () => {
+    currentDoc.visuals.default = resource.id; handleEditorChanged(); renderVisualCards(); renderVisualMeta(resource);
+  }); makeDefault.id = "defaultVisualButton"; makeDefault.disabled = visualReferences().default === resource.id;
+  const remove = visualButton("移除", () => {
+    const modal = visualDialog(`移除「${visualName(visualReferences().resources.find(item => item.id === resource.id) || resource)}」`);
+    const note = document.createElement("p"); note.textContent = visualReferences().default === resource.id ? "移除此形态后，默认形态将改为列表中的下一项；没有其他形态时将不显示角色。" : "移除此形态，保留角色人设和其他形态。";
+    modal.body.append(note); modal.actions.append(visualButton("取消", modal.close), visualButton("移除", () => {
+      modal.close(); currentDoc.visuals.resources = currentDoc.visuals.resources.filter(item => item.id !== resource.id);
+      if (currentDoc.visual_data) delete currentDoc.visual_data[resource.id];
+      if (currentDoc.visuals.providers) delete currentDoc.visuals.providers[resource.id];
+      if (currentDoc.visuals.default === resource.id) currentDoc.visuals.default = currentDoc.visuals.resources[0]?.id || null;
+      handleEditorChanged(); void renderVisualResources();
+    }, true));
+  }); remove.id = "removeVisualButton";
+  actions.append(makeDefault, visualButton("导出形态", () => exportVisualComponent(resource.id).catch(error => setError(String(error)))), remove);
+  meta.append(field, actions);
+}
+async function renderVisualResources({ flush = true, preferredId = null } = {}) {
+  const retained = visualWorkspace === currentWorkspaceId ? selectedVisualId : "";
+  if (visualWorkspace !== currentWorkspaceId) { visualPreviews.clear(); visualEditorScope = null; visualEditor.clear(); }
+  visualWorkspace = currentWorkspaceId;
+  const revision = ++visualEditorRevision;
+  ++visualSelectionRevision;
+  if (!currentDoc) { renderVisualMeta(null); return; }
+  const resources = visualReferences();
+  const selected = resources.resources.find(item => item.id === (preferredId || retained)) || resources.resources.find(item => item.id === resources.default) || resources.resources[0];
+  selectedVisualId = selected?.id || "";
+  renderVisualCards(); renderVisualMeta(selected);
+  void loadVisualPreviews();
+  if (selected) await openVisualEditor(selected, revision, { flush });
+  else { visualEditorScope = null; visualEditor.clear(); }
+}
+async function openVisualEditor(resource, revision = visualEditorRevision, { flush = true, force = false } = {}) {
+  if (revision !== visualEditorRevision) return;
+  if (!force && visualEditorScope?.workspaceId === currentWorkspaceId && visualEditorScope.resourceId === resource.id) return;
+  setError("");
+  const selection = ++visualSelectionRevision;
+  const workspaceId = currentWorkspaceId;
+  visualEditorScope = null;
+  visualEditor.freeze();
+  selectedVisualId = resource.id;
+  renderVisualCards(); renderVisualMeta(resource);
+  try {
+    if (flush) await flushDraftAutosave();
+    if (selection !== visualSelectionRevision || workspaceId !== currentWorkspaceId) return;
+    const providerId = currentDoc.visuals?.providers?.[resource.id];
+    const descriptor = await invoke("studio_request", { method: "studio.visual.open", params: { workspaceId, resourceId: resource.id, ...(providerId ? { providerId } : {}) } });
+    if (revision !== visualEditorRevision || selection !== visualSelectionRevision || workspaceId !== currentWorkspaceId) return;
+    if (!await visualEditor.open(descriptor)) return;
+    if (selection === visualSelectionRevision) visualEditorScope = { workspaceId, resourceId: resource.id, pluginId: descriptor.presentation.visual.providerId, type: resource.type, scopeId: descriptor.providerScopeId };
+    refreshControls();
+  } catch (error) {
+    if (revision !== visualEditorRevision || selection !== visualSelectionRevision) return;
+    visualEditor.clear();
+    const inactive = String(error).match(/VISUAL_PROVIDER_MISSING|PLUGIN_DISABLED/);
+    if (inactive) {
+      const text = document.createElement("p");
+      text.textContent = inactive[0] === "VISUAL_PROVIDER_MISSING"
+        ? "尚未安装支持此形态的插件。资源会随角色保存，安装并启用插件后可编辑和显示。"
+        : "所需插件尚未启用。资源会随角色保存，启用插件后可编辑和显示。";
+      const hints = (resource.pluginRequirements || []).flatMap(item => item.plugins || []);
+      if (inactive[0] === "VISUAL_PROVIDER_MISSING" && hints.length) text.textContent += " 可安装：" + hints.map(item => item.name || item.id).join(" 或 ") + "。";
+      fields.expressionList.append(text);
+      refreshControls();
+      return;
+    }
+    const text = document.createElement("p"); text.textContent = "此表现暂时无法编辑。保存其他修改会保留原有资源。";
+    fields.expressionList.append(text);
+    runtimeDiagnostics.reportError(error, { command: "studio_visual_open", code: "VISUAL_EDITOR_FAILED" });
+    setError("形态编辑器加载失败，请查看运行日志。");
+  }
+}
+async function addVisualResource() {
+  if (!currentDoc) return;
+  await loadVisualCatalog();
+  const workspaceId = currentWorkspaceId;
+  const modal = visualDialog("添加形态");
+  const available = visualCatalog.filter(item => item.reasonCode === "READY");
+  let chosen = available[0], adding = false;
+  const types = document.createElement("div"); types.className = "visual-type-options"; types.setAttribute("aria-label", "形态类型");
+  const nameLabel = document.createElement("label"); nameLabel.className = "modal-field"; nameLabel.htmlFor = "newVisualName";
+  const label = document.createElement("span"); label.textContent = "形态名称";
+  const name = document.createElement("input"); name.type = "text"; name.id = "newVisualName"; name.maxLength = 80;
+  const uniqueName = base => { let title = base, number = 2; while (visualReferences().resources.some(item => visualName(item) === title)) title = `${base} ${number++}`; return title; };
+  name.value = chosen ? uniqueName(chosen.name) : "";
+  for (const item of available) {
+    const button = visualButton("", () => { chosen = item; name.value = uniqueName(item.name); [...types.children].forEach(node => node.setAttribute("aria-pressed", String(node === button))); });
+    button.className = "visual-type-option"; button.setAttribute("aria-pressed", String(item === chosen));
+    const title = document.createElement("strong"); title.textContent = item.name;
+    button.append(createIcon(document, "images"), title); types.append(button);
+  }
+  const error = document.createElement("p"); error.className = "error-text"; error.setAttribute("role", "alert");
+  if (!available.length) error.textContent = "没有可用的形态插件，请先在设置中启用所需插件。";
+  nameLabel.append(label, name); nameLabel.hidden = !available.length;
+  modal.body.append(types, nameLabel, error);
+  const cancel = visualButton("取消", modal.close);
+  const add = visualButton("添加", async () => {
+    if (adding || !chosen) return;
+    const title = name.value.trim();
+    if (!title) { error.textContent = "请输入形态名称。"; name.focus(); return; }
+    if (visualReferences().resources.some(item => visualName(item) === title)) { error.textContent = "已有同名形态，请换一个名称。"; name.focus(); return; }
+    adding = true; modal.dialog.querySelectorAll("button, input").forEach(control => { control.disabled = true; });
+    try {
+      await runBusy(async () => {
+        await flushDraftAutosave();
+        const result = await invoke("studio_request", { method: "studio.visual.create", params: { workspaceId, type: chosen.type, providerId: chosen.pluginId, name: title } });
+        if (workspaceId !== currentWorkspaceId) return;
+        currentDoc = mapObjectKeys(result.doc, snakeKey); handleEditorChanged();
+        await renderVisualResources({ preferredId: currentDoc.visuals.resources.at(-1).id });
+      });
+      modal.close();
+    } catch (failure) { error.textContent = String(failure); }
+    finally { adding = false; modal.dialog.querySelectorAll("button, input").forEach(control => { control.disabled = false; }); }
+  }, true);
+  add.disabled = !available.length;
+  modal.dialog.addEventListener("cancel", event => { if (adding) event.preventDefault(); });
+  name.onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); add.click(); } };
+  modal.actions.append(cancel, add); name.focus(); name.select();
+}
+async function loadVisualCatalog() {
+  const result = await invoke("studio_request", { method: "studio.visual.catalog", params: {} });
+  visualCatalog = result.items;
+}
+let visualStatusBusy = false;
+const visualStatusTimer = window.setInterval(async () => {
+  const scope = visualEditorScope;
+  if (!scope || busy || visualStatusBusy) return;
+  visualStatusBusy = true;
+  try {
+    const catalog = await invokeStudio("studio.visual.catalog", {});
+    if (scope !== visualEditorScope) return;
+    if (catalog.items.some((item) => item.pluginId === scope.pluginId && item.type === scope.type && item.scopeId === scope.scopeId && item.reasonCode === "READY")) return;
+    visualCatalog = catalog.items;
+    renderVisualCards();
+    ++visualSelectionRevision;
+    visualEditor.clear();
+    visualEditorScope = null;
+    setError("表现插件已停止或重新加载。重新选择表现资源后可继续编辑。");
+  } catch {
+    // A failed status request does not establish that the provider stopped.
+    // Only a successful catalog with a changed scope revokes this editor.
+  } finally { visualStatusBusy = false; }
+}, 1000);
+window.addEventListener("pagehide", () => { window.clearInterval(visualStatusTimer); visualEditor.clear(); });
 
-function syncExpressionEmptyState() {
-  if (fields.expressionList.querySelector(".expression-row")) {
-    fields.expressionList.querySelector(".resource-empty")?.remove();
-    return;
-  }
-  if (fields.expressionList.querySelector(".resource-empty")) {
-    return;
-  }
-  const empty = document.createElement("div");
-  empty.className = "resource-empty";
-  empty.innerHTML = "<strong>还没有立绘</strong>";
-  fields.expressionList.append(empty);
+async function exportVisualComponent(resourceId) {
+  await flushDraftAutosave();
+  const path = await invoke("studio_choose_export", { defaultName: `${resourceId}.visual` });
+  if (!path) return;
+  await runBusy(() => invokeStudio("studio.visual.export", { workspaceId: currentWorkspaceId, resourceId, path }, "正在导出表现组件…"));
 }
+document.getElementById("importVisualComponent").onclick = async () => {
+  try {
+    if (!currentWorkspaceId) return;
+    await flushDraftAutosave();
+    const path = await chooseStudioSource("resourceArchive");
+    if (!path) return;
+    await runBusy(async () => {
+      const result = await invokeStudio("studio.visual.import", { workspaceId: currentWorkspaceId, path }, "正在导入表现组件…");
+      currentDoc = mapObjectKeys(result.doc, snakeKey);
+      handleEditorChanged();
+      await renderVisualResources();
+    });
+  } catch (error) { setError(String(error)); }
+};
 
 function collectReferenceAudios() {
   return Array.from(fields.referenceAudioList.querySelectorAll(".reference-audio-row"), (row) => ({
@@ -976,13 +1220,6 @@ function stopReferenceAudioPreview() {
   previewAudio.pause();
   previewAudio.currentTime = 0;
   previewAudio = null;
-}
-
-function syncVoiceEnabledState() {
-  const enabled = fields.voiceEnabled.checked;
-  fields.voiceEnabledLabel.textContent = enabled ? "已启用" : "未启用";
-  fields.voiceModelFields.classList.toggle("is-disabled", !enabled);
-  document.getElementById("page-reference-audio")?.classList.toggle("is-voice-disabled", !enabled);
 }
 
 function themeFieldInput(id) {
@@ -1539,64 +1776,6 @@ async function discardCurrentDraft() {
   });
 }
 
-async function importPortrait(targetRow = null) {
-  if (!currentDoc || !currentWorkspaceId) {
-    setError("请先打开或新建角色。");
-    return;
-  }
-  const selected = await chooseStudioSource("portrait");
-  const path = Array.isArray(selected) ? selected[0] : selected;
-  if (!path) {
-    return;
-  }
-  await runBusy(async () => {
-    const result = await hostCall("studio.import_portrait", {
-      workspace_id: currentWorkspaceId,
-      path,
-      label: targetRow?.querySelector("[data-expression-label]")?.value.trim() || "portrait",
-    });
-    if (targetRow) {
-      targetRow.querySelector("[data-expression-path]").value = result.relative_path;
-      targetRow.querySelector(".compact-button").textContent = "替换";
-    } else {
-      const hasDefault = Boolean(fields.expressionList.querySelector("[data-portrait-default]:checked"));
-      addExpressionRow(result.suggested_label || "立绘", result.relative_path, !hasDefault);
-    }
-    handleEditorChanged();
-    await flushDraftAutosave();
-  });
-}
-
-async function importPortraitFolder() {
-  if (!currentDoc || !currentWorkspaceId) {
-    setError("请先打开或新建角色。");
-    return;
-  }
-  const selected = await chooseStudioSource("portraitFolder");
-  const path = Array.isArray(selected) ? selected[0] : selected;
-  if (!path) {
-    return;
-  }
-  await runBusy(async () => {
-    const result = await hostCall("studio.import_portrait_folder", {
-      workspace_id: currentWorkspaceId,
-      path,
-    });
-    let hasDefault = Boolean(fields.expressionList.querySelector("[data-portrait-default]:checked"));
-    (result.items || []).forEach((item) => {
-      addExpressionRow(item.suggested_label || "立绘", item.relative_path, !hasDefault);
-      hasDefault = true;
-    });
-    if (!result.items?.length) {
-      notify("所选文件夹中没有支持的立绘图片。", "info");
-      return;
-    }
-    handleEditorChanged();
-    await flushDraftAutosave();
-    notify(`已导入 ${result.items.length} 张立绘。`, "success");
-  });
-}
-
 async function importVoiceModel(modelType) {
   if (!currentDoc || !currentWorkspaceId) {
     setError("请先打开或新建角色。");
@@ -1614,9 +1793,7 @@ async function importVoiceModel(modelType) {
       path,
       model_type: modelType,
     });
-    fields.voiceEnabled.checked = true;
     (isGpt ? fields.gptModelPath : fields.sovitsModelPath).value = result.relative_path;
-    syncVoiceEnabledState();
     handleEditorChanged();
     await flushDraftAutosave();
   });
@@ -1633,8 +1810,6 @@ async function importReferenceAudio(targetRow = null) {
     return;
   }
   await runBusy(async () => {
-    fields.voiceEnabled.checked = true;
-    syncVoiceEnabledState();
     for (const path of paths) {
       const result = await hostCall("studio.import_reference_audio", {
         workspace_id: currentWorkspaceId,
@@ -1672,8 +1847,6 @@ async function importReferenceAudioFolder() {
       path,
       ref_lang: fields.defaultRefLang.value.trim() || "JA",
     });
-    fields.voiceEnabled.checked = true;
-    syncVoiceEnabledState();
     (result.items || []).forEach((item) => addReferenceAudioRow(item));
     if (!result.items?.length) {
       notify("所选文件夹中没有支持的音频文件。", "info");
@@ -1716,54 +1889,7 @@ function validateThemeInputs() {
 }
 
 function validateExpressionInputs() {
-  const rows = Array.from(fields.expressionList.querySelectorAll(".expression-row"));
-  if (!rows.length) {
-    switchPage("portrait");
-    fields.addExpressionButton.focus();
-    setError("请至少选择一张立绘。");
-    return false;
-  }
-  if (!fields.expressionList.querySelector("[data-portrait-default]:checked")) {
-    switchPage("portrait");
-    rows[0].querySelector("[data-portrait-default]").focus();
-    setError("请选择默认立绘。");
-    return false;
-  }
-  const labels = new Set();
-  rows.forEach((row) => {
-    row.querySelectorAll("input").forEach((input) => input.classList.remove("is-invalid"));
-  });
-  for (const row of rows) {
-    const labelInput = row.querySelector("[data-expression-label]");
-    const pathInput = row.querySelector("[data-expression-path]");
-    const label = labelInput.value.trim();
-    const path = pathInput.value.trim();
-    let message = "";
-    let focusTarget = labelInput;
-    if (!label && !path) {
-      message = "请填写或删除空的表情立绘行。";
-      labelInput.classList.add("is-invalid");
-      pathInput.classList.add("is-invalid");
-    } else if (!label) {
-      message = "请填写表情标签。";
-      labelInput.classList.add("is-invalid");
-    } else if (!path) {
-      message = `请为表情「${label}」选择图片。`;
-      pathInput.classList.add("is-invalid");
-      focusTarget = pathInput;
-    } else if (labels.has(label)) {
-      message = `表情标签重复：${label}`;
-      labelInput.classList.add("is-invalid");
-    }
-    if (message) {
-      switchPage("portrait");
-      focusTarget.focus();
-      setError(message);
-      return false;
-    }
-    labels.add(label);
-  }
-  return true;
+  try { return visualEditor.validate(); } catch (error) { switchPage("portrait"); setError(String(error)); return false; }
 }
 
 function validateVoiceInputs() {
@@ -1772,9 +1898,6 @@ function validateVoiceInputs() {
     fields.sovitsModelPath,
     ...fields.referenceAudioList.querySelectorAll("input"),
   ].forEach((input) => input.classList.remove("is-invalid"));
-  if (!fields.voiceEnabled.checked) {
-    return true;
-  }
   const modelChecks = [
     [fields.gptModelPath, ".ckpt", "GPT 模型"],
     [fields.sovitsModelPath, ".pth", "SoVITS 模型"],
@@ -1790,12 +1913,6 @@ function validateVoiceInputs() {
     }
   }
   const rows = Array.from(fields.referenceAudioList.querySelectorAll(".reference-audio-row"));
-  if (!rows.length) {
-    switchPage("reference-audio");
-    fields.addReferenceAudioButton.focus();
-    setError("启用语音后至少需要一条完整参考语音。");
-    return false;
-  }
   const audioPattern = /\.(wav|mp3|ogg|flac)$/i;
   for (const [index, row] of rows.entries()) {
     const inputs = [
@@ -1866,11 +1983,40 @@ async function commitCharacter({ publish = false } = {}) {
   }
   await runBusy(async () => {
     await flushDraftAutosave();
-    const payload = await hostCall("studio.save_character", {
-      workspace_id: currentWorkspaceId,
-      current_character_id: request.initial_character_id || "",
-      doc: collectDoc(),
-    });
+    ++visualSelectionRevision;
+    visualEditorScope = null;
+    visualEditor.freeze();
+    // Subscribe before publishing: the ready event may precede the IPC reply.
+    const reload = new Promise(resolve => { completeStudioReload = resolve; });
+    let reloadTimer;
+    let payload;
+    let reloadFailure = "";
+    try {
+      payload = await hostCall("studio.save_character", {
+        workspace_id: currentWorkspaceId,
+        current_character_id: request.initial_character_id || "",
+        doc: collectDoc(),
+      });
+      if (payload.runtime_reload === "requested") {
+        notify("角色已保存，正在应用修改。", "info");
+        const result = await Promise.race([reload, new Promise(resolve => {
+          reloadTimer = window.setTimeout(() => resolve({ state: "failed" }), 70000);
+        })]);
+        if (result.state !== "ready") reloadFailure = result.message || "修改已保存但未生效，请重启 Sakura。";
+      } else if (payload.runtime_reload === "failed") {
+        reloadFailure = payload.reload_error || "修改已保存但未生效，请重启 Sakura。";
+      }
+      if (!reloadFailure) {
+        try { await loadVisualCatalog(); }
+        catch { reloadFailure = "角色已保存，形态暂时无法加载。请重新选择形态。"; }
+      }
+    } catch (error) {
+      void renderVisualResources({ flush: false });
+      throw error;
+    } finally {
+      completeStudioReload = null;
+      window.clearTimeout(reloadTimer);
+    }
     if (Array.isArray(payload.characters)) {
       request.characters = payload.characters;
     }
@@ -1879,14 +2025,10 @@ async function commitCharacter({ publish = false } = {}) {
     editingCharacterId = currentDoc.id || editingCharacterId;
     temporaryCharacter = null;
     renderCharacterOptions();
-    renderEditor();
+    await renderEditor({ openVisuals: !reloadFailure });
     markBaseline();
     notify(payload.message || (publish ? "角色已添加到列表。" : "角色已保存。"), "success");
-    if (payload.runtime_reload === "failed") {
-      setError(payload.reload_error || "修改已保存但未生效，请重启 Sakura。");
-    } else if (payload.runtime_reload === "requested") {
-      notify("角色已保存，正在应用修改。", "info");
-    }
+    if (reloadFailure) setError(reloadFailure);
   });
 }
 
@@ -1932,6 +2074,7 @@ async function runBusy(action) {
   try {
     await action();
   } catch (error) {
+    runtimeDiagnostics.reportError(error, { command: "studio_action", code: "STUDIO_OPERATION_FAILED" });
     setError(String(error));
   } finally {
     busy = false;
@@ -1941,7 +2084,6 @@ async function runBusy(action) {
 
 function refreshControls() {
   const hasDoc = Boolean(currentDoc);
-  const voiceEnabled = hasDoc && fields.voiceEnabled.checked;
   const currentEntry = currentCharacterEntry();
   const published = isPublishedCharacter(currentEntry);
   const workspace = hasDoc && !published;
@@ -1968,7 +2110,7 @@ function refreshControls() {
     fields.initialMessage,
     fields.cardText,
     fields.addExpressionButton,
-    fields.importPortraitFolderButton,
+    document.getElementById("importVisualComponent"),
   ].forEach((element) => {
     element.disabled = busy || !hasDoc;
   });
@@ -1978,17 +2120,20 @@ function refreshControls() {
   fields.expressionList.querySelectorAll("input, button").forEach((element) => {
     element.disabled = busy || !hasDoc;
   });
-  fields.voiceEnabled.disabled = busy || !hasDoc;
+  fields.visualResourceList.querySelectorAll("input, button, select").forEach((element) => { element.disabled = busy || !hasDoc; });
+  document.getElementById("visualMeta").querySelectorAll("input, button, select").forEach(element => {
+    element.disabled = busy || !hasDoc || (element.id === "defaultVisualButton" && selectedVisualId === visualReferences().default);
+  });
   fields.voiceModelFields.querySelectorAll("input, button").forEach((element) => {
-    element.disabled = busy || !voiceEnabled;
+    element.disabled = busy || !hasDoc;
   });
-  fields.addReferenceAudioButton.disabled = busy || !voiceEnabled;
-  fields.importReferenceAudioFolderButton.disabled = busy || !voiceEnabled;
+  fields.addReferenceAudioButton.disabled = busy || !hasDoc;
+  fields.importReferenceAudioFolderButton.disabled = busy || !hasDoc;
   fields.referenceAudioList.querySelectorAll("input, button").forEach((element) => {
-    element.disabled = busy || !voiceEnabled;
+    element.disabled = busy || !hasDoc;
   });
-  fields.clearGptModelButton.disabled = busy || !voiceEnabled || !fields.gptModelPath.value;
-  fields.clearSovitsModelButton.disabled = busy || !voiceEnabled || !fields.sovitsModelPath.value;
+  fields.clearGptModelButton.disabled = busy || !hasDoc || !fields.gptModelPath.value;
+  fields.clearSovitsModelButton.disabled = busy || !hasDoc || !fields.sovitsModelPath.value;
   fields.themeFields.querySelectorAll("input, button").forEach((element) => {
     element.disabled = busy || !hasDoc;
   });
@@ -2081,8 +2226,7 @@ fields.createCharacterForm.addEventListener("submit", (event) => {
   closeCreateCharacterDialog({ characterId, displayName });
 });
 fields.discardDraftButton.addEventListener("click", discardCurrentDraft);
-fields.addExpressionButton.addEventListener("click", () => importPortrait());
-fields.importPortraitFolderButton.addEventListener("click", importPortraitFolder);
+fields.addExpressionButton.addEventListener("click", () => addVisualResource().catch((error) => setError(String(error))));
 fields.importGptModelButton.addEventListener("click", () => importVoiceModel("gpt"));
 fields.importSovitsModelButton.addEventListener("click", () => importVoiceModel("sovits"));
 fields.clearGptModelButton.addEventListener("click", () => {
@@ -2092,21 +2236,6 @@ fields.clearGptModelButton.addEventListener("click", () => {
 });
 fields.clearSovitsModelButton.addEventListener("click", () => {
   fields.sovitsModelPath.value = "";
-  handleEditorChanged();
-  refreshControls();
-});
-fields.voiceEnabled.addEventListener("change", () => {
-  if (!fields.voiceEnabled.checked) {
-    const hasVoiceAssets = Boolean(
-      fields.gptModelPath.value
-      || fields.sovitsModelPath.value
-      || fields.referenceAudioList.querySelector(".reference-audio-row")
-    );
-    if (hasVoiceAssets && !window.confirm("关闭语音并保存后，将移除语音配置和参考语音关联。是否继续？")) {
-      fields.voiceEnabled.checked = true;
-    }
-  }
-  syncVoiceEnabledState();
   handleEditorChanged();
   refreshControls();
 });
@@ -2133,6 +2262,7 @@ window.__TAURI__?.event?.listen?.("sakura://studio-exit-requested", () => {
 });
 window.__TAURI__?.event?.listen?.("sakura://studio-runtime-reload", ({ payload }) => {
   const state = runtimeReloadState(payload?.state);
+  if (state === "ready" || state === "failed") completeStudioReload?.(payload);
   if (state === "ready") {
     notify("角色修改已生效。", "success");
   } else if (state === "failed") {
@@ -2143,11 +2273,13 @@ enhanceSelect(fields.studioCharacterSelect);
 
 async function startStudio() {
   try {
+    await loadVisualCatalog();
     await load();
   } catch (error) {
     setError(String(error));
   }
   await invoke("show_studio");
+  runtimeDiagnostics.markReady();
 }
 
 startStudio().catch((error) => setError(String(error)));

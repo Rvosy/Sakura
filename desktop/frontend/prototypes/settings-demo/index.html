@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sakura 设置体验 Demo</title>
+    <link rel="stylesheet" href="./demo.css" />
+  </head>
+  <body>
+    <header class="demo-bar">
+      <div class="demo-brand">
+        <strong>Sakura</strong><span>设置体验 Demo</span>
+      </div>
+      <div class="demo-controls">
+        <div class="demo-tabs" role="group" aria-label="界面对照">
+          <button id="proposed" class="selected" aria-pressed="true">
+            新增设置</button
+          ><button id="original" aria-pressed="false">原版对照</button>
+        </div>
+        <label class="scenario-label" for="scenario">演示场景</label
+        ><select id="scenario">
+          <option value="portrait">只有立绘</option>
+          <option value="multiple">多种表现</option>
+          <option value="missing">缺少插件</option>
+        </select>
+        <button id="reset">重置演示</button>
+      </div>
+      <span class="demo-note">演示数据 · 不连接程序</span>
+    </header>
+    <main class="demo-stage">
+      <iframe
+        id="settings"
+        title="Sakura 设置"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+      ></iframe>
+      <div id="loading" role="status">正在载入设置…</div>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -349,9 +349,33 @@ class AppSettingsService:
         character_registry: CharacterRegistry,
         character_id: str,
     ) -> None:
+        self.save_character_selection(character_registry, character_id, {})
+
+    def load_visual_selections(self) -> dict[str, str]:
+        raw = load_yaml_mapping(self.characters_config_path).get("visual_selections", {})
+        return {key: value for key, value in raw.items() if isinstance(key, str) and isinstance(value, str)} if isinstance(raw, dict) else {}
+
+    def selected_visual_resource(self, profile):
+        resource_id = self.load_visual_selections().get(profile.id, profile.default_visual_id)
+        return next((item for item in profile.visual_resources if item.id == resource_id), profile.current_visual_resource)
+
+    def save_character_selection(self, character_registry, character_id: str, visual_selections: dict[str, str | None]) -> None:
         character_registry.get(character_id)
         data = load_yaml_mapping(self.characters_config_path)
         data["current_character_id"] = character_id
+        selections = self.load_visual_selections()
+        for target, resource_id in visual_selections.items():
+            profile = character_registry.get(target)
+            if resource_id is None:
+                selections.pop(target, None)
+            elif any(item.id == resource_id for item in profile.visual_resources):
+                selections[target] = resource_id
+            else:
+                raise ValueError("VISUAL_RESOURCE_NOT_FOUND")
+        if selections:
+            data["visual_selections"] = selections
+        else:
+            data.pop("visual_selections", None)
         save_yaml_mapping(self.characters_config_path, data)
 
     def _api_section(self, name: str) -> dict[str, Any]:

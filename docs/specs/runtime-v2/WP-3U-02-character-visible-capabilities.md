@@ -16,6 +16,12 @@ updated: 2026-09-05
 回退边界：关闭角色外观保存命令，设置窗口退回能力门控壳，保留当前角色只读展示
 ```
 
+## 当前表现合同
+
+2026-09-12 起，本文原有固定 portrait/portraitChoices 投影与宿主图片选择由[表现插件合同](visual-plugin-boundary.md)取代。
+CharacterPresentation 使用 schemaVersion 2 的可空 visual；公共 Profile 不提供图片候选。立绘兼容、切图、
+解码和过渡归入内置插件，宿主在实际分段播放时派发 control；历史浏览只读文字。以下旧 WP 实施与验收记录保留历史语境。
+
 ## 目标
 
 在真实聊天进入 UI 前，先完成角色包的可见表现闭环：角色名、初始消息、主题、默认立绘、表情资源映射、

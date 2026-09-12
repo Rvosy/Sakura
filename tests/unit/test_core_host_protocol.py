@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import queue
 import struct
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from app.core_host.protocol import (
     encode_frame,
     event,
     read_frame,
+    response,
 )
 from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, WriterError, run_host
 from app.storage.runtime_roots import RuntimeRoots
@@ -45,6 +48,89 @@ def request(request_id: str, name: str = "system.hello") -> dict[str, object]:
         "deadlineMs": 3000,
         "priority": "control",
     }
+
+
+@pytest.mark.parametrize("stop_while_queued", [False, True])
+def test_router_queues_settings_bursts_without_blocking_control_or_executing_expired_writes(stop_while_queued):
+    incoming = queue.Queue()
+    release = threading.Event()
+    changed = threading.Condition()
+    messages, executed, abandoned = {}, [], []
+    active = 0
+    peak = 0
+
+    class Boundary:
+        def reserve_send(self, request): pass
+        def abandon_send(self, request): abandoned.append(request["id"])
+        def handle(self, request):
+            nonlocal active, peak
+            with changed:
+                active += 1
+                peak = max(peak, active)
+                executed.append(request["id"])
+                changed.notify_all()
+            try:
+                if request["id"].startswith("blocked-"):
+                    assert release.wait(3)
+                return response(request, generation_id=GENERATION_ID, generation_credential=GENERATION_CREDENTIAL,
+                    protocol_minor=2, payload={"ok": True})
+            finally:
+                with changed: active -= 1
+
+    class Dispatcher:
+        def dispatch(self, request):
+            return response(request, generation_id=GENERATION_ID, generation_credential=GENERATION_CREDENTIAL,
+                protocol_minor=2, payload={"ok": True}), False
+        def invalidate_generation_work(self): release.set()
+
+    class Writer:
+        def send(self, message):
+            with changed:
+                messages[message["id"]] = message
+                changed.notify_all()
+
+    def wait_for(predicate):
+        with changed: assert changed.wait_for(predicate, timeout=3)
+
+    router = ConcurrentHostRouter(None, Writer(), Dispatcher(), fixture_handler=Boundary().handle,
+        fixture_names=frozenset({"characters.visuals.get", "characters.settings.select"}),
+        read_frame_fn=lambda _: incoming.get())
+    thread = threading.Thread(target=router.run)
+    thread.start()
+    try:
+        for index in range(4): incoming.put(request(f"blocked-{index}", "fixture.blocking"))
+        wait_for(lambda: active == 4)
+        for index in range(7): incoming.put(request(f"settings-{index}", "characters.visuals.get"))
+        expired = request("expired-write", "characters.settings.select")
+        expired["deadlineMs"] = 10
+        incoming.put(expired)
+        incoming.put(request("overflow", "characters.visuals.get"))
+        incoming.put(request("health", "system.health"))
+        wait_for(lambda: "health" in messages)
+        assert messages["health"]["payload"] == {"ok": True}
+        assert messages["overflow"]["error"]["code"] == "ROUTER_QUEUE_FULL"
+        assert not any(f"settings-{index}" in messages for index in range(7))
+        if stop_while_queued:
+            incoming.put(None)
+            thread.join(4)
+            assert not thread.is_alive()
+            assert set(executed) == {f"blocked-{index}" for index in range(4)}
+            assert set(abandoned) == {"overflow", "expired-write", *(f"settings-{index}" for index in range(7))}
+            return
+        time.sleep(0.02)
+        release.set()
+        wait_for(lambda: len(messages) == 14)
+        assert all("error" not in messages[f"settings-{index}"] for index in range(7))
+        assert messages["expired-write"]["error"]["code"] == "REQUEST_DEADLINE_EXCEEDED"
+        assert "expired-write" not in executed
+        assert set(abandoned) == {"overflow", "expired-write"}
+        assert peak == 4
+    finally:
+        release.set()
+        incoming.put(None)
+        thread.join(4)
+        assert not thread.is_alive()
+        assert router.fatal_error is None
 
 
 def test_codec_accepts_every_split_and_multiple_merged_frames() -> None:

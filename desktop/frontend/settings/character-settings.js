@@ -1,3 +1,4 @@
+import { requirementMessage } from "../core/plugin-requirements.js";
 import {
   createRootSettingsClient,
   normalizeCharacterSettingsSnapshot,
@@ -5,12 +6,12 @@ import {
 import {
   applyCharacterCatalogChange,
   applyCharacterSwitch,
-  commitCharacterSelection,
   pendingCharacterSelection,
   syncCharacterEditorControl,
   setCharacterSwitchLock,
 } from "./character-switch-runtime.js";
 import { isHexColor, RUNTIME_THEME_FIELDS as runtimeThemeLegacyFields } from "../core/theme-runtime.js";
+import { createCharacterVisualSettings } from "./character-visual-settings.js";
 
 export function createCharacterSettingsFeature({
   document,
@@ -27,6 +28,8 @@ export function createCharacterSettingsFeature({
   rebindSettings,
   clearCharacterState,
   renderMemorySurface,
+  openPlugin = () => {},
+  reportError = () => {},
 }) {
   const rootSettingsClient = createRootSettingsClient({ invoke });
   const fields = {
@@ -57,6 +60,7 @@ export function createCharacterSettingsFeature({
   let closeExportKindDialog = null;
   let disposed = false;
   const listeners = [];
+  const visualSettings = createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty: refreshDirty, openPlugin, reportError });
 
   const characterExportOptions = [
     {
@@ -141,6 +145,7 @@ export function createCharacterSettingsFeature({
       fields.applyButton.disabled = true;
     }
     const character = selectedCharacter();
+    visualSettings.sync(character?.id, characterArchiveBusy || characterSwitching || isSubmitting());
     const hasCharacter = Boolean(character);
     fields.characterSelect.disabled = characterArchiveBusy || characterSwitching
       || !characterView.characters.length;
@@ -215,6 +220,7 @@ export function createCharacterSettingsFeature({
   }
 
   async function discardRuntimeCharacterSelection() {
+    visualSettings.discard();
     runtimeCharacterDraftId = runtimeCharacterSnapshot?.currentCharacterId || "";
     fields.characterSelect.value = runtimeCharacterDraftId;
     refreshSelect(fields.characterSelect);
@@ -258,7 +264,10 @@ export function createCharacterSettingsFeature({
         applyCatalog: (snapshot) => applyRuntimeCharacterSnapshot(snapshot, { preserveSelection: true }),
         rebindSettings: rebindSettingsAfterCharacterSwitch,
       });
-      if (applied && revision === characterCatalogRefreshRevision) setError("");
+      if (applied && revision === characterCatalogRefreshRevision) {
+        await visualSettings.refresh(runtimeCharacterDraftId);
+        setError("");
+      }
     } catch (error) {
       if (revision === characterCatalogRefreshRevision) {
         setError(`角色列表刷新失败：${String(error)}`);
@@ -407,6 +416,8 @@ export function createCharacterSettingsFeature({
       const result = await rootSettingsClient.characterImport(path);
       await applyRuntimeCharacterChange(result, previousLifecycle);
       notify("角色包已导入。", "success");
+      const missing = (result.pluginRequirements || []).filter(item => item.reasonCode !== "COMPATIBLE");
+      if (missing.length) notify(missing.map(requirementMessage).join("\n"), "info");
     });
   }
 
@@ -460,6 +471,8 @@ export function createCharacterSettingsFeature({
       const result = await rootSettingsClient.characterVoiceImport(path, character.id);
       await applyRuntimeCharacterChange(result, previousLifecycle);
       notify(`已为角色「${character.display_name}」导入 TTS 模型包。`, "success");
+      const missing = (result.pluginRequirements || []).filter(item => item.reasonCode !== "COMPATIBLE");
+      if (missing.length) notify(missing.map(requirementMessage).join("\n"), "info");
     });
   }
 
@@ -511,6 +524,7 @@ export function createCharacterSettingsFeature({
   listen(fields.ttsVoiceImportButton, "click", importCharacterVoiceArchive);
   listen(fields.characterExportButton, "click", exportCharacterArchive);
   listen(fields.characterEditorButton, "click", launchCharacterStudio);
+  listen(window, "focus", () => { if (!characterSwitching && !isSubmitting()) void visualSettings.refresh(); });
 
   return Object.freeze({
     async initialize() {
@@ -530,6 +544,7 @@ export function createCharacterSettingsFeature({
     },
     prepareControls() {
       enhanceSelect(fields.characterSelect);
+      enhanceSelect(document.getElementById("visualSelect"));
       refreshSelect(fields.characterSelect);
       syncCharacterArchiveState();
     },
@@ -554,22 +569,26 @@ export function createCharacterSettingsFeature({
     selectedThemeDefaults: () => selectedCharacter()?.default_theme,
     currentCharacterId: () => runtimeCharacterSnapshot?.currentCharacterId || "",
     pendingCharacterId: pendingRuntimeCharacterId,
-    isDirty: () => Boolean(pendingRuntimeCharacterId()),
+    isDirty: () => Boolean(pendingRuntimeCharacterId()) || visualSettings.isDirty(),
     isSwitching: () => characterSwitching,
     isTransitioning: () => memoryState.rebinding || characterSwitching,
     syncControls: syncCharacterArchiveState,
     refreshCatalog: refreshRuntimeCharacterCatalog,
+    onPageChanged(page) { if (page === "character" && !characterSwitching && !isSubmitting()) void visualSettings.refresh(runtimeCharacterDraftId); },
     discard: discardRuntimeCharacterSelection,
     waitForPreview: () => runtimeCharacterVisualPreviewPromise,
-    commit: () => commitCharacterSelection({
-      committedCharacterId: runtimeCharacterSnapshot?.currentCharacterId,
-      selectedCharacterId: runtimeCharacterDraftId,
-      readLifecycle: () => invoke("runtime_lifecycle_snapshot"),
-      selectCharacter: (characterId) => rootSettingsClient.characterSelect(characterId),
-      applyChange: applyRuntimeCharacterChange,
-    }),
+    async commit() {
+      if (!pendingRuntimeCharacterId() && !visualSettings.isDirty()) return null;
+      const previous = await invoke("runtime_lifecycle_snapshot");
+      const receipt = await rootSettingsClient.characterSelect(runtimeCharacterDraftId, visualSettings.selections());
+      visualSettings.committed();
+      await applyRuntimeCharacterChange(receipt, previous);
+      await visualSettings.refresh(runtimeCharacterDraftId);
+      return receipt;
+    },
     dispose() {
       disposed = true;
+      visualSettings.dispose();
       characterCatalogRefreshRevision += 1;
       for (const removeListener of listeners) removeListener();
       listeners.length = 0;

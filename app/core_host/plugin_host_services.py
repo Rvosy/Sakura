@@ -407,6 +407,8 @@ class _ArtifactsHostService:
 class _CharacterHostService:
     def __init__(self, store: object) -> None:
         self._store = store
+        self.workspaces = {}
+        self.workspace_lock = threading.Lock()
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         try:
@@ -427,6 +429,13 @@ class _CharacterHostService:
                 )
             if method == "resolve_resource" and len(args) == 3:
                 _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
+                with self.workspace_lock:
+                    workspace = self.workspaces.get(args[1])
+                if workspace is not None:
+                    from app.plugins.visuals import relative_resource_path, resolve_resource_path
+                    if workspace[0] != args[0]:
+                        raise HostServiceError("VISUAL_WORKSPACE_DENIED")
+                    return str(resolve_resource_path(workspace[1], relative_resource_path(args[2])))
                 return getattr(self._store, "resolve_resource")(
                     _bounded_identifier(args[1], "CHARACTER_NOT_FOUND", 128),
                     args[2],
@@ -1547,6 +1556,16 @@ class _ComposerToolsV0HostService:
 
 class PluginHostServices:
     """Generation-bound generic dispatcher; it does not import plugin code."""
+
+    def grant_visual_workspace(self, plugin_id, package_dir):
+        token = "studio-" + secrets.token_hex(16)
+        with self._character.workspace_lock:
+            self._character.workspaces[token] = (plugin_id, Path(package_dir).resolve(strict=True))
+        return token
+
+    def revoke_visual_workspace(self, token):
+        with self._character.workspace_lock:
+            self._character.workspaces.pop(token, None)
 
     def __init__(
         self,

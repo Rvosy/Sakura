@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-12
 ---
 
 # WP-2-01：最小并发 request/response/event Router
@@ -40,7 +40,8 @@ Python 的 response 和 event 共用 `ResponseWriter` 的有界队列与写入�
 ### 2.3 Python Router
 
 - 一个常驻 reader 读取和校验帧，一个 dispatcher 分派 control 和请求；只有 `ResponseWriter` 的线程调用 `write_frame`。
-- 同步设置请求使用 4 个执行槽与有界队列；聊天由边界启动可取消任务，不让长模型请求占住 control。
+- 同步设置请求由 4 个 worker 执行，最多另有 8 个请求排队；执行槽已满但队列有空位时应正常接收。聊天由边界启动可取消任务，不让长模型请求占住 control。
+- 排队时间计入 `deadlineMs`，开始执行前已超时的请求返回 `REQUEST_DEADLINE_EXCEEDED`，释放预留的领域状态，不执行过期保存或其他写入。关闭时放弃尚未执行的排队请求。
 - response 和 event 都直接进入 `ResponseWriter` 的 32 项队列。发布者等待本条写入完成；队列饱和、写入失败或确认超时会使 generation 失败，不丢弃终态或重放写入。
 - Router 先停止接收请求并取消领域任务，再等待执行槽和聊天事件生产者收尾。收尾期间仍允许发布终态；排空后拒绝新事件，随后由 Host 关闭唯一的协议 writer。
 - Python `queue.Queue` 已提供并发入队和背压，不再额外维护事件 ticket、转发队列或专用事件线程。
@@ -50,6 +51,7 @@ Python 的 response 和 event 共用 `ResponseWriter` 的有界队列与写入�
 
 - pending request 数、Rust writer/event 队列、Python dispatch/writer 队列和 fixture 并发槽均使用命名常量。
 - 达到上限时返回稳定、脱敏、可归因的过载错误，或安全关闭当前 generation；不得无限增长，也不得静默丢 response/terminal-shaped event。
+- 执行队列也已满时才返回 `ROUTER_QUEUE_FULL`，可重试。错误文案面向用户，不暴露旧测试夹具名称。
 - 可以丢弃的 progress 类事件不在本 WP 实现，因此不要为“以后可能需要”建设合并、采样或多等级配额。
 - 任何 queue-full/close/write failure 路径都必须有有界退出测试。
 

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-12
 ---
 
 # Runtime v2 角色工坊
@@ -15,7 +15,7 @@ updated: 2026-09-09
 添加成功提示为“角色已添加到列表”，不附加本地保存的解释。内部 publish 事务名称保持不变，不表示在线发布，
 也不自动切换桌宠。已有角色放弃操作明确为“放弃草稿修改”；删除新角色草稿仍提示不可恢复。
 
-角色工坊保留 0.9.10 已有的本地编辑能力：新建和编辑角色、草稿自动保存、角色卡、立绘与表情、主题颜色、
+角色工坊保留 0.9.10 已有的本地编辑能力：新建和编辑角色、草稿自动保存、角色卡、插件表现资源、主题颜色、
 GPT-SoVITS 模型、参考语音试听、发布、放弃草稿和 `.char` 导出。本轮不增加角色删除、复制、在线发布或把
 未发布草稿直接投影到桌宠。
 
@@ -58,9 +58,14 @@ studio.asset.import
 studio.reference.preview
 studio.archive.export
 studio.operation.cancel
+studio.visual.catalog
+studio.visual.open
+studio.visual.create
+studio.visual.import
+studio.visual.export
 ```
 
-请求与响应字段使用 camelCase，未知字段返回 `STUDIO_REQUEST_INVALID`。公开 DTO 不含 `packageDir`、角色绝对
+请求与响应公共字段使用 camelCase，`visuals`、`visualData` 和插件 `data` 的内部键原样传递；未知公共字段返回 `STUDIO_REQUEST_INVALID`。公开 DTO 不含 `packageDir`、角色绝对
 路径和音频 `data:` 内容。工作区用 `workspaceId` 标识；资源使用角色包内逻辑路径。Rust 可以接收 Core 私有的
 试听源描述，但向 WebView 返回的只有 `previewUrl`、MIME 和字节数。
 
@@ -74,31 +79,65 @@ studio.operation.cancel
 `runtime/character-studio/workspace/characters` 中未发布的新角色也要迁移；使用原始角色 ID 命名的草稿目录
 在启动时迁移到可移植目录名，重复启动不得生成第二份草稿。
 
+恢复 1.1.0 及更早的内联立绘草稿时，封面、插件编辑器、组件导出和发布都以 `draft.json` 中尚未发布的默认图、
+表情映射为准，不能使用草稿包 `character.json` 中的旧副本覆盖。公共表单自动保存为 `visuals` 引用后，
+只要该引用仍指向内联立绘，就继续保留这些待发布修改；独立表现入口和已有 `visualData` 使用各自的数据。
+
 表单修改先保存到草稿。切换角色、新建角色和关闭窗口前必须等待自动保存完成。角色 ID、工作区、包内资源
 路径和导入源都要检查路径穿越；角色包或草稿资源不能经过符号链接。尾点角色 ID 继续通过可移植目录名保存，
 保证 Windows 与旧草稿兼容。
 
 每个角色复用一个草稿目录。自动保存只更新 `draft.json`，不复制整个包，也不创建历史备份；已导入且不再被
-表单引用的资源按原有规则清理。未发布修改必须跨重启保留；关闭窗口时可以释放 clean 工作区。
+语音表单引用的导入资源按原有规则清理。表现资源引用由插件解释，普通保存不推测删除其私有文件。未发布修改必须跨重启保留；关闭窗口时可以释放 clean 工作区。
 
-导入类型固定为 `portrait`、`portraitFolder`、`gptModel`、`sovitsModel`、`referenceAudio` 和
-`referenceAudioFolder`。大文件复制和重复文件比较都要分块检查取消。文件夹导入在全部文件复制完成后一次
+通用表现导入使用 `visual` 或 `visualFolder`，绑定 workspaceId 与 resourceId。立绘标签和说明文件由插件解释；
+语音继续使用 `gptModel`、`sovitsModel`、`referenceAudio` 和 `referenceAudioFolder`。大文件复制和重复文件比较都要分块检查取消。文件夹导入在全部文件复制完成后一次
 登记；任一文件失败或用户取消时，只删除本批新建的资源，不改动此前已有的同名文件。
 
 Managed Genie 未显式配置的共享语音字段在运行时继承 GPT-SoVITS extension，再兼容旧 `voice`；Studio
 不向 Genie 复制模型路径。这样源权重编辑可在下一次 Genie 预热或合成时生效，同时保留用户的 Genie 覆盖值。
-独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，保留当前引擎选择、Genie 覆盖值与未知字段。
+独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，保留 Genie 覆盖值与未知字段。
 
 Studio 只拥有表单明确编辑的 manifest 字段。`renderer`、`backchannel`、未知顶层或嵌套字段和其他插件
-extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Runtime v2 extension，保存时同步
-`voice`、`sakura.tts` 和 `sakura.tts.gpt-sovits`。Genie 等非 Studio 管理的语音 Provider 不能因为普通
-主题保存而被切换或禁用。
+extension 必须原样保留，已废弃的 `sakura.tts` 运行选择除外。语音资源读取兼容 `voice` 与资源 extension，
+保存时同步 `voice` 和 `sakura.tts.gpt-sovits`，不写入引擎选择或启用状态。
+
+工坊不提供语音启用开关。模型、参考音频、文本、标签和语言始终可以编辑；允许先保存模型，稍后再补参考语音。
+已有参考语音行必须完整，缺少合成必需资源时由实际语音请求报错。外部语音开关或引擎选择不影响资源展示、编辑、
+保存和导出；关闭语音不删除资源配置或引用。启用状态和引擎选择只由应用语音设置管理，见
+[语音合同](WP-4-05-tts-playback-audio-device-gate.md)与 [ADR-0048](../../adr/0048-voice-resources-and-local-selection.md)。
 
 “语音模型”页独立列出当前编辑副本中可读取元数据的 `.ckpt`、`.pth` 和 `.onnx` 文件，显示文件名、大小及
-角色包内相对路径。列表不依赖 GPT-SoVITS 是否启用，也不要求文件已经登记到 Provider 配置；使用 Genie
+角色包内相对路径。列表不依赖语音是否启用，也不要求文件已经登记到 Provider 配置；使用 Genie
 或关闭语音时仍可查看。打开、草稿保存和发布响应通过只读 `modelFiles` 返回 `relativePath`、`byteLength`，
 切换角色、导入模型和清理草稿资源后同步刷新。枚举只读取文件元数据，不读取模型内容、不跟随符号链接或
-目录联接，也不把模型列表写入角色配置。下方编辑区明确标为 GPT-SoVITS 配置，查看文件不会切换 Provider。
+目录联接，也不把模型列表写入角色配置。下方编辑区为语音资源配置，查看和编辑文件不会切换 Provider。
+
+## 表现编辑与组件
+
+公共页面管理资源列表、默认项、提供者、添加、移除和保存。专属编辑区加载安装内的插件模块，立绘标签、默认图片、
+PNG 导入和标签文件解释由内置立绘插件提供。私有草稿以 `visualData[resourceId]` 保存；资源引用格式及方法签名见
+[表现插件合同](visual-plugin-boundary.md)。缺失入口可以由 editorData 的默认配置修复；插件停用、缺失或不兼容时，
+公共资料仍可保存并保留原资源。编辑器进程 scope 改变后，模块授权及前端实例均撤销。
+
+“角色形态”页以卡片显示包内形态，提供名称编辑和“添加形态”弹窗。当前编辑项与包默认项分开；设置页的
+个人“显示方式”选择也不改包默认。立绘编辑器提供缩略图、大图预览、标签、默认图片、替换和移除。
+卡片封面由插件的可选静态预览接口提供，打开列表就加载所有已有封面；未选中的形态无需挂载编辑器或渲染器。
+立绘使用默认图，模型插件可提供包内截图，没有预览图时显示占位图标。切换编辑器保留同一封面的图片节点，
+更换封面先完成新图解码，保存或切换期间不先清空旧图。
+自动保存后仍可继续改名；暂时空白或重复的表情标签按完整行保存草稿，切换或重开后继续编辑，不能静默合并或删除。
+
+显示新角色表单时先完整填充参考语音和主题，再打开表现编辑器，不能在半成品表单上自动保存。添加和导入资源期间
+禁止切换工作区；回包必须核对工作区和编辑器修订。关闭或替换编辑器中止 signal，旧模块不能继续写新草稿。
+
+完整 `.char` 保持旧 version 1 读取；通用角色包使用 version 2、kind character。单独形态组件使用 `.visual`，为 version 2、kind resource，
+由插件投影入口和资产，宿主完成容器、路径、复制、取消和提交。旧版 `.char` 形态组件仍可导入，新导出统一使用 `.visual`。
+组件导入生成新资源 ID，仅加入目标草稿并设为默认，
+保留其人格、voice、角色 ID 与已安装包；可以放弃草稿撤销。详见表现插件合同的文件交换部分。
+
+基础信息中的“所需插件”根据当前草稿显示形态与 TTS 资源的兼容状态，保存草稿后刷新。
+缺少插件时仍可保存资源；插件安装建议和实际引擎选择分开。包声明及 Genie 转换兼容规则见
+[角色包插件需求](visual-plugin-boundary.md#角色包插件需求)。
 
 ## 发布、导出与取消
 
@@ -152,6 +191,10 @@ Rust 随后只发起一次现有 Core restart，并关闭旧音频状态。停�
 发布非当前角色后立即发送 `sakura://character-catalog-changed`，设置页重新读取角色列表。发布当前角色时，
 事件必须等新 generation 就绪后发送，并携带新 generation ID；设置页先重绑定运行态控制器，再刷新角色列表。
 旧 generation 的迟到事件不能覆盖新状态或显示 `Router closed`。工坊关闭本身不触发目录刷新。
+工坊保存前冻结旧表现编辑器并保留静态内容；当前角色需要重启时，先等待 `sakura://studio-runtime-reload` 的结果，
+再刷新表现插件目录，待新编辑器就绪后替换。保存回包之前到达的就绪事件也有效。失败时保留已保存的数据并提示重启。
+图片与模型文件在打开形态时一次授权资源根，随后由原生协议直接读取，不经 Core 逐文件请求或草稿写锁。
+重复点击当前形态保留编辑器；临时插件状态查询失败不能销毁编辑区。
 
 `.char` 角色包和 `.voice` 独立语音包导入允许单个文件最大 8 GiB、解压后总量最大 32 GiB，
 大小按 ZIP 中的未压缩字节数计算，上限值本身允许导入。仍限制 ZIP 成员不超过 4096 个，
@@ -170,7 +213,9 @@ GPT-SoVITS、Genie extension 引用的模型、参考表和参考音频；导入
 
 自动入口是 `python -m harness run journey-character-studio`，覆盖 Core schema、旧草稿恢复、资源导入、试听
 描述、发布与二次恢复、整批取消清理、归档字段和资源 round-trip、Rust 临时资源和取色会话，以及前端 DTO、
-同角色历史和立绘归一化。
+同角色文字历史；过期表现控制只保留为数据，不重新执行。
+`journey-visuals-browser` 另以正式工坊和插件模块验证形态卡片、名称、添加、默认项、草稿恢复与窄窗口布局。
+其中保存回归使用正式桌面 CSP 和真实有界 Core 路由，覆盖多图预览及重启期间的编辑器挂载顺序。
 
 发布前还要通过 `journey-character-switch`、`runtime-v2-shell` 和 `release-distribution`。Windows x64 与 macOS
 arm64 必须实机检查当前/非当前角色发布、跨重启草稿、带语音导出、取消大文件、多显示器取色和安装包入口。

@@ -376,13 +376,14 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
             "displayName",
             "initialMessage",
             "themeTokens",
-            "defaultPortraitKey",
-            "portraitKeys",
-            "portraitResourceIds",
+            "visual",
+            "visualReasonCode",
         }
-        assert set(presentation["portraitKeys"]) == set(
-            presentation["portraitResourceIds"]
-        )
+        assert presentation["schemaVersion"] == 2
+        # This lifecycle fixture initializes the Assistant without binding a
+        # visual provider. Character information remains available to the UI.
+        assert presentation["visual"] is None
+        assert presentation["visualReasonCode"] == "VISUAL_NOT_BOUND"
         assert str(app_root) not in repr(presentation)
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0

@@ -88,7 +88,7 @@ export function normalizeCharacterExportReceipt(receipt) {
 }
 
 export function normalizeCharacterSwitchReceipt(receipt) {
-  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).sort() : [];
+  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).filter(key => key !== "pluginRequirements").sort() : [];
   const expected = [
     "previousCoreGenerationId",
     "restartState",
@@ -105,6 +105,13 @@ export function normalizeCharacterSwitchReceipt(receipt) {
     || !["not_required", "requested"].includes(receipt.restartState)
     || (receipt.targetCharacterId !== null && typeof receipt.targetCharacterId !== "string")
   ) fail(CHARACTER_ERROR);
+  const requirements = receipt.pluginRequirements ?? [];
+  if (!Array.isArray(requirements) || requirements.length > 64 || requirements.some(item =>
+    !item || !["visual", "tts"].includes(item.kind) || typeof item.type !== "string"
+    || !["COMPATIBLE", "PLUGIN_DISABLED", "PLUGIN_INCOMPATIBLE", "PLUGIN_MISSING"].includes(item.reasonCode)
+    || !Array.isArray(item.plugins) || !Array.isArray(item.candidates)
+    || [...item.plugins, ...item.candidates].some(plugin => !plugin || typeof plugin.id !== "string")
+  )) fail(CHARACTER_ERROR);
   const normalized = normalizeCharacterSettingsSnapshot(receipt.snapshot);
   if ((receipt.targetCharacterId || "") !== normalized.character.current_character_id) {
     fail(CHARACTER_ERROR);
@@ -114,6 +121,7 @@ export function normalizeCharacterSwitchReceipt(receipt) {
     previousCoreGenerationId: receipt.previousCoreGenerationId,
     restartState: receipt.restartState,
     targetCharacterId: receipt.targetCharacterId,
+    pluginRequirements: requirements,
   });
 }
 
@@ -311,9 +319,9 @@ export function createRootSettingsClient({ invoke }) {
         await invoke("settings_character_export", { path, characterId, kind }),
       );
     },
-    async characterSelect(characterId) {
+    async characterSelect(characterId, visualSelections) {
       return normalizeCharacterSwitchReceipt(
-        await invoke("settings_character_select", { characterId }),
+        await invoke("settings_character_select", { characterId, ...(visualSelections ? { visualSelections } : {}) }),
       );
     },
     async storageGet() {

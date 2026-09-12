@@ -57,6 +57,9 @@ scope；旧 generation 或已退出插件的身份立即失效。
 Host Service、应用配置和撤销 scope。不得出现 `call_tts()`、`register_memory()`、Provider ID 白名单或其他
 领域分支。
 
+插件清单还可声明静态 `ttsResources`，供角色包导入和工坊查询兼容格式。它不进入服务启动依赖，
+不会改变引擎选择；字段与状态见[角色包插件需求](visual-plugin-boundary.md#角色包插件需求)。
+
 ## 3. 插件包、Python 与 dependency root
 
 v4 插件至少包含 `plugin.yaml` 和 Python entry，manifest 使用 `api: 4`。`provides/requires` 继续只表达
@@ -96,6 +99,14 @@ Manifest 名称须匹配 `[a-z][a-z0-9-]{0,63}`；缺失或格式不符时 Inven
 快照中的图标允许为空；前端对空值及本地目录未收录的名称按领域回退，系统组件默认使用 `layers`。
 插件只提供名称，颜色、尺寸、线宽和动效由 Sakura 统一控制，不接收图标 URL、路径或 SVG 代码。
 本地目录与使用方式见 [Lucide 资源说明](../../../desktop/frontend/assets/lucide/README.md)。
+
+### 3.2 表现能力声明
+
+Manifest 可通过 `visuals` 声明资源类型、领域合同版本、Service 和渲染/编辑模块入口。
+它与展示用的 `presentation` 分开，参与资源匹配，并随 Inventory、RuntimePluginSpec 和 PluginSpec 保留。
+静态发现不执行插件代码；资源说明、专属解析、普通/主动回复、播放与工坊编辑均通过该合同接入。
+预构建 JavaScript 来自可信插件安装目录，角色包中的脚本不能作为模块执行；模块与回调随绑定/进程 scope 失效。
+字段、错误和实施边界见[表现插件合同](visual-plugin-boundary.md)。
 
 ## 4. Plugin SDK 边界
 

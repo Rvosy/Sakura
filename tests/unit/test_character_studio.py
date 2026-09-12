@@ -46,10 +46,13 @@ def test_character_studio_creates_imports_saves_and_exports(tmp_path: Path) -> N
     portrait_source.write_bytes(b"new portrait")
 
     created = service.create_character({"id": "new_role", "display_name": "新角色"})
-    portrait = service.import_portrait(
+    # Exercise saving an older inline-portrait draft through generic import.
+    created["doc"]["visuals"] = None
+    service.save_workspace_draft(created["workspace_id"], created["doc"])
+    portrait = service.import_visual_asset(
         created["workspace_id"],
         portrait_source,
-        label="default",
+        "portrait-default",
     )
     doc = created["doc"]
     doc["card_text"] = "system prompt"
@@ -108,6 +111,25 @@ def test_character_studio_voice_assets_round_trip_through_the_draft(tmp_path: Pa
     assert preview["data_url"] == "data:audio/wav;base64,YXVkaW8="
 
 
+def test_studio_can_save_models_without_reference_audio_or_enabling_speech(tmp_path: Path) -> None:
+    service = CharacterStudioService(tmp_path)
+    package = _write_character(tmp_path)
+    opened = service.open_character("sakura")
+    model_source = tmp_path / "model.ckpt"
+    model_source.write_bytes(b"model")
+    imported = service.import_voice_model(opened["workspace_id"], model_source, model_type="gpt")
+    doc = opened["doc"]
+    doc["voice"] = {"gpt_model": imported["relative_path"], "ref_lang": "ja", "text_lang": "ja"}
+    doc["reference_audios"] = []
+    saved = service.save_character(doc, opened["workspace_id"])
+    reopened = service.open_character("sakura")
+    assert reopened["doc"]["voice"]["gpt_model"] == imported["relative_path"]
+    assert reopened["doc"]["reference_audios"] == []
+    manifest = json.loads((package / "character.json").read_text())
+    assert "sakura.tts" not in manifest["extensions"]
+    assert (package / imported["relative_path"]).read_bytes() == b"model"
+
+
 def test_character_studio_uses_portable_directories_for_windows_trailing_dot_id(
     tmp_path: Path,
 ) -> None:
@@ -135,9 +157,9 @@ def test_invalid_published_save_preserves_the_original_character(tmp_path: Path)
     service = CharacterStudioService(tmp_path)
     opened = service.open_character("sakura")
     doc = opened["doc"]
-    doc["default_portrait"] = "portraits/missing.png"
+    doc["visuals"] = {"resources": [{"id": "bad", "type": "fixture.model@1", "root": "../outside", "entry": "resource.json"}], "default": "bad"}
 
-    with pytest.raises(CharacterConfigError, match="默认立绘不存在"):
+    with pytest.raises(ValueError, match="VISUAL_PATH_INVALID"):
         service.save_character(doc, opened["workspace_id"])
 
     assert manifest.read_bytes() == original_manifest
@@ -628,7 +650,8 @@ def test_open_rejects_symlink_before_copying_formal_role(
     assert not service._draft_root("sakura").exists()
 
 
-def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) -> None:
+@pytest.mark.parametrize("old_selection", [{"enabled": False, "provider": "sakura.tts.gpt-sovits"}, {"enabled": True, "provider": "sakura.tts.genie"}])
+def test_studio_reads_and_updates_voice_resources_independent_of_old_selection(tmp_path: Path, old_selection) -> None:
     from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
     package = _write_character(tmp_path)
     (package / "voice" / "models").mkdir(parents=True)
@@ -644,7 +667,7 @@ def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) ->
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["reply"] = {"futureMode": "keep"}
     manifest["extensions"] = {
-        "sakura.tts": {"enabled": True, "provider": "sakura.tts.gpt-sovits"},
+        "sakura.tts": old_selection,
         "sakura.tts.gpt-sovits": {
             "toneRefs": "voice/refs/ref.txt",
             "gptModel": "voice/models/old.ckpt",
@@ -671,7 +694,7 @@ def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) ->
     )
 
     assert saved["reply"] == {"futureMode": "keep", "tones": ["中性"]}
-    assert saved["extensions"]["sakura.tts"]["enabled"] is True
+    assert "sakura.tts" not in saved["extensions"]
     assert "gptModel" not in saved["extensions"]["sakura.tts.gpt-sovits"]
     assert saved["extensions"]["sakura.tts.gpt-sovits"]["futureProviderField"] == 7
     assert saved["extensions"]["com.example.keep"] == {"value": True}
@@ -682,17 +705,6 @@ def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) ->
     assert effective["sovitsModel"] == "voice/models/old.pth"
     assert effective["refLang"] == "zh"
 
-    doc["voice"] = None
-    service.save_draft(doc, opened["workspace_id"])
-    disabled = json.loads(
-        (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
-    )
-    assert "voice" not in disabled
-    assert disabled["extensions"]["sakura.tts"]["enabled"] is False
-    assert disabled["extensions"]["sakura.tts.gpt-sovits"] == {
-        "futureProviderField": 7,
-    }
-    assert disabled["extensions"]["com.example.keep"] == {"value": True}
 
 
 def test_studio_preserves_future_reply_fields_when_tones_are_absent(tmp_path: Path) -> None:
@@ -735,7 +747,7 @@ def test_studio_theme_save_preserves_an_unmanaged_voice_provider(tmp_path: Path)
         (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
     )
 
-    assert saved["extensions"] == manifest["extensions"]
+    assert saved["extensions"] == {key: value for key, value in manifest["extensions"].items() if key != "sakura.tts"}
 
 
 def test_legacy_raw_and_new_drafts_migrate_once(tmp_path: Path) -> None:
@@ -807,36 +819,6 @@ def test_legacy_raw_and_new_drafts_migrate_once(tmp_path: Path) -> None:
     assert service.open_character("N.A.V.I.")["doc"]["card_text"] == "raw draft"
     assert second.open_character("legacy")["resumed"] is True
     assert len([item for item in second.list_characters() if item["id"] == "legacy"]) == 1
-
-
-def test_cancelled_folder_import_rolls_back_the_whole_batch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = CharacterStudioService(tmp_path)
-    created = service.create_character({"id": "batch", "display_name": "Batch"})
-    source = tmp_path / "portrait-source"
-    source.mkdir()
-    (source / "a.png").write_bytes(b"a")
-    (source / "b.png").write_bytes(b"b")
-    from app.config.character_studio import _copy_workspace_asset as original_copy_asset
-    copied = 0
-
-    def cancel_second(*args, **kwargs):
-        nonlocal copied
-        copied += 1
-        if copied == 2:
-            raise CharacterStudioOperationCancelled()
-        return original_copy_asset(*args, **kwargs)
-
-    monkeypatch.setattr("app.config.character_studio._copy_workspace_asset", cancel_second)
-
-    with pytest.raises(CharacterStudioOperationCancelled):
-        service.import_portrait_folder(created["workspace_id"], source)
-
-    portrait_dir = Path(created["package_dir"]) / "portraits"
-    assert list(portrait_dir.iterdir()) == []
-    assert service._read_state("batch")["imported_assets"] == []
 
 
 def test_current_role_quiesces_before_the_first_directory_rename(tmp_path: Path) -> None:

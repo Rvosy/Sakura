@@ -50,14 +50,15 @@ function safeDiagnostic(error) {
   const raw = publicError?.[2] || coded?.[2] || source;
   const prefix = !publicError && !coded && typeof error?.name === "string" ? `${error.name}: ` : "";
   const diagnostic = safeErrorText(prefix + raw) || "未记录底层原因";
-  const stack = typeof error?.stack === "string" ? safeErrorText(error.stack.split("\n").slice(0, 33).join("\n"), 8192) : "";
-  const chain = [], seen = new Set();
+  const chain = [], stacks = [], seen = new Set();
   let cause = error;
   while (cause && !seen.has(cause) && chain.length < 16) {
     seen.add(cause);
     chain.push(safeErrorText(typeof cause === "string" ? cause : `${cause.name || "Error"}: ${cause.message || ""}`));
+    if (typeof cause.stack === "string") stacks.push(cause.stack.split("\n").slice(0, 33).join("\n"));
     cause = cause.cause;
   }
+  const stack = safeErrorText(stacks.join("\nCaused by:\n"), 8192);
   const exceptionChain = chain.length > 1 ? safeErrorText(chain.join("\nCaused by: "), 8192) : "";
   return {code, diagnostic, ...(stack ? {exceptionStack: stack} : {}), ...(exceptionChain ? {exceptionChain} : {})};
 }
@@ -150,6 +151,7 @@ function controlledEntry(input) {
     && !["started", "completed", "failed", "cancelled"].includes(input.outcome)
   ) return null;
   if (input.code !== undefined && !stableCode(input.code)) return null;
+  if (input.stage !== undefined && !token(input.stage, 96)) return null;
   if (
     input.elapsedMs !== undefined
     && (!Number.isFinite(input.elapsedMs) || input.elapsedMs < 0 || input.elapsedMs > 3_600_000)
@@ -174,6 +176,7 @@ function controlledEntry(input) {
   if (input.command !== undefined) entry.command = input.command;
   if (input.outcome !== undefined) entry.outcome = input.outcome;
   if (input.code !== undefined) entry.code = input.code;
+  if (input.stage !== undefined) entry.stage = input.stage;
   if (input.elapsedMs !== undefined) entry.elapsedMs = input.elapsedMs;
   if (input.operationId !== undefined) entry.operationId = input.operationId;
   if (input.revision !== undefined) entry.revision = input.revision;
@@ -219,6 +222,16 @@ export function createRuntimeDiagnostics({
   let timer = null;
   let sending = false;
   let disposed = false;
+  const reportedErrors = new WeakSet();
+
+  function reportError(error, { command, code, stage = command, level = "warn" } = {}) {
+    if (error && typeof error === "object" && reportedErrors.has(error)) return false;
+    const diagnostic = safeDiagnostic(error);
+    const accepted = record({ ...diagnostic, level, event: "webview.command.failed", outcome: "failed",
+      command, stage, code: diagnostic.code === "INVOKE_FAILED" ? code || diagnostic.code : diagnostic.code });
+    if (accepted && error && typeof error === "object") reportedErrors.add(error);
+    return accepted;
+  }
 
   function schedule() {
     if (disposed || sending || timer !== null || pending.length === 0) return;
@@ -263,11 +276,13 @@ export function createRuntimeDiagnostics({
   async function observedInvoke(command, args) {
     if (command === DIAGNOSTICS_COMMAND) return nativeInvoke(command, args);
     const started = now();
+    // Attribute Studio calls by their controlled method, never by request data.
+    const logCommand = command === "studio_request" && token(args?.method, 96) ? args.method : command;
     if (token(command, 96)) {
       record({
         level: "debug",
         event: eventForCommand(command, "started"),
-        command,
+        command: logCommand,
         outcome: "started",
       });
     }
@@ -275,9 +290,9 @@ export function createRuntimeDiagnostics({
       const result = await nativeInvoke(command, args);
       if (token(command, 96)) {
         record({
-          level: "info",
+          level: logCommand === "studio.visual.catalog" ? "debug" : "info",
           event: eventForCommand(command, "completed"),
-          command,
+          command: logCommand,
           outcome: "completed",
           elapsedMs: Math.max(0, now() - started),
         });
@@ -290,12 +305,13 @@ export function createRuntimeDiagnostics({
         record({
           level: expectedRetry ? "debug" : "warn",
           event: eventForCommand(command, "failed"),
-          command,
+          command: logCommand,
           outcome: "failed",
           code: diagnostic?.code || "INVOKE_FAILED",
           ...diagnostic,
           elapsedMs: Math.max(0, now() - started),
         });
+        if (error && typeof error === "object") reportedErrors.add(error);
       }
       throw error;
     }
@@ -343,6 +359,7 @@ export function createRuntimeDiagnostics({
       return record({ level, event: "runtime.message", message, fields });
     },
     record,
+    reportError,
     flush,
     markReady({ settings = false } = {}) {
       return record({

@@ -100,9 +100,20 @@
                 <button id="characterEditorButton" type="button" class="secondary-button">修改角色</button>
               </div>
             </div>
+            <div id="visualSetting" class="setting-row">
+              <label class="setting-row-text" for="visualSelect"><span class="setting-title">显示方式</span></label>
+              <div class="character-select-controls">
+                <select id="visualSelect"></select>
+                <button id="visualConfigure" class="secondary-button" type="button">设置</button>
+              </div>
+            </div>
+            <div id="visualStatus" class="visual-status-row" hidden>
+              <span id="visualStatusText" role="status"></span>
+              <button id="visualPluginAction" class="secondary-button" type="button">查看插件</button>
+            </div>
             <div class="setting-row">
               <label class="setting-row-text" for="portraitScale">
-                <span class="setting-title">立绘大小</span>
+                <span class="setting-title">角色大小</span>
               </label>
               <div class="slider-control">
                 <input id="portraitScale" class="layout-slider" type="range" step="1" />

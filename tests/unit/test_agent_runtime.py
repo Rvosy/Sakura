@@ -162,9 +162,9 @@ def test_chat_prompt_budget_excludes_native_visual_reply_instruction() -> None:
         )
     ]
 
-    chat_prompt = _chat_provider_system_prompt("system", ["中性"], ["neutral"])
+    chat_prompt = _chat_provider_system_prompt("system", ["中性"], None)
     native_prompt = _final_provider_system_prompt(
-        "system", messages, ["中性"], ["neutral"]
+        "system", messages, ["中性"], None
     )
 
     assert "visual_observation" not in chat_prompt

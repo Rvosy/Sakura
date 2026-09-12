@@ -131,9 +131,8 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   `LEGACY_CHARACTER_IMPORT_SKIPPED` 并继续；锁或权限等原因导致清理无法确认完成时，整个迁移必须在 commit 前明确失败。
   旧版
   `compat_default` 等内部主题来源标记统一转为当前 `package`，保留实际主题颜色，不得因此拒绝角色。角色校验必须在
-  大型 TTS复制前执行。voice 的当前选择写入
-  `sakura.tts`，同时生成 `sakura.tts.gpt-sovits` 与 `sakura.tts.genie` 两个角色 extension，使迁移后切换已安装
-  引擎不需要重新导入角色。共享模型与参考配置写入 GPT-SoVITS extension，Genie 在运行时继承，避免路径副本
+  大型 TTS 复制前执行。角色运行选择由应用语音设置管理，不因资源导入自动开启。资源转换生成
+  `sakura.tts.gpt-sovits` 与 `sakura.tts.genie` 两个角色 extension，使导入后切换已安装引擎不需要重新导入角色。共享模型与参考配置写入 GPT-SoVITS extension，Genie 在运行时继承，避免路径副本
   遮蔽后续 Studio 编辑或语音包导入；能唯一匹配的 ONNX 只补入 Genie extension，不覆盖已有显式路径。
   大小写只能做唯一匹配，冲突阻止提交。
 - JSONL 按 archive 后 active 顺序导入。user → human；相邻 assistant 行合并为一个或多个不超过上限的 segments

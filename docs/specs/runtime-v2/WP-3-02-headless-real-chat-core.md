@@ -95,7 +95,8 @@ Rust chat Gateway
   generation 所有的有界后台执行中等待 Provider 与最终终态；不得把图片上下文或慢 Provider 的完整耗时
   绑定到 `chat.send` request deadline。
 - `chat.completed.reply` 固定投影为 `segments` 数组；每段仅含 `text`、`translation`、`tone`、
-  `portrait`、`suppressTts`。禁止序列化 `_debug`、actions、tool continuation、prompt、endpoint、model、
+  `portrait`、`suppressTts`，以及按[表现插件合同](visual-plugin-boundary.md)校验的可选 `control`。
+  control 内的 state/actions 是插件私有数据；禁止序列化 `_debug`、Agent actions、tool continuation、prompt、endpoint、model、
   API key、generation credential 或 Python 对象。WP-3-02 的空 `ToolRegistry` 下出现 action 视为边界错误。
 - `chat.failed.error` 使用稳定 code、message、retryable、details 空对象。网络不可达、timeout、HTTP、
   Provider 响应格式错误均只终止本 operation；Core readiness 仍为 ready/degraded，health/control 可用。

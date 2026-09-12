@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import copy
 import queue
 import threading
 from collections.abc import Mapping
@@ -257,6 +258,7 @@ class ReadinessController:
     def published_character_presentation(self) -> dict[str, object] | None:
         """Return the generation-frozen character even when chat still needs setup."""
 
+        self._refresh_visual_presentation()
         with self._lock:
             if self._closed or self._readiness not in {
                 "ready",
@@ -359,6 +361,7 @@ class ReadinessController:
             update(settings)
 
     def snapshot(self) -> dict[str, Any]:
+        self._refresh_visual_presentation()
         with self._lock:
             components = {}
             if self._component is not None:
@@ -382,6 +385,7 @@ class ReadinessController:
             }
 
     def minimal_snapshot(self, chat_boundary: object | None) -> dict[str, Any]:
+        self._refresh_visual_presentation()
         with self._lock:
             readiness = self._readiness
             revision = self._revision
@@ -571,6 +575,10 @@ class ReadinessController:
                     getattr(application_to_bind, "bind_session")(result.session)
                 except Exception:
                     pass
+            elif claimed is None and plugin_application is not None and presentation is not None:
+                bind_presentation = getattr(plugin_application, "bind_character_presentation", None)
+                if callable(bind_presentation):
+                    bind_presentation(str(presentation["characterId"]))
             if claimed is None and session_callback is not None:
                 try:
                     session_callback()
@@ -664,6 +672,15 @@ class ReadinessController:
             raise TypeError("character presentation must be a mapping")
         projected = dict(presentation)
         projected["generationId"] = self._config.generation_id
+        if projected.get("schemaVersion") == 2:
+            if set(projected) != {"schemaVersion", "generationId", "characterId", "displayName", "initialMessage", "themeTokens", "visual", "visualReasonCode"}:
+                raise TypeError("character presentation fields are invalid")
+            for key in ("generationId", "characterId", "displayName", "initialMessage", "visualReasonCode"):
+                if not isinstance(projected[key], str) or not projected[key].strip():
+                    raise TypeError("character presentation strings are invalid")
+            if not isinstance(projected["themeTokens"], dict) or (projected["visual"] is not None and not isinstance(projected["visual"], dict)):
+                raise TypeError("character presentation visual is invalid")
+            return self._copy_presentation(projected)
         if set(projected) != set(_PRESENTATION_KEYS):
             raise TypeError("character presentation fields are invalid")
         if projected["schemaVersion"] != 1:
@@ -704,13 +721,24 @@ class ReadinessController:
     ) -> dict[str, object] | None:
         if presentation is None:
             return None
-        copied = dict(presentation)
-        copied["themeTokens"] = dict(presentation["themeTokens"])  # type: ignore[arg-type]
-        copied["portraitKeys"] = [*presentation["portraitKeys"]]  # type: ignore[misc]
-        copied["portraitResourceIds"] = dict(
-            presentation["portraitResourceIds"]  # type: ignore[arg-type]
-        )
-        return copied
+        return copy.deepcopy(presentation)
+
+    def _refresh_visual_presentation(self) -> None:
+        with self._lock:
+            application = self._plugin_application
+            if self._closed:
+                return
+        project = getattr(application, "visual_presentation", None)
+        if not callable(project):
+            return
+        value = project()
+        if value is None:
+            return
+        projected = self._project_presentation(value)
+        with self._lock:
+            if not self._closed and application is self._plugin_application and projected != self._current_character_presentation:
+                self._current_character_presentation = projected
+                self._revision += 1
 
     @staticmethod
     def _add_cleanup_note(primary: BaseException, additional: BaseException) -> None:
@@ -1361,11 +1389,13 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
+            plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
         )
         character_studio = CharacterStudioBoundary(
             config.generation_id,
             config.generation_credential,
             config.user_root,
+            plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
             quiesce_generation=getattr(
                 dispatcher,
                 "quiesce_for_character_publish",

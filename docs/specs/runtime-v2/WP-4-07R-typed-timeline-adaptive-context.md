@@ -85,7 +85,7 @@ payload 只允许以下形状：
 | kind | payload | 规则 |
 |---|---|---|
 | `human` | `{ "text": string }` | 仅用户实际提交的文字；Host 引导语不得混入 |
-| `assistant` | `{ "segments": Segment[1..N] }` | 一个 generation 一条；Segment 保留 text/translation/tone/portrait/suppressTts |
+| `assistant` | `{ "segments": Segment[1..N] }` | 一个 generation 一条；Segment 保留 text/translation/tone/portrait/suppressTts，可选 control 见表现插件合同 |
 | `observation` | `{ "text": string, "visual": object? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata |
 | `system` | `{ "text": string, "eventType": string? }` | 仅需要进入未来关系连续性的 Host 已确认事实，不是普通日志 |
 
@@ -104,7 +104,9 @@ API key 或 Provider 原始异常。
 - 定时截图的捕获占位 observation 不属于可整理证据。Provider 成功返回视觉分析后，Host 追加一条同
   `turn_id` 的有界脱敏语义 observation；它只保存摘要/OCR 文本投影、置信度和脱敏标记，不保存原图。
 - Provider 最终回复完成解析、segment 校验和授权后，在一个事务中写一条 assistant entry。多个气泡、语气、
-  立绘和 TTS 标记全部在 `segments[]`，不得逐 segment 追加历史。
+  TTS 标记及可选表现 `control` 全部在 `segments[]`，不得逐 segment 追加历史。
+  control 的版本、大小、目标和失败隔离遵循[表现插件合同](visual-plugin-boundary.md)；旧五字段 segment 继续可读，
+  超过整条 256 KiB 预算的可选控制会被剥离，文字保留。历史 UI 不执行 state/actions。
 - 工具循环只在当前模型 operation 中保留 Provider native call/result；第一版 Timeline 只保存最终用户可见
   assistant generation，不保存每个内部 Agent step。
 - 历史 UI 从同一 Timeline 投影；assistant segments 可以显示为多个气泡，但它们共享一个 entry/turn，删除、

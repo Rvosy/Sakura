@@ -308,6 +308,20 @@ fn validate_active_interaction_summary(summary: Option<&Value>) -> Result<(), St
 }
 
 fn reject_sensitive_snapshot_fields(value: &Value) -> Result<(), String> {
+    // Only these DTO fields are plugin-owned dictionaries. Asset values are
+    // still checked as package-relative paths by CharacterPresentation.
+    let mut public = value.clone();
+    if let Some(visual) = public
+        .pointer_mut("/characterPresentation/visual")
+        .and_then(Value::as_object_mut)
+    {
+        visual.remove("data");
+        visual.remove("assets");
+    }
+    reject_sensitive_public_fields(&public)
+}
+
+fn reject_sensitive_public_fields(value: &Value) -> Result<(), String> {
     match value {
         Value::Object(object) => {
             for (key, nested) in object {
@@ -333,12 +347,12 @@ fn reject_sensitive_snapshot_fields(value: &Value) -> Result<(), String> {
                 {
                     return Err("Core Snapshot contains a forbidden private field".to_string());
                 }
-                reject_sensitive_snapshot_fields(nested)?;
+                reject_sensitive_public_fields(nested)?;
             }
         }
         Value::Array(values) => {
             for nested in values {
-                reject_sensitive_snapshot_fields(nested)?;
+                reject_sensitive_public_fields(nested)?;
             }
         }
         _ => {}
@@ -1329,7 +1343,10 @@ impl ConcurrentRequestHandle {
         let severity = if event == "ipc.request.completed"
             && matches!(
                 name,
-                "asr.input.availability" | "asr.input.poll" | "asr.input.capture_status"
+                "asr.input.availability"
+                    | "asr.input.poll"
+                    | "asr.input.capture_status"
+                    | "studio.visual.catalog"
             ) {
             Severity::Debug
         } else {
@@ -3523,7 +3540,7 @@ mod tests {
 
     fn valid_character_presentation() -> Value {
         json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "generationId": GENERATION_ID,
             "characterId": "sakura",
             "displayName": "Sakura",
@@ -3541,12 +3558,46 @@ mod tests {
                 "bubbleBackground": "#fff0f7",
                 "border": "#efbfd6"
             },
-            "defaultPortraitKey": "__default__",
-            "portraitKeys": ["__default__"],
-            "portraitResourceIds": {
-                "__default__": "character-v1-73616b757261-portrait-5f5f64656661756c745f5f"
-            }
+            "visual": null,
+            "visualReasonCode": "VISUAL_NOT_BOUND"
         })
+    }
+
+    #[test]
+    fn visual_resources_snapshot_preserves_plugin_owned_keys() {
+        let mut presentation = valid_character_presentation();
+        presentation["visual"] = json!({
+            "bindingId": "a".repeat(32), "resourceId": "model-1", "type": "fixture.numeric@1",
+            "providerId": "fixture.numeric", "installId": "pi_bundled_6e756d65726963",
+            "renderer": "frontend/renderer.js", "editor": null,
+            "data": {"private": {"token": "model-state"}},
+            "assets": {"secret": "assets/model.json", "token": "assets/motion.json"}
+        });
+        let snapshot = json!({
+            "generationId": GENERATION_ID, "revision": 1, "readiness": "ready",
+            "currentCharacterSummary": valid_character_summary(), "characterPresentation": presentation,
+            "activeInteractionSummary": null
+        });
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).unwrap();
+        cache
+            .store_minimal_python_snapshot(&snapshot)
+            .expect("private resource identifiers remain valid");
+        for invalid in [
+            json!("../outside.json"),
+            json!({"path": "assets/model.json"}),
+        ] {
+            let mut next = snapshot.clone();
+            next["revision"] = json!(2);
+            next["characterPresentation"]["visual"]["assets"]["secret"] = invalid;
+            assert!(cache.store_minimal_python_snapshot(&next).is_err());
+        }
+        // The exception applies only to the typed presentation dictionaries.
+        for extra in [
+            json!({"visual": {"data": {"secret": "hidden"}}}),
+            json!({"apiKey": "hidden"}),
+        ] {
+            assert!(super::reject_sensitive_snapshot_fields(&extra).is_err());
+        }
     }
 
     #[test]
@@ -4329,7 +4380,7 @@ mod tests {
     }
 
     #[test]
-    fn asr_polling_logs_are_debug_while_rejections_and_deadlines_remain_visible() {
+    fn polling_logs_are_debug_while_rejections_and_deadlines_remain_visible() {
         use crate::runtime_log::{RuntimeLogConfig, Severity, Verbosity};
         let _test_lock = lifecycle_test_lock();
         let root =
@@ -4356,7 +4407,11 @@ mod tests {
                 .unwrap();
             assert_eq!(availability["ok"], true);
             // Exercise the same producer and real writer without opening a microphone.
-            for command in ["asr.input.poll", "asr.input.capture_status"] {
+            for command in [
+                "asr.input.poll",
+                "asr.input.capture_status",
+                "studio.visual.catalog",
+            ] {
                 handle.log_request(
                     Severity::Info,
                     "ipc.request.completed",
@@ -4464,6 +4519,12 @@ mod tests {
                 if level == Verbosity::Debug { 3 } else { 0 });
             assert!(text.contains("REQUEST_DEADLINE_EXCEEDED"));
             assert!(text.contains("ASR_RECORDING_NOT_FOUND"));
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.contains("studio.visual.catalog"))
+                    .count(),
+                if level == Verbosity::Debug { 1 } else { 0 }
+            );
             assert!(text.contains("File is not a zip file"));
             assert!(!text.contains("private-fixture-key"));
         }

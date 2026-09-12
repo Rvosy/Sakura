@@ -26,7 +26,7 @@
             </button>
             <button class="nav-item" type="button" data-page="portrait">
               <span class="nav-item-icon" aria-hidden="true"><span class="sakura-icon icon-images" aria-hidden="true"></span></span>
-              <span class="nav-item-label">立绘</span>
+              <span class="nav-item-label">角色形态</span>
             </button>
             <button class="nav-item" type="button" data-page="voice-model">
               <span class="nav-item-icon" aria-hidden="true"><span class="sakura-icon icon-music" aria-hidden="true"></span></span>
@@ -82,6 +82,10 @@
                 <textarea id="initialMessage" rows="4"></textarea>
               </div>
             </fieldset>
+            <fieldset class="settings-group" id="pluginRequirementsPanel" hidden>
+              <legend>所需插件</legend>
+              <ul id="pluginRequirementsList"></ul>
+            </fieldset>
           </section>
 
           <section id="page-card" class="settings-page">
@@ -97,20 +101,21 @@
           </section>
 
           <section id="page-portrait" class="settings-page">
-            <fieldset class="settings-group">
-              <legend>立绘</legend>
-              <div class="setting-row setting-row-block">
-                <div class="resource-section-head">
-                  <div class="setting-row-text">
-                    <span class="setting-title">立绘资源</span>
-                  </div>
-                  <div class="resource-section-actions">
-                    <button id="addExpressionButton" type="button" class="secondary-button">选择立绘</button>
-                    <button id="importPortraitFolderButton" type="button" class="secondary-button">导入文件夹</button>
-                  </div>
+            <div class="forms-library">
+              <div class="forms-library-head">
+                <span class="forms-library-title">角色包中的形态</span>
+                <div class="resource-section-actions">
+                  <button id="importVisualComponent" type="button" class="secondary-button">导入形态</button>
+                  <button id="addExpressionButton" type="button" class="primary-button">添加形态</button>
                 </div>
-                <div id="expressionList" class="expression-list"></div>
               </div>
+              <div id="visualResourceList" class="form-cards" aria-label="角色形态列表"></div>
+            </div>
+            <div id="visualMeta" class="form-meta" hidden></div>
+            <div id="visualEmpty" class="forms-empty" hidden><span class="sakura-icon icon-images" aria-hidden="true"></span><h2>还没有角色形态</h2></div>
+            <fieldset id="visualEditorPanel" class="settings-group" hidden>
+              <legend id="visualEditorTitle">形态编辑</legend>
+              <div id="expressionList"></div>
             </fieldset>
           </section>
 
@@ -121,16 +126,7 @@
               <div id="modelFileList" class="model-file-list" aria-label="角色包中的语音模型"></div>
             </fieldset>
             <fieldset class="settings-group">
-              <legend>GPT-SoVITS 配置</legend>
-              <div class="setting-row">
-                <div class="setting-row-text">
-                  <span class="setting-title">启用 GPT-SoVITS</span>
-                </div>
-                <label class="check-control" for="voiceEnabled">
-                  <input id="voiceEnabled" type="checkbox" />
-                  <span id="voiceEnabledLabel">未启用</span>
-                </label>
-              </div>
+              <legend>语音资源配置</legend>
               <div id="voiceModelFields" class="voice-model-fields">
                 <div class="setting-row">
                   <label class="setting-row-text" for="gptModelPath">

@@ -1,4 +1,5 @@
 import { isChatReadyLifecycle } from "../lifecycle.js";
+import { normalizeVisualControl } from "../pet/visual-control.js";
 
 const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
@@ -25,7 +26,7 @@ function freezeState(value) {
   });
 }
 
-function initialState(defaultPortraitKey) {
+function initialState() {
   return freezeState({
     generationId: null,
     generationNumber: 0,
@@ -45,7 +46,7 @@ function initialState(defaultPortraitKey) {
     canReviewPrevious: false,
     canReviewNext: false,
     error: null,
-    portrait: defaultPortraitKey,
+
     canCancel: false,
     canRetry: false,
     silentInteraction: false,
@@ -69,15 +70,15 @@ function normalizedSegments(reply) {
           tone: typeof segment.tone === "string" ? segment.tone : "calm",
           portrait: typeof segment.portrait === "string" ? segment.portrait : "idle",
           suppressTts: segment.suppressTts === true,
+          ...(normalizeVisualControl(segment.control) ? { control: normalizeVisualControl(segment.control) } : {}),
         }),
       ),
   );
 }
 
-export function createChatPresentationReducer({ initialMessage, defaultPortraitKey, thinkingPortraitKey, concernedPortraitKey } = {}) {
-  if (!initialMessage || !defaultPortraitKey) throw new Error("character presentation is required");
-  let concernedPortrait = concernedPortraitKey || defaultPortraitKey;
-  let state = initialState(defaultPortraitKey);
+export function createChatPresentationReducer({ initialMessage } = {}) {
+  if (!initialMessage) throw new Error("character presentation is required");
+  let state = initialState();
   let hasReachedReady = false;
   let greetingStarted = false;
 
@@ -178,7 +179,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: activeReplyInterrupted
             ? Object.freeze({ code: "CHAT_INTERRUPTED", retryable: true })
             : state.error,
-          portrait: preserveVisualState || chatReady || initialStartup ? state.portrait : concernedPortrait,
+
           canCancel: preserveInteraction && state.canCancel,
           silentInteraction: preserveInteraction && state.silentInteraction,
           canRetry: Boolean(event.canRetry),
@@ -216,7 +217,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           currentReplyHistoryStart: -1,
           showingReplyHistorySegment: false,
           error: null,
-          portrait: state.portrait,
+
           canCancel: true,
           silentInteraction: false,
         });
@@ -238,7 +239,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           currentReplyHistoryStart,
           showingReplyHistorySegment: false,
           bubbleText: state.bubbleText,
-          portrait: state.portrait,
+
           canCancel: false,
           silentInteraction: false,
         });
@@ -263,7 +264,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
-          portrait: state.portrait,
+
           canCancel: false,
           silentInteraction: false,
         });
@@ -278,7 +279,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: null,
-          portrait: state.portrait,
+
           canCancel: false,
           silentInteraction: false,
         });
@@ -303,7 +304,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         : state.replyHistoryIndex;
       state = freezeState({
         ...state,
-        portrait: segment?.portrait || state.portrait,
         replyHistoryIndex: historyIndex,
         showingReplyHistorySegment: state.currentReplyHistoryStart >= 0,
       });
@@ -323,7 +323,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       state = freezeState({
         ...state,
         bubbleText: String(text ?? ""),
-        portrait: segment.portrait || state.portrait,
         replyHistoryIndex: index,
         showingReplyHistorySegment: true,
       });
@@ -341,7 +340,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           text: initialMessage,
           translation: "",
           tone: "calm",
-          portrait: state.portrait,
+
           suppressTts: true,
         })]),
       });
@@ -350,22 +349,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
     finishTyping() {
       if (state.phase !== "typing") return result(false);
       state = freezeState({ ...state, phase: "settled", operationId: null });
-      return result(true);
-    },
-    rebindPortraits({ validPortraitKeys, defaultPortraitKey: nextDefault, concernedPortraitKey: nextConcerned }) {
-      if (!Array.isArray(validPortraitKeys) || !validPortraitKeys.includes(nextDefault)) return result(false);
-      const valid = new Set(validPortraitKeys);
-      const normalizeSegment = (segment) => Object.freeze({
-        ...segment,
-        portrait: valid.has(segment?.portrait) ? segment.portrait : nextDefault,
-      });
-      concernedPortrait = valid.has(nextConcerned) ? nextConcerned : nextDefault;
-      state = freezeState({
-        ...state,
-        portrait: valid.has(state.portrait) ? state.portrait : nextDefault,
-        segments: Object.freeze(state.segments.map(normalizeSegment)),
-        replyHistorySegments: Object.freeze(state.replyHistorySegments.map(normalizeSegment)),
-      });
       return result(true);
     },
     current() {

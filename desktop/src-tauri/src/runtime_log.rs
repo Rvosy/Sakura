@@ -405,6 +405,8 @@ pub struct WebviewDiagnosticEntry {
     #[serde(default)]
     code: Option<String>,
     #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
     diagnostic: Option<String>,
     #[serde(default)]
     exception_stack: Option<String>,
@@ -737,7 +739,7 @@ impl RuntimeLogService {
         window_label: &str,
         entry: WebviewDiagnosticEntry,
     ) -> Result<RuntimeLogEvent, &'static str> {
-        if !matches!(window_label, "main" | "settings") {
+        if !matches!(window_label, "main" | "settings" | "studio") {
             return Err("RUNTIME_DIAGNOSTIC_WINDOW_INVALID");
         }
         let submitted_severity = match entry.level.as_str() {
@@ -793,9 +795,12 @@ impl RuntimeLogService {
         if entry.command.as_deref().is_some_and(|value| {
             normalize_token(value, 96).is_none() || value == "record_runtime_diagnostics"
         }) || entry
-            .outcome
+            .stage
             .as_deref()
-            .is_some_and(|value| !matches!(value, "started" | "completed" | "failed" | "cancelled"))
+            .is_some_and(|value| normalize_token(value, 96).is_none())
+            || entry.outcome.as_deref().is_some_and(|value| {
+                !matches!(value, "started" | "completed" | "failed" | "cancelled")
+            })
             || entry.code.as_deref().is_some_and(|value| {
                 value.len() > 64
                     || value.is_empty()
@@ -847,6 +852,9 @@ impl RuntimeLogService {
         }
         if let Some(code) = entry.code {
             attributes.insert("code".to_string(), Value::String(code));
+        }
+        if let Some(stage) = entry.stage {
+            attributes.insert("stage".to_string(), Value::String(stage));
         }
         if let Some(diagnostic) = entry.diagnostic {
             attributes.insert("diagnostic".to_string(), Value::String(diagnostic));
@@ -1516,10 +1524,10 @@ fn viewer_record_default_message(record: &RuntimeLogRecord, severity: Severity) 
 
 fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
     let suffix = match record.event.as_str() {
-        "ipc.request.started" => "中",
-        "ipc.request.completed" => "完成",
-        "ipc.request.cancelled" => "已取消",
-        "ipc.request.failed" => "失败",
+        "ipc.request.started" | "webview.command.started" => "中",
+        "ipc.request.completed" | "webview.command.completed" => "完成",
+        "ipc.request.cancelled" | "webview.command.cancelled" => "已取消",
+        "ipc.request.failed" | "webview.command.failed" => "失败",
         _ => return None,
     };
     let command = viewer_attribute_strings(record, &["command"]).next()?;
@@ -1559,6 +1567,25 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "tts.playback.observe" => "更新语音播放状态",
         "screen_awareness.settings.get" => "读取屏幕感知设置",
         "screen_awareness.settings.save" => "保存屏幕感知设置",
+        "studio.bootstrap" => "打开角色工坊",
+        "studio.character.open" => "打开角色草稿",
+        "studio.character.create" => "新建角色",
+        "studio.character.publish" => "保存角色",
+        "studio.draft.save" => "保存角色草稿",
+        "studio.visual.catalog" => "读取形态插件目录",
+        "studio.visual.open" | "studio_visual_open" | "studio_visual_editor" => "打开形态编辑器",
+        "studio.visual.previews" | "studio_visual_previews" | "studio_visual_cover" => {
+            "加载形态封面"
+        }
+        "studio.visual.create" => "添加形态",
+        "studio.visual.import" => "导入形态",
+        "studio.visual.export" => "导出形态",
+        "studio.asset.import" => "导入角色资源",
+        "characters.visuals.get" | "settings_character_visuals_get" => "读取角色形态",
+        "visual_renderer" | "visual_startup" => "加载角色表现",
+        "visual_control" => "执行表现控制",
+        "visual_preview" => "预览角色",
+        "visual_rebind" => "切换角色表现",
         "characters.settings.get" => "读取角色设置",
         "characters.settings.import" => "导入角色",
         "characters.settings.import_voice" => "导入角色语音",
@@ -1570,11 +1597,16 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "ui.history.page" => "读取对话记录",
         _ => return None,
     };
-    Some(if record.event == "ipc.request.started" {
-        format!("正在{action}")
-    } else {
-        format!("{action}{suffix}")
-    })
+    Some(
+        if matches!(
+            record.event.as_str(),
+            "ipc.request.started" | "webview.command.started"
+        ) {
+            format!("正在{action}")
+        } else {
+            format!("{action}{suffix}")
+        },
+    )
 }
 
 fn viewer_is_gpt_sovits(record: &RuntimeLogRecord) -> bool {
@@ -2152,6 +2184,10 @@ fn business_message(event: &str) -> Option<&'static str> {
         "reply.processing.failed" => "模型回复处理失败",
         "reply.display.completed" => "回复已显示",
         "reply.display.failed" => "回复显示失败",
+        "visual.binding.failed" => "角色表现加载失败",
+        "visual.control.failed" => "表现控制未应用",
+        "visual.preview.failed" => "角色预览加载失败",
+        "visual.resource.failed" => "角色表现资源加载失败",
         "tool.execution.started" => "正在执行工具",
         "tool.execution.finished" => "工具执行完成",
         "tool.execution.waiting_confirmation" => "工具正在等待确认",
@@ -2344,6 +2380,10 @@ fn viewer_message(event: &str, severity: Severity) -> &'static str {
         "reply.processing.failed" => "模型回复处理失败",
         "reply.display.completed" => "回复已显示",
         "reply.display.failed" => "回复显示失败",
+        "visual.binding.failed" => "角色表现加载失败",
+        "visual.control.failed" => "表现控制未应用",
+        "visual.preview.failed" => "角色预览加载失败",
+        "visual.resource.failed" => "角色表现资源加载失败",
         "tool.execution.started" => "正在执行工具",
         "tool.execution.finished" => "工具执行完成",
         "tool.execution.waiting_confirmation" => "工具正在等待确认",
@@ -3350,6 +3390,13 @@ fn sanitize_fixed_message(value: &str) -> String {
 
 /// Preserve the failure text while redacting only credential values.
 /// Multiline diagnostics stay multiline in the viewer; the text writer escapes them.
+pub(crate) fn diagnostic_error(code: &str, error: impl std::fmt::Display) -> String {
+    format!(
+        "{code}: {}",
+        sanitize_diagnostic(&error.to_string(), &[], 4096)
+    )
+}
+
 pub(crate) fn redact_diagnostic_credentials(value: &str, secrets: &[String]) -> String {
     use regex::{Captures, Regex};
     use std::sync::LazyLock;
@@ -4541,6 +4588,30 @@ mod tests {
             viewer_ipc_request_message(&record("ipc.request.completed", "future.command")),
             None
         );
+    }
+
+    #[test]
+    fn visual_webview_failure_reaches_viewer_with_stage_and_redacted_stack() {
+        let root = temp_root("visual-diagnostics");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let entry: WebviewDiagnosticEntry = serde_json::from_value(json!({
+            "level": "warn", "event": "webview.command.failed", "command": "studio_visual_editor",
+            "outcome": "failed", "code": "VISUAL_EDITOR_FAILED", "stage": "studio.visual.ready",
+            "diagnostic": "TypeError: texture decode failed token=private-value",
+            "exceptionStack": "TypeError: texture decode failed\n at mount (C:/Users/private/renderer.js:12:3)"
+        })).unwrap();
+        let event = log
+            .prepare_webview(crate::character_studio_window::STUDIO_WINDOW_LABEL, entry)
+            .unwrap();
+        assert!(log.submit(event));
+        let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+        let text = serde_json::to_string(&record).unwrap();
+        assert!(text.contains("texture decode failed"));
+        assert!(text.contains("studio.visual.ready"));
+        assert!(text.contains("renderer.js"));
+        assert!(!text.contains("private-value"));
+        assert!(text.contains("C:/Users/private/renderer.js:12:3"));
+        assert!(log.shutdown(Duration::from_secs(2)));
     }
 
     #[test]

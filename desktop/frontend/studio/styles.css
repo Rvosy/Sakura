@@ -1,5 +1,6 @@
 /* 角色工坊直接沿用设置页的主题令牌、布局、控件和反馈样式。 */
 @import url("../settings/styles.css");
+@import url("./visual-editor.css");
 
 :root {
   --studio-dirty-dot-size: 7px;
@@ -330,12 +331,6 @@
 .voice-model-fields {
   gap: 12px;
   transition: opacity var(--motion-base) var(--ease);
-}
-
-.voice-model-fields.is-disabled,
-.settings-page.is-voice-disabled .reference-audio-list,
-.settings-page.is-voice-disabled .reference-audio-intro {
-  opacity: 0.58;
 }
 
 .reference-audio-head {

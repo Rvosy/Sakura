@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from dataclasses import replace
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult
 from app.agent.trace import (
@@ -75,7 +75,7 @@ _VISUAL_OBSERVATION_REPLY_INSTRUCTION = """
 visual_observation 只给系统保存短期视觉记忆，不会展示给用户；请用事实摘要，不要用角色口吻。
 格式：
 {
-  "segments": [{"ja":"日文原文","zh":"中文译文","tone":"中性","portrait":"站立待机"}],
+  "segments": [{"ja":"日文原文","zh":"中文译文","tone":"中性"}],
   "visual_observation": {
     "summary": "一句到三句话概括画面",
     "visible_texts": ["明确可见文字或台词"],
@@ -97,7 +97,6 @@ class AgentRuntime:
         api_client: OpenAICompatibleClient,
         system_prompt: str,
         reply_tones: list[str] | None = None,
-        reply_portraits: list[str] | None = None,
         tools: ToolRegistry | None = None,
         history_store: ChatHistoryStore | None = None,
         prompt_patches: list[PromptPatchContribution] | None = None,
@@ -125,7 +124,7 @@ class AgentRuntime:
             if callable(vision_setter):
                 vision_setter(agent_trace_recorder)
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
-        self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
+        self._visual_binding = None
         self.tools = tools or ToolRegistry()
         self.history_store = history_store
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
@@ -194,22 +193,39 @@ class AgentRuntime:
         self,
         system_prompt: str,
         reply_tones: list[str] | None = None,
-        reply_portraits: list[str] | None = None,
         character_id: str = "",
         character_name: str = "",
     ) -> None:
-        """角色切换后同步系统提示词、可用语气和可用立绘列表。"""
+        """角色切换后同步系统提示词、可用语气并撤销旧表现绑定。"""
         self.system_prompt = system_prompt
         if character_id:
             self.character_id = character_id.strip()
         if character_name:
             self.character_name = character_name.strip()
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
-        self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
+        self._visual_binding = None
 
     def set_prompt_patches(self, prompt_patches: list[PromptPatchContribution] | None) -> None:
         """同步插件提示词补丁。"""
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
+
+    def set_visual_binding(self, binding: object | None) -> None:
+        self._visual_binding = binding
+
+    @property
+    def visual_binding(self):
+        return self._visual_binding
+
+    @property
+    def reply_visual(self):
+        binding = self._visual_binding
+        if binding is None:
+            return None
+        try:
+            description = binding.description
+            return {"resourceId": binding.resource_id, "prompt": description["prompt"], "outputSchema": description["outputSchema"]}
+        except ValueError:
+            return None
 
     def set_context_providers(
         self,
@@ -391,7 +407,7 @@ class AgentRuntime:
                     "上一条 assistant 输出不是合格的 Sakura 回复 JSON。"
                     "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
                     "格式必须是 {\"segments\":[{\"ja\":\"自然日语\",\"zh\":\"中文译文\","
-                    "\"tone\":\"中性\",\"portrait\":\"站立待机\"}]}。"
+                    "\"tone\":\"中性\"}]}。"
                     "ja 字段只能写自然日语，不能包含中文。"
                     "如果 ja 中有中文，请把它的意思翻译成自然日语，不要用固定兜底句替代。"
                     "zh 保留或补充与 ja 对应的中文译文。"
@@ -576,7 +592,7 @@ class AgentRuntime:
             system_prompt,
             working_messages,
             self.reply_tones,
-            self.reply_portraits,
+            self.reply_visual,
         )
         turn = self._client_for_messages(working_messages).complete_with_tools(
             prompt,
@@ -612,7 +628,7 @@ class AgentRuntime:
             system_prompt,
             working_messages,
             self.reply_tones,
-            self.reply_portraits,
+            self.reply_visual,
             runtime_context=runtime_context,
             cancel_checker=cancel_checker,
             trace_metadata=trace_metadata or PromptTraceMetadata(purpose="final_reply"),
@@ -1198,14 +1214,14 @@ class AgentRuntime:
                     _chat_provider_system_prompt(
                         base_final_prompt_build.system_prompt,
                         self.reply_tones,
-                        self.reply_portraits,
+                        self.reply_visual,
                     )
                     if use_text_tool_summary
                     else _final_provider_system_prompt(
                         base_final_prompt_build.system_prompt,
                         working_messages,
                         self.reply_tones,
-                        self.reply_portraits,
+                        self.reply_visual,
                     )
                 ),
                 tools=(),
@@ -1283,7 +1299,7 @@ class AgentRuntime:
                         static_prompt=_chat_provider_system_prompt(
                             base_fallback_prompt.system_prompt,
                             self.reply_tones,
-                            self.reply_portraits,
+                            self.reply_visual,
                         ),
                         tools=(),
                         **_client_context_budget_settings(fallback_client),
@@ -1400,7 +1416,7 @@ class AgentRuntime:
             static_prompt=_chat_provider_system_prompt(
                 base_prompt_build.system_prompt,
                 self.reply_tones,
-                self.reply_portraits,
+                self.reply_visual,
             ),
             source="event",
             mode="screen_awareness" if event.type == "screen_awareness_check" else "normal",
@@ -1415,7 +1431,7 @@ class AgentRuntime:
                 prompt_build.system_prompt,
                 event_messages,
                 self.reply_tones,
-                self.reply_portraits,
+                self.reply_visual,
                 runtime_context=prompt_build.runtime_context,
                 trace_metadata=PromptTraceMetadata(
                     purpose="proactive_reply",
@@ -1519,7 +1535,7 @@ class AgentRuntime:
         import app.agent.tool_routing as tool_routing
 
         reply_protocol = self._apply_reply_protocol_patches(
-            build_agent_reply_protocol(self.reply_tones, self.reply_portraits)
+            build_agent_reply_protocol(self.reply_tones, self.reply_visual)
         )
         context_strategy = build_context_acquisition_strategy(
             allow_screen_observation=allow_screen_observation
@@ -1602,7 +1618,7 @@ class AgentRuntime:
         screen_awareness_rules = build_screen_awareness_check_tool_system_prefix(
             "",
             self.reply_tones,
-            self.reply_portraits,
+            self.reply_visual,
             max_tool_calls_per_step=self.runtime_loop_settings.max_tool_calls_per_step,
             max_tool_calls_per_turn=self.runtime_loop_settings.max_tool_calls_per_turn,
             extra_instructions=self._combine_extra_instructions(extra_instructions),
@@ -1647,7 +1663,7 @@ class AgentRuntime:
         snapshot: ContextSnapshot | None = None,
     ):
         event_rules = build_event_system_prompt(
-            "", self.reply_tones, self.reply_portraits, event_type=event_type
+            "", self.reply_tones, self.reply_visual, event_type=event_type
         )
         sections = [
             *self._persona_sections(),
@@ -1720,6 +1736,7 @@ def _reply_trace_mapping(reply: ChatReply) -> dict[str, Any]:
                 "zh": segment.translation,
                 "tone": segment.tone,
                 "portrait": segment.portrait,
+                **({"control": segment.control} if segment.control is not None else {}),
             }
             for segment in reply.segments
         ]
@@ -1757,12 +1774,12 @@ def _final_provider_system_prompt(
     system_prompt: str,
     messages: list[ChatMessage],
     reply_tones: list[str],
-    reply_portraits: list[str],
+    reply_visual: Mapping[str, Any] | None,
 ) -> str:
     return "\n\n".join(
         part
         for part in (
-            _chat_provider_system_prompt(system_prompt, reply_tones, reply_portraits),
+            _chat_provider_system_prompt(system_prompt, reply_tones, reply_visual),
             _VISUAL_OBSERVATION_REPLY_INSTRUCTION
             if messages_contain_image(messages)
             else "",
@@ -1774,13 +1791,13 @@ def _final_provider_system_prompt(
 def _chat_provider_system_prompt(
     system_prompt: str,
     reply_tones: list[str],
-    reply_portraits: list[str],
+    reply_visual: Mapping[str, Any] | None,
 ) -> str:
     return "\n\n".join(
         part
         for part in (
             system_prompt.strip(),
-            build_segmented_reply_instruction(reply_tones, reply_portraits),
+            build_segmented_reply_instruction(reply_tones, reply_visual),
         )
         if part
     )
@@ -2341,7 +2358,7 @@ def _build_screen_observation_request_reply() -> ChatReply:
                         "ja": "画面を確認してから答えるね。",
                         "zh": "我先看一下当前画面再回答。",
                         "tone": "请求",
-                        "portrait": "伸手命令",
+
                     }
                 ]
             },
@@ -2366,7 +2383,7 @@ def _build_fallback_tool_reply(results: list[ToolExecutionResult]) -> ChatReply:
                             "ja": f"処理は終わったよ。{summary}",
                             "zh": f"已经处理好了。{summary}",
                             "tone": "请求",
-                            "portrait": "自信拍胸",
+
                         }
                     ]
                 },
@@ -2386,7 +2403,7 @@ def _build_fallback_tool_reply(results: list[ToolExecutionResult]) -> ChatReply:
                         "ja": "処理中に問題が起きたみたい。設定かネットワークを確認して。",
                         "zh": f"工具执行时出了点问题：{error_text}",
                         "tone": "困惑",
-                        "portrait": "张嘴疑问",
+
                     }
                 ]
             },
@@ -2404,7 +2421,7 @@ def _build_vision_unsupported_reply() -> ChatReply:
                         "ja": "今のモデルでは画像を見られないみたい。画面の内容は勝手に想像しないでおくね。",
                         "zh": "当前模型或接口似乎不支持图片输入。我不会猜屏幕内容，请换成支持视觉的模型后再试。",
                         "tone": "困惑",
-                        "portrait": "张嘴疑问",
+
                     }
                 ]
             },

@@ -54,9 +54,12 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0043：Telemetry Edge 使用 CDN 后的单机 FastAPI 与 SQLite](0043-vps-fastapi-sqlite-telemetry-edge.md)
 - [ADR-0044：角色工坊使用主 Tauri 应用内的独立窗口](0044-character-studio-same-app-window.md)
 - [ADR-0045：ASR Hub、可替换识别引擎与宿主录音](0045-asr-hub-and-host-audio-input.md)
+- [ADR-0046：表现插件负责编辑、控制说明、解析与渲染](0046-composable-character-resources-and-renderer-host.md)（已接受；完整立绘插件与通用宿主已实现）
 
 - [ADR-0047：联网搜索与网页抓取由内置插件提供](0047-bundled-web-search-plugin.md)
 - [ADR-0048：以原始错误证据为遥测主体](0048-original-error-reports.md)
+
+- [ADR-0048：语音资源与应用运行选择分离](0048-voice-resources-and-local-selection.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

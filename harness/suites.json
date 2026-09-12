@@ -161,6 +161,23 @@
         "remote-telemetry-rust-tests",
         "remote-telemetry-frontend-tests"
       ]
+    },
+    "journey-visuals": {
+      "description": "验证表现插件的资源、编辑、回复控制、播放、撤销与归档",
+      "cases": [
+        "visual-plugin-python-journey",
+        "visual-plugin-frontend-journey",
+        "visual-plugin-rust-journey"
+      ]
+    },
+    "journey-visuals-browser": {
+      "description": "验证设置形态选择、工坊编辑与真实插件播放",
+      "cases": [
+        "visual-plugin-browser-journey",
+        "settings-visuals-browser-journey",
+        "studio-visuals-browser-journey",
+        "studio-save-browser-journey"
+      ]
     }
   },
   "cases": [
@@ -580,6 +597,9 @@
         "-m",
         "pytest",
         "tests/unit/test_plugin_runtime_v4.py",
+        "tests/unit/test_visual_capabilities.py",
+        "tests/integration/test_visual_plugin_boundary.py",
+        "tests/integration/test_portrait_resources.py",
         "tests/unit/test_web_plugin.py",
         "tests/unit/test_playwright_browser_plugin_v4.py",
         "tests/unit/test_sakura_mobile_plugin_v4.py",
@@ -1044,6 +1064,103 @@
       "env": {
         "NO_COLOR": "1",
         "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "visual-plugin-python-journey",
+      "description": "验证静态能力、真实插件、普通/主动回复、历史、草稿和完整/组件归档",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/unit/test_visual_capabilities.py",
+        "tests/unit/test_visual_archive.py",
+        "tests/unit/test_core_host_character_settings.py",
+        "tests/integration/test_visual_plugin_boundary.py",
+        "tests/integration/test_portrait_resources.py",
+        "tests/unit/test_character_archive.py",
+        "tests/unit/test_character_studio.py",
+        "tests/unit/test_core_host_character_studio.py",
+        "tests/integration/test_character_studio_journey.py",
+        "tests/unit/test_agent_runtime.py",
+        "tests/unit/test_timeline_store.py"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    },
+    {
+      "id": "visual-plugin-frontend-journey",
+      "description": "验证控制派发、去重、过期结果、取消及编辑器生命期",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/renderer-host.test.js",
+        "desktop/frontend/tests/visual-editor-host.test.js",
+        "desktop/frontend/tests/portrait-controller.test.js",
+        "desktop/frontend/tests/character-generation.test.js",
+        "desktop/frontend/tests/chat-presentation.test.js",
+        "desktop/frontend/tests/character-visual-preview.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "visual-plugin-rust-journey",
+      "description": "验证通用资产、已安装模块、编辑器授权与透明命中服务",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "visual_resources",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "settings-visuals-browser-journey",
+      "description": "验证个人显示方式选择、应用、放弃与插件状态刷新",
+      "argv": ["{python}", "desktop/frontend/tests/settings-visuals.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "studio-save-browser-journey",
+      "description": "使用桌面 CSP、真实有界 Core 路由和多图角色验证保存重载",
+      "argv": ["{python}", "desktop/frontend/tests/studio-save.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "studio-visuals-browser-journey",
+      "description": "验证形态卡片、命名、立绘草稿、添加保存与窄窗口布局",
+      "argv": ["{python}", "desktop/frontend/tests/studio-visuals.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "visual-plugin-browser-journey",
+      "description": "使用隔离角色运行真实工坊、Core插件与浏览器渲染器；原生窗口传输采用测试桥",
+      "argv": [
+        "{python}",
+        "desktop/frontend/tests/visual-plugin.journey.py"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1"
       }
     }
   ]

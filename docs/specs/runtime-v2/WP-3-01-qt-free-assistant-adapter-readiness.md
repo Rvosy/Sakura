@@ -8,6 +8,12 @@ updated: 2026-09-05
 
 # WP-3-01：无 Qt Assistant Adapter 与真实 Readiness
 
+## 当前表现合同
+
+2026-09-12 起，本文原有固定 portrait/portraitChoices 投影与宿主图片选择由[表现插件合同](visual-plugin-boundary.md)取代。
+CharacterPresentation 使用 schemaVersion 2 的可空 visual；公共 Profile 不提供图片候选。立绘兼容、切图、
+解码和过渡归入内置插件，宿主在实际分段播放时派发 control；历史浏览只读文字。以下旧 WP 实施与验收记录保留历史语境。
+
 ## 状态与范围
 
 历史结论：2026-07-26 accepted。工作包进度与接受证据见

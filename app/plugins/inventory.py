@@ -18,6 +18,8 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
+from app.config.plugin_requirements import tts_resource_types
+from app.plugins.visuals import VisualCapability, visual_capabilities_from_manifest
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import DistributionPaths, RuntimeRoots, coerce_runtime_roots
@@ -52,6 +54,7 @@ class RuntimePluginSpec:
     requires: tuple[str, ...]
     source: str
     directory_name: str
+    visuals: tuple[VisualCapability, ...] = ()
 
     def to_plugin_spec(self, roots: RuntimeRoots | Path) -> PluginSpec:
         resolved = coerce_runtime_roots(roots)
@@ -75,6 +78,7 @@ class RuntimePluginSpec:
             requires=self.requires,
             plugin_root=root,
             source=self.source,
+            visuals=self.visuals,
         )
 
     def private_dict(self) -> dict[str, Any]:
@@ -93,6 +97,7 @@ class RuntimePluginSpec:
             "requires": list(self.requires),
             "source": self.source,
             "directoryName": self.directory_name,
+            "visuals": [item.to_mapping() for item in self.visuals],
         }
 
     @classmethod
@@ -102,7 +107,7 @@ class RuntimePluginSpec:
             "entry", "enabled", "required", "provides", "requires",
             "source", "directoryName",
         }
-        if set(value) != expected:
+        if set(value) not in (expected, expected | {"visuals"}):
             raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
         plugin_id = value.get("pluginId")
         source = value.get("source")
@@ -125,6 +130,10 @@ class RuntimePluginSpec:
             ):
                 raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
             services[key] = tuple(dict.fromkeys(raw))
+        try:
+            visuals = visual_capabilities_from_manifest(value.get("visuals", []), services["provides"])
+        except ValueError as error:
+            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID") from error
         strings = {}
         for key, maximum in (
             ("installId", 2059), ("name", 120), ("author", 120),
@@ -159,6 +168,7 @@ class RuntimePluginSpec:
             requires=services["requires"],
             source=source,
             directory_name=directory_name,
+            visuals=visuals,
         )
 
 
@@ -184,6 +194,8 @@ class InstalledPluginRecord:
     presentation_kind: str = "extension"
     presentation_category: str = "other"
     presentation_icon: str = ""
+    tts_resources: tuple[str, ...] = ()
+    visuals: tuple[VisualCapability, ...] = ()
 
     @property
     def can_uninstall(self) -> bool:
@@ -207,6 +219,7 @@ class InstalledPluginRecord:
             requires=self.requires,
             source=self.source,
             directory_name=self.directory_name,
+            visuals=self.visuals,
         )
 
 
@@ -421,6 +434,14 @@ class PluginInventory:
                 )
             services[key] = tuple(dict.fromkeys(value))
         supported = api_version == PLUGIN_API_V4_VERSION
+        try:
+            visuals = visual_capabilities_from_manifest(raw.get("visuals", []), services["provides"], plugin_root=directory)
+            tts_resources = tts_resource_types(raw.get("ttsResources", []))
+        except ValueError:
+            return replace(
+                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
+                desired_enabled=enabled,
+            )
         presentation = raw.get("presentation")
         presentation = presentation if isinstance(presentation, Mapping) else {}
         kind = presentation.get("kind")
@@ -444,9 +465,11 @@ class PluginInventory:
             reason_code="READY" if supported else "API_VERSION_UNSUPPORTED",
             supported=supported,
             runtime_eligible=supported,
+            tts_resources=tts_resources,
             presentation_kind=kind if kind in ("extension", "provider", "infrastructure") else "extension",
             presentation_category=category if category in ("model", "voice", "memory", "tools", "connectivity", "other") else "other",
             presentation_icon=icon if isinstance(icon, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", icon) else "",
+            visuals=visuals,
         )
 
     @staticmethod

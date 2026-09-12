@@ -1,0 +1,139 @@
+@import url("../../assets/fonts/fonts.css");
+:root {
+  font-family: "Sakura Noto Sans SC", "PingFang SC", sans-serif;
+  color: #27445a;
+  background: #eaf2f6;
+  font-size: 13px;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+.demo-bar {
+  min-height: 60px;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  border-bottom: 1px solid #c7dbe6;
+  background: #fff;
+  flex-shrink: 0;
+}
+.demo-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  white-space: nowrap;
+}
+.demo-brand strong {
+  font-size: 18px;
+  color: #408fb9;
+}
+.demo-brand span,
+.demo-note {
+  color: #708795;
+  font-size: 12px;
+}
+.demo-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-left: auto;
+}
+.demo-tabs {
+  display: flex;
+  background: #eff5f8;
+  border: 1px solid #d8e4eb;
+  padding: 3px;
+  border-radius: 9px;
+  gap: 2px;
+}
+button,
+select {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #c9dbe5;
+  border-radius: 7px;
+  padding: 7px 11px;
+}
+button:hover {
+  background: #eaf4fa;
+}
+.demo-tabs button {
+  border: 0;
+  background: transparent;
+  padding: 6px 12px;
+}
+.demo-tabs .selected {
+  background: #fff;
+  color: #317fa8;
+  box-shadow: 0 1px 4px #27445a1c;
+}
+button:focus-visible,
+select:focus-visible {
+  outline: 2px solid #4b9ac4;
+  outline-offset: 2px;
+}
+.demo-stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  width: 100%;
+  max-width: 1440px;
+  margin: auto;
+  background: #f8fcfe;
+}
+iframe {
+  display: block;
+  border: 0;
+  width: 100%;
+  height: 100%;
+}
+#loading {
+  position: absolute;
+  inset: 0;
+  background: #f8fcfe;
+  display: grid;
+  place-items: center;
+  color: #54768b;
+}
+#loading[hidden] {
+  display: none;
+}
+@media (max-width: 1100px) {
+  .demo-note {
+    display: none;
+  }
+  .demo-bar {
+    gap: 12px;
+    padding: 8px 14px;
+  }
+}
+@media (max-width: 700px) {
+  .demo-bar {
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .demo-controls {
+    margin-left: 0;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .demo-brand span {
+    font-size: 11px;
+  }
+  .scenario-label {
+    display: none;
+  }
+  .demo-tabs button {
+    padding: 5px 8px;
+  }
+}

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
+from typing import Mapping
+
 from app.llm.prompts.render import render_blocks
 from app.llm.prompts.types import PromptBlock
 
 
 DEFAULT_REPLY_TONES = ["中性", "不满", "害羞", "请求", "困惑", "惊讶"]
-DEFAULT_REPLY_PORTRAITS = ["站立待机"]
 
 DESKTOP_PET_CONTEXT = """【桌宠运行规则】
 - 当前运行环境是桌面宠物聊天窗口。你存在于用户的电脑桌面、窗口、语音和文字互动中。
@@ -18,12 +20,12 @@ DESKTOP_PET_CONTEXT = """【桌宠运行规则】
 JSON_ONLY_INSTRUCTION = "你必须只返回 JSON，不要使用 Markdown 代码块，不要输出额外解释。"
 
 SEGMENTED_REPLY_FORMAT = (
-    '{"segments":[{"ja":"日文原文","zh":"中文译文","tone":"中性","portrait":"站立待机"}]}'
+    '{"segments":[{"ja":"日文原文","zh":"中文译文","tone":"中性"}]}'
 )
 
 AGENT_REPLY_FORMAT = """{
   "segments": [
-    {"ja": "日文原文", "zh": "中文译文", "tone": "中性", "portrait": "站立待机"}
+    {"ja": "日文原文", "zh": "中文译文", "tone": "中性"}
   ]
 }"""
 
@@ -51,14 +53,13 @@ def segment_rules_block(segment_rules: str) -> PromptBlock:
     return PromptBlock(None, f"分段规则：\n{segment_rules}")
 
 
-def reply_label_constraints_block(tones: list[str], portraits: list[str]) -> PromptBlock:
+def reply_label_constraints_block(tones: list[str]) -> PromptBlock:
     return PromptBlock(
         None,
         "\n".join(
             [
                 "要求：",
                 f"- tone 只能从这些类别中选择：{'、'.join(tones)}。",
-                f"- portrait 只能从这些类别中选择：{'、'.join(portraits)}。",
             ]
         ),
     )
@@ -83,7 +84,7 @@ def translation_rules_block() -> PromptBlock:
 
 def build_segment_protocol(
     tones: list[str],
-    portraits: list[str],
+    visual: Mapping | None,
     *,
     format_text: str,
     segment_rules: str,
@@ -95,7 +96,13 @@ def build_segment_protocol(
     ]
     if segment_rules:
         blocks.append(segment_rules_block(segment_rules))
-    blocks.append(reply_label_constraints_block(tones, portraits))
+    blocks.append(reply_label_constraints_block(tones))
+    if isinstance(visual, Mapping):
+        blocks.append(PromptBlock("表现控制", "\n".join([
+            "每段可以附带 control，封装为 " + json.dumps({"version": 1, "resourceId": visual["resourceId"], "payload": {}}, ensure_ascii=False) + "。",
+            str(visual["prompt"]),
+            "control.payload 的格式：" + json.dumps(visual["outputSchema"], ensure_ascii=False),
+        ])))
     if include_translation_rules:
         blocks.append(translation_rules_block())
     return render_blocks(blocks)
@@ -195,7 +202,7 @@ def screen_awareness_rules_block(*, include_tool_rules: bool = False) -> PromptB
         "- 避免机械套用休息、喝水、深呼吸等通用提醒；优先回应真实可见或已知的具体内容、当前进展、卡点或画面变化。",
         "- 当前本地时间、深夜、停留时长只能作为弱信号；除非屏幕内容或近期对话明确指向疲惫/作息问题，否则不要主动催睡觉、休息或喝水。",
         "- 女性照片、二次元角色、角色立绘等内容可触发轻微吃醋或傲娇，但要先判断是否是开发、资料、设计等正经任务；不要指责或情绪勒索。",
-        "- 主动回复优先结构：具体观察 + 角色态度/情绪 + 轻问题、评论或小步协助；tone 和 portrait 要根据内容选择，主动搭话时不要固定使用同一种语气。",
+        "- 主动回复优先结构：具体观察 + 角色态度/情绪 + 轻问题、评论或小步协助；tone 和表现控制要根据内容选择，主动搭话时不要固定使用同一种语气。",
     ]
     if include_tool_rules:
         rules.extend(

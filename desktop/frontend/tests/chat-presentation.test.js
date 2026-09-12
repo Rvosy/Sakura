@@ -98,13 +98,13 @@ test("completed replies keep the waiting frame visible until the first subtitle 
   });
   assert.equal(reducer.current().phase, "typing");
   assert.equal(reducer.current().bubbleText, "....");
-  assert.equal(reducer.current().portrait, "__default__");
+
   assert.equal(reducer.setWaitingText(".....").applied, true);
   assert.equal(reducer.current().bubbleText, ".....");
-  assert.equal(reducer.current().portrait, "__default__");
+
 
   reducer.setTypingSegment(reducer.current().segments[0], 0);
-  assert.equal(reducer.current().portrait, "smile");
+
   reducer.setTypingText("");
   assert.equal(reducer.current().bubbleText, "");
   reducer.finishTyping();
@@ -176,7 +176,7 @@ test("silent proactive requests preserve the current UI until the completed repl
   assert.equal(started.applied, true);
   assert.equal(started.state.phase, before.phase);
   assert.equal(started.state.bubbleText, before.bubbleText);
-  assert.equal(started.state.portrait, before.portrait);
+
   assert.equal(started.state.canCancel, false);
   assert.equal(started.state.silentInteraction, true);
   assert.equal(reducer.setWaitingText("...").applied, false);
@@ -261,7 +261,7 @@ test("subtitle changes do not replace cancellation or provider error copy with a
   }
 });
 
-test("reply history navigation crosses turns and switches text with its portrait", () => {
+test("reply history navigation crosses turns and only changes text", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "first" });
   reducer.reduce({
@@ -299,12 +299,12 @@ test("reply history navigation crosses turns and switches text with its portrait
   let reviewed = reducer.reviewReplyAt(1, "第二段");
   assert.equal(reviewed.applied, true);
   assert.equal(reviewed.state.bubbleText, "第二段");
-  assert.equal(reviewed.state.portrait, "smile");
+
   assert.equal(reviewed.state.canReviewPrevious, true);
   assert.equal(reviewed.state.canReviewNext, true);
 
   reviewed = reducer.reviewReplyAt(0, "第一段");
-  assert.equal(reviewed.state.portrait, "calm");
+
   assert.equal(reviewed.state.canReviewPrevious, false);
   assert.equal(reducer.reviewReplyAt(-1, "越界").applied, false);
 });
@@ -341,7 +341,7 @@ test("Core restart preserves the settled presentation and rejects old generation
   assert.equal(reducer.current().phase, "settled");
   assert.equal(reducer.current().generationId, "generation-2");
   assert.equal(reducer.current().bubbleText, "切换前的回复");
-  assert.equal(reducer.current().portrait, "smile");
+
   assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["切换前的回复"]);
   assert.equal(
     reducer.reduce({ type: "chat.completed", generationId: "generation-1", generationNumber: 1, operationId: "old", reply: { segments: [{ text: "late" }] } }).applied,

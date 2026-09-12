@@ -115,7 +115,7 @@ async function characterSettings(options = {}) {
   };
   const feature = createCharacterSettingsFeature({
     document,
-    window: { setTimeout: (callback) => setTimeout(callback, 0) },
+    window: Object.assign(new EventTarget(), { setTimeout: (callback) => setTimeout(callback, 0) }),
     invoke: async (command, args) => {
       calls.push([command, args]);
       assert.ok(handlers[command], `unexpected command ${command}`);
@@ -408,4 +408,24 @@ test("disposing a character feature isolates pending catalog and visual preview 
   assert.deepEqual(transitions, []);
   assert.deepEqual(previews, []);
   assert.deepEqual(calls.map(([command]) => command), ["settings_character_visual_preview", "runtime_lifecycle_snapshot"]);
+});
+
+
+test("character and voice imports deliver plugin hints through the settings receipt", async () => {
+  for (const kind of ["character", "voice"]) {
+    const notices = [];
+    const fixture = await characterSettings({ handlers: {
+      settings_character_choose_import: () => `/tmp/fixture.${kind === "voice" ? "voice" : "char"}`,
+      [kind === "voice" ? "settings_character_import_voice" : "settings_character_import"]: () => ({
+        schemaVersion: 1, snapshot: catalog(), previousCoreGenerationId: "generation-a",
+        restartState: "not_required", targetCharacterId: "alpha",
+        pluginRequirements: [{kind: "tts", type: "custom.voice@1", reasonCode: "PLUGIN_MISSING",
+          plugins: [{id: "custom.voice", name: "示例语音插件"}], candidates: []}],
+      }),
+    }, feature: { notify: (message, level) => notices.push({message, level}) } });
+    await fixture.fields[kind === "voice" ? "ttsVoiceImportButton" : "characterImportButton"].click();
+    assert.deepEqual(fixture.errors, []);
+    assert.ok(notices.some(item => item.level === "info" && item.message.includes("示例语音插件")));
+    fixture.feature.dispose();
+  }
 });

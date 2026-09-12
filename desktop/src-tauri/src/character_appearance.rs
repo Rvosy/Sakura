@@ -806,7 +806,7 @@ mod tests {
 
         fn presentation(&self, generation: &str) -> CharacterPresentation {
             CharacterPresentation {
-                schema_version: 1,
+                schema_version: 2,
                 generation_id: generation.to_string(),
                 character_id: "Sakura".to_string(),
                 display_name: "Sakura".to_string(),
@@ -815,12 +815,8 @@ mod tests {
                     .iter()
                     .map(|(key, _)| ((*key).to_string(), "#a1b2c3".to_string()))
                     .collect(),
-                default_portrait_key: "__default__".to_string(),
-                portrait_keys: vec!["__default__".to_string()],
-                portrait_resource_ids: BTreeMap::from([(
-                    "__default__".to_string(),
-                    "character-v1-53616b757261-portrait-5f5f64656661756c745f5f".to_string(),
-                )]),
+                visual: None,
+                visual_reason_code: "VISUAL_RESOURCE_MISSING".to_string(),
             }
         }
     }

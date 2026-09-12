@@ -1,0 +1,45 @@
+#page-portrait { gap: 18px; }
+.forms-library { display: grid; gap: 12px; min-width: 0; }
+.forms-library-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.forms-library-title { color: var(--sakura-secondary-text); font-size: 13px; font-weight: 500; }
+.form-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(205px, 1fr)); gap: 10px; }
+.form-card { display: flex; align-items: center; gap: 12px; min-width: 0; width: 100%; padding: 10px; text-align: left; border-radius: 11px; min-height: 100px; }
+.form-card[aria-pressed="true"] { border-color: var(--sakura-primary); background: var(--tint-faint); box-shadow: inset 0 0 0 1px var(--sakura-primary); }
+.form-card-cover { display: grid; place-items: center; flex: none; width: 60px; height: 80px; overflow: hidden; border-radius: 7px; background: var(--sakura-panel-bg); }
+.form-card-cover img { width: 100%; height: 100%; object-fit: contain; }
+.form-card-cover .sakura-icon { width: 25px; height: 25px; }
+.form-card-text { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.form-card-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sakura-text); font-size: 14px; }
+.form-card-type { font-size: 12px; color: var(--sakura-muted-text); }
+.form-card-badges { display: flex; flex-wrap: wrap; gap: 4px; min-height: 19px; }
+.form-default-badge, .form-missing-badge { border-radius: 4px; padding: 1px 6px; font-size: 10px; line-height: 17px; font-weight: 500; }
+.form-default-badge { color: var(--sakura-primary); background: var(--tint-soft); }
+.form-missing-badge { color: var(--sakura-secondary-text); background: var(--sakura-panel-bg); }
+.form-meta { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; padding-top: 4px; }
+.form-name-field { display: grid; gap: 7px; flex: 1 1 180px; max-width: 320px; font-size: 12px; color: var(--sakura-secondary-text); }
+.form-name-field input { width: 100%; max-width: none; }
+.form-meta-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 1px; }
+.form-meta-actions button { min-width: 76px; padding-inline: 12px; }
+.forms-empty { padding: 42px 20px; display: grid; place-items: center; gap: 16px; border: 1px dashed var(--sakura-border); border-radius: var(--radius-md); color: var(--sakura-muted-text); }
+.forms-empty h2 { font-size: 15px; margin: 0; }
+.forms-empty > .sakura-icon { width: 34px; height: 34px; }
+.form-meta[hidden], .forms-empty[hidden] { display: none; }
+.studio-visual-dialog { width: min(570px, calc(100vw - 36px)); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--sakura-border); border-radius: var(--radius-lg); background: var(--sakura-page-bg); color: var(--sakura-text); padding: 24px; box-shadow: 0 20px 60px #27445a26; }
+.studio-visual-dialog::backdrop { background: #27445a45; backdrop-filter: blur(3px); }
+.studio-visual-dialog h2 { margin: 0 0 22px; font-size: 20px; }
+.visual-dialog-body { display: grid; gap: 18px; }
+.visual-dialog-body > p { margin: 0; line-height: 1.8; font-size: 13px; }
+.visual-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+.visual-type-options { display: grid; grid-template-columns: repeat(auto-fit,minmax(120px,1fr)); gap: 10px; }
+.visual-type-option { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; padding: 16px; min-width: 0; border-radius: 10px; }
+.visual-type-option[aria-pressed="true"] { background: var(--tint-faint); border-color: var(--sakura-primary); box-shadow: inset 0 0 0 1px var(--sakura-primary); }
+.visual-type-option .sakura-icon { width: 25px; height: 25px; }
+.visual-type-option strong { font-size: 14px; }
+@media (max-width: 820px) {
+  .form-cards { grid-template-columns: repeat(auto-fill,minmax(160px,1fr)); }
+  .form-meta-actions { gap: 6px; }
+  .forms-library-head { flex-wrap: wrap; }
+  .form-card-cover { width: 48px; height: 64px; }
+  .form-card { min-height: 86px; gap: 10px; }
+}
+.visual-editor-staging { position: absolute; visibility: hidden; pointer-events: none; }

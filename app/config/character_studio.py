@@ -36,9 +36,7 @@ PUBLISH_JOURNAL_VERSION = 2
 PUBLISH_JOURNAL_FILENAME = "publish-journal.json"
 PUBLISH_TRANSACTIONS_DIRNAME = ".studio-transactions"
 PUBLISH_BACKUP_LIMIT = 2
-PORTRAIT_DESCRIPTION_FILENAME = "立绘说明.txt"
 _CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-_PORTRAIT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _VOICE_MODEL_SUFFIXES = {"gpt": ".ckpt", "sovits": ".pth"}
 _REFERENCE_AUDIO_MIME_TYPES = {
     ".flac": "audio/flac",
@@ -47,7 +45,6 @@ _REFERENCE_AUDIO_MIME_TYPES = {
     ".wav": "audio/wav",
 }
 _COPY_CHUNK_SIZE = 1024 * 1024
-_TTS_HUB_EXTENSION = "sakura.tts"
 _GPT_SOVITS_EXTENSION = "sakura.tts.gpt-sovits"
 
 
@@ -108,6 +105,8 @@ class CharacterStudioDoc:
     theme: ThemeSettings = DEFAULT_THEME_SETTINGS
     voice: VoiceDraft | None = None
     reference_audios: list[ReferenceAudioDraft] = field(default_factory=list)
+    visuals: dict[str, Any] | None = None
+    visual_data: dict[str, Any] = field(default_factory=dict)
 
     def to_manifest(self) -> dict[str, Any]:
         manifest: dict[str, Any] = {
@@ -127,6 +126,16 @@ class CharacterStudioDoc:
                 source=THEME_SOURCE_PACKAGE,
             ),
         }
+        if self.visuals is not None:
+            # A resumed pre-visuals draft still owns the pending inline portrait
+            # until the plugin editor has written a separate resource entry.
+            if not any(
+                item.get("type") == "sakura.visual.portrait@1"
+                and item.get("root") == "." and item.get("entry") == "character.json"
+                for item in self.visuals.get("resources", [])
+            ):
+                manifest.pop("portrait", None)
+            manifest["visuals"] = json.loads(json.dumps(self.visuals, ensure_ascii=False, allow_nan=False))
         if self.initial_message.strip():
             manifest["initial_message"] = self.initial_message.strip()
         tones = [str(tone).strip() for tone in self.reply_tones if str(tone).strip()]
@@ -156,6 +165,8 @@ class CharacterStudioDoc:
             "card_text": self.card_text,
             "default_portrait": self.default_portrait,
             "expressions": dict(self.expressions),
+            "visuals": self.visuals,
+            "visual_data": self.visual_data,
             "reply_tones": list(self.reply_tones),
             "reference_audios": [item.to_payload() for item in self.reference_audios],
             "theme": theme_to_mapping(self.theme.normalized()),
@@ -205,6 +216,8 @@ class CharacterStudioDoc:
             theme=theme_from_mapping(payload.get("theme")).normalized(),
             voice=voice,
             reference_audios=[ReferenceAudioDraft.from_payload(item) for item in reference_audios],
+            visuals=payload.get("visuals"),
+            visual_data=payload.get("visual_data") or {},
         )
 
     @classmethod
@@ -248,13 +261,15 @@ class CharacterStudioDoc:
             theme=theme_from_mapping(raw.get("theme")).normalized(),
             voice=voice,
             reference_audios=reference_audios,
+            visuals=raw.get("visuals"),
         )
 
 
 class CharacterStudioService:
     """角色工作室后端服务：草稿编辑与本地角色包保存。"""
 
-    def __init__(self, base_dir: Path, workspace_root: Path | None = None) -> None:
+    def __init__(self, base_dir: Path, workspace_root: Path | None = None, *, validate_visuals=None) -> None:
+        self._validate_visuals = validate_visuals
         self.base_dir = Path(base_dir)
         self.characters_dir = self.base_dir / "characters"
         storage = StoragePaths(self.base_dir)
@@ -370,7 +385,7 @@ class CharacterStudioService:
             shutil.rmtree(draft_root)
         (package_dir / "portraits").mkdir(parents=True)
         (package_dir / CARD_FILENAME).write_text("", encoding="utf-8")
-        doc = CharacterStudioDoc(id=safe_id, display_name=display_name)
+        doc = CharacterStudioDoc(id=safe_id, display_name=display_name, visuals={"resources": [], "default": None})
         (package_dir / "character.json").write_text(doc.manifest_json(), encoding="utf-8")
         self._write_state(safe_id, doc, origin="new", dirty=True, imported_assets=[])
         return self._opened_payload(package_dir, doc, source="draft", resumed=False)
@@ -381,6 +396,7 @@ class CharacterStudioService:
         doc = CharacterStudioDoc.from_payload(doc_payload)
         if doc.id != safe_id:
             raise ValueError("草稿角色 ID 与工作区不一致。")
+        _validate_visual_draft(self._draft_package_dir(safe_id), doc)
         imported_assets = [str(item) for item in state.get("imported_assets", []) if str(item)]
         imported_assets = self._prune_imported_assets(safe_id, doc, imported_assets)
         self._write_state(
@@ -402,11 +418,6 @@ class CharacterStudioService:
         package_dir = self._workspace_package(package_dir)
         workspace_id = self._workspace_id_for_package(package_dir)
         state = self._read_state(workspace_id)
-        previous_doc = (
-            CharacterStudioDoc.from_payload(state["doc"])
-            if state is not None and isinstance(state.get("doc"), dict)
-            else None
-        )
         doc = CharacterStudioDoc.from_payload(doc_payload)
         _validate_character_id(doc.id)
         if doc.id != workspace_id:
@@ -418,15 +429,8 @@ class CharacterStudioService:
             doc.reply_tones = _reference_tones(doc.reference_audios)
             _write_reference_audios(package_dir, doc.reference_audios)
         (package_dir / CARD_FILENAME).write_text(doc.card_text, encoding="utf-8")
-        manifest = _merge_character_manifest(
-            package_dir,
-            doc,
-            disable_voice=(
-                previous_doc is not None
-                and previous_doc.voice is not None
-                and doc.voice is None
-            ),
-        )
+        _write_visual_draft(package_dir, doc)
+        manifest = _merge_character_manifest(package_dir, doc)
         atomic_write_text(
             package_dir / "character.json",
             json.dumps(manifest, ensure_ascii=False, indent=2),
@@ -572,78 +576,74 @@ class CharacterStudioService:
             ),
         }
 
-    def import_portrait(
-        self,
-        package_dir: Path | str,
-        source_path: Path,
-        *,
-        label: str,
-        cancel_check: Callable[[], None] | None = None,
-        commit_started: Callable[[], None] | None = None,
-    ) -> dict[str, str]:
-        package_dir = self._workspace_package(package_dir)
+    def import_visual_asset(self, workspace_id, source_path, resource_id, *, cancel_check=None, commit_started=None):
+        from app.config.character_resources import character_visual_resources
+        state = self._require_state(workspace_id)
+        doc = CharacterStudioDoc.from_payload(state["doc"])
+        package_dir = self._workspace_package(workspace_id)
+        resources, _ = character_visual_resources(doc.to_manifest(), package_dir)
+        resource = next((item for item in resources if item.id == resource_id), None)
+        if resource is None:
+            raise ValueError("VISUAL_RESOURCE_MISSING")
+        subdir = f"visuals/{resource_id}/assets" if resource.root == "." else f"{resource.root}/assets"
+        _resolve_workspace_path(package_dir, subdir, "表现资源")
         source = Path(source_path)
-        if source.suffix.lower() not in _PORTRAIT_SUFFIXES:
-            raise ValueError("立绘文件扩展名必须是 .png / .jpg / .jpeg / .webp / .gif。")
-        if not source.is_file():
-            raise ValueError(f"立绘文件不存在：{source}")
-        result = _copy_workspace_asset(
-            package_dir,
-            source,
-            "portraits",
-            preferred_stem=_safe_filename(label or source.stem),
-            cancel_check=cancel_check,
-        )
-        self._commit_imported_assets(
-            package_dir,
-            [result],
-            cancel_check=cancel_check,
-            commit_started=commit_started,
-        )
+        if source.is_symlink() or source.is_junction():
+            raise ValueError("VISUAL_ASSET_INVALID")
+        if source.is_dir():
+            source = source.resolve(strict=True)
+            # A fresh import directory preserves filenames and model-relative
+            # references without renaming collisions with earlier imports.
+            imported_root = _resolve_workspace_path(package_dir, f"{subdir}/{_safe_filename(source.name)}-{uuid.uuid4().hex[:12]}", "表现资源")
+            items = []
+            copied = []
+            total_bytes = 0
+            directory_count = 0
+            try:
+                def walk_error(error):
+                    raise error
+                for directory, dirs, names in os.walk(source, followlinks=False, onerror=walk_error):
+                    directory_count += 1
+                    if directory_count > 512:
+                        raise ValueError("VISUAL_ASSET_LIMIT")
+                    dirs.sort()
+                    for name in [*dirs, *sorted(names)]:
+                        _operation_checkpoint(cancel_check)
+                        file = Path(directory) / name
+                        if file.is_symlink() or file.is_junction():
+                            raise ValueError("VISUAL_ASSET_INVALID")
+                        relative_source = file.resolve(strict=True).relative_to(source)
+                        if len(relative_source.parts) > 32:
+                            raise ValueError("VISUAL_ASSET_LIMIT")
+                        if name in dirs:
+                            continue
+                        size = file.stat().st_size
+                        total_bytes += size
+                        if not file.is_file() or size > 64 * 1024 * 1024 or total_bytes > 256 * 1024 * 1024 or len(copied) >= 512:
+                            raise ValueError("VISUAL_ASSET_LIMIT")
+                        target = _resolve_workspace_path(imported_root, relative_source.as_posix(), "表现资源")
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        _copy_file_cancellable(file, target, cancel_check=cancel_check)
+                        relative = target.relative_to(package_dir).as_posix()
+                        item = {"relative_path": relative, "path": str(target), "_created": True}
+                        copied.append(item)
+                        items.append({"resource_path": relative if resource.root == "." else Path(relative).relative_to(resource.root).as_posix(), "relative_path": relative, "name": file.name,
+                            "text": target.read_text(encoding="utf-8-sig", errors="replace") if file.suffix.lower() == ".txt" and size <= 32768 else ""})
+                self._commit_imported_assets(package_dir, copied, cancel_check=cancel_check, commit_started=commit_started)
+            except BaseException:
+                if imported_root.exists():
+                    shutil.rmtree(imported_root)
+                raise
+            return {"items": items}
+        if not source.is_file() or source.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError("VISUAL_ASSET_INVALID")
+        result = _copy_workspace_asset(package_dir, source, subdir, cancel_check=cancel_check)
+        self._commit_imported_assets(package_dir, [result], cancel_check=cancel_check, commit_started=commit_started)
         result.pop("_created", None)
-        result["suggested_label"] = source.stem
+        relative = result["relative_path"]
+        result["resource_path"] = relative if resource.root == "." else Path(relative).relative_to(resource.root).as_posix()
+        result["name"] = source.name
         return result
-
-    def import_portrait_folder(
-        self,
-        package_dir: Path | str,
-        source_dir: Path,
-        *,
-        cancel_check: Callable[[], None] | None = None,
-        commit_started: Callable[[], None] | None = None,
-    ) -> dict[str, Any]:
-        package_dir = self._workspace_package(package_dir)
-        source = Path(source_dir)
-        if not source.is_dir():
-            raise ValueError(f"立绘文件夹不存在：{source}")
-        labels = _read_portrait_description(source)
-        items: list[dict[str, str]] = []
-        copied_assets: list[dict[str, Any]] = []
-        try:
-            for image in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
-                _operation_checkpoint(cancel_check)
-                if image.is_symlink() or not image.is_file() or image.suffix.lower() not in _PORTRAIT_SUFFIXES:
-                    continue
-                copied = _copy_workspace_asset(
-                    package_dir, image, "portraits", cancel_check=cancel_check
-                )
-                copied_assets.append(copied)
-                items.append(
-                    {
-                        "relative_path": copied["relative_path"],
-                        "suggested_label": _portrait_label(image, labels),
-                    }
-                )
-            self._commit_imported_assets(
-                package_dir,
-                copied_assets,
-                cancel_check=cancel_check,
-                commit_started=commit_started,
-            )
-        except BaseException:
-            _cleanup_created_assets(package_dir, copied_assets)
-            raise
-        return {"items": items, "ignored_ref_file": False}
 
     def import_voice_model(
         self,
@@ -779,7 +779,10 @@ class CharacterStudioService:
     def validate_draft(self, package_dir: Path | str) -> CharacterProfile:
         package_dir = self._workspace_package(package_dir)
         _validate_package_local_paths(package_dir)
-        return _load_profile(package_dir / "character.json")
+        profile = _load_profile(package_dir / "character.json")
+        if self._validate_visuals is not None:
+            self._validate_visuals(profile)
+        return profile
 
     def export_archive(
         self,
@@ -888,7 +891,7 @@ class CharacterStudioService:
             "has_voice": profile.voice is not None,
             "source": "installed",
             "theme": theme_to_mapping(theme),
-            "default_portrait": str(profile.default_portrait_path),
+            "default_portrait": "",
             "is_installed": True,
             "has_draft": False,
             "draft_kind": None,
@@ -1025,10 +1028,15 @@ class CharacterStudioService:
         doc: CharacterStudioDoc,
         imported_assets: list[str],
     ) -> list[str]:
+        # Private formats may reference any retained file. Their absence from
+        # the common document is not evidence that an asset is unused.
         package_dir = self._draft_package_dir(workspace_id)
         referenced = _document_asset_paths(doc)
         retained: list[str] = []
         for relative_path in imported_assets:
+            if doc.visuals is not None and not relative_path.startswith("voice/"):
+                retained.append(relative_path)
+                continue
             if relative_path in referenced:
                 retained.append(relative_path)
                 continue
@@ -1514,32 +1522,46 @@ def _copytree_cancellable(
         raise
 
 
-def _read_portrait_description(source_dir: Path) -> list[tuple[str, str]]:
-    path = Path(source_dir) / PORTRAIT_DESCRIPTION_FILENAME
-    if not path.is_file():
-        return []
-    result: list[tuple[str, str]] = []
-    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
-        line = raw_line.strip()
-        if not line:
+def _validate_visual_draft(package_dir: Path, doc: CharacterStudioDoc) -> None:
+    from app.config.character_resources import character_visual_resources
+    if not isinstance(doc.visual_data, dict):
+        raise ValueError("VISUAL_DRAFT_INVALID")
+    if doc.visuals is None:
+        if doc.visual_data:
+            raise ValueError("VISUAL_DRAFT_INVALID")
+        return
+    resources, _ = character_visual_resources({"visuals": doc.visuals}, package_dir)
+    if set(doc.visual_data) - {item.id for item in resources}:
+        raise ValueError("VISUAL_DRAFT_INVALID")
+    encoded = json.dumps(doc.visual_data, ensure_ascii=False, allow_nan=False)
+    if len(encoded.encode("utf-8")) > 256 * 1024:
+        raise ValueError("VISUAL_DRAFT_TOO_LARGE")
+
+
+def _write_visual_draft(package_dir: Path, doc: CharacterStudioDoc) -> None:
+    from app.config.character_resources import character_visual_resources
+    _validate_visual_draft(package_dir, doc)
+    if doc.visuals is None:
+        return
+    resources, _ = character_visual_resources({"visuals": doc.visuals}, package_dir)
+    for resource in resources:
+        if resource.id not in doc.visual_data:
             continue
-        parts = line.split(maxsplit=1)
-        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-            result.append((parts[0].strip(), parts[1].strip()))
-    return result
-
-
-def _portrait_label(image: Path, labels: list[tuple[str, str]]) -> str:
-    name = image.name.casefold()
-    stem = image.stem.casefold()
-    for token, label in labels:
-        if token.casefold() == name:
-            return label
-    for token, label in labels:
-        if Path(token).stem.casefold() == stem:
-            return label
-    prefix_matches = [label for token, label in labels if stem.startswith(Path(token).stem.casefold())]
-    return prefix_matches[0] if len(prefix_matches) == 1 else image.stem
+        # The common character manifest is never an editor's write target.
+        # Explicit editing of a legacy inline resource creates a separate entry.
+        if resource.root == "." and resource.entry == "character.json":
+            entry = f"visuals/{resource.id}.json"
+            for item in doc.visuals["resources"]:
+                if item["id"] == resource.id:
+                    item["entry"] = entry
+        else:
+            entry = resource.entry
+        relative = entry if resource.root == "." else f"{resource.root}/{entry}"
+        path = _resolve_workspace_path(package_dir, relative, "表现资源")
+        if path == package_dir / CARD_FILENAME or relative.startswith("voice/") or path == package_dir / "character.json":
+            raise ValueError("VISUAL_DRAFT_TARGET_INVALID")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps(doc.visual_data[resource.id], ensure_ascii=False, indent=2, allow_nan=False))
 
 
 def _document_asset_paths(doc: CharacterStudioDoc) -> set[str]:
@@ -1557,8 +1579,6 @@ def _document_asset_paths(doc: CharacterStudioDoc) -> set[str]:
 def _merge_character_manifest(
     package_dir: Path,
     doc: CharacterStudioDoc,
-    *,
-    disable_voice: bool = False,
 ) -> dict[str, Any]:
     path = Path(package_dir) / "character.json"
     try:
@@ -1577,9 +1597,12 @@ def _merge_character_manifest(
     else:
         manifest.pop("initial_message", None)
 
-    portrait = dict(manifest.get("portrait")) if isinstance(manifest.get("portrait"), dict) else {}
-    portrait.update(generated["portrait"])
-    manifest["portrait"] = portrait
+    if "visuals" in generated:
+        manifest["visuals"] = generated["visuals"]
+    if "portrait" in generated:
+        portrait = dict(manifest.get("portrait")) if isinstance(manifest.get("portrait"), dict) else {}
+        portrait.update(generated["portrait"])
+        manifest["portrait"] = portrait
 
     reply = dict(manifest.get("reply")) if isinstance(manifest.get("reply"), dict) else {}
     if "reply" in generated:
@@ -1592,7 +1615,6 @@ def _merge_character_manifest(
         else:
             manifest.pop("reply", None)
 
-    had_voice = isinstance(manifest.get("voice"), dict)
     if "voice" in generated:
         voice = dict(manifest.get("voice")) if isinstance(manifest.get("voice"), dict) else {}
         voice.update(generated["voice"])
@@ -1600,34 +1622,19 @@ def _merge_character_manifest(
             if optional not in generated["voice"]:
                 voice.pop(optional, None)
         manifest["voice"] = voice
-    elif disable_voice:
-        manifest.pop("voice", None)
-    extensions = _sync_voice_extensions(
-        manifest.get("extensions"),
-        doc.voice,
-        had_voice=had_voice,
-        disable_voice=disable_voice,
-    )
+    extensions = _sync_voice_extensions(manifest.get("extensions"), doc.voice)
     if extensions:
         manifest["extensions"] = extensions
     else:
         manifest.pop("extensions", None)
+    from app.config.plugin_requirements import requirements_for_manifest
+    manifest["pluginRequirements"] = requirements_for_manifest(manifest)
     return manifest
 
 
 def _voice_draft_from_manifest(manifest: dict[str, Any]) -> VoiceDraft | None:
     extensions = manifest.get("extensions")
     extension_map = extensions if isinstance(extensions, dict) else {}
-    hub = extension_map.get(_TTS_HUB_EXTENSION)
-    if isinstance(hub, dict) and hub.get("enabled") is False:
-        return None
-    if (
-        isinstance(hub, dict)
-        and hub.get("enabled") is True
-        and isinstance(hub.get("provider"), str)
-        and hub.get("provider") != _GPT_SOVITS_EXTENSION
-    ):
-        return None
     provider = extension_map.get(_GPT_SOVITS_EXTENSION)
     legacy = manifest.get("voice")
     legacy_map = legacy if isinstance(legacy, dict) else {}
@@ -1656,28 +1663,14 @@ def _voice_draft_from_manifest(manifest: dict[str, Any]) -> VoiceDraft | None:
 def _sync_voice_extensions(
     raw_extensions: object,
     voice: VoiceDraft | None,
-    *,
-    had_voice: bool,
-    disable_voice: bool,
 ) -> dict[str, Any]:
     extensions = dict(raw_extensions) if isinstance(raw_extensions, dict) else {}
-    existing_hub = extensions.get(_TTS_HUB_EXTENSION)
-    hub = dict(existing_hub) if isinstance(existing_hub, dict) else {}
+    extensions.pop("sakura.tts", None)
     existing_provider = extensions.get(_GPT_SOVITS_EXTENSION)
     provider = dict(existing_provider) if isinstance(existing_provider, dict) else {}
     if voice is None:
-        if disable_voice and (had_voice or hub or provider):
-            hub["enabled"] = False
-            extensions[_TTS_HUB_EXTENSION] = hub
-            for key in ("toneRefs", "gptModel", "sovitsModel", "refLang", "textLang"):
-                provider.pop(key, None)
-            if provider:
-                extensions[_GPT_SOVITS_EXTENSION] = provider
-            else:
-                extensions.pop(_GPT_SOVITS_EXTENSION, None)
         return extensions
 
-    hub.update({"enabled": True, "provider": _GPT_SOVITS_EXTENSION})
     provider.update(
         {
             "toneRefs": voice.tone_refs,
@@ -1693,7 +1686,6 @@ def _sync_voice_extensions(
             provider[target_key] = source_value
         else:
             provider.pop(target_key, None)
-    extensions[_TTS_HUB_EXTENSION] = hub
     extensions[_GPT_SOVITS_EXTENSION] = provider
     return extensions
 
@@ -1742,8 +1734,6 @@ def _reference_tones(references: list[ReferenceAudioDraft]) -> list[str]:
 
 
 def _validate_reference_audios(package_dir: Path, references: list[ReferenceAudioDraft]) -> None:
-    if not references:
-        raise ValueError("启用语音后至少需要一条完整参考语音。")
     for index, item in enumerate(references, start=1):
         fields = (item.audio_path, item.ref_lang, item.ref_text, item.tone)
         if not all(value.strip() for value in fields):
