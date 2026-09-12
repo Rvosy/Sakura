@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+from importlib.metadata import distribution
 import shutil
+import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 import yaml
+from packaging.requirements import Requirement
 
 from app.agent.tools import Tool, ToolRegistry
 from app.config.web_plugin_migration import migrate_web_configuration
@@ -24,6 +28,14 @@ def roots(tmp_path: Path, *, fixture_network: bool = True) -> RuntimeRoots:
     distribution = tmp_path / "distribution"
     plugin = distribution / "plugins/builtin/sakura_web"
     shutil.copytree(SOURCE, plugin)
+    # Most cases replace network I/O. Supply the distribution marker without
+    # installing packages; the proxy regression below supplies the real client.
+    dependency = distribution / "plugins/dependencies/sakura.web"
+    dependency.mkdir(parents=True)
+    (dependency / ".sakura-dependencies.json").write_text(json.dumps({
+        "schemaVersion": 1, "kind": "requirements.txt",
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+    }), encoding="utf-8")
     user = tmp_path / "user"
     user.mkdir()
     if fixture_network:
@@ -68,6 +80,80 @@ def _request_public_url_once(url, max_bytes):
         body = '<title>网页标题</title><p>' + '正文内容' * 1000 + '</p><a href="/next">下一页</a>'
     return 200, "OK", headers, body.encode("utf-8")[:max_bytes]
 '''
+
+
+def test_proxy_fetch_in_isolated_worker(tmp_path: Path, monkeypatch) -> None:
+    runtime_roots = roots(tmp_path, fixture_network=False)
+    dependency = runtime_roots.distribution_root / "plugins/dependencies/sakura.web"
+    # Copy only the client's packages into a private distribution root. The
+    # Worker must never gain access to the test process's site-packages.
+    pending = [Requirement("httpx[socks]")]
+    copied = set()
+    while pending:
+        requirement = pending.pop()
+        key = (requirement.name, frozenset(requirement.extras))
+        if key in copied:
+            continue
+        copied.add(key)
+        package = distribution(requirement.name)
+        for relative in package.files or ():
+            if ".." in relative.parts or "__pycache__" in relative.parts:
+                continue
+            target = dependency / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(package.locate_file(relative), target)
+        for declaration in package.requires or ():
+            required = Requirement(declaration)
+            if required.marker is None or any(
+                required.marker.evaluate({"extra": extra})
+                for extra in {"", *requirement.extras}
+            ):
+                pending.append(required)
+    plugin = runtime_roots.distribution_root / "plugins/builtin/sakura_web"
+    with (plugin / "web.py").open("a", encoding="utf-8") as stream:
+        # Deterministic DNS only: request selection, proxy transport and tool RPC
+        # are the production path. No request leaves the local test server.
+        stream.write('\ndef _resolve_public_addresses(host, port):\n    return ["93.184.216.34"]\n')
+    requests = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append((self.path, self.headers.get("Host")))
+            body = b"<title>Proxy fixture</title><p>isolated worker response</p>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    proxy = f"http://127.0.0.1:{server.server_port}"
+    for key in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(key, proxy)
+    for key in ("NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(key, "")
+    registry = ToolRegistry()
+    application = PluginApplicationHost(runtime_roots, "web-proxy", registry)
+    thread.start()
+    try:
+        application.start()
+        fetched = registry.execute("web__fetch_url", {"url": "http://public.example/article"})
+        assert fetched.success, fetched
+        assert fetched.content["title"] == "Proxy fixture"
+        assert "isolated worker response" in fetched.content["text"]
+        assert requests == [("http://93.184.216.34/article", "public.example")]
+        process = application.application._manager._records["sakura.web"].process._process
+        assert process.args[1:3] == ["-I", "-S"]
+        assert str(dependency) in process.args
+    finally:
+        application.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
 
 
 def test_real_plugin_calls_and_disable(tmp_path: Path) -> None:
