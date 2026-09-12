@@ -28,7 +28,8 @@ export const reportColumns: ColumnDef<Row, any>[] = [
           <ArrowUpRight size={13} />
         </a>
         <small>
-          {row.original.component} · {row.original.event}
+          {row.original.diagnostic ||
+            `${row.original.component} · ${row.original.event}`}
         </small>
       </div>
     ),
@@ -165,7 +166,8 @@ function ErrorsContent({ data, route }: { data: Row; route: Route }) {
               <ArrowUpRight size={13} />
             </button>
             <small>
-              {row.original.component} · {row.original.event}
+              {row.original.diagnostic ||
+                `${row.original.component} · ${row.original.event}`}
             </small>
             <small className="mono">
               {row.original.location || "未记录位置"}

@@ -142,6 +142,7 @@ test("real errors retain original messages and frames with credentials redacted"
   const error=new TypeError("Cannot read properties of undefined");
   env.listeners.get("error")({error,filename:"http://tauri.localhost/settings/index.js",lineno:42,colno:7});
   const rejection=new Error("Connection refused token=PRIVATE_KEY_VALUE");
+  rejection.cause = new Error("Cannot open C:/插件/runtime/python.exe at https://example.test/runtime?version=2");
   rejection.stack="Error: Connection refused token=PRIVATE_KEY_VALUE\n at send (tauri://localhost/chat/main.js:19:5)";
   env.listeners.get("unhandledrejection")({reason:rejection});
   env.listeners.get("error")({target:{src:"https://private.example/PRIVATE_PATH.js"}});
@@ -150,6 +151,8 @@ test("real errors retain original messages and frames with credentials redacted"
   assert.equal(entries[0].details.file,"desktop/frontend/settings/index.js");
   assert.match(entries[0].diagnostic,/Cannot read properties of undefined/);
   assert.match(entries[1].exceptionStack,/Connection refused/);
+  assert.match(entries[1].exceptionChain,/C:\/插件\/runtime\/python.exe/);
+  assert.match(entries[1].exceptionChain,/version=2/);
   assert.equal(entries[0].details.line,42);
   assert.equal(entries[0].details.causeType,"TypeError");
   assert.equal(entries[1].details.line,19);
@@ -170,9 +173,11 @@ test("caught plugin exceptions retain causes and stages through the shared diagn
   assert.equal(entries.length, 1);
   assert.equal(entries[0].stage, "visual.renderer.ready");
   assert.equal(entries[0].code, "VISUAL_RENDERER_FAILED");
-  assert.match(entries[0].diagnostic, /model shader failed/);
+  assert.match(entries[0].diagnostic, /renderer mount failed/);
+  assert.match(entries[0].exceptionChain, /model shader failed/);
+  assert.ok(entries[0].exceptionChain.includes("C:\\Users\\private\\model.bin"));
   assert.match(entries[0].exceptionStack, /Caused by:/);
-  assert.doesNotMatch(JSON.stringify(entries), /private-value|Users/);
+  assert.doesNotMatch(JSON.stringify(entries), /private-value/);
 });
 
 test("Studio polling remains debug and failed calls keep the method without request contents", async () => {

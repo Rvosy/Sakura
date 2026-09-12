@@ -72,7 +72,7 @@ def test_model_metric_bridge_is_body_free_and_projects_custom_model(monkeypatch,
         assert sentinel not in encoded
 
 
-def test_unhandled_error_bridge_keeps_only_safe_stack_and_type() -> None:
+def test_unhandled_error_bridge_preserves_original_error_and_stack() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     client = OpenAICompatibleClient(ApiSettings("", "", ""))
@@ -89,7 +89,7 @@ def test_unhandled_error_bridge_keeps_only_safe_stack_and_type() -> None:
     assert error_payload["exceptionType"] == "ApiConfigError"
     assert all(not str(frame.get("file", "")).startswith("/") for frame in error_payload["stack"])
     encoded = json.dumps(error_payload, sort_keys=True)
-    assert SENTINELS["exception"] not in encoded
+    assert SENTINELS["exception"] in error_payload["evidence"]["diagnostic"]
     assert SENTINELS["absolute_path"] not in encoded
 
 

@@ -14,7 +14,7 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8765 --workers 1 --no-access-l
 ```
 
 `/health` 检查数据库。Admin API 和静态页要求 `Host: admin.cialloo.cn`；本地 Host 隔离不提供密码认证。生产 Basic Auth 必须继续由 Nginx 执行，8765 不得对公网开放。
-数据库初始化采用增量列和索引，不修改既有 received_at。v1/v2 均可入库；未知诊断字段不补零、不推测。
+数据库初始化采用增量列和索引，不修改既有 received_at。v1/v2/v3 错误报告均可入库；未知诊断字段不补零、不推测。
 
 后台构建：在 `dashboard/` 执行 `npm ci && npm run build`，将 dist 内容放入服务根的 `admin_static/`，保留 `assets/` 子目录。HTML 位于 `admin_static/index.html`，脚本、样式和字体位于 `admin_static/assets/`；后端通过固定路由提供这些文件。原外部后台目录没有被覆盖。
 
@@ -80,3 +80,23 @@ python tools/telemetry_server/tests/verify_captured_wire.py /tmp/http-wire.json
 
 回退先暂停新版客户端发布，保留新增列和 v2 接收模块；可以回退页面或关闭有问题的查询入口。不得用旧数据库覆盖新上报，也不能把 v1-only 旧服务替回已有 v2 客户端使用的服务器。
 生产备份由维护者在服务器私有目录管理。
+
+
+## 原始错误报告 v3
+
+`POST /v3/errors` 接收最多 128 KiB 的原始错误证据，`report_json` 保存完整报告，`group_key` 按实际原因分组。既有 v1/v2 接口继续接受旧客户端。管理端详情优先显示原始报错、异常链和栈，可以复制完整报告；ZIP 保留相同 evidence，不再按 URL/路径清空字符串。
+
+部署必须先更新服务端，再发布客户端：
+
+1. 在隔离数据库验证增量列、旧版入库、v3 入库/重复 reportId、详情查询和导出。
+2. 在现有遥测 Nginx vhost 添加精确的 `/v3/errors` POST 路由，body 上限 `128k`，沿用当前 Origin Secret 和 Host 隔离。不要只更新 Python 后端而遗漏源站/边缘路由。
+3. 验证遥测域名仍不能访问 Admin，管理 API 和下载仍需鉴权，再启用新客户端。此 PR 不执行生产部署。
+
+本地跨层验收使用真实 Python 异常，经 Rust HTTP 发送器捕获后交给隔离 FastAPI/SQLite，最终比较详情和 ZIP：
+
+```sh
+# 当前 Python 环境需安装服务端 requirements、pytest、httpx；客户端使用 bundled runtime。
+python tools/telemetry_server/verify_original_errors.py
+```
+
+此命令不连接生产，不读写真实用户 data。更多契约见 [远程诊断 Spec](../../docs/specs/runtime-v2/remote-diagnostics-telemetry.md)。

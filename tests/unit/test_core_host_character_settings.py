@@ -31,7 +31,8 @@ def test_import_failure_keeps_original_cause_in_response(tmp_path, monkeypatch, 
     assert diagnostic["cause_type"] == expected
     assert expected in diagnostic["exception_chain"]
     assert " at " in diagnostic["exception_stack"]
-    assert str(tmp_path) not in json.dumps(diagnostic)
+    if failure in {"missing", "permission"}:
+        assert str(archive) in diagnostic["diagnostic"]
     assert CREDENTIAL not in json.dumps(diagnostic)
 
 
