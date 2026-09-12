@@ -31,7 +31,9 @@ updated: 2026-09-12
   与已选 Provider 按角色 ID 保存在应用用户根 `data/plugins/sakura.tts/config.json` 的 `selections` 映射中，
   每项为 `{enabled, provider}`；关闭时保留选择和 Provider 配置，不修改角色包。
   Hub 的 `status`、`configure`、预热和合成只读取这份应用设置。未设置时禁用且不选择引擎；
-  旧角色包 `extensions.sakura.tts` 的启用与选择不再读取，不迁移或回退。角色导入、导出、工坊保存只处理资源，
+  Core 启动插件和开放工坊前，将本机已有角色的有效旧 `extensions.sakura.tts` 选择补入缺失的本机条目；
+  已存在的本机选择优先，原关闭状态保留，不修改角色包，不自动启用提供者插件。配置损坏或写入失败保留原文件并记录诊断。
+  Hub 不在运行时回退旧字段；没有明确旧选择时不根据资源推断引擎。角色导入、导出、工坊保存只处理资源，
   不携带运行选择。见 [ADR-0048](../../adr/0048-voice-resources-and-local-selection.md)。
 - `sakura.tts` Hub、当前选中的 Provider 插件或角色级 TTS 开关被明确关闭时，Core 必须在段落授权阶段把
   该段投影为 `suppressTts=true`，WebView 直接走字幕且不得发起合成；插件仍启用但 Worker、Service 或

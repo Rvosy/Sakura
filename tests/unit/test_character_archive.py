@@ -63,6 +63,36 @@ def test_character_archive_export_then_import_roundtrip() -> None:
     )
 
 
+def test_v1_character_import_preserves_resources_without_migrating_shared_voice_choice(tmp_path):
+    from app.config.character_packages import repair_character_packages
+    from app.plugins.sakura_plugin_sdk import PluginConfig
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+
+    source = _build_character_package(tmp_path / "source")
+    archive_path = tmp_path / "legacy.char"
+    export_character_archive(source, archive_path)
+    with zipfile.ZipFile(archive_path) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(files["manifest.json"])
+    manifest["version"] = 1
+    manifest["character"].setdefault("extensions", {})["sakura.tts"] = {"enabled": True, "provider": "sakura.tts.genie"}
+    files["manifest.json"] = json.dumps(manifest).encode()
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+
+    user = tmp_path / "user"
+    imported = import_character_archive(archive_path, user)
+    repair_character_packages(user)
+    profile = CharacterRegistry(user).get(imported.character_id)
+    assert profile.voice.gpt_model_path.read_bytes() == source.voice.gpt_model_path.read_bytes()
+    assert profile.voice.tone_ref_path.read_bytes() == source.voice.tone_ref_path.read_bytes()
+    assert (profile.package_dir / "portraits/default.png").read_bytes() == (source.package_dir / "portraits/default.png").read_bytes()
+    config = PluginConfig("sakura.tts", tmp_path / "plugin", user / "data/plugins/sakura.tts", lambda callback: callback)
+    status = SakuraTTSHub(None, config).status(imported.character_id)
+    assert status["enabled"] is False and status["providerId"] is None
+
+
 def test_character_archive_uses_portable_directory_and_manifest_id_uniqueness() -> None:
     root = _runtime_root("portable_character_directory")
     archive_path = _build_minimal_character_archive(root, "N.A.V.I.")

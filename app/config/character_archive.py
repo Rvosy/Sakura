@@ -626,9 +626,8 @@ def _normalized_import_character_data(
         normalized["backchannel"] = _package_path_text(
             _archive_resource_path(backchannel, "character.backchannel")
         )
-    extensions = _opaque_extensions(character_data.get("extensions"))
-    if extensions:
-        normalized["extensions"] = extensions
+    # The clone already preserved extensions and removed the package's local
+    # voice choice. Do not restore it from the original archive before startup.
     ensure_legacy_voice_extensions(normalized, package_dir)
 
     _validate_referenced_files(package_dir, normalized)

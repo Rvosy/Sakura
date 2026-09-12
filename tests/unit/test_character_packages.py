@@ -30,6 +30,85 @@ def test_repair_character_packages_upgrades_legacy_voice_manifest(tmp_path: Path
     assert issues[0][2]["reason_code"] == "CHARACTER_LEGACY_VOICE_UPGRADED"
 
 
+def test_startup_migrates_legacy_voice_choices_without_overwriting_local_settings(tmp_path):
+    from app.plugins.sakura_plugin_sdk import PluginConfig
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+
+    old_choices = {
+        "enabled": {"enabled": True, "provider": "sakura.tts.genie"},
+        "disabled": {"enabled": False, "provider": "sakura.tts.gpt-sovits"},
+        "local": {"enabled": True, "provider": "sakura.tts.genie"},
+    }
+    originals = {}
+    for character_id, choice in old_choices.items():
+        package = _write_package(tmp_path, character_id, character_id, with_voice=False)
+        path = package / "character.json"
+        manifest = json.loads(path.read_text())
+        manifest["extensions"] = {"sakura.tts": choice}
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        originals[path] = path.read_bytes()
+    _write_package(tmp_path, "no-choice", "no-choice", with_voice=True)
+    config = PluginConfig("sakura.tts", tmp_path / "plugin", tmp_path / "data/plugins/sakura.tts", lambda callback: callback)
+    config.update({"custom": 42, "selections": {"local": {"enabled": False, "provider": "example.other"}}})
+
+    repair_character_packages(tmp_path)
+    hub = SakuraTTSHub(None, config)
+    assert hub.status("enabled")["enabled"] is True
+    assert hub.status("enabled")["providerId"] == "sakura.tts.genie"
+    assert hub.status("disabled")["enabled"] is False
+    assert hub.status("disabled")["providerId"] == "sakura.tts.gpt-sovits"
+    assert hub.status("local")["providerId"] == "example.other"
+    assert hub.status("local")["enabled"] is False
+    assert hub.status("no-choice")["providerId"] is None
+    assert config.get()["custom"] == 42
+    for path, original in originals.items():
+        assert path.read_bytes() == original
+
+    hub.configure("enabled", {"enabled": False, "provider": "sakura.tts.genie"})
+    before = (tmp_path / "data/plugins/sakura.tts/config.json").read_bytes()
+    repair_character_packages(tmp_path)
+    assert (tmp_path / "data/plugins/sakura.tts/config.json").read_bytes() == before
+    assert hub.status("enabled")["enabled"] is False
+
+
+@pytest.mark.parametrize("contents", ['{invalid', '{"selections": []}'])
+def test_voice_selection_migration_keeps_invalid_local_config(tmp_path, contents):
+    package = _write_package(tmp_path, "demo", "demo", with_voice=False)
+    path = package / "character.json"
+    manifest = json.loads(path.read_text())
+    manifest["extensions"] = {"sakura.tts": {"enabled": True, "provider": "example.voice"}}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    original = path.read_bytes()
+    target = tmp_path / "data/plugins/sakura.tts/config.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(contents, encoding="utf-8")
+    issues = []
+    repair_character_packages(tmp_path, issue_sink=lambda *args: issues.append(args))
+    assert target.read_text() == contents
+    assert path.read_bytes() == original
+    assert any(event[2].get("stage") == "tts_selection" for event in issues)
+
+
+def test_voice_selection_migration_write_failure_can_resume(tmp_path, monkeypatch):
+    from app.config import character_packages as module
+    package = _write_package(tmp_path, "demo", "demo", with_voice=False)
+    path = package / "character.json"
+    manifest = json.loads(path.read_text())
+    manifest["extensions"] = {"sakura.tts": {"enabled": True, "provider": "example.voice"}}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    original = path.read_bytes()
+    target = tmp_path / "data/plugins/sakura.tts/config.json"
+    with monkeypatch.context() as patch:
+        def fail_write(*args, **kwargs):
+            raise PermissionError("fixture: local config unavailable")
+        patch.setattr(module, "atomic_write_text", fail_write)
+        repair_character_packages(tmp_path)
+    assert not target.exists()
+    assert path.read_bytes() == original
+    repair_character_packages(tmp_path)
+    assert json.loads(target.read_text())["selections"]["demo"] == manifest["extensions"]["sakura.tts"]
+
+
 @pytest.mark.parametrize("explicit_genie", [None, {"gptModel": "custom.ckpt", "remoteCharacterName": "remote"}])
 def test_partial_voice_migration_preserves_provider_settings_and_is_idempotent(tmp_path: Path, explicit_genie) -> None:
     extensions = {
