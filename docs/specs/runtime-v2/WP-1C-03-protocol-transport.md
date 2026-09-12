@@ -72,9 +72,9 @@ lossy UTF-8 仅生成受控诊断记录；原始字节不进入用户可见面�
 每 generation 只保留最近 64 KiB 脱敏文本，单条记录最多 4096 bytes；超过上限删除最旧记录并
 累计 `droppedBytes`/`droppedRecords`，单条超限累计 `truncatedRecords`。统计使用饱和整数，重复
 finish/close 幂等。日志值先按 ASCII 大小写不敏感规则脱敏 credential、`token`、
-`Authorization`、`cookie`、常见 key/secret/password 字段和当前进程环境变量的非空值；聊天/
-prompt/message/content 字段整体替换为 `[REDACTED]`。输出只含 generation ID、PID、稳定计数和
-脱敏片段，不含裸环境变量或平台资源标识。
+`Authorization`、`cookie`、常见 key/secret/password 字段及凭据类环境变量的值。
+保留报错上下文、路径、换行和非凭据 URL，不再替换所有环境变量值或因出现 message/content 就隐藏整段报错。
+原始错误片段使用 [诊断字段及预算](remote-diagnostics-telemetry.md)，不主动序列化环境变量或请求正文。
 
 reader 在正常退出、Core crash、spawn 后初始化失败、protocol fatal、deadline 强杀和 Tauri
 shutdown 后都必须由 runtime 显式 join；pipe read failure 记录 `STDERR_READ_FAILED` 后仍进入同一

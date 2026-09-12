@@ -142,6 +142,7 @@ test("real errors retain original messages and frames with credentials redacted"
   const error=new TypeError("Cannot read properties of undefined");
   env.listeners.get("error")({error,filename:"http://tauri.localhost/settings/index.js",lineno:42,colno:7});
   const rejection=new Error("Connection refused token=PRIVATE_KEY_VALUE");
+  rejection.cause = new Error("Cannot open C:/插件/runtime/python.exe at https://example.test/runtime?version=2");
   rejection.stack="Error: Connection refused token=PRIVATE_KEY_VALUE\n at send (tauri://localhost/chat/main.js:19:5)";
   env.listeners.get("unhandledrejection")({reason:rejection});
   env.listeners.get("error")({target:{src:"https://private.example/PRIVATE_PATH.js"}});
@@ -150,6 +151,8 @@ test("real errors retain original messages and frames with credentials redacted"
   assert.equal(entries[0].details.file,"desktop/frontend/settings/index.js");
   assert.match(entries[0].diagnostic,/Cannot read properties of undefined/);
   assert.match(entries[1].exceptionStack,/Connection refused/);
+  assert.match(entries[1].exceptionChain,/C:\/插件\/runtime\/python.exe/);
+  assert.match(entries[1].exceptionChain,/version=2/);
   assert.equal(entries[0].details.line,42);
   assert.equal(entries[0].details.causeType,"TypeError");
   assert.equal(entries[1].details.line,19);

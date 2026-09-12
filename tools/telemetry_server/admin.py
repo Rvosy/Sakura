@@ -267,6 +267,7 @@ def errors(
                 connection.execute(
                     """
                     SELECT error_code, severity, location, component, event, fingerprint,
+                           json_extract(report_json, '$.evidence.diagnostic') AS diagnostic,
                            COUNT(*) AS occurrences,
                            COUNT(DISTINCT installation_id) AS installations,
                            MIN(received_at) AS first_seen,
@@ -274,7 +275,7 @@ def errors(
                     FROM error_events
                     WHERE received_at >= datetime('now', '+8 hours', ?)
                       AND instr(lower(COALESCE(run_id, '')), 'acceptance') = 0
-                    GROUP BY error_code, severity, location, component, event, fingerprint
+                    GROUP BY error_code, severity, location, component, event, coalesce(group_key,fingerprint)
                     ORDER BY occurrences DESC, last_seen DESC
                     LIMIT 50
                     """,
@@ -351,7 +352,7 @@ def report(request: Request, report_id: str) -> dict[str, Any]:
                        arch, webview_version, component, event, error_code,
                        severity, location, exception_type, fingerprint,
                        install_kind, upgraded_from,
-                       stack_json, breadcrumbs_json, details_json, generation, build_id, schema_version
+                       stack_json, breadcrumbs_json, details_json, generation, build_id, schema_version, report_json
                 FROM error_events
                 WHERE report_id = ?
                 LIMIT 1
@@ -367,6 +368,8 @@ def report(request: Request, report_id: str) -> dict[str, Any]:
         "details": json.loads(data["details_json"])
         if data.get("details_json")
         else None,
+        "evidence": json.loads(data["report_json"]).get("evidence") if data.get("report_json") else None,
+        "rawReport": json.loads(data["report_json"]) if data.get("report_json") else None,
         "generation": data.get("generation"),
         "schema": data.get("schema_version"),
         "receivedAt": data["received_at"],

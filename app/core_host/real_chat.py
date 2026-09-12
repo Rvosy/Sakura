@@ -236,6 +236,7 @@ class RealChatBoundary:
         _terminal_sink: Callable[[str, Mapping[str, Any]], None] | None = None,
         _publish_events: bool = True,
     ) -> dict[str, Any]:
+        started_at = monotonic()
         payload = self._validate_send(request)
         operation_id = str(request["id"])
         with self._changed:
@@ -639,6 +640,13 @@ class RealChatBoundary:
                 }
 
         resolved_terminal = self._finish(operation_id, terminal)
+        if resolved_terminal is not None:
+            from app.core.runtime_log import log_event
+            log_event("Chat", "对话已结束", {
+                "operation_id": operation_id,
+                "outcome": {"chat.completed": "success", "chat.cancelled": "cancelled"}.get(resolved_terminal, "failed"),
+                "elapsed_ms": int((monotonic() - started_at) * 1000),
+            }, event="chat.finished", severity="info")
         try:
             if resolved_terminal == "chat.completed":
                 if plugin_application is not None and completed_fact is not None:

@@ -140,7 +140,7 @@ export function Records({ kind, filters }: { kind: string; filters: Filters }) {
     <QueryState query={q}>
       {(d) => (
         <>
-          <p>
+          <p className="records-count">
             共 {d.total} {kind === "groups" ? "个问题组" : "条记录"}
           </p>
           <div className="diagnostic-table">
@@ -184,7 +184,13 @@ export function Records({ kind, filters }: { kind: string; filters: Filters }) {
                       ) : (
                         r.event || r.purpose
                       )}
-                      <small>{r.component || r.outcome || ""}</small>
+                      <small>
+                        {r.evidence?.diagnostic ||
+                          r.diagnostic ||
+                          r.component ||
+                          r.outcome ||
+                          ""}
+                      </small>
                     </td>
                     <td>
                       {kind === "groups" ? (
@@ -255,8 +261,8 @@ export function Records({ kind, filters }: { kind: string; filters: Filters }) {
               </tbody>
             </table>
           </div>
-          {!d.items.length && <p>没有匹配记录。</p>}
-          <div className="page-actions">
+          {!d.items.length && <p className="records-empty">没有匹配记录。</p>}
+          <div className="diagnostic-pagination">
             <button
               className="btn"
               disabled={!cursor}
@@ -292,9 +298,9 @@ export function Diagnostics({ route }: { route: Route }) {
   const [kind, setKind] = useState("events");
   return (
     <>
-      <Panel title="诊断筛选">
+      <Panel title="诊断筛选" className="diagnostic-panel">
         <form
-          className="filters diagnostic-filters"
+          className="diagnostic-filters"
           onSubmit={(e) => {
             e.preventDefault();
             const values = new FormData(e.currentTarget);
@@ -307,7 +313,7 @@ export function Diagnostics({ route }: { route: Route }) {
           }}
         >
           {[
-            ["query", "错误码或指纹"],
+            ["query", "错误原文、错误码或指纹"],
             ["build", "构建"],
             ["version", "版本"],
             ["platform", "平台"],
@@ -347,19 +353,23 @@ export function Diagnostics({ route }: { route: Route }) {
               onChange={(e) => setEnd(e.target.value)}
             />
           </label>
-          <label>
-            <input
-              type="checkbox"
-              name="includeTest"
-              defaultChecked={route.includeTest}
-            />{" "}
-            包含开发与验收数据
-          </label>
-          <button className="btn btn-primary">应用筛选</button>
+          <div className="diagnostic-filter-actions">
+            <label className="diagnostic-test-toggle">
+              <input
+                type="checkbox"
+                name="includeTest"
+                defaultChecked={route.includeTest}
+              />{" "}
+              包含开发与验收数据
+            </label>
+            <button className="btn btn-primary">应用筛选</button>
+          </div>
         </form>
-        <ExportButton filters={filters} />
+        <div className="diagnostic-export">
+          <ExportButton filters={filters} />
+        </div>
       </Panel>
-      <div className="page-actions">
+      <div className="diagnostic-tabs" aria-label="诊断视图">
         {[
           ["groups", "问题组"],
           ["reports", "错误报告"],
@@ -368,7 +378,7 @@ export function Diagnostics({ route }: { route: Route }) {
         ].map(([tab, label]) => (
           <button
             className="btn"
-            aria-pressed={route.tab === tab}
+            aria-pressed={(route.tab || "groups") === tab}
             key={tab}
             onClick={() => navigate({ tab })}
           >
@@ -377,7 +387,7 @@ export function Diagnostics({ route }: { route: Route }) {
         ))}
       </div>
       {route.tab === "quality" ? (
-        <Panel title="字段覆盖">
+        <Panel title="字段覆盖" className="diagnostic-panel">
           <QueryState query={quality}>
             {(d) => (
               <>
@@ -440,7 +450,7 @@ export function Diagnostics({ route }: { route: Route }) {
           </QueryState>
         </Panel>
       ) : route.tab === "timeline" ? (
-        <Panel title="操作时间线">
+        <Panel title="操作时间线" className="diagnostic-panel">
           {!route.installation || !route.run ? (
             <p>
               请先指定 Installation ID 和 Run ID。旧链接只有 Operation ID
@@ -454,7 +464,10 @@ export function Diagnostics({ route }: { route: Route }) {
           )}
         </Panel>
       ) : (
-        <Panel title={route.tab === "reports" ? "错误报告" : "问题组"}>
+        <Panel
+          title={route.tab === "reports" ? "错误报告" : "问题组"}
+          className="diagnostic-panel"
+        >
           <Records
             kind={route.tab === "reports" ? "errors" : "groups"}
             filters={filters}

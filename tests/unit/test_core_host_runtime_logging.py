@@ -43,7 +43,7 @@ def test_custom_core_messages_share_bridge_and_are_bounded() -> None:
     assert records[0]["attributes"]["nested"] == {"count": 2}
     assert all(r["custom"] for r in records)
     text = stream.getvalue().decode("utf-8")
-    assert all(private not in text for private in ("private-secret", "private-password", "C:/private/model", "too deep"))
+    assert all(private not in text for private in ("private-secret", "private-password", "too deep"))
     assert "truncated" in text
     assert all(len(line) + 1 <= CORE_BRIDGE_MAX_LINE_BYTES for line in stream.getvalue().splitlines())
 
@@ -615,3 +615,20 @@ def test_api_failure_keeps_bounded_diagnostic_but_redacts_credentials() -> None:
     assert PRIVATE_SECRET not in serialized
     assert "token=visible" not in serialized
     assert PRIVATE_CHAT not in serialized
+
+
+def test_chat_terminals_keep_their_event_identity_and_duration_on_the_core_bridge() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        for outcome in ("success", "failed", "cancelled"):
+            log_event("Chat", "对话已结束", {
+                "operation_id": "chat-1", "outcome": outcome, "elapsed_ms": 123,
+            }, event="chat.finished", severity="info")
+    finally:
+        bridge.close()
+    records = _records(stream)
+    assert len(records) == 3
+    assert [r["attributes"]["outcome"] for r in records] == ["success", "failed", "cancelled"]
+    assert all(r["event"] == "chat.finished" and r["severity"] == "info" for r in records)
+    assert all(r["operation_id"] == "chat-1" and r["attributes"]["elapsed_ms"] == 123 for r in records)

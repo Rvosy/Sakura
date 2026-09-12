@@ -9,6 +9,8 @@ updated: 2026-09-02
 
 # ADR-0043：Telemetry Edge 使用 CDN 后的单机 FastAPI 与 SQLite
 
+> 客户端的错误内容、定向凭据处理和有界补发已由 [ADR-0048](0048-original-error-reports.md) 调整；本文的部署与访问隔离决策继续有效。
+
 ## 背景
 
 ADR-0042 选择 Cloudflare Worker + D1 承载远程诊断。这个方案完成了 schema 和写入 PoC，但旧生产入口曾在请求到达 Worker

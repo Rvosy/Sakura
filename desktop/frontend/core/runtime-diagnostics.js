@@ -34,21 +34,11 @@ function stableCode(value) {
 function safeErrorText(value, maximum = 4096) {
   let text = String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   text = text
-    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi, "$1=[REDACTED]")
-    .replace(/\bbearer\s+[^\s,;}]+/gi, "Bearer [REDACTED]")
+    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)/gi, "$1=[REDACTED]")
+    .replace(/\bbearer\s+[^\s,;}&]+/gi, "Bearer [REDACTED]")
     .replace(/\bsk-[A-Za-z0-9._-]{6,}/gi, "[REDACTED]");
-  const urls = [];
-  text = text.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi, value => {
-    try { const url = new URL(value); url.username = ""; url.password = ""; url.search = ""; url.hash = ""; urls.push(url.protocol === "file:" ? `<路径>/${url.pathname.split("/").at(-1)}` : url.href); }
-    catch { urls.push("[URL]"); }
-    return `<url-${urls.length - 1}>`;
-  });
-  const path = value => `<路径>/${value.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || ""}`;
-  text = text.replace(/(["'])((?:[a-z]:[\\/]|\/|\\\\)[^\r\n]*?)\1/gi, (_, quote, value) => quote + path(value) + quote)
-    .replace(/(?:[a-z]:[\\/]|\\\\)[^\s"'<>|,;]*/gi, path)
-    .replace(/(^|[\s(\[])\/[^\s"'<>|,;]*/g, value => (value.match(/^[\s(\[]/)?.[0] || "") + path(value.trim()))
+  text = text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1[REDACTED]@")
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-  urls.forEach((url, index) => { text = text.replaceAll(`<url-${index}>`, url); });
   return text.length <= maximum ? text : text.slice(0, maximum - 48) + `\n[truncated: ${text.length} characters]`;
 }
 
@@ -61,12 +51,19 @@ function safeDiagnostic(error) {
   const prefix = !publicError && !coded && typeof error?.name === "string" ? `${error.name}: ` : "";
   const diagnostic = safeErrorText(prefix + raw) || "未记录底层原因";
   const stack = typeof error?.stack === "string" ? safeErrorText(error.stack.split("\n").slice(0, 33).join("\n"), 8192) : "";
-  return {code, diagnostic, ...(stack ? {exceptionStack: stack} : {})};
+  const chain = [], seen = new Set();
+  let cause = error;
+  while (cause && !seen.has(cause) && chain.length < 16) {
+    seen.add(cause);
+    chain.push(safeErrorText(typeof cause === "string" ? cause : `${cause.name || "Error"}: ${cause.message || ""}`));
+    cause = cause.cause;
+  }
+  const exceptionChain = chain.length > 1 ? safeErrorText(chain.join("\nCaused by: "), 8192) : "";
+  return {code, diagnostic, ...(stack ? {exceptionStack: stack} : {}), ...(exceptionChain ? {exceptionChain} : {})};
 }
 
 function logText(value, maximum) {
-  const text = value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\s+/g, " ").trim();
-  if (/(?:[a-z]:[\\/]|(?:^|\s)\/|:\/\/|bearer\s|sk-|(?:api[_-]?key|token|password|secret|authorization|cookie)\s*[:=])/i.test(text)) return "[REDACTED]";
+  const text = safeErrorText(value, 32768).replace(/\s+/g, " ").trim();
   const bytes = new TextEncoder().encode(text);
   if (bytes.length <= maximum) return text || "[empty]";
   return new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maximum - 16)).replace(/\ufffd$/, "") + " [truncated]";
@@ -90,7 +87,7 @@ function logFields(input) {
       for (const key in value) {
         if (!Object.hasOwn(value, key)) continue;
         if (count++ >= 8) { result.record_truncated = true; break; }
-        if (!token(key, 64) || /(?:api.?key|authorization|cookie|password|secret|token|content|prompt|messages|arguments|payload|body|path)/i.test(key)) {
+        if (!token(key, 64) || /(?:api.?key|authorization|cookie|password|secret|token|content|prompt|messages|arguments|payload|body)/i.test(key)) {
           result.redacted = "[REDACTED]";
         } else {
           result[key] = clean(value[key], depth + 1);
@@ -185,6 +182,10 @@ function controlledEntry(input) {
       return null;
     }
     entry.diagnostic = input.diagnostic;
+  }
+  if (input.exceptionChain !== undefined) {
+    if (typeof input.exceptionChain !== "string" || input.exceptionChain.length > 8192) return null;
+    entry.exceptionChain = input.exceptionChain;
   }
   if (input.exceptionStack !== undefined) {
     if (typeof input.exceptionStack !== "string" || input.exceptionStack.length > 8192) return null;

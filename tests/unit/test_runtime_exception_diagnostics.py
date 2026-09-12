@@ -22,7 +22,7 @@ def test_wrapped_error_keeps_root_message_frames_and_system_code():
     assert fields["cause_type"] == "PermissionError"
     assert "RuntimeError" in fields["exception_chain"]
     assert " at " in fields["exception_stack"]
-    assert "C:" not in json.dumps(fields)
+    assert "C:" in fields["diagnostic"] and "private" in fields["diagnostic"]
 
 
 def test_local_diagnostic_redacts_fragments_without_discarding_error():
@@ -32,11 +32,12 @@ Authorization: Bearer private-token
 {"password": "quoted private value"}'''
     text = safe_diagnostic_text(raw)
     assert "Permission denied" in text and "config.yaml" in text
-    assert "https://example.test/v1/models" in text
-    for private in ["Private Name", "private-token", "quoted private value", "secret-value", "user:pass"]:
+    assert "example.test/v1/models?api_key=[REDACTED]" in text
+    assert r"C:\Users\Private Name\config.yaml" in text
+    for private in ["private-token", "quoted private value", "secret-value", "user:pass"]:
         assert private not in text
     assert "[truncated:" in safe_diagnostic_text("多行错误\n" * 2000, 512)
-    assert "C:" not in safe_diagnostic_text("file:///C:/Users/private/file.txt")
+    assert safe_diagnostic_text("file:///C:/Users/private/file.txt") == "file:///C:/Users/private/file.txt"
 
 
 def test_broken_message_and_cyclic_cause_do_not_break_reporting():

@@ -1,4 +1,4 @@
-"""Local exception diagnostics, without credentials, locals or absolute paths.
+"""Local exception diagnostics, with original error text and targeted credential removal.
 
 This module uses only the standard library so protocol error responses can use it
 without importing the application or plugin runtime.
@@ -10,20 +10,17 @@ import json
 from contextlib import contextmanager
 from contextvars import ContextVar
 from collections.abc import Iterable
-from urllib.parse import urlsplit, urlunsplit
 
 DIAGNOSTIC_LIMIT = 4096
 TRACE_LIMIT = 8192
 DIAGNOSTIC_TEXT_KEYS = frozenset({"diagnostic", "exception_chain", "exception_stack", "recovery_diagnostic"})
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _SECRET = re.compile(r'''(?ix)
-    \b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
-    ["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)
-    |\bbearer\s+[^\s,;}]+|\bsk-[\w.-]{6,}
+    (\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
+    ["']?\s*[:=]\s*(?:bearer\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
+    |(\bbearer\s+)[^\s,;}&]+|\bsk-[\w.-]{6,}
 ''')
-_URL = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>\"']+")
-_QUOTED_PATH = re.compile(r'''(["'])((?:[A-Za-z]:[\\/]|/|\\\\)[^\r\n]*?)\1''')
-_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|(?<![\w:>])/(?!/))[^\s\"'<>|,;]*")
+_URL_AUTH = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@")
 _SECRETS: ContextVar[set[str] | None] = ContextVar("diagnostic_secrets", default=None)
 
 
@@ -64,29 +61,8 @@ def safe_diagnostic_text(value: object, maximum: int = DIAGNOSTIC_LIMIT, *, secr
         if secret:
             text = text.replace(secret, "[REDACTED]")
     text = _ANSI.sub("", text)
-    text = _SECRET.sub("[REDACTED]", text)
-    text = re.sub(r"\bPRIVATE_[A-Z0-9_]+\b", "[REDACTED]", text)
-    urls: list[str] = []
-
-    def url(match: re.Match[str]) -> str:
-        try:
-            parsed = urlsplit(match.group())
-            host = parsed.hostname or ""
-            port = f":{parsed.port}" if parsed.port else ""
-            urls.append("<路径>/" + parsed.path.rsplit("/", 1)[-1] if parsed.scheme == "file" else urlunsplit((parsed.scheme, host + port, parsed.path, "", "")))
-        except ValueError:
-            urls.append("[URL]")
-        return f"<url-{len(urls) - 1}>"
-
-    def path(value: str) -> str:
-        name = value.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-        return f"<路径>/{name}" if name else "<路径>"
-
-    text = _URL.sub(url, text)
-    text = _QUOTED_PATH.sub(lambda m: m[1] + path(m[2]) + m[1], text)
-    text = _PATH.sub(lambda m: path(m[0]), text)
-    for index, value in enumerate(urls):
-        text = text.replace(f"<url-{index}>", value)
+    text = _SECRET.sub(lambda m: (m[1] or m[2] or "") + "[REDACTED]", text)
+    text = _URL_AUTH.sub(r"\1[REDACTED]@", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text).replace("\r\n", "\n")
     return bounded_text(text.strip(), maximum)
 
@@ -133,19 +109,18 @@ def _exception_message(error: object) -> str:
             if isinstance(source, dict):
                 fields = [f"{key}: {source[key]}" for key in ("message", "code", "type", "status") if isinstance(source.get(key), (str, int, float))]
                 return safe_diagnostic_text(prefix + " " + "; ".join(fields))
-    if "格式无法解析" in raw:
-        return safe_diagnostic_text(raw.split("：", 1)[0] + "（响应正文未写入日志）")
     return safe_diagnostic_text(text)
 
 
-def exception_frames(error: BaseException) -> list[str]:
+def exception_frames(error: BaseException, *, include_file: bool = False) -> list[str]:
     result = []
     tb = error.__traceback__
     while tb is not None:
         frame = tb.tb_frame
         module = re.sub(r"[^A-Za-z0-9_.-]", "_", str(frame.f_globals.get("__name__", "unknown")))
         function = re.sub(r"[^A-Za-z0-9_.<>-]", "_", frame.f_code.co_name)
-        result.append(f"{module}:{function}:{tb.tb_lineno}")
+        identity = f"{module}:{function}:{tb.tb_lineno}"
+        result.append(f"{identity} ({frame.f_code.co_filename})" if include_file else identity)
         tb = tb.tb_next
     return (["[earlier frames omitted]"] if len(result) > 32 else []) + result[-32:]
 
@@ -181,7 +156,7 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
             attributes["exception_chain"] = bounded_text(str(attributes["exception_chain"]) + "\n[exception limit: 16]", TRACE_LIMIT)
         stacks = []
         for item, summary in zip(chain, summaries):
-            frames = exception_frames(item)
+            frames = exception_frames(item, include_file=True)
             if frames:
                 stacks.append(summary + "\n" + "\n".join(f"  at {frame}" for frame in frames))
         if stacks:

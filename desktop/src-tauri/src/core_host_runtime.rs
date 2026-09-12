@@ -42,7 +42,7 @@ const GENERATION_CREDENTIAL_BYTES: usize = 16;
 const STDERR_READ_CHUNK_SIZE: usize = 4 * 1024;
 const STDERR_READ_SLICE: Duration = Duration::from_millis(10);
 const STDERR_RECORD_LIMIT: usize = 32 * 1024;
-const STDERR_TELEMETRY_RECORD_LIMIT: usize = 8 * 1024 + TELEMETRY_CORE_BRIDGE_PREFIX.len();
+const STDERR_TELEMETRY_RECORD_LIMIT: usize = 128 * 1024 + TELEMETRY_CORE_BRIDGE_PREFIX.len();
 const STDERR_CACHE_LIMIT: usize = 64 * 1024;
 const CHARACTER_SUMMARY_KEYS: [&str; 5] = [
     "id",
@@ -682,39 +682,13 @@ struct StderrRedactor {
 impl StderrRedactor {
     fn new(generation_credential: &str) -> Self {
         let mut secrets = vec![generation_credential.to_string()];
-        for value in std::env::vars_os().map(|(_, value)| value) {
-            let value = value.to_string_lossy();
-            if (4..=4096).contains(&value.len())
-                && !secrets.iter().any(|secret| secret == value.as_ref())
-            {
-                secrets.push(value.into_owned());
-            }
-        }
+        secrets.extend(crate::runtime_log::environment_secrets());
         secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
         Self { secrets }
     }
 
     fn redact(&self, text: &str) -> String {
-        let mut redacted = text.to_string();
-        for secret in &self.secrets {
-            redacted = redacted.replace(secret, "[REDACTED]");
-        }
-        for key in [
-            "authorization",
-            "cookie",
-            "credential",
-            "api_key",
-            "apikey",
-            "token",
-            "secret",
-            "password",
-            "prompt",
-            "message",
-            "content",
-        ] {
-            redacted = redact_key_values(&redacted, key);
-        }
-        redacted
+        crate::runtime_log::redact_diagnostic_credentials(text, &self.secrets)
     }
 }
 
@@ -1117,68 +1091,6 @@ fn push_stderr_text(
         state.buffered_bytes = state.buffered_bytes.saturating_add(record.len());
         state.records.push_back(record);
     }
-}
-
-fn redact_key_values(text: &str, key: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let lower = text.to_ascii_lowercase();
-    let mut cursor = 0;
-    while let Some(relative) = lower[cursor..].find(key) {
-        let key_start = cursor + relative;
-        let key_end = key_start + key.len();
-        output.push_str(&text[cursor..key_end]);
-        let bytes = text.as_bytes();
-        let mut separator = key_end;
-        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
-            separator += 1;
-        }
-        if separator >= bytes.len() || !matches!(bytes[separator], b'=' | b':') {
-            cursor = key_end;
-            continue;
-        }
-        separator += 1;
-        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
-            separator += 1;
-        }
-        output.push_str(&text[key_end..separator]);
-        let quote = bytes
-            .get(separator)
-            .copied()
-            .filter(|byte| matches!(byte, b'\'' | b'"'));
-        if quote.is_some() {
-            output.push(char::from(quote.expect("quote exists")));
-            separator += 1;
-        }
-        output.push_str("[REDACTED]");
-        let mut value_end = separator;
-        let redact_to_line_end = matches!(
-            key,
-            "authorization" | "cookie" | "prompt" | "message" | "content"
-        );
-        while value_end < bytes.len() {
-            if quote.is_some_and(|quote| bytes[value_end] == quote) {
-                break;
-            }
-            if quote.is_none()
-                && !redact_to_line_end
-                && (bytes[value_end].is_ascii_whitespace()
-                    || matches!(bytes[value_end], b',' | b';'))
-            {
-                break;
-            }
-            if quote.is_none() && matches!(bytes[value_end], b'\r' | b'\n') {
-                break;
-            }
-            value_end += 1;
-        }
-        if quote.is_some() && value_end < bytes.len() {
-            output.push(char::from(bytes[value_end]));
-            value_end += 1;
-        }
-        cursor = value_end;
-    }
-    output.push_str(&text[cursor..]);
-    output
 }
 
 struct RequestExpectation {
@@ -3951,7 +3863,7 @@ mod tests {
         let output = state.records.iter().cloned().collect::<String>();
         assert!(output.contains("ordinary\n多行 UTF-8\n"));
         assert!(output.contains('\u{fffd}'));
-        assert!(output.contains('\0'));
+        assert!(!output.contains('\0')); // Strip terminal control bytes, preserve decoded text.
         assert!(!output.contains(split_secret));
         assert!(state.stats.eof);
         assert!(!state.stats.read_failed);
@@ -4028,20 +3940,20 @@ mod tests {
     }
 
     #[test]
-    fn wp_4l_02_stderr_summary_replaces_paths_and_urls_without_hiding_the_cause() {
+    fn stderr_summary_preserves_paths_and_urls_with_only_credentials_replaced() {
         let summary = stderr_diagnostic_summary(
             "File C:\\private\\bridge.py failed while requesting https://user:pass@example.test/path",
         );
         assert_eq!(
             summary,
-            "File <路径>/bridge.py failed while requesting https://example.test/path"
+            "File C:\\private\\bridge.py failed while requesting https://[REDACTED]@example.test/path"
         );
-        assert!(!summary.contains("private"));
+        assert!(summary.contains("private"));
         assert!(!summary.contains("user:pass"));
     }
 
     #[test]
-    fn wp_4l_01_structured_stderr_rejects_generation_credential_before_persistence() {
+    fn structured_stderr_replaces_generation_credential_before_persistence() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -4078,11 +3990,12 @@ mod tests {
         runtime_log.drain_and_shutdown_for_test();
 
         let stats = &state.lock().expect("stderr state").stats;
-        assert_eq!(stats.structured_records, 0);
-        assert_eq!(stats.invalid_structured_records, 1);
+        assert_eq!(stats.structured_records, 1);
+        assert_eq!(stats.invalid_structured_records, 0);
         let contents = fs::read_to_string(path).unwrap();
         assert!(!contents.contains(credential));
-        assert!(!contents.contains("agent.turn.started"));
+        assert!(contents.contains("[AGENT]"));
+        assert!(contents.contains("[REDACTED]"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4117,7 +4030,7 @@ mod tests {
         assert!(!output.contains(environment_value));
         assert!(!output.contains("Bearer private"));
         assert!(!output.contains("session"));
-        assert!(!output.contains("hello"));
+        assert!(output.contains("content=hello"));
     }
 
     #[test]
@@ -4180,9 +4093,11 @@ mod tests {
         assert!(exit.stderr_stats.truncated_records > 0);
         assert!(exit.stderr.len() <= STDERR_CACHE_LIMIT);
         assert!(!exit.stderr.contains(&credential));
-        for secret in ["private", "Bearer", "session", "user-chat"] {
+        for secret in ["private", "session"] {
             assert!(!exit.stderr.contains(secret));
         }
+        assert!(exit.stderr.contains("content=user-chat"));
+        assert!(exit.stderr.contains("Bearer [REDACTED]"));
     }
 
     #[test]
