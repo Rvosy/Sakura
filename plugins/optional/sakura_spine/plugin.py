@@ -65,14 +65,21 @@ def _names(values, code):
 
 def validate_config(config, animations, skins):
     if (not isinstance(config, dict)
-        or set(config) - {'version', 'skeleton', 'atlas', 'defaultAnimation', 'defaultSkin', 'speed', 'premultipliedAlpha', 'modelControls'}
+        or set(config) - {'version', 'skeleton', 'atlas', 'defaultAnimation', 'defaultSkin', 'speed', 'premultipliedAlpha', 'modelControls', 'selectableSkins'}
         or type(config.get('version')) is not int or config['version'] != 1):
         raise ValueError('SPINE_CONFIG_INVALID')
     result = dict(config)
     result['skeleton'] = relative_path(config.get('skeleton'))
     result['atlas'] = relative_path(config.get('atlas'))
     result.setdefault('defaultAnimation', 'idle' if 'idle' in animations else animations[0])
-    result.setdefault('defaultSkin', 'default' if 'default' in skins else skins[0])
+    selectable = result.get('selectableSkins', skins)
+    if (not isinstance(selectable, list) or not selectable or len(selectable) > len(skins)
+        or any(not isinstance(name, str) or name not in skins for name in selectable)
+        or len(set(selectable)) != len(selectable)):
+        raise ValueError('SPINE_CONFIG_INVALID')
+    if 'selectableSkins' in result:
+        result['selectableSkins'] = list(selectable)
+    result.setdefault('defaultSkin', 'default' if 'default' in selectable else selectable[0])
     result.setdefault('speed', 1)
     result.setdefault('premultipliedAlpha', False)
     result.setdefault('modelControls', ['skin'] if len(animations) == 1 else list(_CONTROL_FIELDS))
@@ -82,7 +89,7 @@ def validate_config(config, animations, skins):
         or len(set(controls)) != len(controls)):
         raise ValueError('SPINE_CONFIG_INVALID')
     result['modelControls'] = list(controls)
-    if result['defaultAnimation'] not in animations or result['defaultSkin'] not in skins:
+    if result['defaultAnimation'] not in animations or result['defaultSkin'] not in selectable:
         raise ValueError('SPINE_DEFAULT_INVALID')
     if (type(result['speed']) not in (int, float) or not math.isfinite(result['speed'])
         or not 0.1 <= result['speed'] <= 3 or type(result['premultipliedAlpha']) is not bool):
@@ -107,6 +114,7 @@ def describe_resource(config, resolve):
     animations = _names(skeleton.get('animations'), 'SPINE_ANIMATIONS_INVALID')
     skins = _names(skeleton.get('skins'), 'SPINE_SKINS_INVALID')
     config = validate_config(config, animations, skins)
+    skins = config.get('selectableSkins', skins)
     atlas_file = resolve(atlas_path)
     if not atlas_file.is_file() or atlas_file.stat().st_size > 2 * 1024 * 1024:
         raise ValueError('SPINE_ATLAS_INVALID')

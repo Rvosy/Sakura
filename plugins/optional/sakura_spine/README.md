@@ -23,6 +23,20 @@ runtime/python.exe -m tools.spine_preview serve "artifacts/spine/my-character" -
 只使用 Room 时，把第一条命令的输入指向解包目录中的 `spine/room`，就只导入 Room 的动画和皮肤。
 其他角色也可以按同样方式选定所需子目录，插件不依赖角色编号或文件名。
 
+本次 DeepOne Room 的贴图已经预乘透明度，且 `default` 只有基础部件，五官在 `normal` 和各表情皮肤中。
+准备这些素材时使用：
+
+```text
+runtime/bin/python -m tools.spine_preview prepare 原始room目录 artifacts/spine/room --premultiplied-alpha --exclude-skin default
+```
+
+生成配置会设置 `premultipliedAlpha: true`，默认选择 `normal`，通过 `selectableSkins` 排除基础皮肤。
+基础附件仍保留，供完整表情使用；不叠加多个表情。其他素材按自身的透明编码和皮肤结构选择参数。
+
+已经导入的旧包可在编辑器把“贴图透明方式”改为“预乘透明（PMA）”，表情选择“平静”后保存。
+更改透明方式会重建预览并保留表情和速度，导出也会保留配置。修正版组件直接导入即可。
+
+
 预览中的“保存草稿”保存到输出目录中的 `spine-draft.json`，重新选择形态或重启预览可恢复。
 它不会写入已安装角色；正式工坊通过 `mountEditor` 和自己的草稿事务保存配置。
 组件目录需先导出为 `.visual` 文件，再通过工坊的“导入形态”添加。

@@ -291,3 +291,28 @@ def test_preview_draft_survives_reload_without_rewriting_component_or_source(spi
     exercise(False)
     assert (component / 'spine-resource.json').read_bytes() == original
     assert (source / 'skeleton.json').read_bytes() == source_before
+
+
+def test_preparation_declares_texture_encoding_and_playable_skins(spine_resource, tmp_path):
+    from app.config.visual_archive import import_visual_archive
+    root, _, _ = spine_resource
+    prepared = tmp_path / 'pma'
+    prepare(root, prepared, premultiplied_alpha=True, exclude_skins=['default'])
+    archive = export_components(prepared, tmp_path / 'archives')[0]
+    target = tmp_path / 'imported'; target.mkdir()
+    resource = import_visual_archive(archive, target)
+    package = target / resource.root
+    description = describe_resource(json.loads((package / resource.entry).read_text()), lambda rel: package / rel)
+    assert description['rendererData']['config']['premultipliedAlpha'] is True
+    assert description['rendererData']['config']['defaultSkin'] == 'normal'
+    assert description['rendererData']['skins'] == ['normal', 'smile']
+    assert 'default' in json.loads((package / 'model/skeleton.json').read_text())['skins']
+    with pytest.raises(ValueError, match='SPINE_CONTROL_INVALID'):
+        parse_preview_control(description['parserData'], {'skin': 'default'})
+
+
+@pytest.mark.parametrize('selectable', [[], ['unknown'], ['normal', 'normal'], 'normal'])
+def test_invalid_selectable_skins_are_rejected(spine_resource, selectable):
+    root, config, _ = spine_resource
+    with pytest.raises(ValueError, match='SPINE_CONFIG_INVALID'):
+        describe_resource({**config, 'selectableSkins': selectable}, lambda rel: root / rel)

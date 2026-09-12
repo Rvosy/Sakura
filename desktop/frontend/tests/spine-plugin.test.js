@@ -73,3 +73,24 @@ test('skin changes preserve loop progress and the speed selected in the editor',
   assert.equal(controller.snapshot().playing, 'idle');
   assert.equal(controller.snapshot().speed, 2);
 });
+
+test('expression skins retain the base body and never expose a faceless base-only skin', () => {
+  const data = new spine.SkeletonData();
+  const bone = new spine.BoneData(0, 'root', null); data.bones.push(bone);
+  for (const [index, name] of ['body', 'face'].entries()) {
+    const slot = new spine.SlotData(index, name, bone); slot.attachmentName = name; data.slots.push(slot);
+  }
+  const base = new spine.Skin('default'); base.addAttachment(0, 'body', new spine.RegionAttachment('body'));
+  data.defaultSkin = base;
+  data.skins = [base, ...['normal', 'smile'].map(name => {
+    const skin = new spine.Skin(name); skin.addAttachment(1, 'face', new spine.RegionAttachment(name)); return skin;
+  })];
+  data.animations.push(new spine.Animation('idle', [], 1));
+  const skeleton = new spine.Skeleton(data);
+  const controller = createSpineController(skeleton, {defaultSkin:'normal', defaultAnimation:'idle', speed:1, selectableSkins:['normal','smile']}, {bindingId:'b',resourceId:'r'});
+  assert.deepEqual(skeleton.slots.map(slot => slot.attachment?.name), ['body','normal']);
+  const deliver = skin => controller.applyControl({version:1,bindingId:'b',resourceId:'r',state:{skin}}, {sequence:1});
+  assert.equal(deliver('default'), false);
+  assert.equal(deliver('smile'), true);
+  assert.deepEqual(skeleton.slots.map(slot => slot.attachment?.name), ['body','smile']);
+});

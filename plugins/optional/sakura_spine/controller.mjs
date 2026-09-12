@@ -10,7 +10,7 @@ export function createSpineController(skeleton, config, { bindingId, resourceId 
   let disposed = false;
   const validState = (state) => state && typeof state === 'object' && !Array.isArray(state)
     && Object.keys(state).every(key => ['skin', 'animation', 'speed'].includes(key))
-    && (state.skin === undefined || Boolean(skeleton.data.findSkin(state.skin)))
+    && (state.skin === undefined || Boolean(skeleton.data.findSkin(state.skin)) && (!config.selectableSkins || config.selectableSkins.includes(state.skin)))
     && (state.animation === undefined || Boolean(skeleton.data.findAnimation(state.animation)))
     && (state.speed === undefined || (Number.isFinite(state.speed) && state.speed >= 0.1 && state.speed <= 3));
   function restore() {

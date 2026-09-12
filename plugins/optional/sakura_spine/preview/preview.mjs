@@ -61,7 +61,7 @@ async function load(id) {
       onChange: config => {
         drafts.set(id, { config, revision: ++draftRevision });
         byId('saved').textContent = '未保存'; byId('save').disabled = false;
-      }, onPreview: preview });
+      }, onPreview: preview, onRenderingChange: () => load(id) });
     byId('saved').textContent = draft ? '未保存' : '';
     byId('save').disabled = !draft;
     byId('version').textContent = `Spine ${description.rendererData.runtimeVersion}`;

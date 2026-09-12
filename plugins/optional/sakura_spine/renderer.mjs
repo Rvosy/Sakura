@@ -64,7 +64,7 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
     const context = new spine.webgl.ManagedWebGLRenderingContext(gl);
     for (const [page, path] of Object.entries(rendererData.textures)) {
       const blob = await read(path, 'blob');
-      const bitmap = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+      const bitmap = await createImageBitmap(blob, { premultiplyAlpha: config.premultipliedAlpha ? 'none' : 'premultiply', colorSpaceConversion: 'none' });
       if (disposed || signal?.aborted) { bitmap.close(); checkActive(); }
       bitmaps.push(bitmap);
       if (Math.max(bitmap.width, bitmap.height) > gl.getParameter(gl.MAX_TEXTURE_SIZE)) throw new Error('SPINE_TEXTURE_TOO_LARGE');
@@ -82,7 +82,9 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
     shader = spine.webgl.Shader.newTwoColoredTextured(context);
     batcher = new spine.webgl.PolygonBatcher(context);
     const painter = new spine.webgl.SkeletonRenderer(context);
-    painter.premultipliedAlpha = config.premultipliedAlpha;
+    // Both source encodings reach the GPU as premultiplied colors. This also
+    // keeps framebuffer alpha correct when translucent slots overlap.
+    painter.premultipliedAlpha = true;
     const matrix = new spine.webgl.Matrix4();
     const centerX = offset.x + size.x / 2, centerY = offset.y + size.y / 2;
     function resize() {

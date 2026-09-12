@@ -25,6 +25,7 @@ updated: 2026-09-12
   "skeleton": "model/skeleton.json",
   "atlas": "model/skeleton.atlas",
   "defaultSkin": "normal",
+  "selectableSkins": ["normal", "smile"],
   "defaultAnimation": "idle",
   "speed": 1,
   "modelControls": ["skin"],
@@ -33,9 +34,18 @@ updated: 2026-09-12
 ```
 
 `version`、`skeleton`、`atlas` 必填，其余字段可省略。默认循环优先选 `idle`，否则选第一项；
-默认皮肤优先选 `default`，否则选第一项；默认速度为 1，默认不使用预乘 alpha。
+默认皮肤从可选列表中优先选 `default`，否则选第一项；默认速度为 1，默认输入为普通透明贴图。
 示例资源导入工具遇到 `normal` 皮肤会显式设为初始皮肤，避免把仅含共享部件的 `default` 当作完整表情。
 配置只接受上述字段。皮肤和动画名必须存在，速度是 0.1–3 的有限数，布尔值不作为数字接受。
+
+`selectableSkins` 可选，用于声明可切换的完整表情；必须是实际皮肤名称的非空子集，不允许重复，
+`defaultSkin` 必须在其中。省略时使用全部皮肤。编辑器、提示词、Schema、模型解析和前端控制使用同一候选范围。
+隐藏皮肤仍保留在骨骼内，继续参与 Spine 的附件回退。例如只有基础部件的 `default` 可以隐藏，
+由 `normal` 提供正常五官；不会把多个表情叠加。界面将原始 `default` 标为“基础皮肤”。
+
+`premultipliedAlpha` 声明输入贴图的颜色编码，已预乘的素材必须设为 `true`，不通过文件名或像素猜测。
+渲染器将普通透明输入转换为预乘纹理，已预乘输入直接上传；两者统一使用预乘颜色合成到透明画布，
+避免半透明部件重叠时重复衰减透明度。原始贴图文件不改写。
 
 `modelControls` 是当前资源开放给模型的字段列表，只能包含下表中的字段，不允许重复。
 省略时，只有一个动画的资源默认只开放 `skin`；多动画资源保留四个字段。作者也可显式选择子集，
@@ -113,12 +123,14 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 `onLayout` 目前报告 CSS 像素尺寸和初始可见范围，仅供预览布局，不宣称已支持原生 alpha 命中和鼠标穿透。
 视口按初始动画姿态固定，动作不会驱动相机缩放。音频、交互驱动和多骨骼特效编排后续另行接入。
 
-`editor.mjs` 导出 `createEditor({container, rendererData, onChange?, onPreview?})`，返回 `getDraft()` 和 `dispose()`。
-编辑器提供皮肤、循环动画和速度编辑，动作按钮只触发预览，不把一次动作写为默认设置。
+`editor.mjs` 导出 `createEditor({container, rendererData, onChange?, onPreview?, onRenderingChange?})`，返回 `getDraft()` 和 `dispose()`。
+编辑器提供皮肤、循环动画、速度和贴图透明方式编辑，动作按钮只触发预览，不把一次动作写为默认设置。
 `onChange` 得到独立配置副本。`onPreview(payload)` 是用户在编辑页的操作，由宿主调用插件的
 `parse_preview_control()` 校验实际资源名称和参数范围，再交给渲染器。编辑预览可调整速度，
 不扩展模型的控制范围；不能把模型产生的数据送到编辑预览入口。
-单动画资源省略动画选择和一次动作按钮，保留表情与速度编辑。
+单动画资源省略动画选择和一次动作按钮，保留表情、速度与贴图透明方式编辑。
+透明方式变化通过 `onRenderingChange(config)` 重新加载预览，保留当前表情和速度；保存、重开与导出保留该配置。
+旧包可以在编辑器中修正透明方式并选择完整表情，无需重新导入。
 编辑器使用独立 DOM 区域，不执行文件操作；草稿、恢复和发布属于宿主。
 
 正式编辑入口 `mountEditor({container, data, host, signal})` 返回 `ready/collect/validate/destroy`，
@@ -132,6 +144,8 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 `127.0.0.1`，使用同一插件的说明、解析器、renderer 和 editor。保存仅写输出组件的 `spine-draft.json`，
 重新选择资源或重启后读取草稿。它不连接实际角色目录、模型服务或聊天会话。
 `/api/control` 使用模型解析器，`/api/preview` 使用编辑预览校验；二者不共用模型权限。
+准备已预乘贴图时显式使用 `--premultiplied-alpha`；通过可重复的 `--exclude-skin NAME`
+排除不完整表情，例如 `--exclude-skin default`，不删除对应骨骼数据。
 原始游戏中独立特效的触发位置、时间和层次无法从骨骼名单推断，工具跳过没有独立布局的特效并记录原因。
 
 准备后的组件独立声明 `spine-resource.json`，骨骼和图集统一为 `model/skeleton.json`、`model/skeleton.atlas`，

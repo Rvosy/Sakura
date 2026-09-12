@@ -27,7 +27,7 @@ def resolve_inside(root, relative):
     return path
 
 
-def prepare(source: Path, output: Path):
+def prepare(source: Path, output: Path, *, premultiplied_alpha=False, exclude_skins=()):
     source = source.resolve(strict=True)
     output = output.resolve()
     if output.exists():
@@ -46,7 +46,10 @@ def prepare(source: Path, output: Path):
             continue
         skeleton.relative_to(source)
         config = {'version': 1, 'skeleton': skeleton.relative_to(source).as_posix(), 'atlas': atlas.relative_to(source).as_posix()}
-        if 'normal' in data.get('skins', {}):
+        config['premultipliedAlpha'] = premultiplied_alpha
+        if exclude_skins:
+            config['selectableSkins'] = [name for name in data.get('skins', {}) if name not in exclude_skins]
+        if 'normal' in data.get('skins', {}) and 'normal' not in exclude_skins:
             config['defaultSkin'] = 'normal'
         description = describe_resource(config, lambda rel: resolve_inside(source, rel))
         # Effect-only skeletons have no standalone layout; retain them in source,
@@ -243,6 +246,8 @@ def main():
     preparation = sub.add_parser('prepare')
     preparation.add_argument('source', type=Path)
     preparation.add_argument('output', type=Path)
+    preparation.add_argument('--premultiplied-alpha', action='store_true', help='输入贴图已预乘透明度')
+    preparation.add_argument('--exclude-skin', action='append', default=[], help='保留资源但不将此皮肤暴露为可选表情')
     preview = sub.add_parser('serve')
     preview.add_argument('root', type=Path)
     preview.add_argument('--port', type=int, default=8786)
@@ -251,7 +256,7 @@ def main():
     export.add_argument('output', type=Path)
     args = parser.parse_args()
     if args.command == 'prepare':
-        result = prepare(args.source, args.output)
+        result = prepare(args.source, args.output, premultiplied_alpha=args.premultiplied_alpha, exclude_skins=args.exclude_skin)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == 'export':
         print('\n'.join(str(path) for path in export_components(args.root, args.output)))

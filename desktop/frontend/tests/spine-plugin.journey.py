@@ -64,7 +64,44 @@ def fixture(root):
     return root / 'components'
 
 
+def verify_alpha_compositing(browser, origin, root):
+    from PIL import Image
+    from io import BytesIO
+    page = browser.new_page(viewport={'width': 160, 'height': 160}, device_scale_factor=1)
+    samples = []
+    for pma in [False, True]:
+        package = root / ('pma' if pma else 'straight'); package.mkdir()
+        Image.new('RGBA', (8, 8), (100, 50, 25, 128) if pma else (200, 100, 50, 128)).save(package / 'texture.png')
+        attachment = {'type': 'region', 'path': 'body', 'width': 100, 'height': 100}
+        skeleton = {'skeleton': {'spine': '3.6.53'}, 'bones': [{'name': 'root'}],
+                    'slots': [{'name': name, 'bone': 'root', 'attachment': 'body'} for name in ['back', 'front']],
+                    'skins': {'default': {name: {'body': attachment} for name in ['back', 'front']}}, 'animations': {'idle': {}}}
+        (package / 'skeleton.json').write_text(json.dumps(skeleton))
+        (package / 'skeleton.atlas').write_text('texture.png\nsize: 8,8\nformat: RGBA8888\nfilter: Linear,Linear\nrepeat: none\nbody\n  rotate: false\n  xy: 0,0\n  size: 8,8\n  orig: 8,8\n  offset: 0,0\n  index: -1\n')
+        prefix = '/compositing/' + package.name; Handler.assets[prefix] = package
+        assets = {name: origin + prefix + '/' + name.encode().hex() for name in ['texture.png', 'skeleton.json', 'skeleton.atlas']}
+        page.goto(origin + '/desktop/frontend/prototypes/asr/')
+        page.evaluate("""async ({assets,pma}) => {
+            document.body.replaceChildren(); Object.assign(document.body.style,{margin:'0',background:'#19262a'});
+            const container=document.createElement('div');Object.assign(container.style,{width:'160px',height:'160px'});document.body.append(container);
+            const {createRenderer}=await import('/plugins/optional/sakura_spine/renderer.mjs');
+            window.alphaRenderer=await createRenderer({container,rendererData:{runtimeVersion:'3.6.53',textures:{'texture.png':'texture.png'},
+              config:{skeleton:'skeleton.json',atlas:'skeleton.atlas',defaultSkin:'default',defaultAnimation:'idle',speed:1,premultipliedAlpha:pma}},
+              bindingId:'alpha',resourceId:'alpha',signal:new AbortController().signal,resolveAssetUrl:path=>assets[path]});
+            alphaRenderer.setPaused(true);
+        }""", {'assets': assets, 'pma': pma})
+        sample = Image.open(BytesIO(page.locator('canvas').screenshot())).convert('RGB').getpixel((80, 80))
+        # Two 50% opaque layers: correct source-over alpha is 75%, not alpha squared.
+        expected = (157, 85, 48)
+        assert all(abs(actual-wanted) <= 3 for actual,wanted in zip(sample, expected)), (pma, sample)
+        samples.append(sample)
+        page.evaluate('alphaRenderer.dispose()')
+    assert all(abs(a-b) <= 2 for a,b in zip(*samples)), samples
+    page.close()
+
+
 def run(components=None):
+    real_components = components is not None
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(ROOT)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f'http://127.0.0.1:{server.server_port}'
@@ -115,6 +152,7 @@ def run(components=None):
                                 item['previewUrl'] = origin + prefix + '/' + path.name.encode().hex()
                     return result
                 browser = playwright.chromium.launch(channel=os.environ.get('SAKURA_BROWSER_CHANNEL') or ('msedge' if sys.platform == 'win32' else None))
+                verify_alpha_compositing(browser, origin, root)
                 page = browser.new_page(viewport={'width': 1274, 'height': 900})
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
@@ -134,6 +172,23 @@ def run(components=None):
                     expect(page.locator('canvas.spine-canvas')).to_be_visible()
                     page.get_by_role('button', name='微笑', exact=True).click()
                     speed.fill('1.5')
+                    source_resource = catalog['models'][index]['resource']
+                    source_config = json.loads((components / source_resource['root'] / source_resource['entry']).read_text())
+                    alpha = page.get_by_role('combobox', name='贴图透明方式', exact=True)
+                    original_alpha = str(source_config['premultipliedAlpha']).lower()
+                    expect(alpha).to_have_value(original_alpha)
+                    if 'selectableSkins' in source_config:
+                        expect(page.get_by_role('button', name='基础皮肤', exact=True)).to_have_count(0)
+                    # Recreate the renderer and retain the rest of the draft.
+                    # The synthetic fixture saves a changed encoding to test persistence.
+                    saved_alpha = original_alpha if real_components else 'true'
+                    for value in (['false' if original_alpha == 'true' else 'true', saved_alpha] if real_components else [saved_alpha]):
+                        previous = page.locator('canvas.spine-canvas').element_handle()
+                        alpha.select_option(value)
+                        page.wait_for_function('(canvas) => !canvas.isConnected', arg=previous)
+                        expect(alpha).to_have_value(value)
+                        expect(speed).to_have_value('1.5')
+                        expect(page.get_by_role('button', name='微笑', exact=True)).to_have_attribute('aria-pressed', 'true')
                     page.locator('#saveButton').click()
                     expect(page.locator('#saveButton')).to_be_enabled(timeout=20000)
                     page.reload()
@@ -143,6 +198,7 @@ def run(components=None):
                     expect(speed).to_have_value('1.5', timeout=20000)
                     expect(speed).to_be_visible()
                     expect(speed).to_be_enabled()
+                    expect(alpha).to_have_value(saved_alpha)
                     page.wait_for_function("!document.querySelector('#expressionList').inert")
                     expect(page.get_by_role('button', name='微笑', exact=True)).to_have_attribute('aria-pressed', 'true')
                     page.locator('canvas.spine-canvas').scroll_into_view_if_needed()
@@ -154,6 +210,8 @@ def run(components=None):
                     projection = application.application.export_visual_resource(_load_profile(package / 'character.json'), resource)
                     assert projection['pluginRequirements'][0]['plugins'][0]['id'] == 'sakura.visual.spine'
                     assert projection['data']['defaultSkin'] == 'smile' and projection['data']['speed'] == 1.5
+                    assert projection['data']['premultipliedAlpha'] == (saved_alpha == 'true')
+                    assert projection['data'].get('selectableSkins') == source_config.get('selectableSkins')
                     assert len(projection['assets']) >= 3
                     binding = application.application.visuals.bind('sample', package, resource)
                     visual = binding.presentation()

@@ -10,7 +10,10 @@ function relative(value) {
 export async function readEditorResource(config, read) {
   const skeleton = await read(relative(config.skeleton), 'json');
   if (!/^3\.6\.\d+$/.test(skeleton.skeleton?.spine)) throw new Error('SPINE_VERSION_UNSUPPORTED');
-  const skins = Object.keys(skeleton.skins || {}), animations = Object.keys(skeleton.animations || {});
+  const allSkins = Object.keys(skeleton.skins || {}), animations = Object.keys(skeleton.animations || {});
+  const skins = 'selectableSkins' in config ? config.selectableSkins : allSkins;
+  if (!Array.isArray(skins) || !skins.length || new Set(skins).size !== skins.length
+    || skins.some(name => !allSkins.includes(name))) throw new Error('SPINE_CONFIG_INVALID');
   if (!skins.length || !animations.length || !skeleton.bones?.length) throw new Error('SPINE_SKELETON_INCOMPLETE');
   const atlas = relative(config.atlas), prefix = atlas.slice(0, atlas.lastIndexOf('/') + 1);
   const text = await read(atlas, 'text');
@@ -23,6 +26,7 @@ export async function readEditorResource(config, read) {
   const normalized = { version: 1, defaultSkin: skins.includes('default') ? 'default' : skins[0],
     defaultAnimation: animations.includes('idle') ? 'idle' : animations[0], speed: 1, premultipliedAlpha: false,
     modelControls: animations.length === 1 ? ['skin'] : ['skin', 'animation', 'speed', 'action'], ...config };
+  if (!skins.includes(normalized.defaultSkin)) throw new Error('SPINE_DEFAULT_INVALID');
   return { runtimeVersion: skeleton.skeleton.spine, config: normalized, skins, animations, textures };
 }
 
@@ -75,7 +79,7 @@ export function mountEditor({ container, data, host, signal }) {
       controls = createEditor({ container: panel, rendererData, onChange(value) {
         if (signal.aborted || current !== revision) return;
         draft = value; host.changed(draft);
-      }, onPreview(payload) {
+      }, onRenderingChange: value => load(value, true), onPreview(payload) {
         if (signal.aborted || current !== revision) return;
         const { action, ...state } = payload;
         if (!candidate.applyControl({ version: 1, bindingId: 'editor', resourceId: 'editor', state,

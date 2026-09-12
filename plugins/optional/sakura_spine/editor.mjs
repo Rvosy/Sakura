@@ -1,8 +1,8 @@
-const skinLabels = { default: '默认', normal: '平静', anger: '生气', sad: '难过', shy: '害羞', smile: '微笑', surprise: '惊讶' };
+const skinLabels = { default: '基础皮肤', normal: '平静', anger: '生气', sad: '难过', shy: '害羞', smile: '微笑', surprise: '惊讶' };
 const animationLabels = { idle: '待机', attack: '攻击', damage: '受伤', death: '倒下', dying: '虚弱', skill: '技能', home: '展示', animation: '动画' };
 export function labelFor(name, type) { return (type === 'skin' ? skinLabels : animationLabels)[name] || name; }
 
-export function createEditor({ container, rendererData, onChange = () => {}, onPreview = () => {} }) {
+export function createEditor({ container, rendererData, onChange = () => {}, onPreview = () => {}, onRenderingChange = () => {} }) {
   let draft = structuredClone(rendererData.config);
   const element = document.createElement('div');
   const root = element.attachShadow({ mode: 'open' });
@@ -78,6 +78,21 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
     actions.append(button);
   }
   if (rendererData.animations.length > 1) root.append(actions);
+  const alphaLabel = document.createElement('label');
+  alphaLabel.textContent = '贴图透明方式';
+  const alpha = document.createElement('select');
+  for (const [value, text] of [['false', '普通透明'], ['true', '预乘透明（PMA）']]) {
+    const option = document.createElement('option'); option.value = value; option.textContent = text; alpha.append(option);
+  }
+  alpha.value = String(draft.premultipliedAlpha);
+  alpha.setAttribute('aria-label', '贴图透明方式');
+  alpha.addEventListener('change', () => {
+    draft.premultipliedAlpha = alpha.value === 'true'; changed();
+    Promise.resolve(onRenderingChange(structuredClone(draft))).catch(() => {
+      if (!disposed) error.textContent = '预览失败，请重新加载';
+    });
+  }, { signal: events.signal });
+  alphaLabel.append(alpha); root.append(alphaLabel);
   root.append(error);
   container.append(element);
   return { getDraft: () => structuredClone(draft), freeze() { events.abort(); element.inert = true; },
