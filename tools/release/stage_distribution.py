@@ -30,6 +30,7 @@ BUILTIN_PLUGINS = {
     "sakura_gpt_sovits",
 }
 BUNDLED_DEPENDENCY_DIRECTORIES = {
+    "sakura_web",
     "sakura_asr_sensevoice",
     "sakura_mem0",
     "sakura_genie",
