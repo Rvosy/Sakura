@@ -747,11 +747,12 @@
     },
     {
       "id": "runtime-v2-asr-python-journey",
-      "description": "验证独立 ASR Hub/Provider 进程、取消、至多一次结果、授权与资源清理",
+      "description": "验证独立 ASR Hub/Provider 进程、重载隔离、取消、至多一次结果、授权与资源清理",
       "argv": [
         "{python}", "-m", "pytest", "-q",
         "tests/unit/test_asr_input.py",
-        "tests/unit/test_asr_plugins.py"
+        "tests/unit/test_asr_plugins.py",
+        "tests/unit/test_asr_service_binding.py"
       ],
       "timeout_seconds": 180,
       "env": {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"}

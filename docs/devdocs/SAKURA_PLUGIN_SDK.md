@@ -403,6 +403,12 @@ state = provider.poll(job_id)
 现有 TTS Hub 在 `begin` 前绑定 Provider，就绪查询 `status`、受理以及该任务的全部 `poll/cancel` 使用同一代理。
 Provider 崩溃并由用户重载后，新任务可以绑定新进程；即使新进程重复使用旧 `jobId`，旧任务也不能读到或取消它。
 
+ASR Hub 同样通过 `bind()` 保存每项识别任务的 Provider 代理。Core 输入消费者固定原 Hub 实例，
+在接收成功结果后及首次向 UI 交付文本前核对 Hub 与 Provider 身份，避免重载期间的旧识别结果回填当前草稿。
+单独检查 scope 后再使用 `get()` 调用不能代替绑定：提供者可能在检查与派发之间被替换。
+音频读取仍使用 Host 授权和租约，绑定不增加录音访问权限。ASR 入口将实例失效报告为
+`ASR_PROVIDER_UNAVAILABLE`，取消结果不因迟到返回而改变；详见 [ASR 语音输入](../specs/runtime-v2/asr-voice-input.md)。
+
 ### 配置
 
 插件目录中的 `config.json` 提供默认值，用户覆盖保存在插件自己的数据目录。可用方法为：

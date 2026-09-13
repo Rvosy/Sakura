@@ -199,6 +199,12 @@ class PluginRuntimeApplication:
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         return self._manager.call_service(service_key, method, *args)
 
+    def call_bound_service(self, service_key, identity, method, *args):
+        return self._manager.call_bound_service(service_key, identity, method, *args)
+
+    def commit_bound_service(self, service_key, identity, commit):
+        return self._manager.commit_bound_service(service_key, identity, commit)
+
     def execution_candidates(self):
         return self._executors.candidates()
 
