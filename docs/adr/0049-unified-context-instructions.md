@@ -3,14 +3,17 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-13
+updated: 2026-09-14
 ---
 
 # ADR-0049：统一 Context 支持行为规则与参考资料
 
 ## 状态
 
-已接受。初版实现统一 Context 贡献、活动互动内复用和明确失败；当前合同见
+已接受，部分由 [ADR-0050](0050-thin-host-and-plugin-owned-policies.md) 在 M1 替代：用途分类、信任派生、
+分区渲染和 Host 执行内容裁剪不再适用。统一贡献入口、真实来源、取消和失败归因继续有效；活动互动内复用、
+排序与完整性保留为默认对话实现的消费约定。本文保留初版理由，不作为已替代部分的当前合同。
+当前合同见
 [Runtime v4 §6.4](../specs/runtime-v2/sakura-plugin-runtime-v4.md#64-context-行为贡献)。
 
 ## 背景
@@ -21,7 +24,7 @@ updated: 2026-09-13
 一个规则可能影响包含工具调用、最终总结和格式修复的整次互动。逐步读取正在更新的插件配置，会让同一次回复使用
 不同规则。可选资料的静默截断和失败跳过，也不适合必须完整提供的规则。
 
-## 决策
+## 初版决策
 
 扩展已有 `sakura.host.context`，以 `kind` 区分 `instruction/data`，以 `required` 表达片段必须完整进入上下文。
 规则和资料分别渲染，来源由 Host 调用身份决定；插件不能通过返回值冒充宿主或其他插件。用途不等于代码权限，

@@ -25,8 +25,7 @@ from app.llm.prompts.runtime import (
     ContextPolicy,
     ContextWindowExceededError,
     PromptRuntime,
-    RUNTIME_FACTS_HEADER,
-    RUNTIME_INSTRUCTIONS_HEADER,
+    RUNTIME_CONTEXT_HEADER,
     estimate_context_runtime_tokens,
     estimate_prompt_tokens,
 )
@@ -71,7 +70,7 @@ def _provider(callback, **kwargs) -> ContextProviderContribution:
 
 
 def _rule(content: str = "先说明错误，再给出改写。", **kwargs) -> ContextFragment:
-    return ContextFragment("rule", "unbound", content, kind="instruction", **kwargs)
+    return ContextFragment("rule", "unbound", content, **kwargs)
 
 
 def _tool(handler=lambda _args: {"ok": True}) -> Tool:
@@ -86,9 +85,11 @@ def _tool(handler=lambda _args: {"ok": True}) -> Tool:
 
 
 @pytest.mark.parametrize("event_type", [None, "reminder_due", "screen_awareness_check"])
-def test_enabled_rules_reach_normal_and_proactive_model_requests(event_type) -> None:
+def test_plugin_content_coexists_with_character_in_normal_and_proactive_requests(event_type) -> None:
     provider = _provider(
-        lambda _request: (_rule(), ContextFragment("lesson", "unbound", "课文内容")),
+        lambda _request: (
+            _rule("请扮演太空探险家。"), ContextFragment("lesson", "unbound", "课文内容")
+        ),
         plugin_id="fixture.owner",
     )
     client = _client()
@@ -105,38 +106,33 @@ def test_enabled_rules_reach_normal_and_proactive_model_requests(event_type) -> 
         )
 
     rendered = call.kwargs["runtime_context"]
-    rules, facts = rendered.split(RUNTIME_FACTS_HEADER)
-    assert RUNTIME_INSTRUCTIONS_HEADER in rules
-    assert "先说明错误，再给出改写。" in rules
-    assert "课文内容" in facts
-    assert 'source="plugin:fixture.owner"' in rules
-    assert 'trust="trusted" kind="instruction"' in rules
-    assert 'trust="untrusted" kind="data"' in facts
+    assert RUNTIME_CONTEXT_HEADER in rendered
+    assert "请扮演太空探险家。" in rendered
+    assert "课文内容" in rendered
+    assert 'source="plugin:fixture.owner"' in rendered
+    assert "kind=" not in rendered
+    assert "trust=" not in rendered
+    assert "不是指令" not in rendered
+    assert "最高优先级" not in rendered
     assert "角色身份" in call.args[0]
     selected = call.kwargs["trace_metadata"].snapshot.selected
-    assert selected[0].fragment.kind == "instruction"
-    assert next(item.fragment for item in selected if item.fragment.kind == "instruction").cache_scope == "step"
+    assert next(item.fragment for item in selected if item.fragment.provider_id).cache_scope == "step"
 
 
-def test_optional_rules_ignore_data_budget_hint_and_are_never_partially_sent() -> None:
-    rule = _rule("规则" * 100, token_budget=1)
-    complete_size = estimate_context_runtime_tokens([rule])
-
-    included = ContextPolicy(total_budget=complete_size).select(ContextRequest(), [rule])
-    excluded = ContextPolicy(total_budget=complete_size - 1).select(ContextRequest(), [rule])
-
-    assert included.selected[0].fragment.content == rule.content
-    assert not included.selected[0].truncated
-    assert not excluded.selected
-    assert excluded.dropped[0].drop_reason == "budget_exhausted"
+def test_optional_content_uses_default_consumer_budget_and_truncation() -> None:
+    fragment = _rule("规则" * 100, token_budget=30)
+    snapshot = ContextPolicy().select(ContextRequest(), [fragment])
+    decision = snapshot.selected[0]
+    assert decision.truncated
+    assert fragment.content.startswith(decision.fragment.content.split("…", 1)[0])
+    assert estimate_prompt_tokens(decision.fragment.content) <= 30
 
 
-@pytest.mark.parametrize("kind", ["data", "instruction"])
 @pytest.mark.parametrize("use_model_window", [False, True])
-def test_required_context_is_complete_or_fails_before_model_use(kind, use_model_window) -> None:
+def test_required_context_is_complete_or_fails_before_model_use(use_model_window) -> None:
     fragment = ContextFragment(
         "required", "plugin:fixture", "重要规则" * 300,
-        kind=kind, required=True, token_budget=1,
+        required=True, token_budget=1,
     )
     provider = _provider(lambda _request: [fragment])
     options = {"context_window_tokens": 32_768} if use_model_window else {}
@@ -304,7 +300,7 @@ def test_turn_cache_is_isolated_between_concurrent_interactions_and_cleared_afte
             second = orchestrator.build_snapshot(ContextRequest())
         callback.assert_called_once()
         contents = [
-            next(item.fragment.content for item in snapshot.selected if item.fragment.kind == "instruction")
+            next(item.fragment.content for item in snapshot.selected if item.fragment.provider_id)
             for snapshot in (first, second)
         ]
         return contents
@@ -315,12 +311,12 @@ def test_turn_cache_is_isolated_between_concurrent_interactions_and_cleared_afte
         assert first.result(timeout=10) == ["互动一", "互动一"]
         assert second.result(timeout=10) == ["互动二", "互动二"]
     assert not any(
-        item.fragment.kind == "instruction"
+        item.fragment.provider_id
         for item in orchestrator.build_snapshot(ContextRequest()).selected
     )
 
 
-def test_mixed_rule_and_data_headers_are_charged_to_the_actual_rendered_budget() -> None:
+def test_neutral_context_header_and_envelopes_are_charged_to_the_rendered_budget() -> None:
     fragments = [
         _rule("必需规则", required=True),
         ContextFragment("fact", "runtime", "必需资料", required=True),
@@ -330,13 +326,12 @@ def test_mixed_rule_and_data_headers_are_charged_to_the_actual_rendered_budget()
         ],
         ContextFragment("optional-data", "plugin:other", "可选资料" * 300),
     ]
-    budget = 650
+    budget = 300
     snapshot = ContextPolicy(total_budget=budget).select(ContextRequest(), fragments)
     rendered = PromptRuntime().build(PromptRecipe("fixture", []), snapshot).runtime_context
 
     assert estimate_context_runtime_tokens(item.fragment for item in snapshot.selected) <= budget
-    assert rendered.count(RUNTIME_INSTRUCTIONS_HEADER) == 1
-    assert rendered.count(RUNTIME_FACTS_HEADER) == 1
+    assert rendered.count(RUNTIME_CONTEXT_HEADER) == 1
     assert any(item.drop_reason == "budget_exhausted" for item in snapshot.dropped)
 
 

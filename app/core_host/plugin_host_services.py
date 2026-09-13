@@ -613,8 +613,7 @@ class _ContextHostService:
     def call(self, method: str, args: Sequence[Any]) -> object:
         if method == "describe" and not args:
             return {
-                "schemaVersion": 1,
-                "fragmentKinds": ["data", "instruction"],
+                "schemaVersion": 2,
                 "scopes": ["step", "turn"],
                 "failurePolicies": ["skip", "abort"],
             }
@@ -658,18 +657,11 @@ class _ContextHostService:
                 "context.contributor",
                 self._encode_request(request),
             )
-            if not isinstance(payload, list) or (
-                len(payload) > 16
-                and any(
-                    isinstance(item, Mapping)
-                    and (item.get("required") is True or item.get("kind") == "instruction")
-                    for item in payload
-                )
-            ):
+            if not isinstance(payload, list):
                 raise HostServiceError("CONTEXT_RESULT_INVALID")
             return tuple(
                 _context_fragment(item, index, scope=scope)
-                for index, item in enumerate(payload[:16])
+                for index, item in enumerate(payload)
             )
 
         contribution = ContextProviderContribution(
@@ -1832,22 +1824,19 @@ def _new_registration_id(existing: Mapping[str, Any]) -> str:
 
 def _context_fragment(value: object, index: int, *, scope: str = "step") -> ContextFragment:
     raw = _mapping(value, "CONTEXT_RESULT_INVALID")
+    if "kind" in raw:
+        raise HostServiceError("CONTEXT_SCHEMA_INCOMPATIBLE")
     content = raw.get("content")
     if not isinstance(content, str) or not content.strip():
         raise HostServiceError("CONTEXT_RESULT_INVALID")
-    kind = raw.get("kind", "data")
     required = raw.get("required", False)
-    if kind not in ("data", "instruction") or not isinstance(required, bool):
-        raise HostServiceError("CONTEXT_RESULT_INVALID")
-    if len(content) > 8192 and (required or kind == "instruction"):
+    if not isinstance(required, bool):
         raise HostServiceError("CONTEXT_RESULT_INVALID")
     sensitivity = raw.get("sensitivity", "private")
     return ContextFragment(
         fragment_id=str(raw.get("id") or index)[:64],
         source="plugin",
-        content=content[:8192],
-        kind=kind,
-        trust="trusted" if kind == "instruction" else "untrusted",
+        content=content,
         priority=_bounded_int(raw.get("priority"), 0, 100, 50),
         token_budget=_bounded_int(raw.get("budgetHint"), 1, 4096, 512),
         sensitivity=(

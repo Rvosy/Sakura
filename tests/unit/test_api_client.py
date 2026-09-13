@@ -127,14 +127,14 @@ def test_complete_raw_does_not_log_request_body(monkeypatch) -> None:  # type: i
 
 
 @pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
-def test_runtime_role_fallback_preserves_rule_and_data_purposes(
+def test_runtime_role_fallback_preserves_unclassified_context(
     monkeypatch: pytest.MonkeyPatch, method: str,
 ) -> None:
     client = OpenAICompatibleClient(ApiSettings("https://example.invalid/v1", "fixture", "model"))
     snapshot = ContextPolicy().select(ContextRequest(), [
         ContextFragment(
             "rule", "plugin:fixture", "用简短的句子回答。",
-            kind="instruction", required=True, trust="trusted",
+            required=True,
         ),
         ContextFragment("reference", "plugin:fixture", "这是一段参考资料。"),
     ])
@@ -158,8 +158,10 @@ def test_runtime_role_fallback_preserves_rule_and_data_purposes(
     assert fallback["role"] == "user"
     prefix, retained_context = fallback["content"].split("\n", 1)
     assert retained_context == runtime_context
-    assert 'kind="instruction"' in retained_context
-    assert 'kind="data"' in retained_context
+    assert "用简短的句子回答。" in retained_context
+    assert "这是一段参考资料。" in retained_context
+    assert 'kind=' not in retained_context
+    assert 'trust=' not in retained_context
     assert "facts" not in prefix.lower()
     assert "host" in prefix.lower()
 

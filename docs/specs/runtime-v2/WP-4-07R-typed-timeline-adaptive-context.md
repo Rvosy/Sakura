@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-13
+updated: 2026-09-14
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -244,9 +244,11 @@ Legacy Qt 可以暂时保留旧限制，但不得影响 Runtime v2 resolved budg
 
 ### 7.4 行为贡献与本轮采集
 
-插件可通过统一 Context 入口返回规则和资料，完整合同见 [Runtime v4 §6.4](sakura-plugin-runtime-v4.md#64-context-行为贡献)。
-本轮规则的临时缓存只属于活动调用，供模型各步骤复用；它不改变第 6 节历史投影的无状态要求，
-也不创建持久 Turn cache。回调失败策略和片段完整性由插件显式声明，旧插件保持可选资料语义。
+插件通过统一 Context 入口提供自行组织的文本，不声明用途或信任分类；当前合同见
+[Runtime v4 §6.4](sakura-plugin-runtime-v4.md#64-context-行为贡献)。M1 已将旧可选内容的 16 条/8192 字符裁剪移到默认消费者，
+Host 传递完整贡献并保留来源与有界传输检查。必需内容完整保留，放不下时报告模型预算不足。
+本轮内容的临时缓存只属于活动调用，供模型各步骤复用；它不改变第 6 节历史投影的无状态要求，也不创建持久 Turn cache。
+回调失败、复用和片段完整性是默认对话实现的消费约定，旧无分类插件保持可选内容行为；默认对话策略迁入独立插件仍属 M4。
 
 ## 8. Memory 与其他插件
 

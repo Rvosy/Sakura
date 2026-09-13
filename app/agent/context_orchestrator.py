@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 MAX_VISUAL_SUMMARIES = 6
 MAX_VISUAL_SUMMARY_CHARS = 500
+DEFAULT_MAX_OPTIONAL_PROVIDER_FRAGMENTS = 16
+DEFAULT_MAX_OPTIONAL_FRAGMENT_CHARS = 8192
 
 
 class ContextContributionError(RuntimeError):
@@ -67,7 +69,7 @@ class _ContextTurnState:
 
 
 class ContextOrchestrator:
-    """收集插件规则和事实，经统一策略选择后生成 ContextSnapshot。"""
+    """默认对话消费者：收集贡献、复用轮次结果并选择模型上下文。"""
 
     def __init__(self, policy: ContextPolicy | None = None) -> None:
         self.policy = policy or ContextPolicy()
@@ -234,7 +236,6 @@ def _builtin_fragments(request: ContextRequest) -> list[ContextFragment]:
             fragment_id="runtime.time",
             source="runtime",
             content=f"当前本地时间：{request.current_time}",
-            trust="trusted",
             priority=100,
             token_budget=128,
             sensitivity="public",
@@ -248,7 +249,6 @@ def _builtin_fragments(request: ContextRequest) -> list[ContextFragment]:
                 f"当前 Agent 循环是第 {request.step_index + 1} 步，"
                 f"之后最多还可以继续 {request.remaining_steps} 步。"
             ),
-            trust="trusted",
             priority=100,
             token_budget=128,
             sensitivity="public",
@@ -280,6 +280,7 @@ def _collect_provider_fragments(
             check_cancelled(cancel_checker)
             if not isinstance(provided, Sequence) or isinstance(provided, (str, bytes)):
                 raise ValueError("CONTEXT_RESULT_INVALID")
+            optional_count = 0
             for index, fragment in enumerate(provided):
                 if not isinstance(fragment, ContextFragment):
                     if provider.failure_policy == "abort":
@@ -292,13 +293,19 @@ def _collect_provider_fragments(
                     continue
                 if fragment.required and not fragment.content.strip():
                     raise ContextContributionError(provider.provider_id, provider.plugin_id)
+                if not fragment.required:
+                    optional_count += 1
+                    if optional_count > DEFAULT_MAX_OPTIONAL_PROVIDER_FRAGMENTS:
+                        continue
+                    fragment = replace(
+                        fragment, content=fragment.content[:DEFAULT_MAX_OPTIONAL_FRAGMENT_CHARS]
+                    )
                 local_id = fragment.fragment_id.strip() or str(index)
                 normalized.append(
                     replace(
                         fragment,
                         fragment_id=f"plugin.{provider.provider_id}.{local_id}",
                         source=f"plugin:{provider.plugin_id or provider.provider_id}",
-                        trust="trusted" if fragment.kind == "instruction" else "untrusted",
                         cache_scope=provider.scope,
                         provider_id=provider.provider_id,
                         provider_order=provider.order,

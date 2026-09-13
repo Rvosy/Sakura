@@ -4,8 +4,9 @@ from collections.abc import Mapping
 from typing import Any
 
 
-DEFAULT_RULES = "用简短、自然的句子回答。先回答用户的问题；用户要求详细解释时再展开。"
-MAX_TEXT_LENGTH = 4096
+DEFAULT_CONTENT = "用简短、自然的句子回答。先回答用户的问题；用户要求详细解释时再展开。"
+# Preserve both previously valid 4096-character fields and their separator.
+MAX_TEXT_LENGTH = 4096 * 2 + 2
 SETTINGS_SECTION_ID = "context_rules"
 
 
@@ -14,7 +15,7 @@ class ContextRulesPlugin:
 
     def setup(self, context: Any) -> None:
         contributions = context.get("sakura.host.context")
-        _require_instruction_context(contributions)
+        _require_content_context(contributions)
         config = context.config
         values = _config_values(config.get())
 
@@ -24,24 +25,10 @@ class ContextRulesPlugin:
             return "applied"
 
         def collect(_request: Mapping[str, Any]) -> list[dict[str, Any]]:
-            current = values
-            fragments: list[dict[str, Any]] = []
-            if current["rules"].strip():
-                fragments.append({
-                    "id": "rules",
-                    "kind": "instruction",
-                    "content": current["rules"],
-                    "required": True,
-                    "budgetHint": 4096,
-                })
-            if current["reference"].strip():
-                fragments.append({
-                    "id": "reference",
-                    "kind": "data",
-                    "content": current["reference"],
-                    "budgetHint": 2048,
-                })
-            return fragments
+            content = values["content"]
+            if not content.strip():
+                return []
+            return [{"id": "content", "content": content, "required": True}]
 
         def save(updated: Mapping[str, Any]) -> object:
             normalized = _config_values({**config.get(), **updated})
@@ -51,7 +38,7 @@ class ContextRulesPlugin:
         contributions.register(
             {
                 "providerId": context.plugin_id,
-                "description": "用户设置的对话行为规则和参考资料。",
+                "description": "用户填写的对话上下文。",
                 "order": 50,
                 "scope": "turn",
                 "failurePolicy": "abort",
@@ -65,17 +52,10 @@ class ContextRulesPlugin:
                 "order": 50,
                 "fields": [
                     {
-                        "key": "rules",
-                        "label": "行为规则",
+                        "key": "content",
+                        "label": "上下文",
                         "type": "string",
-                        "default": DEFAULT_RULES,
-                        "maxLength": MAX_TEXT_LENGTH,
-                    },
-                    {
-                        "key": "reference",
-                        "label": "参考资料",
-                        "type": "string",
-                        "default": "",
+                        "default": DEFAULT_CONTENT,
                         "maxLength": MAX_TEXT_LENGTH,
                     },
                 ],
@@ -85,29 +65,30 @@ class ContextRulesPlugin:
         )
 
 
-def _require_instruction_context(service: Any) -> None:
+def _require_content_context(service: Any) -> None:
     describe = getattr(service, "describe", None)
     capabilities = describe() if callable(describe) else None
     if not (
         isinstance(capabilities, Mapping)
-        and capabilities.get("schemaVersion") == 1
-        and isinstance(capabilities.get("fragmentKinds"), list)
-        and {"instruction", "data"}.issubset(capabilities["fragmentKinds"])
+        and capabilities.get("schemaVersion") == 2
         and isinstance(capabilities.get("scopes"), list)
         and "turn" in capabilities["scopes"]
         and isinstance(capabilities.get("failurePolicies"), list)
         and "abort" in capabilities["failurePolicies"]
     ):
         raise RuntimeError(
-            "CONTEXT_RULES_HOST_UNSUPPORTED: 当前 Sakura 不支持对话行为规则，请使用支持此功能的构建。"
+            "CONTEXT_RULES_HOST_UNSUPPORTED: 当前 Sakura 不支持此上下文接口，请更新应用。"
         )
 
 
 def _config_values(raw: Mapping[str, Any]) -> dict[str, str]:
-    values = {
-        "rules": raw.get("rules", DEFAULT_RULES),
-        "reference": raw.get("reference", ""),
-    }
-    if any(not isinstance(value, str) or len(value) > MAX_TEXT_LENGTH for value in values.values()):
+    if "content" in raw:
+        content = raw["content"]
+    else:
+        previous = [raw.get("rules", DEFAULT_CONTENT), raw.get("reference", "")]
+        if any(not isinstance(value, str) for value in previous):
+            raise ValueError("CONTEXT_RULES_CONFIG_INVALID")
+        content = "\n\n".join(value for value in previous if value != "")
+    if not isinstance(content, str) or len(content) > MAX_TEXT_LENGTH:
         raise ValueError("CONTEXT_RULES_CONFIG_INVALID")
-    return values
+    return {"content": content}

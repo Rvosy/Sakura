@@ -22,6 +22,7 @@ from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.real_chat import RealChatBoundary
 from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
+from app.llm.prompts.types import ContextRequest
 from app.storage.runtime_roots import RuntimeRoots
 from app.storage.timeline import TimelineKind, TimelineStore
 
@@ -32,6 +33,8 @@ PLUGIN_ID = "fixture.context.rules"
 SERVICE_KEY = "fixture.context.inspection"
 RULE = "Use Japanese for this interaction and correct grammar before answering."
 REFERENCE = "The practice text is about a fictional trip to Kyoto."
+LARGE_OPTIONAL = "x" * 9000
+LARGE_REQUIRED = "  Required beginning\n" + "r" * 8194 + "\nRequired ending  "
 
 
 def _write_plugin(distribution: Path) -> None:
@@ -69,8 +72,20 @@ class Plugin:
         self.calls += 1
         if request["current_input"] == "fail required contribution":
             raise RuntimeError("private callback detail must not escape")
+        if request["current_input"] == "transport large context":
+            return [
+                {{"id": f"optional-{{index}}", "content": (
+                    {LARGE_OPTIONAL!r} if index == 0 else f"Optional content {{index}}"
+                ), "budgetHint": 4096}}
+                for index in range(20)
+            ] + [
+                {{"id": f"required-{{index}}", "required": True, "content": (
+                    {LARGE_REQUIRED!r} if index == 0 else f"Required content {{index}}"
+                )}}
+                for index in range(20)
+            ]
         return [
-            {{"id": "practice-rule", "kind": "instruction", "required": True,
+            {{"id": "practice-rule", "required": True,
               "content": {RULE!r}, "budgetHint": 512}},
             {{"id": "practice-reference", "content": {REFERENCE!r}, "budgetHint": 512}},
         ]
@@ -86,6 +101,7 @@ class _ChatFixture:
     timeline: TimelineStore
     requests: list[dict[str, Any]]
     events: list[dict[str, Any]]
+    runtime: AgentRuntime
 
     def send(self, operation_id: str, message: str) -> dict[str, Any]:
         request = {
@@ -184,12 +200,11 @@ def chat(tmp_path: Path) -> Iterator[_ChatFixture]:
         inspection = application.call_service(SERVICE_KEY, "inspect")
         assert inspection["pid"] != os.getpid()
         assert inspection["capabilities"] == {
-            "schemaVersion": 1,
-            "fragmentKinds": ["data", "instruction"],
+            "schemaVersion": 2,
             "scopes": ["step", "turn"],
             "failurePolicies": ["skip", "abort"],
         }
-        yield _ChatFixture(application, boundary, timeline, requests, events)
+        yield _ChatFixture(application, boundary, timeline, requests, events, runtime)
     finally:
         boundary.close()
         application.close()
@@ -199,7 +214,7 @@ def chat(tmp_path: Path) -> Iterator[_ChatFixture]:
         assert not worker.is_alive()
 
 
-def test_real_plugin_rules_and_data_reach_provider_and_disabling_removes_them(
+def test_real_plugin_content_reaches_provider_and_disabling_removes_it(
     chat: _ChatFixture,
 ) -> None:
     terminal = chat.send("practice", "Let us practice Japanese.")
@@ -209,15 +224,18 @@ def test_real_plugin_rules_and_data_reach_provider_and_disabling_removes_them(
     rule_message = next(message for message in messages if RULE in str(message["content"]))
     assert rule_message["role"] in {"system", "developer"}
     fragments = {
-        kind: content
-        for kind, content in re.findall(
-            r'<context\b[^>]*\bkind="(instruction|data)">\s*(.*?)\s*</context>',
+        fragment_id.rsplit(".", 1)[-1]: content
+        for fragment_id, content in re.findall(
+            r'<context\b[^>]*\bid="([^"]+)"[^>]*>\s*(.*?)\s*</context>',
             rule_message["content"],
             re.DOTALL,
         )
     }
-    assert fragments["instruction"] == RULE
-    assert fragments["data"] == REFERENCE
+    assert fragments["practice-rule"] == RULE
+    assert fragments["practice-reference"] == REFERENCE
+    assert 'kind=' not in rule_message["content"]
+    assert 'trust=' not in rule_message["content"]
+    assert any("You are Sakura" in str(message["content"]) for message in messages)
     assert chat.application.call_service(SERVICE_KEY, "inspect")["calls"] == 1
     entries = chat.timeline.read_all("fixture")
     assert [entry.kind for entry in entries] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
@@ -234,6 +252,40 @@ def test_real_plugin_rules_and_data_reach_provider_and_disabling_removes_them(
     assert RULE not in next_request
     assert REFERENCE not in next_request
     assert len(chat.timeline.read_all("fixture")) == 4
+
+
+def test_real_plugin_transport_preserves_raw_content_and_default_consumer_applies_its_limits(
+    chat: _ChatFixture,
+) -> None:
+    provider = chat.runtime.context_providers[0]
+    transported = provider.build_context(ContextRequest(current_input="transport large context"))
+    assert len(transported) == 40
+    assert transported[0].content == LARGE_OPTIONAL
+    assert transported[20].content == LARGE_REQUIRED
+
+    terminal = chat.send("large-context", "transport large context")
+
+    assert terminal["name"] == "chat.completed", terminal
+    assert len(chat.requests) == 1
+    context = next(
+        message["content"] for message in chat.requests[0]["messages"]
+        if "Required beginning" in str(message["content"])
+    )
+    fragments = {
+        fragment_id.rsplit(".", 1)[-1]: content
+        for fragment_id, content in re.findall(
+            r'<context\b[^>]*\bid="([^"]+)"[^>]*>\n(.*?)\n</context>',
+            context, re.DOTALL,
+        )
+    }
+    assert fragments["optional-0"] == LARGE_OPTIONAL[:8192]
+    assert {key for key in fragments if key.startswith("optional-")} == {
+        f"optional-{index}" for index in range(16)
+    }
+    assert fragments["required-0"] == LARGE_REQUIRED
+    assert {key for key in fragments if key.startswith("required-")} == {
+        f"required-{index}" for index in range(20)
+    }
 
 
 def test_required_plugin_callback_failure_stops_before_provider_and_assistant_history(

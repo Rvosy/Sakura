@@ -2,8 +2,8 @@ api: 4
 id: context_rules
 name: 对话规则
 author: Sakura
-description: 为对话添加自定义行为规则和参考资料。
-version: 0.1.0
+description: 为对话添加自己编写的上下文。
+version: 0.2.0
 entry: plugin:ContextRulesPlugin
 enabled: false
 priority: 50

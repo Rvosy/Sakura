@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-13
+updated: 2026-09-14
 ---
 
 # Sakura Plugin Runtime v4
@@ -317,33 +317,41 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
 
 ### 6.4 Context 行为贡献
 
-`sakura.host.context` 在原有 `register/unregister` 上增加 `describe()`，返回
-`{schemaVersion: 1, fragmentKinds: ["data", "instruction"], scopes: ["step", "turn"], failurePolicies: ["skip", "abort"]}`。
-新行为插件在启用时检查所需能力；旧 Host 缺少方法或能力时明确失败，不能依赖旧 Host 忽略新增字段。
+`sakura.host.context` 提供 `register/unregister/describe`。当前 `describe()` 返回
+`{schemaVersion: 2, scopes: ["step", "turn"], failurePolicies: ["skip", "abort"]}`，不包含 `fragmentKinds`。
+新插件在启用时核实版本和所需能力；旧 Host 缺少方法或版本不符时明确失败。版本只通过能力查询检查，
+注册描述不另设版本字段。没有分类字段的旧插件保持兼容。
 
-注册描述保留 `providerId/description/order/enabled`，增加 `scope`（默认 `step`）和 `failurePolicy`
-（默认 `skip`）。片段增加 `kind`（默认 `data`）和 `required`（默认 `false`）。未知枚举、非布尔 required、
-非有限 order 等无效字段明确拒绝。`scope` 是整个注册回调的采集范围，不是片段字段。
+Context 只提供内容与调用信息，不要求插件区分规则、资料或角色关系。Host 不根据内容判断用途、信任等级或角色卡冲突，
+也不切换默认角色。插件自行组织文本；当前默认对话实现负责组合和模型消息格式，模型 role 降级也使用中性上下文说明。
+文本不授予代码权限，公开操作和结果格式仍由实际能力入口检查。
 
-- `data` 作为参考资料；`instruction` 作为用户启用的行为规则。Host 从调用身份绑定真实插件来源，
-  从登记绑定 Provider，忽略片段自报身份；`trust` 分别派生为 `untrusted/trusted`，不授予代码权限。
-  两类内容分区渲染；模型 Provider 的 role 降级也保留用途，不能统一标成事实。
-- 行为规则可以调整交流风格和活动规则，仍须遵守宿主执行边界及公共回复格式。自然语言规则不保证模型必然遵从。
-- 顶层用户或事件互动开始时固定贡献者集合与顺序。`step` 每次组装调用；`turn` 第一次组装采集并在
-  工具后续步骤、最终总结、格式修复中复用，互动退出时释放。下一次互动重新采集，不跨会话或重启持久化。
-  配置更新、停用不改写本轮已采集结果；未完成的回调仍可能因插件退出而失败，按失败策略处理。
-- `skip` 在回调失败时记录并跳过；`abort` 产生 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮，错误和运行日志
-  携带真实插件及 Provider 标识。失败不生成助手历史。取消不受失败策略影响；同步回调前后均检查取消。
-- `required` 片段不裁剪，预算不足时产生 `CONTEXT_WINDOW_EXCEEDED`。可选规则完整装入或整条丢弃，
-  忽略 `budgetHint`；可选资料保留原贡献者额度与全局预算裁剪。两个 Provider 即使属于同一插件也分别计额。
-  `abort` 控制回调失败，`required` 控制成功结果的预算保留，强制贡献必须同时声明两者。
-- 一次最多返回 16 项，每项最多 8192 字符。旧可选资料继续保留前 16 项和前 8192 字符；超项结果中
-  存在规则或必需片段，或单条规则/必需片段超长时，拒绝为 `CONTEXT_RESULT_INVALID`，再应用失败策略。
-  空内容、未知 kind 和无效 required 也拒绝，不静默降级为资料。
+Host 保留以下边界：
 
-Agent Trace 与 Prompt Inspection 保留用途、必需性和采集范围，Trace 还保留实际插件与 Provider；运行日志
-只记录诊断标识，不记录规则正文。Context 不自动写入 Timeline，也不改变 Memory 的整理策略。
-接口用法见 [SDK](../../devdocs/SAKURA_PLUGIN_SDK.md)，取舍见 [ADR-0049](../../adr/0049-unified-context-instructions.md)。
+- 注册描述使用 `providerId/description/order/enabled/scope/failurePolicy`；片段必填非空 `content`，
+  `required` 默认为 `false`。未知枚举、非布尔 required、非有限 order 等无效字段明确拒绝。
+  `scope` 属于注册回调，不是片段字段。旧 `kind` 字段无论值为何都报 `CONTEXT_SCHEMA_INCOMPATIBLE`。
+- 从调用身份绑定真实插件来源，从登记绑定 Provider；旧片段自报的 `source/trust` 忽略，不能覆盖实际来源。
+  登记、回调和进程实例的有效性仍由运行底座检查，取消保持可传播。
+- 在有界 JSON 与 IPC 总尺寸允许的范围内，传递全部片段及完整文本。Host 不执行前 16 项或每项 8192 字符的裁剪；
+  结构或传输超限时明确拒绝，不把截断后的结果当作完整传输。
+
+以下是当前默认对话实现的消费约定；M1 已将旧裁剪逻辑移到该消费者，代码仍在现有进程内，迁成独立插件属于 M4：
+
+- 顶层用户或事件互动开始时固定贡献者集合与顺序。`scope: step` 为默认值，每次组装调用；`turn` 首次组装采集，
+  后续工具步骤、最终总结与格式修复复用，退出后释放。配置更新或停用不改写本轮已采集结果，下一轮重新采集。
+  未完成回调可能因插件退出而失败，按失败策略处理。
+- `failurePolicy: skip` 为默认值，回调失败时记录并跳过；`abort` 产生 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮，
+  错误与日志保留实际插件和 Provider，失败不生成助手历史。取消及 `CONTEXT_SCHEMA_INCOMPATIBLE` 不受 `skip` 影响。
+- `required` 内容完整保留，不受旧 16 项和 8192 字符的可选兼容额度限制；模型预算不足时产生
+  `CONTEXT_WINDOW_EXCEEDED`。默认消费者保留前 16 条可选内容及每条前 8192 字符，再按贡献者额度与全局预算选择或裁剪。
+  同一插件的不同 Provider 分别计额。`abort` 控制回调失败，`required` 控制完整性，需要完整贡献时同时声明。
+
+Agent Trace 与 Prompt Inspection 保留必需性、采集范围及真实来源，不再输出 Context 的用途或信任分类。
+运行日志只记录诊断信息，不承载内容正文。Context 不自动写入 Timeline，也不改变 Memory 的整理策略。
+接口用法见 [SDK](../../devdocs/SAKURA_PLUGIN_SDK.md)，本次边界见
+[ADR-0050](../../adr/0050-thin-host-and-plugin-owned-policies.md)；初版取舍保留在
+[ADR-0049](../../adr/0049-unified-context-instructions.md)。
 
 ## 7. 官方默认插件
 

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-13
+updated: 2026-09-14
 ---
 
 # 编写 Sakura 插件
@@ -789,10 +789,11 @@ tools.register(
 
 ### 动态上下文
 
-本节描述当前已提交的 Context 开发版接口。[开放插件生态计划](../plans/runtime-v2/open-plugin-ecosystem.md) 的 M1 将移除用途分类，
-并调整 Host 与默认消费者的职责；这些变化尚未实施，当前写法仍以下文为准。
+Context schema 2 只传递内容和调用信息，不分类行为要求与资料，也不判断内容和角色卡的关系。
+插件自行组织文本；当前默认对话实现负责采集、组合、预算和模型消息格式。Host 保留来源绑定、登记有效性及有界 JSON 传输。
+这完成了[开放插件生态计划](../plans/runtime-v2/open-plugin-ecosystem.md) 的 M1；默认对话实现迁入独立插件仍是后续 M4。
 
-上下文贡献者收到有界请求，返回参考资料（`data`）或用户启用的行为规则（`instruction`）。二者走同一注册入口，分别渲染。检索资料可沿用原写法：
+上下文贡献者收到有界请求，返回少量文本片段。未声明分类的旧检索插件可以保留原写法：
 
 ```python
 context_host = context.get("sakura.host.context")
@@ -827,15 +828,15 @@ context_host.register(
 request 使用 snake_case，常用字段有 `current_input`、`character_id`、`current_turn_id`、`source`、`mode`、
 `recent_messages`、`available_tools`、`visual_summaries`、`screen_context_available` 和 `current_time`。
 
-`kind` 默认 `data`，`required` 默认 `false`；旧插件仍贡献可选参考资料。Host 绑定真实插件来源，忽略片段自报的来源和信任等级。规则的 `trust` 派生为 `trusted`，资料为 `untrusted`；它表示提示词用途，不是插件的系统权限。网页、OCR、导入文档应使用 `data`。
+片段必填非空 `content`，`required` 默认 `false`。插件不声明用途或信任等级；Host 从调用身份绑定真实插件来源，
+从登记绑定 Provider，忽略旧片段自报的 `source/trust`。角色说明、教学要求、笔记或引用的组织方式由贡献插件决定。
 
-行为插件先检查 Host 能力，再登记：
+需要新合同的插件先检查 Host 能力，再登记：
 
 ```python
 capabilities = context_host.describe()
 if (
-    capabilities.get("schemaVersion") != 1
-    or "instruction" not in capabilities.get("fragmentKinds", [])
+    capabilities.get("schemaVersion") != 2
     or "turn" not in capabilities.get("scopes", [])
     or "abort" not in capabilities.get("failurePolicies", [])
 ):
@@ -849,22 +850,31 @@ context_host.register(
     },
     lambda request: [{
         "id": "language-rule",
-        "kind": "instruction",
         "required": True,
         "content": "主要用日语交流，先纠正明显语法错误，再继续回答。",
     }],
 )
 ```
 
-旧 Host 不提供 `describe()` 时也必须停止启用并给出兼容错误，不能吞掉异常后把规则当作资料使用。完整示例见[对话规则插件](../../plugins/optional/context_rules/README.md)。
+`describe()` 返回 `{schemaVersion: 2, scopes: ["step", "turn"], failurePolicies: ["skip", "abort"]}`，不再包含
+`fragmentKinds`。版本通过能力查询检查，不在注册描述中另设版本字段。旧 Host 缺少 `describe()` 或返回不同版本时，
+应明确停止启用。旧无分类插件保持兼容；返回 `kind` 的开发版插件需要适配，收到
+`CONTEXT_SCHEMA_INCOMPATIBLE` 时不能吞掉异常继续运行。完整示例见[对话规则插件](../../plugins/optional/context_rules/README.md)。
 
-注册描述的 `scope` 默认为 `step`，每次组装重新调用；`turn` 在一次顶层互动中只采集一次，工具后续步骤、最终总结和格式修复复用结果。它作用于整个回调结果，不是片段字段。本轮开始固定贡献者集合；已经采集的规则在配置更新或停用后仍用于本轮，下一轮重新采集。需要立即停止当前回复时使用现有取消入口。
+以下范围、顺序、完整性和失败行为属于当前默认对话实现的消费约定，不是所有执行器必须采用的宿主策略。
 
-`failurePolicy` 默认为 `skip`，回调失败记录后继续；`abort` 报告 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮。它处理“回调未能产生结果”；片段的 `required` 处理“结果必须完整装入上下文”。需要强制贡献时同时使用 `abort` 和 `required: true`。取消始终传播，不按 `skip` 忽略；同步回调返回后再次检查取消。
+注册描述的 `scope` 默认为 `step`，每次组装重新调用；`turn` 在一次顶层互动中只采集一次，工具后续步骤、最终总结和格式修复复用结果。它作用于整个回调结果，不是片段字段。本轮开始固定贡献者集合；已经采集的内容在配置更新或停用后仍用于本轮，下一轮重新采集。需要立即停止当前回复时使用现有取消入口。
 
-一次最多返回 16 个 fragment，`content` 必填且非空。旧可选资料继续只保留前 16 项、每项前 8192 个字符；结果含规则或必需片段时，超过 16 项会拒绝整个结果，规则或必需片段超过 8192 字符也会拒绝。无效结果按注册的失败策略处理。
+`failurePolicy` 默认为 `skip`，回调失败记录后继续；`abort` 报告 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮。它处理“回调未能产生结果”；片段的 `required` 处理“结果必须完整装入上下文”。需要完整贡献时同时使用 `abort` 和 `required: true`。取消和接口版本不兼容始终传播，不按 `skip` 忽略；同步回调返回后再次检查取消。
 
-`priority` 范围为 0–100，`budgetHint` 范围为 1–4096；`sensitivity` 可为 `public`、`private` 或 `sensitive`。可选资料受贡献者额度与总预算约束，可裁剪；同一 Provider 的多片段共享额度，不合并同插件不同 Provider 的额度。必需片段完整保留，放不下时报告 `CONTEXT_WINDOW_EXCEEDED`；可选规则完整保留或整条丢弃，不按 `budgetHint` 截断。规则可以调整交流方式，仍需遵守宿主执行边界和公共回复格式。
+Host 在 IPC 总大小及 JSON 结构允许的范围内传递完整数量和文本，超过传输边界时明确报错。
+默认消费者保留旧可选内容的兼容处理：只采用前 16 条可选片段，每条最多 8192 字符；这些限制不在 Host 执行。
+`required: true` 的内容不受这两个旧可选额度限制，完整保留或因模型上下文预算不足明确失败。
+
+`priority` 范围为 0–100，`budgetHint` 范围为 1–4096；`sensitivity` 可为 `public`、`private` 或 `sensitive`。
+可选内容受贡献者额度与总预算约束，可裁剪；同一 Provider 的多片段共享额度，不合并同插件不同 Provider 的额度。
+必需片段不按 `budgetHint` 截断，放不下时报告 `CONTEXT_WINDOW_EXCEEDED`。宿主不从内容推断怎样处理；
+调用权限和公开结果格式仍由实际能力入口执行，提示词内容不授予系统权限。
 
 Context 只影响本次模型请求，不自动写入 Timeline，也不改变长期记忆的学习规则。不要把完整数据库、长期历史或无关资料每轮都塞进 Prompt。
 

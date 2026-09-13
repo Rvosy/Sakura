@@ -43,7 +43,6 @@ def build_session_state_fragment(
         fragment_id="session_state.recent_history",
         source="session_state",
         content="\n".join(body),
-        trust="untrusted",
         priority=75,
         freshness=freshness,
         token_budget=SESSION_STATE_TOKEN_BUDGET,
