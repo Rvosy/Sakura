@@ -36,6 +36,7 @@ import {
 } from "./pet/character-presentation.js";
 import { isNewCharacterGeneration, rebindCharacterPresentation } from "./pet/character-generation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
+import { attachDynamicHitTest } from "./pet/dynamic-hit-test.js";
 import {
   classifyPointerHit,
   clearTextSelection,
@@ -857,6 +858,11 @@ const rendererHost = createRendererHost({
   onUnavailable: visualUnavailable,
   onError: reportVisualError,
   services: {
+    setHitTest(hitTest, { signal, container }) {
+      return attachDynamicHitTest({ invoke: nativeInvoke, listen: window.__TAURI__.event.listen,
+        container, hitTest, signal,
+        onError: error => reportVisualError("DYNAMIC_HIT_TEST_FAILED", error, "visual.hit-test") });
+    },
     unavailable: visualUnavailable,
     reportError: reportVisualError,
     cancelSurface() {
@@ -1266,7 +1272,7 @@ const typewriter = createTypewriter({
           if (presentation.current().operationId !== state.operationId) return;
           const result = presentation.setTypingSegment(segment, index);
           if (result.applied) {
-            void rendererHost.play(segment.control, state.operationId, index);
+            void rendererHost.play(segment.control, state.operationId, index, segment);
             void render(result.state);
           }
         },
@@ -2131,11 +2137,8 @@ function reviewReplyBy(offset) {
   if (!segment) return;
   const result = presentation.reviewReplyAt(targetIndex, selectSegmentText(segment, subtitleLanguage));
   if (result.applied) {
-    render(
-      result.state,
-      { reason: "history", forceEnd: true },
-      { syncBubbleWithPortrait: true },
-    );
+    void rendererHost.review(segment);
+    render(result.state, { reason: "history", forceEnd: true });
   }
 }
 replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));

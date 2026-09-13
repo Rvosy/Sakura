@@ -1,5 +1,6 @@
-import { requirementMessage } from "../core/plugin-requirements.js";
-import { createVisualEditorHost } from "./visual-editor-host.js";
+import { requirementSummary } from "../core/plugin-requirements.js";
+import { createVisualEditorHost, renderVisualThumbnail } from "./visual-editor-host.js";
+import { observeSelects } from "../settings/select-control.js";
 import { createIcon } from "../core/icons.js";
 import {
   characterOptionGroup,
@@ -131,6 +132,7 @@ let themeEditor = {};
 let previewAudio = null;
 let draftAutosaveTimer = null;
 let draftAutosavePromise = null;
+let discardingDraft = false;
 let renderingEditor = false;
 let createCharacterResolve = null;
 let createCharacterPreviousFocus = null;
@@ -529,10 +531,6 @@ function isDirty() {
   return Boolean(currentDoc) && editorSnapshot() !== baseline;
 }
 
-function confirmDiscardChanges() {
-  return !isDirty() || window.confirm("继续将丢失未保存的修改，是否继续？");
-}
-
 function currentCharacterEntry() {
   return (request?.characters || []).find((item) => item.id === editingCharacterId) || null;
 }
@@ -642,7 +640,7 @@ function handleEditorChanged() {
 }
 
 function scheduleDraftAutosave() {
-  if (!currentWorkspaceId || !currentDoc) {
+  if (discardingDraft || !currentWorkspaceId || !currentDoc) {
     return;
   }
   window.clearTimeout(draftAutosaveTimer);
@@ -654,12 +652,12 @@ function scheduleDraftAutosave() {
 async function flushDraftAutosave() {
   window.clearTimeout(draftAutosaveTimer);
   draftAutosaveTimer = null;
-  if (renderingEditor || !currentWorkspaceId || !currentDoc || !isDirty()) {
+  if (discardingDraft || renderingEditor || !currentWorkspaceId || !currentDoc || !isDirty()) {
     return null;
   }
   if (draftAutosavePromise) {
     await draftAutosavePromise;
-    if (!isDirty()) {
+    if (discardingDraft || !isDirty()) {
       return null;
     }
   }
@@ -737,7 +735,17 @@ async function refreshPluginRequirements() {
     if (revision !== requirementsRevision || workspaceId !== currentWorkspaceId) return;
     list.replaceChildren();
     for (const item of result.items) {
-      const row = document.createElement("li"); row.textContent = requirementMessage(item); list.append(row);
+      const summary = requirementSummary(item);
+      const row = document.createElement("li"); row.className = "plugin-requirement";
+      const text = document.createElement("div"); text.className = "plugin-requirement-text";
+      const name = document.createElement("strong"); name.textContent = summary.names.join("、") || `支持此${summary.label}的插件`;
+      row.setAttribute("aria-label", `${summary.label}：${name.textContent}`);
+      text.append(name);
+      if (summary.detail) {
+        const detail = document.createElement("p"); detail.textContent = summary.detail; text.append(detail);
+      }
+      const status = document.createElement("span"); status.className = `plugin-requirement-status is-${summary.state}`; status.textContent = summary.status;
+      row.append(text, status); list.append(row);
     }
     panel.hidden = !result.items.length;
   } catch (error) {
@@ -805,6 +813,8 @@ function renderModelFiles(modelFiles = []) {
 let selectedVisualId = "";
 let visualWorkspace = "";
 const visualPreviews = new Map();
+let visualPreviewAbort = new AbortController();
+let visualThumbnailQueue = Promise.resolve();
 let visualCatalog = [];
 let visualEditorRevision = 0;
 let visualSelectionRevision = 0;
@@ -820,6 +830,9 @@ const visualEditor = createVisualEditorHost({
     if (!currentDoc || !selectedVisualId) return;
     ensureVisualReferences();
     currentDoc.visual_data ||= {};
+    const cover = visualPreviews.get(selectedVisualId);
+    if (cover?.generated && JSON.stringify(currentDoc.visual_data[selectedVisualId]) !== JSON.stringify(data))
+      visualPreviews.set(selectedVisualId, { ...cover, dirty: true });
     currentDoc.visual_data[selectedVisualId] = data;
     handleEditorChanged();
   },
@@ -840,6 +853,8 @@ const visualEditor = createVisualEditorHost({
     return result;
   },
 });
+const stopObservingVisualSelects = observeSelects(fields.expressionList);
+window.addEventListener('pagehide', stopObservingVisualSelects, { once: true });
 function visualReferences() {
   return currentDoc?.visuals || { resources: [], default: null };
 }
@@ -853,23 +868,49 @@ function visualName(resource) { return resource.name || visualProvider(resource)
 function updateVisualPreview(url, resourceId, path) {
   const previous = visualPreviews.get(resourceId);
   // Opening another editor changes its authorization URL, not this card's image.
-  if (previous?.path === path && (previous.url || !url)) return;
-  visualPreviews.set(resourceId, { path, url });
+  if (previous?.path === path && (previous.url || !url)) { previous.dirty = false; return; }
+  visualPreviews.set(resourceId, { path, url, generated: Boolean(url?.startsWith('data:image/png;base64,')), dirty: false });
   const cover = fields.visualResourceList.querySelector(`[data-visual-id="${CSS.escape(resourceId)}"] .form-card-cover`);
   if (cover) fillVisualCover(cover, resourceId);
 }
 async function loadVisualPreviews() {
+  visualPreviewAbort.abort();
+  visualPreviewAbort = new AbortController();
+  const signal = visualPreviewAbort.signal;
   const workspaceId = currentWorkspaceId;
   const revision = visualEditorRevision;
   const previous = new Map(visualPreviews);
   try {
     const result = await invoke("studio_request", { method: "studio.visual.previews", params: { workspaceId } });
-    if (workspaceId !== currentWorkspaceId || revision !== visualEditorRevision) return;
+    if (signal.aborted || workspaceId !== currentWorkspaceId || revision !== visualEditorRevision) return;
     for (const item of result.items) {
       // An editor may have changed the cover while the initial list was loading.
       if (visualPreviews.get(item.resourceId) !== previous.get(item.resourceId)) continue;
+      if (!item.previewUrl && visualPreviews.get(item.resourceId)?.generated) continue;
       if (visualReferences().resources.some(resource => resource.id === item.resourceId)) updateVisualPreview(item.previewUrl || null, item.resourceId, item.relativePath);
     }
+    // Generate one static cover at a time, keeping at most one extra WebGL
+    // context and one native thumbnail authorization alongside the editor.
+    visualThumbnailQueue = visualThumbnailQueue.catch(() => {}).then(async () => {
+      for (const item of result.items) {
+        if (signal.aborted || workspaceId !== currentWorkspaceId || revision !== visualEditorRevision) return;
+        const cached = visualPreviews.get(item.resourceId);
+        if (cached?.url && !cached.dirty) continue;
+        const resource = visualReferences().resources.find(resource => resource.id === item.resourceId);
+        if (!resource) continue;
+        const before = visualPreviews.get(item.resourceId);
+        try {
+          const providerId = currentDoc.visuals?.providers?.[resource.id];
+          const descriptor = await invoke("studio_request", { method: "studio.visual.thumbnail", params: { workspaceId, resourceId: resource.id, ...(providerId ? { providerId } : {}) } });
+          if (signal.aborted || workspaceId !== currentWorkspaceId) return;
+          const url = await renderVisualThumbnail(descriptor, signal);
+          if (!signal.aborted && workspaceId === currentWorkspaceId && revision === visualEditorRevision && url && visualPreviews.get(resource.id) === before)
+            updateVisualPreview(url, resource.id, url);
+        } catch (error) {
+          if (!signal.aborted) runtimeDiagnostics.reportError(error, { command: "studio_visual_cover", code: "VISUAL_PREVIEW_FAILED" });
+        }
+      }
+    });
   } catch (error) {
     if (workspaceId === currentWorkspaceId && revision === visualEditorRevision)
       runtimeDiagnostics.reportError(error, { command: "studio_visual_previews", code: "VISUAL_PREVIEW_FAILED" });
@@ -949,9 +990,14 @@ function renderVisualMeta(resource) {
     provider.onchange = () => { ensureVisualReferences(); currentDoc.visuals.providers ||= {}; if (provider.value) currentDoc.visuals.providers[resource.id] = provider.value; else delete currentDoc.visuals.providers[resource.id]; handleEditorChanged(); void openVisualEditor(resource, visualEditorRevision, { force: true }); };
     actions.append(provider); enhanceSelect(provider);
   }
-  const makeDefault = visualButton(visualReferences().default === resource.id ? "默认形态" : "设为默认", () => {
+  const isDefault = visualReferences().default === resource.id;
+  const makeDefault = visualButton(isDefault ? "默认形态" : "设为默认", () => {
     currentDoc.visuals.default = resource.id; handleEditorChanged(); renderVisualCards(); renderVisualMeta(resource);
-  }); makeDefault.id = "defaultVisualButton"; makeDefault.disabled = visualReferences().default === resource.id;
+  }); makeDefault.id = "defaultVisualButton"; makeDefault.disabled = isDefault;
+  if (isDefault) {
+    makeDefault.classList.add("form-default-state");
+    makeDefault.prepend(createIcon(document, "check"));
+  }
   const remove = visualButton("移除", () => {
     const modal = visualDialog(`移除「${visualName(visualReferences().resources.find(item => item.id === resource.id) || resource)}」`);
     const note = document.createElement("p"); note.textContent = visualReferences().default === resource.id ? "移除此形态后，默认形态将改为列表中的下一项；没有其他形态时将不显示角色。" : "移除此形态，保留角色人设和其他形态。";
@@ -1748,31 +1794,56 @@ async function discardCurrentDraft() {
   if (published && !entry?.has_draft && !entry?.is_dirty && !isDirty()) {
     return;
   }
-  const action = published ? "放弃草稿修改" : "删除草稿角色";
-  const detail = published
-    ? ""
-    : "删除后无法恢复。";
-  if (!window.confirm(`${action}「${currentDoc.display_name || currentDoc.id}」？${detail ? `\n${detail}` : ""}`)) {
-    return;
-  }
   await runBusy(async () => {
-    const result = await hostCall("studio.discard_draft", {
-      workspace_id: currentWorkspaceId,
-      current_character_id: request.initial_character_id || "",
+    const action = published ? "放弃修改" : "删除草稿";
+    const modal = visualDialog(action);
+    const note = document.createElement("p");
+    note.textContent = published
+      ? `放弃「${currentDoc.display_name || currentDoc.id}」的修改，恢复已保存的角色内容？`
+      : `删除「${currentDoc.display_name || currentDoc.id}」的草稿？删除后无法恢复。`;
+    modal.body.append(note);
+    const confirmed = await new Promise(resolve => {
+      const cancel = visualButton("继续编辑", modal.close);
+      const accept = visualButton(action, () => { resolve(true); modal.close(); });
+      accept.classList.add("danger-button");
+      modal.actions.append(cancel, accept);
+      modal.dialog.addEventListener("close", () => resolve(false), { once: true });
+      cancel.focus();
     });
-    request.characters = result.characters || [];
-    if (result.doc) {
-      setCurrentDoc(result);
-      return;
+    if (!confirmed) return;
+    discardingDraft = true;
+    window.clearTimeout(draftAutosaveTimer);
+    ++visualSelectionRevision;
+    visualEditorScope = null;
+    visualEditor.freeze();
+    try {
+      // Finish an existing write before removing its draft; do not start a new
+      // autosave with the contents the user has just chosen to discard.
+      await draftAutosavePromise?.catch(() => {});
+      const result = await hostCall("studio.discard_draft", {
+        workspace_id: currentWorkspaceId,
+        current_character_id: request.initial_character_id || "",
+      });
+      request.characters = result.characters || [];
+      if (result.doc) {
+        setCurrentDoc(result);
+        return;
+      }
+      currentWorkspaceId = "";
+      currentDoc = null;
+      visualEditor.clear();
+      renderModelFiles();
+      editingCharacterId = "";
+      temporaryCharacter = null;
+      renderCharacterOptions();
+      renderEditor();
+      markBaseline();
+    } catch (error) {
+      void renderVisualResources({ flush: false });
+      throw error;
+    } finally {
+      discardingDraft = false;
     }
-    currentWorkspaceId = "";
-    currentDoc = null;
-    renderModelFiles();
-    editingCharacterId = "";
-    temporaryCharacter = null;
-    renderCharacterOptions();
-    renderEditor();
-    markBaseline();
   });
 }
 

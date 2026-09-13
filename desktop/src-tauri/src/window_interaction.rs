@@ -161,7 +161,7 @@ impl PhysicalHitRect {
         i64::from(self.y) + i64::from(self.height)
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
     pub(crate) fn contains(self, point: [i32; 2]) -> bool {
         let inside_bounds = i64::from(point[0]) >= i64::from(self.x)
             && i64::from(point[0]) < self.right()

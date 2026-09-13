@@ -125,7 +125,7 @@ def test_studio_can_save_models_without_reference_audio_or_enabling_speech(tmp_p
     reopened = service.open_character("sakura")
     assert reopened["doc"]["voice"]["gpt_model"] == imported["relative_path"]
     assert reopened["doc"]["reference_audios"] == []
-    manifest = json.loads((package / "character.json").read_text())
+    manifest = json.loads((package / "character.json").read_text(encoding="utf-8"))
     assert "sakura.tts" not in manifest["extensions"]
     assert (package / imported["relative_path"]).read_bytes() == b"model"
 

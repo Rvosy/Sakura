@@ -82,6 +82,7 @@ struct CachedMask {
 struct Editor {
     active: Active,
     scope_id: String,
+    thumbnail: bool,
 }
 pub struct CharacterPresentationState {
     user_root: PathBuf,
@@ -282,6 +283,25 @@ impl CharacterPresentationState {
         scope_id: &str,
         asset_root: &Path,
     ) -> Result<FrontendCharacterPresentation, String> {
+        self.authorize_editor_surface(presentation, generation, scope_id, asset_root, false)
+    }
+    pub fn authorize_thumbnail(
+        &self,
+        presentation: CharacterPresentation,
+        generation: &str,
+        scope_id: &str,
+        asset_root: &Path,
+    ) -> Result<FrontendCharacterPresentation, String> {
+        self.authorize_editor_surface(presentation, generation, scope_id, asset_root, true)
+    }
+    fn authorize_editor_surface(
+        &self,
+        presentation: CharacterPresentation,
+        generation: &str,
+        scope_id: &str,
+        asset_root: &Path,
+        thumbnail: bool,
+    ) -> Result<FrontendCharacterPresentation, String> {
         if scope_id.is_empty() {
             return Err("VISUAL_EDITOR_INVALID".into());
         }
@@ -311,9 +331,9 @@ impl CharacterPresentationState {
             .editors
             .lock()
             .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?;
-        // The studio has one selected editor. Replacing it revokes its files
-        // and modules together, including within the same Core generation.
-        editors.clear();
+        // One selected editor and one sequential thumbnail job may coexist.
+        // Replacing either revokes only its own files and modules.
+        editors.retain(|_, editor| editor.thumbnail != thumbnail);
         editors.insert(
             active
                 .presentation
@@ -325,6 +345,7 @@ impl CharacterPresentationState {
             Editor {
                 active,
                 scope_id: scope_id.to_owned(),
+                thumbnail,
             },
         );
         Ok(public)
@@ -893,6 +914,42 @@ mod tests {
         assert!(state
             .load_module("67", &"a".repeat(32), "frontend/renderer.js", "g")
             .is_err());
+    }
+    #[test]
+    fn thumbnail_authorization_does_not_revoke_the_selected_editor() {
+        let dir = Fixture::new();
+        let state = CharacterPresentationState::new(dir.path().into());
+        let mut input = fixture(dir.path());
+        let visual = input.visual.as_mut().unwrap();
+        visual.assets.clear();
+        visual.editor = Some("frontend/renderer.js".into());
+        let root = dir
+            .path()
+            .join("data/character_studio/drafts/model/package");
+        fs::create_dir_all(&root).unwrap();
+        state
+            .authorize_editor(input.clone(), "g", "scope", &root)
+            .unwrap();
+        input.visual.as_mut().unwrap().binding_id = "b".repeat(32);
+        state
+            .authorize_thumbnail(input.clone(), "g", "scope", &root)
+            .unwrap();
+        let available = |letter: &str| {
+            state
+                .load_module("67", &letter.repeat(32), "frontend/renderer.js", "g")
+                .is_ok()
+        };
+        assert!(available("a") && available("b"));
+        input.visual.as_mut().unwrap().binding_id = "c".repeat(32);
+        state
+            .authorize_thumbnail(input.clone(), "g", "scope", &root)
+            .unwrap();
+        assert!(available("a") && available("c") && !available("b"));
+        input.visual.as_mut().unwrap().binding_id = "d".repeat(32);
+        state.authorize_editor(input, "g", "scope", &root).unwrap();
+        assert!(available("c") && available("d") && !available("a"));
+        state.clear_editors();
+        assert!(!available("c") && !available("d"));
     }
     #[test]
     fn png_alpha_service_preserves_transparency_without_reading_portrait_manifest() {

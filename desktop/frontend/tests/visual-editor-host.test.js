@@ -10,6 +10,27 @@ const container = () => {
 const descriptor = { presentation: { visual: { editor: "fixture:editor" } }, data: { Private_Key: 1 } };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test("editor view survives save/remount and stays scoped to its resource and workspace", async () => {
+  let view;
+  const host = createVisualEditorHost({ container: container(), loadModule: async () => ({ mountEditor: () => {
+    view = { zoom: 1, x: 0, y: 0 };
+    return { collect() {}, validate() {}, destroy() {}, snapshotView: () => view, restoreView: value => { view = value; } };
+  } }) });
+  const resource = id => ({ ...descriptor, presentation: { visual: { editor: 'fixture:editor', providerId: 'provider', resourceId: id } } });
+  await host.open(resource('first'));
+  view = { zoom: 2.7, x: 30, y: 140 };
+  await host.open(resource('first'));
+  assert.deepEqual(view, { zoom: 2.7, x: 30, y: 140 });
+  await host.open(resource('second'));
+  assert.deepEqual(view, { zoom: 1, x: 0, y: 0 });
+  await host.open(resource('first'));
+  assert.deepEqual(view, { zoom: 2.7, x: 30, y: 140 });
+  host.clear();
+  await host.open(resource('first'));
+  assert.deepEqual(view, { zoom: 1, x: 0, y: 0 });
+  host.clear();
+});
+
 test("editor assets use the authorized root without IPC and retain content until the next editor is ready", async () => {
   const next = deferred();
   const root = container();
