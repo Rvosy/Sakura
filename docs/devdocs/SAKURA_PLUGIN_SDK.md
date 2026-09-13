@@ -325,7 +325,8 @@ ServiceProxy、回调、资源 descriptor 和文件 artifact 都会失效，不�
 | 成员 | 用途 |
 |---|---|
 | `plugin_id` | 当前 Manifest 中的插件 ID。 |
-| `get(service_key)` | 取得 Host 或其他插件提供的 ServiceProxy。 |
+| `get(service_key)` | 取得 Host 或插件 Service 代理；跨进程调用动态路由到当前提供者。 |
+| `bind(service_key)` | 取得固定到当前插件进程实例的 ServiceProxy，供多次调用组成的同一操作使用。 |
 | `provide(service_key, service, exports=...)` | 发布本插件的 Service。 |
 | `on(event_name, handler)` | 监听 Host 事实事件。 |
 | `effect(cleanup)` | 登记随插件 scope 反向执行的清理函数。 |
@@ -374,6 +375,33 @@ Python 对象 identity、共享内存或无限调用时间。远端调用有 dea
 
 普通 Service 的参数和返回值只使用有界 JSON。不能传 Python 对象、类、异常、callable、文件句柄、生成器、
 pickle、裸本地路径或 Host callback handle。需要交换大文件时使用 artifact descriptor。
+
+### 固定一次操作的服务实例
+
+普通查询可以用 `get()`。开始后台任务后，后续查询和取消必须回到创建该任务的进程，此时先调用 `bind()`，
+并让整项操作使用同一个代理：
+
+```python
+provider = context.bind("other.jobs")
+job_id = provider.begin({"text": "待处理内容"})
+state = provider.poll(job_id)
+# 需要取消时继续使用 provider.cancel(job_id)。
+```
+
+`bind()` 固定当前 active 插件的 `providerId` 与进程 `scopeId`。停用、退出或同 ID 重载后，旧绑定返回
+`SERVICE_BINDING_EXPIRED`，不会把旧任务查询或取消发给新进程。宿主在派发前和返回后检查绑定；
+返回期间进程已更换时，旧结果也不能当作成功。调用超时和失效都不会自动重放，新任务由消费者重新显式绑定。
+
+绑定以插件进程为单位，不区分同一进程内 Python 服务对象的代次。`provide()` 的 disposer 撤销本地服务后，
+调用报告 `SERVICE_MISSING`；同进程重新提供同 key、同导出合同的服务仍可由原绑定访问。导出表仍由 setup 确定，
+本接口不开放动态方法表。`get()` 与 `bind()` 都不会自动增加 Manifest 硬依赖或重启关系。
+
+`bind()` 只适用于插件提供的服务，内置 Host 服务使用 `get()`。绑定时没有 active 服务返回 `SERVICE_MISSING`，
+尝试绑定 Host 服务返回 `SERVICE_BINDING_UNSUPPORTED`；畸形绑定在 RPC 边界报告 `PLUGIN_PROTOCOL_INVALID`。
+插件代码持有代理即可，不需要读取、保存或自行构造绑定身份。
+
+现有 TTS Hub 在 `begin` 前绑定 Provider，就绪查询 `status`、受理以及该任务的全部 `poll/cancel` 使用同一代理。
+Provider 崩溃并由用户重载后，新任务可以绑定新进程；即使新进程重复使用旧 `jobId`，旧任务也不能读到或取消它。
 
 ### 配置
 
@@ -1145,6 +1173,9 @@ Python 标准 `logging`、`print`、stderr 和外部程序输出不会自动进�
 | `PLUGIN_DEPENDENCIES_MISSING/STALE` | 依赖是否安装，声明或 Python ABI 是否变化。 |
 | `MISSING_SERVICE` | `requires` 中的 Service 是否由已启用插件或 Host 提供。 |
 | `SERVICE_CONFLICT` | 是否同时启用了两个同名 Service 提供者。 |
+| `SERVICE_MISSING` | 动态查询或绑定时是否存在 active 服务，同进程内的服务是否已撤销。 |
+| `SERVICE_BINDING_EXPIRED` | 操作绑定的插件进程是否已经退出、停用或重载；旧操作不能改用新进程继续。 |
+| `SERVICE_BINDING_UNSUPPORTED` | 是否对内置 Host 服务使用了 `bind()`；Host 服务应使用 `get()`。 |
 | `DEPENDENCY_CYCLE` | 插件之间的硬依赖是否成环。 |
 | `PLUGIN_CALL_TIMEOUT` | 回调或 Service 方法是否阻塞。 |
 | `PLUGIN_PROCESS_EXITED` | 插件是否崩溃，Effect 是否误杀自身进程。 |

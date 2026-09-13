@@ -23,6 +23,7 @@ class _JobBinding:
     provider_id: str
     service_key: str
     job_id: str
+    provider: object
     terminal: dict[str, Any] | None = None
 
 
@@ -232,15 +233,21 @@ class SakuraTTSHub:
             if request_id in self._jobs:
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
             descriptor = self._providers.get(provider_id)
-        readiness = self._provider_readiness(descriptor) if descriptor is not None else None
-        if descriptor is None or readiness is None or not readiness[0]:
+        if descriptor is None:
+            return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
+        try:
+            provider = getattr(self._context, "bind")(descriptor.service_key)
+        except Exception:
+            return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
+        readiness = self._provider_readiness(descriptor, provider=provider)
+        if not readiness[0]:
             return self._failed(
                 request_id,
                 provider_id,
-                readiness[1] if readiness is not None else "TTS_PROVIDER_UNAVAILABLE",
+                readiness[1],
             )
         try:
-            job_id = self._provider(descriptor).begin(
+            job_id = provider.begin(
                 {
                     "requestId": request_id,
                     "characterId": character_id,
@@ -261,11 +268,11 @@ class SakuraTTSHub:
             )
         if not self._valid_identifier(job_id):
             return self._failed(request_id, provider_id, "TTS_JOB_INVALID")
-        binding = _JobBinding(provider_id, descriptor.service_key, job_id)
+        binding = _JobBinding(provider_id, descriptor.service_key, job_id, provider)
         with self._lock:
             if request_id in self._jobs:
                 try:
-                    self._provider(descriptor).cancel(job_id)
+                    provider.cancel(job_id)
                 except Exception:
                     pass
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
@@ -289,7 +296,7 @@ class SakuraTTSHub:
         failure_reported = False
         if terminal is None:
             try:
-                result = self._provider_by_key(binding.service_key).poll(binding.job_id)
+                result = binding.provider.poll(binding.job_id)
             except Exception:
                 self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code="TTS_PROVIDER_UNAVAILABLE")
                 failure_reported = True
@@ -315,7 +322,7 @@ class SakuraTTSHub:
         else:
             try:
                 accepted = bool(
-                    self._provider_by_key(binding.service_key).cancel(binding.job_id)
+                    binding.provider.cancel(binding.job_id)
                 )
             except Exception:
                 accepted = False
@@ -389,9 +396,11 @@ class SakuraTTSHub:
     def _provider_readiness(
         self,
         descriptor: _ProviderDescriptor,
+        *,
+        provider: object | None = None,
     ) -> tuple[bool, str, str]:
         try:
-            result = self._provider(descriptor).status()
+            result = (provider if provider is not None else self._provider(descriptor)).status()
         except Exception:
             return False, "TTS_PROVIDER_UNAVAILABLE", "provider_status"
         if not isinstance(result, Mapping):

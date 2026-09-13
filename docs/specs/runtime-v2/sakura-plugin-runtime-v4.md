@@ -122,7 +122,7 @@ Python 标准库
 第三方插件以及完成迁移的官方插件不得导入 `app.*`、Core 私有 bootstrap 或其他插件的源码目录。需要的
 宿主信息必须通过 `context` 和 `sakura.host.*` 取得；可复用的领域代码应搬入插件自身包或独立的公开库。
 
-SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`。允许因跨进程而收紧参数、返回值和 cleanup
+SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`，增加显式进程绑定 `bind`。允许因跨进程而收紧参数、返回值和 cleanup
 合同，但不把 RPC client、PID、pipe、模块名或进程地址暴露给插件作者。
 
 SDK 提供不依赖 Core 的 `sakura_http.urlopen_direct_for_loopback` 和 `proxy_for_url`。内置插件的 HTTP API
@@ -240,6 +240,30 @@ Manifest `requires` 表示启动和失败传播使用的硬依赖。已知固定
 Service key 可以由 `context.get()` 动态解析，但这种查找只返回当前 ServiceProxy 或明确缺失，不创建硬依赖、
 后台重绑或恢复关系。
 
+### 5.1 显式绑定插件进程
+
+`context.get(service_key)` 的跨进程调用保持动态路由，每次调用解析当前提供者。`context.bind(service_key)` 返回固定到
+当前 active 插件进程的 ServiceProxy，绑定身份为 `providerId + scopeId`。普通插件可以使用该接口，不需要
+经过某个特定领域的 Host 适配器。内置 Host 服务不提供进程绑定，继续使用 `get()`。
+
+Runtime 在绑定创建、派发及返回边界校验身份。停用、退出、同 ID 重载后旧绑定失效，不能把调用路由到替代进程；
+原调用返回时若绑定已失效，也不能交付旧成功结果。过期身份不自动刷新，超时、断连及失效不自动重放。
+新操作由实际消费者显式绑定新实例，旧操作保留原绑定。
+
+| 情况 | 稳定错误 |
+|---|---|
+| 绑定时不存在 active 插件服务 | `SERVICE_MISSING` |
+| 尝试绑定内置 Host 服务 | `SERVICE_BINDING_UNSUPPORTED` |
+| 已绑定进程停用、退出或被同 ID 新进程替代 | `SERVICE_BINDING_EXPIRED` |
+| RPC 携带畸形绑定身份 | `PLUGIN_PROTOCOL_INVALID` |
+
+绑定只固定插件进程，不定义同进程内 Python 服务对象的代次。`provide()` 的 disposer 撤销本地服务后，
+原绑定调用报告 `SERVICE_MISSING`；同一进程重新提供相同 key 和导出合同的服务仍属原绑定。
+导出方法表仍是 setup 产物，本轮不增加服务 revision 或动态方法表。
+
+`bind()` 不创建 Manifest 硬依赖、后台健康探测、重启或业务恢复关系，也不赋予额外权限。
+绑定代理仅在当前消费者进程内使用，普通 Service 参数和结果的 JSON 边界保持不变。
+
 ## 6. 能力组合与替换
 
 ### 6.1 替换型 Service
@@ -285,12 +309,15 @@ cancel(jobId)
 }
 ```
 
-Hub 只保存 descriptor，通过 `serviceKey` 动态取得当前 ServiceProxy，并以 `jobId` 驱动任务。正常 cleanup 时
-Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`；Provider 崩溃时 Hub 对该
-`serviceKey` 的后续调用明确失败并把 Provider 呈现为不可用，不触发 Runtime 自动重启或重绑。
+Hub 保存 descriptor，在创建任务前通过 `context.bind(serviceKey)` 取得固定进程的 ServiceProxy。
+就绪查询 `status`、`begin` 及该任务后续全部 `poll/cancel` 使用同一代理，并以 `jobId` 驱动任务。正常 cleanup 时
+Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`。Provider 崩溃后，即使没有执行 unregister、
+用户又重载同 ID Provider，旧任务仍因绑定失效而失败，不能查询或取消新进程中的同名 `jobId`。
+新的任务可以重新显式绑定；Runtime 不自动重启 Provider、不重绑或重放旧任务。
 
-Hub 不保存 Python Provider 对象、Python Job 对象、callable、callback handle 或通用远端对象引用。
-Generic Runtime 只执行普通 `service.call`，不理解 `providerId`、`jobId`、warmup 或合成状态。
+Hub 持有具名服务的 ServiceProxy；不跨进程交换 Provider 内部 Python 对象、Job 对象、callable、callback handle
+或任意 Python 对象的远端引用。任务身份继续使用有界 JSON 的 `jobId`。
+Generic Runtime 只执行普通服务调用与进程绑定检查，不理解 TTS 的 Provider descriptor、`jobId`、warmup 或合成状态。
 
 失败任务和已接受取消的任务由 Provider 收尾：尚未执行的取消可以立即释放临时 artifact 和 Job Effect；
 正在执行的任务必须等生产者停止写入后再释放。资源回收不依赖 Core 继续 `poll`，终态仍保留到调用方读取，

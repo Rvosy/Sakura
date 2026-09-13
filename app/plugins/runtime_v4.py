@@ -1268,19 +1268,34 @@ class PluginRuntimeManager:
                 if removed:
                     del self._callbacks[handle]
             return {"removed": removed}
-        if name != "service.call":
+        if name not in {"service.bind", "service.call"}:
             raise PluginApiError("PLUGIN_REQUEST_UNKNOWN", plugin_id=caller_id)
         service_key = payload.get("serviceKey")
+        if not isinstance(service_key, str):
+            raise PluginApiError("PLUGIN_PROTOCOL_INVALID", plugin_id=caller_id)
         method = payload.get("method")
         args = payload.get("args")
-        if (
-            not isinstance(service_key, str)
-            or not isinstance(method, str)
-            or not isinstance(args, list)
+        if name == "service.call" and (not isinstance(method, str) or not isinstance(args, list)):
+            raise PluginApiError("PLUGIN_PROTOCOL_INVALID", plugin_id=caller_id)
+        identity = payload.get("binding")
+        if "binding" in payload and (
+            not isinstance(identity, Mapping)
+            or set(identity) != {"providerId", "scopeId"}
+            or any(not isinstance(value, str) or not value for value in identity.values())
         ):
             raise PluginApiError("PLUGIN_PROTOCOL_INVALID", plugin_id=caller_id)
         try:
-            return self._route_service_call(caller_id, service_key, method, args)
+            if name == "service.bind":
+                with self._lock:
+                    if self._closed:
+                        raise PluginRuntimeError("GENERATION_INVALIDATED")
+                    binding = self._services.get(service_key)
+                    if binding is not None and binding.process is None:
+                        raise PluginRuntimeError("SERVICE_BINDING_UNSUPPORTED", service_key=service_key)
+                    return self.service_identity(service_key)
+            return self._route_service_call(
+                caller_id, service_key, method, args, expected_identity=identity,
+            )
         except PluginRuntimeError as error:
             raise PluginApiError(
                 error.code,

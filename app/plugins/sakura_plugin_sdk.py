@@ -1313,6 +1313,26 @@ class PluginContext:
             return _HostRegistrationProxy(self, key, callback_shape)
         return ServiceProxy(service_key, self._remote_call)
 
+    def bind(self, service_key: str) -> ServiceProxy:
+        """Hold one active plugin process; never adopt a replacement instance."""
+        key = _identifier(service_key, "SERVICE_KEY_INVALID")
+        binding = self._remote_request("service.bind", {"serviceKey": key})
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding) != {"providerId", "scopeId"}
+            or any(not isinstance(value, str) or not value for value in binding.values())
+        ):
+            raise PluginApiError("PLUGIN_RESPONSE_INVALID", service_key=key)
+        identity = dict(binding)
+
+        def call(service: str, method: str, args: Sequence[Any]) -> object:
+            return self._remote_request("service.call", {
+                "serviceKey": service, "method": method, "args": list(args),
+                "binding": identity,
+            })
+
+        return ServiceProxy(key, call)
+
     def provide(
         self,
         service_key: str,
