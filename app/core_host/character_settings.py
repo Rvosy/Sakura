@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import threading
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,6 +22,8 @@ from app.config.character_loader import (
     CharacterRegistry,
 )
 from app.config.settings_service import AppSettingsService
+from app.core.diagnostics import exception_diagnostics
+from app.core.runtime_log import log_event
 from app.core_host.protocol import response
 
 CHARACTER_SETTINGS_REQUEST_NAMES = frozenset(
@@ -59,6 +62,8 @@ class CharacterSettingsBoundary:
         user_root: Path,
         *,
         plugin_application_provider: Callable[[], object | None] = lambda: None,
+        prepare_voice_update: Callable | None = None,
+        apply_current: Callable[[], None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
@@ -67,6 +72,8 @@ class CharacterSettingsBoundary:
         self._revision = 1
         self._lock = threading.Lock()
         self._plugin_application_provider = plugin_application_provider
+        self._prepare_voice_update = prepare_voice_update
+        self._apply_current = apply_current
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -220,7 +227,13 @@ class CharacterSettingsBoundary:
                 ) from error
             current = self._settings.load_current_character_id(registry)
             try:
-                import_character_voice_archive(archive, self._user_root, character_id)
+                scope = (
+                    self._prepare_voice_update()
+                    if current == character_id and self._prepare_voice_update
+                    else nullcontext()
+                )
+                with scope as runtime_errors:
+                    import_character_voice_archive(archive, self._user_root, character_id)
             except (
                 OSError,
                 CharacterArchiveError,
@@ -233,8 +246,20 @@ class CharacterSettingsBoundary:
                     field="path",
                 ) from error
             self._revision += 1
+            try:
+                if runtime_errors:
+                    raise runtime_errors[0]
+                if current == character_id and self._apply_current is not None:
+                    self._apply_current()
+            except Exception as error:
+                log_event("CharacterSettings", "语音包已导入，运行态更新失败", exception_diagnostics(
+                    error, reason_code="CHARACTER_VOICE_APPLY_FAILED", stage="character.voice.apply"), severity="error")
+                raise CharacterSettingsError(
+                    "CHARACTER_VOICE_APPLY_FAILED",
+                    "语音包已导入，但运行态更新失败，请查看插件运行日志。",
+                ) from error
             result = self._change_result(
-                "core_restart_required" if current == character_id else "unchanged"
+                "character_refresh" if current == character_id else "unchanged"
             )
             result["pluginRequirements"] = [item for item in self._package_requirements(registry.get(character_id).package_dir) if item["kind"] == "tts"]
             return result
@@ -400,7 +425,7 @@ class CharacterSettingsBoundary:
             return self._change_result("unchanged")
 
     def _change_result(self, change_plan: str) -> dict[str, object]:
-        if change_plan not in {"unchanged", "core_restart_required", "visual_rebind"}:
+        if change_plan not in {"unchanged", "core_restart_required", "visual_rebind", "character_refresh"}:
             raise ValueError("invalid character change plan")
         return {
             "schemaVersion": 1,

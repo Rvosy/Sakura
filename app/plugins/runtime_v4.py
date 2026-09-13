@@ -11,6 +11,7 @@ import threading
 import time
 import codecs
 from dataclasses import dataclass, replace
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -696,6 +697,34 @@ class PluginRuntimeManager:
     def owns_callback(self, handle: str) -> bool:
         with self._lock:
             return handle in self._callbacks
+
+    @contextmanager
+    def pause_service_providers(self, prefix: str):
+        """Pause active readers and their dependents without changing enablement.
+
+        The caller inspects restoration errors separately from its file transaction.
+        """
+        errors = []
+        with self._operation_lock:
+            with self._lock:
+                affected = set()
+                for plugin_id, record in self._records.items():
+                    if record.state == "active" and any(key.startswith(prefix) for key in record.spec.provides):
+                        affected.add(plugin_id)
+                        affected.update(self._hard_dependents_locked(plugin_id))
+                order = [plugin_id for plugin_id in self._activation_order if plugin_id in affected]
+            try:
+                for plugin_id in reversed(order):
+                    self._stop_process(plugin_id, reason="PLUGIN_RELOADING", failed=False)
+                yield errors
+            finally:
+                for plugin_id in order:
+                    try:
+                        record = self._records[plugin_id]
+                        if not self._start_one(record):
+                            raise PluginRuntimeError(record.reason_code, plugin_id=plugin_id)
+                    except Exception as error:
+                        errors.append(error)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         with self._operation_lock:

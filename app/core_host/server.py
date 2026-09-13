@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import hmac
 import copy
+import hmac
+import json
 import queue
 import threading
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -351,6 +353,38 @@ class ReadinessController:
             getattr(plugin_application, "bind_session")(result.session)
         if callback is not None:
             callback()
+
+    def apply_character_configuration(self) -> None:
+        from app.config.character_loader import CharacterRegistry, load_character_system_prompt
+        from app.config.settings_service import AppSettingsService
+        from app.core_host.assistant_adapter import project_current_character_summary
+
+        registry = CharacterRegistry(self._config.user_root)
+        character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
+        if not character_id:
+            return
+        character = registry.get(character_id)
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            session = self._session
+        if session is not None:
+            if session.character.id != character_id:
+                raise ValueError("CHARACTER_SESSION_MISMATCH")
+            visual_binding = session.runtime.visual_binding
+            session.runtime.update_character(
+                load_character_system_prompt(character),
+                reply_tones=character.reply_tones,
+                character_id=character.id,
+                character_name=character.display_name,
+            )
+            session.runtime.set_visual_binding(visual_binding)
+            session.character = character
+        with self._lock:
+            if session is not None:
+                self._current_character_summary = project_current_character_summary(character)
+            self._revision += 1
+        self._refresh_visual_presentation()
 
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
@@ -889,24 +923,46 @@ class ControlDispatcher:
             if callable(cancel_all):
                 cancel_all()
 
-    def quiesce_for_character_publish(self) -> None:
-        """Stop generation-owned readers before replacing the active role package."""
-
-        self.invalidate_generation_work()
-        if self._asr_boundary is not None:
-            self._asr_boundary.close()
-        if self._chat_boundary is not None:
-            close = getattr(self._chat_boundary, "close", None)
-            if callable(close):
-                close()
+    @contextmanager
+    def prepare_voice_resource_update(self):
+        """Release only voice model readers; desired plugin enablement is unchanged."""
+        application = self.published_plugin_application()
         if self._tts_boundary is not None:
-            close = getattr(self._tts_boundary, "close", None)
-            if callable(close):
-                close()
-        plugin_application = self.published_plugin_application()
-        close = getattr(plugin_application, "close", None)
-        if callable(close):
-            close()
+            self._tts_boundary.cancel_all()
+        if application is None:
+            yield []
+        else:
+            with application.application.pause_service_providers("sakura.tts.provider.") as errors:
+                yield errors
+
+    @contextmanager
+    def prepare_character_publish(self, previous, incoming, changed_files):
+        def voice_config(profile):
+            raw = json.loads((profile.package_dir / "character.json").read_text(encoding="utf-8"))
+            extensions = raw.get("extensions", {})
+            return raw.get("voice"), {key: value for key, value in extensions.items() if key.startswith("sakura.tts")}
+        voice_changed = voice_config(previous) != voice_config(incoming) or any(
+            Path(path).suffix.lower() in {".ckpt", ".pth", ".onnx", ".wav", ".flac", ".mp3", ".ogg"}
+            or path.startswith("voice/") for path in changed_files)
+        if voice_changed:
+            with self.prepare_voice_resource_update() as errors:
+                yield errors
+        else:
+            yield []
+
+    def apply_character_configuration(self) -> None:
+        from app.config.character_loader import CharacterRegistry
+        from app.config.settings_service import AppSettingsService
+        registry = CharacterRegistry(self._config.user_root)
+        character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
+        application = self.published_plugin_application()
+        if application is not None and character_id:
+            application.bind_character_presentation(character_id)
+        schedule = getattr(self._chat_boundary, "schedule_runtime_update", None)
+        if callable(schedule):
+            schedule("character", self._readiness.apply_character_configuration)
+        else:
+            self._readiness.apply_character_configuration()
 
     def drain_generation_work(self) -> None:
         """Wait for detached event producers before the Router closes its writer."""
@@ -1389,6 +1445,8 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
+            prepare_voice_update=getattr(dispatcher, "prepare_voice_resource_update", None),
+            apply_current=getattr(dispatcher, "apply_character_configuration", None),
             plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
         )
         character_studio = CharacterStudioBoundary(
@@ -1396,11 +1454,8 @@ def run_host(
             config.generation_credential,
             config.user_root,
             plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
-            quiesce_generation=getattr(
-                dispatcher,
-                "quiesce_for_character_publish",
-                None,
-            ),
+            prepare_current=getattr(dispatcher, "prepare_character_publish", None),
+            apply_current=getattr(dispatcher, "apply_character_configuration", None),
         )
         storage_settings = StorageSettingsBoundary(
             config.generation_id,

@@ -350,7 +350,9 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
   插件进程退出时变化。
 - manifest `requires` 是硬依赖。Provider 进程退出或被停止时，Runtime 只标记 Provider `failed`、失效它的
   ServiceProxy，并停止声明该硬依赖的 consumer；动态查找该 Service 的插件和无关插件继续运行。
-- 普通配置先在目标进程调用 `config.on_change()`：`applied` 保持进程；`restart_required` 只在本次用户操作
+- 普通配置的有效字段与本进程已应用配置相同时直接返回 `applied`，不调用更新回调或重载插件；显式覆盖默认值仍会保存。
+  上次应用失败或仍要求重载时，相同配置可以再次应用，不能用磁盘值相同吞掉重试。
+- 配置变化时在目标进程调用 `config.on_change()`：`applied` 保持进程；`restart_required` 只在本次用户操作
   内按硬依赖顺序停止 consumer、重启目标，再重启本次被停止且此前 active 的 consumer；`error` 明确失败。
   这是显式设置保存的同步步骤，不接收完整目标态 inventory，也不进入后台 reconcile。
 - 插件调用超时、依赖安装失败、Service 冲突和进程崩溃均不自动重放、探测、重启、恢复 consumer 或静默选择

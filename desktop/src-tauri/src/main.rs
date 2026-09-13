@@ -4577,7 +4577,7 @@ fn validate_character_settings_change(value: Value) -> Result<(Value, String, Va
         .filter(|value| {
             matches!(
                 *value,
-                "unchanged" | "core_restart_required" | "visual_rebind"
+                "unchanged" | "core_restart_required" | "visual_rebind" | "character_refresh"
             )
         })
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?
@@ -4679,51 +4679,6 @@ fn observe_character_restart(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-        });
-}
-
-fn observe_studio_character_restart(
-    app_handle: tauri::AppHandle,
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    previous_generation_id: String,
-    previous_generation_number: u64,
-    target_character_id: String,
-) {
-    let _ = std::thread::Builder::new()
-        .name("studio-character-reload-ready".to_string())
-        .spawn(move || {
-            for _ in 0..1300 {
-                if let Some(generation_id) = handle
-                    .ready_character_generation(
-                        &previous_generation_id,
-                        previous_generation_number,
-                        &target_character_id,
-                    )
-                    .ok()
-                    .flatten()
-                {
-                    let _ = app_handle.emit_to(
-                        character_studio_window::STUDIO_WINDOW_LABEL,
-                        "sakura://studio-runtime-reload",
-                        json!({"state": "ready", "generationId": generation_id}),
-                    );
-                    let _ = app_handle.emit_to(
-                        product_shell::SETTINGS_WINDOW_LABEL,
-                        character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
-                        json!({"generationId": generation_id}),
-                    );
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            let _ = app_handle.emit_to(
-                character_studio_window::STUDIO_WINDOW_LABEL,
-                "sakura://studio-runtime-reload",
-                json!({
-                    "state": "failed",
-                    "message": "角色已保存，但修改暂时未能生效。请重启 Sakura。"
-                }),
-            );
         });
 }
 
@@ -6855,7 +6810,6 @@ async fn studio_request(
     params: Value,
     app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
-    audio_state: State<'_, audio::AudioState>,
     state: State<'_, character_studio_window::CharacterStudioWindowState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
 ) -> Result<Value, String> {
@@ -6867,17 +6821,8 @@ async fn studio_request(
     if name == "studio.bootstrap" {
         return Err("STUDIO_COMMAND_UNKNOWN".to_string());
     }
-    let publish_target_character_id = if name == "studio.character.publish" {
-        params
-            .pointer("/doc/id")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    } else {
-        None
-    };
     let handle = settings_core_handle(&lifecycle)?;
-    let (previous_generation_id, previous_generation_number) = handle
+    let (previous_generation_id, _) = handle
         .available_generation_identity()
         .map_err(str::to_string)?
         .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
@@ -6895,35 +6840,6 @@ async fn studio_request(
         std::time::Duration::from_secs(30)
     };
     let response = dispatch_settings_request(handle.clone(), None, name, params, deadline).await?;
-    if name == "studio.character.publish"
-        && response
-            .pointer("/error/details/generationInvalidated")
-            .and_then(Value::as_bool)
-            == Some(true)
-    {
-        let target_character_id =
-            publish_target_character_id.ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?;
-        handle
-            .restart()
-            .map_err(|error| format!("STUDIO_PUBLISH_RECOVERY_RESTART_FAILED: {error}"))?;
-        audio_state.shutdown();
-        state.bind_generation("")?;
-        observe_studio_character_restart(
-            app_handle.clone(),
-            handle.clone(),
-            previous_generation_id.clone(),
-            previous_generation_number,
-            target_character_id.clone(),
-        );
-        observe_character_restart(
-            app_handle,
-            handle,
-            previous_generation_id,
-            previous_generation_number,
-            target_character_id,
-        );
-        return settings_response_payload(response);
-    }
     let mut payload = settings_response_payload(response)?;
 
     if name == "studio.visual.open" || name == "studio.visual.thumbnail" {
@@ -7035,49 +6951,19 @@ async fn studio_request(
     validate_studio_payload(&payload)?;
 
     if name == "studio.character.publish" {
-        if payload.get("changePlan").and_then(Value::as_str) == Some("core_restart_required") {
-            let target_character_id = payload
-                .get("savedCharacterId")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?
-                .to_string();
-            let restart = handle.restart();
-            if restart.is_ok() {
-                audio_state.shutdown();
-                state.bind_generation("")?;
-                observe_studio_character_restart(
-                    app_handle.clone(),
-                    handle.clone(),
-                    previous_generation_id.clone(),
-                    previous_generation_number,
-                    target_character_id.clone(),
-                );
-                observe_character_restart(
-                    app_handle,
-                    handle,
-                    previous_generation_id,
-                    previous_generation_number,
-                    target_character_id,
-                );
-                payload["runtimeReload"] = json!("requested");
-            } else {
-                payload["runtimeReload"] = json!("failed");
-                payload["reloadError"] = json!("角色已保存，但修改暂时未能生效。请重启 Sakura。");
-                let _ = app_handle.emit_to(
-                    product_shell::SETTINGS_WINDOW_LABEL,
-                    character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
-                    (),
-                );
-            }
+        payload["runtimeReload"] = if payload.get("applyError").is_some() {
+            json!("failed")
         } else {
-            payload["runtimeReload"] = json!("not_required");
-            let _ = app_handle.emit_to(
-                product_shell::SETTINGS_WINDOW_LABEL,
-                character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
-                (),
-            );
+            json!("not_required")
+        };
+        if let Some(error) = payload.get("applyError").cloned() {
+            payload["reloadError"] = error;
         }
+        let _ = app_handle.emit_to(
+            product_shell::SETTINGS_WINDOW_LABEL,
+            character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+            (),
+        );
     }
     Ok(payload)
 }
@@ -8783,14 +8669,16 @@ mod tests {
             "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
             "pluginRequirements": [{"kind": "tts", "type": "gpt-sovits.models@1", "reasonCode": "READY"}],
         })).is_err());
-        let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
-            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "visual_rebind",
-        }))
-        .unwrap();
-        assert_eq!(
-            character_restart_target(&hot_snapshot, &hot_plan).unwrap(),
-            None
-        );
+        for plan in ["visual_rebind", "character_refresh"] {
+            let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
+                "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": plan,
+            }))
+            .unwrap();
+            assert_eq!(
+                character_restart_target(&hot_snapshot, &hot_plan).unwrap(),
+                None
+            );
+        }
 
         assert_eq!(
             validate_character_settings_change(json!({

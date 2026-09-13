@@ -108,7 +108,8 @@ class CharacterStudioBoundary:
         generation_credential: str,
         user_root: Path,
         *,
-        quiesce_generation: Callable[[], None] | None = None,
+        prepare_current: Callable[..., Any] | None = None,
+        apply_current: Callable[[], None] | None = None,
         plugin_application_provider: Callable[[], object | None] = lambda: None,
     ) -> None:
         self._generation_id = generation_id
@@ -120,8 +121,8 @@ class CharacterStudioBoundary:
         self._mutation_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._active_operation: _StudioOperation | None = None
-        self._quiesce_generation = quiesce_generation
-        self._generation_invalidated = False
+        self._prepare_current = prepare_current
+        self._apply_current = apply_current
         self._plugin_application_provider = plugin_application_provider
 
     @property
@@ -164,8 +165,6 @@ class CharacterStudioBoundary:
             )
         except CharacterStudioError as error:
             public_error = error.public_error()
-            if self._generation_invalidated:
-                public_error["details"]["generationInvalidated"] = True
             return response(
                 request,
                 generation_id=self._generation_id,
@@ -186,8 +185,6 @@ class CharacterStudioBoundary:
             )
         except (VisualHostError, PluginRuntimeError) as error:
             public_error = CharacterStudioError(error.code, "表现资源操作失败，请查看运行日志。").public_error()
-            if self._generation_invalidated:
-                public_error["details"]["generationInvalidated"] = True
             return response(
                 request, generation_id=self._generation_id,
                 generation_credential=self._generation_credential, protocol_minor=2,
@@ -198,8 +195,6 @@ class CharacterStudioBoundary:
                 "STUDIO_OPERATION_FAILED",
                 str(error) or "角色工坊操作失败。",
             ).public_error()
-            if self._generation_invalidated:
-                public_error["details"]["generationInvalidated"] = True
             return response(
                 request,
                 generation_id=self._generation_id,
@@ -304,23 +299,37 @@ class CharacterStudioBoundary:
                         current_character_id=current,
                         cancel_check=self._cancel_check(operation),
                         commit_started=self._commit_started(operation),
-                        quiesce_current=self._quiesce_current_generation,
+                        prepare_current=self._prepare_current,
                     )
             finally:
                 self._finish_operation(operation)
+            if result.get("changed") and result.get("saved_character_id") == current:
+                try:
+                    if self._apply_current is not None:
+                        self._apply_current()
+                    else:
+                        application = self._plugin_application_provider()
+                        if application is not None:
+                            application.bind_character_presentation(current)
+                except Exception as error:
+                    log_event("CharacterStudio", "角色已保存，运行态更新失败", exception_diagnostics(
+                        error, reason_code="CHARACTER_APPLY_FAILED", stage="character.apply"), severity="error")
+                    result["apply_error"] = "角色已保存，但运行态更新失败，请查看运行日志。"
             public = _opened_to_public(result, current)
             public.update(
                 {
                     "savedCharacterId": str(result.get("saved_character_id") or ""),
                     "currentCharacterId": current or None,
                     "changePlan": (
-                        "core_restart_required"
+                        "character_refresh"
                         if result.get("changed") and result.get("saved_character_id") == current
                         else "unchanged"
                     ),
                     "message": str(result.get("message") or ""),
                 }
             )
+            if result.get("apply_error"):
+                public["applyError"] = result["apply_error"]
             return public
         if name == "studio.asset.import":
             return self._import_asset(payload, current)
@@ -613,18 +622,6 @@ class CharacterStudioBoundary:
                     operation.phase = "committing"
 
         return mark
-
-    def _quiesce_current_generation(self) -> None:
-        if self._quiesce_generation is None:
-            return
-        self._generation_invalidated = True
-        try:
-            self._quiesce_generation()
-        except Exception as exc:
-            raise CharacterStudioError(
-                "STUDIO_OPERATION_FAILED",
-                "停止当前角色的运行任务失败。",
-            ) from exc
 
     @staticmethod
     def _operation_id(value: object, *, required: bool) -> str:

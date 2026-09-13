@@ -26,6 +26,34 @@ from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
 
 
+@pytest.mark.parametrize("retry_port", [8000, 8001])
+def test_unchanged_config_does_not_reload_and_failed_apply_remains_retryable(tmp_path, retry_port):
+    from app.plugins.sakura_plugin_sdk import PluginConfig
+    root, data = tmp_path / "plugin", tmp_path / "data"
+    root.mkdir()
+    (root / "config.json").write_text('{"port": 8000}', encoding="utf-8")
+    config = PluginConfig("fixture", root, data, lambda cleanup: cleanup)
+    # Explicitly pinning a default persists the override without restarting.
+    assert config.update({"port": 8000}) == "applied"
+    assert json.loads((data / "config.json").read_text(encoding="utf-8")) == {"port": 8000}
+    calls = []
+    def apply(values):
+        calls.append(values)
+        return "error" if len(calls) == 1 else "applied"
+    config.on_change(apply)
+    assert config.update({"port": 8000}) == "applied"
+    assert not calls
+    assert config.update({"port": 8001}) == "error"
+    assert config.update({"port": retry_port}) == "applied"
+    assert len(calls) == 2
+    assert config.replace({"port": retry_port}) == "applied"
+    assert len(calls) == 2
+    fresh = PluginConfig("fixture", root, data, lambda cleanup: cleanup)
+    assert fresh.update({"port": retry_port}) == "applied"
+    assert fresh.update({"port": 8002}) == "restart_required"
+    assert fresh.update({"port": 8002}) == "restart_required"
+
+
 def test_unified_logging_two_real_plugins_keep_identity_and_flush_cleanup(tmp_path: Path) -> None:
     from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
 
@@ -477,6 +505,46 @@ def test_failed_enable_returns_saved_revision_for_subsequent_toggles(tmp_path: P
         retried = boundary.set_enabled(disabled["revision"], install_id, True)
         assert retried["applicationReasonCode"] == "MISSING_SERVICE"
         assert retried["revision"] == boundary.snapshot()["revision"]
+    finally:
+        application.close()
+
+
+@pytest.mark.parametrize("fail_publish", [False, True])
+def test_voice_resource_update_restores_dependents_and_preserves_unrelated_processes(tmp_path, fail_publish):
+    roots = _roots(tmp_path)
+    for name, service, requires in (
+        ("voice", "sakura.tts.provider.fixture", ()),
+        ("consumer", "fixture.consumer", ("sakura.tts.provider.fixture",)),
+        ("unrelated", "fixture.unrelated", ()),
+    ):
+        _plugin_source(roots.distribution_root / "plugins/builtin", f"fixture.{name}", service,
+            requires=requires, body=_simple_service_body(service, name))
+    application = PluginApplicationHost(roots, "generation-voice-update", ToolRegistry())
+    application.start()
+    try:
+        def records():
+            return {item["pluginId"]: item for item in application.application.public_snapshot()["plugins"]}
+        before = records()
+        assert all(item["state"] == "active" for item in before.values())
+        desired = PluginDesiredStateStore(roots.user_root).read()
+        try:
+            with application.application.pause_service_providers("sakura.tts.provider.") as errors:
+                paused = records()
+                assert paused["fixture.voice"]["pid"] is None
+                assert paused["fixture.consumer"]["pid"] is None
+                assert paused["fixture.unrelated"]["pid"] == before["fixture.unrelated"]["pid"]
+                assert all(item["enabled"] for item in paused.values())
+                if fail_publish:
+                    raise OSError("publication failed")
+        except OSError:
+            assert fail_publish
+        assert not errors
+        after = records()
+        assert all(item["state"] == "active" for item in after.values())
+        assert after["fixture.unrelated"]["pid"] == before["fixture.unrelated"]["pid"]
+        for name in ("voice", "consumer"):
+            assert after[f"fixture.{name}"]["pid"] != before[f"fixture.{name}"]["pid"]
+        assert PluginDesiredStateStore(roots.user_root).read() == desired
     finally:
         application.close()
 

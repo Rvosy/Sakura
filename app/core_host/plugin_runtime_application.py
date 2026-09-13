@@ -364,6 +364,9 @@ class PluginRuntimeApplication:
     def bind_chat_boundary(self, boundary: object) -> None:
         self._chat_boundary = boundary
 
+    def pause_service_providers(self, prefix: str):
+        return self._manager.pause_service_providers(prefix)
+
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         result = self._manager.set_enabled(plugin_id, enabled)
         self._refresh_visual_provider(plugin_id)

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-05
+updated: 2026-09-14
 ---
 
 # WP-5-03 安全角色切换、Session 与历史分页
@@ -22,8 +22,10 @@ generation 私有资源完成清理，再启动完整的新 generation。
 导入角色包只有在首次导入并自动成为当前角色时要求重启；
 导入非当前角色不重启。
 
-设置页可以给当前已提交角色导入 `.voice`，也可以导出完整角色包、单角色包或语音包。给当前角色导入语音后必须
-受控重启 Core，使新的模型和参考语音进入下一 generation；给非当前角色导入时只更新角色包。导出只读取
+设置页可以给当前已提交角色导入 `.voice`，也可以导出完整角色包、单角色包或语音包。给当前角色导入语音返回
+`character_refresh`：暂停并恢复活动语音服务及其硬依赖方，重新读取模型和参考语音，Core generation 保持不变。
+语音包已导入但运行态更新失败时返回 `CHARACTER_VOICE_APPLY_FAILED`，不得宣称文件未保存或自动重启。
+给非当前角色导入时只更新角色包。导出只读取
 已保存的角色数据，不改变当前角色，也不触发重启。完整角色包和语音包要求 GPT 与 SoVITS 模型文件都存在；
 模型不完整时仍可导出不含语音的单角色包。
 
@@ -35,12 +37,12 @@ Python `characters.settings.select/import/import_voice` 在校验归档或目标
 {
   "schemaVersion": 1,
   "snapshot": {},
-  "changePlan": "unchanged | visual_rebind | core_restart_required"
+  "changePlan": "unchanged | visual_rebind | character_refresh | core_restart_required"
 }
 ```
 
 Rust 必须在同一设置窗口和当前 Core identity 下校验完整响应。`core_restart_required` 只派发一次受控
-restart，并向设置页返回已提交目标、前一 generation 和 `restartState=requested`；`unchanged` 返回
+restart，并向设置页返回已提交目标、前一 generation 和 `restartState=requested`；其余计划返回
 `restartState=not_required`。配置保存失败不得 restart；restart 派发失败返回
 `CHARACTER_RESTART_REQUEST_FAILED`。配置可能已经提交，因此失败后禁止第二次写入、自动回滚、自动重试或回退
 旧角色，用户只能按明确错误人工恢复。
@@ -100,7 +102,7 @@ generation 隔离，但不视为角色变化。
   collection editor；切换清理会关闭 editor portal、失效在途 collection 查询并清空其分页状态。
 - 收到已提交的 restart receipt 后进入 switching，立即清空并隐藏旧角色 Memory 列表、编辑器、插件
   collection 页面状态和历史内容；切换期间禁用角色导入/选择及角色相关操作，不整页 reload。
-- 当前角色有未保存的外观、语音或 Memory 改动时禁止导入语音，避免受控重启丢失草稿。导出仍可读取已保存
+- 当前角色有未保存的外观、语音或 Memory 改动时禁止导入语音，避免导入后的刷新覆盖草稿。导出仍可读取已保存
   的角色包；有待应用的角色切换时，导入语音和导出都保持禁用。
 - Provider、Tools、Plugin 和 Screen Awareness 等全局设置草稿保留，并在新 generation 就绪后重新绑定；
   外观、语音和 Memory 草稿不得迁移到另一角色。
@@ -116,4 +118,5 @@ generation 隔离，但不视为角色变化。
 阻断/reducer 重建/迟到页以及受控 restart cleanup。
 
 回退只能关闭设置页角色选择入口并移除新命令接线；不得改写用户已保存的目标角色、删除 Memory/Timeline，
-也不得恢复同 generation 的 Assistant Session 热替换路径。本 WP 沿用既有受控 Core restart 决策，不新增 ADR。
+也不得恢复跨角色 ID 的同 generation Assistant Session 热替换路径。同角色编辑与角色切换的边界见
+[ADR-0050](../../adr/0050-current-character-local-refresh.md)。

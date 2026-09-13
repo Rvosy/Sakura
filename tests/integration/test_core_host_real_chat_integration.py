@@ -1967,3 +1967,66 @@ def test_eof_during_blocked_provider_read_drains_terminal_and_process(tmp_path: 
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)
+
+
+def test_studio_publish_updates_live_character_without_restarting_core_or_plugins(tmp_path):
+    import psutil
+    server, provider_thread = _start_provider("complete")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    distribution = tmp_path / "distribution"
+    for plugin in ("sakura_portrait", "sakura_spine"):
+        shutil.copytree(REPO_ROOT / "plugins/builtin" / plugin, distribution / "plugins/builtin" / plugin)
+    package = app_root / "characters/sakura"
+    shutil.copyfile(REPO_ROOT / "desktop/frontend/prototypes/asr/assets/navi.png", package / "portraits/neutral.png")
+    manifest = json.loads((package / "character.json").read_text(encoding="utf-8"))
+    manifest["portrait"] = {"default": "portraits/neutral.png", "expressions": {"neutral": "portraits/neutral.png"}}
+    (package / "character.json").write_text(json.dumps(manifest), encoding="utf-8")
+    process = _start_host(app_root, distribution_root=distribution)
+    stderr = []
+    drain = threading.Thread(target=lambda: stderr.extend(iter(process.stderr.readline, b"")), daemon=True)
+    drain.start()
+    def plugin_process_ids():
+        return {child.pid for child in psutil.Process(process.pid).children()
+                if "--plugin-id" in child.cmdline()}
+    try:
+        _wait_ready(process, ["transport.concurrent-router", "assistant.plugins-v1"])
+        deadline = time.monotonic() + 5
+        index = 0
+        while True:
+            response = _exchange(process, _request(f"plugins-ready-{index}", "plugins.settings.get", {}))
+            assert response["ok"], response
+            plugins = response["payload"]["plugins"]
+            before = _exchange(process, _request(f"presentation-ready-{index}", "core.snapshot", {}))["payload"]
+            if len(plugins) == 2 and all(item["state"] == "active" for item in plugins) and before["characterPresentation"]["visual"]:
+                break
+            assert time.monotonic() < deadline, (plugins, before)
+            index += 1
+        plugin_pids = plugin_process_ids()
+        assert len(plugin_pids) == 2
+        opened = _exchange(process, _request("open-role", "studio.character.open", {"characterId": "sakura"}))["payload"]
+        doc = opened["doc"]
+        doc["displayName"] = "更新后的角色"
+        doc["cardText"] = "You are a character with a purple umbrella."
+        doc["theme"]["primaryColor"] = "#123456"
+        doc["visuals"]["resources"][0]["name"] = "新的形态名称"
+        published = _exchange(process, _request("publish-role", "studio.character.publish", {"workspaceId": opened["workspaceId"], "doc": doc}))
+        assert published["ok"], published
+        assert published["payload"]["changePlan"] == "character_refresh"
+        assert "applyError" not in published["payload"]
+        after = _exchange(process, _request("after-save", "core.snapshot", {}))["payload"]
+        assert after["generationId"] == before["generationId"]
+        assert after["currentCharacterSummary"]["displayName"] == "更新后的角色"
+        assert after["characterPresentation"]["themeTokens"]["primary"] == "#123456"
+        assert after["characterPresentation"]["visual"]["bindingId"] != before["characterPresentation"]["visual"]["bindingId"]
+        assert plugin_process_ids() == plugin_pids
+        _send(process, _request("chat-after-save", "chat.send", {"message": "hello", "operationId": "chat-after-save"}))
+        frames = [_read(process), _read(process), _read(process)]
+        assert any(frame.get("name") == "chat.completed" for frame in frames), frames
+        assert "purple umbrella" in json.dumps(_ProviderHandler.requests)
+        assert plugin_process_ids() == plugin_pids
+        _exchange(process, _request("shutdown-after-save", "system.shutdown", {}))
+        process.wait(timeout=5)
+        drain.join(2)
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)

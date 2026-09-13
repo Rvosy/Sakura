@@ -553,6 +553,7 @@ class PluginConfig:
         self._data_dir = data_dir
         self._effect = effect
         self._handlers: list[Callable[[dict[str, Any]], str]] = []
+        self._applied_config = self.get()
 
     def get(self) -> dict[str, Any]:
         merged = self._read(self._plugin_root / "config.json")
@@ -598,8 +599,12 @@ class PluginConfig:
         return value
 
     def _write(self, overrides: Mapping[str, Any]) -> str:
-        self._data_dir.mkdir(parents=True, exist_ok=True)
+        effective = self._read(self._plugin_root / "config.json")
+        effective.update(overrides)
         target = self._data_dir / "config.json"
+        if dict(overrides) == self._read(target) and effective == self._applied_config:
+            return "applied"
+        self._data_dir.mkdir(parents=True, exist_ok=True)
         temporary = self._data_dir / f".config-{uuid.uuid4().hex}.tmp"
         try:
             temporary.write_text(
@@ -612,7 +617,10 @@ class PluginConfig:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-        effective = self.get()
+        if effective == self._applied_config:
+            return "applied"
+        # A handler may partly apply before failing; neither old nor new is known active.
+        self._applied_config = None
         if not self._handlers:
             return "restart_required"
         results: list[str] = []
@@ -628,6 +636,7 @@ class PluginConfig:
             return "error"
         if "restart_required" in results:
             return "restart_required"
+        self._applied_config = effective
         return "applied"
 
 

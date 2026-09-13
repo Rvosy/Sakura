@@ -163,7 +163,24 @@ def test_select_same_character_is_unchanged_without_rewriting_config(
     assert config.read_bytes() == before
 
 
-def test_voice_import_restarts_current_character_and_exports_all_package_kinds(
+def test_voice_import_reports_committed_files_when_runtime_restore_fails(tmp_path):
+    from contextlib import contextmanager
+    @contextmanager
+    def prepare():
+        errors = []
+        yield errors
+        errors.append(RuntimeError("voice start failed"))
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path, prepare_voice_update=prepare)
+    boundary.import_archive(str(_archive(tmp_path / "fixture.char")))
+    result = boundary.handle(_request("characters.settings.import_voice", {
+        "path": str(_voice_archive(tmp_path / "fixture.voice")), "characterId": "fixture",
+    }))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "CHARACTER_VOICE_APPLY_FAILED"
+    assert boundary.snapshot()["characters"][0]["hasExportableVoice"] is True
+
+
+def test_voice_import_refreshes_current_character_and_exports_all_package_kinds(
     tmp_path: Path,
 ) -> None:
     boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
@@ -185,7 +202,7 @@ def test_voice_import_restarts_current_character_and_exports_all_package_kinds(
     )
 
     assert imported["ok"] is True
-    assert imported["payload"]["changePlan"] == "core_restart_required"
+    assert imported["payload"]["changePlan"] == "character_refresh"
     assert imported["payload"]["snapshot"]["characters"] == [
         {
             "id": "fixture",

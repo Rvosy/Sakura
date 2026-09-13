@@ -61,6 +61,7 @@ spec 或 plan，验收证据放在 records。
 
 - [ADR-0048：语音资源与应用运行选择分离](0048-voice-resources-and-local-selection.md)
 - [ADR-0049：动画表现使用单点命中，宿主管理原生穿透](0049-animated-point-hit-testing.md)
+- [ADR-0050：当前角色编辑局部更新，角色切换保留 generation 隔离](0050-current-character-local-refresh.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

@@ -821,23 +821,95 @@ def test_legacy_raw_and_new_drafts_migrate_once(tmp_path: Path) -> None:
     assert len([item for item in second.list_characters() if item["id"] == "legacy"]) == 1
 
 
-def test_current_role_quiesces_before_the_first_directory_rename(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reverse", [False, True])
+def test_current_publish_supports_resource_file_directory_changes(tmp_path, reverse):
+    package = _write_character(tmp_path)
+    old_path = "assets/model" if reverse else "assets/model/data.bin"
+    new_path = "assets/model/data.bin" if reverse else "assets/model"
+    old = package / old_path
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old resource")
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    draft = service._workspace_package(opened["workspace_id"])
+    (draft / old_path).unlink()
+    if (draft / new_path).is_dir():
+        (draft / new_path).rmdir()
+    (draft / new_path).parent.mkdir(parents=True, exist_ok=True)
+    (draft / new_path).write_bytes(b"new resource")
+    service.save_character(opened["doc"], opened["workspace_id"], current_character_id="sakura")
+    assert (package / new_path).read_bytes() == b"new resource"
+    assert not (package / old_path).is_file()
+
+
+def test_current_publish_keeps_committed_data_when_voice_restore_fails(tmp_path):
+    from contextlib import contextmanager
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    opened["doc"]["card_text"] = "saved card"
+    @contextmanager
+    def prepare(*_args):
+        errors = []
+        yield errors
+        errors.append(RuntimeError("voice start failed"))
+    result = service.save_character(opened["doc"], opened["workspace_id"],
+        current_character_id="sakura", prepare_current=prepare)
+    assert result["apply_error"]
+    assert (package / "card.md").read_text(encoding="utf-8") == "saved card"
+    assert service.open_character("sakura")["is_dirty"] is False
+
+
+def test_current_role_updates_changed_files_and_preserves_open_resources(tmp_path: Path):
+    from contextlib import contextmanager
     package = _write_character(tmp_path)
     service = CharacterStudioService(tmp_path)
     opened = service.open_character("sakura")
     doc = opened["doc"]
     doc["card_text"] = "replacement card"
-    observed: list[str] = []
-
-    def quiesce() -> None:
+    observed = []
+    original_identity = (package / "portraits/default.png").stat().st_ino
+    @contextmanager
+    def prepare(previous, incoming, changed):
         observed.append((package / "card.md").read_text(encoding="utf-8"))
+        assert "card.md" in changed
+        assert "portraits/default.png" not in changed
+        yield
+        observed.append((package / "card.md").read_text(encoding="utf-8"))
+    with (package / "portraits/default.png").open("rb") as reader:
+        service.save_character(doc, opened["workspace_id"], current_character_id="sakura", prepare_current=prepare)
+        assert reader.read() == b"portrait"
+    assert (package / "portraits/default.png").stat().st_ino == original_identity
+    assert observed == ["original card", "replacement card"]
 
-    service.save_character(
-        doc,
-        opened["workspace_id"],
-        current_character_id="sakura",
-        quiesce_current=quiesce,
-    )
 
-    assert observed == ["original card"]
-    assert (package / "card.md").read_text(encoding="utf-8") == "replacement card"
+
+
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+def test_current_role_incremental_publish_recovers_without_replacing_unchanged_assets(tmp_path, monkeypatch, failure):
+    import app.config.character_studio as module
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    original_card = (package / "card.md").read_bytes()
+    original_manifest = (package / "character.json").read_bytes()
+    identity = (package / "portraits/default.png").stat().st_ino
+    opened["doc"]["card_text"] = "modified card"
+    opened["doc"]["display_name"] = "modified name"
+    replace = module.replace_with_retry
+    failed = False
+    def fail_manifest(source, target, *args, **kwargs):
+        nonlocal failed
+        if not failed and target == package / "character.json":
+            failed = True
+            assert (package / "card.md").read_text(encoding="utf-8") == "modified card"
+            raise failure("interrupted commit")
+        return replace(source, target, *args, **kwargs)
+    monkeypatch.setattr(module, "replace_with_retry", fail_manifest)
+    with pytest.raises(failure):
+        service.save_character(opened["doc"], opened["workspace_id"], current_character_id="sakura")
+    recovered = CharacterStudioService(tmp_path)
+    assert (package / "card.md").read_bytes() == original_card
+    assert (package / "character.json").read_bytes() == original_manifest
+    assert (package / "portraits/default.png").stat().st_ino == identity
+    assert recovered.open_character("sakura")["doc"]["card_text"] == "modified card"
