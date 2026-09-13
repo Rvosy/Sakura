@@ -3,7 +3,28 @@ import test from "node:test";
 import { executeSettingsClose } from "../settings/close-flow.js";
 import { field, snapshot, featureFixture, queryResult, settle } from "./fixtures/plugin-settings-fixture.js";
 
-for (const surface of ["memory", null]) {
+const collectionSurfaces = ["memory", null, "custom_archive"];
+
+function collectionSnapshot(surface, generation = "generation-a") {
+  const data = snapshot(generation);
+  data.plugins[0].sections[1].surface = surface;
+  return data;
+}
+
+function collectionControls(document, surface) {
+  const memory = surface === "memory";
+  return {
+    add: () => document.querySelector(memory ? ".memory-add-button" : ".plugin-collection-head button"),
+    record: () => document.querySelector(memory ? ".memory-record-card" : ".plugin-collection-table tbody tr"),
+    input: () => document.querySelector(memory ? ".memory-editor-overlay textarea" : ".plugin-collection-editor textarea"),
+    save: () => document.querySelector(memory ? '[data-memory-action="save"]' : ".plugin-collection-editor .secondary-button"),
+    remove: () => document.querySelector(memory ? '[data-memory-action="delete"]' : ".plugin-collection-editor .danger-button"),
+    search: () => document.querySelector(memory ? ".memory-search-input" : ".plugin-collection-toolbar input"),
+    async openRecord() { await this.record().fire(memory ? "dblclick" : "click"); },
+  };
+}
+
+for (const surface of collectionSurfaces) {
   test(`an open ${surface || "plugin"} collection draft prevents silent Settings close`, async () => {
     const data = snapshot();
     data.plugins[0].sections[1].surface = surface;
@@ -17,7 +38,7 @@ for (const surface of ["memory", null]) {
     const add = document.querySelector(surface === "memory" ? ".memory-add-button" : ".plugin-collection-head button");
     await add.fire("click");
     assert.equal(feature.hasCollectionDrafts(), true);
-    assert.equal(feature.characterDraftCount(), surface === "memory" ? 1 : 0);
+    assert.equal(feature.collectionDraftCount(), 1);
     let choices = 0;
     let closed = false;
     const decision = await executeSettingsClose({
@@ -67,7 +88,7 @@ test("plugin feature retains Memory editors and detaches old-generation queries 
 
   nextSnapshot = snapshot("generation-b");
   await feature.refreshCurrent();
-  assert.equal(feature.characterDraftCount(), 1);
+  assert.equal(feature.collectionDraftCount(), 1);
   assert.equal(document.querySelector(".memory-search-input").value, "旅行");
   assert.equal(document.querySelector(".memory-editor-overlay textarea").value, "未保存的记忆");
   resolveOldQuery(queryResult("stale"));
@@ -87,12 +108,12 @@ test("plugin feature retains Memory editors and detaches old-generation queries 
   await document.querySelector(".memory-dialog-close").fire("click");
   nextSnapshot = snapshot("generation-c");
   await feature.refreshCurrent();
-  assert.equal(feature.characterDraftCount(), 0, "refreshing a closed editor must not create a phantom draft");
+  assert.equal(feature.collectionDraftCount(), 0, "refreshing a closed editor must not create a phantom draft");
   assert.equal(document.querySelector(".memory-editor-overlay"), null);
   await document.querySelector(".memory-add-button").fire("click");
-  assert.equal(feature.characterDraftCount(), 1);
+  assert.equal(feature.collectionDraftCount(), 1);
   feature.discard();
-  assert.equal(feature.characterDraftCount(), 0);
+  assert.equal(feature.collectionDraftCount(), 0);
   assert.equal(document.querySelector(".memory-editor-overlay"), null);
   feature.dispose();
   assert.equal(timers.size, 0);
@@ -151,7 +172,7 @@ test("a detached collection save callback cannot submit into the next generation
   await feature.refreshCurrent();
   await oldSave.fire("click");
   assert.deepEqual(writes, []);
-  assert.equal(feature.characterDraftCount(), 1);
+  assert.equal(feature.collectionDraftCount(), 1);
   feature.dispose();
 });
 
@@ -235,49 +256,190 @@ test("plugin feature owns page polling and removes mounted listeners and pending
   assert.deepEqual(calls, ["settings_plugins_get"], "disposal cancels queued collection queries");
 });
 
-test("character transitions clear the Memory editor and invalidate outstanding collection reads", async () => {
+for (const surface of collectionSurfaces) {
+  test(`character transitions clear ${surface || "plugin"} drafts and invalidate outstanding collection reads`, async () => {
+    let transitioning = false;
+    let pendingSelection = true;
+    let resolveOldQuery;
+    const queries = [];
+    const fixture = featureFixture(async (command, args) => {
+      if (command === "settings_plugins_get") return collectionSnapshot(surface, "generation-b");
+      assert.equal(command, "settings_plugins_collection");
+      queries.push(args);
+      if (queries.length === 1) return new Promise((resolve) => { resolveOldQuery = resolve; });
+      return queryResult("new-character");
+    }, {
+      isCharacterTransitioning: () => transitioning,
+      hasPendingCharacterSelection: () => pendingSelection,
+    });
+    const { feature, document, runTimers } = fixture;
+    const controls = collectionControls(document, surface);
+    feature.initialize(collectionSnapshot(surface));
+    if (surface !== "memory") await fixture.openSettings();
+    await runTimers(0);
+    assert.equal(queries.length, 0, "a pending character choice blocks reads for the old character");
+    pendingSelection = false;
+    feature.renderMemorySurface();
+    await controls.add().fire("click");
+    await runTimers(0);
+    assert.equal(queries.length, 1);
+    assert.equal(feature.collectionDraftCount(), 1);
+    transitioning = true;
+    feature.clearCharacterState();
+    assert.equal(feature.collectionDraftCount(), 0);
+    assert.equal(controls.input(), null);
+    assert.equal(document.querySelector(".memory-editor-overlay"), null);
+    assert.equal(document.querySelector(".settings-shell").hasAttribute("inert"), false);
+    resolveOldQuery(queryResult("old-character"));
+    await settle();
+    await runTimers(0);
+    assert.equal(queries.length, 1);
+    assert.equal(controls.record(), null);
+    transitioning = false;
+    await feature.refreshCurrent();
+    if (surface !== "memory") await fixture.openSettings();
+    await runTimers(0);
+    assert.equal(queries.at(-1).coreGenerationId, "generation-b");
+    assert.equal(controls.record().textContent.includes("new-character"), true);
+    assert.equal(feature.collectionDraftCount(), 0);
+    feature.dispose();
+  });
+
+  test(`${surface || "plugin"} collection operations pause for character changes, including delete confirmation`, async () => {
+    let transitioning = false;
+    let pendingSelection = false;
+    let confirmDelete;
+    const calls = [];
+    const ui = featureFixture(async (command, args) => {
+      assert.equal(command, "settings_plugins_collection");
+      calls.push(args);
+      if (args.operation === "query") return queryResult("note");
+      if (args.operation === "delete") return { deleted: true };
+      return { itemId: "note", values: args.payload.values };
+    }, {
+      isCharacterTransitioning: () => transitioning,
+      hasPendingCharacterSelection: () => pendingSelection,
+      confirmAction: () => new Promise((resolve) => { confirmDelete = resolve; }),
+    });
+    const { feature, document, runTimers } = ui;
+    const controls = collectionControls(document, surface);
+    feature.initialize(collectionSnapshot(surface));
+    if (surface !== "memory") await ui.openSettings();
+    await runTimers(0);
+    await controls.openRecord();
+    controls.input().value = "draft";
+    await controls.input().fire("input");
+    const callsBeforeSwitch = calls.length;
+
+    for (const state of ["pending", "transitioning"]) {
+      pendingSelection = state === "pending";
+      transitioning = state === "transitioning";
+      controls.search().value = state;
+      await controls.search().fire(surface === "memory" ? "input" : "change");
+      await runTimers(220);
+      assert.equal(calls.length, callsBeforeSwitch, "blocked queries must not reach the plugin");
+      await controls.save().fire("click");
+      assert.equal(calls.length, callsBeforeSwitch, "blocked updates must not reach the plugin");
+      await controls.remove().fire("click");
+      assert.equal(confirmDelete, undefined, "blocked deletion must not open a confirmation");
+      assert.equal(calls.length, callsBeforeSwitch, "blocked collection operations must not reach the plugin");
+      pendingSelection = false;
+      transitioning = false;
+
+      const deleting = controls.remove().fire("click");
+      await settle();
+      assert.equal(typeof confirmDelete, "function");
+      pendingSelection = state === "pending";
+      transitioning = state === "transitioning";
+      confirmDelete(true);
+      await deleting;
+      confirmDelete = undefined;
+      assert.equal(calls.length, callsBeforeSwitch, "a confirmed deletion must recheck the character state");
+      assert.equal(controls.input().value, "draft");
+      pendingSelection = false;
+      transitioning = false;
+    }
+
+    await controls.save().fire("click");
+    assert.equal(calls.filter((call) => call.operation === "update").length, 1);
+    assert.equal(feature.hasCollectionDrafts(), false);
+    feature.dispose();
+  });
+}
+
+test("ordinary collections resume an interrupted read when character transitions finish", async () => {
   let transitioning = false;
-  let pendingSelection = true;
-  let resolveOldQuery;
+  let finishOldQuery;
   const queries = [];
-  const fixture = featureFixture(async (command, args) => {
-    if (command === "settings_plugins_get") return snapshot("generation-b");
+  const ui = featureFixture(async (command, args) => {
     assert.equal(command, "settings_plugins_collection");
     queries.push(args);
-    if (queries.length === 1) return new Promise((resolve) => { resolveOldQuery = resolve; });
-    return queryResult("new-character");
-  }, {
-    isMemoryTransitioning: () => transitioning,
-    hasPendingCharacterSelection: () => pendingSelection,
-  });
-  const { feature, document, runTimers } = fixture;
-  feature.initialize(snapshot());
-  await runTimers(0);
-  assert.equal(queries.length, 0, "a pending character choice blocks reads for the old character");
-  pendingSelection = false;
-  feature.renderMemorySurface();
-  await document.querySelector(".memory-add-button").fire("click");
+    if (queries.length === 1) return new Promise((resolve) => { finishOldQuery = resolve; });
+    return queryResult("current-record");
+  }, { isCharacterTransitioning: () => transitioning });
+  const { feature, document, runTimers } = ui;
+  const controls = collectionControls(document, null);
+  feature.initialize(collectionSnapshot(null));
+  await ui.openSettings();
   await runTimers(0);
   assert.equal(queries.length, 1);
-  assert.equal(feature.characterDraftCount(), 1);
+
   transitioning = true;
-  feature.clearCharacterState();
-  assert.equal(feature.characterDraftCount(), 0);
-  assert.equal(document.querySelector(".memory-editor-overlay"), null);
-  assert.equal(document.querySelector(".settings-shell").hasAttribute("inert"), false);
-  resolveOldQuery(queryResult("old-character"));
+  finishOldQuery(queryResult("old-record"));
   await settle();
+  feature.renderCollections();
   await runTimers(0);
   assert.equal(queries.length, 1);
-  assert.equal(document.querySelector(".memory-record-card"), null);
+  assert.equal(controls.record(), null);
+
   transitioning = false;
-  await feature.refreshCurrent();
+  feature.renderCollections();
   await runTimers(0);
-  assert.equal(queries.at(-1).coreGenerationId, "generation-b");
-  assert.equal(document.querySelector(".memory-record-card").dataset.itemId, "new-character");
-  assert.equal(feature.characterDraftCount(), 0);
+  assert.equal(queries.length, 2);
+  assert.equal(controls.record().textContent, "current-record");
   feature.dispose();
 });
+
+for (const interruption of ["before query", "during query"]) {
+  test(`loaded collection searches resume after interruption ${interruption}`, async () => {
+    let transitioning = false;
+    let finishSearch;
+    const searches = [];
+    const ui = featureFixture(async (command, args) => {
+      assert.equal(command, "settings_plugins_collection");
+      if (!args.payload.search) return queryResult("unfiltered-record");
+      searches.push(args.payload.search);
+      if (interruption === "during query" && searches.length === 1) {
+        return new Promise((resolve) => { finishSearch = resolve; });
+      }
+      return queryResult("matching-record");
+    }, { isCharacterTransitioning: () => transitioning });
+    const { feature, document, runTimers } = ui;
+    const controls = collectionControls(document, null);
+    feature.initialize(collectionSnapshot(null));
+    await ui.openSettings();
+    await runTimers(0);
+    assert.equal(controls.record().textContent, "unfiltered-record");
+
+    transitioning = interruption === "before query";
+    controls.search().value = "needle";
+    await controls.search().fire("change");
+    transitioning = true;
+    finishSearch?.(queryResult("matching-record"));
+    await settle();
+    const interruptedSearches = searches.length;
+    feature.renderCollections();
+    await runTimers(0);
+    assert.equal(searches.length, interruptedSearches, "the search stays paused during transition");
+
+    transitioning = false;
+    feature.renderCollections();
+    await runTimers(0);
+    assert.deepEqual(searches, interruption === "before query" ? ["needle"] : ["needle", "needle"]);
+    assert.equal(controls.record().textContent, "matching-record");
+    feature.dispose();
+  });
+}
 
 test("About component actions use the owning plugin section and refresh its rendered resource", async () => {
   const resourceValue = (ready) => ({

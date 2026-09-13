@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-14
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -177,17 +177,19 @@ publication 保持 v1 并强制发布 `values.visualEffectMode`。Windows capabi
 readiness 和 Character Presentation identity 全部一致后再水合。保存失败不重启，restart 派发失败不回滚或
 重写配置。
 
-角色外观、语音和 Memory 草稿属于当前角色，存在未保存内容时阻止选择另一角色。Provider、Tools、Plugin、
-Screen Awareness 等全局草稿保留并绑定新 generation。switching 开始即清空旧 Memory/历史内容和游标，禁止
-旧 transport、旧分页或迟到事件重新显示。完整行为见
+角色外观、语音、Memory 及所有插件 Collection 的新建/编辑草稿存在未保存内容时阻止选择另一角色，Collection 不按 surface 区分。
+Provider、Tools、Plugin、Screen Awareness 等普通全局字段草稿保留并绑定新 generation。实际角色切换开始即清空旧 Memory、
+所有 Collection 页面状态和历史内容，失效旧游标与请求，禁止旧 transport、旧分页或迟到事件重新显示。完整行为见
 [`WP-5-03-safe-character-switch.md`](WP-5-03-safe-character-switch.md)。
 
 角色下拉只形成设置窗口内草稿，允许在提交前反复改选；选择本身不得写配置、清空角色页面或启动 restart。
 它只可调用只读视觉预览命令，将桌宠主题、默认立绘和气泡问候语暂时投影为目标角色；Core、Memory、Timeline、
 TTS、名字与回复状态仍绑定正式角色，放弃时恢复正式角色当前应显示的视觉和气泡内容。
 “应用”和“保存并关闭”先保存当前 generation 的其他域，最后只提交一次最终角色。放弃设置或选回已提交角色
-会清除该草稿；暂存期间锁定仍属于当前正式角色的外观、语音和 Memory 页面。只有收到已提交的 restart
-receipt 后才进入 switching，并关闭 Memory editor portal、失效在途查询、清空角色级页面再重新水合。
+会清除该草稿；暂存期间锁定仍属于当前正式角色的外观、语音和 Memory 页面，并暂停所有 Collection 查询和写入。
+删除确认返回后仍须复核编辑器与切换状态。只有收到已提交的 restart receipt 后才进入 switching；实际角色变化时，
+关闭所有 Collection editor、失效在途查询并清空页面状态再重新水合。同角色 Core 重启保留仍存在 Collection 的草稿和筛选，
+隔离旧请求与回执，不自动重放写入；普通目录刷新不得改变 Collection 原属角色并因此漏掉后续清理。
 
 ### 5.3 开机启动设置契约
 

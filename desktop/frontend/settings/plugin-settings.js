@@ -2,7 +2,6 @@ import { createIcon } from "../core/icons.js";
 import { animatedBrainMarkup } from "../core/animated-icons.js";
 import { createPluginController } from "./plugin-runtime.js";
 import * as pluginPresentation from "./plugin-presentation.js";
-import { countCharacterScopedCollectionDrafts } from "./character-switch-runtime.js";
 
 export function createPluginSettingsFeature({
   document,
@@ -21,7 +20,7 @@ export function createPluginSettingsFeature({
   getAsrController = () => null,
   removeOverlayAfterExit,
   showPage,
-  isMemoryTransitioning,
+  isCharacterTransitioning,
   hasPendingCharacterSelection,
 }) {
   const fields = {
@@ -60,8 +59,20 @@ export function createPluginSettingsFeature({
   let pluginSettingsDialog = null;
   const pluginCollectionState = new Map();
 
+  function collectionDraftCount() {
+    let count = 0;
+    for (const state of pluginCollectionState.values()) {
+      if (state.editor) count += 1;
+    }
+    return count;
+  }
+
   function hasCollectionDrafts() {
-    return Array.from(pluginCollectionState.values()).some((state) => Boolean(state.editor));
+    return collectionDraftCount() > 0;
+  }
+
+  function collectionInteractionBlocked() {
+    return isCharacterTransitioning() || hasPendingCharacterSelection();
   }
   let pluginActivityRefreshTimer = null;
   let pluginActivityRefreshInFlight = false;
@@ -750,7 +761,6 @@ export function createPluginSettingsFeature({
     const key = pluginCollectionKey(plugin, section, collection);
     if (!pluginCollectionState.has(key)) {
       pluginCollectionState.set(key, {
-        surface: section.surface,
         items: [], nextCursor: null, total: null, search: "", filters: {},
         loading: false, loaded: false, error: "", editor: null, editorError: "",
         selectedItemId: "", searchTimer: null, queryRevision: 0, queryPending: false,
@@ -767,11 +777,13 @@ export function createPluginSettingsFeature({
     { append = false, render = true } = {},
   ) {
     if (!pluginView?.items.includes(plugin)) return;
-    if (section.surface === "memory" && (
-      isMemoryTransitioning() || hasPendingCharacterSelection()
-    )) return;
-    if (section.surface === "memory" && memoryActivityBlocksCollection(projectPluginActivity(plugin))) return;
     const state = pluginCollectionRuntimeState(plugin, section, collection);
+    if (collectionInteractionBlocked()) {
+      state.loaded = false;
+      state.error = "";
+      return;
+    }
+    if (section.surface === "memory" && memoryActivityBlocksCollection(projectPluginActivity(plugin))) return;
     if (!runtimePluginController) return;
     if (state.loading) {
       state.queryPending = true;
@@ -800,7 +812,7 @@ export function createPluginSettingsFeature({
         filters: queryFilters,
       });
       if (pluginCollectionState.get(collectionKey) !== state) return;
-      if (section.surface === "memory" && (isMemoryTransitioning())) return;
+      if (collectionInteractionBlocked()) return;
       if (queryRevision !== state.queryRevision) {
         state.queryPending = true;
         return;
@@ -811,12 +823,14 @@ export function createPluginSettingsFeature({
       state.loaded = true;
     } catch (error) {
       if (pluginCollectionState.get(collectionKey) !== state) return;
+      if (collectionInteractionBlocked()) return;
       if (queryRevision === state.queryRevision) state.error = String(error);
       else state.queryPending = true;
     } finally {
       if (pluginCollectionState.get(collectionKey) !== state) return;
       state.loading = false;
-      if (section.surface === "memory" && (isMemoryTransitioning())) {
+      if (collectionInteractionBlocked()) {
+        state.loaded = false;
         state.queryPending = false;
         state.queryPendingRender = false;
         return;
@@ -910,7 +924,7 @@ export function createPluginSettingsFeature({
     const isCurrent = () => pluginCollectionState.get(collectionKey) === state;
     const memorySurface = section.surface === "memory";
     if (!runtimePluginController || state.loading || !state.editor) return;
-    if (memorySurface && (isMemoryTransitioning() || hasPendingCharacterSelection())) return;
+    if (collectionInteractionBlocked()) return;
     const editor = state.editor;
     if (operation !== "delete") {
       const invalid = (collection.fields || []).find((field) => {
@@ -928,12 +942,12 @@ export function createPluginSettingsFeature({
     }
     if (operation === "delete") {
       const confirmed = await confirmAction(collection.delete_confirmation, {
-        title: "删除记忆",
+        title: memorySurface ? "删除记忆" : "删除记录",
         confirmText: "删除",
         cancelText: "保留",
         danger: true,
       });
-      if (!confirmed || !isCurrent() || state.editor !== editor) return;
+      if (!confirmed || !isCurrent() || state.editor !== editor || collectionInteractionBlocked()) return;
     }
     const editorItemId = state.editor.itemId;
     state.loading = true;
@@ -1981,7 +1995,7 @@ export function createPluginSettingsFeature({
     if (!fields.memorySurface) return;
     clearMemoryEditorPortal();
     fields.memorySurface.textContent = "";
-    if (isMemoryTransitioning()) {
+    if (isCharacterTransitioning()) {
       const switching = document.createElement("div");
       switching.className = "memory-surface-state";
       switching.setAttribute("role", "status");
@@ -2184,6 +2198,11 @@ export function createPluginSettingsFeature({
     renderPluginDetail();
     syncPluginSettingsDialog();
     schedulePluginActivityRefresh();
+  }
+
+  function renderCollections() {
+    renderPluginPage();
+    renderMemorySurface();
   }
 
   async function installLocalPlugin(sourceKind) {
@@ -2658,7 +2677,8 @@ export function createPluginSettingsFeature({
     },
     refreshCurrent: runtimePluginController.refreshCurrent,
     discard: runtimePluginController.discard,
-    characterDraftCount: () => countCharacterScopedCollectionDrafts(pluginCollectionState.values()),
+    collectionDraftCount,
+    renderCollections,
     renderMemorySurface,
     dialogElement: () => pluginSettingsDialog?.dialog,
     onVoiceSectionsRendered() {
@@ -2684,7 +2704,7 @@ export function createPluginSettingsFeature({
       });
       clearMemoryEditorPortal();
       pluginCollectionState.clear();
-      renderMemorySurface();
+      renderCollections();
       refreshDirty();
     },
     dispose() {

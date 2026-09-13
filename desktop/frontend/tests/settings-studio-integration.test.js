@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createCharacterSettingsFeature } from "../settings/character-settings.js";
 import { RUNTIME_THEME_FIELDS } from "../core/theme-runtime.js";
+import { featureFixture, snapshot as pluginSnapshot, queryResult } from "./fixtures/plugin-settings-fixture.js";
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -133,7 +134,7 @@ async function characterSettings(options = {}) {
     applyPreviewTheme: (theme) => previews.push(theme),
     rebindSettings: async (generationId) => { transitions.push(["rebind", generationId]); },
     clearCharacterState: () => transitions.push(["clear"]),
-    renderMemorySurface: () => transitions.push(["render-memory"]),
+    renderPluginCollections() {},
     ...options.feature,
   });
   if (options.initialize !== false) await feature.initialize();
@@ -222,7 +223,7 @@ test("current-character publication rebinds only the announced ready generation 
   assert.equal(feature.isSwitching(), false);
   assert.equal(feature.isTransitioning(), false);
   assert.equal(fields.characterEditorButton.disabled, false);
-  assert.deepEqual(transitions, [["render-memory"]]);
+  assert.deepEqual(transitions, []);
   calls.length = 0;
   await feature.refreshCatalog({ generationId: "generation-a" });
   assert.deepEqual(rebinds, ["generation-b"], "an obsolete publication cannot rebind the current generation");
@@ -230,6 +231,194 @@ test("current-character publication rebinds only the announced ready generation 
   assert.equal(feature.pendingCharacterId(), "beta");
   feature.dispose();
 });
+
+for (const surface of [null, "memory"]) {
+  test(`external character changes discard ${surface || "plugin"} collection drafts but same-character restarts retain them`, async () => {
+    function snapshotFor(generation) {
+      const value = pluginSnapshot(generation);
+      value.plugins[0].sections[1].surface = surface;
+      return value;
+    }
+    let nextPlugins = snapshotFor("generation-a");
+    const plugins = featureFixture(async (command, args) => {
+      if (command === "settings_plugins_get") return nextPlugins;
+      assert.equal(args.operation, "query", "a role change must never submit a collection draft");
+      return queryResult("saved-note");
+    });
+    plugins.feature.initialize(nextPlugins);
+    if (surface === null) await plugins.openSettings();
+    await plugins.runTimers(0);
+    await plugins.document.querySelector(surface === "memory" ? ".memory-add-button" : ".plugin-collection-head button").fire("click");
+    const editor = plugins.document.querySelector(surface === "memory" ? ".memory-editor-overlay textarea" : ".plugin-collection-editor textarea");
+    editor.value = "draft belonging to alpha";
+    await editor.fire("input");
+    const characters = await characterSettings({ feature: {
+      hasCharacterDrafts: () => plugins.feature.hasCollectionDrafts(),
+      clearCharacterState: () => plugins.feature.clearCharacterState(),
+      rebindSettings: async (generation) => {
+        nextPlugins = snapshotFor(generation);
+        await plugins.feature.refreshCurrent();
+      },
+    } });
+    try {
+      await characters.feature.refreshCatalog({});
+      assert.equal(plugins.feature.hasCollectionDrafts(), true, "same-character catalog changes keep unfinished editing");
+      characters.state.lifecycle = lifecycle("generation-b", 2, "alpha");
+      await characters.feature.refreshCatalog({ generationId: "generation-b" });
+      assert.equal(plugins.feature.hasCollectionDrafts(), true, "same-character restarts keep unfinished editing");
+
+      // A catalog-only notification may learn the new role before its ready
+      // generation arrives. It must not hide the old editor's ownership.
+      characters.state.catalog = catalog(["alpha", "beta"], "beta");
+      await characters.feature.refreshCatalog({});
+      characters.state.lifecycle = lifecycle("generation-c", 3, "beta");
+      characters.state.catalog = catalog(["alpha", "beta"], "beta");
+      await characters.feature.refreshCatalog({ generationId: "generation-c" });
+      assert.equal(characters.feature.currentCharacterId(), "beta");
+      assert.equal(plugins.feature.hasCollectionDrafts(), false, "old character drafts cannot be restored for a new character");
+      await plugins.runTimers(0);
+      assert.equal(plugins.document.querySelector(".memory-editor-overlay"), null);
+      assert.equal(plugins.document.querySelector(".plugin-collection-editor"), null);
+    } finally {
+      characters.feature.dispose();
+      plugins.feature.dispose();
+    }
+  });
+}
+
+test("same-character voice import retains a collection draft opened while importing", async () => {
+  const snapshotFor = (generation) => {
+    const value = pluginSnapshot(generation);
+    value.plugins[0].sections[1].surface = null;
+    return value;
+  };
+  let nextPlugins = snapshotFor("generation-a"), releaseImport;
+  const plugins = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_get") return nextPlugins;
+    assert.equal(args.operation, "query", "rebinding cannot submit the draft");
+    return queryResult("saved-note");
+  });
+  plugins.feature.initialize(nextPlugins);
+  const characters = await characterSettings({
+    handlers: {
+      settings_character_choose_import: () => "C:\\imports\\alpha.voice",
+      settings_character_import_voice: () => new Promise((resolve) => { releaseImport = resolve; }),
+    },
+    feature: {
+      hasCharacterDrafts: () => plugins.feature.hasCollectionDrafts(),
+      clearCharacterState: () => plugins.feature.clearCharacterState(),
+      rebindSettings: async (generation) => {
+        nextPlugins = snapshotFor(generation);
+        await plugins.feature.refreshCurrent();
+      },
+    },
+  });
+  let importing;
+  try {
+    importing = characters.fields.ttsVoiceImportButton.click();
+    await settle();
+    assert.equal(typeof releaseImport, "function", "import started before any draft existed");
+    await plugins.openSettings();
+    await plugins.runTimers(0);
+    await plugins.document.querySelector(".plugin-collection-head button").fire("click");
+    const editor = plugins.document.querySelector(".plugin-collection-editor textarea");
+    editor.value = "unfinished alpha note";
+    await editor.fire("input");
+    characters.state.lifecycle = lifecycle("generation-b", 2, "alpha");
+    releaseImport({
+      schemaVersion: 1, previousCoreGenerationId: "generation-a", restartState: "requested",
+      targetCharacterId: "alpha", snapshot: characters.state.catalog,
+    });
+    await importing;
+    assert.deepEqual(characters.errors, []);
+    assert.equal(plugins.feature.hasCollectionDrafts(), true);
+    await plugins.openSettings();
+    assert.equal(plugins.document.querySelector(".plugin-collection-editor textarea").value, "unfinished alpha note");
+  } finally {
+    characters.feature.dispose();
+    plugins.feature.dispose();
+  }
+});
+
+test("overlapping catalog-only publications cannot leave a completed rebind locked", async () => {
+  let releaseRebind;
+  const fixture = await characterSettings({ feature: {
+    rebindSettings: () => new Promise((resolve) => { releaseRebind = resolve; }),
+  } });
+  try {
+    fixture.state.lifecycle = lifecycle("generation-b", 2);
+    const rebinding = fixture.feature.refreshCatalog({ generationId: "generation-b" });
+    await settle();
+    assert.equal(fixture.feature.isTransitioning(), true);
+    const catalogOnly = fixture.feature.refreshCatalog({});
+    await settle();
+    assert.equal(fixture.feature.isTransitioning(), true, "the active rebind retains its lock");
+    releaseRebind();
+    await Promise.all([rebinding, catalogOnly]);
+    assert.equal(fixture.feature.isTransitioning(), false);
+    assert.equal(fixture.fields.saveButton.disabled, false);
+    assert.equal(fixture.fields.characterSelect.disabled, false);
+  } finally {
+    releaseRebind?.();
+    fixture.feature.dispose();
+  }
+});
+
+for (const firstFinished of ["catalog", "local"]) {
+  test(`${firstFinished} completion cannot release the other character transition`, async () => {
+    let releaseLocal, releaseCatalog;
+    const fixture = await characterSettings({ feature: {
+      rebindSettings: () => new Promise((resolve) => { releaseLocal = resolve; }),
+    } });
+    const { feature, fields, state, handlers } = fixture;
+    let local, catalogRefresh;
+    try {
+      await select(fixture, "beta");
+      handlers.settings_character_select = () => {
+        state.catalog = catalog(["alpha", "beta"], "beta");
+        state.lifecycle = lifecycle("generation-b", 2, "beta");
+        return {
+          schemaVersion: 1, previousCoreGenerationId: "generation-a", restartState: "requested",
+          targetCharacterId: "beta", snapshot: state.catalog,
+        };
+      };
+      state.submitting = true;
+      local = feature.commit();
+      await settle();
+      assert.equal(typeof releaseLocal, "function");
+      handlers.runtime_lifecycle_snapshot = () => new Promise((resolve) => { releaseCatalog = resolve; });
+      catalogRefresh = feature.refreshCatalog({ generationId: "generation-a" });
+      await settle();
+      assert.equal(typeof releaseCatalog, "function");
+
+      if (firstFinished === "catalog") {
+        releaseCatalog(state.lifecycle);
+        await catalogRefresh;
+      } else {
+        releaseLocal();
+        await local;
+        state.submitting = false;
+        feature.syncControls();
+      }
+      assert.equal(feature.isTransitioning(), true, "the other hand-off still blocks collection operations");
+      assert.equal(fields.characterSelect.disabled, true);
+      assert.equal(fields.saveButton.disabled, true);
+      releaseCatalog(state.lifecycle);
+      releaseLocal();
+      await Promise.all([local, catalogRefresh]);
+      state.submitting = false;
+      feature.syncControls();
+      assert.equal(feature.isTransitioning(), false);
+      assert.equal(fields.characterSelect.disabled, false);
+      assert.equal(fields.saveButton.disabled, false);
+    } finally {
+      releaseLocal?.();
+      releaseCatalog?.(state.lifecycle);
+      await Promise.all([local, catalogRefresh]);
+      feature.dispose();
+    }
+  });
+}
 
 test("character drafts block changing roles and commit submits only the final unblocked selection", async () => {
   const fixture = await characterSettings();

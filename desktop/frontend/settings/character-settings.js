@@ -27,7 +27,7 @@ export function createCharacterSettingsFeature({
   applyPreviewTheme,
   rebindSettings,
   clearCharacterState,
-  renderMemorySurface,
+  renderPluginCollections,
   openPlugin = () => {},
   reportError = () => {},
 }) {
@@ -54,9 +54,10 @@ export function createCharacterSettingsFeature({
   let runtimeCharacterVisualPreviewRevision = 0;
   let runtimeCharacterVisualPreviewPromise = Promise.resolve();
   let characterArchiveBusy = false;
-  let characterSwitching = false;
-  let characterCatalogRefreshRevision = 0;
-  const memoryState = { rebinding: false };
+  let localCharacterSwitching = false;
+  let catalogRebinding = false;
+  let characterCatalogRefreshQueue = Promise.resolve();
+  let collectionCharacterId;
   let closeExportKindDialog = null;
   let disposed = false;
   const listeners = [];
@@ -116,6 +117,7 @@ export function createCharacterSettingsFeature({
       : normalizeCharacterSettingsSnapshot(snapshot);
     const pendingSelection = preserveSelection ? pendingRuntimeCharacterId() : null;
     runtimeCharacterSnapshot = normalized.snapshot;
+    collectionCharacterId ??= runtimeCharacterSnapshot.currentCharacterId || "";
     runtimeCharacterDraftId = normalized.character.characters.some((item) => item.id === pendingSelection)
       ? pendingSelection : normalized.character.current_character_id;
     characterView = normalized.character;
@@ -123,11 +125,16 @@ export function createCharacterSettingsFeature({
     refreshSelect(fields.characterSelect);
   }
 
+  function isCharacterSwitching() {
+    return localCharacterSwitching || catalogRebinding;
+  }
+
   function syncCharacterArchiveState() {
     if (!characterView || disposed) {
       return;
     }
     const pendingCharacterId = pendingRuntimeCharacterId();
+    const characterSwitching = isCharacterSwitching();
     setCharacterSwitchLock({
       pages: [fields.pages.character],
       // Global drafts remain editable on their own pages, but the aggregate
@@ -226,7 +233,14 @@ export function createCharacterSettingsFeature({
     refreshSelect(fields.characterSelect);
     syncCharacterArchiveState();
     refreshDirty();
+    renderPluginCollections();
     if (runtimeCharacterDraftId) await previewRuntimeCharacterVisual(runtimeCharacterDraftId);
+  }
+
+  function resetCollectionsForCharacter(characterId) {
+    const next = characterId || "";
+    if (collectionCharacterId !== undefined && collectionCharacterId !== next) clearCharacterState();
+    collectionCharacterId = next;
   }
 
   async function rebindSettingsAfterCharacterSwitch(lifecycle) {
@@ -235,25 +249,32 @@ export function createCharacterSettingsFeature({
     if (typeof generationId !== "string" || !generationId) {
       throw new Error("CHARACTER_SWITCH_IDENTITY_INVALID");
     }
+    resetCollectionsForCharacter(lifecycle.characterPresentation?.characterId);
     await rebindSettings(generationId);
     if (disposed) return;
     const snapshot = await rootSettingsClient.charactersGet();
     if (disposed) return;
     applyRuntimeCharacterSnapshot(snapshot, { preserveSelection: true });
-    memoryState.rebinding = false;
     refreshDirty();
   }
 
-  async function refreshRuntimeCharacterCatalog(payload) {
+  function refreshRuntimeCharacterCatalog(payload) {
+    if (disposed) return Promise.resolve();
+    // Catalog and generation notifications share one hand-off. A catalog-only
+    // notification must not release (or strand) another refresh's busy state.
+    const refresh = characterCatalogRefreshQueue.then(() => refreshCharacterCatalog(payload));
+    characterCatalogRefreshQueue = refresh.catch(() => {});
+    return refresh;
+  }
+
+  async function refreshCharacterCatalog(payload) {
     if (disposed) return;
-    const revision = ++characterCatalogRefreshRevision;
     const generationId = typeof payload?.generationId === "string"
       ? payload.generationId
       : "";
     const rebinding = Boolean(generationId);
     if (rebinding) {
-      characterSwitching = true;
-      memoryState.rebinding = true;
+      catalogRebinding = true;
       syncCharacterArchiveState();
     }
     try {
@@ -261,22 +282,25 @@ export function createCharacterSettingsFeature({
         generationId,
         readLifecycle: () => invoke("runtime_lifecycle_snapshot"),
         readCatalog: () => rootSettingsClient.charactersGet(),
-        applyCatalog: (snapshot) => applyRuntimeCharacterSnapshot(snapshot, { preserveSelection: true }),
+        applyCatalog(snapshot) {
+          if (disposed) return;
+          resetCollectionsForCharacter(snapshot.snapshot.currentCharacterId);
+          applyRuntimeCharacterSnapshot(snapshot, { preserveSelection: true });
+        },
         rebindSettings: rebindSettingsAfterCharacterSwitch,
       });
-      if (applied && revision === characterCatalogRefreshRevision) {
+      if (applied && !disposed) {
         await visualSettings.refresh(runtimeCharacterDraftId);
         setError("");
       }
     } catch (error) {
-      if (revision === characterCatalogRefreshRevision) {
+      if (!disposed) {
         setError(`角色列表刷新失败：${String(error)}`);
       }
     } finally {
-      if (rebinding && revision === characterCatalogRefreshRevision) {
-        characterSwitching = false;
-        memoryState.rebinding = false;
-        renderMemorySurface();
+      if (rebinding && !disposed) {
+        catalogRebinding = false;
+        renderPluginCollections();
         syncCharacterArchiveState();
       }
     }
@@ -288,14 +312,13 @@ export function createCharacterSettingsFeature({
       previousLifecycle,
       applyCommittedSnapshot: applyRuntimeCharacterSnapshot,
       clearCharacterState() {
-        memoryState.rebinding = true;
-        clearCharacterState();
+        resetCollectionsForCharacter(runtimeCharacterSnapshot?.currentCharacterId);
       },
       rebindSettings: rebindSettingsAfterCharacterSwitch,
       setSwitching(value) {
-        characterSwitching = value;
-        if (!value) memoryState.rebinding = false;
+        localCharacterSwitching = value;
         syncCharacterArchiveState();
+        if (!value && !disposed) renderPluginCollections();
       },
       readLifecycle: () => invoke("runtime_lifecycle_snapshot"),
       delay: (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)),
@@ -432,7 +455,7 @@ export function createCharacterSettingsFeature({
     if (characterId !== committedCharacterId && currentCharacterHasDrafts()) {
       fields.characterSelect.value = previousCharacterId;
       refreshSelect(fields.characterSelect);
-      setError("当前角色还有未保存的外观、语音或记忆改动，请先保存或放弃后再切换。");
+      setError("还有未保存的外观、语音或插件记录，请先保存或放弃后再切换角色。");
       return;
     }
     runtimeCharacterDraftId = characterId;
@@ -440,6 +463,7 @@ export function createCharacterSettingsFeature({
     refreshSelect(fields.characterSelect);
     syncCharacterArchiveState();
     refreshDirty();
+    renderPluginCollections();
     if (pendingRuntimeCharacterId()) {
       notify("已选好角色，点击“应用”或“保存并关闭”即可切换。", "info");
     }
@@ -524,7 +548,7 @@ export function createCharacterSettingsFeature({
   listen(fields.ttsVoiceImportButton, "click", importCharacterVoiceArchive);
   listen(fields.characterExportButton, "click", exportCharacterArchive);
   listen(fields.characterEditorButton, "click", launchCharacterStudio);
-  listen(window, "focus", () => { if (!characterSwitching && !isSubmitting()) void visualSettings.refresh(); });
+  listen(window, "focus", () => { if (!isCharacterSwitching() && !isSubmitting()) void visualSettings.refresh(); });
 
   return Object.freeze({
     async initialize() {
@@ -570,11 +594,11 @@ export function createCharacterSettingsFeature({
     currentCharacterId: () => runtimeCharacterSnapshot?.currentCharacterId || "",
     pendingCharacterId: pendingRuntimeCharacterId,
     isDirty: () => Boolean(pendingRuntimeCharacterId()) || visualSettings.isDirty(),
-    isSwitching: () => characterSwitching,
-    isTransitioning: () => memoryState.rebinding || characterSwitching,
+    isSwitching: isCharacterSwitching,
+    isTransitioning: isCharacterSwitching,
     syncControls: syncCharacterArchiveState,
     refreshCatalog: refreshRuntimeCharacterCatalog,
-    onPageChanged(page) { if (page === "character" && !characterSwitching && !isSubmitting()) void visualSettings.refresh(runtimeCharacterDraftId); },
+    onPageChanged(page) { if (page === "character" && !isCharacterSwitching() && !isSubmitting()) void visualSettings.refresh(runtimeCharacterDraftId); },
     discard: discardRuntimeCharacterSelection,
     waitForPreview: () => runtimeCharacterVisualPreviewPromise,
     async commit() {
@@ -589,7 +613,6 @@ export function createCharacterSettingsFeature({
     dispose() {
       disposed = true;
       visualSettings.dispose();
-      characterCatalogRefreshRevision += 1;
       for (const removeListener of listeners) removeListener();
       listeners.length = 0;
       closeExportKindDialog?.();

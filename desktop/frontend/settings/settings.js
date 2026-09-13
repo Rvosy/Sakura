@@ -1034,7 +1034,7 @@ function currentCharacterHasDrafts() {
   return hasCharacterScopedDrafts({
     appearanceDirty: runtimeAppearanceController?.isDirty(),
     voiceDirty: runtimeVoiceController?.isDirty(),
-    memoryEditorDraftCount: (runtimePluginController?.characterDraftCount() || 0),
+    collectionDraftCount: (runtimePluginController?.collectionDraftCount() || 0),
   });
 }
 
@@ -1768,7 +1768,7 @@ async function startSettingsFrontend() {
     applyPreviewTheme: (theme) => runThemeTransition(() => applyThemeTokens(theme)),
     rebindSettings: rebindSettingsAfterCharacterSwitch,
     clearCharacterState: () => runtimePluginController?.clearCharacterState(),
-    renderMemorySurface: () => runtimePluginController?.renderMemorySurface(),
+    renderPluginCollections: () => runtimePluginController?.renderCollections(),
     openPlugin: (installId, configure) => { showPage("plugins"); runtimePluginController?.openPlugin(installId, configure); },
   });
   window.__TAURI__?.event?.listen?.("sakura://character-catalog-changed", ({ payload } = {}) => {
@@ -1911,7 +1911,7 @@ async function startSettingsFrontend() {
         getAsrController: () => runtimeAsrController,
         removeOverlayAfterExit,
         showPage,
-        isMemoryTransitioning: () => runtimeCharacterFeature?.isTransitioning(),
+        isCharacterTransitioning: () => runtimeCharacterFeature?.isTransitioning(),
         hasPendingCharacterSelection: () => Boolean(runtimeCharacterFeature?.pendingCharacterId()),
       });
       runtimePluginController.initialize(await invoke("settings_plugins_get"));

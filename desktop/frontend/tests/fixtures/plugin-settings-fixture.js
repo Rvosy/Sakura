@@ -202,7 +202,7 @@ export function featureFixture(invoke, options = {}) {
     onDirty: () => { dirtyNotifications += 1; }, onError: (error) => { if (error) errors.push(error); },
     notify() {}, confirmAction: async () => true, enhanceSelect() {},
     removeOverlayAfterExit: async (overlay) => overlay.remove(), showPage() {},
-    isMemoryTransitioning: () => false, hasPendingCharacterSelection: () => false,
+    isCharacterTransitioning: () => false, hasPendingCharacterSelection: () => false,
     refreshSelect() {}, closeSelects() {}, focusSelect: (control) => control?.focus(),
     replayMotion() {}, getVoiceController: () => null,
     ...options,
