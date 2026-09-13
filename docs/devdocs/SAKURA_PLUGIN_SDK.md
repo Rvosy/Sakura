@@ -789,6 +789,9 @@ tools.register(
 
 ### 动态上下文
 
+本节描述当前已提交的 Context 开发版接口。[开放插件生态计划](../plans/runtime-v2/open-plugin-ecosystem.md) 的 M1 将移除用途分类，
+并调整 Host 与默认消费者的职责；这些变化尚未实施，当前写法仍以下文为准。
+
 上下文贡献者收到有界请求，返回参考资料（`data`）或用户启用的行为规则（`instruction`）。二者走同一注册入口，分别渲染。检索资料可沿用原写法：
 
 ```python
