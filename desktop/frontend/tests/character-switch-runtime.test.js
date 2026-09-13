@@ -37,6 +37,23 @@ function lifecycle({
   };
 }
 
+test("local character switch clears role state and accepts the same Core generation", async () => {
+  const calls = [];
+  const current = lifecycle({ generationId: "generation-a", generationNumber: 1 });
+  const result = await applyCharacterSwitch({
+    receipt: { ...receipt, restartState: "not_required", characterChanged: true },
+    previousLifecycle: lifecycle({ generationId: "generation-a", generationNumber: 1, characterId: "character-a" }),
+    applyCommittedSnapshot: () => calls.push("snapshot"),
+    clearCharacterState: () => calls.push("clear"),
+    rebindSettings: async () => calls.push("rebind"),
+    setSwitching: value => calls.push(value),
+    readLifecycle: async () => current,
+    delay: async () => assert.fail("ready local switch should not wait"),
+  });
+  assert.equal(result, current);
+  assert.deepEqual(calls, ["snapshot", true, "clear", "rebind", false]);
+});
+
 test("character-specific appearance, voice, and Memory drafts block switching", () => {
   assert.equal(hasCharacterScopedDrafts(), false);
   assert.equal(hasCharacterScopedDrafts({ appearanceDirty: true }), true);

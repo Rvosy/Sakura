@@ -1393,7 +1393,7 @@ const chatClient = createRealChatClient({
   listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
   onEvent: handleCoreEvent,
   initialPreparedGenerationId: characterPresentation.generationId,
-  prepareGeneration: ({ generationId }) => rebindCoreGeneration(generationId),
+  prepareGeneration: ({ generationId, refresh }) => rebindCoreGeneration(generationId, { refresh }),
 });
 
 const updateAnnouncement = createUpdateAnnouncementController({
@@ -1665,6 +1665,13 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
     const rebound = rebindCharacterPresentation({ currentCharacterId: characterPresentation.characterId, nextPresentation: next, currentReducer: presentation });
     if (rebound.characterChanged || next.generationId !== characterPresentation.generationId) {
       waitingIndicator.stop(); typewriter.cancel(""); ttsController.cancel();
+      void asrController?.cancel({ restore: false });
+      asrPresentation.reset();
+      composerActionIndicator.reset();
+      screenAttachment.invalidate();
+      screenAwareness.generationChanged(next.generationId);
+      updateAnnouncement.generationChanged();
+      composerToolRegistry.invalidate();
     }
     presentation = rebound.reducer;
     pendingCharacterGreeting = rebound.greetingPending;

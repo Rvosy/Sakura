@@ -88,7 +88,7 @@ export function normalizeCharacterExportReceipt(receipt) {
 }
 
 export function normalizeCharacterSwitchReceipt(receipt) {
-  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).filter(key => key !== "pluginRequirements").sort() : [];
+  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).filter(key => !["pluginRequirements", "characterChanged"].includes(key)).sort() : [];
   const expected = [
     "previousCoreGenerationId",
     "restartState",
@@ -103,6 +103,7 @@ export function normalizeCharacterSwitchReceipt(receipt) {
     || typeof receipt.previousCoreGenerationId !== "string"
     || !receipt.previousCoreGenerationId
     || !["not_required", "requested"].includes(receipt.restartState)
+    || (receipt.characterChanged !== undefined && typeof receipt.characterChanged !== "boolean")
     || (receipt.targetCharacterId !== null && typeof receipt.targetCharacterId !== "string")
   ) fail(CHARACTER_ERROR);
   const requirements = receipt.pluginRequirements ?? [];
@@ -120,6 +121,7 @@ export function normalizeCharacterSwitchReceipt(receipt) {
     ...normalized,
     previousCoreGenerationId: receipt.previousCoreGenerationId,
     restartState: receipt.restartState,
+    characterChanged: receipt.characterChanged === true,
     targetCharacterId: receipt.targetCharacterId,
     pluginRequirements: requirements,
   });

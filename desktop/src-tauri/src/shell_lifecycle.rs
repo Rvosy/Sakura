@@ -964,7 +964,15 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
         .as_mut()
         .ok_or(())?
         .refresh_snapshot(&request_id, SNAPSHOT_DEADLINE)
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            log_lifecycle(
+                state,
+                Severity::Error,
+                "core.snapshot.failed",
+                "Core 快照读取或校验失败",
+                json!({"outcome": "failed", "diagnostic": error}),
+            );
+        })?;
     state.snapshot = Some(snapshot);
     Ok(())
 }
@@ -1552,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_5_03_character_switch_restart_waits_for_cleanup_and_releases_old_generation() {
+    fn wp_5_03_character_switch_rebinds_session_in_the_same_core_generation() {
         let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
         let manifest_directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repository_root = manifest_directory
@@ -1585,6 +1593,7 @@ mod tests {
             first
                 .supervisor
                 .generation_id
+                .clone()
                 .expect("first Supervisor generation")
         );
         assert_eq!(
@@ -1608,13 +1617,35 @@ mod tests {
             select_beta
                 .pointer("/payload/changePlan")
                 .and_then(Value::as_str),
-            Some("core_restart_required")
+            Some("character_switch")
         );
-        handle
-            .restart()
-            .expect("beta restart enters Supervisor once");
-        let second = wait_for_stable_generation(&handle, 2);
-        assert_eq!(second.supervisor.generation_number, 2);
+        let wait_for_role = |role: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let publication = handle.snapshot().expect("character publication");
+                if publication.character_presentation.as_ref()
+                    .and_then(|value| value.get("characterId")).and_then(Value::as_str) == Some(role) {
+                    let bootstrap = handle.settings_request(None, "studio.bootstrap", json!({}), Duration::from_secs(5))
+                        .expect("Studio remains available after switching");
+                    assert_eq!(bootstrap.pointer("/payload/selectedCharacterId").and_then(Value::as_str), Some(role));
+                    let opened = handle.settings_request(None, "studio.character.open", json!({"characterId": role}), Duration::from_secs(5))
+                        .expect("open selected character in Studio");
+                    let workspace = opened.pointer("/payload/workspaceId").and_then(Value::as_str).expect("Studio workspace");
+                    let released = handle.settings_request(None, "studio.workspace.release", json!({"workspaceId": workspace}), Duration::from_secs(5))
+                        .expect("close Studio workspace");
+                    assert!(released.get("error").is_none(), "{released}");
+                    let settings = handle.settings_request(None, "characters.settings.get", json!({}), Duration::from_secs(5))
+                        .expect("Settings remains available after closing Studio");
+                    assert_eq!(settings.pointer("/payload/currentCharacterId").and_then(Value::as_str), Some(role));
+                    return publication;
+                }
+                assert!(Instant::now() < deadline, "new character did not publish");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let second = wait_for_role("beta");
+        assert_eq!(second.supervisor.generation_number, 1);
+        assert_eq!(second.supervisor.generation_id, first.supervisor.generation_id);
         assert_eq!(
             second
                 .character_presentation
@@ -1636,12 +1667,11 @@ mod tests {
             select_sakura
                 .pointer("/payload/changePlan")
                 .and_then(Value::as_str),
-            Some("core_restart_required")
+            Some("character_switch")
         );
-        handle
-            .restart()
-            .expect("sakura restart enters Supervisor once");
-        let third = wait_for_stable_generation(&handle, 3);
+        let third = wait_for_role("sakura");
+        assert_eq!(third.supervisor.generation_number, 1);
+        assert_eq!(third.supervisor.generation_id, first.supervisor.generation_id);
         assert_eq!(
             third
                 .character_presentation

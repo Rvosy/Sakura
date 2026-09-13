@@ -194,7 +194,8 @@ PNG 导入和标签文件解释由内置立绘插件提供。私有草稿以 `vi
 发布非当前角色或内容未变化时返回 `changePlan: unchanged`，不能切换桌宠。发布当前角色且内容有变化时返回
 `changePlan: character_refresh`，Core generation 和 Assistant Session 保持不变。表现绑定立即刷新；角色名称、
 提示词和回复语气通过既有聊天更新队列应用，正在进行的回复继续完成，下一次请求使用新配置。
-语音配置、模型或参考音频变化时取消当前合成，暂停并恢复活动的 `sakura.tts.provider.*` 服务及其硬依赖方；
+语音配置、模型或参考音频变化时取消当前合成。支持资源更新协议的 `sakura.tts.provider.*` 服务暂停队列，
+发布或回滚后失效权重缓存并恢复接收任务，保留推理服务；不支持该协议的服务及其硬依赖方局部重载。
 插件启用配置不变。普通名称、主题、提示词、立绘和 Spine 形态编辑不停止插件进程。
 保存失败不重启 Core。保存成功但运行态更新失败时返回 `applyError`，原生回执为 `runtimeReload: failed`；
 正常回执为 `runtimeReload: not_required`。不以重启作为自动恢复措施。

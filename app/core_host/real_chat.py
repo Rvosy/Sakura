@@ -9,6 +9,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -109,6 +110,7 @@ class RealChatBoundary:
         self._pending_runtime_updates: dict[str, Callable[[], None]] = {}
         self._revision = 0
         self._closed = False
+        self._switching_character = False
 
     def set_event_publisher(self, publisher: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:
@@ -120,6 +122,8 @@ class RealChatBoundary:
         payload = self._validate_send(request)
         operation_id = str(request["id"])
         with self._changed:
+            if self._switching_character:
+                raise RealChatRejection("CHARACTER_SWITCH_IN_PROGRESS", "角色正在切换", retryable=True)
             if self._closed:
                 raise RealChatRejection("GENERATION_INVALIDATED", "chat generation is closing")
             if self._session_provider() is None:
@@ -162,7 +166,7 @@ class RealChatBoundary:
                     "GENERATION_INVALIDATED", "chat generation is closing"
                 )
             self._pending_runtime_updates[key] = update
-            if not self._executions:
+            if not self._executions and not self._switching_character:
                 self._apply_pending_runtime_updates_locked()
 
     def _apply_pending_runtime_updates_locked(self) -> None:
@@ -878,7 +882,7 @@ class RealChatBoundary:
         )
         item_id = f"shot-{secrets.token_hex(16)}"
         with self._lock:
-            if self._closed:
+            if self._closed or self._switching_character:
                 raise LookupError("screen attachment generation is closing")
             pending = self._pending_screen_attachment
             if pending is None:
@@ -938,7 +942,7 @@ class RealChatBoundary:
             source="screen_awareness",
         )
         with self._lock:
-            if self._closed:
+            if self._closed or self._switching_character:
                 raise LookupError("screen attachment generation is closing")
             if self._pending_screen_attachment is not None:
                 raise LookupError("another screen attachment is pending")
@@ -1056,6 +1060,27 @@ class RealChatBoundary:
             ),
             "activeInteractionSummary": interaction,
         }
+
+    @contextmanager
+    def suspend_for_character_change(self):
+        deadline = monotonic() + CHAT_CLOSE_TIMEOUT_SECONDS
+        with self._changed:
+            self._switching_character = True
+            self._pending_screen_attachment = None
+            self.cancel_all()
+            try:
+                while self._executions and monotonic() < deadline:
+                    self._changed.wait(timeout=max(0.0, deadline - monotonic()))
+                if self._executions:
+                    raise RuntimeError("CHARACTER_SWITCH_CHAT_BUSY")
+            except BaseException:
+                self._switching_character = False
+                raise
+        try:
+            yield
+        finally:
+            with self._changed:
+                self._switching_character = False
 
     def cancel_all(self) -> None:
         with self._lock:

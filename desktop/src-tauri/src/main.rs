@@ -4577,7 +4577,7 @@ fn validate_character_settings_change(value: Value) -> Result<(Value, String, Va
         .filter(|value| {
             matches!(
                 *value,
-                "unchanged" | "core_restart_required" | "visual_rebind" | "character_refresh"
+                "unchanged" | "core_restart_required" | "visual_rebind" | "character_refresh" | "character_switch"
             )
         })
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?
@@ -5094,7 +5094,7 @@ async fn settings_character_select(
     }
     let (
         snapshot,
-        _change_plan,
+        change_plan,
         handle,
         previous_generation_id,
         previous_generation_number,
@@ -5106,7 +5106,7 @@ async fn settings_character_select(
         &lifecycle,
         "characters.settings.select",
         payload,
-        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(60),
     )
     .await?;
     if let Some(target_character_id) = target_character_id {
@@ -5134,7 +5134,18 @@ async fn settings_character_select(
         );
         return character_switch_receipt(snapshot, previous_generation_id, "requested");
     }
-    character_switch_receipt(snapshot, previous_generation_id, "not_required")
+    let mut receipt = character_switch_receipt(snapshot, previous_generation_id.clone(), "not_required")?;
+    if change_plan == "character_switch" {
+        audio_state.shutdown();
+        receipt["characterChanged"] = json!(true);
+        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
+            let _ = history.emit(history_window::HISTORY_REFRESH_REQUESTED_EVENT, json!({
+                "previousGenerationId": previous_generation_id,
+                "characterId": receipt["targetCharacterId"], "reset": true, "ready": true,
+            }));
+        }
+    }
+    Ok(receipt)
 }
 
 fn validate_storage_settings_snapshot(value: &Value) -> Result<(), String> {
@@ -8669,7 +8680,7 @@ mod tests {
             "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
             "pluginRequirements": [{"kind": "tts", "type": "gpt-sovits.models@1", "reasonCode": "READY"}],
         })).is_err());
-        for plan in ["visual_rebind", "character_refresh"] {
+        for plan in ["visual_rebind", "character_refresh", "character_switch"] {
             let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
                 "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": plan,
             }))

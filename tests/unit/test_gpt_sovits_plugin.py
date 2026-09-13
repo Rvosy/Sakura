@@ -320,6 +320,19 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
         assert [item["text"] for item in server.requests[-2:]] == ["alpha", "beta"]
         worker.release_committed_artifact(first_terminal["artifact"]["artifactId"])
         worker.release_committed_artifact(second_terminal["artifact"]["artifactId"])
+        pids = {item["pluginId"]: item["pid"] for item in worker.public_snapshot()["plugins"]}
+        with worker.prepare_voice_resources() as errors:
+            assert {item["pluginId"]: item["pid"] for item in worker.public_snapshot()["plugins"]} == pids
+        assert not errors
+        assert {item["pluginId"]: item["pid"] for item in worker.public_snapshot()["plugins"]} == pids
+        again = worker.call_service("sakura.tts", "begin", {
+            "requestId": "after-resource-update", "characterId": "beta", "text": "still alive",
+            "options": {"tone": "中性"},
+        })
+        assert again["state"] == "running"
+        completed = _poll_terminal(worker, "after-resource-update")
+        assert completed["state"] == "succeeded"
+        worker.release_committed_artifact(completed["artifact"]["artifactId"])
     finally:
         boundary.close()
         worker.close()
@@ -966,6 +979,16 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
         ]
         assert events[0][1].endswith("alpha.ckpt")
         assert events[3][1].endswith("beta.ckpt")
+        # Replacing weights at the same paths must reload weights, retaining the endpoint.
+        coordinator._queue.join()
+        retained = coordinator._resolver
+        assert coordinator.prepare_resources() is True
+        assert coordinator.finish_resources() is True
+        coordinator.warmup(voice)
+        coordinator._queue.join()
+        assert coordinator._resolver is retained
+        assert len(resolvers) == 1
+        assert [kind for kind, _value in events[-2:]] == ["gpt", "sovits"]
     finally:
         coordinator.close()
 

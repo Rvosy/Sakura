@@ -347,7 +347,7 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
   callback 和 Effect。
 - `PluginRuntimeManager` 不运行后台 reconcile、health loop、retry counter、自动重新激活或依赖恢复调度。
   插件状态只在 generation 启动，用户显式 install/update/enable/disable/reload/uninstall、显式设置保存，以及
-  插件进程退出时变化。
+  显式角色切换或资源更新，以及插件进程退出时变化。
 - manifest `requires` 是硬依赖。Provider 进程退出或被停止时，Runtime 只标记 Provider `failed`、失效它的
   ServiceProxy，并停止声明该硬依赖的 consumer；动态查找该 Service 的插件和无关插件继续运行。
 - 普通配置的有效字段与本进程已应用配置相同时直接返回 `applied`，不调用更新回调或重载插件；显式覆盖默认值仍会保存。
@@ -359,6 +359,16 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
   替代实现。恢复只能由用户 reload、重新安装/重试或新 Core generation 触发。
 - 正常停止先拒绝新调用并执行有界 LIFO cleanup；超时后只终止目标插件及其受控后代，不结束其他插件或
   扫描无关系统进程。
+
+角色切换保持 Core generation，重建 Assistant Session。依赖当前角色服务、且不属于明确按角色参数工作的
+表现/TTS Provider 的旧插件局部重载，详见[安全角色切换](WP-5-03-safe-character-switch.md)。
+
+TTS Provider 可同时导出 `prepareResourceUpdate()` 与 `finishResourceUpdate()`，两者成功返回 `true`。
+宿主按 Service 实际导出能力选择此路径，不按插件 ID 特判。prepare 拒绝新任务、取消并等待现有任务退出，
+完成后允许宿主替换角色文件；finish 在发布成功或回滚后恢复接收任务，并失效路径未变但内容已变的权重缓存。
+GPT-SoVITS 保留 Coordinator、Endpoint 和推理进程，下一次预热或合成复用 `set_gpt_weights`、
+`set_sovits_weights`。prepare 失败时不写入角色文件；finish 失败与文件保存结果分开报告。
+未实现完整接口的 Provider 使用局部插件生命周期回退，不重启整个 Core。
 
 公开状态继续保持简单的 `disabled/active/failed`；具体原因通过稳定 `reasonCode` 和有界详情表达，不新增
 waiting、self-healing 或复杂调和状态机。

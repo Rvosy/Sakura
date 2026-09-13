@@ -8,7 +8,7 @@ import json
 import queue
 import threading
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -163,6 +163,7 @@ class ReadinessController:
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
         self._closed = False
+        self._switching_character = False
         self._close_called = False
         self._readiness = "transport_ready"
         self._revision = 0
@@ -335,6 +336,11 @@ class ReadinessController:
         presentation = self._project_presentation(
             result.current_character_presentation
         )
+        if plugin_application is not None and result.session is not None:
+            getattr(plugin_application, "bind_session")(result.session)
+            project = getattr(plugin_application, "visual_presentation", None)
+            if callable(project):
+                presentation = self._project_presentation(project())
         with self._lock:
             if self._closed:
                 raise OperationCancelled()
@@ -349,10 +355,35 @@ class ReadinessController:
             self._session = result.session
             self._revision += 1
             callback = self._session_published_callback if result.session is not None else None
-        if plugin_application is not None and result.session is not None:
-            getattr(plugin_application, "bind_session")(result.session)
         if callback is not None:
             callback()
+
+    def switch_character_session(self) -> None:
+        from app.config.character_loader import CharacterRegistry
+        from app.config.settings_service import AppSettingsService
+        registry = CharacterRegistry(self._config.user_root)
+        character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
+        with self._lock:
+            if self._closed or self._switching_character or self._readiness == "initializing":
+                raise RuntimeError("CHARACTER_SWITCH_NOT_READY")
+            self._switching_character = True
+            initializer = self._initializer
+            application = self._plugin_application
+            self._session = None
+        try:
+            if application is not None:
+                application.unbind_session()
+                application.application.set_current_character(character_id)
+            if initializer is not None:
+                initializer.retire_session()
+            self.apply_provider_configuration()
+            # Provider setup can leave us without a Session, but the selected
+            # character must still be available in Settings and Studio.
+            if application is not None and self.published_session() is None:
+                application.bind_character_presentation(character_id)
+        finally:
+            with self._lock:
+                self._switching_character = False
 
     def apply_character_configuration(self) -> None:
         from app.config.character_loader import CharacterRegistry, load_character_system_prompt
@@ -760,7 +791,8 @@ class ReadinessController:
     def _refresh_visual_presentation(self) -> None:
         with self._lock:
             application = self._plugin_application
-            if self._closed:
+            revision = self._revision
+            if self._closed or self._switching_character:
                 return
         project = getattr(application, "visual_presentation", None)
         if not callable(project):
@@ -770,7 +802,21 @@ class ReadinessController:
             return
         projected = self._project_presentation(value)
         with self._lock:
-            if not self._closed and application is self._plugin_application and projected != self._current_character_presentation:
+            # A provider call may span a character switch. Never combine the
+            # previous Session summary with the next character's visual (or
+            # publish a late result over an already committed new Session).
+            if self._closed or self._switching_character or revision != self._revision:
+                return
+            summary = self._current_character_summary
+            if summary is not None and projected is not None and any(
+                projected.get(field) != summary.get(summary_field)
+                for field, summary_field in (
+                    ("characterId", "id"), ("displayName", "displayName"),
+                    ("initialMessage", "initialMessage"),
+                )
+            ):
+                return
+            if application is self._plugin_application and projected != self._current_character_presentation:
                 self._current_character_presentation = projected
                 self._revision += 1
 
@@ -932,8 +978,25 @@ class ControlDispatcher:
         if application is None:
             yield []
         else:
-            with application.application.pause_service_providers("sakura.tts.provider.") as errors:
+            with application.application.prepare_voice_resources() as errors:
                 yield errors
+
+    @contextmanager
+    def prepare_character_switch(self):
+        if self._readiness.readiness() == "initializing":
+            raise ValueError("角色正在初始化，请稍后再切换。")
+        chat_scope = self._chat_boundary.suspend_for_character_change() if self._chat_boundary else nullcontext()
+        with chat_scope:
+            if self._tts_boundary is not None:
+                self._tts_boundary.reset_character()
+            if self._asr_boundary is not None:
+                self._asr_boundary.cancel_all()
+            application = self.published_plugin_application()
+            scope = application.application.prepare_character_switch() if application else nullcontext()
+            with scope as errors:
+                yield
+            if errors:
+                raise ValueError("角色已切换，但部分角色插件恢复失败，请查看运行日志。")
 
     @contextmanager
     def prepare_character_publish(self, previous, incoming, changed_files):
@@ -974,6 +1037,9 @@ class ControlDispatcher:
 
     def published_session(self) -> object | None:
         return self._readiness.published_session()
+
+    def switch_character_session(self) -> None:
+        self._readiness.switch_character_session()
 
     def published_character_presentation(self) -> dict[str, object] | None:
         return self._readiness.published_character_presentation()
@@ -1447,6 +1513,8 @@ def run_host(
             config.user_root,
             prepare_voice_update=getattr(dispatcher, "prepare_voice_resource_update", None),
             apply_current=getattr(dispatcher, "apply_character_configuration", None),
+            prepare_switch=getattr(dispatcher, "prepare_character_switch", None),
+            apply_switch=getattr(dispatcher, "switch_character_session", None),
             plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
         )
         character_studio = CharacterStudioBoundary(

@@ -694,12 +694,24 @@ class PluginRuntimeManager:
                     return {"providerId": record.spec.plugin_id, "scopeId": record.process.scope_id}
         raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
 
+    def service_exports(self, service_key: str) -> frozenset[str]:
+        with self._lock:
+            binding = self._services.get(service_key)
+            return binding.exports if binding is not None else frozenset()
+
     def owns_callback(self, handle: str) -> bool:
         with self._lock:
             return handle in self._callbacks
 
     @contextmanager
     def pause_service_providers(self, prefix: str):
+        ids = [item["pluginId"] for item in self.snapshot()["plugins"]
+               if item["state"] == "active" and any(key.startswith(prefix) for key in item["provides"])]
+        with self.pause_plugins(ids) as errors:
+            yield errors
+
+    @contextmanager
+    def pause_plugins(self, plugin_ids: Sequence[str]):
         """Pause active readers and their dependents without changing enablement.
 
         The caller inspects restoration errors separately from its file transaction.
@@ -708,17 +720,20 @@ class PluginRuntimeManager:
         with self._operation_lock:
             with self._lock:
                 affected = set()
-                for plugin_id, record in self._records.items():
-                    if record.state == "active" and any(key.startswith(prefix) for key in record.spec.provides):
+                for plugin_id in plugin_ids:
+                    record = self._records[plugin_id]
+                    if record.state == "active":
                         affected.add(plugin_id)
                         affected.update(self._hard_dependents_locked(plugin_id))
                 order = [plugin_id for plugin_id in self._activation_order if plugin_id in affected]
             try:
+                stopped = []
                 for plugin_id in reversed(order):
                     self._stop_process(plugin_id, reason="PLUGIN_RELOADING", failed=False)
+                    stopped.append(plugin_id)
                 yield errors
             finally:
-                for plugin_id in order:
+                for plugin_id in reversed(stopped):
                     try:
                         record = self._records[plugin_id]
                         if not self._start_one(record):

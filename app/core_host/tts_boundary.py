@@ -380,6 +380,13 @@ class TTSBoundary:
             self._authorizations.clear()
         self._recordings.cleanup_generation(self._generation_id)
 
+    def reset_character(self) -> None:
+        self.cancel_all()
+        with self._lock:
+            for authorization in self._authorizations.values():
+                authorization.state = "cancelling"
+            self._authorizations.clear()
+
     def cancel_all(self) -> None:
         """Signal every in-flight synthesis before Router/generation teardown waits."""
 
@@ -456,6 +463,8 @@ class TTSBoundary:
                 event="tts.recording.committed",
             )
             with self._lock:
+                if authorization.state == "cancelling" or self._authorizations.get((operation_id, segment_index)) is not authorization:
+                    raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "角色语音任务已失效")
                 authorization.state = "ready"
             log_event(
                 "TTS", "TTS synthesis ready",
@@ -470,7 +479,10 @@ class TTSBoundary:
                 },
                 event="tts.synthesis.ready",
             )
-            self._publish(request, "tts.synthesis.ready", {**descriptor, "operationId": operation_id, "segmentIndex": segment_index})
+            with self._lock:
+                if authorization.state == "cancelling":
+                    raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "角色语音任务已失效")
+                self._publish(request, "tts.synthesis.ready", {**descriptor, "operationId": operation_id, "segmentIndex": segment_index})
             return descriptor
         except TTSBoundaryError as error:
             self._mark_failed(authorization)

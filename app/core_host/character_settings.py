@@ -64,6 +64,8 @@ class CharacterSettingsBoundary:
         plugin_application_provider: Callable[[], object | None] = lambda: None,
         prepare_voice_update: Callable | None = None,
         apply_current: Callable[[], None] | None = None,
+        prepare_switch: Callable | None = None,
+        apply_switch: Callable[[], None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
@@ -74,6 +76,8 @@ class CharacterSettingsBoundary:
         self._plugin_application_provider = plugin_application_provider
         self._prepare_voice_update = prepare_voice_update
         self._apply_current = apply_current
+        self._prepare_switch = prepare_switch
+        self._apply_switch = apply_switch
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -398,7 +402,23 @@ class CharacterSettingsBoundary:
                             raise CharacterSettingsError(error.code, "所选形态无法使用，请检查对应插件或选择其他形态。") from error
                 if current == character_id and not changed:
                     return self._change_result("unchanged")
-                self._settings.save_character_selection(registry, character_id, changed)
+                if current != character_id and self._apply_switch is not None:
+                    scope = self._prepare_switch() if self._prepare_switch else nullcontext()
+                    committed = False
+                    try:
+                        with scope:
+                            self._settings.save_character_selection(registry, character_id, changed)
+                            committed = True
+                            self._apply_switch()
+                    except Exception as error:
+                        log_event("CharacterSettings", "角色切换未完成", exception_diagnostics(
+                            error, reason_code="CHARACTER_SWITCH_FAILED", stage="character.switch"), severity="error")
+                        raise CharacterSettingsError(
+                            "CHARACTER_SWITCH_APPLY_FAILED" if committed else "CHARACTER_SWITCH_PREPARE_FAILED",
+                            "角色选择已保存，但切换未能完成，请查看运行日志。" if committed else "旧角色任务尚未结束，角色未切换。",
+                        ) from error
+                else:
+                    self._settings.save_character_selection(registry, character_id, changed)
             except CharacterSettingsError:
                 raise
             except CharacterConfigError as error:
@@ -415,7 +435,7 @@ class CharacterSettingsBoundary:
                 ) from error
             self._revision += 1
             if current != character_id:
-                return self._change_result("core_restart_required")
+                return self._change_result("character_switch" if self._apply_switch else "core_restart_required")
             if character_id in changed:
                 # The Assistant and other plugins belong to the character session.
                 # Changing its presentation only replaces the visual binding; old
@@ -425,7 +445,7 @@ class CharacterSettingsBoundary:
             return self._change_result("unchanged")
 
     def _change_result(self, change_plan: str) -> dict[str, object]:
-        if change_plan not in {"unchanged", "core_restart_required", "visual_rebind", "character_refresh"}:
+        if change_plan not in {"unchanged", "core_restart_required", "visual_rebind", "character_refresh", "character_switch"}:
             raise ValueError("invalid character change plan")
         return {
             "schemaVersion": 1,

@@ -316,7 +316,8 @@ def test_voice_update_pauses_only_active_voice_providers(monkeypatch):
     class PluginApplication:
         application = property(lambda self: self)
         @contextmanager
-        def pause_service_providers(self, prefix):
+        def prepare_voice_resources(self):
+            prefix = "sakura.tts.provider."
             calls.append((prefix, "pause"))
             try:
                 yield []

@@ -528,7 +528,7 @@ def test_voice_resource_update_restores_dependents_and_preserves_unrelated_proce
         assert all(item["state"] == "active" for item in before.values())
         desired = PluginDesiredStateStore(roots.user_root).read()
         try:
-            with application.application.pause_service_providers("sakura.tts.provider.") as errors:
+            with application.application.prepare_voice_resources() as errors:
                 paused = records()
                 assert paused["fixture.voice"]["pid"] is None
                 assert paused["fixture.consumer"]["pid"] is None
