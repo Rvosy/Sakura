@@ -31,7 +31,10 @@ def test_import_failure_keeps_original_cause_in_response(tmp_path, monkeypatch, 
     assert diagnostic["cause_type"] == expected
     assert expected in diagnostic["exception_chain"]
     assert " at " in diagnostic["exception_stack"]
-    if failure in {"missing", "permission"}:
+    if failure == "permission":
+        # OSError formats filenames with repr(), including escaped Windows separators.
+        assert diagnostic["diagnostic"] == str(PermissionError(13, "Permission denied", str(archive)))
+    elif failure == "missing":
         assert str(archive) in diagnostic["diagnostic"]
     assert CREDENTIAL not in json.dumps(diagnostic)
 
@@ -133,7 +136,7 @@ def test_empty_snapshot_and_first_import_auto_select(tmp_path: Path) -> None:
             "hasExportableVoice": False,
         }
     ]
-    saved = yaml.safe_load((tmp_path / "config" / "characters.yaml").read_text())
+    saved = yaml.safe_load((tmp_path / "config" / "characters.yaml").read_text(encoding="utf-8"))
     assert saved == {"current_character_id": "fixture"}
 
 
@@ -349,8 +352,8 @@ def test_import_responses_report_missing_plugins_and_genie_compatibility(tmp_pat
     plugin = tmp_path / "plugins/builtin/genie"
     plugin.mkdir(parents=True)
     shutil.copyfile(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_genie/plugin.yaml", plugin / "plugin.yaml")
-    (plugin / "plugin.py").write_text('raise AssertionError("no synthesis during import")')
+    (plugin / "plugin.py").write_text('raise AssertionError("no synthesis during import")', encoding="utf-8")
     result = boundary.import_voice_archive(str(voice), "fixture")
     assert result["pluginRequirements"][0]["reasonCode"] == "COMPATIBLE"
-    manifest = json.loads((tmp_path / "characters/fixture/character.json").read_text())
+    manifest = json.loads((tmp_path / "characters/fixture/character.json").read_text(encoding="utf-8"))
     assert "sakura.tts" not in manifest["extensions"]

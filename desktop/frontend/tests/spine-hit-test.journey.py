@@ -23,7 +23,7 @@ def run():
     plugin = load('spine_plugin', ROOT / 'plugins/builtin/sakura_spine/plugin.py')
     journey = load('spine_journey', Path(__file__).with_name('spine-plugin.journey.py'))
     model = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'artifacts/spine/196104-room/spine-1'
-    config = json.loads((model / 'spine-resource.json').read_text())
+    config = json.loads((model / 'spine-resource.json').read_text(encoding="utf-8"))
     data = plugin.describe_resource(config, lambda path: model / path)['rendererData']
     journey.Handler.assets['/hit-model'] = model
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(journey.Handler, directory=str(ROOT)))

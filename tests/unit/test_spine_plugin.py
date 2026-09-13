@@ -152,7 +152,7 @@ def test_preparation_keeps_source_and_copies_only_component_dependencies(spine_r
     assert (root / 'skeleton.json').read_bytes() == source_json
     assert not (component / 'unrelated.txt').exists()
     assert not (component / 'metadata.json').exists()
-    assert json.loads((component / 'spine-resource.json').read_text())['defaultSkin'] == 'normal'
+    assert json.loads((component / 'spine-resource.json').read_text(encoding="utf-8"))['defaultSkin'] == 'normal'
     with pytest.raises(ValueError, match='输出目录已存在'):
         prepare(root, output)
 
@@ -219,7 +219,7 @@ def test_prepared_component_roundtrips_through_production_archive(spine_resource
     package.mkdir()
     resource = import_visual_archive(archives[0], package)
     assert resource.plugin_requirements == ({'kind': 'visual', 'type': 'spine.json@1', 'plugins': [{'id': 'sakura.visual.spine', 'name': 'Spine'}]},)
-    config = json.loads((package / resource.root / resource.entry).read_text())
+    config = json.loads((package / resource.root / resource.entry).read_text(encoding="utf-8"))
     description = describe_resource(config, lambda path: resolve_inside(package / resource.root, path))
     assert description['rendererData']['skins'] == ['default', 'normal', 'smile']
     assert description['rendererData']['config']['defaultSkin'] == 'normal'
@@ -238,7 +238,7 @@ def test_preview_draft_survives_reload_without_rewriting_component_or_source(spi
     catalog = prepare(source, output)
     model_id = catalog['default']
     component = output / model_id
-    resource_config = json.loads((component / 'spine-resource.json').read_text())
+    resource_config = json.loads((component / 'spine-resource.json').read_text(encoding="utf-8"))
     resource_config['modelControls'] = ['skin']
     (component / 'spine-resource.json').write_text(json.dumps(resource_config), encoding='utf-8')
     original = (component / 'spine-resource.json').read_bytes()
@@ -302,21 +302,21 @@ def test_preparation_declares_texture_encoding_and_playable_skins(spine_resource
     root, _, _ = spine_resource
     prepared = tmp_path / 'pma'
     prepare(root, prepared, premultiplied_alpha=True, exclude_skins=['default'])
-    catalog = json.loads((prepared / 'catalog.json').read_text())
+    catalog = json.loads((prepared / 'catalog.json').read_text(encoding="utf-8"))
     entry = prepared / catalog['models'][0]['resource']['root'] / 'spine-resource.json'
-    config = json.loads(entry.read_text())
+    config = json.loads(entry.read_text(encoding="utf-8"))
     config['skinLabels'] = {'normal': '自然放松', 'smile': '发自内心的高兴'}
-    entry.write_text(json.dumps(config, ensure_ascii=False))
+    entry.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
     archive = export_components(prepared, tmp_path / 'archives')[0]
     target = tmp_path / 'imported'; target.mkdir()
     resource = import_visual_archive(archive, target)
     package = target / resource.root
-    description = describe_resource(json.loads((package / resource.entry).read_text()), lambda rel: package / rel)
+    description = describe_resource(json.loads((package / resource.entry).read_text(encoding="utf-8")), lambda rel: package / rel)
     assert description['rendererData']['config']['premultipliedAlpha'] is True
     assert description['rendererData']['config']['defaultSkin'] == 'normal'
     assert description['rendererData']['skins'] == ['normal', 'smile']
     assert description['rendererData']['config']['skinLabels'] == config['skinLabels']
-    assert 'default' in json.loads((package / 'model/skeleton.json').read_text())['skins']
+    assert 'default' in json.loads((package / 'model/skeleton.json').read_text(encoding="utf-8"))['skins']
     with pytest.raises(ValueError, match='SPINE_CONTROL_INVALID'):
         parse_preview_control(description['parserData'], {'skin': 'default'})
 

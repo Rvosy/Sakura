@@ -27,7 +27,7 @@ from tools.spine_preview import export_components, prepare
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     assets = {}
-    csp = json.loads((ROOT / 'desktop/src-tauri/tauri.conf.json').read_text())['app']['security']['csp']
+    csp = json.loads((ROOT / 'desktop/src-tauri/tauri.conf.json').read_text(encoding="utf-8"))['app']['security']['csp']
     def log_message(self, *_args): pass
     def end_headers(self):
         self.send_header('Content-Security-Policy', self.csp)
@@ -56,13 +56,13 @@ def fixture(root):
             'slots': [{'name': 'body', 'bone': 'root', 'attachment': 'body'}],
             'skins': {name: {'body': {'body': attachment}} for name in ['normal', 'smile']},
             'animations': {'idle': {'bones': {'root': {'rotate': [{'time': 0, 'angle': -2}, {'time': 1, 'angle': 2}, {'time': 2, 'angle': -2}]}}}}}
-    (source / 'skeleton.json').write_text(json.dumps(data))
-    (source / 'skeleton.atlas').write_text(f'texture.png\nsize: {width},{height}\nformat: RGBA8888\nfilter: Linear,Linear\nrepeat: none\nbody\n  rotate: false\n  xy: 0,0\n  size: {width},{height}\n  orig: {width},{height}\n  offset: 0,0\n  index: -1\n')
+    (source / 'skeleton.json').write_text(json.dumps(data), encoding="utf-8")
+    (source / 'skeleton.atlas').write_text(f'texture.png\nsize: {width},{height}\nformat: RGBA8888\nfilter: Linear,Linear\nrepeat: none\nbody\n  rotate: false\n  xy: 0,0\n  size: {width},{height}\n  orig: {width},{height}\n  offset: 0,0\n  index: -1\n', encoding="utf-8")
     catalog = prepare(source, root / 'components')
     entry = root / 'components' / catalog['models'][0]['resource']['root'] / 'spine-resource.json'
-    config = json.loads(entry.read_text())
+    config = json.loads(entry.read_text(encoding="utf-8"))
     config['skinLabels'] = {'normal': '放松', 'smile': '友好'}
-    entry.write_text(json.dumps(config, ensure_ascii=False))
+    entry.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
     return root / 'components'
 
 
@@ -116,8 +116,8 @@ def verify_alpha_compositing(browser, origin, root):
         skeleton = {'skeleton': {'spine': '3.6.53'}, 'bones': [{'name': 'root'}],
                     'slots': [{'name': name, 'bone': 'root', 'attachment': 'body'} for name in ['back', 'front']],
                     'skins': {'default': {name: {'body': attachment} for name in ['back', 'front']}}, 'animations': {'idle': {}}}
-        (package / 'skeleton.json').write_text(json.dumps(skeleton))
-        (package / 'skeleton.atlas').write_text('texture.png\nsize: 8,8\nformat: RGBA8888\nfilter: Linear,Linear\nrepeat: none\nbody\n  rotate: false\n  xy: 0,0\n  size: 8,8\n  orig: 8,8\n  offset: 0,0\n  index: -1\n')
+        (package / 'skeleton.json').write_text(json.dumps(skeleton), encoding="utf-8")
+        (package / 'skeleton.atlas').write_text('texture.png\nsize: 8,8\nformat: RGBA8888\nfilter: Linear,Linear\nrepeat: none\nbody\n  rotate: false\n  xy: 0,0\n  size: 8,8\n  orig: 8,8\n  offset: 0,0\n  index: -1\n', encoding="utf-8")
         prefix = '/compositing/' + package.name; Handler.assets[prefix] = package
         assets = {name: origin + prefix + '/' + name.encode().hex() for name in ['texture.png', 'skeleton.json', 'skeleton.atlas']}
         page.goto(origin + '/desktop/frontend/prototypes/asr/')
@@ -154,15 +154,15 @@ def run(components=None):
             root = Path(temporary)
             components = Path(components).resolve() if components else fixture(root)
             archives = export_components(components, root / 'archives')
-            catalog = json.loads((components / 'catalog.json').read_text())
+            catalog = json.loads((components / 'catalog.json').read_text(encoding="utf-8"))
             roots = RuntimeRoots(root / 'distribution', root / 'user')
             shutil.copytree(ROOT / 'plugins/builtin/sakura_portrait', roots.distribution_root / 'plugins/builtin/sakura_portrait')
             package = roots.user_root / 'characters/sample'
             package.mkdir(parents=True)
             shutil.copyfile(ROOT / 'desktop/frontend/prototypes/asr/assets/navi.png', package / 'default.png')
-            (package / 'card.md').write_text('隔离验证角色')
+            (package / 'card.md').write_text('隔离验证角色', encoding="utf-8")
             (package / 'character.json').write_text(json.dumps({'id': 'sample', 'display_name': 'Spine 验证',
-                'card': 'card.md', 'portrait': {'default': 'default.png'}}))
+                'card': 'card.md', 'portrait': {'default': 'default.png'}}), encoding="utf-8")
             shutil.copytree(ROOT / 'plugins/builtin/sakura_spine', roots.distribution_root / 'plugins/builtin/sakura_spine')
             application = PluginApplicationHost(roots, 'spine-browser', ToolRegistry())
             application.start()
@@ -240,7 +240,7 @@ def run(components=None):
                     page.locator('.spine-choices button[value="smile"]').click()
                     speed.fill('1.5')
                     source_resource = catalog['models'][index]['resource']
-                    source_config = json.loads((components / source_resource['root'] / source_resource['entry']).read_text())
+                    source_config = json.loads((components / source_resource['root'] / source_resource['entry']).read_text(encoding="utf-8"))
                     default_skin = page.locator('.spine-editor select[aria-label="默认表情"]')
                     expect(default_skin).to_have_value(source_config['defaultSkin'])
                     skin_name = page.get_by_role('textbox', name='当前表情名称', exact=True)
@@ -307,7 +307,7 @@ def run(components=None):
                         assert page.evaluate("document.querySelector('.page-scroll').scrollWidth <= document.querySelector('.page-scroll').clientWidth")
                         page.set_viewport_size({'width':1274,'height':900})
                         page.evaluate("document.documentElement.removeAttribute('style')")
-                    saved = json.loads((package / 'character.json').read_text())
+                    saved = json.loads((package / 'character.json').read_text(encoding="utf-8"))
                     raw_resource = next(item for item in saved['visuals']['resources'] if item.get('name') == name)
                     resource = CharacterVisualResource.from_mapping(raw_resource)
                     from app.config.character_loader import _load_profile
@@ -380,12 +380,12 @@ def run(components=None):
                 expect(speed).to_have_value('1')
                 page.locator('#saveButton').click()
                 expect(page.locator('#saveButton')).to_be_enabled(timeout=20000)
-                saved = json.loads((package / 'character.json').read_text())
+                saved = json.loads((package / 'character.json').read_text(encoding="utf-8"))
                 imported = next(item for item in saved['visuals']['resources'] if item.get('name') == '目录导入')
-                config = json.loads((package / imported['root'] / imported['entry']).read_text())
-                original = json.loads((chosen / catalog['models'][0]['resource']['entry']).read_text())
-                assert json.loads((package / imported['root'] / config['skeleton']).read_text()) == json.loads(
-                    (chosen / original['skeleton']).read_text())
+                config = json.loads((package / imported['root'] / imported['entry']).read_text(encoding="utf-8"))
+                original = json.loads((chosen / catalog['models'][0]['resource']['entry']).read_text(encoding="utf-8"))
+                assert json.loads((package / imported['root'] / config['skeleton']).read_text(encoding="utf-8")) == json.loads(
+                    (chosen / original['skeleton']).read_text(encoding="utf-8"))
                 # Saving reopens the visual editor; finish that transition before closing the bridge.
                 page.wait_for_function("!document.querySelector('#expressionList').inert")
                 expect(page.locator('canvas.spine-canvas')).to_be_visible(timeout=20000)

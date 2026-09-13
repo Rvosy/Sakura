@@ -47,7 +47,7 @@ def underlay(root):
     U.CreateWindowExW.restype = W.HWND
     hwnd = U.CreateWindowExW(0, wc.name, 'Sakura isolated click target', 0x90000000,
                              0, 0, U.GetSystemMetrics(0), U.GetSystemMetrics(1), None, None, None, None)
-    (root / 'underlay.json').write_text(json.dumps({'hwnd': hwnd}))
+    (root / 'underlay.json').write_text(json.dumps({'hwnd': hwnd}), encoding="utf-8")
     msg = W.MSG()
     while U.GetMessageW(C.byref(msg), None, 0, 0) > 0:
         U.TranslateMessage(C.byref(msg)); U.DispatchMessageW(C.byref(msg))
@@ -84,8 +84,8 @@ def run():
                     'entry': 'spine-resource.json', 'type': 'spine.json@1'}]}}), encoding='utf-8')
     (root / 'config').mkdir()
     (root / 'config/ui.json').write_text(json.dumps({'domain': 'ui', 'schema_version': 1,
-        'settings': {'first_run_guide_completed': True, 'telemetry': {'enabled': False}}}))
-    (root / 'config/characters.yaml').write_text('current_character_id: probe\nvisual_selections:\n  probe: spine\n')
+        'settings': {'first_run_guide_completed': True, 'telemetry': {'enabled': False}}}), encoding="utf-8")
+    (root / 'config/characters.yaml').write_text('current_character_id: probe\nvisual_selections:\n  probe: spine\n', encoding="utf-8")
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     env = {**os.environ, 'SAKURA_RUNTIME_USER_ROOT': str(root),
@@ -103,7 +103,7 @@ def run():
             try: return json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list'))
             except Exception: return False
         wait_for(debug_ready, 40)
-        target_hwnd = json.loads((root / 'underlay.json').read_text())['hwnd']
+        target_hwnd = json.loads((root / 'underlay.json').read_text(encoding="utf-8"))['hwnd']
         with sync_playwright() as pw:
             browser = pw.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
             page = next(p for p in browser.contexts[0].pages if '/settings/' not in p.url)
@@ -141,10 +141,10 @@ def run():
             # Send only to our verified test window. A real OS click must arrive there.
             U.mouse_event(2, 0, 0, 0, 0); U.mouse_event(4, 0, 0, 0, 0)
             wait_for(lambda: (root / 'clicks').exists())
-            previous_clicks = (root / 'clicks').read_text().count('click')
+            previous_clicks = (root / 'clicks').read_text(encoding="utf-8").count('click')
             U.mouse_event(2, 0, 0, 0, 0)
             try:
-                wait_for(lambda: (root / 'clicks').read_text().count('click') > previous_clicks)
+                wait_for(lambda: (root / 'clicks').read_text(encoding="utf-8").count('click') > previous_clicks)
                 move(0.5, 0.5)
                 # Observe the held-button interval, not a delay to make a racing assertion pass.
                 end = time.monotonic() + 0.15
@@ -194,7 +194,7 @@ def run():
                 move(0.5, 0.5)
                 measurements['disabledInside'] = measure()
                 report['cpu'] = measurements
-            (root / 'result.json').write_text(json.dumps(report, indent=2))
+            (root / 'result.json').write_text(json.dumps(report, indent=2), encoding="utf-8")
             print(json.dumps(report, indent=2), flush=True)
             page.screenshot(path=str(root / 'webview.png'), omit_background=True)
             browser.close()

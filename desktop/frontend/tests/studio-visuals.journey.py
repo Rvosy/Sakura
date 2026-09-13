@@ -220,10 +220,10 @@ def run():
                 expect(page.locator("#errorText")).to_be_empty()
                 page.locator("#saveButton").click()
                 expect(page.locator("#saveButton")).to_be_enabled()
-                saved = json.loads((package / "character.json").read_text())
+                saved = json.loads((package / "character.json").read_text(encoding="utf-8"))
                 missing = next(item for item in saved["visuals"]["resources"] if item["type"] == "fixture.missing@1")
                 assert saved["visuals"]["default"] == missing["id"]
-                assert json.loads((package / missing["root"] / missing["entry"]).read_text()) == {"private": True}
+                assert json.loads((package / missing["root"] / missing["entry"]).read_text(encoding="utf-8")) == {"private": True}
                 page.get_by_role("button", name="基础信息", exact=True).click()
                 expect(page.locator("#pluginRequirementsList")).to_contain_text("示例形态插件")
                 expect(page.locator("#pluginRequirementsList")).to_contain_text("未安装")
