@@ -279,6 +279,8 @@ catalog 返回编辑器提供者的 scopeId，open 返回 providerScopeId。工�
 可选名称随导出、导入保留，旧版 `.char` 形态组件仍可读取。导出统一写 `.visual`，完整角色保持 `.char`，语音包保持 `.voice`。
 原生“导入形态”选择器提供 `.visual` 与旧版 `.char` 过滤项；归档内容仍按 format/version/kind 校验，改后缀不能把完整角色变成形态组件。
 组件入口由 exportResource 投影，附件由 describe.assets 声明；导入生成新资源 ID，仅加入目标角色草稿并设为默认。
+导入先写入该新 ID 的未引用目录，文件完整且通过最后取消检查后才返回资源描述，由调用者加入草稿。
+不通过重命名整个资源目录提交，避免 Windows 上子文件被读取时拒绝目录改名。失败仅清理本次新建目录，既有资源不受影响。
 不覆盖目标人格、voice、角色 ID 或已安装包。未知类型组件仍可保存并随完整角色包转交，缺失插件不触发隐式安装。
 组件可声明 `resource.pluginRequirements`，完整角色在 `character.pluginRequirements` 汇总需求；格式和检测规则见下节。
 宿主按资源 `type` 匹配能力，插件 ID 是安装建议；完整角色的 `visuals.providers` 仍可指定实际提供者 ID。

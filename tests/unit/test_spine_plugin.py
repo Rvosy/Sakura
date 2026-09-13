@@ -35,6 +35,53 @@ def spine_resource(tmp_path):
     return root, config, skeleton
 
 
+@pytest.mark.parametrize("operation", ["prepare", "export"])
+def test_preview_output_can_publish_while_completed_files_are_being_read(spine_resource, tmp_path, monkeypatch, operation):
+    from contextlib import ExitStack
+    from app.config.visual_archive import export_visual_archive
+    source, _, _ = spine_resource
+    output = tmp_path / "output"
+    original_write = Path.write_text
+    with ExitStack() as readers:
+        if operation == "prepare":
+            def write(path, *args, **kwargs):
+                result = original_write(path, *args, **kwargs)
+                if path.name == "catalog.json":
+                    readers.enter_context(next(path.parent.rglob("skeleton.json")).open("rb"))
+                return result
+            monkeypatch.setattr(Path, "write_text", write)
+            catalog = prepare(source, output)
+            assert len(catalog["models"]) == 1
+        else:
+            prepared = tmp_path / "prepared"
+            prepare(source, prepared)
+            def export(*args, **kwargs):
+                path = export_visual_archive(*args, **kwargs)
+                readers.enter_context(path.open("rb"))
+                return path
+            monkeypatch.setattr("app.config.visual_archive.export_visual_archive", export)
+            archives = export_components(prepared, output)
+            assert len(archives) == 1
+            import zipfile
+            with zipfile.ZipFile(archives[0]) as archive:
+                assert json.loads(archive.read("manifest.json"))["kind"] == "resource"
+
+
+def test_preview_preparation_failure_removes_only_its_new_output(spine_resource, tmp_path, monkeypatch):
+    source, _, _ = spine_resource
+    before = (source / "skeleton.json").read_bytes()
+    output = tmp_path / "output"
+    original_copy = shutil.copyfile
+    def copy(source, target, *args, **kwargs):
+        original_copy(source, target, *args, **kwargs)
+        raise OSError("disk full")
+    monkeypatch.setattr("tools.spine_preview.shutil.copyfile", copy)
+    with pytest.raises(OSError, match="disk full"):
+        prepare(source, output)
+    assert not output.exists()
+    assert (source / "skeleton.json").read_bytes() == before
+
+
 def test_resource_describes_actual_controls_and_freezes_parser_snapshot(spine_resource):
     root, config, skeleton = spine_resource
     description = describe_resource(config, lambda rel: resolve_inside(root, rel))

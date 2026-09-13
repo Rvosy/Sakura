@@ -169,6 +169,8 @@ signal?, onLayout?, onError?, enableHitTest?})`。`resolveAssetUrl(relative)` �
 `tools.spine_preview prepare` 在新目录准备组件及 `catalog.json`，原始资源保持不变。`serve` 只监听
 `127.0.0.1`，使用同一插件的说明、解析器、renderer 和 editor。保存仅写输出组件的 `spine-draft.json`，
 重新选择资源或重启后读取草稿。它不连接实际角色目录、模型服务或聊天会话。
+预处理和组件导出仅写入本次新建的输出目录，完整完成后返回结果；失败清理本次输出，不覆盖既有目录。
+消费者在调用成功后才打开输出；预处理最后写入 `catalog.json`，不重命名包含已生成文件的目录。
 `/api/control` 使用模型解析器，`/api/preview` 使用编辑预览校验；二者不共用模型权限。
 准备已预乘贴图时显式使用 `--premultiplied-alpha`；通过可重复的 `--exclude-skin NAME`
 排除不完整表情，例如 `--exclude-skin default`，不删除对应骨骼数据。

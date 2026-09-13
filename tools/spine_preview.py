@@ -6,8 +6,10 @@ Run with the bundled runtime: python -m tools.spine_preview --help.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import shutil
+import sys
 import tempfile
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +27,21 @@ def resolve_inside(root, relative):
     path = (root / relative_path(relative)).resolve(strict=True)
     path.relative_to(root.resolve(strict=True))
     return path
+
+
+@contextmanager
+def new_output(output: Path):
+    """Only a completed call publishes this new output to its consumer."""
+    output.mkdir(exist_ok=False)
+    try:
+        yield output
+    except BaseException:
+        primary = sys.exception()
+        try:
+            shutil.rmtree(output)
+        except OSError as recovery:
+            primary.recovery_error = recovery
+        raise
 
 
 def prepare(source: Path, output: Path, *, premultiplied_alpha=False, exclude_skins=()):
@@ -62,9 +79,7 @@ def prepare(source: Path, output: Path, *, premultiplied_alpha=False, exclude_sk
     if not found:
         raise ValueError('未找到可独立预览的 Spine 3.6 JSON 角色')
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='spine-', dir=output.parent) as directory:
-        staging = Path(directory) / 'components'
-        staging.mkdir()
+    with new_output(output) as staging:
         models = []
         for description in found:
             data = description['rendererData']
@@ -88,7 +103,6 @@ def prepare(source: Path, output: Path, *, premultiplied_alpha=False, exclude_sk
         default = next((m['resource']['id'] for m in models if m['name'] == '房间' or m['name'].endswith(' · 房间')), models[0]['resource']['id'])
         catalog = {'version': 1, 'default': default, 'models': models, 'skipped': skipped}
         (staging / 'catalog.json').write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding='utf-8')
-        staging.rename(output)
     return catalog
 
 
@@ -102,9 +116,7 @@ def export_components(root: Path, output: Path):
     if output.exists():
         raise ValueError('输出目录已存在，请使用新目录')
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='spine-export-', dir=output.parent) as directory:
-        staging = Path(directory) / 'archives'
-        staging.mkdir()
+    with new_output(output) as staging:
         for index, model in enumerate(catalog['models'], 1):
             resource = CharacterVisualResource.from_mapping({**model['resource'], 'name': model['name']})
             model_root = resolve_inside(root, resource.root)
@@ -117,7 +129,6 @@ def export_components(root: Path, output: Path):
                           'pluginRequirements': [{'kind': 'visual', 'type': 'spine.json@1',
                                                   'plugins': [{'id': 'sakura.visual.spine', 'name': 'Spine'}]}]}
             export_visual_archive(root, resource, projection, staging / f'spine-{index}.visual')
-        staging.rename(output)
     return sorted(output.glob('*.visual'))
 
 
