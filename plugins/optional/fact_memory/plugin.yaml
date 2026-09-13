@@ -3,7 +3,7 @@ id: fact_memory
 name: 便签记忆
 author: Sakura
 description: 手动保存便签，在相关对话中提供给当前角色。
-version: 0.1.0
+version: 0.1.1
 entry: plugin:FactMemoryPlugin
 enabled: false
 provides: []

@@ -82,6 +82,16 @@ def test_character_partition_applies_to_collection_tool_context_and_item_ids(mem
     assert runtime.context({"current_input": "忌口"}) == []
 
 
+def test_explicit_search_finds_body_even_when_context_requires_keywords(memory) -> None:
+    runtime, character = memory
+    item = runtime.create({"content": "项目验收编号是 24680", "keywords": "验收项目"})
+
+    assert runtime.search_tool({"query": " 24680 "})["facts"][0]["id"] == item["itemId"]
+    assert runtime.search_tool({"query": "验收项目"})["facts"][0]["id"] == item["itemId"]
+    assert runtime.context({"character_id": character["id"], "current_input": "24680"}) == []
+    assert runtime.context({"character_id": character["id"], "current_input": "验收项目"})
+
+
 @pytest.mark.parametrize("invalid", [
     {"content": " \n "},
     {"content": 42},
@@ -102,25 +112,26 @@ def test_invalid_writes_leave_existing_data_unchanged(memory, invalid) -> None:
 
 def test_keyword_recall_takes_priority_and_does_not_fall_back_to_content(memory) -> None:
     runtime, character = memory
-    relevant = runtime.create({"content": "我不吃香菜", "keywords": "香菜、饮食；忌口"})
+    runtime.create({"content": "我不吃香菜", "keywords": "香菜、饮食；忌口"})
     runtime.create({"content": "讨论忌口和饮食的便签", "keywords": "咖啡"})
-    fallback = runtime.create({"content": "忌口和饮食需要提前确认"})
-    result = runtime.search_tool({"query": "饮食有什么忌口？"})["facts"]
-    assert [item["id"] for item in result] == [relevant["itemId"], fallback["itemId"]]
+    runtime.create({"content": "忌口和饮食需要提前确认"})
     fragment, = runtime.context({"character_id": character["id"], "current_input": "饮食有什么忌口？"})
-    assert "我不吃香菜" in fragment["content"]
+    assert fragment["content"].index("我不吃香菜") < fragment["content"].index("忌口和饮食需要提前确认")
     assert "讨论忌口和饮食的便签" not in fragment["content"]
     assert runtime.context({"character_id": character["id"], "current_input": "天气如何"}) == []
 
 
 def test_content_fallback_matches_chinese_pairs_and_whole_english_words(memory) -> None:
-    runtime, _character = memory
-    chinese = runtime.create({"content": "猫耳项目下周交付"})
-    english = runtime.create({"content": "I drink tea after lunch"})
+    runtime, character = memory
+    runtime.create({"content": "猫耳项目下周交付"})
+    runtime.create({"content": "I drink tea after lunch"})
     runtime.create({"content": "The steam engine needs maintenance"})
-    assert runtime.search_tool({"query": "猫耳进度"})["facts"][0]["id"] == chinese["itemId"]
-    assert [item["id"] for item in runtime.search_tool({"query": "TEA"})["facts"]] == [english["itemId"]]
-    assert runtime.search_tool({"query": "coffee"}) == {"facts": []}
+    chinese, = runtime.context({"character_id": character["id"], "current_input": "猫耳进度"})
+    english, = runtime.context({"character_id": character["id"], "current_input": "TEA"})
+    assert "猫耳项目下周交付" in chinese["content"]
+    assert "I drink tea after lunch" in english["content"]
+    assert "steam" not in english["content"]
+    assert runtime.context({"character_id": character["id"], "current_input": "coffee"}) == []
 
 
 def test_recall_budget_skips_whole_items_and_respects_item_limits(memory) -> None:
@@ -136,9 +147,9 @@ def test_recall_budget_skips_whole_items_and_respects_item_limits(memory) -> Non
         if char != "丙":
             expected.append(char * length)
     query = "alpha beta gamma delta"
-    result = runtime.search_tool({"query": query})["facts"]
-    assert [item["content"] for item in result] == expected
+    result = runtime.search_tool({"query": "alpha"})["facts"]
     assert sum(len(item["content"]) for item in result) <= MAX_RECALL_CHARS
+    assert all(len(item["content"]) in {900, 500, 100} for item in result)
     fragment, = runtime.context({"character_id": character["id"], "current_input": query})
     assert all(content in fragment["content"] for content in expected)
     assert "丙" not in fragment["content"]

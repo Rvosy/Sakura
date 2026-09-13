@@ -87,8 +87,8 @@ class FactMemoryPlugin:
             {
                 "name": TOOL_NAME,
                 "description": (
-                    "查询用户为当前角色保存的便签；需要核对个人偏好、约定或项目事实时使用。"
-                    "query 填相关关键词；仅做文字匹配，未命中不表示用户没有相关偏好。"
+                    "只读搜索当前角色便签的正文或关键词；需要核对个人偏好、约定或项目事实时使用。"
+                    "query 填要查找的词或短语；仅做字面匹配，未命中不表示用户没有相关偏好。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -211,9 +211,14 @@ class FactMemoryRuntime:
             or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_RECALL_ITEMS
         ):
             raise ValueError("FACT_MEMORY_SEARCH_INVALID")
+        term = query.strip().casefold()
+        matches = [
+            row for row in self._rows(self._character_id())
+            if term in row["content"].casefold() or term in row["keywords"].casefold()
+        ]
         return {"facts": [
             {"id": row["id"], **_collection_item(row)["values"]}
-            for row in self._recall(self._character_id(), query, limit)
+            for row in _within_budget(matches, limit)
         ]}
 
     def context(self, request: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -246,16 +251,7 @@ class FactMemoryRuntime:
                 ranked.append((score, row))
         # Stable sorting retains updated_at DESC, id ASC for equal relevance.
         ranked.sort(key=lambda item: item[0], reverse=True)
-        selected: list[sqlite3.Row] = []
-        remaining = MAX_RECALL_CHARS
-        for _score, row in ranked:
-            if len(row["content"]) > remaining:
-                continue
-            selected.append(row)
-            remaining -= len(row["content"])
-            if len(selected) == limit:
-                break
-        return selected
+        return _within_budget([row for _score, row in ranked], limit)
 
     def _rows(self, character_id: str) -> list[sqlite3.Row]:
         with self._lock:
@@ -305,6 +301,19 @@ def _collection_item(row: sqlite3.Row) -> dict[str, Any]:
         "itemId": row["id"],
         "values": {"content": row["content"], "keywords": row["keywords"], "updatedAt": row["updated_at"]},
     }
+
+
+def _within_budget(rows: list[sqlite3.Row], limit: int) -> list[sqlite3.Row]:
+    selected = []
+    remaining = MAX_RECALL_CHARS
+    for row in rows:
+        if len(row["content"]) > remaining:
+            continue
+        selected.append(row)
+        remaining -= len(row["content"])
+        if len(selected) == limit:
+            break
+    return selected
 
 
 def _keywords(value: str) -> set[str]:

@@ -52,7 +52,7 @@ def _provider():
                         "type": "function",
                         "function": {
                             "name": "fact_memory_search",
-                            "arguments": json.dumps({"query": "验收项目", "limit": 5}),
+                            "arguments": json.dumps({"query": "周六上午十点", "limit": 5}),
                         },
                     }],
                 }
@@ -200,6 +200,23 @@ def test_install_manage_recall_disable_and_restart_memory_through_real_core(tmp_
             assert not any(tool["function"]["name"] == "fact_memory_search" for tool in requests[-1].get("tools", []))
             _enable(peer, True)
             assert _query(peer)["items"][0]["values"]["content"] == UPDATED_FACT
+
+            # Updating a local plugin currently uses uninstall/reinstall. Code
+            # removal must preserve records; a fresh install starts disabled.
+            snapshot = peer.request("plugins.settings.get")
+            peer.request("plugins.uninstall", {
+                "revision": snapshot["revision"], "installId": _plugin(peer)["installId"],
+            })
+            snapshot = peer.request("plugins.settings.get")
+            assert not any(item["pluginId"] == PLUGIN_ID for item in snapshot["plugins"])
+            peer.request("plugins.install", {
+                "revision": snapshot["revision"], "sourceKind": "zip", "sourcePath": str(archive),
+            })
+            assert _plugin(peer)["state"] == "disabled"
+            _enable(peer, True)
+            restored, = _query(peer)["items"]
+            assert restored["itemId"] == item_id
+            assert restored["values"]["content"] == UPDATED_FACT
 
         # A real Core restart must reuse the plugin's own durable records.
         with _core(user, distribution) as peer:
