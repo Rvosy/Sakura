@@ -353,6 +353,56 @@ Agent Trace 与 Prompt Inspection 保留必需性、采集范围及真实来源�
 [ADR-0050](../../adr/0050-thin-host-and-plugin-owned-policies.md)；初版取舍保留在
 [ADR-0049](../../adr/0049-unified-context-instructions.md)。
 
+### 6.5 可替换互动执行器
+
+M2 已通过正常聊天入口消费插件执行服务。默认 Assistant 仍由本地适配器包装现有模型、Agent 与管线；
+它们的完整插件迁移属于 M3/M4。此合同不要求插件提供模型，也不包含命令执行或通用任务调度。
+
+插件先用 `context.provide()` 提供自己的 Service，导出 `describe/begin/read/cancel`，再调用
+`sakura.host.executors.register({serviceKey, displayName})` 登记到互动方式选择器。Service 必须由实际调用插件拥有；
+显示名为 1–100 字符。返回 `{registrationId}`，可传给 `unregister()`；Runtime 在停用、退出和重载时清理登记。
+登记属于具体进程实例，Service 已注册不代表业务已就绪。
+
+| 方法 | 请求与结果 |
+|---|---|
+| `describe()` | 返回 `{schemaVersion:1, ready:boolean, inputs:["text"]}`。可额外声明 `"event"` 接收当前应用事件；图片输入尚未开放。 |
+| `begin(request)` | 请求包含 `schemaVersion:1, operationId, generationId, turnId, characterId, input`；文字输入为 `input:{text}`。快速受理并返回含原 `operationId` 的对象，耗时工作在插件后台完成。 |
+| `read({operationId, afterSequence})` | 返回当前快照：`{operationId,state,sequence,progress}`。`state` 为 `running/cancelling/completed/cancelled/failed`；运行中的 `sequence` 为非负整数，进度变化时递增，`progress` 是最多 500 字符的纯文本，允许空串清除。 |
+| `cancel({operationId})` | 向原操作传递取消；返回只确认此次调用，实际停止必须由 `read()` 的终态确认。重复取消应可安全处理。 |
+
+`completed` 快照还包含 `reply:{segments:[...]}`。每段必须有字符串 `text`；可选 `translation/tone/portrait` 为字符串，
+`suppressTts` 为布尔值，`control` 遵循现有公共表现控制格式。最多 64 段，整个 reply JSON 的 UTF-8 大小最多 64 KiB；
+空数组表示 NOOP，不写助手历史。输出不包含 Agent 私有动作、模型协议或 Python 对象。
+`failed/cancelled` 只在本次工作已经退出后报告；完成结果也必须是不可再变的终态。
+
+宿主在派发前固定操作、Session 与执行服务的实际进程实例，后续调用不会因相同 service key 重载而转到新实例。
+重复 `begin` 同一 operation 不得启动第二份工作；相同身份对应不同输入应明确拒绝。插件在受理时校验
+`context.caller_id == "sakura.core"`，保存原请求关联并显式传给后台线程。后续 Service 调用具有其自己的真实调用者，
+保存的调用者字符串或请求中的 operation ID 不授予权限。插件可通过公开 Timeline/角色服务读取自己需要的历史，
+Host 不为独立执行器注入默认对话的 Prompt 或模型配置。
+
+每次执行服务调用期限为 1 秒。`begin` 超时后继续按原 operation 查询，绝不再次受理；查询超时仍保持忙碌，
+用户取消后仍等待停止确认。插件必须将取消传给自己启动或等待的实际工作；协议损坏或非超时 RPC 故障时，
+宿主回收原进程及其依赖消费者，再结束操作；正常业务失败只结束当前任务。不会重启插件或改用默认执行器。
+
+若进程清理本身失败，Runtime 保留原实例并报告 `PLUGIN_CLEANUP_FAILED`，禁止同 ID 重启。
+聊天报告 `EXECUTOR_STOP_UNCONFIRMED`，即使已经点击停止也不伪称取消完成；保留操作占用，阻止后续输入和
+执行器切换。用户退出并重新启动 Sakura，由既有 Core 生命周期回收进程树；不增加后台重试或自动恢复。
+清理完成通知携带成功或失败结果，异常必须唤醒等待者；并发关闭等待同一实例结束后才能撤销其 Host 资源。
+
+进度通过 `chat.progress {operationId,text}` 与快照的可选 `activeInteractionSummary.progress` 显示，不写助手历史、
+不触发 TTS。桌面校验当前 generation 和操作；进度队列满时可丢弃临时进度，终态仍走既有可靠提交路径。
+最终结果在取消、来源、实例和格式校验后提交一次；重复读取不会重复落盘、通知或播放。提交前取消拒绝迟到成功，
+已经取得提交资格后不改写历史；取消不回滚已发生的外部效果。实例有效性检查和短暂的本地历史提交保持原子性。
+
+互动方式选择保存在 `config/system_config.yaml` 的 `chat_executor`，空串表示默认 Assistant。
+`settings.executor.get/save` 独立于模型表单保存；无模型配置仍能打开设置、选用无模型插件。
+设置区分已保存选择、实际生效选择和等待本轮结束的状态；空闲时应用，在途切换于当前操作退出后生效。
+停用或重载后的失效绑定不会自动接续，用户可重新启用插件并显式重试相同选择。
+
+可运行样例见[专注陪伴](../../../plugins/optional/focus_companion/README.md)。真实进程与提交回归见
+`tests/integration/test_plugin_executor_chat.py`、`tests/integration/test_executor_core_protocol.py`。
+
 ## 7. 官方默认插件
 
 官方插件满足和第三方完全相同的运行合同：

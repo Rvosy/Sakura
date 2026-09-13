@@ -112,6 +112,11 @@ class PluginRuntimeApplication:
             specs,
             **manager_options,
         )
+        from app.core_host.executors import ExecutorCatalog, HOST_EXECUTORS_SERVICE
+        self._executors = ExecutorCatalog(self._manager, generation_id)
+        self._manager.install_host_service(
+            HOST_EXECUTORS_SERVICE, self._executors, exports=("register", "unregister"),
+        )
         self.visuals = VisualHost(roots, self._manager)
         self._visual_character = None
         self._visual_binding = None
@@ -194,6 +199,12 @@ class PluginRuntimeApplication:
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         return self._manager.call_service(service_key, method, *args)
 
+    def execution_candidates(self):
+        return self._executors.candidates()
+
+    def bind_executor(self, service_key):
+        return self._executors.bind(service_key)
+
     def service_identity(self, service_key: str) -> dict[str, str]:
         return self._manager.service_identity(service_key)
 
@@ -225,7 +236,8 @@ class PluginRuntimeApplication:
         getattr(tool_registry, "set_event_emitter")(
             lambda event_name, payload: self.emit_event(event_name, payload or {})
         )
-        getattr(runtime, "set_context_providers")(self._host_services.context_providers())
+        if runtime is not None:
+            getattr(runtime, "set_context_providers")(self._host_services.context_providers())
         character = getattr(session, "character", None)
         if character is not None:
             self.bind_visual_character(character)
@@ -486,8 +498,8 @@ class PluginRuntimeApplication:
         self._loaded.set()
 
     def _current_character_id(self) -> str | None:
-        runtime_character = getattr(self._runtime, "character_id", None)
-        return runtime_character if isinstance(runtime_character, str) and runtime_character else None
+        character_id = getattr(getattr(self._session, "character", None), "id", None)
+        return character_id if isinstance(character_id, str) and character_id else None
 
     def _host_context_changed(self, providers: list[object]) -> None:
         runtime = self._runtime

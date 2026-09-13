@@ -512,7 +512,13 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             if active_chat
                 && !matches!(
                     event_name,
-                    Some("chat.started" | "chat.completed" | "chat.failed" | "chat.cancelled")
+                    Some(
+                        "chat.started"
+                            | "chat.progress"
+                            | "chat.completed"
+                            | "chat.failed"
+                            | "chat.cancelled"
+                    )
                 )
             {
                 return Err("INVALID_CHAT_EVENT: event name is not allowlisted".to_string());
@@ -537,11 +543,17 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             } else {
                 (&shared.event_count, EVENT_QUEUE_LIMIT)
             };
-            count
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                    (current < limit).then_some(current + 1)
-                })
-                .map_err(|_| "EVENT_QUEUE_FULL: event queue is full".to_string())?;
+            let reserved = count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < limit).then_some(current + 1)
+            });
+            if reserved.is_err() {
+                // Progress is replaceable; queue pressure must not discard a terminal
+                // or terminate the transport for an otherwise healthy interaction.
+                if event_name == Some("chat.progress") {
+                    return Ok(());
+                }
+                return Err("EVENT_QUEUE_FULL: event queue is full".to_string());
+            }
             let event = SequencedEvent {
                 sequence: shared.next_event_sequence.fetch_add(1, Ordering::Relaxed),
                 critical,
@@ -1037,6 +1049,45 @@ mod tests {
             .expect("pending registry")
             .pending
             .clear();
+        router.close().expect("clean router close");
+    }
+
+    #[test]
+    fn progress_queue_pressure_preserves_started_and_terminal_order() {
+        let (mut router, _released) = router_with_messages(Vec::new());
+        router.enable_events(true);
+        router
+            .shared
+            .requests
+            .lock()
+            .unwrap()
+            .active_chat_events
+            .insert("chat-progress".to_string());
+        let event = |name: &str| {
+            json!({
+                "protocolMajor": 2, "protocolMinor": 2, "kind": "event",
+                "generationId": GENERATION, "generationCredential": CREDENTIAL,
+                "id": "chat-progress", "name": name,
+                "payload": {"operationId": "chat-progress", "text": "Working"}
+            })
+        };
+        super::route_message(&router.shared, event("chat.started")).unwrap();
+        for _ in 0..super::EVENT_QUEUE_LIMIT + 5 {
+            super::route_message(&router.shared, event("chat.progress")).unwrap();
+        }
+        super::route_message(&router.shared, event("chat.completed")).unwrap();
+        super::route_message(&router.shared, event("chat.progress")).unwrap();
+        let mut names = Vec::new();
+        while let Some(message) = router.recv_event_timeout(Duration::ZERO).unwrap() {
+            names.push(message["name"].as_str().unwrap().to_string());
+        }
+        assert_eq!(names.len(), super::EVENT_QUEUE_LIMIT + 1);
+        assert_eq!(names.first().map(String::as_str), Some("chat.started"));
+        assert_eq!(names.last().map(String::as_str), Some("chat.completed"));
+        assert!(names[1..names.len() - 1]
+            .iter()
+            .all(|name| name == "chat.progress"));
+        assert!(router.fatal().is_none());
         router.close().expect("clean router close");
     }
 

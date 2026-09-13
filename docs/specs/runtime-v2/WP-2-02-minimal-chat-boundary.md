@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-14
 ---
 
 # WP-2-02：最小聊天取消、Gateway 与 Snapshot 边界
@@ -20,6 +20,15 @@ Router、Gateway 与领域实现共享既有 Core 生命周期和单 stdout writ
 
 Rust Gateway 只允许 `chat.send` 和 `chat.cancel`；未知 command、错误窗口、非法/超限 payload 和任何调用方提交的 generation、credential、request ID、deadline、priority 或协议字段均拒绝。Rust 生成 request/operation identity、generation credential、受控 deadline 和最小调度类别。聊天只产生 `chat.started` 后的一个 `chat.completed`、`chat.failed` 或 `chat.cancelled` 终态；重复取消、完成/取消或失败/取消竞态、晚到事件均幂等。
 
+活动操作可以在 started 与终态之间发送 `chat.progress {operationId,text}`，文本最多 500 字符。
+Rust 与 WebView 按当前 generation 和 operation 过滤；进度只更新气泡，不写助手历史、不触发 TTS，
+等待动画不能覆盖它。队列满时可以丢弃临时进度，started 与终态仍保留原有顺序和交付规则。
+取消、终态或 generation 切换后，迟到进度不恢复旧操作；快照中可选的
+`activeInteractionSummary.progress` 用于恢复当前进度，空文本恢复等待展示。
+
+执行器进程清理失败是取消仲裁的明确例外：`EXECUTOR_STOP_UNCONFIRMED` 保持失败终态，不转成取消成功，
+原操作继续占用输入边界并拒绝新任务，直到退出 Core。该状态不能通过再发一次输入或切换执行器绕过。
+
 当前产品在不增加 command 类型的前提下，把 `chat.send` 输入冻结为严格联合：
 
 - 用户分支仍为 `{ message, attachmentId? }`，WebView 不提交 operation/generation/credential 或模型字段；
@@ -29,16 +38,21 @@ Rust Gateway 只允许 `chat.send` 和 `chat.cancel`；未知 command、错误�
 - 两个分支不得混合，也不得增加 prompt、history、model、priority 或任意扩展字段。Rust Gateway 与 Python
   RealChatBoundary 分别做一次 exact-shape 校验。
 
-`update_available` 进入 `AgentRuntime.handle_event()` 的独立更新提示词。release notes 是有界不可信运行时事实，
+默认 Assistant 把 `update_available` 交给 `AgentRuntime.handle_event()` 的独立更新提示词。release notes 是有界不可信运行时事实，
 必须置于事实非指令信封内，不能覆盖人格、系统提示或回复协议。回复必须明确新版本、引导“设置 → 关于”，只可
 概括已提供事实，不得声称已下载、安装或重启。该分支不写伪造 human Timeline；成功 assistant 以
 `origin=proactive` 保存，并继续使用既有 segment、角色表现和 TTS。
+
+独立执行器仅在 `describe().inputs` 声明 `event` 时接收该事件，否则明确拒绝；不回退到默认 Assistant。
+执行器请求、取消和结果契约见 [Plugin Runtime v4 §6.5](sakura-plugin-runtime-v4.md#65-可替换互动执行器)。
 
 Rust 仅在内部把候选版本绑定到 operation，公开 `chat.started/completed/failed/cancelled` 不携带版本私有字段。
 只有对应 `chat.completed` 可确认主动播报成功；终态先于 send response、取消、失败和 generation 失效仍沿用
 本规范的唯一终态与幂等规则。
 
-Python 只提供可取消的 sleep/阻塞文件 I/O fixture，并构造五字段 Snapshot：`generationId`、`revision`、`readiness`、`currentCharacterSummary`、`activeInteractionSummary`。Rust 只读缓存；generation/revision 失配触发完整重取，Rust 不推导业务对象或 patch。
+Core 构造五字段 Snapshot：`generationId`、`revision`、`readiness`、`currentCharacterSummary`、`activeInteractionSummary`。
+活动摘要可以包含上述进度字段。Rust 只读缓存；generation/revision 失配触发完整重取，Rust 不推导业务对象或 patch。
+早期的可取消 sleep/阻塞文件 I/O fixture 继续用于边界回归。
 
 必须执行的窄故障矩阵：
 
@@ -50,7 +64,8 @@ Python 只提供可取消的 sleep/阻塞文件 I/O fixture，并构造五字段
 
 ## 非目标
 
-本边界不定义 `chat.progress`、`chat.delta`、token streaming 或通用 Operation/priority/Snapshot component model/resource token。真实 Assistant、Provider 和聊天 UI 的行为见对应聊天 Spec。
+本边界不定义 `chat.delta`、token streaming 或通用 Operation/priority/Snapshot component model/resource token。
+`chat.progress` 是当前任务状态，不是增量回复。真实 Assistant、Provider 和聊天 UI 的行为见对应聊天 Spec。
 
 ## 回退命令
 

@@ -52,6 +52,9 @@ def _new_cancellation_token() -> CancellationToken:
 @dataclass
 class _Execution:
     operation_id: str
+    session: object | None = field(default=None, repr=False)
+    progress: str = ""
+    cleanup_failed: bool = False
     cancel: CancellationToken = field(default_factory=_new_cancellation_token)
     started: bool = False
     cancel_requested: bool = False
@@ -122,7 +125,12 @@ class RealChatBoundary:
         with self._changed:
             if self._closed:
                 raise RealChatRejection("GENERATION_INVALIDATED", "chat generation is closing")
-            if self._session_provider() is None:
+            if any(item.cleanup_failed for item in self._executions.values()):
+                raise RealChatRejection(
+                    "EXECUTOR_STOP_UNCONFIRMED", "无法确认互动插件已停止，请退出并重新启动 Sakura。",
+                )
+            session = self._session_provider()
+            if session is None:
                 raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
             if operation_id in self._executions:
                 raise RealChatRejection("DUPLICATE_CHAT_IDENTITY", "chat identity is already in use")
@@ -133,6 +141,9 @@ class RealChatBoundary:
                     retryable=True,
                 )
             self._apply_pending_runtime_updates_locked()
+            session = self._session_provider()
+            if session is None:
+                raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
             attachment_id = payload.get("attachmentId")
             screen_attachment = None
             if attachment_id is not None:
@@ -146,6 +157,7 @@ class RealChatBoundary:
                 self._pending_screen_attachment = None
             self._executions[operation_id] = _Execution(
                 operation_id,
+                session=session,
                 screen_attachment=screen_attachment,
             )
             self._revision += 1
@@ -171,6 +183,10 @@ class RealChatBoundary:
             # operation boundary; successful domains must not be replayed.
             self._pending_runtime_updates[key]()
             del self._pending_runtime_updates[key]
+
+    def has_pending_runtime_update(self, key: str) -> bool:
+        with self._lock:
+            return key in self._pending_runtime_updates
 
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))
@@ -204,7 +220,8 @@ class RealChatBoundary:
                 if not started.is_set():
                     kickoff_errors.append(error)
                 else:
-                    _safe_diagnostic(error)
+                    code, message, _ = _classify_error(error)
+                    _safe_diagnostic(error, code=code, message=message)
                 self._drop_execution(operation_id)
             finally:
                 started.set()
@@ -270,10 +287,12 @@ class RealChatBoundary:
             from app.storage.timeline import NewTimelineEntry, TimelineKind
 
             execution.cancel.throw_if_cancelled()
-            session = self._session_provider()
+            session = execution.session
             if session is None:
                 raise _BoundaryFailure("ASSISTANT_NOT_READY", "Assistant is not ready", False)
             character = getattr(session, "character")
+            from app.core_host.executors import PluginExecutor, session_executor
+            executor = session_executor(session)
             runtime = getattr(session, "runtime", None)
             wait_dependencies = getattr(session, "wait_prompt_dependencies", None)
             if callable(wait_dependencies):
@@ -319,14 +338,38 @@ class RealChatBoundary:
             input_entries: list[NewTimelineEntry] = []
             turn_id = uuid.uuid4().hex
             created_at = _now_iso()
-            if is_update_event:
+            if isinstance(executor, PluginExecutor):
+                from app.core_host.executors import ExecutionError
+                if screen_attachment is not None or (is_update_event and "event" not in executor.inputs):
+                    raise ExecutionError("EXECUTOR_INPUT_UNSUPPORTED", "所选互动方式不支持此次输入。")
+                if not is_update_event:
+                    execution.cancel.throw_if_cancelled()
+                    try:
+                        timeline.append(NewTimelineEntry(
+                            entry_id=uuid.uuid4().hex, turn_id=turn_id, character_id=str(character.id),
+                            kind=TimelineKind.HUMAN, origin="chat", created_at=created_at, payload={"text": message},
+                        ))
+                    except Exception as error:
+                        history_status = "degraded"
+                        raise _BoundaryFailure("TIMELINE_WRITE_FAILED", "Chat input could not be saved", False) from error
+                executor_request = {
+                    "schemaVersion": 1, "operationId": operation_id,
+                    "generationId": self._generation_id, "turnId": turn_id,
+                    "characterId": str(character.id),
+                    "input": {"event": dict(proactive_event)} if is_update_event else {"text": message},
+                }
+                result = executor.execute(
+                    executor_request, cancel=execution.cancel,
+                    progress=lambda text: self._update_progress(request, execution, text, publish=_publish_events),
+                )
+            elif is_update_event:
                 from app.agent.actions import AgentEvent
 
                 event_payload = proactive_event.get("payload")
                 assert isinstance(event_payload, Mapping)
                 execution.cancel.throw_if_cancelled()
                 with suppress_runtime_logs():
-                    result = getattr(session, "pipeline").run_event(
+                    result = executor.run_event(
                         AgentEvent(type="update_available", payload=dict(event_payload)),
                         cancel_checker=execution.cancel.throw_if_cancelled,
                     )
@@ -476,23 +519,11 @@ class RealChatBoundary:
                     }
                     if visual_observation_jobs:
                         pipeline_kwargs["visual_observation_jobs"] = visual_observation_jobs
-                    result = getattr(session, "pipeline").run_user_message(
+                    result = executor.run_user_message(
                         messages,
                         **pipeline_kwargs,
                     )
             execution.cancel.throw_if_cancelled()
-            allowed_action_types = {"tool_call", "event"} if is_update_event else {"tool_call"}
-            unsupported = [
-                action
-                for action in getattr(result, "actions", [])
-                if getattr(action, "type", "") not in allowed_action_types
-            ]
-            if unsupported:
-                raise _BoundaryFailure(
-                    "UNEXPECTED_CHAT_ACTION",
-                    "Assistant returned an unsupported action",
-                    False,
-                )
             if plugin_application is not None:
                 try:
                     reply_text = str(getattr(getattr(result, "reply", None), "speech", ""))
@@ -595,12 +626,24 @@ class RealChatBoundary:
                     )
                     assistant_committed = True
                 except Exception as exc:
+                    from app.core_host.executors import ExecutionError
+                    if isinstance(exc, ExecutionError):
+                        raise
                     if _is_operation_cancelled(exc):
                         raise
                     history_status = "degraded"
                     raise _BoundaryFailure(
                         "TIMELINE_WRITE_FAILED", "Assistant reply could not be saved", False
                     ) from exc
+            else:
+                with self._changed:
+                    execution.cancel.throw_if_cancelled()
+                    claim = lambda: setattr(execution, "completion_claimed", True)
+                    guarded_commit = getattr(executor, "commit", None)
+                    if callable(guarded_commit):
+                        guarded_commit(claim)
+                    else:
+                        claim()
             terminal = "chat.completed"
             terminal_payload = {
                 "operationId": operation_id,
@@ -627,6 +670,12 @@ class RealChatBoundary:
                 }
             else:
                 code, message, retryable = _classify_error(error)
+                if code == "EXECUTOR_STOP_UNCONFIRMED":
+                    with self._changed:
+                        execution.cleanup_failed = True
+                        execution.cancel_requested = True
+                        execution.progress = message
+                        self._revision += 1
                 _safe_diagnostic(error, code=code, message=message)
                 terminal_payload = {
                     "operationId": operation_id,
@@ -1043,6 +1092,7 @@ class RealChatBoundary:
                 {
                     "operationId": active.operation_id,
                     "state": "cancelling" if active.cancel_requested else "started",
+                    **({"progress": active.progress} if active.progress else {}),
                 }
                 if active is not None
                 else None
@@ -1076,6 +1126,10 @@ class RealChatBoundary:
                         continue
                     execution.cancel_requested = True
                     execution.cancel.cancel()
+            if any(item.cleanup_failed for item in self._executions.values()):
+                # No worker can confirm this stop. Let the existing Core owner
+                # finish shutdown and reclaim its process tree.
+                raise RuntimeError("EXECUTOR_STOP_UNCONFIRMED")
             while self._executions and monotonic() < deadline:
                 self._changed.wait(timeout=max(0.0, deadline - monotonic()))
             if self._executions:
@@ -1086,7 +1140,7 @@ class RealChatBoundary:
             execution = self._executions.get(operation_id)
             if execution is None or execution.terminal is not None:
                 return None
-            if execution.cancel.is_cancelled() and terminal != "chat.cancelled":
+            if execution.cancel.is_cancelled() and terminal != "chat.cancelled" and not execution.cleanup_failed:
                 terminal = "chat.cancelled"
             execution.terminal = terminal
             return terminal
@@ -1100,17 +1154,47 @@ class RealChatBoundary:
         with self._changed:
             if execution.cancel_requested or execution.cancel.is_cancelled():
                 execution.cancel.throw_if_cancelled()
-            if len(entries) == 1:
-                timeline.append(entries[0])
+            def commit():
+                if len(entries) == 1:
+                    timeline.append(entries[0])
+                else:
+                    timeline.append_many(entries)
+                execution.completion_claimed = True
+            executor = getattr(execution.session, "executor", None)
+            guarded_commit = getattr(executor, "commit", None)
+            if callable(guarded_commit):
+                guarded_commit(commit)
             else:
-                timeline.append_many(entries)
-            execution.completion_claimed = True
+                commit()
+
+    def _update_progress(self, request, execution, text, *, publish):
+        with self._changed:
+            if execution.terminal is not None or execution.cancel_requested or execution.progress == text:
+                return
+            execution.progress = text
+            self._revision += 1
+            if publish:
+                self._publish(request, "chat.progress", {"operationId": execution.operation_id, "text": text})
 
     def _drop_execution(self, operation_id: str) -> None:
         with self._changed:
+            execution = self._executions.get(operation_id)
+            if execution is not None and execution.cleanup_failed:
+                # Keep the existing busy reservation until the Core exits. A
+                # failed cleanup must not permit overlapping work or switching.
+                return
             if self._executions.pop(operation_id, None) is not None:
                 self._revision += 1
                 self._changed.notify_all()
+                if not self._executions and "executor" in self._pending_runtime_updates:
+                    try:
+                        # Apply the requested choice at the idle boundary, not
+                        # after accepting another input on the previous executor.
+                        self._pending_runtime_updates["executor"]()
+                    except Exception as error:
+                        _safe_diagnostic(error, code="EXECUTOR_APPLY_FAILED", message="互动方式应用失败。")
+                    else:
+                        self._pending_runtime_updates.pop("executor", None)
 
     def _publish(self, request: Mapping[str, Any], name: str, payload: Mapping[str, Any]) -> None:
         publisher = self._event_publisher
@@ -1561,6 +1645,9 @@ def _project_reply(reply: object) -> list[dict[str, object]]:
 
 
 def _classify_error(error: BaseException) -> tuple[str, str, bool]:
+    from app.core_host.executors import ExecutionError
+    if isinstance(error, ExecutionError):
+        return error.code, error.public_message, error.retryable
     if isinstance(error, _BoundaryFailure):
         return error.code, error.public_message, error.retryable
     from app.llm.prompts.runtime import ContextWindowExceededError

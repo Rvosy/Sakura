@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-14
 ---
 
 # WP-3-02：无 UI 的真实聊天 Core 垂直链
@@ -11,6 +11,17 @@ updated: 2026-09-05
 > 当前状态唯一真相源见
 > `docs/plans/runtime-v2/work-packages.md`。本 WP 已于 2026-07-26
 > 完成正式验收；以下 active/stabilizing 内容保留为历史实施记录。
+
+## 当前执行入口
+
+2026-09-14 起，`AssistantSession` 持有选中的执行器。默认 Assistant 通过适配器调用既有
+Pipeline/Agent/Provider，独立插件使用 [Plugin Runtime v4 §6.5](sakura-plugin-runtime-v4.md#65-可替换互动执行器)
+的公开请求、进度、取消和结果合同。无模型执行器的就绪不依赖默认模型配置；每个活动操作固定绑定到原 Session
+与插件进程实例。下面关于固定 Provider 调用的旧 WP 描述只代表默认路径，不能作为独立执行器的前提。
+
+当前历史使用 [Timeline 契约](WP-4-07R-typed-timeline-adaptive-context.md)。输入保存失败时不启动独立插件任务；
+助手结果经身份与取消校验后提交，提交失败明确报告 `TIMELINE_WRITE_FAILED`，不会伪造完成或播放。
+旧 WP 的 JSONL 和 best-effort 写入说明保留为历史记录。
 
 ## 激活记录（2026-07-26）
 

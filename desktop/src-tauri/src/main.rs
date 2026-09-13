@@ -5374,6 +5374,64 @@ async fn settings_storage_reset_tts_root(
 }
 
 #[tauri::command]
+async fn settings_executor_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let result = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "settings.executor.get",
+        json!({}),
+        std::time::Duration::from_secs(10),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let mut payload = settings_response_payload(result)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string())?;
+    object.insert("window_generation".to_string(), json!(window_generation));
+    object.insert("core_generation_id".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_executor_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    service_key: String,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let result = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "settings.executor.save",
+        json!({"serviceKey": service_key}),
+        std::time::Duration::from_secs(15),
+    )
+    .await?;
+    let payload = settings_response_payload(result)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    reveal_pet_when_session_ready(app_handle, handle);
+    Ok(payload)
+}
+
+#[tauri::command]
 async fn settings_provider_model_get(
     window: WebviewWindow,
     app_handle: tauri::AppHandle,
@@ -8528,6 +8586,8 @@ fn main() {
             chat_settings::settings_bubble_auto_hide_get,
             chat_settings::settings_bubble_auto_hide_save,
             settings_provider_model_get,
+            settings_executor_get,
+            settings_executor_save,
             settings_provider_model_save,
             settings_provider_model_probe,
             settings_provider_model_cancel,

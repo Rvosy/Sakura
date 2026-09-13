@@ -6,13 +6,16 @@ const STABLE_LIFECYCLE = new Set(["ready", "setup_required", "degraded", "failed
 function validateChatEvent(value) {
   if (
     !value
-    || !["chat.started", ...TERMINALS].includes(value.type)
+    || !["chat.started", "chat.progress", ...TERMINALS].includes(value.type)
     || typeof value.generationId !== "string"
     || !Number.isSafeInteger(value.generationNumber)
     || value.generationNumber < 1
     || typeof value.operationId !== "string"
     || !value.operationId
   ) throw new Error("CHAT_EVENT_INVALID");
+  if (value.type === "chat.progress" && (
+    typeof value.text !== "string" || [...value.text].length > 500
+  )) throw new Error("CHAT_EVENT_INVALID");
   return Object.freeze(value);
 }
 
@@ -218,6 +221,7 @@ export function createRealChatClient({
       || !sameIdentity(event.generationId, event.generationNumber)
     ) return;
     const key = operationKey(event.generationId, event.generationNumber, event.operationId);
+    if (event.type === "chat.progress" && !operationPresentations.has(key)) return;
     if (event.type === "chat.started") {
       operationPresentations.set(
         key,

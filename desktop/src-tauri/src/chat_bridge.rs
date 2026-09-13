@@ -42,6 +42,8 @@ pub struct ChatEventPublication {
     pub reply: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     #[serde(skip)]
     pub(crate) update_version: Option<String>,
 }
@@ -252,6 +254,14 @@ impl ChatBridge {
         let error = (event_type == "chat.failed")
             .then(|| project_error(payload.get("error")))
             .transpose()?;
+        let text = (event_type == "chat.progress")
+            .then(|| {
+                payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .flatten();
         let update_version = state
             .active
             .as_ref()
@@ -269,6 +279,7 @@ impl ChatBridge {
             operation_id: operation_id.to_string(),
             reply,
             error,
+            text,
             update_version,
         }))
     }
@@ -465,6 +476,7 @@ mod tests {
     fn event(operation_id: &str, name: &str) -> Value {
         let payload = match name {
             "chat.started" => json!({"operationId": operation_id}),
+            "chat.progress" => json!({"operationId": operation_id, "text": "正在读取资料"}),
             "chat.failed" => json!({
                 "operationId": operation_id,
                 "historyStatus": "degraded",
@@ -536,6 +548,64 @@ mod tests {
             "暂时无法完成回复。"
         );
         assert_eq!(failed.error.unwrap()["retryable"], true);
+        assert!(bridge
+            .send_with_attachment("main", "next".to_string(), None)
+            .is_ok());
+    }
+
+    #[test]
+    fn progress_keeps_the_operation_cancellable_and_never_claims_a_terminal() {
+        let bridge = bridge();
+        let pending = bridge
+            .send_with_attachment("main", "hello".to_string(), None)
+            .unwrap();
+        let operation_id = pending.publication.operation_id.clone();
+        let cancel_handle = pending.publication.cancel_handle.clone();
+        pending.wait().unwrap();
+        let progress = event(&operation_id, "chat.progress");
+        assert!(bridge.observe_event(&progress).is_err());
+        bridge
+            .observe_event(&event(&operation_id, "chat.started"))
+            .unwrap();
+
+        for text in ["正在读取资料", "正在整理回答", ""] {
+            let mut next = progress.clone();
+            next["payload"]["text"] = json!(text);
+            let publication = bridge.observe_event(&next).unwrap().unwrap();
+            assert_eq!(publication.text.as_deref(), Some(text));
+            assert!(publication.reply.is_none());
+            assert!(publication.error.is_none());
+            assert_eq!(serde_json::to_value(&publication).unwrap()["text"], text);
+            assert!(bridge
+                .send_with_attachment("main", "second".to_string(), None)
+                .is_err());
+        }
+        assert!(
+            bridge
+                .cancel("main", &operation_id, &cancel_handle)
+                .unwrap()
+                .accepted
+        );
+        for invalid in [
+            json!(null),
+            json!({"text": "nested"}),
+            json!("界".repeat(501)),
+        ] {
+            let mut next = progress.clone();
+            next["payload"]["text"] = invalid;
+            assert!(bridge.observe_event(&next).is_err());
+        }
+        let mut wrong_generation = progress.clone();
+        wrong_generation["generationId"] = json!("00000000-0000-4000-8000-000000003005");
+        assert!(bridge.observe_event(&wrong_generation).is_err());
+        assert!(bridge
+            .observe_event(&event("unknown-operation", "chat.progress"))
+            .is_err());
+        bridge
+            .observe_event(&event(&operation_id, "chat.completed"))
+            .unwrap()
+            .unwrap();
+        assert!(bridge.observe_event(&progress).unwrap().is_none());
         assert!(bridge
             .send_with_attachment("main", "next".to_string(), None)
             .is_ok());

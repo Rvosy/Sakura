@@ -127,6 +127,7 @@ let request = null;
 let runtimeAppearanceController = null;
 let runtimeCharacterFeature = null;
 let runtimeProviderFeature = null;
+let runtimeExecutorController = null;
 let runtimeChatTimingController = null;
 let runtimeBubbleAutoHideController = null;
 let runtimeToolsController = null;
@@ -250,6 +251,7 @@ function computeDirty() {
   return Boolean(
     runtimeAppearanceController?.isDirty()
     || runtimeProviderFeature?.isDirty()
+    || runtimeExecutorController?.isDirty()
     || runtimeChatTimingController?.isDirty()
     || runtimeBubbleAutoHideController?.isDirty()
     || runtimeToolsController?.isDirty()
@@ -335,6 +337,7 @@ async function requestCancelClose() {
         setSubmissionBusy(true);
         await runtimeAppearanceController?.cancelPreview();
         await runtimeProviderFeature?.cancelOperations();
+        runtimeExecutorController?.discard();
         runtimeChatTimingController?.discard();
         runtimeBubbleAutoHideController?.discard();
         runtimeAutostartController?.discard();
@@ -381,6 +384,7 @@ async function requestAppExitClose(event) {
         setSubmissionBusy(true);
         await runtimeAppearanceController?.cancelPreview();
         await runtimeProviderFeature?.cancelOperations();
+        runtimeExecutorController?.discard();
         runtimeChatTimingController?.discard();
         runtimeBubbleAutoHideController?.discard();
         runtimeAutostartController?.discard();
@@ -741,6 +745,7 @@ function showPage(page) {
     replayMotion(fields.pageHead, "is-switching");
   }
   runtimeProviderFeature?.onPageChanged(page);
+  if (page === "model") void runtimeExecutorController?.refreshCurrent().catch((error) => setError(String(error)));
   runtimePluginController?.onPageChanged(page);
   runtimeAsrController?.onPageChanged(page);
   runtimeCharacterFeature?.onPageChanged(page);
@@ -1040,6 +1045,7 @@ function currentCharacterHasDrafts() {
 
 async function rebindSettingsAfterCharacterSwitch(generationId) {
   runtimeProviderFeature?.rebindIdentity(generationId);
+  await runtimeExecutorController?.rebindIdentity(generationId);
   runtimeScreenAwarenessController?.rebindIdentity(generationId);
   await runtimeAppearanceController?.rebindGeneration(generationId);
   await runtimeToolsController?.refreshCurrent();
@@ -1458,6 +1464,7 @@ async function saveRuntimeSettings() {
   }
   if (runtimeProviderFeature?.isDirty()) {
     result = await runtimeProviderFeature.save();
+    await runtimeExecutorController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
   }
@@ -1476,7 +1483,11 @@ async function saveRuntimeSettings() {
   if (runtimePluginController?.isDirty()) {
     result = await runtimePluginController.save();
     await runtimeProviderFeature?.refreshCurrent();
+    await runtimeExecutorController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
+  }
+  if (runtimeExecutorController?.isDirty()) {
+    result = await runtimeExecutorController.save();
   }
   if (runtimeVoiceController?.isDirty()) {
     result = await runtimeVoiceController.save();
@@ -1729,6 +1740,7 @@ window.addEventListener("beforeunload", () => {
   runtimeAppearanceController?.dispose();
   runtimeCharacterFeature?.dispose();
   runtimeProviderFeature?.dispose();
+  runtimeExecutorController?.dispose();
   runtimeChatTimingController?.dispose();
   runtimeBubbleAutoHideController?.dispose();
   runtimeToolsController?.dispose();
@@ -1853,6 +1865,16 @@ async function startSettingsFrontend() {
         setNumericBounds,
       });
       await runtimeProviderFeature.initialize();
+    });
+  }
+  if (featureStatus(manifest, "chat.executor") === "available") {
+    await initializeRuntimeSettingsSection(async () => {
+      const { createExecutorSettingsController } = await import("./executor-settings.js");
+      runtimeExecutorController = createExecutorSettingsController({
+        document, invoke, onDirty: refreshDirty, onError: setError,
+        enhanceSelect, refreshSelect,
+      });
+      await runtimeExecutorController.initialize();
     });
   }
   if (featureStatus(manifest, "chat.presentation_timing") === "available") {

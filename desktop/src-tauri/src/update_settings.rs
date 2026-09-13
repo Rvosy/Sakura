@@ -1327,6 +1327,7 @@ mod tests {
                         operation_id: "operation".to_string(),
                         reply: Some(json!({"segments": []})),
                         error: None,
+                        text: None,
                         update_version: Some("1.2.0".to_string()),
                     })
                     .unwrap();
@@ -1372,6 +1373,7 @@ mod tests {
             operation_id: "operation".to_string(),
             reply: Some(json!({"segments": []})),
             error: None,
+            text: None,
             update_version: Some("1.2.0".to_string()),
         };
 
@@ -1405,6 +1407,7 @@ mod tests {
                     operation_id: "operation".to_string(),
                     reply: None,
                     error: None,
+                    text: None,
                     update_version,
                 })
                 .unwrap();

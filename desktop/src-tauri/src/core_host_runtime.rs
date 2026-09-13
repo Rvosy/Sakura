@@ -292,7 +292,9 @@ fn validate_active_interaction_summary(summary: Option<&Value>) -> Result<(), St
     let object = summary
         .as_object()
         .ok_or_else(|| "Core Snapshot activeInteractionSummary is invalid".to_string())?;
-    if object.len() != 2
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "operationId" | "state" | "progress"))
         || object
             .get("operationId")
             .and_then(Value::as_str)
@@ -301,6 +303,9 @@ fn validate_active_interaction_summary(summary: Option<&Value>) -> Result<(), St
             object.get("state").and_then(Value::as_str),
             Some("started" | "cancelling")
         )
+        || object
+            .get("progress")
+            .is_some_and(|value| value.as_str().is_none_or(|text| text.chars().count() > 500))
     {
         return Err("Core Snapshot activeInteractionSummary fields are invalid".to_string());
     }
@@ -3631,6 +3636,23 @@ mod tests {
             .expect("new generation clears cache");
         assert!(cache.current().is_none());
         assert!(cache.store_minimal_python_snapshot(&first).is_err());
+    }
+
+    #[test]
+    fn active_interaction_snapshot_accepts_bounded_progress_without_reply_data() {
+        for progress in [json!(""), json!("正在整理资料"), json!("界".repeat(500))] {
+            let summary =
+                json!({"operationId": "chat-1", "state": "started", "progress": progress});
+            assert!(super::validate_active_interaction_summary(Some(&summary)).is_ok());
+        }
+        for summary in [
+            json!({"operationId": "chat-1", "state": "started", "progress": null}),
+            json!({"operationId": "chat-1", "state": "started", "progress": "界".repeat(501)}),
+            json!({"operationId": "chat-1", "state": "started", "progress": "读取", "reply": {}}),
+            json!({"operationId": "chat-1", "progress": "读取"}),
+        ] {
+            assert!(super::validate_active_interaction_summary(Some(&summary)).is_err());
+        }
     }
 
     #[test]

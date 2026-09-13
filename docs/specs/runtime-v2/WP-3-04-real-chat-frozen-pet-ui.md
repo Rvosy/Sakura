@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-14
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
@@ -13,6 +13,12 @@ updated: 2026-09-05
 2026-09-12 起，本文原有固定 portrait/portraitChoices 投影与宿主图片选择由[表现插件合同](visual-plugin-boundary.md)取代。
 CharacterPresentation 使用 schemaVersion 2 的可空 visual；公共 Profile 不提供图片候选。立绘兼容、切图、
 解码和过渡归入内置插件，宿主在实际分段播放时派发 control；历史浏览只读文字。以下旧 WP 实施与验收记录保留历史语境。
+
+2026-09-14 起，原输入框可以调用用户选中的互动执行器。活动操作可发送 `chat.progress` 纯文本状态，
+替换等待点号并保持停止按钮可用；进度不进入历史、回复导航、逐字播放或 TTS。空进度恢复等待点号，
+完成、取消、失败或 generation 变化时清除。真实链路与身份规则见
+[聊天边界](WP-2-02-minimal-chat-boundary.md)和[执行器契约](sakura-plugin-runtime-v4.md#65-可替换互动执行器)。
+下面旧 WP 中“不引入进度协议”的限制已由这项合同取代，完整回复仍通过唯一终态交付。
 
 ## 目标与依赖
 

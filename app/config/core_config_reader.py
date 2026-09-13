@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from app.config.executor_settings import ExecutorSettingsError, parse_executor_selection
 from app.config.model_slots import resolve_model_slot
 from app.config.models import (
     MODEL_SLOT_CHAT,
@@ -42,6 +43,7 @@ class CoreConfigReadResult:
     current_character_id: str | None
     provider_selection: ProviderSelection | None = field(repr=False)
     config_problem: StableReadinessError | None = None
+    executor_key: str = ""
 
 
 _PROBLEM_DETAILS: dict[str, tuple[Literal["setup_required", "failed"], str]] = {
@@ -324,6 +326,19 @@ class CoreConfigReader:
             or version != SUPPORTED_CORE_CONFIG_VERSION
         ):
             return _problem_result("CONFIG_VERSION_UNSUPPORTED")
+
+        try:
+            executor_key = parse_executor_selection(system.get("chat_executor", ""))
+        except ExecutorSettingsError as error:
+            return _problem_result(error.code)
+        if executor_key:
+            current_character_id, problem = _read_current_character_id(config_dir)
+            return CoreConfigReadResult(
+                current_character_id=current_character_id,
+                provider_selection=None,
+                config_problem=problem,
+                executor_key=executor_key,
+            )
 
         api_data, problem = _read_auxiliary_mapping(config_dir / "api.yaml")
         if problem is not None:

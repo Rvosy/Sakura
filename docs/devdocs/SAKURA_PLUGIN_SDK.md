@@ -878,6 +878,27 @@ Host 在 IPC 总大小及 JSON 结构允许的范围内传递完整数量和文�
 
 Context 只影响本次模型请求，不自动写入 Timeline，也不改变长期记忆的学习规则。不要把完整数据库、长期历史或无关资料每轮都塞进 Prompt。
 
+## 接管正常互动入口
+
+插件可以在没有模型配置时接管原聊天框。提供一个拥有 `describe/begin/read/cancel` 的 Service，再登记候选：
+
+```python
+context.provide("com.example.focus.executor", executor, exports=("describe", "begin", "read", "cancel"))
+context.get("sakura.host.executors").register({
+    "serviceKey": "com.example.focus.executor",
+    "displayName": "专注陪伴",
+})
+```
+
+用户在“设置 → 模型 → 互动方式”选用该服务，当前互动结束后切换。`describe()` 分别报告接口版本、业务就绪和支持的输入。
+`begin()` 快速返回原 operation ID，任务在后台执行；`read()` 返回当前进度或最终回复，`cancel()` 停止真实工作。
+不要把 Service 超时当作任务停止，也不要因重复受理启动第二份工作。后台线程显式保留受理时的操作关联，
+不依赖只在当前 RPC 内有效的 `context.caller_id`。
+
+完整请求、结果和生命周期见 [Runtime v4 §6.5](../specs/runtime-v2/sakura-plugin-runtime-v4.md#65-可替换互动执行器)，
+可安装示例见[专注陪伴](../../plugins/optional/focus_companion/README.md)。当前支持文本及声明的应用事件，图片输入尚未开放；
+默认模型和对话策略的迁出仍属于 M3/M4，普通插件不应导入宿主的 Agent 或 Pipeline。
+
 ## 模型、角色、历史和文件
 
 ### 模型槽位

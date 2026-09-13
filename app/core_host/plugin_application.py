@@ -62,7 +62,7 @@ class PluginApplicationHost:
         runtime = getattr(session, "runtime", None)
         character = getattr(session, "character", None)
         character_id = getattr(character, "id", None)
-        if runtime is None or not isinstance(character_id, str) or not character_id:
+        if not isinstance(character_id, str) or not character_id:
             raise PluginRuntimeError("PLUGIN_SESSION_INVALID", "插件 Session 无效。")
         with self._lock:
             if self._closed:

@@ -245,7 +245,9 @@ impl CoreHostGateway {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| "INVALID_CHAT_EVENT: event name missing".to_string())?;
-        if event_name != "chat.started" && !CHAT_TERMINALS.contains(&event_name) {
+        if !matches!(event_name, "chat.started" | "chat.progress")
+            && !CHAT_TERMINALS.contains(&event_name)
+        {
             return Err("INVALID_CHAT_EVENT: event name is not allowlisted".to_string());
         }
         let operation_id = object
@@ -288,7 +290,10 @@ impl CoreHostGateway {
             return Ok(EventDisposition::Ignored);
         }
         if !entry.started {
-            return Err("INVALID_CHAT_EVENT: terminal preceded chat.started".to_string());
+            return Err("INVALID_CHAT_EVENT: event preceded chat.started".to_string());
+        }
+        if event_name == "chat.progress" {
+            return Ok(EventDisposition::Accepted);
         }
         entry.terminal = Some(event_name.to_string());
         Ok(EventDisposition::Accepted)
@@ -432,6 +437,17 @@ fn validate_chat_event_payload(name: &str, payload: &Value) -> Result<(), String
         .ok_or_else(|| "INVALID_CHAT_EVENT: payload must be an object".to_string())?;
     match name {
         "chat.started" if payload.len() == 1 => Ok(()),
+        "chat.progress" if payload.len() == 2 => {
+            if payload
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.chars().count() <= 500)
+            {
+                Ok(())
+            } else {
+                Err("INVALID_CHAT_EVENT: progress text is invalid".to_string())
+            }
+        }
         "chat.cancelled" if payload.len() == 2 => validate_history_status(payload),
         "chat.completed" if payload.len() == 3 => {
             validate_history_status(payload)?;

@@ -1,0 +1,16 @@
+api: 4
+id: focus_companion
+name: 专注陪伴
+author: Sakura
+description: 在对话中计时，完成后提醒休息。
+version: 0.1.0
+entry: plugin:FocusCompanionPlugin
+enabled: false
+provides:
+  - focus_companion.executor
+requires:
+  - sakura.host.executors
+presentation:
+  kind: extension
+  category: other
+  icon: timer

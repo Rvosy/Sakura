@@ -169,6 +169,7 @@ class ReadinessController:
         self._current_character_presentation: dict[str, object] | None = None
         self._session: object | None = None
         self._initializer: object | None = None
+        self._executor_configuration_pending = False
         self._initializer_close_claimed = False
         self._initializer_close_thread: threading.Thread | None = None
         self._background_close_error: BaseException | None = None
@@ -280,6 +281,43 @@ class ReadinessController:
         with self._lock:
             return None if self._closed else self._application_mcp
 
+    def executor_status(self) -> dict[str, object]:
+        with self._lock:
+            session = self._session
+            status = {
+                "serviceKey": getattr(session, "executor_key", "") if session is not None else None,
+                "readiness": self._readiness,
+                "code": (self._component or {}).get("code", ""),
+            }
+        validate = getattr(getattr(session, "executor", None), "validate_binding", None)
+        if callable(validate):
+            try:
+                validate()
+            except Exception:
+                status.update(readiness="setup_required", code="EXECUTOR_BINDING_EXPIRED")
+        return status
+
+    def apply_executor_configuration(self) -> None:
+        """Replace the Session only at the chat boundary's idle point."""
+
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            initializer = self._initializer
+            if initializer is None or self._readiness == "initializing":
+                self._executor_configuration_pending = True
+                return
+            self._executor_configuration_pending = False
+            plugin_application = self._plugin_application
+            session = self._session
+            self._session = None
+        if plugin_application is not None and session is not None:
+            getattr(plugin_application, "unbind_session")()
+        retire = getattr(initializer, "retire_session", None)
+        if callable(retire):
+            retire()
+        self._initialize_replacement(initializer, plugin_application)
+
     def apply_provider_configuration(self) -> None:
         """Apply Provider settings or replace/retire only the Assistant Session."""
 
@@ -296,6 +334,9 @@ class ReadinessController:
             session = self._session
             initializer = self._initializer
             plugin_application = self._plugin_application
+        if getattr(config, "executor_key", ""):
+            # An independent executor does not consume the default model slot.
+            return
         if config.config_problem is not None:
             if plugin_application is not None and session is not None:
                 getattr(plugin_application, "unbind_session")()
@@ -328,7 +369,11 @@ class ReadinessController:
 
         if initializer is None:
             raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
+        self._initialize_replacement(initializer, plugin_application)
+
+    def _initialize_replacement(self, initializer: object, plugin_application: object | None) -> None:
         result = getattr(initializer, "initialize")(self._cancel)
+        result = self._bind_initialized_result(initializer, plugin_application, result)
         summary = self._project_summary(result.current_character_summary)
         presentation = self._project_presentation(
             result.current_character_presentation
@@ -347,10 +392,44 @@ class ReadinessController:
             self._session = result.session
             self._revision += 1
             callback = self._session_published_callback if result.session is not None else None
-        if plugin_application is not None and result.session is not None:
-            getattr(plugin_application, "bind_session")(result.session)
         if callback is not None:
             callback()
+
+    def _bind_initialized_result(self, initializer: object, application: object | None, result: Any) -> Any:
+        """A ready Session is observable only after its application binding exists."""
+        if result.session is None:
+            return result
+        try:
+            if application is not None:
+                getattr(application, "bind_session")(result.session)
+            validate = getattr(getattr(result.session, "executor", None), "validate_binding", None)
+            if callable(validate):
+                validate()
+            if self._cancel.is_set():
+                raise OperationCancelled()
+            return result
+        except Exception as error:
+            if application is not None:
+                try:
+                    getattr(application, "unbind_session")()
+                except Exception as cleanup_error:
+                    error.add_note(f"Session unbind failed: {type(cleanup_error).__name__}")
+            retire = getattr(initializer, "retire_session", None)
+            if callable(retire):
+                retire()
+            if isinstance(error, OperationCancelled):
+                raise
+            from .assistant_adapter import ReadinessResult
+            from .executors import ExecutionError
+
+            return ReadinessResult(
+                state="failed",
+                code=error.code if isinstance(error, ExecutionError) else "EXECUTOR_BIND_FAILED",
+                message="互动方式未能完成绑定。",
+                retryable=False,
+                current_character_summary=None,
+                current_character_presentation=result.current_character_presentation,
+            )
 
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
@@ -472,7 +551,6 @@ class ReadinessController:
     def _initialize(self) -> None:
         initializer: object | None = None
         session_callback: Callable[[], None] | None = None
-        application_to_bind: object | None = None
         unpublished_resources: list[object | None] = []
         try:
             with self._lock:
@@ -529,6 +607,9 @@ class ReadinessController:
             initializer = self._initializer_factory(
                 self._config.roots, application_tools, application_mcp,
             )
+            set_application = getattr(initializer, "set_plugin_application", None)
+            if callable(set_application):
+                set_application(plugin_application)
             with self._lock:
                 self._initializer = initializer
                 close_now = self._closed
@@ -538,44 +619,43 @@ class ReadinessController:
                 return
 
             initialize = getattr(initializer, "initialize")
-            result = initialize(self._cancel)
-            summary = self._project_summary(result.current_character_summary)
-            presentation = self._project_presentation(
-                result.current_character_presentation
-            )
-            with self._lock:
-                if self._closed:
-                    claimed = self._claim_initializer_close_locked()
-                else:
-                    self._readiness = result.state
-                    self._component = {
-                        "state": result.state,
-                        "code": result.code,
-                        "retryable": result.retryable,
-                    }
-                    self._current_character_summary = summary
-                    self._current_character_presentation = presentation
-                    self._session = result.session
-                    self._revision = 2
-                    claimed = None
-                    session_callback = (
-                        self._session_published_callback
-                        if self._session is not None and self._readiness in {"ready", "degraded"}
-                        else None
-                    )
-                    application_to_bind = (
-                        self._plugin_application
-                        if self._session is not None and self._readiness in {"ready", "degraded"}
-                        else None
-                    )
+            while True:
+                result = initialize(self._cancel)
+                result = self._bind_initialized_result(initializer, plugin_application, result)
+                summary = self._project_summary(result.current_character_summary)
+                presentation = self._project_presentation(result.current_character_presentation)
+                with self._lock:
+                    replace_candidate = self._executor_configuration_pending and not self._closed
+                    self._executor_configuration_pending = False
+                    if self._closed:
+                        claimed = self._claim_initializer_close_locked()
+                    elif not replace_candidate:
+                        self._readiness = result.state
+                        self._component = {
+                            "state": result.state,
+                            "code": result.code,
+                            "retryable": result.retryable,
+                        }
+                        self._current_character_summary = summary
+                        self._current_character_presentation = presentation
+                        self._session = result.session
+                        self._revision = 2
+                        claimed = None
+                        session_callback = (
+                            self._session_published_callback
+                            if self._session is not None and self._readiness in {"ready", "degraded"}
+                            else None
+                        )
+                if not replace_candidate:
+                    break
+                if plugin_application is not None and result.session is not None:
+                    getattr(plugin_application, "unbind_session")()
+                retire = getattr(initializer, "retire_session", None)
+                if callable(retire):
+                    retire()
             if claimed is not None:
                 self._start_initializer_close(claimed)
-            elif application_to_bind is not None:
-                try:
-                    getattr(application_to_bind, "bind_session")(result.session)
-                except Exception:
-                    pass
-            elif claimed is None and plugin_application is not None and presentation is not None:
+            elif result.session is None and plugin_application is not None and presentation is not None:
                 bind_presentation = getattr(plugin_application, "bind_character_presentation", None)
                 if callable(bind_presentation):
                     bind_presentation(str(presentation["characterId"]))
@@ -931,6 +1011,12 @@ class ControlDispatcher:
     def apply_provider_configuration(self) -> None:
         self._readiness.apply_provider_configuration()
 
+    def apply_executor_configuration(self) -> None:
+        self._readiness.apply_executor_configuration()
+
+    def executor_status(self) -> dict[str, object]:
+        return self._readiness.executor_status()
+
     def apply_tool_runtime_settings(self, settings: object) -> None:
         self._readiness.apply_tool_runtime_settings(settings)
 
@@ -1273,6 +1359,7 @@ def run_host(
     from .mcp_status import MCP_STATUS_REQUEST_NAMES, MCPStatusBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
+    from .executor_settings import ExecutorSettingsBoundary, EXECUTOR_SETTINGS_REQUEST_NAMES
     from .screen_awareness_settings import (
         SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
         ScreenAwarenessSettingsBoundary,
@@ -1346,6 +1433,19 @@ def run_host(
             runtime_apply=lambda: chat_boundary.schedule_runtime_update(
                 "provider",
                 getattr(dispatcher, "apply_provider_configuration", lambda: None),
+            ),
+        )
+        executor_settings = ExecutorSettingsBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.user_root,
+            application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
+            status_provider=lambda: {
+                **getattr(dispatcher, "executor_status", lambda: {})(),
+                "pending": getattr(chat_boundary, "has_pending_runtime_update", lambda _key: False)("executor"),
+            },
+            runtime_apply=lambda: chat_boundary.schedule_runtime_update(
+                "executor", getattr(dispatcher, "apply_executor_configuration", lambda: None),
             ),
         )
         tool_settings = ToolSettingsBoundary(
@@ -1423,6 +1523,15 @@ def run_host(
 
         class RequestBoundary:
             def handle(self, request: dict[str, Any]) -> object:
+                if request.get("name") in EXECUTOR_SETTINGS_REQUEST_NAMES:
+                    if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
+                        return response(
+                            request, generation_id=config.generation_id,
+                            generation_credential=config.generation_credential,
+                            protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload("CAPABILITY_NEGOTIATION_FAILED", "Executor settings capability was not negotiated"),
+                        )
+                    return executor_settings.handle(request)
                 if request.get("name") in ASR_REQUEST_NAMES:
                     return asr_boundary.handle(request)
                 if request.get("name") == "chat.send":
@@ -1540,6 +1649,7 @@ def run_host(
                 {
                     "chat.send",
                     *SETTINGS_REQUEST_NAMES,
+                    *EXECUTOR_SETTINGS_REQUEST_NAMES,
                     *TOOL_SETTINGS_REQUEST_NAMES,
                     *MCP_STATUS_REQUEST_NAMES,
                     *PLUGIN_SETTINGS_REQUEST_NAMES,

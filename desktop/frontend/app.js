@@ -1350,6 +1350,10 @@ function handleCoreEvent(event) {
   if (event.type === "lifecycle" && isChatReadyLifecycle(event.status) && event.generationId === characterPresentation.generationId && event.revision !== before.revision) void rebindCoreGeneration(event.generationId, { refresh: true });
   const result = presentation.reduce(event);
   if (!result.applied) return;
+  if (event.type === "chat.progress") {
+    if (event.text) waitingIndicator.stop();
+    else waitingIndicator.start();
+  }
   if (event.type === "chat.started") rendererHost.begin(event.operationId);
   if (["chat.failed", "chat.cancelled"].includes(event.type) || (event.type === "lifecycle" && !isChatReadyLifecycle(event.status))) rendererHost.cancel("interrupted");
   const waitingForFirstSegment = event.type === "chat.completed" && result.state.phase === "typing";
