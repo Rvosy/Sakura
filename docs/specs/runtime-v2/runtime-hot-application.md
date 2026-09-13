@@ -11,7 +11,6 @@ updated: 2026-09-14
 ## 不变量
 
 - 普通配置保存不得改变 Core generation、目标插件 PID 或无关插件 PID/scope。
-  执行器选择分别返回已保存与实际生效状态；保存成功不等于新执行器已就绪。
 - 聊天、Agent 轮次和 TTS 合成在开始时取得配置快照；进行中的操作不得混用新旧配置。
 - 保存发生在操作进行中时只保留该域最新待应用值，并在下一次操作被接受前应用。
 - 某域应用失败时，本次操作不被接受；保留失败域和尚未应用域的最新值，供下一次操作边界应用。
@@ -25,12 +24,10 @@ updated: 2026-09-14
 
 - Provider/模型：一次 `settings.provider_model.save` 完成 Provider、Core 模型槽和当前 PluginApplication 插件模型槽
   保存。默认 Assistant 的有效 Session 调用 client `update_settings()`；其模型配置变为无效时只退休该 Session，
-  恢复有效时在同 generation 创建 Session 并绑定既有 PluginApplication。独立执行器不因无关模型配置变化而退休。
-- 互动执行器：`settings.executor.save` 保存服务引用，返回 selected/applied 与 pending/initializing/ready/unavailable
-  状态。当前操作固定使用原进程实例，退出后立即应用最新选择，无需再发一次输入。新 Session 完成依赖检查与
-  PluginApplication 绑定后才发布就绪；初始化期间再次保存也不能短暂发布已被替换的候选。
-  插件停用或重载使旧绑定失效，显示所选实现不可用；重新启用后由用户显式重试同一选项，不自动回退或重放旧任务。
-  接口与限制见 [Plugin Runtime v4 §6.5](sakura-plugin-runtime-v4.md#65-可替换互动执行器)。
+  恢复有效时在同 generation 创建 Session 并绑定既有 PluginApplication。
+- 正常聊天固定使用默认 Assistant。`f9fde091` 中的互动方式设置已撤回，`settings.executor.get/save` 不再提供，
+  历史 `chat_executor` 字段被忽略，不作为隐藏选择。插件开关只管理插件生命周期，不切换聊天实现。
+  保留的执行服务开发合同见 [Plugin Runtime v4 §6.5](sakura-plugin-runtime-v4.md#65-可替换互动执行器)。
 - Tools：保存后更新 `AgentRuntime` 的 loop settings；当前 Agent 轮使用其既有快照。
 - MCP：Application 持有 Provider 和工具注册，Session 退休与重建只借用该实例。当前只提供状态读取，
   `mcp.yaml` 的修改在新 Core generation 启动时读取，不提供设置保存或热替换接口。

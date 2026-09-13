@@ -878,9 +878,14 @@ Host 在 IPC 总大小及 JSON 结构允许的范围内传递完整数量和文�
 
 Context 只影响本次模型请求，不自动写入 Timeline，也不改变长期记忆的学习规则。不要把完整数据库、长期历史或无关资料每轮都塞进 Prompt。
 
-## 接管正常互动入口
+## 执行服务开发合同
 
-插件可以在没有模型配置时接管原聊天框。提供一个拥有 `describe/begin/read/cancel` 的 Service，再登记候选：
+`describe/begin/read/cancel` 及执行服务登记保留为开发基础，用于验证跨进程受理、进度、取消和结果。
+登记服务不会接管原聊天框。正常聊天使用默认 Assistant；主设置没有互动方式或 Agent 模式选择。
+提交 `f9fde091` 曾提供该选择入口，后按用户要求撤回。旧 `chat_executor` 配置被忽略，
+`settings.executor.get/save` 已移除，也不通过隐藏配置或插件开关选择执行器。
+
+开发样例可以提供并登记自己的 Service：
 
 ```python
 context.provide("com.example.focus.executor", executor, exports=("describe", "begin", "read", "cancel"))
@@ -890,14 +895,16 @@ context.get("sakura.host.executors").register({
 })
 ```
 
-用户在“设置 → 模型 → 互动方式”选用该服务，当前互动结束后切换。`describe()` 分别报告接口版本、业务就绪和支持的输入。
+开发消费者通过实际服务及进程实例绑定进行调用；这不定义最终用户的入口。
+`describe()` 分别报告接口版本、业务就绪和支持的输入。
 `begin()` 快速返回原 operation ID，任务在后台执行；`read()` 返回当前进度或最终回复，`cancel()` 停止真实工作。
 不要把 Service 超时当作任务停止，也不要因重复受理启动第二份工作。后台线程显式保留受理时的操作关联，
 不依赖只在当前 RPC 内有效的 `context.caller_id`。
 
 完整请求、结果和生命周期见 [Runtime v4 §6.5](../specs/runtime-v2/sakura-plugin-runtime-v4.md#65-可替换互动执行器)，
-可安装示例见[专注陪伴](../../plugins/optional/focus_companion/README.md)。当前支持文本及声明的应用事件，图片输入尚未开放；
-默认模型和对话策略的迁出仍属于 M3/M4，普通插件不应导入宿主的 Agent 或 Pipeline。
+开发样例见[专注陪伴](../../plugins/optional/focus_companion/README.md)。合同支持文本及声明的应用事件，图片输入尚未开放；
+该样例暂不能从聊天框选择。模型和默认能力拆分属于尚未实施的长期方向，须结合真实需求和用户方案确定，
+不因保留合同自动推进产品改造。普通插件不应导入宿主的 Agent 或 Pipeline。
 
 ## 模型、角色、历史和文件
 

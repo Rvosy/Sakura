@@ -15,6 +15,8 @@ updated: 2026-09-14
 
 测试使用隔离临时根和确定性 fixture/local Provider；不依赖真实用户凭据，不污染用户数据。
 Router、Gateway 与领域实现共享既有 Core 生命周期和单 stdout writer，不另建生命周期根。
+正常聊天使用默认 Assistant。`f9fde091` 的互动方式选择已撤回；下文执行器与进度能力保留为开发边界，
+不提供 Agent 模式、隐藏配置或由插件开关触发的聊天实现切换。
 
 ## 冻结边界与故障矩阵
 
@@ -26,8 +28,8 @@ Rust 与 WebView 按当前 generation 和 operation 过滤；进度只更新气�
 取消、终态或 generation 切换后，迟到进度不恢复旧操作；快照中可选的
 `activeInteractionSummary.progress` 用于恢复当前进度，空文本恢复等待展示。
 
-执行器进程清理失败是取消仲裁的明确例外：`EXECUTOR_STOP_UNCONFIRMED` 保持失败终态，不转成取消成功，
-原操作继续占用输入边界并拒绝新任务，直到退出 Core。该状态不能通过再发一次输入或切换执行器绕过。
+开发消费者显式绑定执行器时，进程清理失败是取消仲裁的明确例外：`EXECUTOR_STOP_UNCONFIRMED` 保持失败终态，不转成取消成功，
+原操作继续占用输入边界并拒绝新任务，直到退出 Core。该状态不能通过再发一次输入或重新绑定绕过。
 
 当前产品在不增加 command 类型的前提下，把 `chat.send` 输入冻结为严格联合：
 
@@ -43,8 +45,9 @@ Rust 与 WebView 按当前 generation 和 operation 过滤；进度只更新气�
 概括已提供事实，不得声称已下载、安装或重启。该分支不写伪造 human Timeline；成功 assistant 以
 `origin=proactive` 保存，并继续使用既有 segment、角色表现和 TTS。
 
-独立执行器仅在 `describe().inputs` 声明 `event` 时接收该事件，否则明确拒绝；不回退到默认 Assistant。
-执行器请求、取消和结果契约见 [Plugin Runtime v4 §6.5](sakura-plugin-runtime-v4.md#65-可替换互动执行器)。
+开发合同中的独立执行器仅在 `describe().inputs` 声明 `event` 时接收该事件，否则明确拒绝；
+正常产品的更新通知仍交给默认 Assistant。执行器请求、取消和结果见
+[Plugin Runtime v4 §6.5](sakura-plugin-runtime-v4.md#65-可替换互动执行器)。
 
 Rust 仅在内部把候选版本绑定到 operation，公开 `chat.started/completed/failed/cancelled` 不携带版本私有字段。
 只有对应 `chat.completed` 可确认主动播报成功；终态先于 send response、取消、失败和 generation 失效仍沿用

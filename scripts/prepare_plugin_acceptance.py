@@ -27,8 +27,7 @@ from app.storage.timeline import TimelineStore
 
 
 CHARACTER_ID = "sakura-acceptance"
-EXECUTOR_KEY = "focus_companion.executor"
-ENABLED_PLUGINS = {"sakura.portrait", "focus_companion"}
+ENABLED_PLUGINS = {"sakura.portrait"}
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -81,13 +80,10 @@ def _verify(roots: RuntimeRoots) -> dict[str, object]:
     adapter = AssistantAdapter(roots, tool_registry=registry, mcp_provider=None)
     try:
         application.start()
-        adapter.set_plugin_application(application.application)
         readiness = adapter.initialize(Event())
-        if readiness.state != "ready" or readiness.session is None:
-            raise RuntimeError(f"验收环境未就绪：{readiness.code}")
-        if readiness.session.executor_key != EXECUTOR_KEY or readiness.session.provider is not None:
-            raise RuntimeError("验收环境没有使用离线互动插件。")
-        application.bind_session(readiness.session)
+        if readiness.state != "setup_required" or readiness.code != "PROVIDER_SETUP_REQUIRED":
+            raise RuntimeError(f"空白验收环境应等待模型配置：{readiness.code}")
+        application.bind_character_presentation(CHARACTER_ID)
         presentation = application.visual_presentation()
         visual = presentation.get("visual") if isinstance(presentation, dict) else None
         if not isinstance(visual, dict) or visual.get("providerId") != "sakura.portrait":
@@ -100,7 +96,7 @@ def _verify(roots: RuntimeRoots) -> dict[str, object]:
             raise RuntimeError(f"验收环境启用了非预期的插件：{active}")
         return {
             "assistantReadiness": readiness.state,
-            "executor": readiness.session.executor_key,
+            "readinessCode": readiness.code,
             "providerConfigured": False,
             "activePlugins": active,
             "portraitProvider": visual["providerId"],
@@ -118,7 +114,7 @@ def prepare(user_root: Path) -> dict[str, object]:
         raise FileExistsError(user_root)
     user_root = user_root.resolve(strict=False)
     icon = REPOSITORY_ROOT / "desktop/frontend/assets/sakura-icon.png"
-    sources = [REPOSITORY_ROOT / "plugins/optional" / name for name in ("focus_companion", "context_rules")]
+    sources = [REPOSITORY_ROOT / "plugins/optional/context_rules"]
     if not icon.is_file() or any(not (source / "plugin.yaml").is_file() for source in sources):
         raise RuntimeError("仓库缺少验收所需的插件或 Sakura 图标。")
     # Never reuse a directory, including an existing empty directory or symlink.
@@ -126,9 +122,7 @@ def prepare(user_root: Path) -> dict[str, object]:
     roots = RuntimeRoots(REPOSITORY_ROOT, user_root)
     paths = StoragePaths(user_root)
     paths.config_dir.mkdir()
-    paths.system_config().write_text(
-        f"config_version: 1\nchat_executor: {EXECUTOR_KEY}\n", encoding="utf-8",
-    )
+    paths.system_config().write_text("config_version: 1\n", encoding="utf-8")
     paths.characters_config().write_text(f"current_character_id: {CHARACTER_ID}\n", encoding="utf-8")
 
     character_root = paths.characters_dir / CHARACTER_ID
@@ -178,7 +172,7 @@ def prepare(user_root: Path) -> dict[str, object]:
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="准备独立的插件验收数据目录，并验证离线互动与立绘就绪。")
+    parser = argparse.ArgumentParser(description="准备空白插件验收目录，检查默认对话配置状态和立绘加载。")
     parser.add_argument("--user-root", type=Path, help="新目录的路径；已存在时拒绝写入。")
     args = parser.parse_args()
     user_root = args.user_root or (

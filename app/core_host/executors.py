@@ -1,4 +1,4 @@
-"""Application execution boundary; business state remains in the selected plugin."""
+"""Execution adapters and a developer contract, without a product mode selector."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class ExecutionResult:
 
 
 class DefaultExecutor:
-    """M2 adapter for the existing dialogue implementation, migrated in M4."""
+    """Wrap the existing dialogue implementation used by normal startup."""
 
     def __init__(self, pipeline):
         self.pipeline = pipeline
@@ -58,6 +58,7 @@ def session_executor(session):
 
 
 class ExecutorCatalog:
+    """Track process-owned registrations without selecting the chat consumer."""
     def __init__(self, manager, generation_id):
         self.manager = manager
         self.generation_id = generation_id
@@ -109,7 +110,7 @@ class ExecutorCatalog:
         with self._lock:
             entry = next((item for item in self._entries.values() if item["serviceKey"] == service_key), None)
         if entry is None:
-            raise ExecutionError("EXECUTOR_UNAVAILABLE", "所选互动方式不可用，请检查插件。")
+            raise ExecutionError("EXECUTOR_UNAVAILABLE", "执行服务不可用，请检查插件。")
         return PluginExecutor(self.manager, self.generation_id, entry)
 
 
@@ -131,7 +132,7 @@ class PluginExecutor:
         if not isinstance(value, dict) or isinstance(value.get("schemaVersion"), bool) or value.get("schemaVersion") != EXECUTOR_SCHEMA_VERSION:
             raise ExecutionError("EXECUTOR_CONTRACT_UNSUPPORTED", "互动插件接口版本不兼容。")
         if value.get("ready") is not True:
-            raise ExecutionError("EXECUTOR_NOT_READY", "所选互动方式尚未就绪，请检查插件设置。")
+            raise ExecutionError("EXECUTOR_NOT_READY", "执行服务尚未就绪，请检查插件设置。")
         inputs = value.get("inputs")
         if not isinstance(inputs, list) or len(inputs) > 16 or not all(isinstance(item, str) for item in inputs) or "text" not in inputs:
             raise ExecutionError("EXECUTOR_CONTRACT_UNSUPPORTED", "互动插件不支持文字输入。")
@@ -139,12 +140,12 @@ class PluginExecutor:
 
     def _call(self, method, *args):
         if self._closed.is_set():
-            raise ExecutionError("EXECUTOR_BINDING_EXPIRED", "互动方式已停止。")
+            raise ExecutionError("EXECUTOR_BINDING_EXPIRED", "执行服务已停止。")
         try:
             return self.manager.call_bound_service(self.service_key, self.identity, method, *args, timeout=1.0)
         except PluginRuntimeError as error:
             if error.code in {"SERVICE_BINDING_EXPIRED", "SERVICE_MISSING", "GENERATION_INVALIDATED", "PLUGIN_PROCESS_EXITED"}:
-                raise ExecutionError("EXECUTOR_BINDING_EXPIRED", "所选互动插件已停止或重载。") from error
+                raise ExecutionError("EXECUTOR_BINDING_EXPIRED", "执行服务已停止或重载。") from error
             raise
 
     def commit(self, callback):
@@ -227,7 +228,7 @@ class PluginExecutor:
             if cancelling or state == "cancelled":
                 raise OperationCancelled()
             if state == "failed":
-                raise ExecutionError("EXECUTOR_TASK_FAILED", "所选互动插件执行失败，请查看运行日志。")
+                raise ExecutionError("EXECUTOR_TASK_FAILED", "执行服务失败，请查看运行日志。")
             return ExecutionResult(parse_reply(value.get("reply")))
 
     def close(self):

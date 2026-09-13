@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 import shutil
 import threading
-from pathlib import Path
 
 import pytest
 
 from app.agent.tools import ToolRegistry
-from app.core_host.assistant_adapter import AssistantAdapter
+from app.config.character_loader import CharacterRegistry
+from app.core_host.assistant_adapter import AssistantSession
 from app.core_host.executors import ExecutionError
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
@@ -26,9 +25,6 @@ def executor_chat(tmp_path):
     user = tmp_path / "user"
     shutil.copytree(SOURCE_ROOT, user)
     (user / "config/api.yaml").write_text("invalid: [", encoding="utf-8")
-    (user / "config/system_config.yaml").write_text(
-        f"config_version: 1\nchat_executor: {SERVICE}\n", encoding="utf-8",
-    )
     plugin = tmp_path / "distribution/plugins/builtin/fixture.executor"
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text(
@@ -100,12 +96,13 @@ class Plugin:
     tools = ToolRegistry([])
     application = PluginApplicationHost(roots, GENERATION_ID, tools)
     application.start()
-    adapter = AssistantAdapter(roots, tool_registry=tools, mcp_provider=None)
-    adapter.set_plugin_application(application)
-    result = adapter.initialize(threading.Event())
-    assert result.state == "ready", (result.code, application.public_snapshot())
-    assert result.session.provider is None and result.session.runtime is None
-    application.bind_session(result.session)
+    # Developer-only binding exercises the retained execution contract. Normal
+    # Assistant initialization no longer selects plugins from user settings.
+    character = CharacterRegistry(user).get("sakura")
+    executor = application.bind_executor(SERVICE)
+    executor.initialize(character)
+    session = AssistantSession(character=character, executor=executor)
+    application.bind_session(session)
     events = []
     progress, terminal = threading.Event(), threading.Event()
     def publish(value):
@@ -118,18 +115,18 @@ class Plugin:
     timeline.initialize()
     playback = []
     boundary = RealChatBoundary(
-        GENERATION_ID, GENERATION_CREDENTIAL, user, session_provider=lambda: result.session,
+        GENERATION_ID, GENERATION_CREDENTIAL, user, session_provider=lambda: session,
         plugin_application_provider=lambda: application, timeline_store=timeline,
         event_publisher=publish, segment_authorizer=lambda **values: playback.append(values),
     )
-    yield application, result.session, boundary, events, progress, terminal, timeline, playback
+    yield application, session, boundary, events, progress, terminal, timeline, playback
     boundary.close()
-    adapter.close()
+    executor.close()
     application.close()
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
-def test_real_plugin_uses_normal_chat_without_model_and_stops_actual_work(executor_chat, cancelled):
+def test_explicit_plugin_binding_uses_chat_boundary_and_stops_actual_work(executor_chat, cancelled):
     app, session, boundary, events, progress, terminal, timeline, playback = executor_chat
     request = _request("offline-operation", "chat.send", {"operationId": "offline-operation", "message": "开始整理"})
     boundary.reserve_send(request)
@@ -195,21 +192,6 @@ def test_begin_timeout_keeps_original_operation_queryable_and_cancellable(execut
     assert not playback
 
 
-def test_switch_is_applied_on_completion_without_requiring_another_send(executor_chat):
-    app, session, boundary, events, progress, terminal, timeline, playback = executor_chat
-    request = _request("switch-after", "chat.send", {"operationId": "switch-after", "message": "等待"})
-    boundary.reserve_send(request)
-    boundary.start_send(request)
-    assert progress.wait(5)
-    applied = threading.Event()
-    boundary.schedule_runtime_update("executor", applied.set)
-    assert boundary.has_pending_runtime_update("executor") and not applied.is_set()
-    app.call_service(SERVICE, "release", request["id"])
-    assert applied.wait(5)
-    assert terminal.is_set()
-    assert not boundary.has_pending_runtime_update("executor")
-
-
 def test_unknown_state_after_cancel_reclaims_plugin_before_releasing_operation(executor_chat):
     app, session, boundary, events, progress, terminal, timeline, playback = executor_chat
     request = _request("bad-cancel", "chat.send", {"operationId": "bad-cancel", "message": "bad-cancel"})
@@ -254,31 +236,6 @@ def test_input_save_failure_never_starts_plugin_work(executor_chat, monkeypatch)
     assert not progress.is_set() and not playback
 
 
-def test_failed_pending_switch_keeps_original_terminal_and_pending_update(executor_chat, monkeypatch):
-    app, session, boundary, events, progress, terminal, timeline, playback = executor_chat
-    request = _request("switch-failure", "chat.send", {"operationId": "switch-failure", "message": "等待"})
-    boundary.reserve_send(request)
-    boundary.start_send(request)
-    assert progress.wait(5)
-    diagnosed = threading.Event()
-    from app.core_host import real_chat
-    original_diagnostic = real_chat._safe_diagnostic
-    def diagnostic(error, *, code, message):
-        original_diagnostic(error, code=code, message=message)
-        diagnosed.set()
-    monkeypatch.setattr(real_chat, "_safe_diagnostic", diagnostic)
-    def fail_apply():
-        raise RuntimeError("isolated configuration failure")
-    boundary.schedule_runtime_update("executor", fail_apply)
-    app.call_service(SERVICE, "release", request["id"])
-    assert diagnosed.wait(3)
-    assert terminal.is_set()
-    assert [event["name"] for event in events if event["name"] in {
-        "chat.completed", "chat.cancelled", "chat.failed",
-    }] == ["chat.completed"]
-    assert boundary.has_pending_runtime_update("executor")
-
-
 def test_unconfirmed_process_stop_never_claims_cancelled_or_accepts_new_work(executor_chat, monkeypatch):
     app, session, boundary, events, progress, terminal, timeline, playback = executor_chat
     request = _request("cleanup-failure", "chat.send", {"operationId": "cleanup-failure", "message": "bad-cancel"})
@@ -302,7 +259,7 @@ def test_unconfirmed_process_stop_never_claims_cancelled_or_accepts_new_work(exe
         with pytest.raises(RealChatRejection, match="EXECUTOR_STOP_UNCONFIRMED"):
             boundary.reserve_send(next_request)
         applied = threading.Event()
-        boundary.schedule_runtime_update("executor", applied.set)
+        boundary.schedule_runtime_update("provider", applied.set)
         assert not applied.is_set()
         assert not playback
         assert not [entry for entry in timeline.read_all(session.character.id) if entry.kind == TimelineKind.ASSISTANT]
@@ -312,4 +269,4 @@ def test_unconfirmed_process_stop_never_claims_cancelled_or_accepts_new_work(exe
         # Test teardown has now stopped the process; production requires exiting the Core.
         with boundary._changed:
             boundary._executions.pop(request["id"], None)
-            boundary._pending_runtime_updates.pop("executor", None)
+            boundary._pending_runtime_updates.pop("provider", None)

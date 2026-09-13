@@ -10,7 +10,7 @@ updated: 2026-09-14
 
 - [当前路线图](work-packages.md)
 - [插件管理页与通用设置页方向](plugin-management-foundation.md)
-- [开放插件生态总计划：薄宿主与可替换的默认能力](open-plugin-ecosystem.md)（M1/M2 已完成实现与聚焦验证，下一主线为 M3 模型适配器替换）
+- [开放插件生态总计划：薄宿主与可替换的默认能力](open-plugin-ecosystem.md)（M1 保留；M2 产品选择入口撤回，执行基础保留；M3/M4 待真实需求与方案明确）
 - [精简前的完整计划与逐日证据](../../archive/plans/runtime-v2/pre-simplification-2026-08-23/)
 
 当前目录维护阶段表、当前工作、未完成 WP 和尚待产品接入的设计方向。已完成任务的实施计划、Foundation Plan、Draft 和逐日证据

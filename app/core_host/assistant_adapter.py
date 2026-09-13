@@ -36,7 +36,6 @@ class AssistantSession:
     pipeline: ChatPipeline | None = None
     mcp_provider: object | None = field(default=None, repr=False)
     executor: object | None = field(default=None, repr=False)
-    executor_key: str = ""
 
     def wait_prompt_dependencies(
         self,
@@ -139,10 +138,6 @@ class AssistantAdapter:
         # Borrow Application resources; only Provider/Runtime/Pipeline belong to this Session.
         self._application_tools = tool_registry
         self._application_mcp = mcp_provider
-        self._plugin_application = None
-
-    def set_plugin_application(self, application):
-        self._plugin_application = application
 
     def initialize(self, cancel: Event) -> ReadinessResult:
         owned: list[object] = []
@@ -191,27 +186,6 @@ class AssistantAdapter:
                     message="A character must be installed and selected.",
                     retryable=False,
                     current_character_summary=None,
-                )
-
-            executor_key = getattr(config, "executor_key", "")
-            if executor_key:
-                from app.core_host.executors import ExecutionError
-                if self._plugin_application is None:
-                    raise ExecutionError("EXECUTOR_UNAVAILABLE", "所选互动插件尚未加载。")
-                executor = self._plugin_application.bind_executor(executor_key)
-                owned.append(executor)
-                executor.initialize(profile)
-                self._check_active(cancel)
-                session = AssistantSession(character=profile, executor=executor, executor_key=executor_key)
-                with self._lock:
-                    if cancel.is_set() or self._closed:
-                        raise OperationCancelled()
-                    self._owned = owned
-                    owned = []
-                return ReadinessResult(
-                    state="ready", code="READY", message="互动方式已就绪。", retryable=False,
-                    current_character_summary=project_current_character_summary(profile),
-                    current_character_presentation=project_character_presentation(profile), session=session,
                 )
 
             assert config.provider_selection is not None
@@ -294,15 +268,8 @@ class AssistantAdapter:
                 retryable=False,
                 current_character_summary=None,
             )
-        except Exception as error:
+        except Exception:
             _close_owned(owned)
-            from app.core_host.executors import ExecutionError
-            if isinstance(error, ExecutionError):
-                return ReadinessResult(
-                    state="setup_required", code=error.code, message=error.public_message,
-                    retryable=False, current_character_summary=None,
-                    current_character_presentation=(project_character_presentation(profile) if "profile" in locals() and profile is not None else None),
-                )
             return ReadinessResult(
                 state="failed",
                 code="ASSISTANT_INITIALIZATION_FAILED",

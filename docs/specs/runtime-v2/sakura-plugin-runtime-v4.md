@@ -355,11 +355,13 @@ Agent Trace 与 Prompt Inspection 保留必需性、采集范围及真实来源�
 
 ### 6.5 可替换互动执行器
 
-M2 已通过正常聊天入口消费插件执行服务。默认 Assistant 仍由本地适配器包装现有模型、Agent 与管线；
-它们的完整插件迁移属于 M3/M4。此合同不要求插件提供模型，也不包含命令执行或通用任务调度。
+本节保留执行服务与 `PluginExecutor` 的开发合同，涵盖进程绑定、受理、取消和结果校验。
+`f9fde091` 曾让正常聊天选择插件执行器；该产品入口已撤回。当前正常聊天始终使用默认 Assistant，
+沿用现有模型、Agent 与管线。安装、启用或登记执行服务不会更换聊天实现。
+此合同不预定 Agent 模式、选择器或其他产品呈现，也不包含命令执行或通用任务调度。
 
 插件先用 `context.provide()` 提供自己的 Service，导出 `describe/begin/read/cancel`，再调用
-`sakura.host.executors.register({serviceKey, displayName})` 登记到互动方式选择器。Service 必须由实际调用插件拥有；
+`sakura.host.executors.register({serviceKey, displayName})` 登记开发消费者可绑定的服务。Service 必须由实际调用插件拥有；
 显示名为 1–100 字符。返回 `{registrationId}`，可传给 `unregister()`；Runtime 在停用、退出和重载时清理登记。
 登记属于具体进程实例，Service 已注册不代表业务已就绪。
 
@@ -387,20 +389,21 @@ Host 不为独立执行器注入默认对话的 Prompt 或模型配置。
 
 若进程清理本身失败，Runtime 保留原实例并报告 `PLUGIN_CLEANUP_FAILED`，禁止同 ID 重启。
 聊天报告 `EXECUTOR_STOP_UNCONFIRMED`，即使已经点击停止也不伪称取消完成；保留操作占用，阻止后续输入和
-执行器切换。用户退出并重新启动 Sakura，由既有 Core 生命周期回收进程树；不增加后台重试或自动恢复。
+重新绑定该执行器。调用者须保留停止未确认状态，由既有 Core 生命周期完成最终回收；不增加后台重试或自动恢复。
 清理完成通知携带成功或失败结果，异常必须唤醒等待者；并发关闭等待同一实例结束后才能撤销其 Host 资源。
 
-进度通过 `chat.progress {operationId,text}` 与快照的可选 `activeInteractionSummary.progress` 显示，不写助手历史、
-不触发 TTS。桌面校验当前 generation 和操作；进度队列满时可丢弃临时进度，终态仍走既有可靠提交路径。
+保留的聊天边界可通过 `chat.progress {operationId,text}` 与快照的可选 `activeInteractionSummary.progress` 传递进度，
+不写助手历史、不触发 TTS。桌面校验当前 generation 和操作；进度队列满时可丢弃临时进度，终态仍走既有可靠提交路径。
+这项协议支持用于开发验证，不表示存在可从正常聊天框选择的计时或 Agent 模式。
 最终结果在取消、来源、实例和格式校验后提交一次；重复读取不会重复落盘、通知或播放。提交前取消拒绝迟到成功，
 已经取得提交资格后不改写历史；取消不回滚已发生的外部效果。实例有效性检查和短暂的本地历史提交保持原子性。
 
-互动方式选择保存在 `config/system_config.yaml` 的 `chat_executor`，空串表示默认 Assistant。
-`settings.executor.get/save` 独立于模型表单保存；无模型配置仍能打开设置、选用无模型插件。
-设置区分已保存选择、实际生效选择和等待本轮结束的状态；空闲时应用，在途切换于当前操作退出后生效。
-停用或重载后的失效绑定不会自动接续，用户可重新启用插件并显式重试相同选择。
+`config/system_config.yaml` 中已有的 `chat_executor` 字段直接忽略，不要求用户改写或迁移文件。
+`settings.executor.get/save` 不再提供；主设置、隐藏配置和插件开关都不承担执行器选择。
+默认 Assistant 缺少模型配置时仍报告需要配置。开发消费者持有的执行器绑定在停用或重载后失效，
+不得把旧操作转交同服务名的新进程。未来如何让用户使用此类能力，由具体需求与产品方案确定。
 
-可运行样例见[专注陪伴](../../../plugins/optional/focus_companion/README.md)。真实进程与提交回归见
+开发样例见[专注陪伴](../../../plugins/optional/focus_companion/README.md)，暂不提供正常聊天入口。真实进程与提交回归见
 `tests/integration/test_plugin_executor_chat.py`、`tests/integration/test_executor_core_protocol.py`。
 
 ## 7. 官方默认插件

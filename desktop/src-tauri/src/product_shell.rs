@@ -717,10 +717,7 @@ impl SettingsCapabilityManifest {
             "model".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
-                features: BTreeMap::from([
-                    ("model.slots".to_string(), "available".to_string()),
-                    ("chat.executor".to_string(), "available".to_string()),
-                ]),
+                features: BTreeMap::from([("model.slots".to_string(), "available".to_string())]),
             },
         );
         for key in ["providers", "model"] {

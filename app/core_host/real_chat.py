@@ -184,10 +184,6 @@ class RealChatBoundary:
             self._pending_runtime_updates[key]()
             del self._pending_runtime_updates[key]
 
-    def has_pending_runtime_update(self, key: str) -> bool:
-        with self._lock:
-            return key in self._pending_runtime_updates
-
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))
         with self._changed:
@@ -341,7 +337,7 @@ class RealChatBoundary:
             if isinstance(executor, PluginExecutor):
                 from app.core_host.executors import ExecutionError
                 if screen_attachment is not None or (is_update_event and "event" not in executor.inputs):
-                    raise ExecutionError("EXECUTOR_INPUT_UNSUPPORTED", "所选互动方式不支持此次输入。")
+                    raise ExecutionError("EXECUTOR_INPUT_UNSUPPORTED", "执行服务不支持此次输入。")
                 if not is_update_event:
                     execution.cancel.throw_if_cancelled()
                     try:
@@ -1186,15 +1182,6 @@ class RealChatBoundary:
             if self._executions.pop(operation_id, None) is not None:
                 self._revision += 1
                 self._changed.notify_all()
-                if not self._executions and "executor" in self._pending_runtime_updates:
-                    try:
-                        # Apply the requested choice at the idle boundary, not
-                        # after accepting another input on the previous executor.
-                        self._pending_runtime_updates["executor"]()
-                    except Exception as error:
-                        _safe_diagnostic(error, code="EXECUTOR_APPLY_FAILED", message="互动方式应用失败。")
-                    else:
-                        self._pending_runtime_updates.pop("executor", None)
 
     def _publish(self, request: Mapping[str, Any], name: str, payload: Mapping[str, Any]) -> None:
         publisher = self._event_publisher
