@@ -51,6 +51,8 @@ pub struct CaptureMonitor {
 struct CaptureSession {
     id: String,
     generation_id: String,
+    character_session_id: String,
+    capture_revision: u64,
     windows: HashMap<String, u32>,
 }
 
@@ -63,6 +65,7 @@ struct CaptureResource {
 
 #[derive(Clone, Debug)]
 struct ScreenAwarenessFrame {
+    character_session_id: String,
     bytes: Vec<u8>,
     width: u32,
     height: u32,
@@ -73,6 +76,8 @@ struct ScreenAwarenessFrame {
 #[derive(Clone, Debug)]
 pub struct CaptureClaim {
     pub generation_id: String,
+    pub character_session_id: String,
+    pub capture_revision: u64,
     pub monitor_id: u32,
     pub window_labels: Vec<String>,
 }
@@ -93,6 +98,7 @@ pub struct ScreenResourceDescriptor {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenAttachmentPublication {
+    pub capture_revision: u64,
     pub attachment_id: String,
     pub item_id: String,
     pub width: u32,
@@ -122,6 +128,12 @@ pub struct ScreenAwarenessCapturePublication {
 pub struct ScreenAwarenessAttachmentPublication {
     pub attachment_id: String,
     pub count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureStartRequest {
+    pub capture_revision: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -219,6 +231,8 @@ impl CaptureManager {
     pub fn begin_session(
         &self,
         generation_id: &str,
+        character_session_id: &str,
+        capture_revision: u64,
         monitors: &[CaptureMonitor],
     ) -> Result<(String, Vec<String>, Vec<String>), String> {
         if !self.available {
@@ -254,6 +268,8 @@ impl CaptureManager {
         state.active = Some(CaptureSession {
             id: session_id.clone(),
             generation_id: generation_id.to_string(),
+            character_session_id: character_session_id.to_string(),
+            capture_revision,
             windows,
         });
         Ok((session_id, labels, previous))
@@ -281,6 +297,8 @@ impl CaptureManager {
         }
         Ok(CaptureClaim {
             generation_id: session.generation_id,
+            character_session_id: session.character_session_id,
+            capture_revision: session.capture_revision,
             monitor_id,
             window_labels: session.windows.into_keys().collect(),
         })
@@ -410,6 +428,7 @@ impl CaptureManager {
     pub fn capture_screen_awareness_frame(
         &self,
         generation_id: &str,
+        character_session_id: &str,
         cursor_x: i32,
         cursor_y: i32,
         resolution: &str,
@@ -445,6 +464,7 @@ impl CaptureManager {
             return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
         }
         let frame = ScreenAwarenessFrame {
+            character_session_id: character_session_id.to_string(),
             bytes,
             width: rgb.width(),
             height: rgb.height(),
@@ -478,6 +498,7 @@ impl CaptureManager {
             state.awareness_frames.clear();
             state.active_generation = Some(generation_id.to_string());
         }
+        let character_session_id = frame.character_session_id.clone();
         state.awareness_frames.push_back(frame);
         let mut dropped_count = 0;
         while state.awareness_frames.len() > batch_limit
@@ -487,7 +508,7 @@ impl CaptureManager {
             dropped_count += 1;
         }
         Ok(ScreenAwarenessCapturePublication {
-            count: state.awareness_frames.len(),
+            count: state.awareness_frames.iter().filter(|frame| frame.character_session_id == character_session_id).count(),
             dropped_count,
         })
     }
@@ -495,6 +516,7 @@ impl CaptureManager {
     pub fn materialize_screen_awareness_batch(
         &self,
         generation_id: &str,
+        character_session_id: &str,
     ) -> Result<Vec<ScreenResourceDescriptor>, String> {
         validate_generation(generation_id)?;
         self.cleanup_expired();
@@ -507,7 +529,9 @@ impl CaptureManager {
                 state.awareness_frames.clear();
                 return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
             }
-            state.awareness_frames.drain(..).collect::<Vec<_>>()
+            state.awareness_frames.drain(..)
+                .filter(|frame| frame.character_session_id == character_session_id)
+                .collect::<Vec<_>>()
         };
         if frames.is_empty() {
             return Err("SCREEN_AWARENESS_BATCH_EMPTY".to_string());
@@ -950,6 +974,7 @@ mod tests {
 
     fn awareness_frame(label: &str, byte_length: usize) -> ScreenAwarenessFrame {
         ScreenAwarenessFrame {
+            character_session_id: "session-a".to_string(),
             bytes: vec![7; byte_length],
             width: 100,
             height: 50,
@@ -1093,7 +1118,7 @@ mod tests {
             primary: false,
         };
         let (session, labels, _) = manager
-            .begin_session("00000000-0000-4000-8000-000000004006", &[monitor])
+            .begin_session("00000000-0000-4000-8000-000000004006", "session-a", 7, &[monitor])
             .unwrap();
         let claim = manager.claim_selection(&session, &labels[0], 7).unwrap();
         assert_eq!(claim.monitor_id, 7);
@@ -1170,7 +1195,7 @@ mod tests {
         assert_eq!(publication.dropped_count, 1);
 
         let descriptors = manager
-            .materialize_screen_awareness_batch(generation_id)
+            .materialize_screen_awareness_batch(generation_id, "session-a")
             .unwrap();
         assert_eq!(
             descriptors
@@ -1219,5 +1244,27 @@ mod tests {
         drop(state);
         drop(manager);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn screen_awareness_batch_rejects_frames_from_previous_character_sessions() {
+        let root = std::env::temp_dir().join(format!("sakura-session-test-{}", Uuid::new_v4().simple()));
+        let manager = CaptureManager::with_base(root.clone()).unwrap();
+        let generation = "00000000-0000-4000-8000-000000004007";
+        for (session, label) in [("alpha-first", "old"), ("beta", "other"), ("alpha-second", "current")] {
+            let mut frame = awareness_frame(label, 8);
+            frame.character_session_id = session.to_string();
+            manager.push_screen_awareness_frame(generation, frame, 20).unwrap();
+        }
+        // A late frame from the first A session arrives after returning to A.
+        let mut late = awareness_frame("late", 8);
+        late.character_session_id = "alpha-first".to_string();
+        manager.push_screen_awareness_frame(generation, late, 20).unwrap();
+        let descriptors = manager.materialize_screen_awareness_batch(generation, "alpha-second").unwrap();
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].captured_at, "current");
+        manager.release_descriptors(&descriptors, generation);
+        drop(manager);
+        fs::remove_dir_all(root).unwrap();
     }
 }

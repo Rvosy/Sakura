@@ -787,10 +787,11 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_screen_capture.py",
+        "tests/unit/test_core_host_screen_session.py",
         "tests/unit/test_screen_awareness_settings_boundary.py",
         "tests/integration/test_core_host_real_chat_integration.py",
         "-k",
-        "screen_resource or jpeg_dimensions or screen_awareness or manual_screen_attachment",
+        "screen_resource or jpeg_dimensions or screen_awareness or manual_screen_attachment or character_switch_rejects_old_capture",
         "-q"
       ],
       "timeout_seconds": 180,

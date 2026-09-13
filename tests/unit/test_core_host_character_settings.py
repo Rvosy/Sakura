@@ -54,6 +54,38 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("failure_stage", ["apply", "restore"])
+def test_failed_switch_can_reapply_saved_target(tmp_path, failure_stage):
+    from contextlib import contextmanager
+    from app.config.character_loader import CharacterRegistry
+
+    calls = []
+    @contextmanager
+    def prepare():
+        yield
+        if failure_stage == "restore" and len(calls) == 1:
+            raise RuntimeError("restore failed")
+
+    def apply():
+        calls.append("apply")
+        if failure_stage == "apply" and len(calls) == 1:
+            raise RuntimeError("session initialization failed")
+
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path,
+                                         prepare_switch=prepare, apply_switch=apply)
+    for role in ("alpha", "beta"):
+        boundary.import_archive(str(_archive(tmp_path / f"{role}.char", role)))
+    request = _request("characters.settings.select", {"characterId": "beta"})
+    first = boundary.handle(request)
+    assert first["error"]["code"] == "CHARACTER_SWITCH_APPLY_FAILED"
+    assert boundary._settings.load_current_character_id(CharacterRegistry(tmp_path)) == "beta"
+    second = boundary.handle(request)
+    assert second["payload"]["changePlan"] == "character_switch"
+    assert calls == ["apply", "apply"]
+    assert boundary.handle(request)["payload"]["changePlan"] == "unchanged"
+    assert len(calls) == 2
+
+
 def _archive(path: Path, character_id: str = "fixture") -> Path:
     manifest = {
         "format": "sakura.character.archive",

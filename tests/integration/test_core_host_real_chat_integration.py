@@ -836,7 +836,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
         _request(
             "attach-screen",
             "screen.attach",
-            {
+            {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                 "resource": {
                     "generationId": GENERATION_ID,
                     "resourceToken": token,
@@ -860,7 +860,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
         _request(
             "attach-screen-2",
             "screen.attach",
-            {
+            {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                 "resource": {
                     "generationId": GENERATION_ID,
                     "resourceToken": second_token,
@@ -959,7 +959,7 @@ def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
             _request(
                 f"attach-{index}",
                 "screen.attach",
-                {
+                {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -1007,7 +1007,7 @@ def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
             _request(
                 "attach-over-limit",
                 "screen.attach",
-                {
+                {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -1212,7 +1212,7 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         timeline_store=timeline,
     )
     attach = boundary.handle_screen_attach_batch(
-        _request("attach-batch", "screen.attachBatch", {"resources": resources})
+        _request("attach-batch", "screen.attachBatch", {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"], "resources": resources})
     )
     assert attach["payload"]["count"] == 2
     assert not any(root.glob("*.jpg"))
@@ -1300,7 +1300,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
             _request(
                 "attach-real-screen",
                 "screen.attach",
-                {
+                {"sessionId": _exchange(process, _request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -1321,7 +1321,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
             _request(
                 "attach-real-screen-2",
                 "screen.attach",
-                {
+                {"sessionId": _exchange(process, _request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": second_token,

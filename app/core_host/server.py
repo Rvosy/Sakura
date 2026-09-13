@@ -377,10 +377,21 @@ class ReadinessController:
             if initializer is not None:
                 initializer.retire_session()
             self.apply_provider_configuration()
+            if self.readiness() == "failed":
+                raise RuntimeError("ASSISTANT_INITIALIZATION_FAILED")
             # Provider setup can leave us without a Session, but the selected
             # character must still be available in Settings and Studio.
             if application is not None and self.published_session() is None:
                 application.bind_character_presentation(character_id)
+        except Exception:
+            with self._lock:
+                self._session = None
+                self._readiness = "failed"
+                self._component = {"state": "failed", "code": "ASSISTANT_INITIALIZATION_FAILED", "retryable": False}
+                self._current_character_summary = None
+                self._current_character_presentation = None
+                self._revision += 1
+            raise
         finally:
             with self._lock:
                 self._switching_character = False
@@ -389,6 +400,7 @@ class ReadinessController:
         from app.config.character_loader import CharacterRegistry, load_character_system_prompt
         from app.config.settings_service import AppSettingsService
         from app.core_host.assistant_adapter import project_current_character_summary
+        from app.core_host.character_presentation import project_character_presentation
 
         registry = CharacterRegistry(self._config.user_root)
         character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
@@ -399,6 +411,7 @@ class ReadinessController:
             if self._closed:
                 raise OperationCancelled()
             session = self._session
+            application = self._plugin_application
         if session is not None:
             if session.character.id != character_id:
                 raise ValueError("CHARACTER_SESSION_MISMATCH")
@@ -411,11 +424,22 @@ class ReadinessController:
             )
             session.runtime.set_visual_binding(visual_binding)
             session.character = character
+        summary = project_current_character_summary(character) if session is not None else None
+        project = getattr(application, "visual_presentation", None)
+        presentation = self._project_presentation(
+            project() if callable(project) else project_character_presentation(character)
+        )
+        if summary is not None and presentation is not None and any(
+            presentation[field] != summary[summary_field]
+            for field, summary_field in (("characterId", "id"), ("displayName", "displayName"), ("initialMessage", "initialMessage"))
+        ):
+            raise RuntimeError("CHARACTER_PRESENTATION_NOT_READY")
         with self._lock:
-            if session is not None:
-                self._current_character_summary = project_current_character_summary(character)
+            if self._closed or self._session is not session:
+                raise OperationCancelled()
+            self._current_character_summary = summary
+            self._current_character_presentation = presentation
             self._revision += 1
-        self._refresh_visual_presentation()
 
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
@@ -1189,7 +1213,7 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, "handle_cancel")(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
-        elif name in {"screen.attach", "screen.attachBatch", "screen.remove", "screen.release"}:
+        elif name in {"screen.session", "screen.attach", "screen.attachBatch", "screen.remove", "screen.release"}:
             if (
                 SCREEN_CAPTURE_CAPABILITY not in self._negotiated_capabilities
                 or self._chat_boundary is None
@@ -1201,6 +1225,7 @@ class ControlDispatcher:
                 ), False
             try:
                 handler = {
+                    "screen.session": "handle_screen_session",
                     "screen.attach": "handle_screen_attach",
                     "screen.attachBatch": "handle_screen_attach_batch",
                     "screen.remove": "handle_screen_remove",

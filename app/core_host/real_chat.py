@@ -107,6 +107,7 @@ class RealChatBoundary:
         self._changed = threading.Condition(self._lock)
         self._executions: dict[str, _Execution] = {}
         self._pending_screen_attachment: _ScreenAttachment | None = None
+        self._screen_session_id = secrets.token_hex(16)
         self._pending_runtime_updates: dict[str, Callable[[], None]] = {}
         self._revision = 0
         self._closed = False
@@ -870,20 +871,37 @@ class RealChatBoundary:
             payload={"accepted": accepted, "operationId": operation_id},
         )
 
+    def handle_screen_session(self, request: dict[str, Any]) -> dict[str, Any]:
+        if request.get("payload") != {}:
+            raise ValueError("screen.session payload is invalid")
+        with self._lock:
+            self._check_screen_session(self._screen_session_id)
+            session_id = self._screen_session_id
+        return response(request, generation_id=self._generation_id,
+                        generation_credential=self._generation_credential,
+                        protocol_minor=2, payload={"sessionId": session_id})
+
+    def _check_screen_session(self, session_id: object) -> None:
+        # Called under the chat lock both before reading a resource and before
+        # publishing it. The token changes even when A is selected again.
+        if self._closed or self._switching_character or session_id != self._screen_session_id:
+            raise LookupError("SCREEN_SESSION_STALE")
+
     def handle_screen_attach(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"resource"}:
+        if not isinstance(payload, Mapping) or set(payload) != {"resource", "sessionId"}:
             raise ValueError("screen.attach payload is invalid")
         from app.core_host.screen_capture import consume_screen_resource
         from app.storage.visual_observation import generate_visual_observation_id
 
+        with self._lock:
+            self._check_screen_session(payload["sessionId"])
         observation = consume_screen_resource(
             payload["resource"], generation_id=self._generation_id
         )
         item_id = f"shot-{secrets.token_hex(16)}"
         with self._lock:
-            if self._closed or self._switching_character:
-                raise LookupError("screen attachment generation is closing")
+            self._check_screen_session(payload["sessionId"])
             pending = self._pending_screen_attachment
             if pending is None:
                 attachment = _ScreenAttachment(
@@ -922,7 +940,7 @@ class RealChatBoundary:
 
     def handle_screen_attach_batch(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"resources"}:
+        if not isinstance(payload, Mapping) or set(payload) != {"resources", "sessionId"}:
             raise ValueError("screen.attachBatch payload is invalid")
         resources = payload.get("resources")
         if not isinstance(resources, list) or not 1 <= len(resources) <= 20:
@@ -931,6 +949,8 @@ class RealChatBoundary:
             raise ValueError("screen.attachBatch resource is invalid")
         from app.core_host.screen_capture import consume_screen_resource
 
+        with self._lock:
+            self._check_screen_session(payload["sessionId"])
         observations = tuple(
             consume_screen_resource(resource, generation_id=self._generation_id)
             for resource in resources
@@ -942,8 +962,7 @@ class RealChatBoundary:
             source="screen_awareness",
         )
         with self._lock:
-            if self._closed or self._switching_character:
-                raise LookupError("screen attachment generation is closing")
+            self._check_screen_session(payload["sessionId"])
             if self._pending_screen_attachment is not None:
                 raise LookupError("another screen attachment is pending")
             self._pending_screen_attachment = attachment
@@ -1066,6 +1085,7 @@ class RealChatBoundary:
         deadline = monotonic() + CHAT_CLOSE_TIMEOUT_SECONDS
         with self._changed:
             self._switching_character = True
+            self._screen_session_id = secrets.token_hex(16)
             self._pending_screen_attachment = None
             self.cancel_all()
             try:

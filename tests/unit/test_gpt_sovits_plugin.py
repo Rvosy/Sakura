@@ -26,6 +26,45 @@ GENERATION = "generation-gpt-plugin"
 CREDENTIAL = "4" * 32
 
 
+def test_resource_update_is_notified_when_running_task_finishes(tmp_path, monkeypatch):
+    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+
+    config = provider_module._ProviderConfig(
+        enabled=True, custom_base_url=None, tts_path="/tts", timeout_seconds=5,
+        remote_reference_root=None, work_dir=tmp_path, python_path=None, tts_config_path=None)
+    coordinator = provider_module._Coordinator(config)
+    running, waiting, release = threading.Event(), threading.Event(), threading.Event()
+    notified, results = [], []
+    def execute(_item):
+        running.set()
+        assert release.wait(3)
+    monkeypatch.setattr(coordinator, "_execute_warmup", execute)
+    original_wait = coordinator._idle.wait
+    def wait(timeout):
+        waiting.set()
+        result = original_wait(timeout)
+        notified.append(result)
+        return result
+    monkeypatch.setattr(coordinator._idle, "wait", wait)
+    worker = threading.Thread(target=lambda: results.append(coordinator.prepare_resources()))
+    try:
+        coordinator.warmup(None)
+        assert running.wait(3)
+        worker.start()
+        assert waiting.wait(3)
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive()
+        assert results == [True]
+        assert notified == [True], "task completion must notify the waiter, not let its deadline expire"
+    finally:
+        release.set()
+        if worker.ident is not None:
+            worker.join(3)
+        coordinator.finish_resources()
+        coordinator.close()
+
+
 def _wav_bytes() -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as handle:

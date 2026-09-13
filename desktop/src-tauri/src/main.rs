@@ -3415,6 +3415,7 @@ async fn chat_cancel(
 #[tauri::command]
 async fn start_screen_capture(
     window: WebviewWindow,
+    payload: capture::CaptureStartRequest,
     lifecycle: State<'_, ShellLifecycleState>,
     captures: State<'_, Arc<capture::CaptureManager>>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
@@ -3439,10 +3440,11 @@ async fn start_screen_capture(
         .unwrap_or_else(|| "#4b9ac4".to_string());
     let task_generation_id = generation_id.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
+        let character_session_id = screen_session_id(&handle)?;
         let monitors = capture::monitor_descriptors()?;
         let monitor_count = monitors.len();
         let (session_id, labels, previous) =
-            capture_manager.begin_session(&task_generation_id, &monitors)?;
+            capture_manager.begin_session(&task_generation_id, &character_session_id, payload.capture_revision, &monitors)?;
         capture::close_windows(&app, &previous);
         if let Err(error) =
             capture::show_overlays(&app, &session_id, &labels, &monitors, &theme_primary)
@@ -3479,6 +3481,15 @@ async fn start_screen_capture(
     Ok(())
 }
 
+fn screen_session_id(handle: &shell_lifecycle::ShellLifecycleHandle) -> Result<String, String> {
+    let payload = settings_response_payload(handle.settings_request(
+        None, "screen.session", json!({}), std::time::Duration::from_secs(5),
+    )?)?;
+    payload.get("sessionId").and_then(Value::as_str)
+        .filter(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_string).ok_or_else(|| "SCREEN_SESSION_INVALID".to_string())
+}
+
 #[tauri::command]
 async fn capture_selected_region(
     window: WebviewWindow,
@@ -3504,16 +3515,22 @@ async fn capture_selected_region(
         {
             return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
         }
+        if screen_session_id(&handle)? != task_claim.character_session_id {
+            return Err("SCREEN_SESSION_STALE".to_string());
+        }
         let descriptor = manager.capture(&task_claim, local_rect)?;
         let token = descriptor.resource_token.clone();
         let response = handle.settings_request(
             None,
             "screen.attach",
-            json!({"resource": descriptor}),
+            json!({"resource": descriptor, "sessionId": task_claim.character_session_id}),
             std::time::Duration::from_secs(10),
         );
         manager.release(&token, &task_generation_id);
         let payload = settings_response_payload(response?)?;
+        if screen_session_id(&handle)? != task_claim.character_session_id {
+            return Err("SCREEN_SESSION_STALE".to_string());
+        }
         let attachment_id = payload
             .get("attachmentId")
             .and_then(Value::as_str)
@@ -3543,6 +3560,7 @@ async fn capture_selected_region(
             .filter(|value| (1..=6).contains(value))
             .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
         Ok(capture::ScreenAttachmentPublication {
+            capture_revision: task_claim.capture_revision,
             attachment_id: attachment_id.to_string(),
             item_id: item_id.to_string(),
             width,
@@ -3573,7 +3591,9 @@ async fn capture_selected_region(
         }
         Err(code) => {
             let (stable_code, public_message) =
-                if code.contains("manual screen attachment limit exceeded") {
+                if code.contains("SCREEN_SESSION_STALE") {
+                    ("SCREEN_SESSION_STALE", "角色已切换，截图已取消。")
+                } else if code.contains("manual screen attachment limit exceeded") {
                     (
                         "SCREEN_ATTACHMENT_LIMIT_EXCEEDED",
                         "每条消息最多附加 6 张截图。",
@@ -3591,7 +3611,7 @@ async fn capture_selected_region(
             let _ = app.emit_to(
                 "main",
                 capture::ERROR_EVENT,
-                json!({"message": public_message}),
+                json!({"message": public_message, "captureRevision": claim.capture_revision}),
             );
             Err(public_message.to_string())
         }
@@ -3739,8 +3759,10 @@ async fn capture_screen_awareness_frame(
     let manager = captures.inner().clone();
     let task_generation_id = generation_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let character_session_id = screen_session_id(&handle)?;
         manager.capture_screen_awareness_frame(
             &task_generation_id,
+            &character_session_id,
             cursor.x.round() as i32,
             cursor.y.round() as i32,
             &payload.resolution,
@@ -3779,12 +3801,13 @@ async fn attach_screen_awareness_batch(
         .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
     let manager = captures.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let descriptors = manager.materialize_screen_awareness_batch(&generation_id)?;
+        let character_session_id = screen_session_id(&handle)?;
+        let descriptors = manager.materialize_screen_awareness_batch(&generation_id, &character_session_id)?;
         let count = descriptors.len();
         let response = handle.settings_request(
             None,
             "screen.attachBatch",
-            json!({"resources": descriptors}),
+            json!({"resources": descriptors, "sessionId": character_session_id}),
             std::time::Duration::from_secs(15),
         );
         manager.release_descriptors(&descriptors, &generation_id);

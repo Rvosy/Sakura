@@ -2069,7 +2069,7 @@ await listenAppEvent("sakura://screen-capture-cancelled", () => {
   screenAttachment.handleCancelled();
 });
 await listenAppEvent("sakura://screen-capture-error", (event) => {
-  screenAttachment.handleError(event?.payload?.message);
+  screenAttachment.handleError(event?.payload?.message, event?.payload?.captureRevision);
 });
 await listenAppEvent("sakura://screen-awareness-settings", (event) => {
   try {

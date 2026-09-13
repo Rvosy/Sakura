@@ -348,7 +348,9 @@ class _Coordinator:
                     self._pending_config = None
                 if pending_config is not None:
                     self._apply_config(pending_config)
-                self._queue.task_done()
+                with self._idle:
+                    self._queue.task_done()
+                    self._idle.notify_all()
 
     def prepare_resources(self) -> bool:
         from time import monotonic
@@ -367,8 +369,6 @@ class _Coordinator:
                 elif isinstance(item, _Warmup):
                     item.cancel()
                 self._queue.task_done()
-                with self._idle:
-                    self._idle.notify_all()
             while self._queue.unfinished_tasks:
                 remaining = deadline - monotonic()
                 if remaining <= 0:

@@ -78,6 +78,7 @@ class CharacterSettingsBoundary:
         self._apply_current = apply_current
         self._prepare_switch = prepare_switch
         self._apply_switch = apply_switch
+        self._switch_apply_pending = False
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -400,16 +401,19 @@ class CharacterSettingsBoundary:
                             application.application.validate_visual_choice(profile, resource)
                         except VisualHostError as error:
                             raise CharacterSettingsError(error.code, "所选形态无法使用，请检查对应插件或选择其他形态。") from error
-                if current == character_id and not changed:
+                needs_switch = current != character_id or self._switch_apply_pending
+                if not needs_switch and not changed:
                     return self._change_result("unchanged")
-                if current != character_id and self._apply_switch is not None:
+                if needs_switch and self._apply_switch is not None:
                     scope = self._prepare_switch() if self._prepare_switch else nullcontext()
                     committed = False
                     try:
                         with scope:
                             self._settings.save_character_selection(registry, character_id, changed)
                             committed = True
+                            self._switch_apply_pending = True
                             self._apply_switch()
+                        self._switch_apply_pending = False
                     except Exception as error:
                         log_event("CharacterSettings", "角色切换未完成", exception_diagnostics(
                             error, reason_code="CHARACTER_SWITCH_FAILED", stage="character.switch"), severity="error")
@@ -434,7 +438,7 @@ class CharacterSettingsBoundary:
                     field="characterId",
                 ) from error
             self._revision += 1
-            if current != character_id:
+            if needs_switch:
                 return self._change_result("character_switch" if self._apply_switch else "core_restart_required")
             if character_id in changed:
                 # The Assistant and other plugins belong to the character session.

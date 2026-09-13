@@ -46,13 +46,15 @@ Python `characters.settings.select/import/import_voice` 在校验归档或目标
 Rust 必须在同一设置窗口和当前 Core identity 下校验完整响应。`core_restart_required` 只派发一次受控
 restart，并向设置页返回已提交目标、前一 generation 和 `restartState=requested`；其余计划返回
 `restartState=not_required`。配置保存失败不得 restart；restart 派发失败返回
-`CHARACTER_RESTART_REQUEST_FAILED`。配置可能已经提交，因此失败后禁止第二次写入、自动回滚、自动重试或回退
+`CHARACTER_RESTART_REQUEST_FAILED`。配置可能已经提交，因此失败后禁止自动重复写入、自动回滚、自动重试或回退
 旧角色，用户只能按明确错误人工恢复。
 
 正常角色切换返回 `character_switch`，原生回执增加 `characterChanged: true`，同时保持
 `restartState: not_required`。前端据此清空旧角色页面并等待目标表现就绪，不要求 generation 增加。
 准备失败返回 `CHARACTER_SWITCH_PREPARE_FAILED` 且不保存目标；保存后应用失败返回
 `CHARACTER_SWITCH_APPLY_FAILED`，明确说明选择已经保存，不自动重启。
+Core 记录尚未成功应用的选择；用户再次提交同一目标时重新执行切换，只有会话应用和相关插件恢复都成功后，
+后续相同选择才返回 `unchanged`。初始化失败发布 `failed` 状态，设置与工坊仍可访问，不把已保存误报为已应用。
 
 `characters.settings.export` 接收角色 ID、导出类型和 Rust 文件对话框选出的绝对路径，成功时只返回
 `schemaVersion`、`outputPath` 和用户提示。Python Core 负责校验角色及语音模型，并通过临时文件替换目标归档；
@@ -78,6 +80,7 @@ Rust 和 WebView 不直接读取角色目录。
 切换准备期间，Snapshot 保留上一份完整角色信息；新 Session 和最终表现绑定完成后，再一起发布目标角色摘要、
 表现和递增 revision。不得组合旧角色摘要与新角色表现，也不得发布随后立即被替换的中间绑定。
 切换前发起的表现查询不能覆盖已经提交的新 Session。桌面端拒绝快照时，日志必须记录具体读取或校验错误。
+同角色保存名称或开场白也须先准备新摘要与新表现，再一次持锁发布，不能依赖下一次快照读取补齐状态。
 
 ## 3. 会话与数据隔离
 
