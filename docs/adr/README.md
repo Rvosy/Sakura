@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-13
+updated: 2026-09-14
 ---
 
 # Architecture Decision Records
@@ -62,6 +62,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0048：语音资源与应用运行选择分离](0048-voice-resources-and-local-selection.md)
 
 - [ADR-0049：统一 Context 支持行为规则与参考资料](0049-unified-context-instructions.md)
+- [ADR-0050：薄宿主与插件拥有的默认策略](0050-thin-host-and-plugin-owned-policies.md)（提案，实施待完成）
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

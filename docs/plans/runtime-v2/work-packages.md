@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-14
 ---
 
 # Runtime v2 路线图
@@ -11,7 +11,10 @@ updated: 2026-09-05
 本表记录计划和已知验收进度，不是开发许可清单。当前用户任务可以涉及任一相关能力，无需先“激活”工作包；
 开始实现也不等于通过验收。状态更新必须依据实际证据，自动检查和人工结果分别说明。
 
-Runtime v2 的目标是完成可发布的 Tauri 桌宠，而不是建设一套自动治理平台。当前只保留三个能力边界：
+Runtime v2 的目标是完成可发布的 Tauri 桌宠，并由薄宿主与可替换的默认插件提供日常能力。
+插件生态的后续顺序见[开放插件生态总计划](open-plugin-ecosystem.md)：修正 Context 分类、打通执行器替换、
+迁出默认模型与对话策略，再按真实消费者完善协作和界面。该计划不改变下表尚未核对的历史验收状态。
+当前运行拓扑如下；部署位置不等于所有业务策略都应永久归 Core：
 
 ```text
 Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
@@ -49,6 +52,8 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
   不保留后台 reconcile、自愈或调用重放。
 - Plugin Runtime v4 已完成 v4-only 切换和完整验收：官方默认实现可替换，每插件独立进程和 dependency
   root，跨进程 ServiceProxy，官方插件依赖与实现不进入 Core Runtime。
+  这里的默认实现指已迁入插件的能力；当前聊天仍固定创建模型客户端、Agent 和管线，
+  其可替换化属于开放插件生态总计划，不能据此行宣称已经完成。
 - Legacy Qt 已按 ADR-0034 退役；旧行为通过 Git 历史查看，当前运行时不保留旧 schema parser 或 migration。
 
 ## 未完成 Work Package

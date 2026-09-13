@@ -3,14 +3,14 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: work-packages.md
-updated: 2026-09-13
+updated: 2026-09-14
 ---
 
 # Runtime v2 Plans
 
 - [当前路线图](work-packages.md)
 - [插件管理页与通用设置页方向](plugin-management-foundation.md)
-- [开放插件生态：能力组合、默认实现替换与界面扩展](open-plugin-ecosystem.md)（已实现统一 Context 初版，其余阶段待实施）
+- [开放插件生态总计划：薄宿主与可替换的默认能力](open-plugin-ecosystem.md)（Context 初版待纠偏，下一主线为真实执行入口替换）
 - [精简前的完整计划与逐日证据](../../archive/plans/runtime-v2/pre-simplification-2026-08-23/)
 
 当前目录维护阶段表、当前工作、未完成 WP 和尚待产品接入的设计方向。已完成任务的实施计划、Foundation Plan、Draft 和逐日证据
