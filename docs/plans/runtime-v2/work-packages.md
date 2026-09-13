@@ -14,6 +14,7 @@ updated: 2026-09-14
 Runtime v2 的目标是完成可发布的 Tauri 桌宠，并由薄宿主与可替换的默认插件提供日常能力。
 插件生态方向见[开放插件生态总计划](open-plugin-ecosystem.md)：M1 的 Context 修正保留，M2 的主设置选择入口已撤回，
 执行合同、进程绑定和取消作为开发基础保留。M3/M4 仍是长期方向，后续拆分与界面待真实需求和用户方案明确。
+本轮从 M5 推进普通服务显式绑定及 TTS 旧任务隔离、可选便签记忆两个实际消费者，不恢复主设置或模式选择。
 该计划不改变下表尚未核对的历史验收状态。
 当前运行拓扑如下；部署位置不等于所有业务策略都应永久归 Core：
 
@@ -57,6 +58,10 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
 - 开放插件生态 M1 已提交 `2097b739`。M2 的历史实现 `f9fde091` 曾提供执行器选择，现按用户要求撤回主设置和正常聊天入口，
   旧 `chat_executor` 直接忽略，`settings.executor` 端点移除。执行服务与专注样例保留供开发验证，不形成隐藏模式或由插件开关接管聊天。
   当前日常验收复用已有数据、默认 Assistant 和插件自身的对话规则文本；M3/M4 不自动进入产品改造。详细范围见总计划第 12 节。
+- 开放插件生态 M5 本轮分两项实施：公开 `context.bind()`，让 TTS Hub 的旧 job 查询/取消固定到原 Provider 进程；
+  增加可选[便签记忆](../../specs/runtime-v2/fact-memory.md)，由插件自己的 Collection、私有 SQLite、Context 和只读工具完成管理与召回。
+  两项按各自实际测试和 Git 节点记录结果，当前范围不等于已通过验收。日常使用由用户通过已有数据启动器安装、启用可选插件，
+  不自动改写原角色、模型、插件开关或 Mem0 数据。范围与验收见总计划第 13 节。
 - Legacy Qt 已按 ADR-0034 退役；旧行为通过 Git 历史查看，当前运行时不保留旧 schema parser 或 migration。
 
 ## 未完成 Work Package

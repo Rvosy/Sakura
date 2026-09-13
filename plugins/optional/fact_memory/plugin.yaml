@@ -1,0 +1,19 @@
+api: 4
+id: fact_memory
+name: 便签记忆
+author: Sakura
+description: 手动保存便签，在相关对话中提供给当前角色。
+version: 0.1.0
+entry: plugin:FactMemoryPlugin
+enabled: false
+provides: []
+requires:
+  - sakura.host.context
+  - sakura.host.tools
+  - sakura.host.settings
+  - sakura.host.settings.collection-v0
+  - sakura.host.character
+presentation:
+  kind: extension
+  category: other
+  icon: sticky-note
