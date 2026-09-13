@@ -1,0 +1,26 @@
+[Unit]
+Description=Sakura private management console
+After=network.target
+
+[Service]
+User=sakura-console
+Group=sakura-console
+SupplementaryGroups=sakura-diagnostics
+WorkingDirectory=/opt/sakura-service/current
+Environment=SAKURA_CONSOLE_DB=/var/lib/sakura-console/console.db
+Environment=SAKURA_TELEMETRY_EXPORT_ROOT=/var/lib/sakura-console/exports
+Environment=SAKURA_EXPORT_LOCK=/var/lib/sakura-console/export.lock
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/sakura-console-venv/bin/python -m uvicorn console_app:app --host 127.0.0.1 --port 8766 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=3
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/sakura-telemetry
+ReadWritePaths=/var/lib/sakura-console /www/wwwroot/Sakura/service/v1
+
+[Install]
+WantedBy=multi-user.target

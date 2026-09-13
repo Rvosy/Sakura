@@ -52,7 +52,7 @@ def main():
             "telemetry::tests::acceptance_wire_capture_preserves_core_location_and_terminal", "--", "--exact",
         ], cwd=ROOT, env=environment, check=True)
         subprocess.run([
-            sys.executable, "-m", "pytest", "-q", "tools/telemetry_server/tests/test_original_errors.py",
+            sys.executable, "-m", "pytest", "-q", "services/sakura/tests/test_original_errors.py",
         ], cwd=ROOT, env=environment, check=True)
     print("原始错误已通过 Python、Rust HTTP、FastAPI、SQLite、详情和 ZIP 验证。")
 

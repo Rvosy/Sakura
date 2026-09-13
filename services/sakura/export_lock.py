@@ -8,7 +8,7 @@ import queries
 
 @contextmanager
 def exclusive_export():
-    path = queries.DB_PATH.with_suffix(".export.lock")
+    path = os.environ.get("SAKURA_EXPORT_LOCK", str(queries.DB_PATH.with_suffix(".export.lock")))
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:

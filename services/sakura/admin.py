@@ -13,7 +13,8 @@ from fastapi.responses import FileResponse, RedirectResponse
 from db import DB_PATH
 
 
-ADMIN_HOST = "admin.cialloo.cn"
+ADMIN_HOST = "adm.sakura.cialloo.cn"
+ADMIN_HOSTS = {ADMIN_HOST, "admin.cialloo.cn"}
 STATIC_ROOT = Path(__file__).with_name("admin_static")
 
 router = APIRouter(include_in_schema=False)
@@ -25,7 +26,7 @@ def _not_found() -> None:
 
 def _require_admin_host(request: Request) -> None:
     host = request.headers.get("host", "").split(":", 1)[0].rstrip(".").lower()
-    if host != ADMIN_HOST:
+    if host not in ADMIN_HOSTS:
         _not_found()
 
 

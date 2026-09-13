@@ -72,23 +72,23 @@ jobs:
       - name: Install telemetry test dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          -r tools/telemetry_server/requirements.txt pytest httpx
+          -r services/sakura/requirements.txt pytest httpx
 
       - name: Run telemetry server tests
         run: >-
           python -m pytest -q -c /dev/null -p no:cacheprovider
-          tools/telemetry_server/tests
+          services/sakura/tests
 
       - name: Install and build the dashboard
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npm ci && npm run build
 
       - name: Install Chromium for dashboard tests
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npx playwright install --with-deps chromium
 
       - name: Run dashboard browser tests
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npm test
 
   rust-format:

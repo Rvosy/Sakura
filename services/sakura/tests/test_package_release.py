@@ -10,6 +10,8 @@ import package_release
 def test_deployment_package_contains_size_inventory(tmp_path, monkeypatch):
     source = tmp_path / "source"
     (source / "dashboard/dist").mkdir(parents=True)
+    (source / "deploy").mkdir()
+    (source / "deploy/console.service").write_text("[Service]\n")
     (source / "dashboard/dist/index.html").write_text("<html></html>")
     (source / "app.py").write_text("pass\n")
     (source / "requirements.txt").write_text("")

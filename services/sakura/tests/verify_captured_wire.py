@@ -9,7 +9,7 @@ work = Path(tempfile.mkdtemp(prefix="sakura-v2-acceptance-"))
 os.environ["SAKURA_TELEMETRY_DB_PATH"] = str(work / "telemetry.db")
 os.environ["SAKURA_TELEMETRY_EXPORT_ROOT"] = str(work / "exports")
 from fastapi.testclient import TestClient
-from app import app
+from test_diagnostics import app
 from queries import Filters
 from export_bundle import export_bundle
 from verify_bundle import verify

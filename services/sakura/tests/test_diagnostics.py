@@ -8,7 +8,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 from fastapi.testclient import TestClient
 import db, queries, exports, admin
-from app import app
+from app import app as ingest_app
+from fastapi import FastAPI
+from admin_v2 import router as diagnostics_router
+app = FastAPI(lifespan=ingest_app.router.lifespan_context)
+app.include_router(ingest_app.router)
+app.include_router(admin.router)
+app.include_router(diagnostics_router)
+app.include_router(exports.router)
 from export_bundle import export_bundle, ExportLimitError
 from verify_bundle import verify
 
@@ -21,8 +28,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(queries, "DB_PATH", database)
     monkeypatch.setattr(exports, "ROOT", tmp_path / "exports")
     exports.JOBS.clear()
+    exports.start_cleanup()
     with TestClient(app, base_url="http://admin.cialloo.cn") as client:
         yield client
+    exports.STOP.set()
 
 
 def report(**overrides):

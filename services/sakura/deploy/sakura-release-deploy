@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+    echo "Remote commands are forbidden" >&2
+    exit 1
+fi
+exec /usr/bin/sudo -n -u sakura-console /usr/local/sbin/sakura-ci-import

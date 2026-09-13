@@ -1,6 +1,12 @@
 export type Row = Record<string, any>;
 export type View =
-  "diagnostics" | "overview" | "errors" | "models" | "installation" | "report";
+  | "releases"
+  | "diagnostics"
+  | "overview"
+  | "errors"
+  | "models"
+  | "installation"
+  | "report";
 export interface Route {
   view: View;
   days: number;
@@ -24,6 +30,7 @@ export interface Route {
   includeTest?: boolean;
 }
 export const views: View[] = [
+  "releases",
   "diagnostics",
   "overview",
   "errors",

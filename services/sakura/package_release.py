@@ -23,6 +23,7 @@ def package(destination: Path):
         for name in ("requirements.txt", "README.md"):
             shutil.copy2(root / name, stage / name)
         shutil.copytree(root / "dashboard/dist", stage / "admin_static")
+        shutil.copytree(root / "deploy", stage / "deploy")
         files = {
             p.relative_to(stage).as_posix(): {"bytes": p.stat().st_size}
             for p in stage.rglob("*")

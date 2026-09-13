@@ -1,6 +1,6 @@
-# Sakura Telemetry v2 服务器与分析包
+# Sakura 在线服务与私人控制台
 
-本目录包含遥测服务器、后台与分析包导出源码。基础文件取自核对后的线上 BaoTa 服务；旧 Phase 2 目录不再作为部署来源。
+本目录统一维护遥测接收、私人控制台、版本清单发布与分析包导出。源码从 tools/telemetry_server 迁入；部署入口见 deploy/ 和 [运维文档](../../docs/devdocs/SAKURA_SERVICE.md)。
 客户端、服务端与后台必须按协议顺序上线。后端继续使用 FastAPI、Pydantic、SQLite；React 页面保留在 `dashboard/`，没有新增账号系统或消息队列。
 
 ## 本地隔离运行
@@ -13,7 +13,12 @@ export SAKURA_TELEMETRY_EXPORT_ROOT=/tmp/sakura-telemetry-test/exports
 python -m uvicorn app:app --host 127.0.0.1 --port 8765 --workers 1 --no-access-log
 ```
 
-`/health` 检查数据库。Admin API 和静态页要求 `Host: admin.cialloo.cn`；本地 Host 隔离不提供密码认证。生产 Basic Auth 必须继续由 Nginx 执行，8765 不得对公网开放。
+`app:app` 仅接收遥测，`/health` 检查数据库。后台单独运行 `console_app:app` 于 127.0.0.1:8766，
+接受 `Host: adm.sakura.cialloo.cn` 和旧 `admin.cialloo.cn`。本地 Host 隔离不提供密码认证；生产认证由 Nginx 执行，两个端口都不得对公网开放。
+
+本地启动后台前还需设置 `SAKURA_CONSOLE_DB`、`SAKURA_RELEASE_ROOT`、`SAKURA_RELEASE_LOCK`、
+`SAKURA_EXPORT_LOCK` 为隔离目录内的数据库、公开 JSON 目录和锁文件路径，并先初始化隔离遥测库。
+写请求须携带 `Origin: https://adm.sakura.cialloo.cn` 与 JSON Content-Type。发布草稿读取 GitHub，但保存草稿不改变公开清单。
 数据库初始化采用增量列和索引，不修改既有 received_at。v1/v2/v3 错误报告均可入库；未知诊断字段不补零、不推测。
 
 后台构建：在 `dashboard/` 执行 `npm ci && npm run build`，将 dist 内容放入服务根的 `admin_static/`，保留 `assets/` 子目录。HTML 位于 `admin_static/index.html`，脚本、样式和字体位于 `admin_static/assets/`；后端通过固定路由提供这些文件。原外部后台目录没有被覆盖。
@@ -33,6 +38,7 @@ python verify_bundle.py /private/report.zip
 ```
 
 其他筛选参数：version、installation、run、generation、operation、group、component、reason、severity、platform。`--include-test` 明确纳入开发及验收样本。
+生产 CLI 导出须以 sakura-console 身份运行，并设置 `SAKURA_EXPORT_LOCK=/var/lib/sakura-console/export.lock`，与后台共用锁。
 CLI 输出由调用者保管；后台临时文件保留一小时。超出 5 分钟或 1 GiB 未压缩内容会失败并清理，不能拿到静默截断的包。
 
 每个包包含 README、protocol.json、schema.json、manifest 和标准库校验器。先核对必需文件、大小和行数，再查看 groups.json；同一 run 按 occurred_ms 排序。
@@ -53,9 +59,9 @@ python -m pytest -q -s -c /dev/null -p no:cacheprovider tests/test_diagnostics.p
 真实 Core/Rust 请求体到 ZIP 的契约验收，从仓库根执行（最后一步使用服务器虚拟环境）：
 
 ```sh
-runtime/bin/python tools/telemetry_server/tests/capture_core_wire.py /tmp/core-wire.jsonl
+runtime/bin/python services/sakura/tests/capture_core_wire.py /tmp/core-wire.jsonl
 SAKURA_ACCEPTANCE_CORE_WIRE=/tmp/core-wire.jsonl SAKURA_ACCEPTANCE_WIRE_OUTPUT=/tmp/http-wire.json cargo test --manifest-path desktop/src-tauri/Cargo.toml telemetry::tests::acceptance_wire_capture -- --test-threads=1
-python tools/telemetry_server/tests/verify_captured_wire.py /tmp/http-wire.json
+python services/sakura/tests/verify_captured_wire.py /tmp/http-wire.json
 ```
 
 该入口注入真实 ResponseWriter 失败并经过 Core bridge、Rust 校验/HTTP 发送、服务器入库和 ZIP 校验；中间保存 loopback 请求体后重放到 FastAPI。
@@ -96,7 +102,13 @@ python tools/telemetry_server/tests/verify_captured_wire.py /tmp/http-wire.json
 
 ```sh
 # 当前 Python 环境需安装服务端 requirements、pytest、httpx；客户端使用 bundled runtime。
-python tools/telemetry_server/verify_original_errors.py
+python services/sakura/verify_original_errors.py
 ```
 
 此命令不连接生产，不读写真实用户 data。更多契约见 [远程诊断 Spec](../../docs/specs/runtime-v2/remote-diagnostics-telemetry.md)。
+
+## CI 导入
+
+Release 的 `import-console-draft` 在正式资产完成后通过原受限 SSH key 提交完整资料。`ci_import.py` 只导入私人草稿；
+控制台启动时创建导入映射表，CI 调用不执行启动状态恢复。相同版本与内容重跑返回原记录，不覆盖维护者编辑。
+后台显示 GitHub Actions 来源，维护者确认发布后国内更新清单才改变。部署入口与精确 sudo 规则位于 deploy/。

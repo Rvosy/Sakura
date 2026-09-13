@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-query";
 import {
   ChartNoAxesCombined,
-  Bug,
+  PackageCheck,
   Layers,
   Monitor,
   FileSearch,
@@ -24,7 +24,7 @@ import "./styles.css";
 import iconUrl from "./assets/sakura-icon.png";
 import { Overview } from "./Overview";
 import { Diagnostics } from "./Diagnostics";
-import { Errors } from "./Errors";
+import { Releases, ReleaseSummary } from "./Releases";
 import { Models } from "./Models";
 import { Installation, ReportDrawer, Lookup } from "./Details";
 import { useRoute, href, navigate } from "./state";
@@ -32,42 +32,12 @@ import { Panel } from "./components";
 import { useMediaQuery } from "./useMediaQuery";
 import type { View } from "./types";
 const nav = [
-  {
-    id: "diagnostics",
-    label: "诊断与分析包",
-    icon: FileSearch,
-    note: "按构建与运行定位问题，下载完整证据",
-  },
-  {
-    id: "overview",
-    label: "概览",
-    icon: ChartNoAxesCombined,
-    note: "查看运行与错误概况",
-  },
-  {
-    id: "errors",
-    label: "错误排查",
-    icon: Bug,
-    note: "查找错误，查看报告与发生位置",
-  },
-  {
-    id: "models",
-    label: "模型与 Context",
-    icon: Layers,
-    note: "查看用量、窗口占比和逐次调用",
-  },
-  {
-    id: "installation",
-    label: "安装实例",
-    icon: Monitor,
-    note: "查看一个匿名安装实例的记录",
-  },
-  {
-    id: "report",
-    label: "报告查询",
-    icon: FileSearch,
-    note: "按 Report ID 查询已保存的错误报告",
-  },
+  { id: "overview", label: "运行总览", icon: ChartNoAxesCombined },
+  { id: "releases", label: "版本发布", icon: PackageCheck },
+  { id: "diagnostics", label: "诊断与分析包", icon: FileSearch },
+  { id: "models", label: "模型与 Context", icon: Layers },
+  { id: "installation", label: "安装实例", icon: Monitor },
+  { id: "report", label: "报告查询", icon: FileSearch },
 ];
 function App() {
   const route = useRoute();
@@ -75,9 +45,11 @@ function App() {
   const fetching = useIsFetching();
   const [menu, setMenu] = React.useState(false);
   const mobile = useMediaQuery("(max-width: 720px)");
-  const active = nav.find((n) => n.id === route.view)!;
+  const active = nav.find(
+    (n) => n.id === (route.view === "errors" ? "diagnostics" : route.view),
+  )!;
   React.useEffect(() => {
-    document.title = `${active.label} · Sakura 诊断`;
+    document.title = `${active.label} · Sakura 控制台`;
     setMenu(false);
   }, [active.label]);
   return (
@@ -108,10 +80,10 @@ function App() {
             height={40}
           />
           <span className="brand-text">
-            Sakura<small>诊断后台</small>
+            Sakura<small>控制台</small>
           </span>
         </a>
-        <span className="nav-label">诊断</span>
+        <span className="nav-label">管理</span>
         <nav aria-label="主导航">
           {nav.map((n) => (
             <a
@@ -135,8 +107,8 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <span>Sakura Telemetry</span>
-          <p>匿名统计 · 仅供维护者使用</p>
+          <span>Sakura Console</span>
+          <p>私人管理空间</p>
         </div>
       </aside>
       {mobile && menu && (
@@ -156,7 +128,7 @@ function App() {
             >
               {menu ? <X size={20} /> : <Menu size={20} />}
             </button>
-            <span className="muted">Sakura Runtime</span>
+            <span className="muted">Sakura</span>
             <Chevron />
             <span>{active.label}</span>
           </div>
@@ -169,10 +141,9 @@ function App() {
           <div className="page-heading">
             <div>
               <h1>{active.label}</h1>
-              <p>{active.note}</p>
             </div>
             <div className="page-actions">
-              {!["diagnostics", "errors"].includes(route.view) && (
+              {!["diagnostics", "errors", "releases"].includes(route.view) && (
                 <ThemeSelect
                   id="range"
                   label="时间范围"
@@ -197,7 +168,13 @@ function App() {
             </div>
           </div>
           <div className="page-content" key={route.view}>
-            {route.view === "overview" && <Overview route={route} />}{" "}
+            {route.view === "overview" && (
+              <>
+                <ReleaseSummary />
+                <Overview route={route} />
+              </>
+            )}
+            {route.view === "releases" && <Releases />}{" "}
             {(route.view === "errors" || route.view === "diagnostics") && (
               <Diagnostics route={route} />
             )}{" "}
@@ -213,7 +190,7 @@ function App() {
             )}
           </div>
           <footer className="page-footer">
-            Sakura Telemetry<span>时间均为北京时间 · 汇总排除验收样本</span>
+            Sakura Console<span>时间均为北京时间 · 汇总排除验收样本</span>
           </footer>
         </main>
       </div>

@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-12
+updated: 2026-09-13
 ---
 
 # Runtime v2 发行与存储合同
@@ -135,13 +135,14 @@ ZIP 只含程序域、`portable.flag` 和当前 `sakura.exe`，不得携带任�
 把 ZIP 追加到同一 Release，并用包含 Portable URL 的最终 `latest.json` 覆盖初始清单。Portable 条目不生成内容摘要。Portable 失败
 不得撤回已经发布的安装版资产；失败必须在 workflow 中明确可见，维护者修复后重新运行完整发行流程。
 
-稳定版的 Portable 与最终 `latest.json` 发布完成后，发行 workflow 必须把控制面版本元数据推送到
-`https://sakura.cialloo.cn/service/v1/releases.json`。该接口是公告、兼容性和下载入口使用的只读控制面，不替代
-Tauri Updater 的签名清单，也不由客户端据此安装更新。schema 1 固定包含 `latest`、可空的
+稳定版的 Portable 与最终 `latest.json` 发布完成后，发行 workflow 必须把版本资料与完整清单导入私人控制台草稿。
+维护者确认后，控制台更新 `https://api.sakura.cialloo.cn/service/v1/releases.json` 与同目录的 `latest.json`。`releases.json`
+供公告、兼容性和下载入口使用，不由客户端据此安装更新。schema 1 固定包含 `latest`、可空的
 `minimumSupported`、`releaseUrl`、`publishedAt`、`urgent`、三个公开下载 URL 和
-`updaterManifestUrl`；下载文件仍由 GitHub Release 托管。prerelease 不更新该接口，服务端拒绝格式错误和版本
-降级。部署凭据只能调用服务器端受限发布命令，不得获得通用 shell 或站点其他文件的写权限。完整接口 schema、
-失败降级和部署权限合同见 [Sakura Service 静态控制面合同](sakura-service.md)。
+`updaterManifestUrl`，后者指向国内 `latest.json`；下载文件及原始安装包签名仍由 GitHub Release 托管。
+prerelease 不更新该接口，服务端拒绝格式错误和版本
+降级。CI 凭据只能调用服务器端受限草稿导入命令，不得获得通用 shell 或站点其他文件的写权限。完整接口 schema、
+失败降级和部署权限合同见 [Sakura Service 与私人控制台合同](sakura-service.md)。
 
 Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递归删除安装器拥有的 `core/`、`python/`、
 `plugins/builtin/` 和 `plugins/dependencies/` 发行根，包括运行期间在其中产生的字节码缓存；大量小文件的删除
@@ -152,9 +153,9 @@ Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递
 
 ## 启动更新检测与用户操作
 
-正式安装包的 Tauri Updater endpoint 固定为主仓库的 GitHub 稳定版 Release：
-`https://github.com/Rvosy/Sakura/releases/latest/download/latest.json`。`releases/latest` 不包含 draft 和
-prerelease；客户端不调用 GitHub Releases API，也不自行比较版本。开发配置没有 endpoint 时直接跳过。
+新构建正式安装包的 Tauri Updater endpoint 为国内静态清单：
+`https://api.sakura.cialloo.cn/service/v1/latest.json`。CI 把已完成的稳定版导入控制台草稿，维护者确认后更新此入口；保留 GitHub 清单供旧客户端。
+客户端不调用 GitHub Releases API，也不自行比较版本。开发配置没有 endpoint 时直接跳过。
 Updater 负责 SemVer 比较、签名下载包选择和安装前验签。
 
 Updater 网络请求同时遵循 Windows/macOS 系统代理和标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、

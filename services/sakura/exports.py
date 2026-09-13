@@ -86,7 +86,7 @@ def generate(key, filters):
 @router.post("/admin/api/v2/exports", status_code=202)
 async def create(request: Request):
     _require_admin_host(request)
-    from app import _read_json_limited
+    from http_input import _read_json_limited
 
     try:
         filters = Filters.model_validate(await _read_json_limited(request, 8192))

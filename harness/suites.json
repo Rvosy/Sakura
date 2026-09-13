@@ -531,6 +531,7 @@
         "-m",
         "pytest",
         "tests/unit/test_release_packaging.py",
+        "tests/unit/test_service_release.py",
         "tests/unit/test_gitcode_release_mirror.py",
         "tests/unit/test_release_metadata.py",
         "-q"

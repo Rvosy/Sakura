@@ -24,7 +24,7 @@ Rust 是唯一 HTTP 出站 owner。Core 和插件通过现有日志/遥测 bridg
 
 `POST /v3/errors` 接收单条 JSON，成功入库返回 `202`，body 上限 128 KiB。客户端在采集时保留诊断，再做具体凭据替换；服务器校验结构、类型和大小，不因文本含 URL、绝对路径、中文或原始异常而拒收。
 
-契约以 `tools/telemetry_server/v3_models.py` 和 `desktop/src-tauri/src/telemetry.rs` 为准：
+契约以 `services/sakura/v3_models.py` 和 `desktop/src-tauri/src/telemetry.rs` 为准：
 
 |字段|含义|
 |---|---|
@@ -100,4 +100,12 @@ SQLite 原始记录保留 90 天，接收时间使用北京时间。Admin/API/�
 
 重点验证真实错误路径：Python 异常 → bridge → Rust HTTP 发送 → FastAPI → SQLite → 详情/ZIP，并比较原文除具体凭据外是否一致。覆盖相同上层代码下的不同 SQLite 原因、插件失败路径、Provider 错误、WebView 原始 stack/cause、未知异常、大文本、断网重启补发及关闭后清理。用实际聊天边界验证三个终态各记录一次。
 
-工具入口与部署准备见 [服务端 README](../../../tools/telemetry_server/README.md)。测试全部使用隔离根和测试凭据，不向生产写入验收记录。
+工具入口与部署准备见 [服务端 README](../../../services/sakura/README.md)。测试全部使用隔离根和测试凭据，不向生产写入验收记录。
+
+
+## 私人控制台部署边界
+
+接收端 `services/sakura/app.py` 不再挂载管理路由；`console_app.py` 是独立的私人进程。
+正式入口为 `adm.sakura.cialloo.cn/admin/`，旧 admin 域名保留。公开 api 域名只接受既有遥测写入路由和公开清单；
+原遥测 CDN/源站继续转发旧客户端请求，不使用 POST 重定向。故障库保留现有数据与协议，控制台只读查询并独立生成分析包。
+域名、认证、进程权限与版本管理以 [Sakura Service](sakura-service.md) 为准。

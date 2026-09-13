@@ -61,5 +61,11 @@ spec 或 plan，验收证据放在 records。
 
 - [ADR-0048：语音资源与应用运行选择分离](0048-voice-resources-and-local-selection.md)
 
+- [ADR-0049：国内服务器提供更新清单，GitHub 继续分发安装包](0049-domestic-updater-manifest.md)
+
+- [ADR-0050：统一服务域名与独立私人控制台](0050-private-console-and-service-domains.md)
+
+- [ADR-0051：Release Action 导入草稿，维护者确认国内发布](0051-ci-imports-private-release-drafts.md)
+
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
