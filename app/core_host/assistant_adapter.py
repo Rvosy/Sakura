@@ -31,11 +31,10 @@ if TYPE_CHECKING:
 @dataclass
 class AssistantSession:
     character: CharacterProfile
-    provider: OpenAICompatibleClient | None = field(default=None, repr=False)
-    runtime: AgentRuntime | None = None
-    pipeline: ChatPipeline | None = None
+    provider: OpenAICompatibleClient = field(repr=False)
+    runtime: AgentRuntime
+    pipeline: ChatPipeline
     mcp_provider: object | None = field(default=None, repr=False)
-    executor: object | None = field(default=None, repr=False)
 
     def wait_prompt_dependencies(
         self,
@@ -229,8 +228,6 @@ class AssistantAdapter:
                 pipeline=pipeline,
                 mcp_provider=self._application_mcp,
             )
-            from app.core_host.executors import DefaultExecutor
-            session.executor = DefaultExecutor(pipeline)
             self._check_active(cancel)
             if registry.load_errors:
                 state = "degraded"

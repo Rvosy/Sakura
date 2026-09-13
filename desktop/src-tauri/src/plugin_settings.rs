@@ -348,7 +348,14 @@ fn valid_section(section: &Value) -> bool {
         && object
             .get("collections")
             .and_then(Value::as_array)
-            .is_some_and(|items| items.len() <= 4)
+            .is_some_and(|items| {
+                items.len() <= 4
+                    && items.iter().all(|collection| {
+                        collection.get("scope").is_none_or(|scope| {
+                            matches!(scope.as_str(), Some("global" | "character"))
+                        })
+                    })
+            })
         && serde_json::to_vec(section).is_ok_and(|bytes| bytes.len() <= 128 * 1024)
 }
 
@@ -1087,6 +1094,14 @@ mod tests {
             }]
         }]);
         assert!(validate_snapshot(&value).is_ok());
+        for scope in ["global", "character"] {
+            value["plugins"][0]["sections"][0]["collections"][0]["scope"] = json!(scope);
+            assert!(validate_snapshot(&value).is_ok());
+        }
+        for scope in [json!(null), json!("session"), json!([])] {
+            value["plugins"][0]["sections"][0]["collections"][0]["scope"] = scope;
+            assert!(validate_snapshot(&value).is_err());
+        }
         assert!(validate_collection_request(
             "query",
             "fixture_plugin",

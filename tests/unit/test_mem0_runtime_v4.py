@@ -258,6 +258,7 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
         assert [item["collectionId"] for item in sections["memory_management"]["collections"]] == [
             "memories"
         ]
+        assert sections["memory_management"]["collections"][0]["scope"] == "character"
         slots = application.model_slots()
         assert [(item["ownerId"], item["slotId"]) for item in slots] == [
             ("sakura.memory.mem0", "curation")

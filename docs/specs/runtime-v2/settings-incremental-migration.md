@@ -177,19 +177,16 @@ publication 保持 v1 并强制发布 `values.visualEffectMode`。Windows capabi
 readiness 和 Character Presentation identity 全部一致后再水合。保存失败不重启，restart 派发失败不回滚或
 重写配置。
 
-角色外观、语音、Memory 及所有插件 Collection 的新建/编辑草稿存在未保存内容时阻止选择另一角色，Collection 不按 surface 区分。
-Provider、Tools、Plugin、Screen Awareness 等普通全局字段草稿保留并绑定新 generation。实际角色切换开始即清空旧 Memory、
-所有 Collection 页面状态和历史内容，失效旧游标与请求，禁止旧 transport、旧分页或迟到事件重新显示。完整行为见
-[`WP-5-03-safe-character-switch.md`](WP-5-03-safe-character-switch.md)。
+角色外观、语音及 `scope=character` Collection 的实际修改会阻止选择另一角色。全局字段和 `scope=global` Collection 的草稿保留并绑定新 generation；
+实际角色变化只清理角色集合，普通目录刷新和同角色重启不丢弃仍有效的草稿。Collection-v0 缺省归属和实际修改检测见
+[Plugin Runtime](sakura-plugin-runtime-v4.md#10-插件管理与设置窗口)，切换完整性见 [WP-5-03](WP-5-03-safe-character-switch.md)。
 
 角色下拉只形成设置窗口内草稿，允许在提交前反复改选；选择本身不得写配置、清空角色页面或启动 restart。
-它只可调用只读视觉预览命令，将桌宠主题、默认立绘和气泡问候语暂时投影为目标角色；Core、Memory、Timeline、
-TTS、名字与回复状态仍绑定正式角色，放弃时恢复正式角色当前应显示的视觉和气泡内容。
-“应用”和“保存并关闭”先保存当前 generation 的其他域，最后只提交一次最终角色。放弃设置或选回已提交角色
-会清除该草稿；暂存期间锁定仍属于当前正式角色的外观、语音和 Memory 页面，并暂停所有 Collection 查询和写入。
-删除确认返回后仍须复核编辑器与切换状态。只有收到已提交的 restart receipt 后才进入 switching；实际角色变化时，
-关闭所有 Collection editor、失效在途查询并清空页面状态再重新水合。同角色 Core 重启保留仍存在 Collection 的草稿和筛选，
-隔离旧请求与回执，不自动重放写入；普通目录刷新不得改变 Collection 原属角色并因此漏掉后续清理。
+只读视觉预览仍使用既有命令，Core、Memory、Timeline 和 TTS 绑定正式角色。暂存期间锁定外观和语音页面，
+暂停角色 Collection；全局 Collection 可继续编辑。真正切换 Core 时，所有集合暂停请求，旧回调不能提交到新实例。
+
+“应用”先保存当前 generation 的其他域，最后提交角色选择，可保留全局 Collection 草稿；“保存并关闭”仍拒绝未保存的集合记录，
+两者均不会自动调用 Collection 的创建或更新。放弃或选回正式角色清除角色选择草稿；异步删除确认返回后仍须复核身份与当前可操作状态。
 
 ### 5.3 开机启动设置契约
 

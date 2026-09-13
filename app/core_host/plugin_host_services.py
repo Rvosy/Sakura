@@ -720,6 +720,7 @@ class _SettingsCollection:
     collection_id: str
     title: str
     description: str
+    scope: str
     columns: tuple[dict[str, Any], ...]
     fields: tuple[dict[str, Any], ...]
     filters: tuple[dict[str, Any], ...]
@@ -2067,6 +2068,7 @@ def _settings_collection(value: object) -> dict[str, Any]:
         "collectionId",
         "title",
         "description",
+        "scope",
         "columns",
         "fields",
         "filters",
@@ -2083,6 +2085,9 @@ def _settings_collection(value: object) -> dict[str, Any]:
     )
     title = raw.get("title")
     description = raw.get("description", "")
+    # Collection v0 originally treated every collection as character-owned.
+    # Keep that default for already installed plugins; global data opts in.
+    scope = raw.get("scope", "character")
     searchable = raw.get("searchable", False)
     page_size = raw.get("pageSize", 25)
     delete_confirmation = raw.get("deleteConfirmation", "")
@@ -2095,6 +2100,8 @@ def _settings_collection(value: object) -> dict[str, Any]:
         or len(title) > 120
         or not isinstance(description, str)
         or len(description) > 240
+        or not isinstance(scope, str)
+        or scope not in {"global", "character"}
         or not isinstance(searchable, bool)
         or not isinstance(page_size, int)
         or isinstance(page_size, bool)
@@ -2129,6 +2136,7 @@ def _settings_collection(value: object) -> dict[str, Any]:
         "collectionId": collection_id,
         "title": title,
         "description": description,
+        "scope": scope,
         "columns": columns,
         "fields": fields,
         "filters": filters,
@@ -2198,6 +2206,7 @@ def _collection_with_handles(
         collection_id=str(descriptor["collectionId"]),
         title=str(descriptor["title"]),
         description=str(descriptor["description"]),
+        scope=str(descriptor["scope"]),
         columns=tuple(descriptor["columns"]),
         fields=tuple(descriptor["fields"]),
         filters=tuple(descriptor["filters"]),
@@ -2216,6 +2225,7 @@ def _public_collection(collection: _SettingsCollection) -> dict[str, Any]:
         "collectionId": collection.collection_id,
         "title": collection.title,
         "description": collection.description,
+        "scope": collection.scope,
         "columns": [dict(item) for item in collection.columns],
         "fields": [dict(item) for item in collection.fields],
         "filters": [dict(item) for item in collection.filters],

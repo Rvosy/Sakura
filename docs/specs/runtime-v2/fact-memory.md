@@ -26,6 +26,7 @@ Context 请求缺少角色身份或与 Host 当前角色不一致时返回空贡
 
 插件、设置区块与 Context Provider ID 均为 `fact_memory`。设置区块显示为“便签记忆”，Collection ID 为 `facts`。
 它使用现有 `sakura.host.settings` 与 `sakura.host.settings.collection-v0`，不注册 surface，不增加主设置页。
+当前源码显式声明 `scope: character`；已分发的旧 `0.1.1` ZIP 未声明时由宿主按 character 兼容，无需为此重装。
 
 | 字段 | 规则 |
 |---|---|
@@ -88,9 +89,7 @@ Context 以 `scope: turn`、`failurePolicy: skip` 登记，使用当前输入和
 条数/正文预算，以及无效写入保留已有数据。
 这些是验收入口和范围，实际结果随本次运行记录；不据本文推断测试或原生窗口验收已经通过。
 
-用户验收复用已有角色和模型配置，通过插件自己的设置写入“验收项目交付时间是周五下午三点”，
-关键词“验收项目”，提问后改成周六、重启、删除或停用，再检查当轮 Context。
-步骤见[生态验收指南](../../devdocs/PLUGIN_ECOSYSTEM_ACCEPTANCE.md)与[插件 README](../../../plugins/optional/fact_memory/README.md)。
+日常操作见[插件 README](../../../plugins/optional/fact_memory/README.md)，已有数据启动和回归范围见[生态验收指南](../../devdocs/PLUGIN_ECOSYSTEM_ACCEPTANCE.md)。
 
 相关公共合同见 [Plugin Runtime v4](sakura-plugin-runtime-v4.md)、[Plugin SDK](../../devdocs/SAKURA_PLUGIN_SDK.md)
 和[薄宿主与插件自有策略](../../adr/0050-thin-host-and-plugin-owned-policies.md)。

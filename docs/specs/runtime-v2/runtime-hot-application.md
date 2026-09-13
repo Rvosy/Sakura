@@ -27,7 +27,7 @@ updated: 2026-09-14
   恢复有效时在同 generation 创建 Session 并绑定既有 PluginApplication。
 - 正常聊天固定使用默认 Assistant。`f9fde091` 中的互动方式设置已撤回，`settings.executor.get/save` 不再提供，
   历史 `chat_executor` 字段被忽略，不作为隐藏选择。插件开关只管理插件生命周期，不切换聊天实现。
-  保留的执行服务开发合同见 [Plugin Runtime v4 §6.5](sakura-plugin-runtime-v4.md#65-可替换互动执行器)。
+  未使用的执行器实验已清理；当前边界见 [Plugin Runtime](sakura-plugin-runtime-v4.md#65-正常对话与插件服务的边界)。
 - Tools：保存后更新 `AgentRuntime` 的 loop settings；当前 Agent 轮使用其既有快照。
 - MCP：Application 持有 Provider 和工具注册，Session 退休与重建只借用该实例。当前只提供状态读取，
   `mcp.yaml` 的修改在新 Core generation 启动时读取，不提供设置保存或热替换接口。

@@ -141,11 +141,16 @@ export function createCharacterSettingsFeature({
       // submit actions must not cross the generation hand-off.
       submitControls: [fields.saveButton, fields.applyButton],
     }, characterSwitching);
-    for (const page of [fields.pages.appearance, fields.pages.voice, fields.pages.memory]) {
+    for (const page of [fields.pages.appearance, fields.pages.voice]) {
       if (!page) continue;
       page.inert = characterSwitching || Boolean(pendingCharacterId);
       page.setAttribute("aria-busy", String(characterSwitching));
       page.setAttribute("aria-disabled", String(Boolean(pendingCharacterId)));
+    }
+    if (fields.pages.memory) {
+      fields.pages.memory.inert = characterSwitching;
+      fields.pages.memory.setAttribute("aria-busy", String(characterSwitching));
+      fields.pages.memory.setAttribute("aria-disabled", String(characterSwitching));
     }
     if (isSubmitting()) {
       fields.saveButton.disabled = true;
@@ -276,6 +281,7 @@ export function createCharacterSettingsFeature({
     if (rebinding) {
       catalogRebinding = true;
       syncCharacterArchiveState();
+      renderPluginCollections();
     }
     try {
       const applied = await applyCharacterCatalogChange({
@@ -318,7 +324,7 @@ export function createCharacterSettingsFeature({
       setSwitching(value) {
         localCharacterSwitching = value;
         syncCharacterArchiveState();
-        if (!value && !disposed) renderPluginCollections();
+        if (!disposed) renderPluginCollections();
       },
       readLifecycle: () => invoke("runtime_lifecycle_snapshot"),
       delay: (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)),

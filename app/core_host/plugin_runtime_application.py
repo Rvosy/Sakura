@@ -112,11 +112,6 @@ class PluginRuntimeApplication:
             specs,
             **manager_options,
         )
-        from app.core_host.executors import ExecutorCatalog, HOST_EXECUTORS_SERVICE
-        self._executors = ExecutorCatalog(self._manager, generation_id)
-        self._manager.install_host_service(
-            HOST_EXECUTORS_SERVICE, self._executors, exports=("register", "unregister"),
-        )
         self.visuals = VisualHost(roots, self._manager)
         self._visual_character = None
         self._visual_binding = None
@@ -205,12 +200,6 @@ class PluginRuntimeApplication:
     def commit_bound_service(self, service_key, identity, commit):
         return self._manager.commit_bound_service(service_key, identity, commit)
 
-    def execution_candidates(self):
-        return self._executors.candidates()
-
-    def bind_executor(self, service_key):
-        return self._executors.bind(service_key)
-
     def service_identity(self, service_key: str) -> dict[str, str]:
         return self._manager.service_identity(service_key)
 
@@ -242,8 +231,7 @@ class PluginRuntimeApplication:
         getattr(tool_registry, "set_event_emitter")(
             lambda event_name, payload: self.emit_event(event_name, payload or {})
         )
-        if runtime is not None:
-            getattr(runtime, "set_context_providers")(self._host_services.context_providers())
+        getattr(runtime, "set_context_providers")(self._host_services.context_providers())
         character = getattr(session, "character", None)
         if character is not None:
             self.bind_visual_character(character)

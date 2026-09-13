@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
+from collections.abc import Callable
+from typing import Any
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,10 +19,12 @@ from tests.integration.test_core_host_real_chat_integration import (
     REPO_ROOT,
     _configure_app_root,
     _hello,
+    _read,
+    _request,
+    _send,
     _start_host,
     _stop,
 )
-from tests.integration.test_executor_core_protocol import _CorePeer
 from tests.integration.test_wp_4_01_memory_capability import _install_official_mem0
 from tools.release.package_optional_plugin import build
 
@@ -29,6 +34,73 @@ RULE = "对照规则：回复保持简洁。"
 ORIGINAL_FACT = "验收项目交付时间是周五下午三点。"
 UPDATED_FACT = "验收项目交付时间改为周六上午十点。"
 SEARCH_MESSAGE = "请调用便签搜索工具查找验收项目。"
+
+
+class _CorePeer:
+    """Retain interleaved events while waiting for individual stdio responses."""
+
+    def __init__(self, process: Any) -> None:
+        self.process = process
+        self.frames: list[dict[str, Any]] = []
+        self.next_id = 0
+
+    def until(self, predicate: Callable[[dict[str, Any]], bool], *, start: int = 0) -> dict[str, Any]:
+        deadline = time.monotonic() + 10
+        index = start
+        while True:
+            for frame in self.frames[index:]:
+                if predicate(frame):
+                    return frame
+            index = len(self.frames)
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, self.frames[start:]
+            self.frames.append(_read(self.process, timeout=remaining))
+
+    def exchange(self, message: dict[str, Any]) -> dict[str, Any]:
+        start = len(self.frames)
+        _send(self.process, message)
+        reply = self.until(
+            lambda frame: frame.get("kind") == "response" and frame.get("id") == message["id"],
+            start=start,
+        )
+        assert reply.get("ok") is True, reply
+        return reply["payload"]
+
+    def request(self, name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.next_id += 1
+        return self.exchange(_request(f"control-{self.next_id}", name, payload or {}))
+
+    def readiness(self, expected: str) -> dict[str, Any]:
+        deadline = time.monotonic() + 10
+        while True:
+            snapshot = self.request("core.snapshot")
+            if snapshot["readiness"] == expected:
+                return snapshot
+            assert snapshot["readiness"] in {"transport_ready", "initializing"}, json.dumps({
+                "snapshot": snapshot,
+                "plugins": self.request("plugins.settings.get"),
+            }, ensure_ascii=False, indent=2)
+            assert time.monotonic() < deadline, snapshot
+
+    def chat(self, operation_id: str, message: str) -> None:
+        accepted = self.exchange(_request(operation_id, "chat.send", {
+            "operationId": operation_id, "message": message,
+        }))
+        assert accepted == {"accepted": True, "operationId": operation_id}
+
+    def event(self, operation_id: str, name: str) -> dict[str, Any]:
+        return self.until(lambda frame: (
+            frame.get("kind") == "event" and frame.get("id") == operation_id
+            and (frame.get("name") == name or frame.get("name") == "chat.failed")
+        ))
+
+    def completed(self, operation_id: str) -> dict[str, Any]:
+        terminal = self.event(operation_id, "chat.completed")
+        assert terminal["name"] == "chat.completed", terminal
+        events = [frame for frame in self.frames if frame.get("kind") == "event" and frame.get("id") == operation_id]
+        assert events[0]["name"] == "chat.started"
+        assert [frame["name"] for frame in events if frame["name"] in {"chat.completed", "chat.failed", "chat.cancelled"}] == ["chat.completed"]
+        return terminal["payload"]
 
 
 @contextmanager
@@ -174,6 +246,7 @@ def test_install_manage_recall_disable_and_restart_memory_through_real_core(tmp_
             section = next(item for item in _plugin(peer)["sections"] if item["sectionId"] == PLUGIN_ID)
             assert section["surface"] is None
             assert [item["collectionId"] for item in section["collections"]] == ["facts"]
+            assert section["collections"][0]["scope"] == "character"
             assert _query(peer)["items"] == []
             item = _collection(peer, "create", values={"content": ORIGINAL_FACT, "keywords": "验收项目"})
             item_id = item["itemId"]

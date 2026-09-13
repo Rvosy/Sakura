@@ -707,6 +707,10 @@ GPT-SoVITS 与 Genie 的 `aboutBundle` 已改为 `plugin`，section ID 和原有
 
 ### 分页 Collection
 
+Collection 可声明 `scope: "global" | "character"`：全局记录的草稿跨角色保留，角色记录的修改才阻止换角色。
+旧 Collection-v0 省略 scope 时保留 character 行为；新插件请明确声明，勿依赖 surface 表达数据归属。
+该字段需要支持它的宿主；旧宿主会按未知字段拒绝登记。它不替插件分区数据库或实现授权。
+
 需要让用户搜索、增删或编辑一组数据时，使用 `sakura.host.settings.collection-v0`。它仍由 Sakura 渲染，
 插件只负责 descriptor 和 CRUD 回调。
 
@@ -719,6 +723,7 @@ collections.register(
         "collectionId": "items",
         "title": "笔记",
         "description": "当前角色的插件笔记。",
+        "scope": "character",
         "columns": [
             {"key": "title", "label": "标题", "type": "string", "maxLength": 120},
             {"key": "updatedAt", "label": "更新时间", "type": "datetime"},
@@ -788,14 +793,9 @@ def delete_note(item_id):
 不支持的操作传 `None` 或省略对应关键字。要提供删除回调，`deleteConfirmation` 不能留空。cursor 是插件
 定义的 opaque 字符串；不要让界面解析它。Collection v0 每页最多 100 项，结果应保持有界。
 
-Collection 的草稿与切换保护适用于所有 surface，无需增加声明字段：
-
-- 任何 Collection 尚有新建或编辑草稿时，宿主阻止选择另一角色，要求先保存或放弃记录。
-- 角色选择尚未应用或正在切换时，宿主不发起新的查询和写入，也不展示期间到达的在途查询结果。删除确认返回后仍会复核当前编辑器和切换状态。
-- 实际角色变化时清空 Collection 页面状态；同角色 Core 重启保留仍存在 Collection 的草稿和筛选，隔离旧请求与回执，不重放旧写入。
-- 普通 Collection 使用“删除记录”标题，Memory 页使用“删除记忆”；插件的 `deleteConfirmation` 提供实际删除后果。
-
-这些规则保护未提交编辑，不规定插件数据库必须按角色分区。查询、记录结构和持久化范围仍由插件拥有。
+打开编辑器不算修改，只有可编辑字段偏离原值才产生草稿。角色集合的草稿阻止换角色；全局草稿可在“应用”后保留，
+“保存并关闭”仍须先保存或放弃记录。所有集合在 Core 转场时暂停旧请求，重绑定后隔离旧结果；异步删除确认会复核编辑对象。
+完整生命周期规则以 [Runtime Spec](../specs/runtime-v2/sakura-plugin-runtime-v4.md#10-插件管理与设置窗口) 为准。
 
 ## 贡献聊天能力
 
@@ -924,33 +924,11 @@ Host 在 IPC 总大小及 JSON 结构允许的范围内传递完整数量和文�
 
 Context 只影响本次模型请求，不自动写入 Timeline，也不改变长期记忆的学习规则。不要把完整数据库、长期历史或无关资料每轮都塞进 Prompt。
 
-## 执行服务开发合同
+## 正常聊天与插件服务
 
-`describe/begin/read/cancel` 及执行服务登记保留为开发基础，用于验证跨进程受理、进度、取消和结果。
-登记服务不会接管原聊天框。正常聊天使用默认 Assistant；主设置没有互动方式或 Agent 模式选择。
-提交 `f9fde091` 曾提供该选择入口，后按用户要求撤回。旧 `chat_executor` 配置被忽略，
-`settings.executor.get/save` 已移除，也不通过隐藏配置或插件开关选择执行器。
-
-开发样例可以提供并登记自己的 Service：
-
-```python
-context.provide("com.example.focus.executor", executor, exports=("describe", "begin", "read", "cancel"))
-context.get("sakura.host.executors").register({
-    "serviceKey": "com.example.focus.executor",
-    "displayName": "专注陪伴",
-})
-```
-
-开发消费者通过实际服务及进程实例绑定进行调用；这不定义最终用户的入口。
-`describe()` 分别报告接口版本、业务就绪和支持的输入。
-`begin()` 快速返回原 operation ID，任务在后台执行；`read()` 返回当前进度或最终回复，`cancel()` 停止真实工作。
-不要把 Service 超时当作任务停止，也不要因重复受理启动第二份工作。后台线程显式保留受理时的操作关联，
-不依赖只在当前 RPC 内有效的 `context.caller_id`。
-
-完整请求、结果和生命周期见 [Runtime v4 §6.5](../specs/runtime-v2/sakura-plugin-runtime-v4.md#65-可替换互动执行器)，
-开发样例见[专注陪伴](../../plugins/optional/focus_companion/README.md)。合同支持文本及声明的应用事件，图片输入尚未开放；
-该样例暂不能从聊天框选择。模型和默认能力拆分属于尚未实施的长期方向，须结合真实需求和用户方案确定，
-不因保留合同自动推进产品改造。普通插件不应导入宿主的 Agent 或 Pipeline。
+正常聊天使用现有 Assistant 和 ChatPipeline。未使用的执行器实验及登记服务已移除，普通插件通过 Service、Context、Tools 和设置贡献参与现有能力。
+需要固定进程的长操作使用已有 `context.bind()`；服务超时不表示后台任务已停止，消费者仍应按自己的业务合同收尾。
+插件不应导入宿主的 Agent 或 Pipeline。默认模型与对话实现迁移尚未完成，范围见[当前计划](../plans/runtime-v2/open-plugin-ecosystem.md)。
 
 ## 模型、角色、历史和文件
 

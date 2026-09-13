@@ -434,6 +434,7 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
     collection_call = context.services["sakura.host.settings.collection-v0"].calls[0]
     assert collection_call[0][0] == "memory_management"
     assert collection_call[0][1]["collectionId"] == MEMORY_COLLECTION_ID
+    assert collection_call[0][1]["scope"] == "character"
     slot_call = context.services["sakura.host.model_slots"].calls[0]
     assert {key: value for key, value in slot_call[0][0].items() if key not in {"label", "description"}} == {
         "slotId": "curation",

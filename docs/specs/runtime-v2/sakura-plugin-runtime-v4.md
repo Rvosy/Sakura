@@ -380,58 +380,12 @@ Agent Trace 与 Prompt Inspection 保留必需性、采集范围及真实来源�
 [ADR-0050](../../adr/0050-thin-host-and-plugin-owned-policies.md)；初版取舍保留在
 [ADR-0049](../../adr/0049-unified-context-instructions.md)。
 
-### 6.5 可替换互动执行器
+### 6.5 正常对话与插件服务的边界
 
-本节保留执行服务与 `PluginExecutor` 的开发合同，涵盖进程绑定、受理、取消和结果校验。
-`f9fde091` 曾让正常聊天选择插件执行器；该产品入口已撤回。当前正常聊天始终使用默认 Assistant，
-沿用现有模型、Agent 与管线。安装、启用或登记执行服务不会更换聊天实现。
-此合同不预定 Agent 模式、选择器或其他产品呈现，也不包含命令执行或通用任务调度。
-
-插件先用 `context.provide()` 提供自己的 Service，导出 `describe/begin/read/cancel`，再调用
-`sakura.host.executors.register({serviceKey, displayName})` 登记开发消费者可绑定的服务。Service 必须由实际调用插件拥有；
-显示名为 1–100 字符。返回 `{registrationId}`，可传给 `unregister()`；Runtime 在停用、退出和重载时清理登记。
-登记属于具体进程实例，Service 已注册不代表业务已就绪。
-
-| 方法 | 请求与结果 |
-|---|---|
-| `describe()` | 返回 `{schemaVersion:1, ready:boolean, inputs:["text"]}`。可额外声明 `"event"` 接收当前应用事件；图片输入尚未开放。 |
-| `begin(request)` | 请求包含 `schemaVersion:1, operationId, generationId, turnId, characterId, input`；文字输入为 `input:{text}`。快速受理并返回含原 `operationId` 的对象，耗时工作在插件后台完成。 |
-| `read({operationId, afterSequence})` | 返回当前快照：`{operationId,state,sequence,progress}`。`state` 为 `running/cancelling/completed/cancelled/failed`；运行中的 `sequence` 为非负整数，进度变化时递增，`progress` 是最多 500 字符的纯文本，允许空串清除。 |
-| `cancel({operationId})` | 向原操作传递取消；返回只确认此次调用，实际停止必须由 `read()` 的终态确认。重复取消应可安全处理。 |
-
-`completed` 快照还包含 `reply:{segments:[...]}`。每段必须有字符串 `text`；可选 `translation/tone/portrait` 为字符串，
-`suppressTts` 为布尔值，`control` 遵循现有公共表现控制格式。最多 64 段，整个 reply JSON 的 UTF-8 大小最多 64 KiB；
-空数组表示 NOOP，不写助手历史。输出不包含 Agent 私有动作、模型协议或 Python 对象。
-`failed/cancelled` 只在本次工作已经退出后报告；完成结果也必须是不可再变的终态。
-
-宿主在派发前固定操作、Session 与执行服务的实际进程实例，后续调用不会因相同 service key 重载而转到新实例。
-重复 `begin` 同一 operation 不得启动第二份工作；相同身份对应不同输入应明确拒绝。插件在受理时校验
-`context.caller_id == "sakura.core"`，保存原请求关联并显式传给后台线程。后续 Service 调用具有其自己的真实调用者，
-保存的调用者字符串或请求中的 operation ID 不授予权限。插件可通过公开 Timeline/角色服务读取自己需要的历史，
-Host 不为独立执行器注入默认对话的 Prompt 或模型配置。
-
-每次执行服务调用期限为 1 秒。`begin` 超时后继续按原 operation 查询，绝不再次受理；查询超时仍保持忙碌，
-用户取消后仍等待停止确认。插件必须将取消传给自己启动或等待的实际工作；协议损坏或非超时 RPC 故障时，
-宿主回收原进程及其依赖消费者，再结束操作；正常业务失败只结束当前任务。不会重启插件或改用默认执行器。
-
-若进程清理本身失败，Runtime 保留原实例并报告 `PLUGIN_CLEANUP_FAILED`，禁止同 ID 重启。
-聊天报告 `EXECUTOR_STOP_UNCONFIRMED`，即使已经点击停止也不伪称取消完成；保留操作占用，阻止后续输入和
-重新绑定该执行器。调用者须保留停止未确认状态，由既有 Core 生命周期完成最终回收；不增加后台重试或自动恢复。
-清理完成通知携带成功或失败结果，异常必须唤醒等待者；并发关闭等待同一实例结束后才能撤销其 Host 资源。
-
-保留的聊天边界可通过 `chat.progress {operationId,text}` 与快照的可选 `activeInteractionSummary.progress` 传递进度，
-不写助手历史、不触发 TTS。桌面校验当前 generation 和操作；进度队列满时可丢弃临时进度，终态仍走既有可靠提交路径。
-这项协议支持用于开发验证，不表示存在可从正常聊天框选择的计时或 Agent 模式。
-最终结果在取消、来源、实例和格式校验后提交一次；重复读取不会重复落盘、通知或播放。提交前取消拒绝迟到成功，
-已经取得提交资格后不改写历史；取消不回滚已发生的外部效果。实例有效性检查和短暂的本地历史提交保持原子性。
-
-`config/system_config.yaml` 中已有的 `chat_executor` 字段直接忽略，不要求用户改写或迁移文件。
-`settings.executor.get/save` 不再提供；主设置、隐藏配置和插件开关都不承担执行器选择。
-默认 Assistant 缺少模型配置时仍报告需要配置。开发消费者持有的执行器绑定在停用或重载后失效，
-不得把旧操作转交同服务名的新进程。未来如何让用户使用此类能力，由具体需求与产品方案确定。
-
-开发样例见[专注陪伴](../../../plugins/optional/focus_companion/README.md)，暂不提供正常聊天入口。真实进程与提交回归见
-`tests/integration/test_plugin_executor_chat.py`、`tests/integration/test_executor_core_protocol.py`。
+正常聊天只调用现有 Assistant/ChatPipeline。已撤回的执行器实验不再提供 `sakura.host.executors`、替代 Session 或专用进度协议。
+旧 `chat_executor` 配置直接忽略，不迁移或改写用户文件；缺少模型配置时仍报告需要配置。
+普通插件继续通过公共 Service、Context、Tools 和设置贡献扩展能力，安装或启用服务不会接管聊天。
+未来默认模型与对话迁移必须替换真实调用链。取舍见 [ADR-0051](../../adr/0051-retire-executor-experiment-and-scope-collections.md)。
 
 ## 7. 官方默认插件
 
@@ -543,19 +497,23 @@ inventory `revision` 直接比较安装记录和结构化开关配置，状态�
 - 插件页面持有设置弹窗、集合草稿和释放逻辑；根入口只装配语音控件与关闭确认。页面释放时关闭弹窗、
   归还借用的语音控件；尚未完成的退出动画不得在释放后重新渲染页面。
 
-Collection 使用统一的角色与进程生命周期，不以 `surface=memory` 或插件 ID 决定是否保护：
+Collection 的数据归属与进程生命周期分别处理：
 
-- 任一 Collection 的新建或编辑草稿都阻止选择另一角色，用户须先保存或放弃记录。普通设置的“应用”不代替 Collection 保存。
-- 角色选择尚未应用或正在切换时，不发起新的 Collection 查询和写入；期间到达的在途查询成功与失败都不得回填页面。
-  删除确认是异步操作，用户确认后仍须核对 Collection、编辑器与切换状态，失效时不得调用删除回调。
-  取消待切换选择或切换完成后，恢复因转场暂停的查询，使用当前搜索和筛选条件；写入不自动重放。
-- 实际角色变化时关闭所有 Collection 编辑器，失效在途查询并清空条目、筛选、选中项和分页状态。
-  清理依据 Collection 原属角色与实际角色的变化，不以目录刷新、下拉草稿或单纯 generation 更换代替。
-- 同角色 Core 重启保留仍存在 Collection 的草稿和筛选，新快照绑定新的请求状态；旧查询、错误和写入回执不得覆盖新状态，
-  也不得自动重放旧写入。插件停用或贡献消失时按原释放规则清理。
-- 普通插件 Collection 的删除标题为“删除记录”，Memory 页保留“删除记忆”；确认正文继续来自插件的 `deleteConfirmation`。
+- descriptor 可声明 `scope: "global" | "character"`，非法值拒绝。未声明时保留 Collection-v0 的 character 行为，旧安装包无需迁移。
+  新贡献应显式声明归属；Host 不从 surface 或插件 ID 推断 scope。Mem0 与便签记忆均为 character。
+- 草稿只比较可编辑字段与原值。打开已有记录、未修改的新建编辑器或改回原值，不算未保存修改。
+  普通“应用”不代替 Collection 写入；可以保留全局草稿并提交其他设置，“保存并关闭”仍须先处理未保存记录。
+- 只有 character 草稿阻止选择另一角色。待应用角色期间暂停 character 的查询和写入，global 仍可使用。
+  实际 Core 转场期间所有 Collection 暂停请求；在途结果不得回填，新快照绑定新的请求状态。
+- 实际角色变化时关闭 character 编辑器并清空其条目、筛选、选中项和分页；global 草稿与筛选保留。
+  同角色重启保留仍存在集合的草稿与筛选。插件停用、贡献消失或归属变化时撤销原状态，不自动重放写入。
+- 删除确认返回后仍须复核 Collection、编辑器、实例与当前转场状态。取消待切换选择或切换完成后恢复当前搜索，
+  旧查询、错误及写入回执不得覆盖新状态。
+- 用户停用或卸载插件前，若目标或受影响的依赖消费者仍有 Collection 修改，要求先保存或还原记录。
+  不能因为允许保留全局草稿，就在插件失效后的新快照中静默丢弃它。
+- 普通插件 Collection 删除标题为“删除记录”，Memory 页保留“删除记忆”；确认正文来自插件 `deleteConfirmation`。
 
-这些规则不声明 Collection 数据一定按角色存储。数据范围、查询与写入含义由插件定义，宿主负责编辑状态和实例边界。
+scope 只描述设置草稿与角色的关系，数据分区与读写仍由插件实现，不构成权限授权或自动存储管理。
 
 GPT-SoVITS 与 Genie 的现有 `aboutBundle` 区块改为 `surface=plugin`，在各自设置窗口展示整合包资源。
 只迁移入口，保留 section ID、Resource 字段、load callback 和 Action；语音页不重复提供这两项下载。

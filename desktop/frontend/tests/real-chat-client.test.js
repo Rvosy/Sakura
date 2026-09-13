@@ -135,36 +135,6 @@ test("degraded readiness keeps the usable Assistant session chat-capable", async
   client.dispose();
 });
 
-test("progress survives the send response race, keeps cancellation, and rejects stale operations", async () => {
-  const response = deferred();
-  const events = [];
-  const env = harness([response.promise]);
-  const client = env.create((event) => events.push(event));
-  await client.start();
-  const send = client.send({ message: "read this" });
-  const identity = { generationId: "generation-1", generationNumber: 1, operationId: "op-progress" };
-  env.emit({ type: "chat.progress", ...identity, text: "too early" });
-  env.emit({ type: "chat.started", ...identity });
-  env.emit({ type: "chat.progress", ...identity, text: "Reading files" });
-  env.emit({ type: "chat.progress", ...identity, operationId: "old-op", text: "stale" });
-  env.emit({ type: "chat.progress", ...identity, generationId: "old-generation", text: "stale" });
-  env.emit({ type: "chat.progress", ...identity, text: "界".repeat(501) });
-  env.emit({ type: "chat.progress", ...identity, text: null });
-  response.resolve({ accepted: true, ...identity, cancelHandle: "cancel-progress" });
-  await send;
-  assert.equal(client.isBusy(), true);
-  assert.equal(await client.cancel(identity.operationId), true);
-  env.emit({ type: "chat.progress", ...identity, text: "" });
-  env.emit({ type: "chat.cancelled", ...identity });
-  env.emit({ type: "chat.progress", ...identity, text: "late" });
-  assert.equal(client.isBusy(), false);
-  assert.deepEqual(events.slice(1).map((event) => [event.type, event.text]), [
-    ["chat.started", undefined], ["chat.progress", "Reading files"],
-    ["chat.progress", ""], ["chat.cancelled", undefined],
-  ]);
-  client.dispose();
-});
-
 test("generation change seals pending send, cancel, and old native events", async () => {
   const response = deferred();
   const events = [];

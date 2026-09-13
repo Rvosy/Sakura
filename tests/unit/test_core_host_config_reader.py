@@ -202,7 +202,6 @@ def test_legacy_chat_executor_does_not_override_default_assistant(
 
     from app.agent.tools import ToolRegistry
     from app.core_host.assistant_adapter import AssistantAdapter
-    from app.core_host.executors import DefaultExecutor
 
     root = _fresh_root(tmp_path)
     system_path = root / "config" / "system_config.yaml"
@@ -213,7 +212,6 @@ def test_legacy_chat_executor_does_not_override_default_assistant(
         result = adapter.initialize(Event())
         assert result.state == "ready"
         assert result.session is not None
-        assert isinstance(result.session.executor, DefaultExecutor)
         assert result.session.provider is not None
         assert result.session.pipeline is not None
     finally:

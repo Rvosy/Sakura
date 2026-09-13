@@ -10,6 +10,9 @@ updated: 2026-09-14
 
 ## 状态
 
+部分条款已由 [ADR-0051](0051-retire-executor-experiment-and-scope-collections.md) 替代：未使用的执行器实验及专注样例已删除，
+Collection 按真实修改和声明的 scope 管理草稿。下文保留当时的理由与范围；薄宿主和默认策略归插件的方向继续有效。
+
 已接受。M1 已删除 Context 用途分类，并将旧可选内容裁剪移到默认消费者；当前合同为 Context schema 2。
 M2 在 `f9fde091` 实现的主设置“互动方式”和正常聊天选择入口已按用户要求撤回；底层执行合同、进程绑定、取消及
 “专注陪伴”开发样例保留。正常聊天使用默认 Assistant，旧 `chat_executor` 被忽略，`settings.executor` 端点移除。
@@ -54,7 +57,7 @@ Collection 的草稿、角色切换和 Core 重绑定属于通用设置机制，
 `caller_id` 只属于当前 RPC，保存其字符串不代表持续授权。调用超时不等于工作已停止；取消必须传到实际任务，
 重复受理不重复启动，重复读取终态不重复提交历史或触发播放。在途操作保留原绑定，
 失效实例的结果不得由同 ID 新进程接续提交。当前 `describe/begin/read/cancel` 合同见
-[Plugin Runtime v4 §6.5](../specs/runtime-v2/sakura-plugin-runtime-v4.md#65-可替换互动执行器)。
+[历史里程碑记录](../records/audits/PLUGIN_ECOSYSTEM_MILESTONES.md)（此合同已撤回）。
 沿用现有操作及提交保护，不新增持久任务平台。这份合同支持文字及可选事件，截图输入未开放；
 它不定义产品入口。公共工具消费与默认对话工具选择保留在 M4 的长期设想中，当前未实施。
 

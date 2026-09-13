@@ -5,6 +5,7 @@ import {
   createPluginController,
   validatePluginSnapshot,
 } from "../settings/plugin-runtime.js";
+import { snapshot as collectionSnapshot } from "./fixtures/plugin-settings-fixture.js";
 
 function snapshot(coreGenerationId = "generation-a") {
   return {
@@ -63,6 +64,20 @@ function saveResult(changePlan = "applied", applicationState = "applied") {
     applicationReasonCode: applicationState === "applied" ? "READY" : "CORE_RESTART_REQUIRED",
   };
 }
+
+test("collection scopes accept explicit ownership and legacy omission but reject unknown values", () => {
+  const value = collectionSnapshot();
+  assert.doesNotThrow(() => validatePluginSnapshot(value));
+  const collection = value.plugins[0].sections[1].collections[0];
+  for (const scope of ["global", "character"]) {
+    collection.scope = scope;
+    assert.equal(validatePluginSnapshot(value).plugins[0].sections[1].collections[0].scope, scope);
+  }
+  for (const scope of [null, "memory", "", {}]) {
+    collection.scope = scope;
+    assert.throws(() => validatePluginSnapshot(value), /invalid plugin settings/);
+  }
+});
 
 test("plugin snapshots carry encoded directory IDs and reject malformed IDs", () => {
   const value = snapshot();
@@ -151,7 +166,7 @@ test("WP-4-04 plugin enable save uses the applied snapshot while the Core is reb
   assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_enabled_set"]);
   assert.deepEqual(controller.draft(), { enabledById: {}, settingsById: {} });
   assert.equal(applied.length, 2);
-  assert.deepEqual(applied[1][1], { preserveDraft: false, draft: null });
+  assert.deepEqual(applied[1][1], { preserveDraft: false, draft: null, keepGlobalCollectionDrafts: false });
 });
 
 test("unchanged plugin polling does not reapply the snapshot or repaint settings", async () => {

@@ -63,6 +63,7 @@ spec 或 plan，验收证据放在 records。
 
 - [ADR-0049：统一 Context 支持行为规则与参考资料](0049-unified-context-instructions.md)
 - [ADR-0050：薄宿主与插件拥有的默认策略](0050-thin-host-and-plugin-owned-policies.md)（已接受，M1 已实施，后续迁移分阶段完成）
+- [ADR-0051：移除未使用执行器实验，明确 Collection 归属](0051-retire-executor-experiment-and-scope-collections.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

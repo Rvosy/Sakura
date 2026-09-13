@@ -59,10 +59,14 @@ export function createPluginSettingsFeature({
   let pluginSettingsDialog = null;
   const pluginCollectionState = new Map();
 
-  function collectionDraftCount() {
+  function collectionHasDraft(state) {
+    return Boolean(state?.editor && !plainEqual(state.editor.values, state.editor.initialValues));
+  }
+
+  function collectionDraftCount(scope = null) {
     let count = 0;
     for (const state of pluginCollectionState.values()) {
-      if (state.editor) count += 1;
+      if ((!scope || state.scope === scope) && collectionHasDraft(state)) count += 1;
     }
     return count;
   }
@@ -71,8 +75,19 @@ export function createPluginSettingsFeature({
     return collectionDraftCount() > 0;
   }
 
-  function collectionInteractionBlocked() {
-    return isCharacterTransitioning() || hasPendingCharacterSelection();
+  function affectedPluginsHaveCollectionDrafts(plugin) {
+    const affected = [plugin, ...pluginPresentation.enabledPluginDependents(
+      plugin, pluginView.items, pluginState.initialEnabledById,
+    )];
+    return affected.some((item) => pluginSettingsSections(item).some((section) =>
+      (section.collections || []).some((collection) => collectionHasDraft(
+        pluginCollectionState.get(pluginCollectionKey(item, section, collection)),
+      ))));
+  }
+
+  function collectionInteractionBlocked(collection) {
+    return isCharacterTransitioning()
+      || (collection.scope === "character" && hasPendingCharacterSelection());
   }
   let pluginActivityRefreshTimer = null;
   let pluginActivityRefreshInFlight = false;
@@ -761,6 +776,7 @@ export function createPluginSettingsFeature({
     const key = pluginCollectionKey(plugin, section, collection);
     if (!pluginCollectionState.has(key)) {
       pluginCollectionState.set(key, {
+        scope: collection.scope,
         items: [], nextCursor: null, total: null, search: "", filters: {},
         loading: false, loaded: false, error: "", editor: null, editorError: "",
         selectedItemId: "", searchTimer: null, queryRevision: 0, queryPending: false,
@@ -778,7 +794,7 @@ export function createPluginSettingsFeature({
   ) {
     if (!pluginView?.items.includes(plugin)) return;
     const state = pluginCollectionRuntimeState(plugin, section, collection);
-    if (collectionInteractionBlocked()) {
+    if (collectionInteractionBlocked(collection)) {
       state.loaded = false;
       state.error = "";
       return;
@@ -812,7 +828,7 @@ export function createPluginSettingsFeature({
         filters: queryFilters,
       });
       if (pluginCollectionState.get(collectionKey) !== state) return;
-      if (collectionInteractionBlocked()) return;
+      if (collectionInteractionBlocked(collection)) return;
       if (queryRevision !== state.queryRevision) {
         state.queryPending = true;
         return;
@@ -823,13 +839,13 @@ export function createPluginSettingsFeature({
       state.loaded = true;
     } catch (error) {
       if (pluginCollectionState.get(collectionKey) !== state) return;
-      if (collectionInteractionBlocked()) return;
+      if (collectionInteractionBlocked(collection)) return;
       if (queryRevision === state.queryRevision) state.error = String(error);
       else state.queryPending = true;
     } finally {
       if (pluginCollectionState.get(collectionKey) !== state) return;
       state.loading = false;
-      if (collectionInteractionBlocked()) {
+      if (collectionInteractionBlocked(collection)) {
         state.loaded = false;
         state.queryPending = false;
         state.queryPendingRender = false;
@@ -910,7 +926,8 @@ export function createPluginSettingsFeature({
     if (typeof field.maximum === "number") input.max = String(field.maximum);
     if (typeof field.step === "number") input.step = String(field.step);
     input.addEventListener("input", () => {
-      if (field.type === "integer") onChange(Number.parseInt(input.value, 10));
+      if (["integer", "number"].includes(field.type) && input.value === "") onChange(null);
+      else if (field.type === "integer") onChange(Number.parseInt(input.value, 10));
       else if (field.type === "number") onChange(Number.parseFloat(input.value));
       else onChange(input.value);
     });
@@ -924,7 +941,7 @@ export function createPluginSettingsFeature({
     const isCurrent = () => pluginCollectionState.get(collectionKey) === state;
     const memorySurface = section.surface === "memory";
     if (!runtimePluginController || state.loading || !state.editor) return;
-    if (collectionInteractionBlocked()) return;
+    if (collectionInteractionBlocked(collection)) return;
     const editor = state.editor;
     if (operation !== "delete") {
       const invalid = (collection.fields || []).find((field) => {
@@ -947,7 +964,7 @@ export function createPluginSettingsFeature({
         cancelText: "保留",
         danger: true,
       });
-      if (!confirmed || !isCurrent() || state.editor !== editor || collectionInteractionBlocked()) return;
+      if (!confirmed || !isCurrent() || state.editor !== editor || collectionInteractionBlocked(collection)) return;
     }
     const editorItemId = state.editor.itemId;
     state.loading = true;
@@ -1024,6 +1041,8 @@ export function createPluginSettingsFeature({
     const state = pluginCollectionRuntimeState(plugin, section, collection);
     const block = document.createElement("div");
     block.className = "plugin-collection";
+    block.inert = collectionInteractionBlocked(collection);
+    block.setAttribute("aria-disabled", String(block.inert));
     block.dataset.pluginCollection = collection.collection_id;
     const header = document.createElement("div");
     header.className = "plugin-collection-head";
@@ -1038,10 +1057,9 @@ export function createPluginSettingsFeature({
       add.addEventListener("click", () => {
         state.editor = {
           itemId: null,
-          values: Object.fromEntries((collection.fields || [])
-            .filter(pluginFieldEditable)
-            .map((field) => [field.key, field.default])),
+          values: collectionEditorValues(collection),
         };
+        state.editor.initialValues = clonePlain(state.editor.values);
         refreshDirty();
         renderPluginPage();
         renderMemorySurface();
@@ -1132,10 +1150,9 @@ export function createPluginSettingsFeature({
           row.addEventListener("click", () => {
             state.editor = {
               itemId: item.itemId,
-              values: Object.fromEntries((collection.fields || [])
-                .filter(pluginFieldEditable)
-                .map((field) => [field.key, item.values[field.key] ?? field.default])),
+              values: collectionEditorValues(collection, item),
             };
+            state.editor.initialValues = clonePlain(state.editor.values);
             refreshDirty();
             renderPluginPage();
             renderMemorySurface();
@@ -1169,7 +1186,7 @@ export function createPluginSettingsFeature({
         const control = pluginCollectionFieldControl(
           field,
           state.editor.values[field.key] ?? field.default,
-          (value) => { state.editor.values[field.key] = value; },
+          (value) => { state.editor.values[field.key] = value; refreshDirty(); },
         );
         row.append(label, control);
         editor.append(row);
@@ -1414,10 +1431,11 @@ export function createPluginSettingsFeature({
     }).format(date);
   }
 
-  function memoryEditorValues(collection, item = null) {
+  function collectionEditorValues(collection, item = null) {
     return Object.fromEntries((collection.fields || [])
       .filter(pluginFieldEditable)
-      .map((field) => [field.key, item?.values?.[field.key] ?? field.default ?? ""]));
+      .map((field) => [field.key, item?.values?.[field.key] ?? field.default
+        ?? (["integer", "number", "select"].includes(field.type) ? null : "")]));
   }
 
   function clearMemoryEditorPortal() {
@@ -1540,8 +1558,9 @@ export function createPluginSettingsFeature({
     const state = pluginCollectionRuntimeState(plugin, section, collection);
     state.editor = {
       itemId: item?.itemId || null,
-      values: memoryEditorValues(collection, item),
+      values: collectionEditorValues(collection, item),
     };
+    state.editor.initialValues = clonePlain(state.editor.values);
     state.editorError = "";
     state.selectedItemId = item?.itemId || "";
     refreshDirty();
@@ -1595,6 +1614,7 @@ export function createPluginSettingsFeature({
         control.addEventListener("change", () => {
           const option = (field.options || []).find((item) => String(item.value) === control.value);
           state.editor.values[field.key] = option ? option.value : control.value;
+          refreshDirty();
         });
         setTimer(() => enhanceSelect(control), 0);
       } else if (field.key === "content") {
@@ -1605,6 +1625,7 @@ export function createPluginSettingsFeature({
         control.placeholder = "例如：喜欢简洁的回答";
         control.addEventListener("input", () => {
           state.editor.values[field.key] = control.value;
+          refreshDirty();
           const counter = group.querySelector(".memory-character-count");
           if (counter) counter.textContent = `${control.value.length} / ${field.maxLength}`;
         });
@@ -1618,7 +1639,8 @@ export function createPluginSettingsFeature({
         control.value = String(state.editor.values[field.key] ?? "");
         control.addEventListener("input", () => {
           state.editor.values[field.key] = ["integer", "number"].includes(field.type)
-            ? Number(control.value) : control.value;
+            ? (control.value === "" ? null : Number(control.value)) : control.value;
+          refreshDirty();
         });
       }
       group.append(label, control);
@@ -1800,6 +1822,8 @@ export function createPluginSettingsFeature({
     const motion = state.motion;
     const archive = document.createElement("section");
     archive.className = "memory-archive";
+    archive.inert = collectionInteractionBlocked(collection);
+    archive.setAttribute("aria-disabled", String(archive.inert));
     archive.classList.toggle("is-preparing", initializing);
 
     const head = document.createElement("header");
@@ -1981,7 +2005,7 @@ export function createPluginSettingsFeature({
     archive.append(head, toolbar, body);
     // 编辑器属于整个设置窗口，而不是记忆页。挂到 body 可避开页面切换动画建立的
     // containing block，确保 fixed 遮罩覆盖导航、内容和底栏。
-    if (!activityControlsDisabled && state.editor) {
+    if (!activityControlsDisabled && !archive.inert && state.editor) {
       mountMemoryEditorPortal(renderMemoryEditor(plugin, section, collection, state));
       syncMemoryEditorPortalState(state);
     }
@@ -2227,11 +2251,19 @@ export function createPluginSettingsFeature({
 
   async function uninstallLocalPlugin(plugin) {
     if (!runtimePluginController || pluginState.managementBusy || !plugin?.can_uninstall) return;
+    if (affectedPluginsHaveCollectionDrafts(plugin)) {
+      setError("请先保存或还原受影响插件中正在编辑的集合记录，再卸载插件。");
+      return;
+    }
     const confirmed = await confirmAction(
       `卸载“${plugin.name || plugin.id}”？插件设置和数据会保留。`,
       { title: "卸载插件", confirmText: "卸载", cancelText: "取消", danger: true },
     );
     if (!confirmed) return;
+    if (affectedPluginsHaveCollectionDrafts(plugin)) {
+      setError("请先保存或还原受影响插件中正在编辑的集合记录，再卸载插件。");
+      return;
+    }
     pluginState.managementBusy = true;
     setError("");
     renderPluginPage();
@@ -2287,7 +2319,7 @@ export function createPluginSettingsFeature({
     return { enabledById: legacy.enabled_by_id, settingsById: legacy.settings_by_id };
   }
 
-  function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = null } = {}) {
+  function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = null, keepGlobalCollectionDrafts = false } = {}) {
     void getAsrController()?.refresh({ preserveDraft: true });
     pluginView = {
       permission_labels: pluginView?.permission_labels || {},
@@ -2328,6 +2360,7 @@ export function createPluginSettingsFeature({
           })),
           collections: (section.collections || []).map((collection) => ({
             collection_id: collection.collectionId,
+            scope: collection.scope ?? "character",
             title: collection.title,
             description: collection.description,
             columns: clonePlain(collection.columns),
@@ -2349,13 +2382,15 @@ export function createPluginSettingsFeature({
     const previousCollections = new Map(pluginCollectionState);
     previousCollections.forEach((state) => clearTimer(state.searchTimer));
     pluginCollectionState.clear();
-    if (preserveDraft) {
+    if (preserveDraft || keepGlobalCollectionDrafts) {
       for (const plugin of pluginView.items) {
         for (const section of plugin.settings) {
           for (const collection of section.collections) {
             const key = pluginCollectionKey(plugin, section, collection);
             const previous = previousCollections.get(key);
             if (!previous) continue;
+            if (previous.scope !== collection.scope) continue;
+            if (!preserveDraft && collection.scope !== "global") continue;
             // A new state object detaches old queries while keeping the editor and filters.
             const current = pluginCollectionRuntimeState(plugin, section, collection);
             current.editor = previous.editor ? clonePlain(previous.editor) : null;
@@ -2669,15 +2704,22 @@ export function createPluginSettingsFeature({
     },
     isDirty: () => runtimePluginController.isDirty() || hasCollectionDrafts(),
     hasCollectionDrafts,
-    async save() {
-      if (hasCollectionDrafts()) {
+    async save({ keepGlobalCollectionDrafts = false } = {}) {
+      if (hasCollectionDrafts() && (!keepGlobalCollectionDrafts || collectionDraftCount("character") > 0)) {
         throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
       }
-      return runtimePluginController.save();
+      const disablingWithDrafts = pluginView.items.some((plugin) => !plugin.required
+        && pluginState.initialEnabledById[plugin.id] && !pluginState.enabledById[plugin.id]
+        && affectedPluginsHaveCollectionDrafts(plugin));
+      if (disablingWithDrafts) {
+        throw new Error("请先保存或还原受影响插件中正在编辑的集合记录，再停用插件。");
+      }
+      return runtimePluginController.save({ keepGlobalCollectionDrafts });
     },
     refreshCurrent: runtimePluginController.refreshCurrent,
     discard: runtimePluginController.discard,
     collectionDraftCount,
+    characterCollectionDraftCount: () => collectionDraftCount("character"),
     renderCollections,
     renderMemorySurface,
     dialogElement: () => pluginSettingsDialog?.dialog,
@@ -2694,16 +2736,17 @@ export function createPluginSettingsFeature({
       if (page === "memory") renderMemorySurface();
     },
     clearCharacterState() {
-      pluginCollectionState.forEach((state) => {
+      pluginCollectionState.forEach((state, key) => {
+        if (state.scope !== "character") return;
         clearTimer(state.searchTimer);
         state.queryRevision += 1;
         state.queryPending = false;
         state.queryPendingRender = false;
         state.editor = null;
         state.editorError = "";
+        pluginCollectionState.delete(key);
       });
       clearMemoryEditorPortal();
-      pluginCollectionState.clear();
       renderCollections();
       refreshDirty();
     },

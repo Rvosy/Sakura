@@ -46,6 +46,7 @@ class FactMemoryPlugin:
             SETTINGS_SECTION_ID,
             {
                 "collectionId": COLLECTION_ID,
+                "scope": "character",
                 "title": "当前角色的便签",
                 "columns": [
                     {"key": "content", "label": "内容", "type": "string", "maxLength": MAX_CONTENT_LENGTH},

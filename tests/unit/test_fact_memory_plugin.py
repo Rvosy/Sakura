@@ -201,6 +201,8 @@ def test_registration_and_cleanup_do_not_require_a_ready_character(tmp_path: Pat
     FactMemoryPlugin().setup(context)
     try:
         character.current.assert_not_called()
+        descriptor = services["sakura.host.settings.collection-v0"].register.call_args.args[1]
+        assert descriptor["scope"] == "character"
         callbacks = services["sakura.host.settings.collection-v0"].register.call_args.kwargs
         with pytest.raises(RuntimeError, match="CHARACTER_NOT_FOUND"):
             callbacks["query"]({})

@@ -37,7 +37,6 @@ function initialState() {
     phase: "booting",
     operationId: null,
     bubbleText: "",
-    progressText: "",
     segments: Object.freeze([]),
     replyHistorySegments: Object.freeze([]),
     replyHistoryIndex: -1,
@@ -92,7 +91,6 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
       phase: "error",
       operationId: null,
       bubbleText: "连接中断，本次回复已停止。",
-      progressText: "",
       segments: Object.freeze([]),
       replyHistorySegments,
       replyHistoryIndex: replyHistorySegments.length - 1,
@@ -164,7 +162,6 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
               ? (state.phase === "booting" ? "ready" : state.phase)
               : "booting",
           operationId: preserveInteraction ? state.operationId : null,
-          progressText: preserveInteraction ? state.progressText : "",
           bubbleText: activeReplyInterrupted
             ? "连接中断，本次回复已停止。"
             : preserveVisualState || preserveGreeting
@@ -206,7 +203,6 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
           state = freezeState({
             ...state,
             operationId: event.operationId,
-            progressText: "",
             silentInteraction: true,
             canCancel: false,
           });
@@ -217,7 +213,6 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
           phase: "thinking",
           operationId: event.operationId,
           bubbleText: ".",
-          progressText: "",
           segments: Object.freeze([]),
           currentReplyHistoryStart: -1,
           showingReplyHistorySegment: false,
@@ -230,11 +225,6 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
       }
 
       if (!event.operationId || event.operationId !== state.operationId) return result(false);
-      if (event.type === "chat.progress" && state.phase === "thinking" && !state.silentInteraction) {
-        if (typeof event.text !== "string" || [...event.text].length > 500) return result(false);
-        state = freezeState({ ...state, bubbleText: event.text || ".", progressText: event.text });
-        return result(true);
-      }
       if (event.type === "chat.completed" && (state.phase === "thinking" || state.silentInteraction)) {
         const segments = normalizedSegments(event.reply);
         if (!segments.length) return result(false);
@@ -248,8 +238,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
           replyHistoryIndex: currentReplyHistoryStart,
           currentReplyHistoryStart,
           showingReplyHistorySegment: false,
-          bubbleText: state.progressText ? "" : state.bubbleText,
-          progressText: "",
+          bubbleText: state.bubbleText,
 
           canCancel: false,
           silentInteraction: false,
@@ -260,7 +249,6 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
         state = freezeState({
           ...state,
           operationId: null,
-          progressText: "",
           silentInteraction: false,
           canCancel: false,
         });
@@ -273,7 +261,6 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
           phase: "error",
           operationId: null,
           bubbleText: message,
-          progressText: "",
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
@@ -289,7 +276,6 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
           phase: "settled",
           operationId: null,
           bubbleText: event.reason === "core_restart" ? "连接已断开，这次回复停止了。" : "已取消当前回复。",
-          progressText: "",
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: null,
@@ -307,7 +293,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
       return result(true);
     },
     setWaitingText(text) {
-      if (!["thinking", "typing"].includes(state.phase) || state.progressText) return result(false);
+      if (!["thinking", "typing"].includes(state.phase)) return result(false);
       state = freezeState({ ...state, bubbleText: String(text ?? "") });
       return result(true);
     },

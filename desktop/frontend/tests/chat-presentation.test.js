@@ -111,37 +111,6 @@ test("completed replies keep the waiting frame visible until the first subtitle 
   assert.equal(reducer.setWaitingText("...").applied, false);
 });
 
-test("progress is transient plain text and cannot become reply history or a waiting frame", () => {
-  for (const terminal of ["chat.completed", "chat.failed", "chat.cancelled", "restart"]) {
-    const reducer = readyReducer();
-    const identity = { generationId: "generation-1", generationNumber: 1, operationId: "op-progress" };
-    reducer.reduce({ type: "chat.started", ...identity });
-    const text = "<b>正在读取</b>\n第二份资料";
-    assert.equal(reducer.reduce({ type: "chat.progress", ...identity, text }).applied, true);
-    assert.equal(reducer.current().bubbleText, text);
-    assert.equal(reducer.current().phase, "thinking");
-    assert.equal(reducer.current().canCancel, true);
-    assert.deepEqual(reducer.current().segments, []);
-    assert.deepEqual(reducer.current().replyHistorySegments, []);
-    assert.equal(reducer.setWaitingText("...").applied, false);
-    assert.equal(reducer.current().bubbleText, text);
-    assert.equal(reducer.reduce({ type: "chat.progress", ...identity, operationId: "old", text: "late" }).applied, false);
-    reducer.reduce({ type: "chat.progress", ...identity, text: "" });
-    assert.equal(reducer.current().progressText, "");
-    assert.equal(reducer.setWaitingText("...").applied, true);
-    reducer.reduce({ type: "chat.progress", ...identity, text });
-    reducer.reduce(terminal === "restart" ? lifecycle("rehydrating", 2) : {
-      type: terminal, ...identity,
-      reply: { segments: [{ text: "最终回答" }] }, error: { message: "执行失败" },
-    });
-    assert.equal(reducer.current().progressText, "");
-    assert.notEqual(reducer.current().bubbleText, text);
-    assert.deepEqual(reducer.current().replyHistorySegments.map((segment) => segment.text),
-      terminal === "chat.completed" ? ["最终回答"] : []);
-    assert.equal(reducer.reduce({ type: "chat.progress", ...identity, text: "late" }).applied, false);
-  }
-});
-
 test("a new request replaces a completed reply that is still typing or playing audio", () => {
   const reducer = readyReducer();
   reducer.reduce({

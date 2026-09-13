@@ -107,9 +107,9 @@ def test_bound_stop_waits_for_removed_process_cleanup(
         def stop_bound():
             try:
                 if source == "concurrent_stop":
-                    manager._stop_process(PLUGIN, reason="EXECUTOR_PROTOCOL_FAILED", failed=True)
+                    manager._stop_process(PLUGIN, reason="TEST_STOP", failed=True)
                 else:
-                    manager.stop_bound_service(SERVICE, identity, reason="EXECUTOR_PROTOCOL_FAILED")
+                    manager.stop_bound_service(SERVICE, identity, reason="TEST_STOP")
             except BaseException as error:
                 errors.append(error)
             finally:
@@ -151,7 +151,7 @@ def test_old_identity_never_stops_a_same_id_replacement(tmp_path: Path) -> None:
         manager.reload_plugin(PLUGIN)
         current = manager.service_identity(SERVICE)
         assert current != previous
-        manager.stop_bound_service(SERVICE, previous, reason="EXECUTOR_PROTOCOL_FAILED")
+        manager.stop_bound_service(SERVICE, previous, reason="TEST_STOP")
         assert manager.service_identity(SERVICE) == current
         assert manager.call_service(SERVICE, "ping") == "ready"
     finally:
@@ -304,7 +304,7 @@ def test_cleanup_failure_wakes_waiters_and_blocks_same_id_restart(
             assert raised.value.__cause__ is failure
 
         with pytest.raises(PluginRuntimeError, match="PLUGIN_CLEANUP_FAILED") as raised:
-            manager.stop_bound_service(SERVICE, identity, reason="EXECUTOR_PROTOCOL_FAILED")
+            manager.stop_bound_service(SERVICE, identity, reason="TEST_STOP")
         assert raised.value.__cause__ is failure
         assert process._cleanup_complete.is_set()
         with pytest.raises(PluginRuntimeError, match="PLUGIN_CLEANUP_FAILED") as waiter:
