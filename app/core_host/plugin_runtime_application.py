@@ -45,7 +45,7 @@ _HOST_EXPORTS = {
     HOST_DIAGNOSTICS_SERVICE: ("emit",),
     HOST_CHARACTER_SERVICE: ("current", "get", "update", "resolve_resource"),
     HOST_TOOLS_SERVICE: ("register", "unregister"),
-    HOST_CONTEXT_SERVICE: ("register", "unregister"),
+    HOST_CONTEXT_SERVICE: ("register", "unregister", "describe"),
     HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve"),
     HOST_STORAGE_SERVICE: ("resolve",),
     HOST_SETTINGS_SERVICE: ("register", "unregister"),

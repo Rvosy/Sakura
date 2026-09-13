@@ -642,6 +642,12 @@ class _HostRegistrationProxy:
         self._service_key = service_key
         self._callback_shape = callback_shape
 
+    def describe(self) -> dict[str, Any]:
+        result = self._context._remote_call(self._service_key, "describe", [])
+        if not isinstance(result, Mapping):
+            raise PluginApiError("HOST_DESCRIPTOR_INVALID", plugin_id=self._context.plugin_id)
+        return dict(result)
+
     def register(
         self,
         descriptor: Mapping[str, Any],

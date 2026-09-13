@@ -63,7 +63,7 @@ class ContextRequest:
 
 @dataclass(frozen=True)
 class ContextFragment:
-    """一个可预算、可追踪的动态事实片段。"""
+    """一个可预算、可追踪的上下文贡献。"""
 
     fragment_id: str
     source: str
@@ -77,6 +77,8 @@ class ContextFragment:
     provider_order: float = 100.0
     required: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    kind: Literal["data", "instruction"] = "data"
+    provider_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,6 +156,8 @@ class PromptSectionInspection:
     included: bool
     truncated: bool = False
     drop_reason: str = ""
+    kind: str = ""
+    required: bool = False
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult
+from app.agent.context_orchestrator import ContextContributionError
 from app.agent.trace import (
     AgentTraceRecorder,
     PromptTraceMetadata,
@@ -641,6 +642,17 @@ class AgentRuntime:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
+        with self.context_orchestrator.turn(
+            self.context_providers, cancel_checker=cancel_checker
+        ):
+            return self._handle_user_message(messages, progress_callback, cancel_checker)
+
+    def _handle_user_message(
+        self,
+        messages: list[ChatMessage],
+        progress_callback: ProgressCallback | None = None,
+        cancel_checker: CancelChecker | None = None,
+    ) -> AgentResult:
         import app.agent.tool_routing as tool_routing
 
         check_cancelled(cancel_checker)
@@ -1255,7 +1267,7 @@ class AgentRuntime:
                     cancel_checker=cancel_checker,
                 )
             check_cancelled(cancel_checker)
-        except (OperationCancelled, ContextWindowExceededError):
+        except (OperationCancelled, ContextWindowExceededError, ContextContributionError):
             raise
         except Exception as exc:
             if _is_function_response_name_missing_error(exc):
@@ -1320,7 +1332,7 @@ class AgentRuntime:
                         ),
                         cancel_checker=cancel_checker,
                     )
-                except (OperationCancelled, ContextWindowExceededError):
+                except (OperationCancelled, ContextWindowExceededError, ContextContributionError):
                     raise
                 except Exception as retry_exc:
                     if self.strict_provider_errors:
@@ -1367,6 +1379,17 @@ class AgentRuntime:
         )
 
     def handle_event(
+        self,
+        event: AgentEvent,
+        progress_callback: ProgressCallback | None = None,
+        cancel_checker: CancelChecker | None = None,
+    ) -> AgentResult:
+        with self.context_orchestrator.turn(
+            self.context_providers, cancel_checker=cancel_checker
+        ):
+            return self._handle_event(event, progress_callback, cancel_checker)
+
+    def _handle_event(
         self,
         event: AgentEvent,
         progress_callback: ProgressCallback | None = None,

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-11
+updated: 2026-09-13
 ---
 
 # Sakura Plugin Runtime v4
@@ -314,6 +314,36 @@ Tools、Context contributors、Timeline observers、Settings sections 和模型�
 Memory 默认采用 Contribution 组合。官方 Mem0 可同时提供 Timeline 消费、Context、Tools、Settings 和
 model slot；替代插件可以提供相同或部分贡献。用户既可以关闭 Mem0 完整替换，也可以启用多个不同 Memory
 插件共同工作。Runtime 不预设唯一 `sakura.memory` Store/Search/Recall 协议。
+
+### 6.4 Context 行为贡献
+
+`sakura.host.context` 在原有 `register/unregister` 上增加 `describe()`，返回
+`{schemaVersion: 1, fragmentKinds: ["data", "instruction"], scopes: ["step", "turn"], failurePolicies: ["skip", "abort"]}`。
+新行为插件在启用时检查所需能力；旧 Host 缺少方法或能力时明确失败，不能依赖旧 Host 忽略新增字段。
+
+注册描述保留 `providerId/description/order/enabled`，增加 `scope`（默认 `step`）和 `failurePolicy`
+（默认 `skip`）。片段增加 `kind`（默认 `data`）和 `required`（默认 `false`）。未知枚举、非布尔 required、
+非有限 order 等无效字段明确拒绝。`scope` 是整个注册回调的采集范围，不是片段字段。
+
+- `data` 作为参考资料；`instruction` 作为用户启用的行为规则。Host 从调用身份绑定真实插件来源，
+  从登记绑定 Provider，忽略片段自报身份；`trust` 分别派生为 `untrusted/trusted`，不授予代码权限。
+  两类内容分区渲染；模型 Provider 的 role 降级也保留用途，不能统一标成事实。
+- 行为规则可以调整交流风格和活动规则，仍须遵守宿主执行边界及公共回复格式。自然语言规则不保证模型必然遵从。
+- 顶层用户或事件互动开始时固定贡献者集合与顺序。`step` 每次组装调用；`turn` 第一次组装采集并在
+  工具后续步骤、最终总结、格式修复中复用，互动退出时释放。下一次互动重新采集，不跨会话或重启持久化。
+  配置更新、停用不改写本轮已采集结果；未完成的回调仍可能因插件退出而失败，按失败策略处理。
+- `skip` 在回调失败时记录并跳过；`abort` 产生 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮，错误和运行日志
+  携带真实插件及 Provider 标识。失败不生成助手历史。取消不受失败策略影响；同步回调前后均检查取消。
+- `required` 片段不裁剪，预算不足时产生 `CONTEXT_WINDOW_EXCEEDED`。可选规则完整装入或整条丢弃，
+  忽略 `budgetHint`；可选资料保留原贡献者额度与全局预算裁剪。两个 Provider 即使属于同一插件也分别计额。
+  `abort` 控制回调失败，`required` 控制成功结果的预算保留，强制贡献必须同时声明两者。
+- 一次最多返回 16 项，每项最多 8192 字符。旧可选资料继续保留前 16 项和前 8192 字符；超项结果中
+  存在规则或必需片段，或单条规则/必需片段超长时，拒绝为 `CONTEXT_RESULT_INVALID`，再应用失败策略。
+  空内容、未知 kind 和无效 required 也拒绝，不静默降级为资料。
+
+Agent Trace 与 Prompt Inspection 保留用途、必需性和采集范围，Trace 还保留实际插件与 Provider；运行日志
+只记录诊断标识，不记录规则正文。Context 不自动写入 Timeline，也不改变 Memory 的整理策略。
+接口用法见 [SDK](../../devdocs/SAKURA_PLUGIN_SDK.md)，取舍见 [ADR-0049](../../adr/0049-unified-context-instructions.md)。
 
 ## 7. 官方默认插件
 

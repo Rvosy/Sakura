@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-06
+updated: 2026-09-13
 ---
 
 # 用 AI 快速开发 Sakura 插件
@@ -70,6 +70,11 @@ updated: 2026-09-06
 6. 线程、子进程、连接和临时资源登记 context.effect()，清理幂等且有界，等待生产者停止后再释放资源。
    不依赖独立 shutdown() 入口。需要进程树清理时使用公开 sakura_process 工具。
    不在 reload、停用或 Core generation 变化后复用旧 ServiceProxy、callback 或 artifact。
+7. 聊天规则和资料统一通过 sakura.host.context.register() 贡献。检索资料保持 kind: data；用户启用的
+   行为规则使用 kind: instruction。先调用 describe() 检查能力，旧宿主不支持时明确停止启用。
+   固定本轮结果用注册级 scope: turn；必须成功的回调用 failurePolicy: abort，必须完整注入的片段用
+   required: true。两者作用不同，需要强制规则时同时声明。规则仍遵守宿主执行边界和公共回复格式。
+   不把网页、OCR 和导入文档升级为指令，不为教学或角色扮演另造业务专用 Core 接口。
 
 三、设置、分类、图标和资源
 

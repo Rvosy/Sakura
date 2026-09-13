@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-13
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -219,11 +219,12 @@ tokenizer；不可用时使用现有保守估算器，并在 Trace 标明 estima
 
 `ContextPolicy` 在同一个预算账本中处理历史 Turn 和 Context Fragment：
 
-1. 保留必需 Host facts 和当前 Turn；
+1. 保留必需 Host facts、必需插件片段和当前 Turn；
 2. 在能完整容纳时优先保护最近 8 个真实 human/assistant 完整 Turn；8 是保护尾部，不是历史上限；
 3. 尝试完整选择最新的近期 observation Turn；空间不足时整 Turn 丢弃，不截断摘要或 assistant 回复；
-4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；同一 Contributor 的额度按
-   `plugin_id/source` 聚合，不能拆 Fragment 绕过限制；
+4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；可选资料按实际 Provider 聚合额度，
+   内置片段无 Provider 时按 source 聚合，两类标识独立。同一 Provider 不能拆 Fragment 绕过限制；
+   可选规则完整选择或整条丢弃，必需片段不裁剪；
 5. 用剩余预算从近到远选择其余两小时内 observation Turn，再选择更早的真实对话 Turn；
 6. 输出前恢复为旧到新，并由 Provider adapter 进行最终 role/placement 兼容。
 
@@ -240,6 +241,12 @@ WP-4-07R 的 Runtime v2 路径不得继续把以下值作为总上限：
 ```
 
 Legacy Qt 可以暂时保留旧限制，但不得影响 Runtime v2 resolved budget。
+
+### 7.4 行为贡献与本轮采集
+
+插件可通过统一 Context 入口返回规则和资料，完整合同见 [Runtime v4 §6.4](sakura-plugin-runtime-v4.md#64-context-行为贡献)。
+本轮规则的临时缓存只属于活动调用，供模型各步骤复用；它不改变第 6 节历史投影的无状态要求，
+也不创建持久 Turn cache。回调失败策略和片段完整性由插件显式声明，旧插件保持可选资料语义。
 
 ## 8. Memory 与其他插件
 

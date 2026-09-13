@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, Mapping, Sequence
 
+from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
 from app.core.runtime_log import diagnostic_attributes, log_event
 from app.llm.api_client import ChatMessage
 from app.agent.trace import message_provenance
@@ -33,11 +36,63 @@ MAX_VISUAL_SUMMARIES = 6
 MAX_VISUAL_SUMMARY_CHARS = 500
 
 
+class ContextContributionError(RuntimeError):
+    """无法满足本次互动的上下文贡献契约。"""
+
+    code = "CONTEXT_CONTRIBUTION_FAILED"
+
+    def __init__(self, provider_id: str, plugin_id: str = "") -> None:
+        super().__init__(self.code)
+        self.provider_id = provider_id
+        self.plugin_id = plugin_id
+
+    def public_message(self) -> str:
+        owner = self.plugin_id or self.provider_id
+        return f"插件 {owner} 的上下文贡献 {self.provider_id} 失败，本次互动已停止。"
+
+    def log_attributes(self) -> dict[str, str]:
+        return {
+            "reason_code": self.code,
+            "provider_id": self.provider_id,
+            "plugin_id": self.plugin_id,
+            "stage": "context_provider",
+        }
+
+
+@dataclass
+class _ContextTurnState:
+    providers: tuple[ContextProviderContribution, ...]
+    cancel_checker: CancelChecker | None = None
+    results: dict[int, tuple[ContextFragment, ...]] = field(default_factory=dict)
+
+
 class ContextOrchestrator:
-    """收集受限事实，经统一策略选择后生成 ContextSnapshot。"""
+    """收集插件规则和事实，经统一策略选择后生成 ContextSnapshot。"""
 
     def __init__(self, policy: ContextPolicy | None = None) -> None:
         self.policy = policy or ContextPolicy()
+        self._turn: ContextVar[_ContextTurnState | None] = ContextVar(
+            "context_contribution_turn", default=None
+        )
+
+    @contextmanager
+    def turn(
+        self,
+        providers: Sequence[ContextProviderContribution],
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> Iterator[None]:
+        """一次互动固定提供者集合，并隔离本轮首次获取的 turn 贡献。"""
+        state = _ContextTurnState(
+            tuple(sorted((item for item in providers if item.enabled), key=lambda item: item.order)),
+            cancel_checker,
+        )
+        token = self._turn.set(state)
+        try:
+            check_cancelled(cancel_checker)
+            yield
+        finally:
+            self._turn.reset(token)
 
     def build_snapshot(
         self,
@@ -52,9 +107,17 @@ class ContextOrchestrator:
         window_source: str = "fallback",
         max_tokens: int | None = None,
         model: str = "",
+        cancel_checker: CancelChecker | None = None,
     ) -> ContextSnapshot:
+        turn = self._turn.get()
+        cancel_checker = cancel_checker or (turn.cancel_checker if turn else None)
+        check_cancelled(cancel_checker)
         fragments = [*_builtin_fragments(request), *session_fragments]
-        fragments.extend(_collect_provider_fragments(request, providers))
+        fragments.extend(_collect_provider_fragments(
+            request, turn.providers if turn else providers,
+            turn=turn, cancel_checker=cancel_checker,
+        ))
+        check_cancelled(cancel_checker)
         if context_window_tokens is None:
             return self.policy.select(request, fragments)
         turns, required_tokens, projected_drops = _history_budget_inputs(
@@ -198,20 +261,63 @@ def _builtin_fragments(request: ContextRequest) -> list[ContextFragment]:
 def _collect_provider_fragments(
     request: ContextRequest,
     providers: Sequence[ContextProviderContribution],
+    *,
+    turn: _ContextTurnState | None = None,
+    cancel_checker: CancelChecker | None = None,
 ) -> list[ContextFragment]:
     fragments: list[ContextFragment] = []
-    for provider in sorted(
+    for provider_index, provider in enumerate(sorted(
         (item for item in providers if item.enabled),
         key=lambda item: item.order,
-    ):
+    )):
+        check_cancelled(cancel_checker)
+        if turn is not None and provider.scope == "turn" and provider_index in turn.results:
+            fragments.extend(turn.results[provider_index])
+            continue
+        normalized: list[ContextFragment] = []
         try:
             provided = provider.build_context(request)
+            check_cancelled(cancel_checker)
+            if not isinstance(provided, Sequence) or isinstance(provided, (str, bytes)):
+                raise ValueError("CONTEXT_RESULT_INVALID")
+            for index, fragment in enumerate(provided):
+                if not isinstance(fragment, ContextFragment):
+                    if provider.failure_policy == "abort":
+                        raise ValueError("CONTEXT_RESULT_INVALID")
+                    log_event(
+                        "ContextOrchestrator",
+                        "插件上下文片段类型无效，已跳过",
+                        {"provider_id": provider.provider_id, "index": index},
+                    )
+                    continue
+                if fragment.required and not fragment.content.strip():
+                    raise ContextContributionError(provider.provider_id, provider.plugin_id)
+                local_id = fragment.fragment_id.strip() or str(index)
+                normalized.append(
+                    replace(
+                        fragment,
+                        fragment_id=f"plugin.{provider.provider_id}.{local_id}",
+                        source=f"plugin:{provider.plugin_id or provider.provider_id}",
+                        trust="trusted" if fragment.kind == "instruction" else "untrusted",
+                        cache_scope=provider.scope,
+                        provider_id=provider.provider_id,
+                        provider_order=provider.order,
+                    )
+                )
+        except (OperationCancelled, ContextContributionError):
+            raise
         except Exception as exc:  # noqa: BLE001
+            check_cancelled(cancel_checker)
+            if provider.failure_policy == "abort":
+                raise ContextContributionError(
+                    provider.provider_id, provider.plugin_id
+                ) from exc
             log_event(
                 "ContextOrchestrator",
                 "插件上下文提供者执行失败，已跳过",
                 {
                     "provider_id": provider.provider_id,
+                    "plugin_id": provider.plugin_id,
                     **diagnostic_attributes(
                         exc,
                         reason_code="CONTEXT_PROVIDER_FAILED",
@@ -219,34 +325,11 @@ def _collect_provider_fragments(
                     ),
                 },
             )
-            continue
-        if not isinstance(provided, Sequence) or isinstance(provided, (str, bytes)):
-            log_event(
-                "ContextOrchestrator",
-                "插件上下文提供者返回类型无效，已跳过",
-                {"provider_id": provider.provider_id},
-            )
-            continue
-        for index, fragment in enumerate(provided):
-            if not isinstance(fragment, ContextFragment):
-                log_event(
-                    "ContextOrchestrator",
-                    "插件上下文片段类型无效，已跳过",
-                    {"provider_id": provider.provider_id, "index": index},
-                )
-                continue
-            local_id = fragment.fragment_id.strip() or str(index)
-            fragments.append(
-                replace(
-                    fragment,
-                    fragment_id=f"plugin.{provider.provider_id}.{local_id}",
-                    source=f"plugin:{provider.provider_id}",
-                    trust="untrusted",
-                    cache_scope="step",
-                    provider_order=provider.order,
-                    required=False,
-                )
-            )
+            normalized = []
+        check_cancelled(cancel_checker)
+        if turn is not None and provider.scope == "turn":
+            turn.results[provider_index] = tuple(normalized)
+        fragments.extend(normalized)
     return fragments
 
 

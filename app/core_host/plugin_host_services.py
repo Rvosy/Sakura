@@ -611,6 +611,13 @@ class _ContextHostService:
         self._registrations: dict[str, _ContextRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "describe" and not args:
+            return {
+                "schemaVersion": 1,
+                "fragmentKinds": ["data", "instruction"],
+                "scopes": ["step", "turn"],
+                "failurePolicies": ["skip", "abort"],
+            }
         if method == "register" and len(args) == 2:
             return self._register(args[0], args[1])
         if method == "unregister" and len(args) == 1:
@@ -624,6 +631,8 @@ class _ContextHostService:
         description = descriptor.get("description", "")
         order = descriptor.get("order", 100.0)
         enabled = descriptor.get("enabled", True)
+        scope = descriptor.get("scope", "step")
+        failure_policy = descriptor.get("failurePolicy", "skip")
         if (
             not isinstance(provider_id, str)
             or not _IDENTIFIER.fullmatch(provider_id)
@@ -631,7 +640,10 @@ class _ContextHostService:
             or len(description) > 240
             or not isinstance(order, (int, float))
             or isinstance(order, bool)
+            or not math.isfinite(order)
             or not isinstance(enabled, bool)
+            or scope not in ("step", "turn")
+            or failure_policy not in ("skip", "abort")
         ):
             raise HostServiceError("CONTEXT_DESCRIPTOR_INVALID")
         if any(
@@ -646,10 +658,17 @@ class _ContextHostService:
                 "context.contributor",
                 self._encode_request(request),
             )
-            if not isinstance(payload, list):
+            if not isinstance(payload, list) or (
+                len(payload) > 16
+                and any(
+                    isinstance(item, Mapping)
+                    and (item.get("required") is True or item.get("kind") == "instruction")
+                    for item in payload
+                )
+            ):
                 raise HostServiceError("CONTEXT_RESULT_INVALID")
             return tuple(
-                _context_fragment(item, index)
+                _context_fragment(item, index, scope=scope)
                 for index, item in enumerate(payload[:16])
             )
 
@@ -659,6 +678,9 @@ class _ContextHostService:
             build_context=build_context,
             order=float(order),
             enabled=enabled,
+            scope=scope,
+            failure_policy=failure_policy,
+            plugin_id=HOST_CALLER.get() or "",
         )
         registration_id = _new_registration_id(self._registrations)
         self._registrations[registration_id] = _ContextRegistration(contribution)
@@ -1808,17 +1830,24 @@ def _new_registration_id(existing: Mapping[str, Any]) -> str:
     return registration_id
 
 
-def _context_fragment(value: object, index: int) -> ContextFragment:
+def _context_fragment(value: object, index: int, *, scope: str = "step") -> ContextFragment:
     raw = _mapping(value, "CONTEXT_RESULT_INVALID")
     content = raw.get("content")
     if not isinstance(content, str) or not content.strip():
+        raise HostServiceError("CONTEXT_RESULT_INVALID")
+    kind = raw.get("kind", "data")
+    required = raw.get("required", False)
+    if kind not in ("data", "instruction") or not isinstance(required, bool):
+        raise HostServiceError("CONTEXT_RESULT_INVALID")
+    if len(content) > 8192 and (required or kind == "instruction"):
         raise HostServiceError("CONTEXT_RESULT_INVALID")
     sensitivity = raw.get("sensitivity", "private")
     return ContextFragment(
         fragment_id=str(raw.get("id") or index)[:64],
         source="plugin",
         content=content[:8192],
-        trust="untrusted",
+        kind=kind,
+        trust="trusted" if kind == "instruction" else "untrusted",
         priority=_bounded_int(raw.get("priority"), 0, 100, 50),
         token_budget=_bounded_int(raw.get("budgetHint"), 1, 4096, 512),
         sensitivity=(
@@ -1826,8 +1855,8 @@ def _context_fragment(value: object, index: int) -> ContextFragment:
             if sensitivity in {"public", "private", "sensitive"}
             else "private"
         ),
-        cache_scope="step",
-        required=False,
+        cache_scope=scope,
+        required=required,
     )
 
 

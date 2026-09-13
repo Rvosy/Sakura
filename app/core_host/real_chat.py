@@ -1564,7 +1564,10 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     if isinstance(error, _BoundaryFailure):
         return error.code, error.public_message, error.retryable
     from app.llm.prompts.runtime import ContextWindowExceededError
+    from app.agent.context_orchestrator import ContextContributionError
 
+    if isinstance(error, ContextContributionError):
+        return error.code, error.public_message(), False
     if isinstance(error, ContextWindowExceededError):
         return (
             "CONTEXT_WINDOW_EXCEEDED",
@@ -1610,6 +1613,7 @@ def _safe_diagnostic(error: BaseException, *, code: str, message: str) -> None:
     try:
         from app.core.runtime_log import external_runtime_sink_active, log_event, diagnostic_attributes
         from app.llm.prompts.runtime import ContextWindowExceededError
+        from app.agent.context_orchestrator import ContextContributionError
 
         if external_runtime_sink_active():
             attributes: dict[str, Any] = {
@@ -1618,7 +1622,7 @@ def _safe_diagnostic(error: BaseException, *, code: str, message: str) -> None:
                 "error_type": type(error).__name__,
                 **diagnostic_attributes(error, reason_code=code, stage="chat"),
             }
-            if isinstance(error, ContextWindowExceededError):
+            if isinstance(error, (ContextWindowExceededError, ContextContributionError)):
                 attributes.update(error.log_attributes())
             elif (status := provider_http_status(error)) is not None:
                 attributes["http_status"] = status
