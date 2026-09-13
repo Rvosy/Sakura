@@ -74,7 +74,11 @@ class Plugin:
         bridge.close()
     records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines()
         if line.startswith(CORE_BRIDGE_PREFIX)]
-    custom = [r for r in records if r.get("custom")]
+    lifecycle = [r for r in records if r.get("event") == "plugin.loaded" or r.get("attributes", {}).get("event") == "plugin.stopped"]
+    assert len(lifecycle) == 4
+    assert {r["plugin_id"] for r in lifecycle} == {"fixture.one", "fixture.two"}
+    assert all(r.get("plugin_name", "").startswith("示例插件") for r in lifecycle)
+    custom = [r for r in records if r.get("custom") and r.get("attributes", {}).get("stage") in {"setup", "run", "cleanup"}]
     assert len(custom) == 6
     for name in ("one", "two"):
         rows = [r for r in custom if r["plugin_id"] == f"fixture.{name}"]
@@ -84,6 +88,56 @@ class Plugin:
     assert b"fixture.spoofed" not in stream.getvalue()
     assert b"private-credential" not in stream.getvalue()
     assert all(len(line) + 1 <= 4096 for line in stream.getvalue().splitlines())
+
+
+def test_plugin_start_failures_reach_log_bridge_with_identity(tmp_path: Path):
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+    roots = _roots(tmp_path)
+    parent = roots.distribution_root / "plugins/builtin"
+    _plugin_source(parent, "fixture.missing", "fixture.missing.service", requires=("fixture.absent",), body="class Plugin: pass")
+    _plugin_source(parent, "fixture.broken", "fixture.broken.service", body="class Plugin:\n    def setup(self, context): raise ValueError('fixture setup failed')")
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "failure-log-test", ToolRegistry())
+    try:
+        host.start()
+        assert host.application.wait_until_loaded(timeout=3)
+    finally:
+        host.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    failures = [row for row in records if row.get("attributes", {}).get("event") in {"plugin.start.blocked", "plugin.start.failed"}]
+    assert {row["plugin_id"] for row in failures} == {"fixture.missing", "fixture.broken"}
+    assert all(row["severity"] == "error" and row["plugin_name"] == row["plugin_id"] for row in failures)
+    assert next(row for row in failures if row["plugin_id"] == "fixture.missing")["attributes"]["reason_code"] == "MISSING_SERVICE"
+
+
+def test_plugin_stderr_is_forwarded_before_process_exit(tmp_path: Path, monkeypatch) -> None:
+    from app.core import runtime_log
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.stderr", "fixture.stderr.service", body='''class Plugin:
+    def setup(self, context):
+        print("small stderr diagnostic", flush=True)
+        context.provide("fixture.stderr.service", object(), exports=())
+''')
+    received = threading.Event()
+    captured = []
+    def capture(level, message, **kwargs):
+        captured.append(kwargs)
+        if kwargs.get("fields", {}).get("event") == "plugin.process.stderr":
+            received.set()
+    monkeypatch.setattr(runtime_log, "log_message", capture)
+    host = PluginApplicationHost(roots, "stderr-test", ToolRegistry())
+    try:
+        host.start()
+        assert host.application.wait_until_loaded(timeout=3)
+        assert received.wait(3), "short stderr output must arrive while the plugin is alive"
+        row = next(row for row in captured if row.get("fields", {}).get("event") == "plugin.process.stderr")
+        assert row["plugin_id"] == "fixture.stderr"
+        assert row["plugin_name"] == "fixture.stderr"
+        assert row["fields"]["diagnostic"] == "small stderr diagnostic"
+    finally:
+        host.close()
 
 
 def test_unified_logging_sdk_queue_is_bounded_and_does_not_block(tmp_path: Path) -> None:

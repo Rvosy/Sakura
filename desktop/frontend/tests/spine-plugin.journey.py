@@ -416,6 +416,21 @@ def run(components=None):
                 expect(zoom).to_have_value('270')
                 assert preview.locator('canvas').evaluate('canvas => canvas.style.transform') == view_before_save
                 assert page.evaluate("thumbnailRequests === thumbnailRequestsBeforeSave")
+                # Editor-owned catches must forward both preview failures to the host.
+                page.evaluate("""async () => {
+                  const {createEditor}=await import('/plugins/builtin/sakura_spine/editor.mjs');
+                  const container=document.createElement('div'); document.body.append(container);
+                  window.editorFailures=[];
+                  window.errorEditor=createEditor({container,rendererData:{config:{defaultSkin:'normal',defaultAnimation:'idle',speed:1,premultipliedAlpha:false},skins:['normal'],animations:['idle']},
+                    onPreview:async()=>{throw Error('SPINE_PREVIEW_TEST');},
+                    onRenderingChange:async()=>{throw Error('SPINE_RENDERING_TEST');},
+                    onError:(error,stage)=>editorFailures.push({message:error.message,stage})});
+                  container.querySelector('.spine-choices button').click();
+                  container.querySelector('select[aria-label="贴图透明方式"]').dispatchEvent(new Event('change'));
+                }""")
+                page.wait_for_function("editorFailures.length === 2")
+                assert page.evaluate("editorFailures.map(item=>item.stage).sort()") == ['studio.spine.preview', 'studio.spine.rendering']
+                page.evaluate("errorEditor.dispose()")
                 assert not errors, errors
                 browser.close()
                 print(f'PASS: {len(archives)} Spine components: real Studio import/edit/save/reopen + RendererHost lifecycle under desktop CSP')

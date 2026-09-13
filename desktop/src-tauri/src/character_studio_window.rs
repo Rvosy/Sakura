@@ -8,7 +8,7 @@ use std::{
 
 use serde::Serialize;
 use tauri::webview::Color;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use uuid::Uuid;
 
 use crate::product_shell::{PetTopmostState, SETTINGS_WINDOW_LABEL};
@@ -24,6 +24,7 @@ const PREVIEW_LIMIT: u64 = 20 * 1024 * 1024;
 #[derive(Default)]
 struct StudioSession {
     initial_character_id: String,
+    initial_resource_id: Option<String>,
     generation_id: String,
     close_authorized: bool,
     settings_was_visible: bool,
@@ -72,6 +73,12 @@ impl CharacterStudioWindowState {
         self.session
             .lock()
             .map(|session| session.initial_character_id.clone())
+            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())
+    }
+
+    pub fn initial_resource_id(&self) -> Result<Option<String>, String> {
+        self.session.lock()
+            .map(|session| session.initial_resource_id.clone())
             .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())
     }
 
@@ -227,6 +234,7 @@ impl CharacterStudioWindowState {
     fn begin_session(
         &self,
         initial_character_id: &str,
+        initial_resource_id: Option<&str>,
         settings_was_visible: bool,
     ) -> Result<(), String> {
         let mut session = self
@@ -235,6 +243,7 @@ impl CharacterStudioWindowState {
             .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())?;
         *session = StudioSession {
             initial_character_id: initial_character_id.to_string(),
+            initial_resource_id: initial_resource_id.map(str::to_string),
             settings_was_visible,
             ..StudioSession::default()
         };
@@ -267,12 +276,18 @@ pub fn validate_studio_window(window: &WebviewWindow) -> Result<(), String> {
 pub fn show_or_focus(
     app: &AppHandle,
     initial_character_id: &str,
+    initial_resource_id: Option<&str>,
     state: &CharacterStudioWindowState,
     topmost: &PetTopmostState,
 ) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(STUDIO_WINDOW_LABEL) {
         if window.is_minimized().map_err(|error| error.to_string())? {
             window.unminimize().map_err(|error| error.to_string())?;
+        }
+        if let Some(resource_id) = initial_resource_id {
+            window.emit("sakura://studio-navigate", serde_json::json!({
+                "characterId": initial_character_id, "resourceId": resource_id,
+            })).map_err(|error| error.to_string())?;
         }
         window.show().map_err(|error| error.to_string())?;
         return window.set_focus().map_err(|error| error.to_string());
@@ -304,7 +319,7 @@ pub fn show_or_focus(
     .center()
     .build()
     .map_err(|error| format!("STUDIO_WINDOW_CREATE_FAILED: {error}"))?;
-    if let Err(error) = state.begin_session(initial_character_id, settings_was_visible) {
+    if let Err(error) = state.begin_session(initial_character_id, initial_resource_id, settings_was_visible) {
         let _ = studio.destroy();
         return Err(error);
     }

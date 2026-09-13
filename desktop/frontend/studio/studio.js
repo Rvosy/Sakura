@@ -1142,7 +1142,11 @@ window.addEventListener("pagehide", () => { window.clearInterval(visualStatusTim
 
 async function exportVisualComponent(resourceId) {
   await flushDraftAutosave();
-  const path = await invoke("studio_choose_export", { defaultName: `${resourceId}.visual` });
+  const resource = visualReferences().resources.find(item => item.id === resourceId);
+  if (!resource) throw new Error("目标形态已移除，请重新选择。");
+  let name = visualName(resource).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim().replace(/[. ]+$/g, "") || "未命名形态";
+  if (/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name)) name = `_${name}`;
+  const path = await invoke("studio_choose_export", { defaultName: `${name}.visual` });
   if (!path) return;
   await runBusy(() => invokeStudio("studio.visual.export", { workspaceId: currentWorkspaceId, resourceId, path }, "正在导出表现组件…"));
 }
@@ -1661,6 +1665,18 @@ async function openCharacter(characterId) {
     const payload = await hostCall("studio.open_character", { character_id: characterId });
     setCurrentDoc(payload);
   });
+}
+
+async function navigateToVisual({ characterId, resourceId }) {
+  if (!characterId || !resourceId) return;
+  if (editingCharacterId !== characterId) await selectCharacter(characterId);
+  if (editingCharacterId !== characterId) return;
+  switchPage("portrait");
+  if (!visualReferences().resources.some(item => item.id === resourceId)) {
+    setError("目标形态已移除，请重新选择。");
+    return;
+  }
+  await renderVisualResources({ preferredId: resourceId });
 }
 
 async function selectCharacter(characterId) {
@@ -2251,6 +2267,7 @@ async function load() {
   renderCharacterOptions();
   if (initialId) {
     await openCharacter(initialId);
+    if (request.initial_resource_id) await navigateToVisual({ characterId: initialId, resourceId: request.initial_resource_id });
   } else {
     renderEditor();
     refreshControls();
@@ -2327,6 +2344,9 @@ fields.operationCancelButton.addEventListener("click", cancelActiveOperation);
   fields.textLang,
 ].forEach((element) => element.addEventListener("input", handleEditorChanged));
 
+window.__TAURI__?.event?.listen?.("sakura://studio-navigate", ({ payload }) => {
+  void navigateToVisual(payload || {}).catch(error => setError(String(error)));
+});
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);
 window.__TAURI__?.event?.listen?.("sakura://studio-exit-requested", () => {
   void closeStudio({ exitAfter: true });

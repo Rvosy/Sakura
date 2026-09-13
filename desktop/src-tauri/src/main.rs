@@ -6782,6 +6782,7 @@ fn validate_studio_payload(payload: &Value) -> Result<(), String> {
 async fn open_character_studio(
     window: WebviewWindow,
     character_id: String,
+    resource_id: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, character_studio_window::CharacterStudioWindowState>,
     topmost: State<'_, product_shell::PetTopmostState>,
@@ -6791,12 +6792,16 @@ async fn open_character_studio(
     if character_id.is_empty() || character_id.len() > 128 {
         return Err("STUDIO_CHARACTER_ID_INVALID".to_string());
     }
+    if resource_id.as_ref().is_some_and(|id| id.trim().is_empty() || id.len() > 128) {
+        return Err("STUDIO_RESOURCE_ID_INVALID".to_string());
+    }
     // Tauri 同步命令运行在 WebView 事件循环线程。WebView2 处理当前 IPC 时不能在同一线程
     // 创建另一个 WebView，否则设置请求会一直等待，角色控件也会保持禁用。异步命令会先离开
     // 当前 WebView 回调栈，再创建工坊窗口。
     character_studio_window::show_or_focus(
         &app_handle,
         character_id,
+        resource_id.as_deref(),
         state.inner(),
         topmost.inner(),
     )
@@ -6836,6 +6841,8 @@ async fn studio_bootstrap(
     .await?;
     let mut payload = settings_response_payload(response)?;
     validate_studio_payload(&payload)?;
+    payload["initialResourceId"] = serde_json::to_value(state.initial_resource_id()?)
+        .map_err(|error| error.to_string())?;
     payload["shellThemeTokens"] = serde_json::to_value(shell_appearance.values.theme_tokens)
         .map_err(|error| format!("STUDIO_THEME_SERIALIZE_FAILED: {error}"))?;
     Ok(payload)

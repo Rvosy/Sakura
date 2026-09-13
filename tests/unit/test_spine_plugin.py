@@ -227,6 +227,11 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
                      if record.plugin_id == 'sakura.visual.spine')
     assert installed.source == 'bundled'
     assert installed.desired_enabled
+    import io
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+    from app.plugins.runtime_v4 import PluginRuntimeError
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
     application = PluginApplicationHost(roots, 'spine-test', ToolRegistry())
     try:
         application.start()
@@ -249,10 +254,20 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
         invalid = binding.parse_control({**envelope, 'payload': {'speed': 5}})
         assert invalid.control is None
         assert invalid.reason_code == 'VISUAL_CONTROL_REJECTED'
+        (package / 'visual/texture.png').unlink()
+        with pytest.raises(PluginRuntimeError):
+            application.application.call_service('sakura.visual.spine', 'describe', {'characterId': 'alice', 'resource': resource.to_mapping()})
         application.set_enabled(installed.install_id, False)
         assert binding.parse_control(envelope).reason_code == 'VISUAL_BINDING_EXPIRED'
     finally:
         application.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    failures = [r for r in records if r.get('attributes', {}).get('event') == 'visual.resource.failed']
+    assert len(failures) == 1
+    assert failures[0]['plugin_id'] == 'sakura.visual.spine'
+    assert failures[0]['plugin_name'] == 'Spine'
+    assert failures[0]['severity'] == 'error'
 
 
 def test_prepared_component_roundtrips_through_production_archive(spine_resource, tmp_path):

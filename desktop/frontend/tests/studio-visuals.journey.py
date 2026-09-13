@@ -55,10 +55,15 @@ def run():
             application.start()
             try:
                 boundary = CharacterStudioBoundary("g", "c", user, plugin_application_provider=lambda: application)
+                initial_resource_id = None
+                export_names = []
                 def invoke(command, params=None):
                     params = params or {}
-                    if command == "studio_bootstrap": return boundary._dispatch("studio.bootstrap", {"initialCharacterId": "sample"})
+                    if command == "studio_bootstrap": return {**boundary._dispatch("studio.bootstrap", {"initialCharacterId": "sample"}), "initialResourceId": initial_resource_id}
                     if command in {"show_studio", "close_character_studio"}: return None
+                    if command == "studio_choose_export":
+                        export_names.append(params["defaultName"])
+                        return None
                     if command == "studio_choose_source": return [str(source)] if params.get("multiple") else str(source)
                     if command != "studio_request": raise ValueError(command)
                     result = boundary._dispatch(params["method"], params["params"])
@@ -83,17 +88,19 @@ def run():
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.expose_function("nativeInvoke", invoke)
                 page.add_init_script("""
+                  window.__studioListeners = {};
                   window.__discardRequests = 0;
                   window.confirm = () => { throw Error('Native confirm is unavailable in this WebView'); };
                   window.__TAURI__={core:{invoke:async (command,params)=>{
                     if(params?.method==='studio.draft.discard') window.__discardRequests++;
                     const result=await window.nativeInvoke(command,params);
+                    if(command==='studio_choose_export') window.__lastExportName=params.defaultName;
                     if(params?.method==='studio.draft.save' && window.__holdDraftSave) {
                       window.__holdDraftSave=false;
                       await new Promise(resolve=>{window.__releaseDraftSave=resolve;});
                     }
                     return result;
-                  }},event:{listen:async()=>()=>{}}};
+                  }},event:{listen:async(name,callback)=>{window.__studioListeners[name]=callback;return ()=>{};}}};
                 """)
                 page.goto(origin + "/desktop/frontend/studio/")
                 expect(page.locator("#displayName")).to_have_value("示例角色")
@@ -155,6 +162,14 @@ def run():
                 page.locator("#visualName").fill("日常立绘")
                 page.wait_for_function("!document.body.classList.contains('is-dirty')")
                 expect(page.locator(".form-card strong")).to_have_text("日常立绘")
+                for title, expected in [("日常立绘", "日常立绘.visual"), ("夜乃樱/微笑:*", "夜乃樱_微笑__.visual"), ("CON", "_CON.visual")]:
+                    page.locator("#visualName").fill(title)
+                    page.get_by_role("button", name="导出形态", exact=True).click()
+                    page.wait_for_function("!document.body.classList.contains('is-dirty')")
+                    expect(page.get_by_role("button", name="导出形态", exact=True)).to_be_enabled()
+                    page.wait_for_function("window.__lastExportName === " + json.dumps(expected))
+                    assert export_names[-1] == expected
+                page.locator("#visualName").fill("日常立绘")
                 labels = page.get_by_role("textbox", name="表情标签", exact=True)
                 for unfinished in ["", default_label]:
                     labels.nth(1).fill(unfinished)
@@ -181,6 +196,15 @@ def run():
                 output.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(output / "studio-add.png"), animations="disabled")
                 add.get_by_role("button", name="添加", exact=True).click()
+                expect(page.locator("#visualName")).to_have_value("第二套立绘")
+                initial_resource_id = page.locator('.form-card[aria-pressed="true"]').get_attribute("data-visual-id")
+                page.reload()
+                expect(page.locator("#visualName")).to_be_visible()
+                expect(page.locator("#visualName")).to_have_value("第二套立绘")
+                first_resource_id = page.locator('.form-card').first.get_attribute("data-visual-id")
+                page.evaluate("resourceId => window.__studioListeners['sakura://studio-navigate']({payload:{characterId:'sample',resourceId}})", first_resource_id)
+                expect(page.locator("#visualName")).to_have_value("日常立绘")
+                page.evaluate("resourceId => window.__studioListeners['sakura://studio-navigate']({payload:{characterId:'sample',resourceId}})", initial_resource_id)
                 expect(page.locator("#visualName")).to_have_value("第二套立绘")
                 page.get_by_role("button", name="添加图片", exact=True).click()
                 expect(page.locator(".portrait-plugin .expression-row")).to_have_count(1)

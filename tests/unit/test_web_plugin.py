@@ -448,3 +448,17 @@ def test_corrupt_plugin_config_does_not_fail_core_initialization(tmp_path: Path)
         assert app.public_snapshot()["plugins"][0]["state"] == "failed"
     finally:
         app.close()
+
+
+def test_web_failure_logs_code_without_request_content(monkeypatch):
+    from plugins.builtin.sakura_web.plugin import _handler
+    rows = []
+    class Logger:
+        def warning(self, message, *, fields):
+            rows.append(fields)
+    def fail(*args):
+        raise TimeoutError("private request detail")
+    monkeypatch.setattr(web, "search_web", fail)
+    result = _handler("web_search", Logger())({"query": "private search"})
+    assert result["reasonCode"] == "WEB_TIMEOUT"
+    assert rows == [{"tool": "web_search", "reason_code": "WEB_TIMEOUT"}]

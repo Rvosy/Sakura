@@ -136,7 +136,7 @@ export function mountEditor({ container, data, host, signal }) {
         onError: failure => { if (!signal.aborted && current === revision) { valid = false; error.textContent = '模型预览失败，请重新导入'; host.error(failure); } } });
       if (signal.aborted || active.aborted) { candidate.dispose(); stage.remove(); return; }
       let sequence = 0;
-      controls = createEditor({ container: panel, rendererData, onChange(value) {
+      controls = createEditor({ container: panel, rendererData, onError: (error, stage) => host.error(error, stage), onChange(value) {
         if (signal.aborted || current !== revision) return;
         draft = value; host.changed(draft);
       }, onRenderingChange: value => load(value, true), onPreview(payload) {

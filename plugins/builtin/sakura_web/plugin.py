@@ -23,6 +23,7 @@ class WebPlugin:
         risks = config.get("tool_risks", {})
         timeout = config.get("call_timeout", 20)
         tools = context.get("sakura.host.tools")
+        logger = context.get("sakura.host.logging")
         for tool in web.TOOLS:
             name = tool["name"]
             if name not in allowed:
@@ -33,10 +34,20 @@ class WebPlugin:
                 "parameters": tool["inputSchema"],
                 "risk": risks.get(name, "low"),
                 "timeoutSeconds": timeout,
-            }, _handler(name))
+            }, _handler(name, logger))
 
 
-def _handler(name: str):
+def _handler(name: str, logger=None):
+    execute = _execute_handler(name)
+    def logged(arguments):
+        result = execute(arguments)
+        if result.get("isError") and logger is not None:
+            logger.warning("网页工具执行失败", fields={"tool": name, "reason_code": result["reasonCode"]})
+        return result
+    return logged
+
+
+def _execute_handler(name: str):
     def execute(arguments: dict[str, Any]) -> dict[str, Any]:
         try:
             if name == "web_search":

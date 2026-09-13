@@ -6,7 +6,7 @@ export function labelFor(name, type, labels = {}) {
   return Object.hasOwn(defaults, name) ? defaults[name] : name;
 }
 
-export function createEditor({ container, rendererData, onChange = () => {}, onPreview = () => {}, onRenderingChange = () => {} }) {
+export function createEditor({ container, rendererData, onChange = () => {}, onPreview = () => {}, onRenderingChange = () => {}, onError = () => {} }) {
   let draft = structuredClone(rendererData.config);
   let selectedSkin = draft.defaultSkin;
   const doc = container.ownerDocument;
@@ -37,7 +37,7 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   async function preview(payload) {
     error.textContent = '';
     try { await onPreview(payload); }
-    catch { if (!disposed) error.textContent = '预览失败，请重新加载'; }
+    catch (failure) { if (!disposed) { error.textContent = '预览失败，请重新加载'; onError(failure, 'studio.spine.preview'); } }
   }
   function changed() { onChange(structuredClone(draft)); }
   function heading(text) { const h = doc.createElement('h3'); h.textContent = text; root.append(h); }
@@ -115,8 +115,8 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   alpha.setAttribute('aria-label', '贴图透明方式');
   alpha.addEventListener('change', () => {
     draft.premultipliedAlpha = alpha.value === 'true'; changed();
-    Promise.resolve(onRenderingChange(structuredClone(draft))).catch(() => {
-      if (!disposed) error.textContent = '预览失败，请重新加载';
+    Promise.resolve(onRenderingChange(structuredClone(draft))).catch(failure => {
+      if (!disposed) { error.textContent = '预览失败，请重新加载'; onError(failure, 'studio.spine.rendering'); }
     });
   }, { signal: events.signal });
   alphaLabel.append(alpha); root.append(alphaLabel);

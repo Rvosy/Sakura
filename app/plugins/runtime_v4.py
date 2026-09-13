@@ -331,7 +331,7 @@ class _PluginProcess:
         def emit(text: str) -> None:
             if text.strip():
                 log_message("warning", "插件进程标准错误输出", component="plugin",
-                    plugin_id=self._spec.plugin_id,
+                    plugin_id=self._spec.plugin_id, plugin_name=self._spec.name,
                     fields={"event": "plugin.process.stderr", "stage": "stderr",
                             "diagnostic": safe_diagnostic_text(text)})
 
@@ -728,6 +728,7 @@ class PluginRuntimeManager:
                 if missing:
                     record.state = "failed"
                     record.reason_code = "MISSING_SERVICE"
+                    self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
                     return self.snapshot()
             self._start_one(record)
             return self.snapshot()
@@ -757,6 +758,7 @@ class PluginRuntimeManager:
                 if missing:
                     record.state = "failed"
                     record.reason_code = "MISSING_SERVICE"
+                    self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
                     return self.snapshot()
             self._start_one(record)
             return self.snapshot()
@@ -1030,8 +1032,24 @@ class PluginRuntimeManager:
                     record.reason_code = "MISSING_SERVICE"
                     continue
                 self._start_one(record)
+        for record in enabled.values():
+            if record.reason_code in {"API_VERSION_UNSUPPORTED", "SERVICE_CONFLICT", "DEPENDENCY_CYCLE", "MISSING_SERVICE"}:
+                self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
+
+    def _log_lifecycle(self, record: _RuntimeRecord, event: str, message: str, *, failed: bool = False) -> None:
+        from app.core.runtime_log import log_message
+
+        log_message("error" if failed else "info", message, component="plugin",
+            plugin_id=record.spec.plugin_id, plugin_name=record.spec.name,
+            fields={"event": event, "state": record.state, "reason_code": record.reason_code})
 
     def _start_one(self, record: _RuntimeRecord) -> bool:
+        started = self._start_one_impl(record)
+        if not started and record.reason_code != "GENERATION_INVALIDATED":
+            self._log_lifecycle(record, "plugin.start.failed", "插件启动失败", failed=True)
+        return started
+
+    def _start_one_impl(self, record: _RuntimeRecord) -> bool:
         spec = record.spec
         assert spec.plugin_root is not None
         with self._lock:
@@ -1151,6 +1169,8 @@ class PluginRuntimeManager:
             "插件已加载",
             {},
             event="plugin.loaded",
+            plugin_id=spec.plugin_id,
+            plugin_name=spec.name,
             severity="info",
             verbosity=1,
         )
@@ -1358,6 +1378,7 @@ class PluginRuntimeManager:
                 record.process = None
                 record.pid = None
                 record.reason_code = "PLUGIN_PROCESS_EXITED"
+        self._log_lifecycle(record, "plugin.process.exited", "插件进程意外退出", failed=True)
         for consumer_id in consumers:
             self._stop_process(
                 consumer_id,
@@ -1421,6 +1442,8 @@ class PluginRuntimeManager:
                 with self._lock:
                     self._draining_processes.pop(plugin_id, None)
         self._clear_plugin_scope(plugin_id)
+        if process is not None or failed:
+            self._log_lifecycle(record, "plugin.stopped", "插件已停止", failed=failed)
 
 
 __all__ = ["PluginRuntimeError", "PluginRuntimeManager"]

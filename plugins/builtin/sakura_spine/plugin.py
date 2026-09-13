@@ -207,10 +207,22 @@ def _parse_payload(snapshot, payload, allowed_fields):
 
 
 class SpineService:
-    def __init__(self, character):
+    def __init__(self, character, logger=None):
         self.character = character
+        self.logger = logger
 
     def describe(self, request):
+        try:
+            description = self._describe(request)
+        except (ValueError, OSError, RuntimeError):
+            if self.logger is not None:
+                self.logger.error("Spine 资源加载失败", fields={"event": "visual.resource.failed", "stage": "visual.describe", "reason_code": "VISUAL_RESOURCE_INVALID"})
+            raise
+        if self.logger is not None:
+            self.logger.debug("Spine 资源已解析", fields={"event": "visual.resource.ready", "stage": "visual.describe"})
+        return description
+
+    def _describe(self, request):
         resource = request['resource']
         if resource['type'] != 'spine.json@1':
             raise ValueError('SPINE_FORMAT_UNSUPPORTED')
@@ -238,5 +250,5 @@ class SpineService:
 
 class SpinePlugin:
     def setup(self, context):
-        context.provide('sakura.visual.spine', SpineService(context.get('sakura.host.character')),
+        context.provide('sakura.visual.spine', SpineService(context.get('sakura.host.character'), context.get('sakura.host.logging')),
                         exports=('describe', 'parseControl', 'editorData', 'exportResource'))
