@@ -36,6 +36,7 @@ import {
 } from "./pet/character-presentation.js";
 import { isNewCharacterGeneration, rebindCharacterPresentation } from "./pet/character-generation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
+import { attachDynamicHitTest } from "./pet/dynamic-hit-test.js";
 import {
   classifyPointerHit,
   clearTextSelection,
@@ -857,6 +858,11 @@ const rendererHost = createRendererHost({
   onUnavailable: visualUnavailable,
   onError: reportVisualError,
   services: {
+    setHitTest(hitTest, { signal, container }) {
+      return attachDynamicHitTest({ invoke: nativeInvoke, listen: window.__TAURI__.event.listen,
+        container, hitTest, signal,
+        onError: error => reportVisualError("DYNAMIC_HIT_TEST_FAILED", error, "visual.hit-test") });
+    },
     unavailable: visualUnavailable,
     reportError: reportVisualError,
     cancelSurface() {

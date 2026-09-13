@@ -60,6 +60,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0048：以原始错误证据为遥测主体](0048-original-error-reports.md)
 
 - [ADR-0048：语音资源与应用运行选择分离](0048-voice-resources-and-local-selection.md)
+- [ADR-0049：动画表现使用单点命中，宿主管理原生穿透](0049-animated-point-hit-testing.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

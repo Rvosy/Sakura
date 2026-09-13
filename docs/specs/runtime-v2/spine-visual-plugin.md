@@ -114,10 +114,10 @@ Room 解析结果示例：
 也不回退动画帧位置；本段未指定表情时，快照记录实际继承的皮肤。
 公共宿主负责 operation/segment 去重，适配层为内部控制器的状态和动作调用分配递增序号。
 绑定 signal 中止时停止加载、动画与监听，保留静态 canvas，替代实例就绪后由 destroy 释放 GPU 资源。
-挂载失败和加载途中取消直接释放资源。这里的矩形表面不等于逐帧 PNG alpha 命中。
+挂载失败和加载途中取消直接释放资源。Windows 通过宿主可选的 `setHitTest` 启用动画单点命中，显示区域仍使用矩形表面。
 
 `renderer.mjs` 导出异步 `createRenderer({container, rendererData, resolveAssetUrl, bindingId, resourceId,
-signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源根下的授权 URL，可返回 Promise。
+signal?, onLayout?, onError?, enableHitTest?})`。`resolveAssetUrl(relative)` 返回当前资源根下的授权 URL，可返回 Promise。
 运行库在插件内离线提供，角色资源只作为数据加载。
 
 成功返回以下方法：
@@ -135,7 +135,13 @@ signal?, onLayout?, onError?})`。`resolveAssetUrl(relative)` 返回当前资源
 取消后宿主须丢弃在途旧结果。切换资源、停用插件或结束绑定须 abort 旧实例，替换完成后 dispose，不能仅隐藏 canvas。
 加载失败和加载途中取消也清理已分配资源。WebGL 上下文丢失时结束实例并报告错误，由用户重新加载。
 
-`onLayout` 目前报告 CSS 像素尺寸和初始可见范围，仅供预览布局，不宣称已支持原生 alpha 命中和鼠标穿透。
+`onLayout` 报告 CSS 像素尺寸和初始可见范围，仅供预览布局。动态命中由独立的 `hitTest([x,y])` 返回 Promise<boolean>。
+启用时每张纹理在加载阶段提取一次 8 位 Alpha 通道；总缓存上限 64 MiB，超限则释放缓存并保留矩形命中。
+编辑器和缩略图默认不启用这份缓存；宿主不支持动态命中时也释放它。
+检测复用 `PolygonBatcher.draw` 收到的当前帧最终三角形、UV、顶点透明度和混合模式，包含骨骼变形及 Spine clipping。
+它只采样鼠标位置，以线性过滤后的合成 Alpha >= 0.02 为命中；极淡的边缘可穿透，不承诺与 GPU 多重采样、mipmap 足迹逐像素相同。
+请求等待下一次正常绘制，暂停时单独绘制一次；不额外推进动画、不复制整帧顶点、不逐帧读回 GPU，也不修改 vendor 运行库。
+绑定中止或销毁时结束待处理请求并释放对应资源。`hitTestStats()` 返回查询次数、采样耗时累计与最大值、Alpha 缓存字节数，供测试诊断。
 视口按初始动画姿态固定，动作不会驱动相机缩放。音频、交互驱动和多骨骼特效编排后续另行接入。
 
 `editor.mjs` 导出 `createEditor({container, rendererData, onChange?, onPreview?, onRenderingChange?})`，返回 `getDraft()` 和 `dispose()`。

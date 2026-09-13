@@ -15,6 +15,7 @@ mod core_host_protocol;
 mod core_host_router;
 mod core_host_runtime;
 mod core_supervisor;
+mod dynamic_hit_test;
 mod history_window;
 mod input_visual_effect;
 mod interaction_latency;
@@ -6943,7 +6944,8 @@ async fn studio_request(
         } else {
             character_presentation::CharacterPresentationState::authorize_editor
         };
-        payload["presentation"] = serde_json::to_value(authorize(&resources,
+        payload["presentation"] = serde_json::to_value(authorize(
+            &resources,
             presentation,
             &previous_generation_id,
             &scope_id,
@@ -8456,6 +8458,9 @@ fn main() {
             begin_portrait_scale_preview,
             prepare_portrait_transition,
             activate_portrait_hit_test,
+            dynamic_hit_test::configure_dynamic_hit_test,
+            dynamic_hit_test::submit_dynamic_hit_test,
+            dynamic_hit_test::dynamic_hit_test_status,
             commit_portrait_transition,
             settle_portrait_scale_surface,
             interaction_latency_diagnostics_enabled,

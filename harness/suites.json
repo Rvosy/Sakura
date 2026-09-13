@@ -1103,6 +1103,7 @@
         "desktop/frontend/tests/renderer-host.test.js",
         "desktop/frontend/tests/visual-editor-host.test.js",
         "desktop/frontend/tests/spine-plugin.test.js",
+        "desktop/frontend/tests/spine-hit-test.test.js",
         "desktop/frontend/tests/portrait-controller.test.js",
         "desktop/frontend/tests/character-generation.test.js",
         "desktop/frontend/tests/chat-presentation.test.js",

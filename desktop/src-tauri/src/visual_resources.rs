@@ -923,15 +923,27 @@ mod tests {
         let visual = input.visual.as_mut().unwrap();
         visual.assets.clear();
         visual.editor = Some("frontend/renderer.js".into());
-        let root = dir.path().join("data/character_studio/drafts/model/package");
+        let root = dir
+            .path()
+            .join("data/character_studio/drafts/model/package");
         fs::create_dir_all(&root).unwrap();
-        state.authorize_editor(input.clone(), "g", "scope", &root).unwrap();
+        state
+            .authorize_editor(input.clone(), "g", "scope", &root)
+            .unwrap();
         input.visual.as_mut().unwrap().binding_id = "b".repeat(32);
-        state.authorize_thumbnail(input.clone(), "g", "scope", &root).unwrap();
-        let available = |letter: &str| state.load_module("67", &letter.repeat(32), "frontend/renderer.js", "g").is_ok();
+        state
+            .authorize_thumbnail(input.clone(), "g", "scope", &root)
+            .unwrap();
+        let available = |letter: &str| {
+            state
+                .load_module("67", &letter.repeat(32), "frontend/renderer.js", "g")
+                .is_ok()
+        };
         assert!(available("a") && available("b"));
         input.visual.as_mut().unwrap().binding_id = "c".repeat(32);
-        state.authorize_thumbnail(input.clone(), "g", "scope", &root).unwrap();
+        state
+            .authorize_thumbnail(input.clone(), "g", "scope", &root)
+            .unwrap();
         assert!(available("a") && available("c") && !available("b"));
         input.visual.as_mut().unwrap().binding_id = "d".repeat(32);
         state.authorize_editor(input, "g", "scope", &root).unwrap();

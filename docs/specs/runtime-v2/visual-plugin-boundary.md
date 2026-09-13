@@ -171,6 +171,7 @@ RendererHost 限制模块加载、mount 和 ready 等待各为 10 秒，销毁�
 ```text
 prepareSurface({assetKey}) -> boolean
 setSurface({assetKey?, width, height}) -> boolean
+setHitTest(point => Promise<boolean>) -> boolean
 finishSurface() -> boolean
 cancelSurface()
 reportError(reasonCode)
@@ -178,6 +179,15 @@ unavailable(reasonCode)
 ```
 
 尺寸为 1–8192 的整数。不提供 assetKey 时使用矩形表面；提供 key 时由原生 PNG alpha-mask 原语生成命中数据。
+Windows 上的动态表现可在 `setSurface` 成功后调用可选的 `setHitTest`，提供当前画面的一点命中函数。
+参数为表现容器内从左上角起算的归一化 `[x,y]`；true 接收鼠标，false 穿透。宿主负责屏幕坐标、DPI 和 CSS 缩放转换。
+换算必须使用当前绑定实际挂载的表面容器，包含其按比例适配、底部对齐和个人缩放；不能使用外层角色占位区域的矩形。
+此服务不更改显示裁剪，也不写入角色资源。当前仅 Windows 实现；其他平台返回 false，继续使用已声明的表面。
+宿主在角色范围内按最多约 60 Hz 发起请求，在范围外只检查原生鼠标位置；最多一个请求在途，150 ms 超时恢复矩形命中。
+按钮、气泡和菜单优先命中，鼠标按键保持期间不切换事件归属。绑定退出时撤销监听并恢复普通命中。
+回复必须属于当前绑定和请求，且鼠标位置、窗口原点、布局版本、角色表面版本、DPI 均未变化，否则丢弃。
+异步检测存在快速移动后立即点击的旧状态窗口，不保证逐事件同步命中，不向其他应用重放点击。
+`dynamic_hit_test_status` 提供当前会话的 UI 唤醒数、请求数、接受数、过期丢弃数、状态切换数及回包耗时累计值，供本地性能诊断。
 宿主将挂载容器按声明的表面比例放入角色区域，底部居中，并在容器上统一应用个人缩放；插件不重复应用该缩放。
 宿主保留 DPI、拖拽、窗口裁剪与透明穿透，视觉容器与命中区域采用相同尺寸和缩放。取消时恢复最后已提交的表面；
 晚到的准备或提交不能更换画面。内置立绘插件自行创建图片 DOM、解码、缓存和交叉淡入，并在取消或提交失败时清理过渡层。

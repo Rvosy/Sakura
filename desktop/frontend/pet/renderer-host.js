@@ -71,7 +71,7 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     container.append(surface);
     const guarded = Object.fromEntries(Object.entries(services).map(([name, method]) => [name, (...args) => {
       if (signal.aborted || epoch !== current) return Promise.resolve(false);
-      return method(...args, { signal, operationSignal: operation?.abort.signal, visual: target });
+      return method(...args, { signal, operationSignal: operation?.abort.signal, visual: target, container: surface });
     }]));
     ready = (async () => {
       let candidate;
