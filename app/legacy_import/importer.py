@@ -158,7 +158,10 @@ def run_legacy_import(
                 payload / "data" / "chat_history",
                 cancelled=is_cancelled,
             )
-        _merge_timeline(converted, payload, overwrite_conflicts=True)
+        _merge_timeline(
+            converted, payload, overwrite_conflicts=True,
+            quarantine=payload / "data/legacy-imports" / import_id / "quarantine",
+        )
         report.counts.update(
             {
                 "historyRecords": history.source_records,

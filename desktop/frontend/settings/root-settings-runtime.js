@@ -169,7 +169,7 @@ export function normalizeLegacyDataImportPlan(plan) {
     || typeof plan.selectionId !== "string"
     || !plan.selectionId
     || typeof plan.planToken !== "string"
-    || !/^[a-f0-9]{64}$/.test(plan.planToken)
+    || !plan.planToken
     || typeof plan.sourceLabel !== "string"
     || !Array.isArray(plan.characters)
     || plan.characters.length > 256
@@ -209,7 +209,9 @@ export function legacyDataImportPlanHasWork(plan) {
   return Boolean(
     totals
     && (
-      totals.historyNew
+      (plan.packagesNew || 0)
+      + (plan.reassociatedRecords || 0)
+      + totals.historyNew
       + totals.memoryNew
       + totals.historyConflicts
       + totals.memoryConflicts
@@ -339,8 +341,8 @@ export function createRootSettingsClient({ invoke }) {
     async storageResetTtsRoot() {
       return normalizeStorageSettingsSnapshot(await invoke("settings_storage_reset_tts_root"));
     },
-    async legacyRoleDataImportChoose() {
-      const plan = await invoke("settings_legacy_data_import_choose");
+    async legacyRoleDataImportChoose(selectionId = null, roleMapping = {}) {
+      const plan = await invoke("settings_legacy_data_import_choose", { selectionId, roleMapping });
       return plan === null ? null : normalizeLegacyDataImportPlan(plan);
     },
     async legacyRoleDataImportApply(selectionId, planToken, overwriteConflicts) {

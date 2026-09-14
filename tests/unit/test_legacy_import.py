@@ -1308,18 +1308,16 @@ def test_first_import_never_overwrites_cross_role_timeline_identity(
     )
     with sqlite3.connect(timeline.path) as connection:
         write_history_identities(connection, read_history_identities(converted))
-    before = _tree_state(target)
+    connection.close()
     monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
 
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
-        run_legacy_import(
-            source,
-            target,
-            import_id="test-first-import-cross-role",
-            finalize=True,
-        )
-
-    assert _tree_state(target) == before
+    run_legacy_import(
+        source, target, import_id="test-first-import-cross-role", finalize=True,
+    )
+    beta = TimelineStore(timeline.path).read_all("Beta")
+    assert len(beta) == 1
+    assert beta[0].payload["text"] == "beta owns this identity"
+    assert (target / "data/legacy-imports/test-first-import-cross-role/quarantine/history-scope-conflicts.jsonl").is_file()
     assert not list(target.glob(".legacy-import-*"))
 
 

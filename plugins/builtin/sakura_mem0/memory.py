@@ -22,8 +22,6 @@ from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any, Callable, Iterable
 
-from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
-
 try:
     from .support import (
         ResourceRegistry,
@@ -50,6 +48,14 @@ except ImportError:
     )
 
 
+
+
+def urlopen_current_proxy(*args: Any, **kwargs: Any):
+    # Migration uses the local database helpers outside the plugin process.
+    # Load its HTTP SDK only when a resource download actually needs it.
+    from sakura_http import urlopen_direct_for_loopback
+
+    return urlopen_direct_for_loopback(*args, **kwargs)
 
 
 DEFAULT_MEMORY_SCOPE = "sakura"

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sakura · 数据迁移初版</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="review"><strong>Sakura <span>交互初版</span></strong><label>演示场景 <select id="scenario"><option value="normal">有可迁移数据</option><option value="conflict">包含冲突</option><option value="duplicate">全部重复</option><option value="empty">没有数据</option><option value="invalid">目录无法识别</option><option value="dirty">包含坏数据</option></select></label><span>模拟数据 · 不读取或写入真实目录</span></header>
+  <main>
+    <p class="breadcrumb">设置 / 系统</p><h1>用户数据</h1>
+    <section class="settings-card"><div><strong>数据目录</strong><code>C:\Users\Rvosy\AppData\Local\Sakura</code></div><button id="open-data">打开数据目录</button><div><strong>迁移角色和数据</strong><p>从 Sakura 0.9.x 导入</p></div><button id="open">迁移旧数据</button></section>
+    <p id="page-status" role="status"></p>
+  </main>
+</body>
+</html>
