@@ -304,17 +304,21 @@ impl CaptureManager {
         })
     }
 
-    pub fn cancel_session(&self, session_id: &str, window_label: &str) -> Option<(u64, Vec<String>)> {
+    pub fn cancel_session(
+        &self,
+        session_id: &str,
+        window_label: &str,
+    ) -> Option<(u64, Vec<String>)> {
         let mut state = self.state.lock().ok()?;
         let matches = state.active.as_ref().is_some_and(|session| {
             session.id == session_id && session.windows.contains_key(window_label)
         });
         matches.then(|| {
-            let session = state
-                .active
-                .take()
-                .expect("matched session exists");
-            (session.capture_revision, session.windows.into_keys().collect())
+            let session = state.active.take().expect("matched session exists");
+            (
+                session.capture_revision,
+                session.windows.into_keys().collect(),
+            )
         })
     }
 
@@ -506,7 +510,11 @@ impl CaptureManager {
             dropped_count += 1;
         }
         Ok(ScreenAwarenessCapturePublication {
-            count: state.awareness_frames.iter().filter(|frame| frame.character_session_id == character_session_id).count(),
+            count: state
+                .awareness_frames
+                .iter()
+                .filter(|frame| frame.character_session_id == character_session_id)
+                .count(),
             dropped_count,
         })
     }
@@ -527,7 +535,9 @@ impl CaptureManager {
                 state.awareness_frames.clear();
                 return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
             }
-            state.awareness_frames.drain(..)
+            state
+                .awareness_frames
+                .drain(..)
                 .filter(|frame| frame.character_session_id == character_session_id)
                 .collect::<Vec<_>>()
         };
@@ -1116,7 +1126,12 @@ mod tests {
             primary: false,
         };
         let (session, labels, _) = manager
-            .begin_session("00000000-0000-4000-8000-000000004006", "session-a", 7, &[monitor])
+            .begin_session(
+                "00000000-0000-4000-8000-000000004006",
+                "session-a",
+                7,
+                &[monitor],
+            )
             .unwrap();
         let claim = manager.claim_selection(&session, &labels[0], 7).unwrap();
         assert_eq!(claim.monitor_id, 7);
@@ -1246,19 +1261,30 @@ mod tests {
 
     #[test]
     fn screen_awareness_batch_rejects_frames_from_previous_character_sessions() {
-        let root = std::env::temp_dir().join(format!("sakura-session-test-{}", Uuid::new_v4().simple()));
+        let root =
+            std::env::temp_dir().join(format!("sakura-session-test-{}", Uuid::new_v4().simple()));
         let manager = CaptureManager::with_base(root.clone()).unwrap();
         let generation = "00000000-0000-4000-8000-000000004007";
-        for (session, label) in [("alpha-first", "old"), ("beta", "other"), ("alpha-second", "current")] {
+        for (session, label) in [
+            ("alpha-first", "old"),
+            ("beta", "other"),
+            ("alpha-second", "current"),
+        ] {
             let mut frame = awareness_frame(label, 8);
             frame.character_session_id = session.to_string();
-            manager.push_screen_awareness_frame(generation, frame, 20).unwrap();
+            manager
+                .push_screen_awareness_frame(generation, frame, 20)
+                .unwrap();
         }
         // A late frame from the first A session arrives after returning to A.
         let mut late = awareness_frame("late", 8);
         late.character_session_id = "alpha-first".to_string();
-        manager.push_screen_awareness_frame(generation, late, 20).unwrap();
-        let descriptors = manager.materialize_screen_awareness_batch(generation, "alpha-second").unwrap();
+        manager
+            .push_screen_awareness_frame(generation, late, 20)
+            .unwrap();
+        let descriptors = manager
+            .materialize_screen_awareness_batch(generation, "alpha-second")
+            .unwrap();
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].captured_at, "current");
         manager.release_descriptors(&descriptors, generation);

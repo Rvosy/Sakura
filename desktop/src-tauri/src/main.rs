@@ -3443,13 +3443,19 @@ async fn start_screen_capture(
         let character_session_id = screen_session_id(&handle)?;
         let monitors = capture::monitor_descriptors()?;
         let monitor_count = monitors.len();
-        let (session_id, labels, previous) =
-            capture_manager.begin_session(&task_generation_id, &character_session_id, payload.capture_revision, &monitors)?;
+        let (session_id, labels, previous) = capture_manager.begin_session(
+            &task_generation_id,
+            &character_session_id,
+            payload.capture_revision,
+            &monitors,
+        )?;
         capture::close_windows(&app, &previous);
         if let Err(error) =
             capture::show_overlays(&app, &session_id, &labels, &monitors, &theme_primary)
         {
-            if let Some((_, active_labels)) = capture_manager.cancel_session(&session_id, &labels[0]) {
+            if let Some((_, active_labels)) =
+                capture_manager.cancel_session(&session_id, &labels[0])
+            {
                 capture::close_windows(&app, &active_labels);
             }
             return Err(error);
@@ -3483,11 +3489,17 @@ async fn start_screen_capture(
 
 fn screen_session_id(handle: &shell_lifecycle::ShellLifecycleHandle) -> Result<String, String> {
     let payload = settings_response_payload(handle.settings_request(
-        None, "screen.session", json!({}), std::time::Duration::from_secs(5),
+        None,
+        "screen.session",
+        json!({}),
+        std::time::Duration::from_secs(5),
     )?)?;
-    payload.get("sessionId").and_then(Value::as_str)
+    payload
+        .get("sessionId")
+        .and_then(Value::as_str)
         .filter(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .map(str::to_string).ok_or_else(|| "SCREEN_SESSION_INVALID".to_string())
+        .map(str::to_string)
+        .ok_or_else(|| "SCREEN_SESSION_INVALID".to_string())
 }
 
 #[tauri::command]
@@ -3590,17 +3602,16 @@ async fn capture_selected_region(
             Ok(())
         }
         Err(code) => {
-            let (stable_code, public_message) =
-                if code.contains("SCREEN_SESSION_STALE") {
-                    ("SCREEN_SESSION_STALE", "角色已切换，截图已取消。")
-                } else if code.contains("manual screen attachment limit exceeded") {
-                    (
-                        "SCREEN_ATTACHMENT_LIMIT_EXCEEDED",
-                        "每条消息最多附加 6 张截图。",
-                    )
-                } else {
-                    (code.as_str(), "截图失败，请检查系统屏幕录制权限后重试。")
-                };
+            let (stable_code, public_message) = if code.contains("SCREEN_SESSION_STALE") {
+                ("SCREEN_SESSION_STALE", "角色已切换，截图已取消。")
+            } else if code.contains("manual screen attachment limit exceeded") {
+                (
+                    "SCREEN_ATTACHMENT_LIMIT_EXCEEDED",
+                    "每条消息最多附加 6 张截图。",
+                )
+            } else {
+                (code.as_str(), "截图失败，请检查系统屏幕录制权限后重试。")
+            };
             record_screen_capture(
                 &runtime_log,
                 &generation_id,
@@ -3641,9 +3652,11 @@ async fn cancel_screen_capture(
         Severity::Info,
         json!({"outcome": "cancelled"}),
     );
-    let _ = window
-        .app_handle()
-        .emit_to("main", capture::CANCELLED_EVENT, json!({"captureRevision": capture_revision}));
+    let _ = window.app_handle().emit_to(
+        "main",
+        capture::CANCELLED_EVENT,
+        json!({"captureRevision": capture_revision}),
+    );
     Ok(())
 }
 
@@ -3802,7 +3815,8 @@ async fn attach_screen_awareness_batch(
     let manager = captures.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let character_session_id = screen_session_id(&handle)?;
-        let descriptors = manager.materialize_screen_awareness_batch(&generation_id, &character_session_id)?;
+        let descriptors =
+            manager.materialize_screen_awareness_batch(&generation_id, &character_session_id)?;
         let count = descriptors.len();
         let response = handle.settings_request(
             None,
@@ -4600,7 +4614,11 @@ fn validate_character_settings_change(value: Value) -> Result<(Value, String, Va
         .filter(|value| {
             matches!(
                 *value,
-                "unchanged" | "core_restart_required" | "visual_rebind" | "character_refresh" | "character_switch"
+                "unchanged"
+                    | "core_restart_required"
+                    | "visual_rebind"
+                    | "character_refresh"
+                    | "character_switch"
             )
         })
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?
@@ -5157,15 +5175,19 @@ async fn settings_character_select(
         );
         return character_switch_receipt(snapshot, previous_generation_id, "requested");
     }
-    let mut receipt = character_switch_receipt(snapshot, previous_generation_id.clone(), "not_required")?;
+    let mut receipt =
+        character_switch_receipt(snapshot, previous_generation_id.clone(), "not_required")?;
     if change_plan == "character_switch" {
         audio_state.shutdown();
         receipt["characterChanged"] = json!(true);
         if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
-            let _ = history.emit(history_window::HISTORY_REFRESH_REQUESTED_EVENT, json!({
-                "previousGenerationId": previous_generation_id,
-                "characterId": receipt["targetCharacterId"], "reset": true, "ready": true,
-            }));
+            let _ = history.emit(
+                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+                json!({
+                    "previousGenerationId": previous_generation_id,
+                    "characterId": receipt["targetCharacterId"], "reset": true, "ready": true,
+                }),
+            );
         }
     }
     Ok(receipt)
@@ -6781,7 +6803,10 @@ async fn open_character_studio(
     if character_id.is_empty() || character_id.len() > 128 {
         return Err("STUDIO_CHARACTER_ID_INVALID".to_string());
     }
-    if resource_id.as_ref().is_some_and(|id| id.trim().is_empty() || id.len() > 128) {
+    if resource_id
+        .as_ref()
+        .is_some_and(|id| id.trim().is_empty() || id.len() > 128)
+    {
         return Err("STUDIO_RESOURCE_ID_INVALID".to_string());
     }
     // Tauri 同步命令运行在 WebView 事件循环线程。WebView2 处理当前 IPC 时不能在同一线程
@@ -6830,8 +6855,8 @@ async fn studio_bootstrap(
     .await?;
     let mut payload = settings_response_payload(response)?;
     validate_studio_payload(&payload)?;
-    payload["initialResourceId"] = serde_json::to_value(state.initial_resource_id()?)
-        .map_err(|error| error.to_string())?;
+    payload["initialResourceId"] =
+        serde_json::to_value(state.initial_resource_id()?).map_err(|error| error.to_string())?;
     payload["shellThemeTokens"] = serde_json::to_value(shell_appearance.values.theme_tokens)
         .map_err(|error| format!("STUDIO_THEME_SERIALIZE_FAILED: {error}"))?;
     Ok(payload)

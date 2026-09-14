@@ -77,7 +77,8 @@ impl CharacterStudioWindowState {
     }
 
     pub fn initial_resource_id(&self) -> Result<Option<String>, String> {
-        self.session.lock()
+        self.session
+            .lock()
             .map(|session| session.initial_resource_id.clone())
             .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())
     }
@@ -285,9 +286,14 @@ pub fn show_or_focus(
             window.unminimize().map_err(|error| error.to_string())?;
         }
         if let Some(resource_id) = initial_resource_id {
-            window.emit("sakura://studio-navigate", serde_json::json!({
-                "characterId": initial_character_id, "resourceId": resource_id,
-            })).map_err(|error| error.to_string())?;
+            window
+                .emit(
+                    "sakura://studio-navigate",
+                    serde_json::json!({
+                        "characterId": initial_character_id, "resourceId": resource_id,
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
         }
         window.show().map_err(|error| error.to_string())?;
         return window.set_focus().map_err(|error| error.to_string());
@@ -319,7 +325,11 @@ pub fn show_or_focus(
     .center()
     .build()
     .map_err(|error| format!("STUDIO_WINDOW_CREATE_FAILED: {error}"))?;
-    if let Err(error) = state.begin_session(initial_character_id, initial_resource_id, settings_was_visible) {
+    if let Err(error) = state.begin_session(
+        initial_character_id,
+        initial_resource_id,
+        settings_was_visible,
+    ) {
         let _ = studio.destroy();
         return Err(error);
     }

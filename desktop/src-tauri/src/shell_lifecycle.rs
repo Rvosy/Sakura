@@ -1623,20 +1623,62 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
                 let publication = handle.snapshot().expect("character publication");
-                if publication.character_presentation.as_ref()
-                    .and_then(|value| value.get("characterId")).and_then(Value::as_str) == Some(role) {
-                    let bootstrap = handle.settings_request(None, "studio.bootstrap", json!({}), Duration::from_secs(5))
+                if publication
+                    .character_presentation
+                    .as_ref()
+                    .and_then(|value| value.get("characterId"))
+                    .and_then(Value::as_str)
+                    == Some(role)
+                {
+                    let bootstrap = handle
+                        .settings_request(
+                            None,
+                            "studio.bootstrap",
+                            json!({}),
+                            Duration::from_secs(5),
+                        )
                         .expect("Studio remains available after switching");
-                    assert_eq!(bootstrap.pointer("/payload/selectedCharacterId").and_then(Value::as_str), Some(role));
-                    let opened = handle.settings_request(None, "studio.character.open", json!({"characterId": role}), Duration::from_secs(5))
+                    assert_eq!(
+                        bootstrap
+                            .pointer("/payload/selectedCharacterId")
+                            .and_then(Value::as_str),
+                        Some(role)
+                    );
+                    let opened = handle
+                        .settings_request(
+                            None,
+                            "studio.character.open",
+                            json!({"characterId": role}),
+                            Duration::from_secs(5),
+                        )
                         .expect("open selected character in Studio");
-                    let workspace = opened.pointer("/payload/workspaceId").and_then(Value::as_str).expect("Studio workspace");
-                    let released = handle.settings_request(None, "studio.workspace.release", json!({"workspaceId": workspace}), Duration::from_secs(5))
+                    let workspace = opened
+                        .pointer("/payload/workspaceId")
+                        .and_then(Value::as_str)
+                        .expect("Studio workspace");
+                    let released = handle
+                        .settings_request(
+                            None,
+                            "studio.workspace.release",
+                            json!({"workspaceId": workspace}),
+                            Duration::from_secs(5),
+                        )
                         .expect("close Studio workspace");
                     assert!(released.get("error").is_none(), "{released}");
-                    let settings = handle.settings_request(None, "characters.settings.get", json!({}), Duration::from_secs(5))
+                    let settings = handle
+                        .settings_request(
+                            None,
+                            "characters.settings.get",
+                            json!({}),
+                            Duration::from_secs(5),
+                        )
                         .expect("Settings remains available after closing Studio");
-                    assert_eq!(settings.pointer("/payload/currentCharacterId").and_then(Value::as_str), Some(role));
+                    assert_eq!(
+                        settings
+                            .pointer("/payload/currentCharacterId")
+                            .and_then(Value::as_str),
+                        Some(role)
+                    );
                     return publication;
                 }
                 assert!(Instant::now() < deadline, "new character did not publish");
@@ -1645,7 +1687,10 @@ mod tests {
         };
         let second = wait_for_role("beta");
         assert_eq!(second.supervisor.generation_number, 1);
-        assert_eq!(second.supervisor.generation_id, first.supervisor.generation_id);
+        assert_eq!(
+            second.supervisor.generation_id,
+            first.supervisor.generation_id
+        );
         assert_eq!(
             second
                 .character_presentation
@@ -1671,7 +1716,10 @@ mod tests {
         );
         let third = wait_for_role("sakura");
         assert_eq!(third.supervisor.generation_number, 1);
-        assert_eq!(third.supervisor.generation_id, first.supervisor.generation_id);
+        assert_eq!(
+            third.supervisor.generation_id,
+            first.supervisor.generation_id
+        );
         assert_eq!(
             third
                 .character_presentation
