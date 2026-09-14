@@ -7317,36 +7317,9 @@ fn character_protocol_response(
     context: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
-    use tauri::http::{header, Method, StatusCode};
+    use tauri::http::StatusCode;
+    use visual_resources::protocol_error as fail;
 
-    let fail = |status: StatusCode, code: &str| {
-        tauri::http::Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .header(header::CACHE_CONTROL, "no-store")
-            .header("X-Content-Type-Options", "nosniff")
-            .body(code.as_bytes().to_vec())
-            .expect("static character protocol response")
-    };
-    if request.method() != Method::GET || request.uri().query().is_some() {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "CHARACTER_RESOURCE_REQUEST_REJECTED",
-        );
-    }
-    let segments: Vec<_> = request.uri().path().trim_matches('/').split('/').collect();
-    if !((segments.len() == 3 && segments[0] == "v1")
-        || (segments.len() >= 4 && segments[0] == "module")
-        || (segments.len() == 4 && segments[0] == "editor-assets"))
-        || segments[1].is_empty()
-        || segments[2].is_empty()
-        || segments.iter().any(|segment| segment.contains('%'))
-    {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "CHARACTER_RESOURCE_REQUEST_REJECTED",
-        );
-    }
     let lifecycle = context.app_handle().state::<ShellLifecycleState>();
     let Some(handle) = lifecycle.handle.as_ref() else {
         return fail(
@@ -7377,48 +7350,9 @@ fn character_protocol_response(
             }
         }
     }
-    let loaded = if segments[0] == "module" {
-        resources.load_module(
-            segments[1],
-            segments[2],
-            &segments[3..].join("/"),
-            &current_generation,
-        )
-    } else if segments[0] == "editor-assets" {
-        resources.load_editor_asset(segments[1], segments[2], segments[3], &current_generation)
-    } else {
-        resources.load_resource(segments[1], segments[2], &current_generation)
-    };
-    match loaded {
-        Ok(resource) => tauri::http::Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, resource.content_type)
-            .header("Access-Control-Allow-Origin", "*")
-            .header(header::CONTENT_LENGTH, resource.bytes.len().to_string())
-            .header(header::CACHE_CONTROL, "no-store, max-age=0")
-            .header("X-Content-Type-Options", "nosniff")
-            .body(resource.bytes)
-            .expect("validated character resource response"),
-        Err(error) => {
-            let stage = match segments[0] {
-                "module" => "visual.module.read",
-                "editor-assets" => "studio.visual.asset.read",
-                _ => "visual.asset.read",
-            };
-            log_visual_resource_error(&lifecycle.runtime_log, stage, &error);
-            let code = error
-                .split_once(':')
-                .map_or(error.as_str(), |(code, _)| code);
-            let status = if code.contains("GENERATION") {
-                StatusCode::GONE
-            } else if code.contains("UNKNOWN") || code.contains("NOT_FOUND") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::UNPROCESSABLE_ENTITY
-            };
-            fail(status, &code)
-        }
-    }
+    resources.protocol_response(&request, &current_generation, |stage, error| {
+        log_visual_resource_error(&lifecycle.runtime_log, stage, error);
+    })
 }
 
 #[tauri::command]

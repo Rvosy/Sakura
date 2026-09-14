@@ -208,6 +208,8 @@ Core 的 `CharacterPresentation` 使用 schemaVersion 2：角色公共信息、�
 插件停用或渲染失败等确定结果时才显示不可用状态，诊断使用现有运行日志事件并携带稳定错误码。
 Rust 将资源 URL 编码为 `/v1/{hexGeneration}/{bindingId}-{hexAssetKey}`，模块为
 `/module/{hexGeneration}/{bindingId}/{安装内相对模块路径}`，通过 `sakura-character` 协议提供。
+模块路径按 UTF-8 路径段进行 URL 编码；协议读取时只解码一次，再检查包内路径和模块类型。
+中文、空格及文件名中的字面 `%`、`#` 可正常读取；编码后的分隔符和越界路径仍被拒绝。
 WebView 不接收安装绝对路径；模块只能来自已安装插件，角色包里的 JavaScript 不会作为模块加载。
 普通资产限 64 MiB，模块限 4 MiB。内置立绘插件和原生 PNG 命中服务的单张文件上限均为 16 MiB（16,777,216 字节，含上限）；PNG 宽高各不超过 8192，像素总数不超过 40,000,000。PNG 命中服务另有解码预算和小容量缓存。
 URL 随 generation 与绑定失效；同 generation 的插件重绑同样撤销旧目标。CSP 不允许 eval 或运行时 CDN。
