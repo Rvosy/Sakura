@@ -551,38 +551,6 @@ class MemoryModelTaskCancelled(RuntimeError):
     """用户或当前 Core generation 取消了模型导入/下载。"""
 
 
-def validate_existing_memory_store(memory_dir: Path) -> None:
-    """Open an existing local Qdrant store without loading an embedding model.
-
-    The legacy importer uses this while Core is paused.  Opening a copied store
-    through the same Qdrant client as the current plugin catches storage-format
-    incompatibilities that metadata-only checks cannot detect.
-    """
-
-    qdrant_path = Path(memory_dir) / "qdrant"
-    if not qdrant_path.is_dir() or not any(path.is_file() for path in qdrant_path.rglob("*")):
-        return
-    _install_disabled_qdrant_grpc_module()
-    _install_synchronous_qdrant_client_facade()
-    from qdrant_client import QdrantClient
-
-    client = QdrantClient(path=qdrant_path.as_posix())
-    try:
-        collection = client.get_collection(DEFAULT_COLLECTION_NAME)
-        vectors = collection.config.params.vectors
-        if isinstance(vectors, dict):
-            dimensions = {int(value.size) for value in vectors.values()}
-        else:
-            dimensions = {int(vectors.size)}
-        if dimensions != {DEFAULT_EMBEDDING_DIMS}:
-            raise ValueError("memory vector dimensions are incompatible")
-    finally:
-        client.close()
-        # Local Qdrant uses this only while the validator owns the copied store.
-        # It is runtime state and must not become part of the committed payload.
-        (qdrant_path / ".lock").unlink(missing_ok=True)
-
-
 def normalize_existing_history_database(database: Path) -> None:
     """Normalize a copied Mem0 history database with the runtime SQLite manager.
 

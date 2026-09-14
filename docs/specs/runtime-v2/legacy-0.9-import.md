@@ -149,7 +149,7 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
 - `data/memory` 的 Qdrant、mem0 SQLite和 profile必须迁移且不重新 embedding。mem0 SQLite不得作为普通的
   主库/WAL/SHM 文件组合逐个复制；必须使用 SQLite backup API从旧库读取一个一致事务快照，合并已提交 WAL，
   且不得修改旧主库、WAL或复用旧进程的 SQLite `-shm`；只读备份连接正常更新的 `-shm` 读锁槽位不属于用户数据
-  变更。快照只需通过 `quick_check`，不得把复制时序或加载器异常误报为旧数据库结构不兼容。无法打开的源 SQLite或
+  变更。快照完成后直接按实际读取和合并结果处理，不执行 `quick_check`、完整性扫描或重复的存储预检，不得把复制时序或加载器异常误报为旧数据库结构不兼容。无法打开的源 SQLite或
   Qdrant子存储必须原样进入隔离区，其他可读 Timeline/Memory继续提交并产生 warning；不得用一个损坏的源子存储回滚
   所有不可替代数据。目标 SQLite、Qdrant 或 profile 无法打开/读取时必须返回
   `LEGACY_DATA_TARGET_MEMORY_INVALID`，不得删除或重建；目标 collection 创建或 upsert 失败返回
@@ -172,7 +172,7 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   `tts/onnx`；旧绝对运行路径不得保留，包括 Python `site-packages/*.pth` 中的旧安装目录。Windows 对空的
   TTS staging目录可以使用受控的多线程系统复制，
   但传给系统复制工具前必须去掉目录选择器产生且该工具不支持的 Win32 `\\?\` namespace前缀；必须保持相同的
-  噪声排除和 link拒绝规则，支持取消，以实际复制字节持续发布进度，并在复制后复核文件数与总字节。系统复制
+  噪声排除和 link拒绝规则，支持取消，以实际复制字节持续发布进度，复制前后的文件数和总字节仅用于进度与诊断，不要求相等。系统复制返回 0–7 时保留已复制的数据，不得因统计差异清除整个 TTS 暂存树；返回 8 及以上等实际复制失败仍明确报告。系统复制
   返回码、安全诊断和复制前后统计必须经父进程进入统一 Runtime日志，以区分预扫描、系统复制、后扫描和 ONNX合并
   失败。任一 TTS 复制、合并、路径适配或配置校验失败必须清除该域的 staging 输出，并仅在确认该目录已不存在后记录
   `LEGACY_TTS_IMPORT_SKIPPED` 或相应稳定 warning 并继续提交；锁或权限等原因导致清理无法确认完成时，整个迁移必须

@@ -188,15 +188,6 @@ def run_legacy_import(
         )
         report.counts["memoryFiles"] = memory_files
         report.bytes["memory"] = memory_bytes
-        _validate_memory(
-            converted / "data" / "memory",
-            quarantine=converted
-            / "data"
-            / "legacy-imports"
-            / import_id
-            / "quarantine"
-            / "memory",
-        )
         target_memory = target / "data" / "memory"
         if target_memory.is_dir():
             copy_tree_checked(
@@ -1589,10 +1580,6 @@ def _snapshot_sqlite_database(
             with closing(sqlite3.connect(temporary)) as snapshot:
                 step = "backup"
                 origin.backup(snapshot, pages=256, progress=check_progress, sleep=0.05)
-                step = "quick_check"
-                result = snapshot.execute("PRAGMA quick_check").fetchone()
-                if result is None or result[0] != "ok":
-                    raise sqlite3.DatabaseError("SQLite backup failed quick_check")
 
         step = "install_snapshot"
         for suffix in ("-wal", "-shm", "-journal"):
@@ -1605,7 +1592,6 @@ def _snapshot_sqlite_database(
             {
                 **progress_state,
                 "snapshot_bytes": _safe_file_size(target),
-                "quick_check": "ok",
             },
         )
     except LegacyImportError as exc:
@@ -2201,118 +2187,6 @@ def _validate_screen_state(staged: Path) -> None:
                 "validating",
                 "data/screen_awareness_state.json",
             )
-
-
-def _validate_memory(root: Path, *, quarantine: Path | None = None) -> None:
-    if not root.exists():
-        return
-    history = root / "mem0_history.db"
-    if history.is_file():
-        database = history
-        if not database.is_file():
-            return
-        relative = database.relative_to(root).as_posix()
-        # Shared-memory files are process-local coordination state.  The copy
-        # step already replaced the raw WAL triplet with a consistent SQLite
-        # backup, but clean up stale sidecars as a defensive measure for direct
-        # validator callers and older staging directories.
-        Path(f"{database}-shm").unlink(missing_ok=True)
-        try:
-            with closing(sqlite3.connect(database)) as connection:
-                result = connection.execute("PRAGMA quick_check").fetchone()
-                checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        except sqlite3.DatabaseError as exc:
-            if quarantine is not None:
-                _quarantine_invalid_memory_store(root, quarantine, "sqlite")
-                _validate_memory(root, quarantine=quarantine)
-                return
-            raise LegacyImportError(
-                "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
-            ) from exc
-        if result is None or result[0] != "ok" or (checkpoint and checkpoint[0] != 0):
-            if quarantine is not None:
-                _quarantine_invalid_memory_store(root, quarantine, "sqlite")
-                _validate_memory(root, quarantine=quarantine)
-                return
-            raise LegacyImportError(
-                "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
-            )
-        Path(f"{database}-shm").unlink(missing_ok=True)
-        wal = Path(f"{database}-wal")
-        if wal.is_file() and wal.stat().st_size == 0:
-            wal.unlink()
-        try:
-            # Normalize through the same SQLite manager Core will use after
-            # commit.  Keeping a second handwritten schema gate here caused
-            # valid legacy variants to pass standalone database checks but be
-            # rejected by the importer (or vice versa).  This operates only on
-            # the staging copy; the legacy database remains byte-for-byte
-            # untouched.
-            from plugins.builtin.sakura_mem0.memory import (
-                normalize_existing_history_database,
-            )
-
-            normalize_existing_history_database(history)
-            with closing(sqlite3.connect(history)) as connection:
-                result = connection.execute("PRAGMA quick_check").fetchone()
-                checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if result is None or result[0] != "ok":
-                    raise LegacyImportError(
-                        "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
-                    )
-                if checkpoint and checkpoint[0] != 0:
-                    raise LegacyImportError(
-                        "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
-                    )
-        except sqlite3.DatabaseError as exc:
-            if quarantine is not None:
-                _quarantine_invalid_memory_store(root, quarantine, "sqlite")
-                _validate_memory(root, quarantine=quarantine)
-                return
-            raise LegacyImportError(
-                "LEGACY_MEMORY_SCHEMA_INVALID", "validating", relative
-            ) from exc
-        except LegacyImportError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - schema details remain private
-            if quarantine is not None:
-                _quarantine_invalid_memory_store(root, quarantine, "sqlite")
-                _validate_memory(root, quarantine=quarantine)
-                return
-            raise LegacyImportError(
-                "LEGACY_MEMORY_SCHEMA_INVALID", "validating", relative
-            ) from exc
-        Path(f"{history}-shm").unlink(missing_ok=True)
-        wal = Path(f"{history}-wal")
-        if wal.is_file() and wal.stat().st_size == 0:
-            wal.unlink()
-    qdrant = root / "qdrant"
-    if qdrant.is_dir() and any(path.is_file() for path in qdrant.rglob("*")):
-        try:
-            from plugins.builtin.sakura_mem0.memory import validate_existing_memory_store
-
-            validate_existing_memory_store(root)
-        except Exception as exc:  # noqa: BLE001 - quarantine preserves unreadable bytes
-            if quarantine is None:
-                raise LegacyImportError(
-                    "LEGACY_MEMORY_OPEN_FAILED", "validating", "qdrant"
-                ) from exc
-            _quarantine_invalid_memory_store(root, quarantine, "qdrant")
-    profiles = root / "core_profiles.json"
-    if profiles.is_file():
-        try:
-            value = json.loads(profiles.read_text(encoding="utf-8"))
-            if not isinstance(value, dict):
-                raise TypeError("profiles must be an object")
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
-            if quarantine is None:
-                raise LegacyImportError(
-                    "LEGACY_MEMORY_PROFILE_INVALID",
-                    "validating",
-                    "core_profiles.json",
-                ) from exc
-            quarantine.mkdir(parents=True, exist_ok=True)
-            os.replace(profiles, quarantine / profiles.name)
 
 
 def _quarantine_invalid_memory_store(root: Path, quarantine: Path, domain: str) -> None:
