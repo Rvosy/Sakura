@@ -516,7 +516,7 @@ def test_proxy_redirect_rejects_explicit_local_target(monkeypatch, target):
 def test_search_action_long_result_through_real_settings_boundary(tmp_path):
     runtime_roots = roots(tmp_path)
     source = runtime_roots.distribution_root / "plugins/builtin/sakura_web/search.py"
-    with source.open("a") as stream:
+    with source.open("a", encoding="utf-8") as stream:
         stream.write('\ndef search(query, max_results, values):\n    return {"results": [{"title": "Result", "url": "https://example.com/", "snippet": "中文摘要" * 3000}] * 5}\n')
     application = PluginApplicationHost(runtime_roots, "web-action", ToolRegistry())
     try:
