@@ -111,9 +111,9 @@ def test_proxy_fetch_in_isolated_worker(tmp_path: Path, monkeypatch) -> None:
                 pending.append(required)
     plugin = runtime_roots.distribution_root / "plugins/builtin/sakura_web"
     with (plugin / "web.py").open("a", encoding="utf-8") as stream:
-        # Deterministic DNS only: request selection, proxy transport and tool RPC
-        # are the production path. No request leaves the local test server.
-        stream.write('\ndef _resolve_public_addresses(host, port):\n    return ["93.184.216.34"]\n')
+        # Destination DNS must belong to the proxy, even in the isolated worker.
+        # Request selection, proxy transport and tool RPC use production code.
+        stream.write('\ndef _resolve_public_addresses(host, port):\n    raise AssertionError("Proxy destination must not use local DNS")\n')
     requests = []
 
     class Proxy(BaseHTTPRequestHandler):
@@ -145,7 +145,7 @@ def test_proxy_fetch_in_isolated_worker(tmp_path: Path, monkeypatch) -> None:
         assert fetched.success, fetched
         assert fetched.content["title"] == "Proxy fixture"
         assert "isolated worker response" in fetched.content["text"]
-        assert requests == [("http://93.184.216.34/article", "public.example")]
+        assert requests == [("http://public.example/article", "public.example")]
         process = application.application._manager._records["sakura.web"].process._process
         assert process.args[1:3] == ["-I", "-S"]
         assert str(dependency) in process.args
@@ -167,7 +167,8 @@ def test_real_plugin_calls_and_disable(tmp_path: Path) -> None:
         assert all(tool.source == "plugin" for tool in registry.all())
         record = application.settings_snapshot()["plugins"][0]
         assert record["state"] == "active"
-        assert not record.get("sections")
+        assert record["sections"][0]["sectionId"] == "search"
+        application.settings_save("sakura.web", "search", {"provider": "bing", "tavily_api_key": "", "tavily_depth": "basic"})
         result = registry.execute("web__web_search", {"query": "中文新闻"})
         assert result.success, result
         assert result.content["results"] == [{"title": "中文搜索结果", "url": "https://example.com/news", "snippet": "结果摘要"}]
@@ -462,3 +463,79 @@ def test_web_failure_logs_code_without_request_content(monkeypatch):
     result = _handler("web_search", Logger())({"query": "private search"})
     assert result["reasonCode"] == "WEB_TIMEOUT"
     assert rows == [{"tool": "web_search", "reason_code": "WEB_TIMEOUT"}]
+
+
+def test_fake_ip_search_preserves_proxy_hostname(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *a, **k: [
+        (web.socket.AF_INET, web.socket.SOCK_STREAM, 6, "", ("198.18.0.4", 443))
+    ])
+    monkeypatch.setattr(web, "proxy_for_url", lambda url: "http://127.0.0.1:7890")
+    requests = []
+    original_client = httpx.Client
+
+    def respond(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, stream=httpx.ByteStream(b'<li class="b_algo"><h2><a href="https://example.com/">Result</a></h2></li>'))
+
+    def client(**kwargs):
+        assert kwargs["proxy"] == "http://127.0.0.1:7890"
+        return original_client(transport=httpx.MockTransport(respond), trust_env=False)
+
+    monkeypatch.setattr(httpx, "Client", client)
+    assert web.search_web("Bing")["results"][0]["title"] == "Result"
+    assert requests == ["https://www.bing.com/search?q=Bing"]
+
+
+@pytest.mark.parametrize("address", ["198.18.0.4", "127.0.0.1", "192.168.1.1"])
+def test_direct_fetch_rejects_non_public_dns(monkeypatch, address):
+    monkeypatch.setattr(web, "proxy_for_url", lambda url: None)
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *a, **k: [
+        (web.socket.AF_INET, web.socket.SOCK_STREAM, 6, "", (address, 80))
+    ])
+    with pytest.raises(ValueError, match="私有网络"):
+        web.fetch_url("http://public.example/")
+
+
+@pytest.mark.parametrize("target", ["http://127.0.0.1/", "http://192.168.1.1/", "http://198.18.0.4/", "http://localhost/", "http://[::1]/"])
+def test_proxy_redirect_rejects_explicit_local_target(monkeypatch, target):
+    monkeypatch.setattr(web, "proxy_for_url", lambda url: "http://127.0.0.1:7890")
+    calls = []
+
+    def proxy(url, *args):
+        calls.append(url)
+        return 302, "Found", {"Location": target}, b""
+
+    monkeypatch.setattr(web, "_request_through_proxy", proxy)
+    with pytest.raises(ValueError, match="私有网络"):
+        web.fetch_url("https://public.example/")
+    assert calls == ["https://public.example/"]
+
+
+def test_search_action_long_result_through_real_settings_boundary(tmp_path):
+    runtime_roots = roots(tmp_path)
+    source = runtime_roots.distribution_root / "plugins/builtin/sakura_web/search.py"
+    with source.open("a") as stream:
+        stream.write('\ndef search(query, max_results, values):\n    return {"results": [{"title": "Result", "url": "https://example.com/", "snippet": "中文摘要" * 3000}] * 5}\n')
+    application = PluginApplicationHost(runtime_roots, "web-action", ToolRegistry())
+    try:
+        application.start()
+        assert application.settings_action("sakura.web", "search", "test_search", {"provider": "baidu", "test_query": "fixture"}) == {}
+        deadline = time.monotonic() + 3
+        while True:
+            section = application.settings_snapshot()["plugins"][0]["sections"][0]
+            fields = {field["key"]: field["value"] for field in section["fields"]}
+            if fields["test_status"]["state"] != "working":
+                break
+            assert time.monotonic() < deadline
+        assert fields["test_status"]["state"] == "ready"
+        assert fields["test_result"]
+        result_field = next(field for field in section["fields"] if field["key"] == "test_result")
+        assert len(json.dumps(result_field, ensure_ascii=False).encode("utf-8")) <= 16384
+        assert application.settings_save("sakura.web", "search", {"provider": "bing", "tavily_api_key": "", "tavily_depth": "basic"})["saved"] is True
+        saved_section = application.settings_snapshot()["plugins"][0]["sections"][0]
+        assert next(field["value"] for field in saved_section["fields"] if field["key"] == "provider") == "bing"
+        assert "已截断" in fields["test_result"]
+    finally:
+        application.close()

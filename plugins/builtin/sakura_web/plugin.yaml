@@ -3,13 +3,14 @@ id: sakura.web
 name: 联网工具
 author: Rvosy
 description: 搜索公开网页和读取链接内容。
-version: 1.0.0
+version: 1.1.0
 entry: plugin:WebPlugin
 enabled: true
 provides: []
 requires:
   - sakura.host.tools
   - sakura.host.logging
+  - sakura.host.settings
 presentation:
   kind: extension
   category: tools

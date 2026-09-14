@@ -426,7 +426,8 @@ inventory `revision` 直接比较安装记录和结构化开关配置，状态�
 下拉、详情切换和弹窗使用主程序主题与动效 token，不受系统减少动态效果设置影响。
 
 设置窗口只渲染插件已有的 Settings Contribution，不根据展示分类增加字段或动作。字段名称、默认值、校验范围、
-只读属性、`enabledWhen` 与 `placement=advanced` 均沿用声明。长内容在窗口内部滚动，底部操作始终可达。
+只读属性、`enabledWhen` 与 `placement=advanced` 均沿用声明。`enabledWhen` 可添加布尔字段 `hide`：
+为 true 时，条件不满足的字段隐藏且禁用；默认仍显示为禁用。隐藏不清除已填写的值。长内容在窗口内部滚动，底部操作始终可达。
 
 - 未注册 surface 或 `surface=plugin` 的区块放入插件设置窗口；普通字段、Action 和 Collection 保留原调用链。
 - `surface=voice` 仍由 Voice controller 管理；打开插件设置时移动同一组控件，关闭后移回语音页，不复制表单或建立另一套保存接口。

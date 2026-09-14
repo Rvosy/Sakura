@@ -3161,6 +3161,7 @@ button:active:not(:disabled) {
 }
 
 .plugin-readonly-output {
+  white-space: pre-wrap;
   display: block;
   min-width: 0;
   padding: 3px 0;

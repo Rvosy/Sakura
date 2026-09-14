@@ -144,7 +144,7 @@ function validateField(field) {
     && field.actionIds.every((actionId) => IDENTIFIER.test(actionId))
     && new Set(field.actionIds).size === field.actionIds.length
     && (field.type === "resource" || field.actionIds.length === 0)
-    && (field.enabledWhen === null || (exactKeys(field.enabledWhen, ["field", "equals"])
+    && (field.enabledWhen === null || ((exactKeys(field.enabledWhen, ["field", "equals"]) || (exactKeys(field.enabledWhen, ["field", "equals", "hide"]) && typeof field.enabledWhen.hide === "boolean"))
       && IDENTIFIER.test(field.enabledWhen.field) && field.enabledWhen.field !== field.key
       && typeof field.enabledWhen.equals === "string" && field.enabledWhen.equals.length <= 200))
     && (!["status", "resource"].includes(field.type) || field.readonly)

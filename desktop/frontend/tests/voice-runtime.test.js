@@ -242,7 +242,7 @@ test("voice page shows only the selected engine and keeps advanced drafts while 
   const workDir = field({
     key: "workDir", label: "内置服务工作目录", type: "string", default: "", value: "D:\\tts",
     placement: "advanced", options: [], minimum: null, maximum: null, step: null,
-    enabledWhen: { field: "endpointMode", equals: "custom" },
+    enabledWhen: { field: "endpointMode", equals: "custom", hide: true },
   });
   const second = {
     pluginId: "org.demo.graph-voice", sectionId: "runtime", title: "Graph Voice 语音服务",
@@ -274,10 +274,13 @@ test("voice page shows only the selected engine and keeps advanced drafts while 
   assert.equal(graphGroup.hidden, true);
   assert.equal(advanced.children[0].textContent, "高级设置");
   assert.equal(conditionalInput.disabled, true);
+  const conditionalRow = created.find((item) => item.children.includes(conditionalInput));
+  assert.equal(conditionalRow.hidden, true);
 
   modeSelect.value = "custom";
   modeSelect.fire("input");
   assert.equal(conditionalInput.disabled, false);
+  assert.equal(conditionalRow.hidden, false);
 
   controls.ttsProvider.value = "org.demo.graph-voice";
   controls.ttsProvider.fire("change");

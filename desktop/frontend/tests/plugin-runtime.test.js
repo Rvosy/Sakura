@@ -571,3 +571,11 @@ test("Plugin API v3 restart-required config is applied by local plugin reload", 
   assert.equal(result.applicationState, "applied");
   assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
 });
+
+test("conditional settings preserve optional hide behavior and reject malformed flags", () => {
+  const value = snapshot();
+  value.plugins[0].sections[0].fields[0].enabledWhen = { field: "running", equals: "ready", hide: true };
+  assert.equal(validatePluginSnapshot(value).plugins[0].sections[0].fields[0].enabledWhen.hide, true);
+  value.plugins[0].sections[0].fields[0].enabledWhen.hide = "yes";
+  assert.throws(() => validatePluginSnapshot(value));
+});
