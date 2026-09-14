@@ -331,7 +331,9 @@ class _PluginProcess:
 
         def emit(text: str) -> None:
             if text.strip():
-                log_message("warning", "插件进程标准错误输出", component="plugin",
+                # stderr also carries redirected print output and download progress;
+                # the stream alone does not establish a warning or failure.
+                log_message("info", "插件诊断输出", component="plugin",
                     plugin_id=self._spec.plugin_id, plugin_name=self._spec.name,
                     fields={"event": "plugin.process.stderr", "stage": "stderr",
                             "diagnostic": safe_diagnostic_text(text)})

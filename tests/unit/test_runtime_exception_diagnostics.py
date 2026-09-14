@@ -161,7 +161,7 @@ def test_plugin_stderr_drains_large_output_and_preserves_late_errors():
     bridge = install_runtime_logging(stream)
     process = subprocess.Popen([sys.executable, "-c", "import sys; sys.stderr.write('progress\\n' * 20000); sys.stderr.write('RuntimeError: late native failure token=hidden-credential\\n')"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     worker = _PluginProcess.__new__(_PluginProcess)
-    worker._spec = SimpleNamespace(plugin_id="fixture.stderr")
+    worker._spec = SimpleNamespace(plugin_id="fixture.stderr", name="Fixture")
     try:
         worker._drain_stderr(process)
         assert process.wait(timeout=5) == 0

@@ -178,7 +178,7 @@ Rust 依据可信来源分流：插件主动记录写入 `sakura-plugins.log`，
 插件名称用于筛选项和日志行展示，插件 ID 保留在详情和复制文本中。
 ASR Hub 和语音输入 Provider 的记录归入“插件”页，按各自插件名称筛选，同样写入 `sakura-plugins.log`。
 Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接入宿主日志。
-插件进程 stderr（包括 runner 重定向的 stdout）由 Core 持续、有界读取并清洗后记录；不拦截标准 `logging` 配置。Agent Trace 的实现保持独立。
+插件进程 stderr（包括 runner 重定向的 stdout）由 Core 持续、有界读取并清洗后记录，按 info 显示为“插件诊断输出”，不因输出通道而计入问题数。下载进度和第三方提示保留原文；明确的警告、调用失败与异常退出由 SDK 或宿主对应事件报告。不拦截标准 `logging` 配置。Agent Trace 的实现保持独立。
 SDK 的 warning/error 和固定诊断入口在异常处理期间自动附加原文及调用栈。Service RPC error 通过可选 `diagnostics` 保留跨插件异常链，宿主再次清洗。
 
 

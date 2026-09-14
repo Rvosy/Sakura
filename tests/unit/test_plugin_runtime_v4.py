@@ -151,7 +151,7 @@ def test_plugin_stderr_is_forwarded_before_process_exit(tmp_path: Path, monkeypa
     received = threading.Event()
     captured = []
     def capture(level, message, **kwargs):
-        captured.append(kwargs)
+        captured.append({**kwargs, "level": level})
         if kwargs.get("fields", {}).get("event") == "plugin.process.stderr":
             received.set()
     monkeypatch.setattr(runtime_log, "log_message", capture)
@@ -163,9 +163,32 @@ def test_plugin_stderr_is_forwarded_before_process_exit(tmp_path: Path, monkeypa
         row = next(row for row in captured if row.get("fields", {}).get("event") == "plugin.process.stderr")
         assert row["plugin_id"] == "fixture.stderr"
         assert row["plugin_name"] == "fixture.stderr"
+        assert row["level"] == "info"
         assert row["fields"]["diagnostic"] == "small stderr diagnostic"
     finally:
         host.close()
+
+
+@pytest.mark.parametrize("output", [
+    "Fetching 18 files: 100%| 18/18 [00:01<00:00, 13.43it/s]",
+    "Warning: You are sending unauthenticated requests to the HF Hub.",
+    "Failed to load spaCy lemma model: spaCy is not installed.",
+])
+def test_raw_plugin_diagnostics_do_not_imply_failure(output, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from app.core import runtime_log
+    from app.plugins.runtime_v4 import _PluginProcess
+
+    captured = []
+    monkeypatch.setattr(runtime_log, "log_message", lambda level, message, **kwargs:
+                        captured.append((level, kwargs)))
+    worker = _PluginProcess.__new__(_PluginProcess)
+    worker._spec = SimpleNamespace(plugin_id="fixture.stderr", name="Fixture")
+    worker._drain_stderr(SimpleNamespace(stderr=io.BytesIO((output + "\n").encode())))
+    assert len(captured) == 1
+    level, row = captured[0]
+    assert level == "info"
+    assert row["fields"]["diagnostic"] == output
 
 
 def test_unified_logging_sdk_queue_is_bounded_and_does_not_block(tmp_path: Path) -> None:
