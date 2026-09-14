@@ -1014,7 +1014,7 @@ class _SettingsHostService:
     def _section_snapshot(self, registration: _SettingsRegistration) -> dict[str, Any]:
         values: Mapping[str, Any] = {}
         reason_code = registration.reason_code
-        if reason_code == "READY" and registration.descriptor_invalid:
+        if reason_code in {"READY", "SETTINGS_VALUE_INVALID"} and registration.descriptor_invalid:
             reason_code = "SETTINGS_DESCRIPTOR_INVALID"
         if registration.load_handle is not None:
             try:
@@ -1030,18 +1030,13 @@ class _SettingsHostService:
                     else "SETTINGS_LOAD_FAILED"
                 )
                 values = {}
-        fields = []
-        projected_values: dict[str, Any] = {}
-        for spec in registration.fields:
-            value = values.get(spec["key"], spec["default"])
-            if not _settings_value_valid(spec, value):
-                value = spec["default"]
-                if reason_code == "READY":
-                    reason_code = "SETTINGS_VALUE_INVALID"
-            public = dict(spec)
-            public["value"] = value
-            fields.append(public)
-            projected_values[spec["key"]] = value
+        projected_values, invalid_value = _settings_display_values(registration.fields, values)
+        if invalid_value and reason_code == "READY":
+            reason_code = "SETTINGS_VALUE_INVALID"
+        fields = [
+            {**spec, "value": projected_values[spec["key"]]}
+            for spec in registration.fields
+        ]
         actions = [dict(action) for action in registration.actions]
         with self._lock:
             surface = next(
@@ -1209,18 +1204,15 @@ class _SettingsHostService:
         ):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
         public = dict(result)
+        invalid_value = False
         if "values" in public:
             if not isinstance(public["values"], Mapping):
                 raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-            fields = {field["key"]: field for field in registration.fields}
-            if any(key not in fields for key in public["values"]):
-                raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-            projected_values = {}
-            for key, value in public["values"].items():
-                if not _settings_value_valid(fields[key], value):
-                    raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-                projected_values[key] = value
-            public["values"] = projected_values
+            # Action values are a display patch, not another write request.
+            # Omitted controls and plugin-private keys cannot invalidate an
+            # already executed action; absent fields must not reset UI drafts.
+            fields = [field for field in registration.fields if field["key"] in public["values"]]
+            public["values"], invalid_value = _settings_display_values(fields, public["values"])
         if "message" in public and (
             not isinstance(public["message"], str)
             or len(public["message"]) > 240
@@ -1228,6 +1220,12 @@ class _SettingsHostService:
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
         if not _json_compatible(public, 64 * 1024):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
+        if "values" in public:
+            with self._lock:
+                if registration in self._registrations.values() and registration.reason_code in {
+                    "READY", "SETTINGS_VALUE_INVALID",
+                }:
+                    registration.reason_code = "SETTINGS_VALUE_INVALID" if invalid_value else "READY"
         return True, public
 
     def _find(self, plugin_id: str, section_id: str) -> _SettingsRegistration | None:
@@ -2282,6 +2280,21 @@ def _settings_resource_value_valid(
             for action_id in available_action_ids
         )
     )
+
+
+def _settings_display_values(
+    fields: Sequence[Mapping[str, Any]],
+    values: Mapping[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    projected: dict[str, Any] = {}
+    invalid = False
+    for field in fields:
+        value = values.get(field["key"], field["default"])
+        if not _settings_value_valid(field, value):
+            value = field["default"]
+            invalid = True
+        projected[field["key"]] = value
+    return projected, invalid
 
 
 def _editable_settings_values(
