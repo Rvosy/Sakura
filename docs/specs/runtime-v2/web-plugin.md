@@ -11,7 +11,7 @@ updated: 2026-09-14
 ## 能力边界
 
 安装包提供“联网工具”插件 `sakura.web`（目录 `plugins/builtin/sakura_web`），新安装默认启用。插件通过 Plugin API v4
-的 `sakura.host.tools` 提供搜索和网页读取，使用独立 Worker；HTTP 代理和 Tavily 使用插件依赖 httpx。
+的 `sakura.host.tools` 提供搜索和网页读取，使用独立 Worker；HTTP 请求统一使用插件依赖 `httpx[socks]`。
 不启动 MCP Server。通过 `sakura.host.settings` 提供查询服务配置，启停沿用插件管理页。
 
 工具定义经 Assistant 的 `tools` 字段提供给模型。模型根据对话决定是否调用、调用参数及后续步骤；
@@ -48,7 +48,7 @@ Tavily 负责远端抓取与重定向，插件校验提交及返回的 URL；域
 相对链接以最终网页 URL 解析。网络响应按字节有界读取，正文按字符截断；任一截断都设置 `truncated=true`。
 
 请求保留 12 秒连接/读取超时、最多 5 次重定向及响应大小限制。每次连接重新选择系统或环境代理，
-遵循代理绕过规则。直连时校验 DNS 解析结果并绑定已验证的公网地址；使用代理时保留原始域名，
+遵循代理绕过规则。直连时每个请求目标只解析一次 DNS，校验全部结果并绑定已验证的公网地址；使用代理时保留原始域名，
 由代理解析并连接，不使用本地 DNS 结果替换域名，也不因 Fake-IP 拒绝请求或在代理失败后回退直连。
 URL 与每次重定向均拒绝 localhost、明确的非公网 IP 和 URL userinfo。
 代理模式下，域名最终解析地址及其访问控制由用户配置的代理负责，插件不保证代理侧的 DNS 地址隔离。
