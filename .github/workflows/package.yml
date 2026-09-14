@@ -126,6 +126,8 @@ jobs:
       - name: Build the Runtime v2 platform bundle
         working-directory: desktop/src-tauri
         shell: bash
+        env:
+          SAKURA_REQUIRE_DIAGNOSTIC_MAPPING: "1"
         run: npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
 
       - name: Collect Windows Setup and Portable ZIP

@@ -168,7 +168,14 @@ try {
             $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw -LiteralPath $privateKeyPath
             $privateKeyLoadedFromPath = $true
         }
-        Invoke-Checked "npx" @("--yes", "@tauri-apps/cli@2.11.4", "build", "--config", "tauri.release.json")
+        $previousDiagnosticRequirement = $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING
+        try {
+            $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING = "1"
+            Invoke-Checked "npx" @("--yes", "@tauri-apps/cli@2.11.4", "build", "--config", "tauri.release.json")
+        }
+        finally {
+            $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING = $previousDiagnosticRequirement
+        }
     }
     finally {
         Pop-Location
