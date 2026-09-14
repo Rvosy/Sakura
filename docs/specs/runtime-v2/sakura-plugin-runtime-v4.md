@@ -171,15 +171,15 @@ Rust 依据可信来源分流：插件主动记录写入 `sakura-plugins.log`，
 `sakura-runtime.log`；宿主记录单个插件的加载、停止、启动失败和异常退出时也附带可信插件身份，写入插件日志；应用级汇总仍写入运行日志。两者共用队列、序号、写入线程、
 文本格式化与轮转实现，仅文件状态独立；默认各 10 MiB、5 个备份。窗口以同一快照提供插件筛选。
 
-`sakura.host.diagnostics.emit()` 保留为固定 TTS service/weights/conversion 事件的兼容入口，
-接受 `provider/reason_code/stage/status/error_type/elapsed_ms`，`elapsed_ms` 为非负有界十进制字符串。
-它同样附加可信插件身份，进入统一服务及插件文件；已登记 TTS 事件仅显示在 TTS 页，不在插件页重复显示。
+`sakura.host.diagnostics.emit()` 保留原调用格式，转交 `sakura.host.logging` 同一条日志链。
+插件自行提供事件名和业务字段，事件名保存在消息和 `fields.event` 中；宿主不维护 Provider 名称、事件或源文件白名单，也不重解释耗时等业务字段。
+调用方身份由宿主绑定，诊断采用通用日志的大小限制、凭据清洗和插件文件归属。
 宿主日志适配层按 manifest 的 `sakura.tts` / `sakura.tts.provider.*` 声明将语音插件自定义记录归入 TTS，
 插件名称用于筛选项和日志行展示，插件 ID 保留在详情和复制文本中。
 ASR Hub 和语音输入 Provider 的记录归入“插件”页，按各自插件名称筛选，同样写入 `sakura-plugins.log`。
 Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接入宿主日志。
 插件进程 stderr（包括 runner 重定向的 stdout）由 Core 持续、有界读取并清洗后记录，按 info 显示为“插件诊断输出”，不因输出通道而计入问题数。下载进度和第三方提示保留原文；明确的警告、调用失败与异常退出由 SDK 或宿主对应事件报告。不拦截标准 `logging` 配置。Agent Trace 的实现保持独立。
-SDK 的 warning/error 和固定诊断入口在异常处理期间自动附加原文及调用栈。Service RPC error 通过可选 `diagnostics` 保留跨插件异常链，宿主再次清洗。
+SDK 的 warning/error 和兼容诊断入口在异常处理期间自动附加原文及调用栈。Service RPC error 通过可选 `diagnostics` 保留跨插件异常链，宿主再次清洗。Mem0 事件直接保留在插件日志中，不额外生成一条宿主业务记录。
 插件启动失败在转换为状态码前提取原始异常，启动失败日志保留依赖检查或初始化阶段的异常链与调用栈。事件回调、清理回调和宿主资源回收失败也记录诊断，后续回调及资源回收继续执行。关闭期间允许插件注销自己已登记的宿主资源，随后由宿主完成剩余资源回收。
 
 

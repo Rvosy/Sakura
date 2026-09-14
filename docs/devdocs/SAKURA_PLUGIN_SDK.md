@@ -1047,8 +1047,8 @@ Token、完整配置、环境变量、请求头、对话正文、Prompt、工具
 
 Python 标准 `logging`、`print`、stderr 和外部程序输出不会自动进入统一日志。新插件应显式使用上述接口，
 无需自建日志文件、轮转器或 GUI 缓冲。原有第三方引擎输出文件不会被自动汇入；插件应另外报告其启动、
-就绪和失败结果。`sakura.host.diagnostics.emit()` 仍兼容已有固定 TTS 事件，新插件的普通日志使用
-`sakura.host.logging`。Agent Trace 用于宿主的模型调用记录，不是插件保存私密调试内容的通道。
+就绪和失败结果。`sakura.host.diagnostics.emit()` 保留原调用格式并转入同一日志链，事件名和业务字段由插件提供。
+新插件使用 `sakura.host.logging`，例如 `logger.error("模型加载失败", {"event": "model.load.failed", "source_file": "engine/load.py"})`，不需要修改宿主事件目录。Agent Trace 用于宿主的模型调用记录，不是插件保存私密调试内容的通道。
 
 ## 生命周期、冲突和错误
 

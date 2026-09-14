@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from app.agent.tools import Tool
-from app.core.runtime_log import log_event, log_message
+from app.core.runtime_log import log_message
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_LOGGING_SERVICE
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
@@ -50,51 +50,6 @@ _SETTINGS_RESOURCE_TASK_STATES = frozenset(
 _SETTINGS_RESOURCE_APPLICABILITY = frozenset(
     {"required", "not_required", "unsupported"}
 )
-_PLUGIN_DIAGNOSTIC_EVENTS = frozenset(
-    {
-        "tts.service.started",
-        "tts.service.waiting_ready",
-        "tts.service.ready",
-        "tts.service.failed",
-        "tts.synthesis.failed",
-        "tts.service.warmup_failed",
-        "tts.weights.loading",
-        "tts.weights.ready",
-        "tts.weights.failed",
-        "tts.conversion.checking",
-        "tts.conversion.reused",
-        "tts.conversion.cache_hit",
-        "tts.conversion.started",
-        "tts.conversion.running",
-        "tts.conversion.finished",
-        "tts.conversion.failed",
-        "tts.conversion.cancelled",
-    }
-)
-_PLUGIN_DIAGNOSTIC_SEVERITIES = frozenset({"debug", "info", "warning", "error"})
-_PLUGIN_DIAGNOSTIC_ATTRIBUTES = frozenset(
-    {
-        "provider",
-        "reason_code",
-        "stage",
-        "status",
-        "error_type",
-        "elapsed_ms",
-        "code",
-        "timeout_ms",
-        "exit_code",
-        "child_exited",
-        "probe_outcome",
-        "source_file",
-        "source_line",
-        "diagnostic",
-        "cause_type",
-        "exception_chain",
-        "exception_stack",
-    }
-)
-_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
-_ELAPSED_MS = re.compile(r"^[0-9]{1,9}(?:\.[0-9]{1,2})?$")
 
 
 class HostServiceError(RuntimeError):
@@ -104,77 +59,23 @@ class HostServiceError(RuntimeError):
 
 
 class _DiagnosticsHostService:
-    """Accept fixed events and bounded, redacted local exception diagnostics."""
+    """Compatibility adapter for plugins using the original diagnostic API."""
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         if method != "emit" or len(args) != 2:
             raise HostServiceError("HOST_METHOD_INVALID")
-        plugin_id = HOST_CALLER.get() or _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(args[1], "DIAGNOSTIC_DESCRIPTOR_INVALID")
-        if set(descriptor) != {"event", "severity", "attributes"}:
+        event = descriptor.get("event")
+        attributes = descriptor.get("attributes")
+        if not isinstance(event, str) or not event.strip() or not isinstance(attributes, Mapping):
             raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-        event_name = descriptor.get("event")
-        severity = descriptor.get("severity")
-        raw_attributes = descriptor.get("attributes")
-        if (
-            event_name not in _PLUGIN_DIAGNOSTIC_EVENTS
-            or severity not in _PLUGIN_DIAGNOSTIC_SEVERITIES
-            or not isinstance(raw_attributes, Mapping)
-            or not set(raw_attributes).issubset(_PLUGIN_DIAGNOSTIC_ATTRIBUTES)
-        ):
-            raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-        attributes: dict[str, object] = {"component": plugin_id}
-        for key, value in raw_attributes.items():
-            if key in {"diagnostic", "exception_chain", "exception_stack"}:
-                from app.core.diagnostics import safe_diagnostic_text
-
-                if not isinstance(value, str):
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-                value = safe_diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
-            elif key in {"elapsed_ms", "timeout_ms", "exit_code", "source_line"}:
-                if isinstance(value, str) and _ELAPSED_MS.fullmatch(value):
-                    value = round(float(value))
-                low = (
-                    -(2**31) if key == "exit_code" else 1 if key == "source_line" else 0
-                )
-                high = (
-                    10_000_000
-                    if key == "source_line"
-                    else 2**32 - 1
-                    if key == "exit_code"
-                    else 2**53 - 1
-                )
-                if type(value) is not int or not low <= value <= high:
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif key == "child_exited":
-                if type(value) is not bool:
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif key == "source_file":
-                # Source identifiers are supplied only by the bundled provider, never arbitrary plugin paths.
-                if plugin_id != "sakura.tts.gpt-sovits" or value not in {
-                    "plugins/builtin/sakura_gpt_sovits/_support.py",
-                    "plugins/builtin/sakura_gpt_sovits/_runtime_profile.py",
-                }:
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif not isinstance(value, str) or not value or len(value) > 128:
-                raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif key in {"reason_code", "code"}:
-                if _ERROR_CODE.fullmatch(value) is None:
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif _IDENTIFIER.fullmatch(value) is None:
-                raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            attributes[key] = value
-        log_event(
-            "TTS",
-            "Plugin TTS runtime diagnostic",
-            attributes,
-            event=str(event_name),
-            severity=str(severity),
-            verbosity=3 if severity == "debug" else 1,
-            plugin_id=plugin_id,
-            plugin_name=HOST_CALLER_LOG_METADATA.get()[0] or None,
-        )
-        return {"accepted": True}
+        # Identity, redaction, size limits and persistence all use the logger.
+        # args[0] is retained for wire compatibility; the caller owns identity.
+        return _LoggingHostService().call("emit", [[{
+            "severity": descriptor.get("severity"),
+            "message": event,
+            "fields": {"event": event, **attributes},
+        }], 0])
 
     def clear(self) -> None:
         return None
@@ -202,49 +103,6 @@ class _LoggingHostService:
             log_message("warning", "插件日志发送拥塞或中断，部分记录已丢弃",
                 fields={"dropped_count": dropped}, component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         for item in batch:
-            fields = item["fields"]
-            event = fields.get("event")
-            if plugin_id == "sakura.memory.mem0" and event in {
-                "memory.recall.started",
-                "memory.recall.finished",
-                "memory.recall.failed",
-                "memory.recall.unavailable",
-                "memory.curation.started",
-                "memory.curation.finished",
-                "memory.curation.failed",
-            }:
-                from app.core_host.runtime_logging import _safe_attributes
-
-                safe = _safe_attributes(
-                    {
-                        k: v
-                        for k, v in fields.items()
-                        if k
-                        in {
-                            "elapsed_ms",
-                            "status",
-                            "reason_code",
-                            "error_type",
-                            "candidates",
-                            "selected",
-                            "code",
-                        }
-                    }
-                )
-                safe["stage"] = (
-                    "memory_recall"
-                    if event.startswith("memory.recall.")
-                    else "memory_curation"
-                )
-                # Core-owned projection carries no custom plugin name, content, or tool data.
-                log_event(
-                    "Memory",
-                    "Memory diagnostic",
-                    safe,
-                    event=event,
-                    severity=item["severity"],
-                    verbosity=1,
-                )
             log_message(item["severity"], item["message"], fields=item["fields"],
                 component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         # Core owns downstream loss accounting; the SDK counts transport loss only.

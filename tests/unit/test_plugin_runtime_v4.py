@@ -224,76 +224,32 @@ def test_unified_logging_sdk_queue_is_bounded_and_does_not_block(tmp_path: Path)
     assert logger.info("after close") is False
 
 
-def test_plugin_diagnostics_host_service_accepts_only_bounded_fixed_events(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    monkeypatch.setattr(
-        plugin_host_services,
-        "log_event",
-        lambda *args, **kwargs: captured.append((args, kwargs)),
-    )
+def test_plugin_diagnostics_uses_generic_logger_and_bound_identity(monkeypatch) -> None:
+    from app.plugins.host_services import HOST_CALLER
+
+    captured = []
+    monkeypatch.setattr(plugin_host_services, "log_message", lambda *args, **kwargs: captured.append((args, kwargs)))
     service = plugin_host_services._DiagnosticsHostService()
-
-    assert service.call(
-        "emit",
-        [
-            "sakura.tts.gpt-sovits",
-            {
-                "event": "tts.service.failed",
-                "severity": "warning",
-                "attributes": {
-                    "provider": "sakura.tts.gpt-sovits",
-                    "reason_code": "TTS_RUNTIME_EXITED",
-                    "stage": "runtime_start",
-                    "status": "failed",
-                    "error_type": "ChildProcessExit",
-                    "elapsed_ms": "12034.5",
-                },
-            },
-        ],
-    ) == {"accepted": True}
-    assert captured[0][1]["event"] == "tts.service.failed"
-    assert captured[0][1]["severity"] == "warning"
-    assert captured[0][0][2] == {
-        "component": "sakura.tts.gpt-sovits",
-        "provider": "sakura.tts.gpt-sovits",
-        "reason_code": "TTS_RUNTIME_EXITED",
-        "stage": "runtime_start",
-        "status": "failed",
-        "error_type": "ChildProcessExit",
-        "elapsed_ms": 12034,
+    descriptor = {
+        "event": "third_party.engine.failed",
+        "severity": "warning",
+        "attributes": {
+            "source_file": "my_plugin/engine.py",
+            "elapsed_ms": "12034.5",
+            "engine_state": {"phase": "loading"},
+        },
     }
-
-    with pytest.raises(
-        plugin_host_services.HostServiceError,
-        match="DIAGNOSTIC_DESCRIPTOR_INVALID",
-    ):
-        service.call(
-            "emit",
-            [
-                "sakura.tts.gpt-sovits",
-                {
-                    "event": "tts.service.warmup_failed",
-                    "severity": "warning",
-                    "attributes": {"path": "C:/private/model"},
-                },
-            ],
-        )
-
-    with pytest.raises(
-        plugin_host_services.HostServiceError,
-        match="DIAGNOSTIC_DESCRIPTOR_INVALID",
-    ):
-        service.call(
-            "emit",
-            [
-                "sakura.tts.gpt-sovits",
-                {
-                    "event": "tts.service.ready",
-                    "severity": "info",
-                    "attributes": {"elapsed_ms": "-1"},
-                },
-            ],
-        )
+    token = HOST_CALLER.set("third.party")
+    try:
+        assert service.call("emit", ["spoofed.plugin", descriptor]) == {"accepted": True}
+    finally:
+        HOST_CALLER.reset(token)
+    assert captured == [(("warning", descriptor["event"]), {
+        "fields": {"event": descriptor["event"], **descriptor["attributes"]},
+        "component": "plugin", "plugin_id": "third.party", "plugin_name": None,
+    })]
+    with pytest.raises(plugin_host_services.HostServiceError, match="LOG_CALLER_REQUIRED"):
+        service.call("emit", ["third.party", descriptor])
 
 
 def _roots(tmp_path: Path) -> RuntimeRoots:
