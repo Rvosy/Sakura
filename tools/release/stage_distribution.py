@@ -14,8 +14,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app/plugin_sdk"))
 from sakura_downloads import uv_download_environment
+from tools.release.diagnostic_build import write_mapping
 
 TARGETS = {"windows-x64", "macos-arm64", "linux-x64"}
 BUILTIN_PLUGINS = {
@@ -467,10 +469,6 @@ def assemble(repo: Path, python_source: Path, output: Path, target: str, *, port
     if portable:
         (output / "portable.flag").write_bytes(b"")
     validate_layout(output, target, portable=portable)
-    try:
-        from .diagnostic_build import write_mapping
-    except ImportError:
-        from diagnostic_build import write_mapping
     write_mapping(repo, output, target, inventory(output, target))
     (output / "release-inventory.json").write_text(
         json.dumps(inventory(output, target), ensure_ascii=False, indent=2) + "\n",
