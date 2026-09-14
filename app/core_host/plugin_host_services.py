@@ -699,6 +699,7 @@ class _SettingsRegistration:
     surface: str | None
     application_state: str = "applied"
     reason_code: str = "READY"
+    descriptor_invalid: bool = False
 
 
 @dataclass(frozen=True)
@@ -911,15 +912,6 @@ class _SettingsHostService:
     ) -> dict[str, str]:
         plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(raw_descriptor, "SETTINGS_DESCRIPTOR_INVALID")
-        allowed_descriptor = {
-            "sectionId",
-            "title",
-            "fields",
-            "actions",
-            "order",
-        }
-        if any(key not in allowed_descriptor for key in descriptor):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         section_id = _bounded_identifier(
             descriptor.get("sectionId"),
             "SETTINGS_DESCRIPTOR_INVALID",
@@ -941,26 +933,43 @@ class _SettingsHostService:
             or len(raw_actions) > 15
         ):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-        fields = tuple(_settings_field(item) for item in raw_fields)
+        fields = []
+        field_keys = set()
+        descriptor_invalid = False
+        for item in raw_fields:
+            try:
+                field = _settings_field(item)
+                if field["key"] in field_keys:
+                    raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+            except HostServiceError:
+                descriptor_invalid = True
+                continue
+            fields.append(field)
+            field_keys.add(field["key"])
+        actions = []
+        declared_action_ids = set()
+        for item in raw_actions:
+            try:
+                action = _settings_action(item)
+                if action["actionId"] in declared_action_ids:
+                    raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+            except HostServiceError:
+                descriptor_invalid = True
+                continue
+            actions.append(action)
+            declared_action_ids.add(action["actionId"])
+        valid_fields = [field for field in fields if set(field["actionIds"]).issubset(declared_action_ids)]
+        descriptor_invalid |= len(valid_fields) != len(fields)
+        fields = valid_fields
         field_keys = {field["key"] for field in fields}
-        if len(field_keys) != len(fields) or any(
-            field["enabledWhen"] is not None
-            and (
-                field["enabledWhen"]["field"] not in field_keys
-                or field["enabledWhen"]["field"] == field["key"]
-            )
-            for field in fields
-        ):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-        actions = tuple(_settings_action(item) for item in raw_actions)
-        if len({action["actionId"] for action in actions}) != len(actions):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-        declared_action_ids = {action["actionId"] for action in actions}
-        if any(
-            not set(field["actionIds"]).issubset(declared_action_ids)
-            for field in fields
-        ):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+        for field in fields:
+            condition = field["enabledWhen"]
+            if condition is not None and (
+                condition["field"] not in field_keys or condition["field"] == field["key"]
+            ):
+                field["readonly"] = True
+                field["enabledWhen"] = None
+                descriptor_invalid = True
         handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
         if set(handles) != {"load", "save", "actions"}:
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
@@ -971,11 +980,11 @@ class _SettingsHostService:
             "SETTINGS_CALLBACK_INVALID",
         )
         action_ids = {action["actionId"] for action in actions}
-        if set(raw_action_handles) != action_ids:
+        if not action_ids.issubset(raw_action_handles):
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
         action_handles = {
-            action_id: _callback_handle(handle)
-            for action_id, handle in raw_action_handles.items()
+            action_id: _callback_handle(raw_action_handles[action_id])
+            for action_id in action_ids
         }
         if any(not field["readonly"] for field in fields) and save_handle is None:
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
@@ -984,14 +993,15 @@ class _SettingsHostService:
             plugin_id=plugin_id,
             section_id=section_id,
             title=title,
-            fields=fields,
-            actions=actions,
+            fields=tuple(fields),
+            actions=tuple(actions),
             collections=(),
             load_handle=load_handle,
             save_handle=save_handle,
             action_handles=action_handles,
             order=float(order),
             surface=None,
+            descriptor_invalid=descriptor_invalid,
         )
         with self._lock:
             if any(
@@ -1146,6 +1156,8 @@ class _SettingsHostService:
     def _section_snapshot(self, registration: _SettingsRegistration) -> dict[str, Any]:
         values: Mapping[str, Any] = {}
         reason_code = registration.reason_code
+        if reason_code == "READY" and registration.descriptor_invalid:
+            reason_code = "SETTINGS_DESCRIPTOR_INVALID"
         if registration.load_handle is not None:
             try:
                 loaded = self._invoke_callback(
@@ -1166,6 +1178,8 @@ class _SettingsHostService:
             value = values.get(spec["key"], spec["default"])
             if not _settings_value_valid(spec, value):
                 value = spec["default"]
+                if reason_code == "READY":
+                    reason_code = "SETTINGS_VALUE_INVALID"
             public = dict(spec)
             public["value"] = value
             fields.append(public)
@@ -1844,27 +1858,6 @@ def _settings_field(
     allow_display_types: bool = True,
 ) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    allowed = {
-        "key",
-        "label",
-        "type",
-        "default",
-        "description",
-        "options",
-        "minimum",
-        "maximum",
-        "step",
-        "required",
-        "readonly",
-        "copyable",
-        "restartRequired",
-        "maxLength",
-        "placement",
-        "actionIds",
-        "enabledWhen",
-    }
-    if any(key not in allowed for key in raw):
-        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
     label = raw.get("label")
     kind = raw.get("type")
@@ -1889,6 +1882,7 @@ def _settings_field(
         not isinstance(label, str)
         or not label
         or len(label) > 120
+        or not isinstance(kind, str)
         or kind not in kind_map
         or not isinstance(description, str)
         or len(description) > 240
@@ -1920,7 +1914,7 @@ def _settings_field(
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     placement = raw.get("placement", "row")
-    if placement not in {"row", "advanced", "section_header"} or (
+    if not isinstance(placement, str) or placement not in {"row", "advanced", "section_header"} or (
         placement == "section_header" and public_kind != "status"
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
@@ -1942,7 +1936,7 @@ def _settings_field(
     enabled_when = None
     if raw_enabled_when is not None:
         condition = _mapping(raw_enabled_when, "SETTINGS_DESCRIPTOR_INVALID")
-        if set(condition) not in ({"field", "equals"}, {"field", "equals", "hide"}) or ("hide" in condition and not isinstance(condition["hide"], bool)):
+        if "hide" in condition and not isinstance(condition["hide"], bool):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         condition_field = _bounded_identifier(
             condition.get("field"),
@@ -1999,8 +1993,6 @@ def _settings_options(value: object) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     for item in value:
         raw = _mapping(item, "SETTINGS_DESCRIPTOR_INVALID")
-        if set(raw) != {"label", "value"}:
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         label = raw.get("label")
         option_value = raw.get("value")
         if (
@@ -2017,9 +2009,6 @@ def _settings_options(value: object) -> list[dict[str, Any]]:
 
 def _settings_action(value: object) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    allowed = {"actionId", "label", "description", "danger"}
-    if any(key not in allowed for key in raw):
-        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     action_id = _bounded_identifier(
         raw.get("actionId"),
         "SETTINGS_DESCRIPTOR_INVALID",
@@ -2353,7 +2342,7 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
             maximum = 4096
         return isinstance(value, str) and len(value) <= maximum
     if kind == "select":
-        return value in {item["value"] for item in field.get("options", [])}
+        return any(value == item["value"] for item in field.get("options", []))
     if kind == "boolean":
         return isinstance(value, bool)
     if kind == "integer":
@@ -2379,7 +2368,8 @@ def _settings_status_value_valid(value: object) -> bool:
     label = value.get("label")
     message = value.get("message")
     return (
-        state in _SETTINGS_STATUS_STATES
+        isinstance(state, str)
+        and state in _SETTINGS_STATUS_STATES
         and isinstance(label, str)
         and 1 <= len(label) <= 120
         and isinstance(message, str)
@@ -2406,10 +2396,12 @@ def _settings_resource_value_valid(
     available_action_ids = value.get("availableActionIds")
     allowed_action_ids = set(field.get("actionIds", []))
     return (
-        value.get("applicability") in _SETTINGS_RESOURCE_APPLICABILITY
+        isinstance(value.get("applicability"), str)
+        and value.get("applicability") in _SETTINGS_RESOURCE_APPLICABILITY
         and isinstance(value.get("subtitle"), str)
         and len(value["subtitle"]) <= 512
         and isinstance(value.get("ready"), bool)
+        and isinstance(value.get("taskState"), str)
         and value.get("taskState") in _SETTINGS_RESOURCE_TASK_STATES
         and isinstance(value.get("message"), str)
         and len(value["message"]) <= 240

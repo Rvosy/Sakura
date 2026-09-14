@@ -1,16 +1,7 @@
 const SNAPSHOT_KEYS = Object.freeze([
   "schemaVersion", "revision", "state", "reasonCode", "plugins", "windowGeneration", "coreGenerationId",
 ]);
-const PLUGIN_KEYS = Object.freeze([
-  "installId", "pluginId", "name", "version", "author", "description", "enabled", "required", "supported",
-  "source", "canUninstall", "provides", "requires", "missingServices", "state", "reasonCode", "sections",
-]);
-const STATES = new Set([
-  "disabled", "starting", "ready", "degraded", "stopping", "stopped",
-  "active", "failed",
-]);
 const IDENTIFIER = /^[A-Za-z0-9_.-]{1,64}$/;
-const SERVICE_IDENTIFIER = /^[A-Za-z0-9_.-]{1,200}$/;
 const INSTALL_ID = /^pi_(?:user|bundled)_(?:[0-9a-f]{2}){1,1024}$/;
 const REASON = /^[A-Z0-9_]{1,64}$/;
 
@@ -25,171 +16,42 @@ function boundedJson(value, maximum = 65_536) {
   try { return JSON.stringify(value).length <= maximum; } catch { return false; }
 }
 
+function isObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+// Display declarations and values have already been projected by Core. Only
+// check the shape needed to render them and the identities used by commands.
 function validatePlugin(plugin) {
-  const keys = Object.hasOwn(plugin || {}, "presentation") ? [...PLUGIN_KEYS, "presentation"] : PLUGIN_KEYS;
-  const presentation = plugin?.presentation;
-  const presentationKeys = Object.hasOwn(presentation || {}, "icon") ? ["kind", "category", "icon"] : ["kind", "category"];
-  if (!exactKeys(plugin, keys) || (presentation !== undefined && (!exactKeys(presentation, presentationKeys)
-      || !["extension", "provider", "infrastructure"].includes(presentation.kind)
-      || !["model", "voice", "memory", "tools", "connectivity", "other"].includes(presentation.category)
-      || (Object.hasOwn(presentation, "icon") && (typeof presentation.icon !== "string" || !/^(?:[a-z][a-z0-9-]{0,63})?(?![\s\S])/.test(presentation.icon)))))
-      || !INSTALL_ID.test(plugin.installId)
+  if (!isObject(plugin) || !INSTALL_ID.test(plugin.installId)
       || !(plugin.pluginId === null || IDENTIFIER.test(plugin.pluginId))
-      || typeof plugin.name !== "string" || !plugin.name || plugin.name.length > 120
-      || typeof plugin.version !== "string" || !plugin.version || plugin.version.length > 64
-      || typeof plugin.author !== "string" || plugin.author.length > 120
-      || typeof plugin.description !== "string" || plugin.description.length > 500
-      || typeof plugin.enabled !== "boolean" || typeof plugin.required !== "boolean"
-      || typeof plugin.supported !== "boolean" || !["disabled", "active", "failed"].includes(plugin.state)
-      || !["bundled", "user"].includes(plugin.source) || typeof plugin.canUninstall !== "boolean"
-      || (plugin.source === "user" && plugin.required) || plugin.canUninstall !== (plugin.source === "user")
-      || !validateIdentifierList(plugin.provides) || !validateIdentifierList(plugin.requires)
-      || !validateIdentifierList(plugin.missingServices)
-      || !REASON.test(plugin.reasonCode)
-      || !Array.isArray(plugin.sections) || plugin.sections.length > 16
-      || plugin.sections.some((section) => !validateSection(section))) {
+      || !["name", "version", "author", "description", "source", "state", "reasonCode"]
+        .every((key) => typeof plugin[key] === "string")
+      || !["enabled", "required", "supported", "canUninstall"]
+        .every((key) => typeof plugin[key] === "boolean")
+      || !["provides", "requires", "missingServices"].every((key) => Array.isArray(plugin[key])
+        && plugin[key].every((item) => typeof item === "string"))
+      || !Array.isArray(plugin.sections) || !plugin.sections.every(validateSection)) {
     throw new Error("invalid plugin settings item");
   }
   return Object.freeze({ ...plugin, sections: Object.freeze(clone(plugin.sections)) });
 }
 
 function validateSection(section) {
-  const keys = ["sectionId", "title", "surface", "reasonCode", "fields", "values", "actions", "collections"];
-  return exactKeys(section, keys) && IDENTIFIER.test(section.sectionId)
-    && typeof section.title === "string" && section.title.length > 0 && section.title.length <= 120
-    && (section.surface === null || IDENTIFIER.test(section.surface))
-    && REASON.test(section.reasonCode) && Array.isArray(section.fields) && section.fields.length <= 32
-    && section.fields.every(validateField)
-    && section.values && typeof section.values === "object"
-    && !Array.isArray(section.values) && Array.isArray(section.actions) && section.actions.length <= 16
-    && section.actions.every(validateAction)
-    && Array.isArray(section.collections) && section.collections.length <= 4
-    && section.collections.every(validateCollection)
-    && new Set(section.fields.map((field) => field.key)).size === section.fields.length
-    && new Set(section.actions.map((action) => action.actionId)).size === section.actions.length
-    && new Set(section.collections.map((collection) => collection.collectionId)).size === section.collections.length
-    && Object.keys(section.values).length === section.fields.length
-    && section.fields.every((field) => Object.hasOwn(section.values, field.key))
-    && section.fields.every((field) => JSON.stringify(section.values[field.key]) === JSON.stringify(field.value))
-    && section.fields.every((field) => field.enabledWhen === null
-      || section.fields.some((candidate) => candidate.key === field.enabledWhen.field))
-    && section.fields.filter((field) => field.type === "resource").every((field) => {
-      const declared = new Set(section.actions.map((action) => action.actionId));
-      return field.actionIds.every((actionId) => declared.has(actionId));
-    })
-    && boundedJson(section, 131_072);
-}
-
-function validateCollection(collection) {
-  const keys = ["collectionId", "title", "description", "columns", "fields", "filters", "searchable",
-    "pageSize", "canCreate", "canUpdate", "canDelete", "deleteConfirmation"];
-  return exactKeys(collection, keys) && IDENTIFIER.test(collection.collectionId)
-    && typeof collection.title === "string" && collection.title.length > 0 && collection.title.length <= 120
-    && typeof collection.description === "string" && collection.description.length <= 240
-    && Array.isArray(collection.columns) && collection.columns.length > 0 && collection.columns.length <= 12
-    && collection.columns.every((column) => exactKeys(column, ["key", "label", "type", "maxLength"])
-      && IDENTIFIER.test(column.key) && typeof column.label === "string" && column.label.length > 0
-      && column.label.length <= 120 && ["string", "number", "boolean", "datetime"].includes(column.type)
-      && (column.maxLength === null || (column.type === "string" && Number.isSafeInteger(column.maxLength)
-        && column.maxLength >= 1 && column.maxLength <= 16_384)))
-    && Array.isArray(collection.fields) && collection.fields.length <= 16
-    && collection.fields.every(validateCollectionField)
-    && Array.isArray(collection.filters) && collection.filters.length <= 8
-    && collection.filters.every((filter) => exactKeys(filter, ["key", "label", "options"])
-      && IDENTIFIER.test(filter.key) && typeof filter.label === "string" && filter.label.length > 0
-      && filter.label.length <= 120 && Array.isArray(filter.options) && filter.options.length > 0
-      && filter.options.length <= 64 && filter.options.every(validateOption))
-    && typeof collection.searchable === "boolean" && Number.isSafeInteger(collection.pageSize)
-    && collection.pageSize >= 1 && collection.pageSize <= 100
-    && ["canCreate", "canUpdate", "canDelete"].every((key) => typeof collection[key] === "boolean")
-    && typeof collection.deleteConfirmation === "string" && collection.deleteConfirmation.length <= 240;
-}
-
-function validateOption(option) {
-  return exactKeys(option, ["label", "value"])
-    && typeof option.label === "string" && option.label.length > 0 && option.label.length <= 120
-    && ["string", "number", "boolean"].includes(typeof option.value);
-}
-
-function validateCollectionField(field) {
-  const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "maxLength", "placement", "actionIds", "enabledWhen", "required", "readonly", "copyable", "restartRequired"];
-  return exactKeys(field, keys) && IDENTIFIER.test(field.key)
-    && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
-    && ["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(field.type)
-    && typeof field.description === "string" && field.description.length <= 240
-    && Array.isArray(field.options) && field.options.length <= 64 && field.options.every(validateOption)
-    && (field.maxLength === null || (["string", "password", "readonly"].includes(field.type)
-      && Number.isSafeInteger(field.maxLength) && field.maxLength >= 1 && field.maxLength <= 16_384))
-    && field.placement === "row" && Array.isArray(field.actionIds) && field.actionIds.length === 0
-    && field.enabledWhen === null
-    && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
-    && boundedJson(field, 16_384);
-}
-
-function validateField(field) {
-  const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "maxLength", "placement", "actionIds", "enabledWhen", "required", "readonly", "copyable", "restartRequired", "value"];
-  return exactKeys(field, keys) && IDENTIFIER.test(field.key)
-    && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
-    && ["string", "password", "boolean", "integer", "number", "select", "readonly", "status", "resource"].includes(field.type)
-    && typeof field.description === "string" && field.description.length <= 240
-    && Array.isArray(field.options) && field.options.length <= 64
-    && field.options.every(validateOption)
-    && (field.maxLength === null || (["string", "password", "readonly"].includes(field.type)
-      && Number.isSafeInteger(field.maxLength) && field.maxLength >= 1 && field.maxLength <= 16_384))
-    && ["row", "advanced", "section_header"].includes(field.placement)
-    && (field.placement !== "section_header" || field.type === "status")
-    && Array.isArray(field.actionIds) && field.actionIds.length <= 8
-    && field.actionIds.every((actionId) => IDENTIFIER.test(actionId))
-    && new Set(field.actionIds).size === field.actionIds.length
-    && (field.type === "resource" || field.actionIds.length === 0)
-    && (field.enabledWhen === null || ((exactKeys(field.enabledWhen, ["field", "equals"]) || (exactKeys(field.enabledWhen, ["field", "equals", "hide"]) && typeof field.enabledWhen.hide === "boolean"))
-      && IDENTIFIER.test(field.enabledWhen.field) && field.enabledWhen.field !== field.key
-      && typeof field.enabledWhen.equals === "string" && field.enabledWhen.equals.length <= 200))
-    && (!["status", "resource"].includes(field.type) || field.readonly)
-    && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
-    && validateFieldValue(field, field.default)
-    && validateFieldValue(field, field.value)
-    && boundedJson(field, 16_384);
-}
-
-function validateFieldValue(field, value) {
-  if (value === null) return !field.required;
-  if (field.type === "status") {
-    return exactKeys(value, ["state", "label", "message"])
-      && ["neutral", "ready", "working", "warning", "error"].includes(value.state)
-      && typeof value.label === "string" && value.label.length > 0 && value.label.length <= 120
-      && typeof value.message === "string" && value.message.length <= 240;
-  }
-  if (field.type === "resource") {
-    return exactKeys(value, ["applicability", "subtitle", "ready", "taskState", "message", "detail", "progress", "availableActionIds"])
-      && ["required", "not_required", "unsupported"].includes(value.applicability)
-      && typeof value.subtitle === "string" && value.subtitle.length <= 512
-      && typeof value.ready === "boolean"
-      && ["idle", "queued", "running", "succeeded", "failed", "cancelled"].includes(value.taskState)
-      && typeof value.message === "string" && value.message.length <= 240
-      && typeof value.detail === "string" && value.detail.length <= 240
-      && (value.progress === null || (Number.isSafeInteger(value.progress)
-        && value.progress >= 0 && value.progress <= 100))
-      && Array.isArray(value.availableActionIds) && value.availableActionIds.length <= 8
-      && new Set(value.availableActionIds).size === value.availableActionIds.length
-      && value.availableActionIds.every((actionId) => field.actionIds.includes(actionId));
-  }
-  return true;
-}
-
-function validateAction(action) {
-  return exactKeys(action, ["actionId", "label", "description", "danger"])
-    && IDENTIFIER.test(action.actionId) && typeof action.label === "string" && action.label.length > 0
-    && action.label.length <= 120 && typeof action.description === "string" && action.description.length <= 240
-    && action.danger === false;
+  return isObject(section) && typeof section.sectionId === "string"
+    && typeof section.title === "string" && isObject(section.values)
+    && Array.isArray(section.fields) && section.fields.every((field) => isObject(field)
+      && typeof field.key === "string" && typeof field.type === "string"
+      && Array.isArray(field.options) && Array.isArray(field.actionIds))
+    && Array.isArray(section.actions) && section.actions.every(isObject)
+    && Array.isArray(section.collections) && section.collections.every((collection) => isObject(collection)
+      && ["columns", "fields", "filters"].every((key) => Array.isArray(collection[key])));
 }
 
 export function validatePluginSnapshot(input) {
-  if (!exactKeys(input, SNAPSHOT_KEYS) || input.schemaVersion !== 1
-      || !/^[0-9a-f]{16}$/.test(input.revision) || !STATES.has(input.state)
-      || !REASON.test(input.reasonCode) || !Array.isArray(input.plugins) || input.plugins.length > 64
+  if (!isObject(input) || input.schemaVersion !== 1
+      || !/^[0-9a-f]{16}$/.test(input.revision) || typeof input.state !== "string"
+      || typeof input.reasonCode !== "string" || !Array.isArray(input.plugins)
       || !Number.isSafeInteger(input.windowGeneration) || input.windowGeneration < 1
       || typeof input.coreGenerationId !== "string" || !input.coreGenerationId) {
     throw new Error("invalid plugin settings snapshot");
@@ -558,9 +420,4 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     discard() { if (current) applySnapshot(current, { preserveDraft: false, draft: null }); onDirty(); },
     dispose() { disposed = true; current = null; rebindPromise = null; refreshPromise = null; },
   });
-}
-
-function validateIdentifierList(value) {
-  return Array.isArray(value) && value.length <= 64
-    && value.every((item) => typeof item === "string" && SERVICE_IDENTIFIER.test(item));
 }

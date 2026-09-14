@@ -90,8 +90,8 @@ Manifest 可以声明 `presentation: {kind, category, icon}`。`kind` 为 `exten
 或 `infrastructure`（系统组件）；`category` 为 `model/voice/memory/tools/connectivity/other`。
 未声明、类型不符或未知的值逐字段回退为 `extension/other`，不影响插件的加载资格。
 
-Inventory 将归一化后的分类放入公开 Plugin Settings Snapshot。Rust 和 WebView 接受省略 `presentation` 的旧快照；
-存在时接受上述两个枚举字段及可选的 `icon` 字符串。分类只用于分组、标签和筛选，不进入启动 IPC，也不参与依赖、服务选择、权限或业务判断。
+Inventory 将归一化后的分类放入公开 Plugin Settings Snapshot。Rust 和 WebView 接受省略 `presentation` 的旧快照，
+并直接使用宿主投影的展示元信息。分类只用于分组、标签和筛选，不进入启动 IPC，也不参与依赖、服务选择、权限或业务判断。
 前端不得根据插件 ID、作者或依赖猜测分类；安装来源仍由安装记录决定。
 
 `icon` 从 Sakura 随包提供的 Lucide 图标中选择，例如 `brain`、`smartphone`、`audio-lines`。
@@ -428,6 +428,12 @@ inventory `revision` 直接比较安装记录和结构化开关配置，状态�
 设置窗口只渲染插件已有的 Settings Contribution，不根据展示分类增加字段或动作。字段名称、默认值、校验范围、
 只读属性、`enabledWhen` 与 `placement=advanced` 均沿用声明。`enabledWhen` 可添加布尔字段 `hide`：
 为 true 时，条件不满足的字段隐藏且禁用；默认仍显示为禁用。隐藏不清除已填写的值。长内容在窗口内部滚动，底部操作始终可达。
+
+Settings Contribution 的展示规则由 Python 宿主解析并投影，文案长度按 Unicode 字符计数。
+Rust 与前端只检查传输形状、总大小和操作身份，不重复解释字段枚举、文案长度或字段间约束；新增展示元信息不导致整份快照被拒绝。
+宿主忽略未知展示元信息，省略无效字段或动作，并在该区块标记 `SETTINGS_DESCRIPTOR_INVALID`。
+依赖缺失字段的控件改为只读；加载值无效时，仅该控件回退到默认值并标记 `SETTINGS_VALUE_INVALID`。
+其他控件和插件继续使用。区块身份、回调归属、保存值校验与文件访问边界保持有效。
 
 - 未注册 surface 或 `surface=plugin` 的区块放入插件设置窗口；普通字段、Action 和 Collection 保留原调用链。
 - `surface=voice` 仍由 Voice controller 管理；打开插件设置时移动同一组控件，关闭后移回语音页，不复制表单或建立另一套保存接口。

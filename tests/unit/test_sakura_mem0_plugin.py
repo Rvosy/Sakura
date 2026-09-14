@@ -556,7 +556,7 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
     assert slots.count == 1
 
 
-def test_about_surface_is_resource_only_and_rejects_incomplete_v1_values() -> None:
+def test_about_surface_is_resource_only_and_omits_incomplete_v1_values() -> None:
     from app.core_host.plugin_host_services import HostServiceError, _SettingsHostService
 
     handle = "cb_" + "b" * 32
@@ -570,20 +570,22 @@ def test_about_surface_is_resource_only_and_rejects_incomplete_v1_values() -> No
         "availableActionIds": ["install"],
     }
     settings = _SettingsHostService(lambda *_args: {"component": incomplete_value})
-    with pytest.raises(HostServiceError, match="SETTINGS_DESCRIPTOR_INVALID"):
-        settings.call("register", ["fixture", {
-            "sectionId": "component",
-            "title": "Fixture",
-            "fields": [{
-                "key": "component", "label": "Component", "type": "resource",
-                "default": incomplete_value, "actionIds": ["install"],
-            }],
-            "actions": [{"actionId": "install", "label": "Install"}],
-        }, {
-            "load": handle,
-            "save": None,
-            "actions": {"install": handle},
-        }])
+    settings.call("register", ["fixture", {
+        "sectionId": "component",
+        "title": "Fixture",
+        "fields": [{
+            "key": "component", "label": "Component", "type": "resource",
+            "default": incomplete_value, "actionIds": ["install"],
+        }],
+        "actions": [{"actionId": "install", "label": "Install"}],
+    }, {
+        "load": handle,
+        "save": None,
+        "actions": {"install": handle},
+    }])
+    unavailable = settings.sections_for_plugin("fixture")[0]
+    assert unavailable["fields"] == []
+    assert unavailable["reasonCode"] == "SETTINGS_DESCRIPTOR_INVALID"
 
     current_value = {**incomplete_value, "applicability": "required"}
     settings = _SettingsHostService(lambda *_args: {"component": current_value})
