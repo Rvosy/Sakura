@@ -96,7 +96,7 @@ def verify_render_resolution(page):
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             const rect = canvas.getBoundingClientRect(), gl = canvas.getContext('webgl');
             return {actual: [gl.drawingBufferWidth, gl.drawingBufferHeight],
-                expected: [Math.ceil(rect.width * devicePixelRatio), Math.ceil(rect.height * devicePixelRatio)],
+                expected: [Math.ceil(rect.width * devicePixelRatio * 2), Math.ceil(rect.height * devicePixelRatio * 2)],
                 logical: [canvas.clientWidth, canvas.clientHeight]};
         }""", {'scale': scale})
         assert result['actual'] == result['expected'], (dpr, scale, result)
