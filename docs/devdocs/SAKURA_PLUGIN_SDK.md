@@ -1040,8 +1040,10 @@ Python logger，不支持 `%s` 位置参数、`exc_info=True` 或 `logger.except
 Token、完整配置、环境变量、请求头、对话正文、Prompt、工具参数或模型输出。即使 SDK 会清洗凭据、URL、
 绝对路径和敏感字段，也无法识别任意私密内容；日志内容由插件作者负责选择。
 
-消息上限为 1024 UTF-8 字节，字段字符串上限 256 字节；嵌套最多 3 层、每层最多 8 项，总遍历预算 32 项，
-字段编码预算 1800 字节。超限会截断或标记，详见[统一宿主日志合同](../specs/runtime-v2/sakura-plugin-runtime-v4.md#41-统一宿主日志)。
+消息上限为 1024 UTF-8 字节，字段字符串上限 256 字节；嵌套最多 3 层，嵌套集合最多 8 项。
+顶层字段共享 32 项总遍历预算（含根对象），普通字段连同截断标记的编码预算为 1800 字节，
+可保留事件、阶段、超时和退出码等平铺诊断信息。原始异常文本另有预算；重复清洗不会让截断标记占用字段额度。
+详见[统一宿主日志合同](../specs/runtime-v2/sakura-plugin-runtime-v4.md#41-统一宿主日志)。
 
 插件身份由宿主按当前调用进程绑定，不需要也不能通过参数指定来源插件或日志文件。打开运行日志窗口的
 “插件”页，可按插件筛选；文件位于 `data/logs/sakura-plugins.log`，约 10 MiB 轮转，最多保留 5 个备份。
@@ -1050,7 +1052,7 @@ Token、完整配置、环境变量、请求头、对话正文、Prompt、工具
 Python 标准 `logging`、`print`、stderr 和外部程序输出不会自动进入统一日志。新插件应显式使用上述接口，
 无需自建日志文件、轮转器或 GUI 缓冲。原有第三方引擎输出文件不会被自动汇入；插件应另外报告其启动、
 就绪和失败结果。`sakura.host.diagnostics.emit()` 保留原调用格式并转入同一日志链，事件名和业务字段由插件提供。
-新插件使用 `sakura.host.logging`，例如 `logger.error("模型加载失败", {"event": "model.load.failed", "source_file": "engine/load.py"})`，不需要修改宿主事件目录。Agent Trace 用于宿主的模型调用记录，不是插件保存私密调试内容的通道。
+新插件使用 `sakura.host.logging`，例如 `logger.error("模型加载失败", fields={"event": "model.load.failed", "source_file": "engine/load.py"})`，不需要修改宿主事件目录。Agent Trace 用于宿主的模型调用记录，不是插件保存私密调试内容的通道。
 
 ## 生命周期、冲突和错误
 

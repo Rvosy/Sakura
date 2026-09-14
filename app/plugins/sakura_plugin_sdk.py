@@ -54,7 +54,7 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
     if fields is not None and not isinstance(fields, Mapping):
         raise ValueError("LOG_FIELDS_INVALID")
     budget = 32
-    truncated = False
+    truncated = (fields or {}).get("record_truncated") is True
 
     def visit(value: object, depth: int) -> object:
         nonlocal budget, truncated
@@ -72,14 +72,17 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
             return safe_text(value, 256)
         if isinstance(value, Mapping):
             result = {}
-            for key, child in itertools.islice(value.items(), 9):
-                if len(result) >= 8 or budget <= 0:
+            # Flat diagnostic metadata shares the total budget; the eight-item
+            # limit applies to nested collections, not the whole event.
+            limit = 32 if depth == 0 else 8
+            for key, child in itertools.islice(value.items(), limit + 1):
+                if len(result) >= limit or budget <= 0:
                     truncated = True
                     break
                 if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", key):
                     truncated = True
                     continue
-                result[key] = "[REDACTED]" if _PRIVATE.search(key) else visit(child, depth + 1)
+                result[key] = visit("[REDACTED]" if _PRIVATE.search(key) else child, depth + 1)
             return result
         if isinstance(value, (list, tuple)):
             if len(value) > 8:
@@ -91,12 +94,14 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
     diagnostics = {key: _diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
                    for key, value in (fields or {}).items()
                    if key in _DIAGNOSTIC_KEYS and isinstance(value, str)}
-    result = visit({key: value for key, value in (fields or {}).items() if key not in _DIAGNOSTIC_KEYS}, 0)
+    result = visit({key: value for key, value in (fields or {}).items()
+                    if key not in _DIAGNOSTIC_KEYS and key != "record_truncated"}, 0)
     assert isinstance(result, dict)
-    while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 1800:
-        result.pop(next(reversed(result)))
-        truncated = True
     if truncated:
+        result["record_truncated"] = True
+    while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 1800:
+        result.pop("record_truncated", None)
+        result.pop(next(reversed(result)))
         result["record_truncated"] = True
     result.update(diagnostics)
     return safe_text(message), result
