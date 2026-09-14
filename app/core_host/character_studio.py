@@ -440,7 +440,7 @@ class CharacterStudioBoundary:
                 resource = import_visual_archive(Path(self._text(payload.get("path"))), package, cancel_check=self._cancel_check(operation), commit_started=self._commit_started(operation))
                 try:
                     visual_config = dict(doc.visuals or {})
-                    visual_config.update({"resources": [item.to_mapping() for item in (*resources, resource)], "default": resource.id})
+                    visual_config.update({"resources": [item.to_mapping() for item in (*resources, resource)], "default": selected or resource.id})
                     doc.visuals = visual_config
                     return _draft_to_public(self._service.save_workspace_draft(workspace, doc.to_payload()))
                 except BaseException as error:

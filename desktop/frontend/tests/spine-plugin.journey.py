@@ -244,11 +244,11 @@ def run(components=None):
                     default_skin = page.locator('.spine-editor select[aria-label="默认表情"]')
                     expect(default_skin).to_have_value(source_config['defaultSkin'])
                     skin_name = page.get_by_role('textbox', name='当前表情名称', exact=True)
-                    expect(skin_name).to_have_value(source_config.get('skinLabels', {}).get('smile', '微笑'))
+                    expect(skin_name).to_have_value(source_config.get('skinLabels', {}).get('smile', 'smile'))
                     skin_name.fill('开心')
                     expect(page.get_by_role('button', name='开心', exact=True)).to_be_visible()
                     page.locator('.spine-choices button[value="normal"]').click()
-                    expect(skin_name).to_have_value(source_config.get('skinLabels', {}).get('normal', '平静'))
+                    expect(skin_name).to_have_value(source_config.get('skinLabels', {}).get('normal', 'normal'))
                     skin_name.fill('认真')
                     expect(page.get_by_role('button', name='认真', exact=True)).to_be_visible()
                     page.locator('.spine-choices button[value="smile"]').click()
@@ -262,7 +262,7 @@ def run(components=None):
                     original_alpha = str(source_config['premultipliedAlpha']).lower()
                     expect(alpha).to_have_value(original_alpha)
                     if 'selectableSkins' in source_config:
-                        expect(page.get_by_role('button', name='基础皮肤', exact=True)).to_have_count(0)
+                        expect(page.get_by_role('button', name='default', exact=True)).to_have_count(0)
                     # Recreate the renderer and retain the rest of the draft.
                     # The synthetic fixture saves a changed encoding to test persistence.
                     saved_alpha = original_alpha if real_components else 'true'
@@ -290,7 +290,7 @@ def run(components=None):
                     expect(alpha).to_have_value(saved_alpha)
                     expect(default_skin).to_have_value('smile')
                     expect(skin_name).to_have_value('开心')
-                    page.wait_for_function("!document.querySelector('#expressionList').inert")
+                    page.wait_for_function("() => !document.querySelector('#expressionList').inert")
                     expect(page.locator('.spine-choices button[value="smile"]')).to_have_attribute('aria-pressed', 'true')
                     page.locator('canvas.spine-canvas').scroll_into_view_if_needed()
                     page.screenshot(path=str(output / f'room-{index + 1}-studio.png'), animations='disabled')
@@ -387,7 +387,7 @@ def run(components=None):
                 assert json.loads((package / imported['root'] / config['skeleton']).read_text(encoding="utf-8")) == json.loads(
                     (chosen / original['skeleton']).read_text(encoding="utf-8"))
                 # Saving reopens the visual editor; finish that transition before closing the bridge.
-                page.wait_for_function("!document.querySelector('#expressionList').inert")
+                page.wait_for_function("() => !document.querySelector('#expressionList').inert")
                 expect(page.locator('canvas.spine-canvas')).to_be_visible(timeout=20000)
                 # Reopening must populate unselected model cards too, without
                 # mounting an editor or a permanent WebGL canvas for each card.
@@ -397,8 +397,12 @@ def run(components=None):
                     const cards = [...document.querySelectorAll('.form-card')];
                     return cards.length >= 3 && cards.every(card => card.querySelector('.form-card-cover img')?.naturalWidth > 0);
                 }""")
-                assert page.locator('canvas.spine-canvas').count() == 1
+                assert saved['visuals']['default'] == 'portrait-default'
+                # Import preserves the portrait default; explicitly open a Spine editor.
+                page.locator('.form-card').filter(has_text='目录导入').click()
+                page.wait_for_function("() => !document.querySelector('#expressionList').inert")
                 expect(page.locator('.spine-studio-preview canvas')).to_be_visible()
+                assert page.locator('canvas.spine-canvas').count() == 1
                 page.screenshot(path=str(output / 'studio-thumbnails.png'), animations='disabled')
                 page.evaluate("window.coverNodes = [...document.querySelectorAll('.form-card-cover img')]; window.coverSources = coverNodes.map(img => img.src); window.thumbnailRequestsBeforeSave = thumbnailRequests")
                 zoom = page.get_by_role('slider', name='预览缩放', exact=True)
@@ -411,7 +415,7 @@ def run(components=None):
                 view_before_save = preview.locator('canvas').evaluate('canvas => canvas.style.transform')
                 page.locator('#saveButton').click()
                 expect(page.locator('#saveButton')).to_be_enabled(timeout=20000)
-                page.wait_for_function("!document.querySelector('#expressionList').inert")
+                page.wait_for_function("() => !document.querySelector('#expressionList').inert")
                 assert page.evaluate("coverNodes.every((img,i) => img.isConnected && img.src === coverSources[i])")
                 expect(zoom).to_have_value('270')
                 assert preview.locator('canvas').evaluate('canvas => canvas.style.transform') == view_before_save

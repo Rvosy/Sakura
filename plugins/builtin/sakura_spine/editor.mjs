@@ -1,9 +1,6 @@
-const skinLabels = { default: '基础皮肤', normal: '平静', anger: '生气', sad: '难过', shy: '害羞', smile: '微笑', surprise: '惊讶' };
-const animationLabels = { idle: '待机', attack: '攻击', damage: '受伤', death: '倒下', dying: '虚弱', skill: '技能', home: '展示', animation: '动画' };
 export function labelFor(name, type, labels = {}) {
   if (type === 'skin' && Object.hasOwn(labels, name) && labels[name].trim()) return labels[name].trim();
-  const defaults = type === 'skin' ? skinLabels : animationLabels;
-  return Object.hasOwn(defaults, name) ? defaults[name] : name;
+  return name;
 }
 
 export function createEditor({ container, rendererData, onChange = () => {}, onPreview = () => {}, onRenderingChange = () => {}, onError = () => {} }) {
@@ -60,14 +57,14 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
       node.setAttribute('aria-pressed', String(name === value));
       node.className = name === value ? 'primary-button compact-button' : 'secondary-button compact-button';
     }
-    skinName.value = draft.skinLabels?.[name] ?? labelFor(name, 'skin');
+    skinName.value = labelFor(name, 'skin', draft.skinLabels);
     void preview({ skin: name });
   }
   const nameLabel = doc.createElement('label');
   nameLabel.className = 'spine-field'; nameLabel.textContent = '当前表情名称';
   const skinName = doc.createElement('input');
   skinName.type = 'text'; skinName.maxLength = 120; skinName.setAttribute('aria-label', '当前表情名称');
-  skinName.value = draft.skinLabels?.[selectedSkin] ?? labelFor(selectedSkin, 'skin');
+  skinName.value = labelFor(selectedSkin, 'skin', draft.skinLabels);
   skinName.addEventListener('input', () => {
     draft.skinLabels = { ...draft.skinLabels, [selectedSkin]: skinName.value };
     for (const [name, button] of buttons) button.textContent = labelFor(name, 'skin', draft.skinLabels);

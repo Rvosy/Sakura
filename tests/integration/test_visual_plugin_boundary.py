@@ -258,7 +258,7 @@ def test_numeric_studio_private_draft_publish_full_archive_and_component_roundtr
     result = request("studio.visual.import", {"workspaceId": "other", "path": str(component)})
     assert result["doc"]["id"] == "other"
     assert result["doc"]["cardText"] == "B 的人格"
-    assert result["doc"]["visuals"]["default"] != "numeric-1"
+    assert result["doc"]["visuals"]["default"] == result["doc"]["visuals"]["resources"][0]["id"]
     # Import is draft-only and reversible until the normal publish transaction.
     assert "other" not in CharacterRegistry(root).profiles
     request("studio.draft.discard", {"workspaceId": "other"})
@@ -286,11 +286,13 @@ def test_missing_plugin_visual_import_survives_publish_and_later_install(visual_
     result = boundary._dispatch("studio.visual.import", {"workspaceId": "character", "path": str(archive)})
     doc = result["doc"]
     imported = CharacterVisualResource.from_mapping(doc["visuals"]["resources"][-1])
-    assert doc["visuals"]["default"] == imported.id
+    assert doc["visuals"]["default"] == "numeric-1"
     assert application.application.visuals.resource_choice(imported)["reasonCode"] == "VISUAL_PROVIDER_MISSING"
     assert not application.application.visuals.candidates(imported.type)
     with pytest.raises(VisualHostError, match="VISUAL_PROVIDER_MISSING"):
         boundary._dispatch("studio.visual.open", {"workspaceId": "character", "resourceId": imported.id})
+    # The user explicitly selects the unavailable form before publishing.
+    doc["visuals"]["default"] = imported.id
     boundary._dispatch("studio.character.publish", {"workspaceId": "character", "doc": doc})
     assert json.loads((package / imported.root / imported.entry).read_text(encoding="utf-8")) == data
     assert (package / imported.root / "mesh.bin").read_bytes() == b"private model data"
