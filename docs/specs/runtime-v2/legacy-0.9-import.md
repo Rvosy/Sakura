@@ -146,6 +146,7 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   完整 issue 列表；隔离内容必须保持原始行 bytes 不变。
 - 手动截图 marker 从 human正文剥离并生成 `manual_screen` observation；定时/自主 marker生成
   `scheduled_screen` observation；可关联的旧视觉摘要进入 observation，原始 store进入隔离区。
+- 聊天身份复用和记忆快照的只读 SQLite 连接共用路径转换：Windows 安装版传入的 `\\?\` 前缀必须先移除，再转义 URI 中的特殊字符。目标已有聊天时同样适用，不得把 URI 构造错误误报为数据库损坏。
 - `data/memory` 的 Qdrant、mem0 SQLite和 profile必须迁移且不重新 embedding。mem0 SQLite不得作为普通的
   主库/WAL/SHM 文件组合逐个复制；必须使用 SQLite backup API从旧库读取一个一致事务快照，合并已提交 WAL，
   且不得修改旧主库、WAL或复用旧进程的 SQLite `-shm`；只读备份连接正常更新的 `-shm` 读锁槽位不属于用户数据

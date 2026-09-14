@@ -20,7 +20,7 @@ from app.storage.timeline import TimelineDataError, TimelineStore
 
 from .character_transfer import prepare_packages, public_packages, install_packages, remap_frozen_data
 from .errors import LegacyImportError
-from .files import copy_tree_checked
+from .files import copy_tree_checked, sqlite_readonly_uri
 from .history import import_history, read_history_identities, write_history_identities
 from .inspector import detect_legacy_version, legacy_source_is_active
 from .transaction import PendingCommit, commit_payload
@@ -998,7 +998,7 @@ def _sqlite_snapshot(source: Path, destination: Path) -> bool:
     if not source.is_file():
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as original:
+    with closing(sqlite3.connect(sqlite_readonly_uri(source), uri=True)) as original:
         with closing(sqlite3.connect(destination)) as copied:
             original.backup(copied)
     from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
