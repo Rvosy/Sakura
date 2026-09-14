@@ -9,7 +9,6 @@ import {
   isValidCharacterId,
   normalizeColorText,
   operationCancelState,
-  runtimeReloadState,
   selectBootstrapCharacter,
   uniqueReplyTones,
   validateStudioResponse,
@@ -139,7 +138,6 @@ let createCharacterPreviousFocus = null;
 let createDisplayNameEdited = false;
 let closingStudio = false;
 let activeOperationId = "";
-let completeStudioReload = null;
 
 const cancellableOperationLabels = Object.freeze({
   "studio.import_voice_model": "正在复制语音模型…",
@@ -1142,7 +1140,11 @@ window.addEventListener("pagehide", () => { window.clearInterval(visualStatusTim
 
 async function exportVisualComponent(resourceId) {
   await flushDraftAutosave();
-  const path = await invoke("studio_choose_export", { defaultName: `${resourceId}.visual` });
+  const resource = visualReferences().resources.find(item => item.id === resourceId);
+  if (!resource) throw new Error("目标形态已移除，请重新选择。");
+  let name = visualName(resource).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim().replace(/[. ]+$/g, "") || "未命名形态";
+  if (/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name)) name = `_${name}`;
+  const path = await invoke("studio_choose_export", { defaultName: `${name}.visual` });
   if (!path) return;
   await runBusy(() => invokeStudio("studio.visual.export", { workspaceId: currentWorkspaceId, resourceId, path }, "正在导出表现组件…"));
 }
@@ -1663,6 +1665,18 @@ async function openCharacter(characterId) {
   });
 }
 
+async function navigateToVisual({ characterId, resourceId }) {
+  if (!characterId || !resourceId) return;
+  if (editingCharacterId !== characterId) await selectCharacter(characterId);
+  if (editingCharacterId !== characterId) return;
+  switchPage("portrait");
+  if (!visualReferences().resources.some(item => item.id === resourceId)) {
+    setError("目标形态已移除，请重新选择。");
+    return;
+  }
+  await renderVisualResources({ preferredId: resourceId });
+}
+
 async function selectCharacter(characterId) {
   const previousId = editingCharacterId;
   if (!characterId || characterId === previousId) {
@@ -2057,9 +2071,6 @@ async function commitCharacter({ publish = false } = {}) {
     ++visualSelectionRevision;
     visualEditorScope = null;
     visualEditor.freeze();
-    // Subscribe before publishing: the ready event may precede the IPC reply.
-    const reload = new Promise(resolve => { completeStudioReload = resolve; });
-    let reloadTimer;
     let payload;
     let reloadFailure = "";
     try {
@@ -2068,14 +2079,8 @@ async function commitCharacter({ publish = false } = {}) {
         current_character_id: request.initial_character_id || "",
         doc: collectDoc(),
       });
-      if (payload.runtime_reload === "requested") {
-        notify("角色已保存，正在应用修改。", "info");
-        const result = await Promise.race([reload, new Promise(resolve => {
-          reloadTimer = window.setTimeout(() => resolve({ state: "failed" }), 70000);
-        })]);
-        if (result.state !== "ready") reloadFailure = result.message || "修改已保存但未生效，请重启 Sakura。";
-      } else if (payload.runtime_reload === "failed") {
-        reloadFailure = payload.reload_error || "修改已保存但未生效，请重启 Sakura。";
+      if (payload.runtime_reload === "failed") {
+        reloadFailure = payload.reload_error || "角色已保存，但运行态更新失败，请查看运行日志。";
       }
       if (!reloadFailure) {
         try { await loadVisualCatalog(); }
@@ -2084,9 +2089,6 @@ async function commitCharacter({ publish = false } = {}) {
     } catch (error) {
       void renderVisualResources({ flush: false });
       throw error;
-    } finally {
-      completeStudioReload = null;
-      window.clearTimeout(reloadTimer);
     }
     if (Array.isArray(payload.characters)) {
       request.characters = payload.characters;
@@ -2251,6 +2253,7 @@ async function load() {
   renderCharacterOptions();
   if (initialId) {
     await openCharacter(initialId);
+    if (request.initial_resource_id) await navigateToVisual({ characterId: initialId, resourceId: request.initial_resource_id });
   } else {
     renderEditor();
     refreshControls();
@@ -2327,18 +2330,12 @@ fields.operationCancelButton.addEventListener("click", cancelActiveOperation);
   fields.textLang,
 ].forEach((element) => element.addEventListener("input", handleEditorChanged));
 
+window.__TAURI__?.event?.listen?.("sakura://studio-navigate", ({ payload }) => {
+  void navigateToVisual(payload || {}).catch(error => setError(String(error)));
+});
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);
 window.__TAURI__?.event?.listen?.("sakura://studio-exit-requested", () => {
   void closeStudio({ exitAfter: true });
-});
-window.__TAURI__?.event?.listen?.("sakura://studio-runtime-reload", ({ payload }) => {
-  const state = runtimeReloadState(payload?.state);
-  if (state === "ready" || state === "failed") completeStudioReload?.(payload);
-  if (state === "ready") {
-    notify("角色修改已生效。", "success");
-  } else if (state === "failed") {
-    setError(payload.message || "修改已保存但未生效，请重启 Sakura。");
-  }
 });
 enhanceSelect(fields.studioCharacterSelect);
 

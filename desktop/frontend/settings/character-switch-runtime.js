@@ -106,7 +106,7 @@ export async function waitForCharacterSwitch({
   now = () => Date.now(),
   timeoutMs = CHARACTER_SWITCH_TIMEOUT_MS,
 }) {
-  if (receipt?.restartState !== "requested") return null;
+  if (receipt?.restartState !== "requested" && !receipt?.characterChanged) return null;
   if (
     !Number.isSafeInteger(previousGenerationNumber)
     || typeof receipt.previousCoreGenerationId !== "string"
@@ -124,7 +124,8 @@ export async function waitForCharacterSwitch({
     const generationChanged = Number.isSafeInteger(supervisor?.generationNumber)
       && supervisor.generationNumber > previousGenerationNumber
       && supervisor.generationId !== receipt.previousCoreGenerationId;
-    const generationConsistent = generationChanged
+    const generationConsistent = (generationChanged || (receipt.characterChanged
+      && supervisor?.generationId === receipt.previousCoreGenerationId))
       && snapshot?.generationId === supervisor.generationId
       && presentation?.generationId === supervisor.generationId;
     if (
@@ -133,7 +134,7 @@ export async function waitForCharacterSwitch({
       && presentation.characterId === receipt.targetCharacterId
     ) return lifecycle;
     if (
-      generationChanged
+      (generationChanged || (receipt.characterChanged && supervisor?.generationId === receipt.previousCoreGenerationId))
       && snapshot?.generationId === supervisor.generationId
       && TERMINAL_FAILURE_STATES.has(snapshot.readiness)
     ) throw new Error("CHARACTER_SWITCH_INITIALIZATION_FAILED");
@@ -155,7 +156,7 @@ export async function applyCharacterSwitch({
   timeoutMs,
 }) {
   applyCommittedSnapshot(receipt);
-  if (receipt?.restartState !== "requested") return null;
+  if (receipt?.restartState !== "requested" && !receipt?.characterChanged) return null;
   const previousGenerationNumber = previousLifecycle?.supervisor?.generationNumber;
   if (!Number.isSafeInteger(previousGenerationNumber)) {
     throw new Error("CHARACTER_SWITCH_IDENTITY_INVALID");

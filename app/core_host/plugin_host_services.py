@@ -1942,7 +1942,7 @@ def _settings_field(
     enabled_when = None
     if raw_enabled_when is not None:
         condition = _mapping(raw_enabled_when, "SETTINGS_DESCRIPTOR_INVALID")
-        if set(condition) != {"field", "equals"}:
+        if set(condition) not in ({"field", "equals"}, {"field", "equals", "hide"}) or ("hide" in condition and not isinstance(condition["hide"], bool)):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         condition_field = _bounded_identifier(
             condition.get("field"),
@@ -1953,6 +1953,8 @@ def _settings_field(
         if not isinstance(condition_value, str) or len(condition_value) > 200:
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         enabled_when = {"field": condition_field, "equals": condition_value}
+        if "hide" in condition:
+            enabled_when["hide"] = condition["hide"]
     flags = {
         name: raw.get(name, default)
         for name, default in {

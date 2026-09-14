@@ -2,6 +2,8 @@ import { spine } from './vendor/spine-webgl.mjs';
 import { createSpineController } from './controller.mjs';
 import { readTextureAlpha, sampleTriangles } from './hit-test.mjs';
 
+const RENDER_SCALE = 2;
+
 export async function createRenderer({ container, rendererData, resolveAssetUrl, bindingId, resourceId,
   signal, onLayout = () => {}, onError = () => {}, enableHitTest = false }) {
   const canvas = document.createElement('canvas');
@@ -137,7 +139,9 @@ export async function createRenderer({ container, rendererData, resolveAssetUrl,
       // ResizeObserver sees only layout size; sample the displayed size and DPR
       // before drawing so zoom and monitor changes cannot stretch a stale buffer.
       const rect = canvas.getBoundingClientRect();
-      const pixelRatio = window.devicePixelRatio || 1;
+      // Supersample transparent texture edges and fine lines before the browser
+      // composites the canvas at its displayed size. Layout stays in CSS pixels.
+      const pixelRatio = (window.devicePixelRatio || 1) * RENDER_SCALE;
       const desiredWidth = Math.max(1, Math.ceil(rect.width * pixelRatio));
       const desiredHeight = Math.max(1, Math.ceil(rect.height * pixelRatio));
       // Bound GPU allocation for unusually large windows without imposing a

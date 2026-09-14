@@ -54,6 +54,38 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("failure_stage", ["apply", "restore"])
+def test_failed_switch_can_reapply_saved_target(tmp_path, failure_stage):
+    from contextlib import contextmanager
+    from app.config.character_loader import CharacterRegistry
+
+    calls = []
+    @contextmanager
+    def prepare():
+        yield
+        if failure_stage == "restore" and len(calls) == 1:
+            raise RuntimeError("restore failed")
+
+    def apply():
+        calls.append("apply")
+        if failure_stage == "apply" and len(calls) == 1:
+            raise RuntimeError("session initialization failed")
+
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path,
+                                         prepare_switch=prepare, apply_switch=apply)
+    for role in ("alpha", "beta"):
+        boundary.import_archive(str(_archive(tmp_path / f"{role}.char", role)))
+    request = _request("characters.settings.select", {"characterId": "beta"})
+    first = boundary.handle(request)
+    assert first["error"]["code"] == "CHARACTER_SWITCH_APPLY_FAILED"
+    assert boundary._settings.load_current_character_id(CharacterRegistry(tmp_path)) == "beta"
+    second = boundary.handle(request)
+    assert second["payload"]["changePlan"] == "character_switch"
+    assert calls == ["apply", "apply"]
+    assert boundary.handle(request)["payload"]["changePlan"] == "unchanged"
+    assert len(calls) == 2
+
+
 def _archive(path: Path, character_id: str = "fixture") -> Path:
     manifest = {
         "format": "sakura.character.archive",
@@ -163,7 +195,24 @@ def test_select_same_character_is_unchanged_without_rewriting_config(
     assert config.read_bytes() == before
 
 
-def test_voice_import_restarts_current_character_and_exports_all_package_kinds(
+def test_voice_import_reports_committed_files_when_runtime_restore_fails(tmp_path):
+    from contextlib import contextmanager
+    @contextmanager
+    def prepare():
+        errors = []
+        yield errors
+        errors.append(RuntimeError("voice start failed"))
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path, prepare_voice_update=prepare)
+    boundary.import_archive(str(_archive(tmp_path / "fixture.char")))
+    result = boundary.handle(_request("characters.settings.import_voice", {
+        "path": str(_voice_archive(tmp_path / "fixture.voice")), "characterId": "fixture",
+    }))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "CHARACTER_VOICE_APPLY_FAILED"
+    assert boundary.snapshot()["characters"][0]["hasExportableVoice"] is True
+
+
+def test_voice_import_refreshes_current_character_and_exports_all_package_kinds(
     tmp_path: Path,
 ) -> None:
     boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
@@ -185,7 +234,7 @@ def test_voice_import_restarts_current_character_and_exports_all_package_kinds(
     )
 
     assert imported["ok"] is True
-    assert imported["payload"]["changePlan"] == "core_restart_required"
+    assert imported["payload"]["changePlan"] == "character_refresh"
     assert imported["payload"]["snapshot"]["characters"] == [
         {
             "id": "fixture",

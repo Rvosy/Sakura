@@ -103,7 +103,10 @@ def test_portrait_editor_and_component_preserve_target_identity_and_voice(tmp_pa
         assert after["id"] == b["doc"]["id"]
         assert after["voice"] == b["doc"]["voice"]
         assert after["cardText"] == b["doc"]["cardText"]
-        assert after["visuals"]["default"] != "portrait-default"
+        assert after["visuals"]["default"] == "portrait-default"
+        assert len(after["visuals"]["resources"]) == 2
+        reopened = request("studio.character.open", {"characterId": "b"})
+        assert reopened["doc"]["visuals"]["default"] == "portrait-default"
         assert (user / "characters/b/character.json").read_bytes() == before
         request("studio.draft.discard", {"workspaceId": "b"})
         assert (user / "characters/b/character.json").read_bytes() == before

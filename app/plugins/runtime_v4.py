@@ -11,6 +11,7 @@ import threading
 import time
 import codecs
 from dataclasses import dataclass, replace
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -330,8 +331,10 @@ class _PluginProcess:
 
         def emit(text: str) -> None:
             if text.strip():
-                log_message("warning", "插件进程标准错误输出", component="plugin",
-                    plugin_id=self._spec.plugin_id,
+                # stderr also carries redirected print output and download progress;
+                # the stream alone does not establish a warning or failure.
+                log_message("info", "插件诊断输出", component="plugin",
+                    plugin_id=self._spec.plugin_id, plugin_name=self._spec.name,
                     fields={"event": "plugin.process.stderr", "stage": "stderr",
                             "diagnostic": safe_diagnostic_text(text)})
 
@@ -693,9 +696,52 @@ class PluginRuntimeManager:
                     return {"providerId": record.spec.plugin_id, "scopeId": record.process.scope_id}
         raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
 
+    def service_exports(self, service_key: str) -> frozenset[str]:
+        with self._lock:
+            binding = self._services.get(service_key)
+            return binding.exports if binding is not None else frozenset()
+
     def owns_callback(self, handle: str) -> bool:
         with self._lock:
             return handle in self._callbacks
+
+    @contextmanager
+    def pause_service_providers(self, prefix: str):
+        ids = [item["pluginId"] for item in self.snapshot()["plugins"]
+               if item["state"] == "active" and any(key.startswith(prefix) for key in item["provides"])]
+        with self.pause_plugins(ids) as errors:
+            yield errors
+
+    @contextmanager
+    def pause_plugins(self, plugin_ids: Sequence[str]):
+        """Pause active readers and their dependents without changing enablement.
+
+        The caller inspects restoration errors separately from its file transaction.
+        """
+        errors = []
+        with self._operation_lock:
+            with self._lock:
+                affected = set()
+                for plugin_id in plugin_ids:
+                    record = self._records[plugin_id]
+                    if record.state == "active":
+                        affected.add(plugin_id)
+                        affected.update(self._hard_dependents_locked(plugin_id))
+                order = [plugin_id for plugin_id in self._activation_order if plugin_id in affected]
+            try:
+                stopped = []
+                for plugin_id in reversed(order):
+                    self._stop_process(plugin_id, reason="PLUGIN_RELOADING", failed=False)
+                    stopped.append(plugin_id)
+                yield errors
+            finally:
+                for plugin_id in reversed(stopped):
+                    try:
+                        record = self._records[plugin_id]
+                        if not self._start_one(record):
+                            raise PluginRuntimeError(record.reason_code, plugin_id=plugin_id)
+                    except Exception as error:
+                        errors.append(error)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         with self._operation_lock:
@@ -728,6 +774,7 @@ class PluginRuntimeManager:
                 if missing:
                     record.state = "failed"
                     record.reason_code = "MISSING_SERVICE"
+                    self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
                     return self.snapshot()
             self._start_one(record)
             return self.snapshot()
@@ -757,6 +804,7 @@ class PluginRuntimeManager:
                 if missing:
                     record.state = "failed"
                     record.reason_code = "MISSING_SERVICE"
+                    self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
                     return self.snapshot()
             self._start_one(record)
             return self.snapshot()
@@ -1030,8 +1078,27 @@ class PluginRuntimeManager:
                     record.reason_code = "MISSING_SERVICE"
                     continue
                 self._start_one(record)
+        for record in enabled.values():
+            if record.reason_code in {"API_VERSION_UNSUPPORTED", "SERVICE_CONFLICT", "DEPENDENCY_CYCLE", "MISSING_SERVICE"}:
+                self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
+
+    def _log_lifecycle(self, record: _RuntimeRecord, event: str, message: str, *, failed: bool = False, diagnostics: Mapping[str, object] | None = None) -> None:
+        from app.core.runtime_log import log_message
+
+        log_message("error" if failed else "info", message, component="plugin",
+            plugin_id=record.spec.plugin_id, plugin_name=record.spec.name,
+            fields={**(diagnostics or {}), "event": event, "state": record.state, "reason_code": record.reason_code})
 
     def _start_one(self, record: _RuntimeRecord) -> bool:
+        diagnostics: dict[str, object] = {}
+        started = self._start_one_impl(record, diagnostics)
+        if not started and record.reason_code != "GENERATION_INVALIDATED":
+            self._log_lifecycle(record, "plugin.start.failed", "插件启动失败", failed=True, diagnostics=diagnostics)
+        return started
+
+    def _start_one_impl(self, record: _RuntimeRecord, diagnostics: dict[str, object]) -> bool:
+        from app.core.diagnostics import exception_diagnostics
+
         spec = record.spec
         assert spec.plugin_root is not None
         with self._lock:
@@ -1050,6 +1117,7 @@ class PluginRuntimeManager:
                 source=spec.source,
             )
         except PluginDependencyError as error:
+            diagnostics.update(exception_diagnostics(error, reason_code=error.code, stage="dependencies"))
             record.state = "failed"
             record.reason_code = error.code
             return False
@@ -1098,6 +1166,7 @@ class PluginRuntimeManager:
                     process=process,
                 )
         except PluginRuntimeError as error:
+            diagnostics.update(exception_diagnostics(error, reason_code=error.code, stage="initialize"))
             process.close()
             with self._lock:
                 if record.process is process:
@@ -1151,6 +1220,8 @@ class PluginRuntimeManager:
             "插件已加载",
             {},
             event="plugin.loaded",
+            plugin_id=spec.plugin_id,
+            plugin_name=spec.name,
             severity="info",
             verbosity=1,
         )
@@ -1230,7 +1301,14 @@ class PluginRuntimeManager:
             draining_log = (binding is not None
                 and getattr(binding.host_service, "allow_during_shutdown", False) is True
                 and caller_id in self._draining_processes)
-            if self._closed and not draining_log:
+            # A closing worker must be able to release its own registrations
+            # before Core performs the final scope sweep.
+            draining_unregister = (binding is not None and binding.host_service is not None
+                and caller_id in self._draining_processes and method == "unregister"
+                and len(detached_args) == 1
+                and any(item.service_key == service_key and item.registration_id == detached_args[0]
+                        for item in self._host_registrations.get(caller_id, ())))
+            if self._closed and not (draining_log or draining_unregister):
                 raise PluginRuntimeError("GENERATION_INVALIDATED")
         if binding is None:
             raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
@@ -1301,6 +1379,14 @@ class PluginRuntimeManager:
                 ]
 
     def _clear_plugin_scope(self, plugin_id: str) -> None:
+        from app.core.runtime_log import log_message
+
+        def log_cleanup_failure(stage: str, service_key: str) -> None:
+            record = self._records.get(plugin_id)
+            log_message("warning", "插件资源清理失败", component="plugin",
+                plugin_id=plugin_id, plugin_name=record.spec.name if record else plugin_id,
+                fields={"event": "plugin.cleanup.failed", "stage": stage, "service_key": service_key})
+
         with self._lock:
             registrations = list(reversed(self._host_registrations.pop(plugin_id, [])))
             self._callbacks = {
@@ -1324,14 +1410,14 @@ class PluginRuntimeManager:
                 try:
                     callback(registration.registration_id)
                 except Exception:
-                    pass
-        for binding in host_bindings.values():
+                    log_cleanup_failure("unregister", registration.service_key)
+        for service_key, binding in host_bindings.items():
             callback = getattr(binding.host_service, "revoke_scope", None)
             if callable(callback):
                 try:
                     callback(plugin_id)
                 except Exception:
-                    pass
+                    log_cleanup_failure("revoke_scope", service_key)
 
     def _plugin_exited(self, plugin_id: str, process: _PluginProcess) -> None:
         with self._lock:
@@ -1358,6 +1444,7 @@ class PluginRuntimeManager:
                 record.process = None
                 record.pid = None
                 record.reason_code = "PLUGIN_PROCESS_EXITED"
+        self._log_lifecycle(record, "plugin.process.exited", "插件进程意外退出", failed=True)
         for consumer_id in consumers:
             self._stop_process(
                 consumer_id,
@@ -1421,6 +1508,8 @@ class PluginRuntimeManager:
                 with self._lock:
                     self._draining_processes.pop(plugin_id, None)
         self._clear_plugin_scope(plugin_id)
+        if process is not None or failed:
+            self._log_lifecycle(record, "plugin.stopped", "插件已停止", failed=failed)
 
 
 __all__ = ["PluginRuntimeError", "PluginRuntimeManager"]

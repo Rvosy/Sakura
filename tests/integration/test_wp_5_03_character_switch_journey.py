@@ -203,11 +203,12 @@ def test_a_b_a_switch_keeps_character_memory_history_and_generation_services_iso
     _select_on_disk(root, "alpha")
 
     old_character_service = PluginCharacterStore(root)
-    settings = CharacterSettingsBoundary(GENERATION_A, CREDENTIAL_A, root)
+    settings = CharacterSettingsBoundary(GENERATION_A, CREDENTIAL_A, root,
+        apply_switch=lambda: old_character_service.set_current("beta"))
     changed = settings.handle(_character_request("beta"))
-    assert changed["payload"]["changePlan"] == "core_restart_required"
+    assert changed["payload"]["changePlan"] == "character_switch"
     assert changed["payload"]["snapshot"]["currentCharacterId"] == "beta"
-    assert old_character_service.current("fixture.plugin")["id"] == "alpha"
+    assert old_character_service.current("fixture.plugin")["id"] == "beta"
     assert PluginCharacterStore(root).current("fixture.plugin")["id"] == "beta"
 
     records: dict[str, dict[str, dict[str, Any]]] = {}
@@ -251,8 +252,8 @@ def test_a_b_a_switch_keeps_character_memory_history_and_generation_services_iso
         session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="alpha")),
     )
     beta_history = HistoryBoundary(
-        GENERATION_B,
-        CREDENTIAL_B,
+        GENERATION_A,
+        CREDENTIAL_A,
         root,
         session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="beta")),
     )
@@ -260,12 +261,12 @@ def test_a_b_a_switch_keeps_character_memory_history_and_generation_services_iso
         _history_request(GENERATION_A, CREDENTIAL_A, "alpha")
     )
     beta_page = beta_history.handle(
-        _history_request(GENERATION_B, CREDENTIAL_B, "beta")
+        _history_request(GENERATION_A, CREDENTIAL_A, "beta")
     )
     stale_cursor = beta_history.handle(
         _history_request(
-            GENERATION_B,
-            CREDENTIAL_B,
+            GENERATION_A,
+            CREDENTIAL_A,
             "beta",
             cursor=alpha_page["payload"]["beforeCursor"],
         )

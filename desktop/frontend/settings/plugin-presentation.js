@@ -278,7 +278,7 @@ export function projectPluginActivity(plugin = {}) {
   pluginSections(plugin).forEach((section) => {
     (section.fields || []).forEach((field) => {
       const value = projectedFieldValue(section, field);
-      if (field.type === "status" && Object.hasOwn(ACTIVITY_STATE_PRIORITY, value?.state)) {
+      if (field.type === "status" && field.placement !== "row" && Object.hasOwn(ACTIVITY_STATE_PRIORITY, value?.state)) {
         if (!projectedStatus
             || ACTIVITY_STATE_PRIORITY[value.state] > ACTIVITY_STATE_PRIORITY[projectedStatus.state]) {
           projectedStatus = value;

@@ -308,48 +308,30 @@ def test_attaching_tts_boundary_registers_startup_warmup_callback() -> None:
     assert callbacks == [boundary.warmup_current_selection]
 
 
-def test_character_publish_quiesces_all_generation_owned_readers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-
-    class Boundary:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def cancel_all(self) -> None:
-            calls.append(f"{self.name}.cancel")
-
-        def close(self) -> None:
-            calls.append(f"{self.name}.close")
-
+def test_voice_update_pauses_only_active_voice_providers(monkeypatch):
+    from contextlib import contextmanager
+    calls = []
+    class TTS:
+        def cancel_all(self): calls.append("tts.cancel")
     class PluginApplication:
-        def quiesce(self) -> None:
-            calls.append("plugin.quiesce")
+        application = property(lambda self: self)
+        @contextmanager
+        def prepare_voice_resources(self):
+            prefix = "sakura.tts.provider."
+            calls.append((prefix, "pause"))
+            try:
+                yield []
+            finally:
+                calls.append((prefix, "restore"))
+    dispatcher = ControlDispatcher(HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL))
+    dispatcher.attach_tts_boundary(TTS())
+    monkeypatch.setattr(dispatcher, "published_plugin_application", lambda: PluginApplication())
+    with pytest.raises(OSError):
+        with dispatcher.prepare_voice_resource_update():
+            calls.append("publish")
+            raise OSError("rollback")
+    assert calls == ["tts.cancel", ("sakura.tts.provider.", "pause"), "publish", ("sakura.tts.provider.", "restore")]
 
-        def close(self) -> None:
-            calls.append("plugin.close")
-
-    chat = Boundary("chat")
-    tts = Boundary("tts")
-    plugin = PluginApplication()
-    dispatcher = ControlDispatcher(
-        HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL),
-        chat_boundary=chat,
-    )
-    dispatcher.attach_tts_boundary(tts)
-    monkeypatch.setattr(dispatcher, "published_plugin_application", lambda: plugin)
-
-    dispatcher.quiesce_for_character_publish()
-
-    assert calls == [
-        "plugin.quiesce",
-        "chat.cancel",
-        "tts.cancel",
-        "chat.close",
-        "tts.close",
-        "plugin.close",
-    ]
 
 
 def test_router_invalidates_generation_work_before_waiting_for_workers() -> None:

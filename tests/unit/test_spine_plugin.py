@@ -227,6 +227,11 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
                      if record.plugin_id == 'sakura.visual.spine')
     assert installed.source == 'bundled'
     assert installed.desired_enabled
+    import io
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+    from app.plugins.runtime_v4 import PluginRuntimeError
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
     application = PluginApplicationHost(roots, 'spine-test', ToolRegistry())
     try:
         application.start()
@@ -249,10 +254,101 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
         invalid = binding.parse_control({**envelope, 'payload': {'speed': 5}})
         assert invalid.control is None
         assert invalid.reason_code == 'VISUAL_CONTROL_REJECTED'
+        (package / 'visual/texture.png').unlink()
+        with pytest.raises(PluginRuntimeError):
+            application.application.call_service('sakura.visual.spine', 'describe', {'characterId': 'alice', 'resource': resource.to_mapping()})
         application.set_enabled(installed.install_id, False)
         assert binding.parse_control(envelope).reason_code == 'VISUAL_BINDING_EXPIRED'
     finally:
         application.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    failures = [r for r in records if r.get('attributes', {}).get('event') == 'visual.resource.failed']
+    assert len(failures) == 1
+    assert failures[0]['plugin_id'] == 'sakura.visual.spine'
+    assert failures[0]['plugin_name'] == 'Spine'
+    assert failures[0]['severity'] == 'error'
+
+
+def test_v110_role_imports_spine_publishes_and_keeps_selection_after_restart(spine_resource, tmp_path):
+    from app.agent.tools import ToolRegistry
+    from app.config.character_loader import CharacterRegistry
+    from app.config.settings_service import AppSettingsService
+    from app.core_host.character_settings import CharacterSettingsBoundary
+    from app.core_host.character_studio import CharacterStudioBoundary
+    from app.core_host.plugin_application import PluginApplicationHost
+    from app.storage.runtime_roots import RuntimeRoots
+
+    source, _, _ = spine_resource
+    prepared = tmp_path / "prepared"
+    prepare(source, prepared)
+    component = export_components(prepared, tmp_path / "exports")[0]
+    roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    for name in ("sakura_portrait", "sakura_spine"):
+        shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin" / name,
+                        roots.distribution_root / "plugins/builtin" / name)
+    package = roots.user_root / "characters/alice"
+    (package / "voice/refs").mkdir(parents=True)
+    (package / "card.md").write_text("原来的角色人格", encoding="utf-8")
+    (package / "default.png").write_bytes(PNG)
+    (package / "voice/refs/ref.txt").write_text("", encoding="utf-8")
+    manifest = {
+        "id": "alice", "display_name": "Alice", "card": "card.md",
+        "portrait": {"default": "default.png", "expressions": {"开心": "default.png"}},
+        "voice": {"tone_refs": "voice/refs/ref.txt", "ref_lang": "ja", "text_lang": "ja"},
+        "extensions": {"example.private": {"keep": True}},
+    }
+    manifest_path = package / "character.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    original = manifest_path.read_bytes()
+    settings_service = AppSettingsService(roots.user_root)
+    settings_service.save_current_character_id(CharacterRegistry(roots.user_root), "alice")
+
+    application = PluginApplicationHost(roots, "upgrade", ToolRegistry())
+    application.start()
+    try:
+        application.bind_character_presentation("alice")
+        assert application.visual_presentation()["visual"]["resourceId"] == "portrait-default"
+        boundary = CharacterStudioBoundary("upgrade", "c", roots.user_root,
+                                           plugin_application_provider=lambda: application)
+        request = boundary._dispatch
+        request("studio.character.open", {"characterId": "alice"})
+        imported = request("studio.visual.import", {"workspaceId": "alice", "path": str(component)})["doc"]
+        resource_id = next(item["id"] for item in imported["visuals"]["resources"] if item["type"] == "spine.json@1")
+        assert imported["visuals"]["default"] == "portrait-default"
+        assert manifest_path.read_bytes() == original
+        reopened = request("studio.character.open", {"characterId": "alice"})["doc"]
+        request("studio.character.publish", {"workspaceId": "alice", "doc": reopened})
+        saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert saved["voice"] == manifest["voice"]
+        assert saved["extensions"]["example.private"] == {"keep": True}
+        assert (package / "card.md").read_text(encoding="utf-8") == "原来的角色人格"
+        settings = CharacterSettingsBoundary("upgrade", "c", roots.user_root,
+                                             plugin_application_provider=lambda: application)
+        assert all(item["reasonCode"] == "READY" for item in settings.visual_snapshot("alice")["resources"])
+        assert settings.select("alice", {"alice": resource_id})["changePlan"] == "visual_rebind"
+        assert application.visual_presentation()["visual"]["resourceId"] == resource_id
+    finally:
+        application.close()
+
+    restarted = PluginApplicationHost(roots, "restarted", ToolRegistry())
+    restarted.start()
+    try:
+        assert settings_service.load_current_character_id(CharacterRegistry(roots.user_root)) == "alice"
+        restarted.bind_character_presentation("alice")
+        assert restarted.visual_presentation()["visual"]["resourceId"] == resource_id
+        binding = restarted.application._visual_binding
+        result = binding.parse_control({"version": 1, "resourceId": resource_id,
+                                        "payload": {"skin": "smile", "action": "wave"}})
+        assert result.reason_code == "READY"
+        assert result.control["state"] == {"skin": "smile"}
+        assert result.control["actions"] == [{"animation": "wave"}]
+        settings = CharacterSettingsBoundary("restarted", "c", roots.user_root,
+                                             plugin_application_provider=lambda: restarted)
+        settings.select("alice", {"alice": "portrait-default"})
+        assert restarted.visual_presentation()["visual"]["resourceId"] == "portrait-default"
+    finally:
+        restarted.close()
 
 
 def test_prepared_component_roundtrips_through_production_archive(spine_resource, tmp_path):

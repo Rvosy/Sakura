@@ -553,6 +553,7 @@ class PluginConfig:
         self._data_dir = data_dir
         self._effect = effect
         self._handlers: list[Callable[[dict[str, Any]], str]] = []
+        self._applied_config = self.get()
 
     def get(self) -> dict[str, Any]:
         merged = self._read(self._plugin_root / "config.json")
@@ -598,8 +599,12 @@ class PluginConfig:
         return value
 
     def _write(self, overrides: Mapping[str, Any]) -> str:
-        self._data_dir.mkdir(parents=True, exist_ok=True)
+        effective = self._read(self._plugin_root / "config.json")
+        effective.update(overrides)
         target = self._data_dir / "config.json"
+        if dict(overrides) == self._read(target) and effective == self._applied_config:
+            return "applied"
+        self._data_dir.mkdir(parents=True, exist_ok=True)
         temporary = self._data_dir / f".config-{uuid.uuid4().hex}.tmp"
         try:
             temporary.write_text(
@@ -612,7 +617,10 @@ class PluginConfig:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-        effective = self.get()
+        if effective == self._applied_config:
+            return "applied"
+        # A handler may partly apply before failing; neither old nor new is known active.
+        self._applied_config = None
         if not self._handlers:
             return "restart_required"
         results: list[str] = []
@@ -628,6 +636,7 @@ class PluginConfig:
             return "error"
         if "restart_required" in results:
             return "restart_required"
+        self._applied_config = effective
         return "applied"
 
 
@@ -1462,6 +1471,8 @@ class PluginContext:
             try:
                 handler(payload)
             except Exception:
+                self.get("sakura.host.logging").error("插件事件处理失败",
+                    fields={"event": "plugin.event.failed", "stage": "event", "event_name": name})
                 continue
 
     def close(self) -> None:
@@ -1473,7 +1484,8 @@ class PluginContext:
             try:
                 cleanup()
             except Exception:
-                pass
+                self.get("sakura.host.logging").warning("插件资源清理失败",
+                    fields={"event": "plugin.cleanup.failed", "stage": "cleanup"})
         if self._logger is not None:
             self._logger.close()
         self._logging_closed = True

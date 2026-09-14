@@ -31,6 +31,10 @@ class PluginCharacterStore:
         self._manifest_paths: dict[str, Path] = {}
         self._active_character_id = self._load_active_character_id()
 
+    def set_current(self, character_id: str) -> None:
+        with self._lock:
+            self._active_character_id = character_id
+
     def get(self, plugin_id: str, character_id: str) -> dict[str, Any]:
         with self._lock:
             _path, manifest = self._manifest(character_id)

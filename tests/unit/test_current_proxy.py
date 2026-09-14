@@ -144,19 +144,22 @@ def test_mcp_client_refreshes_proxy_per_request_with_open_stream(proxy_state):
         asyncio.run(run(direct, a, b))
 
 
-def test_search_proxy_pins_public_ip_and_preserves_host(proxy_state, monkeypatch):
+def test_search_proxy_preserves_hostname_and_owns_destination_dns(proxy_state, monkeypatch):
     from plugins.builtin.sakura_web import web
 
-    monkeypatch.setattr(web, "_resolve_public_addresses", lambda *_: ["93.184.216.34"])
+    def reject_local_dns(*_):
+        pytest.fail("Proxy destination must not use local DNS")
+
+    monkeypatch.setattr(web, "_resolve_public_addresses", reject_local_dns)
     with endpoint("a") as (a, requests_a), endpoint("b") as (b, requests_b):
         for proxy, expected in [(a, b"a"), (b, b"b")]:
             proxy_state["http"] = proxy
             assert web._request_public_url_once("http://public.example/path", 20)[3] == expected
-        assert requests_a == requests_b == [("http://93.184.216.34/path", "public.example")]
+        assert requests_a == requests_b == [("http://public.example/path", "public.example")]
         proxy_state["https"] = b
         with pytest.raises(RuntimeError):
             web._request_public_url_once("https://public.example/path", 20)
-        assert requests_b[-1][0] == "93.184.216.34:443"
+        assert requests_b[-1][0] == "public.example:443"
 
 
 def test_search_rejects_private_destination_even_with_proxy(proxy_state):

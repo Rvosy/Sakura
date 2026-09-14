@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, Mapping, Sequence
 
@@ -121,10 +122,11 @@ class PluginRuntimeApplication:
             HOST_AUDIO_INPUT_SERVICE, self.audio_input,
             exports=("verifyProvider", "authorize", "acquire", "release", "revoke"),
         )
+        self._character_store = PluginCharacterStore(roots.user_root)
         self._host_services = PluginHostServices(
             tool_registry,
             artifact_store=PluginArtifactStore(roots.user_root, generation_id),
-            character_store=PluginCharacterStore(roots.user_root),
+            character_store=self._character_store,
             timeline_store=TimelineStore(StoragePaths(roots.user_root).timeline_database()),
             current_character_id=self._current_character_id,
             invoke_callback=self._manager.invoke_callback,
@@ -363,6 +365,46 @@ class PluginRuntimeApplication:
 
     def bind_chat_boundary(self, boundary: object) -> None:
         self._chat_boundary = boundary
+
+    def pause_service_providers(self, prefix: str):
+        return self._manager.pause_service_providers(prefix)
+
+    @contextmanager
+    def prepare_voice_resources(self):
+        hot, fallback = [], []
+        for item in self._manager.snapshot()["plugins"]:
+            services = [key for key in item["provides"] if key.startswith("sakura.tts.provider.")]
+            if item["state"] != "active" or not services:
+                continue
+            if all({"prepareResourceUpdate", "finishResourceUpdate"} <= self._manager.service_exports(key) for key in services):
+                hot.extend(services)
+            else:
+                fallback.append(item["pluginId"])
+        with self._manager.pause_plugins(fallback) as errors:
+            prepared = []
+            try:
+                for key in hot:
+                    prepared.append(key)
+                    if self._manager.call_service(key, "prepareResourceUpdate") is not True:
+                        raise PluginRuntimeError("TTS_RESOURCE_UPDATE_BUSY")
+                yield errors
+            finally:
+                for key in prepared:
+                    try:
+                        if self._manager.call_service(key, "finishResourceUpdate") is not True:
+                            raise PluginRuntimeError("TTS_RESOURCE_UPDATE_FAILED")
+                    except Exception as error:
+                        errors.append(error)
+
+    def prepare_character_switch(self):
+        records = self._manager.snapshot()["plugins"]
+        ids = [item["pluginId"] for item in records if item["state"] == "active"
+               and ({"sakura.host.character", "sakura.host.timeline"} & set(item["requires"]))
+               and not any(key == "sakura.tts" or key.startswith(("sakura.tts.provider.", "sakura.visual.")) for key in item["provides"])]
+        return self._manager.pause_plugins(ids)
+
+    def set_current_character(self, character_id: str) -> None:
+        self._character_store.set_current(character_id)
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         result = self._manager.set_enabled(plugin_id, enabled)

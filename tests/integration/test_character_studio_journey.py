@@ -91,7 +91,7 @@ def test_character_studio_current_character_publish_and_export_journey(tmp_path:
         "studio.character.publish",
         {"workspaceId": resumed["workspaceId"], "doc": resumed["doc"]},
     )
-    assert published["changePlan"] == "core_restart_required"
+    assert published["changePlan"] == "character_refresh"
     assert (tmp_path / "characters" / "sakura" / "card.md").read_text(encoding="utf-8") == "new card"
 
     output = tmp_path / "sakura.char"

@@ -309,6 +309,7 @@
         "pytest",
         "tests/integration/test_wp_5_03_character_switch_journey.py",
         "tests/unit/test_core_host_character_settings.py",
+        "tests/unit/test_core_host_character_publication.py",
         "tests/unit/test_plugin_character_generation.py",
         "tests/unit/test_core_host_memory.py",
         "tests/integration/test_core_host_real_chat_integration.py",
@@ -324,7 +325,7 @@
     },
     {
       "id": "runtime-v2-character-switch-rust-journey",
-      "description": "验证角色切换只跨完整 Core generation，旧 transport/聊天/资源先失效且 cleanup 后才启动",
+      "description": "验证角色切换保持 Core generation，旧聊天与角色授权失效后重建会话",
       "argv": [
         "cargo",
         "test",
@@ -349,6 +350,7 @@
         "--test",
         "desktop/frontend/tests/character-switch-runtime.test.js",
         "desktop/frontend/tests/character-generation.test.js",
+        "desktop/frontend/tests/real-chat-client.test.js",
         "desktop/frontend/tests/history-load-guard.test.js",
         "desktop/frontend/tests/root-settings-runtime.test.js",
         "desktop/frontend/tests/provider-model-runtime.test.js",
@@ -785,10 +787,11 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_screen_capture.py",
+        "tests/unit/test_core_host_screen_session.py",
         "tests/unit/test_screen_awareness_settings_boundary.py",
         "tests/integration/test_core_host_real_chat_integration.py",
         "-k",
-        "screen_resource or jpeg_dimensions or screen_awareness or manual_screen_attachment",
+        "screen_resource or jpeg_dimensions or screen_awareness or manual_screen_attachment or character_switch_rejects_old_capture",
         "-q"
       ],
       "timeout_seconds": 180,

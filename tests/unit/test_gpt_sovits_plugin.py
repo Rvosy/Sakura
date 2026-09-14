@@ -26,6 +26,45 @@ GENERATION = "generation-gpt-plugin"
 CREDENTIAL = "4" * 32
 
 
+def test_resource_update_is_notified_when_running_task_finishes(tmp_path, monkeypatch):
+    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+
+    config = provider_module._ProviderConfig(
+        enabled=True, custom_base_url=None, tts_path="/tts", timeout_seconds=5,
+        remote_reference_root=None, work_dir=tmp_path, python_path=None, tts_config_path=None)
+    coordinator = provider_module._Coordinator(config)
+    running, waiting, release = threading.Event(), threading.Event(), threading.Event()
+    notified, results = [], []
+    def execute(_item):
+        running.set()
+        assert release.wait(3)
+    monkeypatch.setattr(coordinator, "_execute_warmup", execute)
+    original_wait = coordinator._idle.wait
+    def wait(timeout):
+        waiting.set()
+        result = original_wait(timeout)
+        notified.append(result)
+        return result
+    monkeypatch.setattr(coordinator._idle, "wait", wait)
+    worker = threading.Thread(target=lambda: results.append(coordinator.prepare_resources()))
+    try:
+        coordinator.warmup(None)
+        assert running.wait(3)
+        worker.start()
+        assert waiting.wait(3)
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive()
+        assert results == [True]
+        assert notified == [True], "task completion must notify the waiter, not let its deadline expire"
+    finally:
+        release.set()
+        if worker.ident is not None:
+            worker.join(3)
+        coordinator.finish_resources()
+        coordinator.close()
+
+
 def _wav_bytes() -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as handle:
@@ -320,6 +359,19 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
         assert [item["text"] for item in server.requests[-2:]] == ["alpha", "beta"]
         worker.release_committed_artifact(first_terminal["artifact"]["artifactId"])
         worker.release_committed_artifact(second_terminal["artifact"]["artifactId"])
+        pids = {item["pluginId"]: item["pid"] for item in worker.public_snapshot()["plugins"]}
+        with worker.prepare_voice_resources() as errors:
+            assert {item["pluginId"]: item["pid"] for item in worker.public_snapshot()["plugins"]} == pids
+        assert not errors
+        assert {item["pluginId"]: item["pid"] for item in worker.public_snapshot()["plugins"]} == pids
+        again = worker.call_service("sakura.tts", "begin", {
+            "requestId": "after-resource-update", "characterId": "beta", "text": "still alive",
+            "options": {"tone": "中性"},
+        })
+        assert again["state"] == "running"
+        completed = _poll_terminal(worker, "after-resource-update")
+        assert completed["state"] == "succeeded"
+        worker.release_committed_artifact(completed["artifact"]["artifactId"])
     finally:
         boundary.close()
         worker.close()
@@ -966,6 +1018,16 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
         ]
         assert events[0][1].endswith("alpha.ckpt")
         assert events[3][1].endswith("beta.ckpt")
+        # Replacing weights at the same paths must reload weights, retaining the endpoint.
+        coordinator._queue.join()
+        retained = coordinator._resolver
+        assert coordinator.prepare_resources() is True
+        assert coordinator.finish_resources() is True
+        coordinator.warmup(voice)
+        coordinator._queue.join()
+        assert coordinator._resolver is retained
+        assert len(resolvers) == 1
+        assert [kind for kind, _value in events[-2:]] == ["gpt", "sovits"]
     finally:
         coordinator.close()
 

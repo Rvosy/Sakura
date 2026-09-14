@@ -458,10 +458,11 @@ fn valid_enabled_when(condition: Option<&Value>, own_key: Option<&Value>) -> boo
     if condition.is_null() {
         return true;
     }
-    let Some(object) = condition
-        .as_object()
-        .filter(|_| has_exact_keys(condition, &["field", "equals"]))
-    else {
+    let Some(object) = condition.as_object().filter(|_| {
+        has_exact_keys(condition, &["field", "equals"])
+            || (has_exact_keys(condition, &["field", "equals", "hide"])
+                && condition.get("hide").is_some_and(Value::is_boolean))
+    }) else {
         return false;
     };
     bounded_identifier(object.get("field"), 64)
@@ -908,6 +909,19 @@ pub(crate) async fn settings_plugins_collection(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conditional_visibility_accepts_only_boolean_hide() {
+        let key = serde_json::json!("api_key");
+        assert!(super::valid_enabled_when(
+            Some(&serde_json::json!({"field":"provider", "equals":"tavily", "hide":true})),
+            Some(&key)
+        ));
+        assert!(!super::valid_enabled_when(
+            Some(&serde_json::json!({"field":"provider", "equals":"tavily", "hide":"yes"})),
+            Some(&key)
+        ));
+    }
+
     use serde_json::json;
 
     use super::{

@@ -95,7 +95,8 @@ class ExamplePlugin:
 插件根目录的 `config.json` 是 packaged defaults，私有数据目录的 `config.json` 是用户 overrides；读取时
 后者覆盖前者。`update/replace` 仅接受有界 JSON，并以原子写入保存 overrides。
 
-`on_change` 返回 `applied`、`restart_required` 或 `error`。没有 handler 时默认
+有效配置与本进程已应用值相同时不触发 `on_change`，返回 `applied`；上次应用失败或要求重载时仍可重试。
+`on_change` 返回 `applied`、`restart_required` 或 `error`。配置变化且没有 handler 时默认
 `restart_required`：
 
 - `applied`：保留当前 Worker。

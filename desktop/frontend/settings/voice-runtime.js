@@ -40,7 +40,7 @@ function exactField(value) {
       || !(value.enabledWhen === null
         || (value.enabledWhen && typeof value.enabledWhen === "object"
           && !Array.isArray(value.enabledWhen)
-          && Object.keys(value.enabledWhen).length === 2
+          && (Object.keys(value.enabledWhen).length === 2 || (Object.keys(value.enabledWhen).length === 3 && typeof value.enabledWhen.hide === "boolean"))
           && IDENTIFIER.test(value.enabledWhen.field)
           && typeof value.enabledWhen.equals === "string"
           && value.enabledWhen.equals.length <= 200
@@ -329,6 +329,7 @@ export function createVoiceController({
         for (const { field, input, row } of conditionalFields) {
           const controller = inputs.get(field.enabledWhen.field);
           const enabled = Boolean(controller) && String(controller.value) === field.enabledWhen.equals;
+          row.hidden = field.enabledWhen.hide === true && !enabled;
           input.disabled = !enabled;
           row.className = `setting-row${enabled ? "" : " is-disabled"}`;
           refreshSelect(input);
