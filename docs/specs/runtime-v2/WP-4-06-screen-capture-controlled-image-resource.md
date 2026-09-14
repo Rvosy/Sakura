@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-14
 ---
 
 # WP-4-06 手动截图、受控图像资源与平台权限规范
@@ -50,8 +50,8 @@ updated: 2026-08-29
   即使随后切回同名角色也不复用。原生覆盖层保存此标记，`screen.attach` 接收 `{ resource, sessionId }`；
   Core 在读取资源前和接纳附件前都检查标记，切换期间或标记过期时返回 `SCREEN_ATTACHMENT_REJECTED`，
   原因是 `SCREEN_SESSION_STALE`。旧资源仍由原生所有者清理，不允许兼容缺少会话标记的提交。
-- `start_screen_capture` 接收前端当前的 `captureRevision`，原生完成和错误事件带回此值。前端失效截图时递增
-  该版本，拒绝旧版本的迟到结果；原生提交前、完成后也确认角色会话标记仍有效。
+- `start_screen_capture` 接收前端当前的 `captureRevision`，原生完成、取消和错误事件带回此值。前端失效截图时递增
+  该版本，拒绝旧版本的迟到结果；旧截图的取消事件也不得改变新截图的进行中状态。原生提交前、完成后确认角色会话标记仍有效。
 
 ## 接口与平台门
 

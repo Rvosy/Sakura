@@ -276,7 +276,8 @@ export function createScreenAttachmentController({
       renderControls();
       return true;
     },
-    handleCancelled() {
+    handleCancelled(value) {
+      if (value?.captureRevision !== captureRevision) return;
       capturing = false;
       renderControls();
     },

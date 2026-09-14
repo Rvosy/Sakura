@@ -262,3 +262,19 @@ test("role invalidation rejects late capture events and late start failures", as
   assert.equal(env.controller.attachmentId(), null);
   assert.equal(env.controller.handleAttached({ ...item, captureRevision: 2 }), true);
 });
+
+test("late cancellation cannot unlock a capture from the next role session", async () => {
+  const env = harness();
+  await env.controller.startCapture();
+  const oldRevision = env.calls.at(-1)[1].payload.captureRevision;
+  env.controller.invalidate(); // A -> B
+  env.controller.invalidate(); // B -> A
+  await env.controller.startCapture();
+  const currentRevision = env.calls.at(-1)[1].payload.captureRevision;
+
+  env.controller.handleCancelled({ captureRevision: oldRevision });
+  assert.equal(env.toggle.disabled, true);
+  assert.equal(await env.controller.startCapture(), false);
+  env.controller.handleCancelled({ captureRevision: currentRevision });
+  assert.equal(env.toggle.disabled, false);
+});

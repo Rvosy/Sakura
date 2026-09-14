@@ -2065,8 +2065,8 @@ await listenAppEvent("sakura://bubble-auto-hide-changed", (event) => {
 await listenAppEvent("sakura://screen-attachment", (event) => {
   if (screenAttachment.handleAttached(event?.payload)) clearRecoverableError();
 });
-await listenAppEvent("sakura://screen-capture-cancelled", () => {
-  screenAttachment.handleCancelled();
+await listenAppEvent("sakura://screen-capture-cancelled", (event) => {
+  screenAttachment.handleCancelled(event?.payload);
 });
 await listenAppEvent("sakura://screen-capture-error", (event) => {
   screenAttachment.handleError(event?.payload?.message, event?.payload?.captureRevision);

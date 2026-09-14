@@ -3449,7 +3449,7 @@ async fn start_screen_capture(
         if let Err(error) =
             capture::show_overlays(&app, &session_id, &labels, &monitors, &theme_primary)
         {
-            if let Some(active_labels) = capture_manager.cancel_session(&session_id, &labels[0]) {
+            if let Some((_, active_labels)) = capture_manager.cancel_session(&session_id, &labels[0]) {
                 capture::close_windows(&app, &active_labels);
             }
             return Err(error);
@@ -3625,7 +3625,7 @@ async fn cancel_screen_capture(
     lifecycle: State<'_, ShellLifecycleState>,
     captures: State<'_, Arc<capture::CaptureManager>>,
 ) -> Result<(), String> {
-    let labels = captures
+    let (capture_revision, labels) = captures
         .cancel_session(&payload.session_id, window.label())
         .ok_or_else(|| "SCREEN_CAPTURE_SESSION_STALE".to_string())?;
     capture::close_windows(window.app_handle(), &labels);
@@ -3643,7 +3643,7 @@ async fn cancel_screen_capture(
     );
     let _ = window
         .app_handle()
-        .emit_to("main", capture::CANCELLED_EVENT, ());
+        .emit_to("main", capture::CANCELLED_EVENT, json!({"captureRevision": capture_revision}));
     Ok(())
 }
 

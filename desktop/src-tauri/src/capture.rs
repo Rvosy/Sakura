@@ -304,19 +304,17 @@ impl CaptureManager {
         })
     }
 
-    pub fn cancel_session(&self, session_id: &str, window_label: &str) -> Option<Vec<String>> {
+    pub fn cancel_session(&self, session_id: &str, window_label: &str) -> Option<(u64, Vec<String>)> {
         let mut state = self.state.lock().ok()?;
         let matches = state.active.as_ref().is_some_and(|session| {
             session.id == session_id && session.windows.contains_key(window_label)
         });
         matches.then(|| {
-            state
+            let session = state
                 .active
                 .take()
-                .expect("matched session exists")
-                .windows
-                .into_keys()
-                .collect()
+                .expect("matched session exists");
+            (session.capture_revision, session.windows.into_keys().collect())
         })
     }
 
