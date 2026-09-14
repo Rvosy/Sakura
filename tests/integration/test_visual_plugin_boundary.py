@@ -20,7 +20,7 @@ _PLUGIN = (_FIXTURE / "plugin.py").read_text(encoding="utf-8")
 
 
 @contextmanager
-def numeric_application(tmp_path: Path, plugin_code: str = _PLUGIN):
+def numeric_application(tmp_path: Path, plugin_code: str = _PLUGIN, *, manifest_extra=None):
     distribution, user = tmp_path / "distribution", tmp_path / "user"
     plugin = distribution / "plugins/builtin/numeric"
     plugin.mkdir(parents=True)
@@ -31,6 +31,7 @@ def numeric_application(tmp_path: Path, plugin_code: str = _PLUGIN):
         "api": 4, "id": "fixture.numeric", "entry": "plugin:Plugin",
         "provides": ["fixture.numeric.control"], "requires": ["sakura.host.character"],
         "visuals": [{"type": "fixture.numeric@1", "service": "fixture.numeric.control", "contract": 1, "renderer": "renderer.js", "editor": "editor.js"}],
+        **(manifest_extra or {}),
     }), encoding="utf-8")
     package = user / "characters/character"
     model = package / "numeric"
@@ -524,3 +525,23 @@ def test_visual_plugin_failures_retain_remote_diagnostics(tmp_path, method, sign
     assert "Remote:" in diagnostic["exception_stack"]
     assert method in diagnostic["exception_stack"]
     assert "private-value" not in json.dumps(diagnostic)
+
+
+def test_bad_optional_declarations_keep_real_plugin_services_and_renderer_running(tmp_path):
+    declaration = {"type": "fixture.numeric@1", "service": "fixture.numeric.control", "contract": 1,
+        "renderer": "renderer.js", "editor": "missing-editor.js", "displayName": "数值角色"}
+    with numeric_application(tmp_path, manifest_extra={
+        "visuals": [declaration, {**declaration, "type": "fixture.other@1", "renderer": "../outside.js"}],
+        "ttsResources": ["fixture.voice@1", "unversioned"],
+    }) as (application, package, resource):
+        host = application.application.visuals
+        assert host._runtime.service_identity("fixture.numeric.control")["providerId"] == "fixture.numeric"
+        binding = host.bind("character", package, resource)
+        assert binding.presentation()["renderer"] == "renderer.js"
+        assert binding.parse_control(_control(resource, {"angle": 7})).control["state"]["angle"] == 7
+        with pytest.raises(VisualHostError, match="VISUAL_MODULE_INVALID"):
+            host.editor(resource, {})
+        assert host.resource_choice(resource)["reasonCode"] == "READY"
+        record = host._inventory.scan().records[0]
+        assert record.tts_resources == ("fixture.voice@1",)
+        assert len(record.capability_issues) == 3

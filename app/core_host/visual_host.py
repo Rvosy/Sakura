@@ -37,6 +37,7 @@ VISUAL_INACTIVE_REASONS = frozenset({
     "VISUAL_NOT_BOUND", "VISUAL_BINDING_EXPIRED", "VISUAL_RESOURCE_MISSING",
     "VISUAL_PROVIDER_MISSING", "PLUGIN_DISABLED", "VISUAL_PROVIDER_SELECTION_REQUIRED",
     "VISUAL_SERVICE_UNAVAILABLE", "VISUAL_CONTRACT_UNSUPPORTED", "API_VERSION_UNSUPPORTED",
+    "VISUAL_MANIFEST_INVALID", "VISUAL_MODULE_INVALID",
 })
 
 
@@ -210,6 +211,28 @@ class VisualHost:
             if capability.resource_type == resource_type
         ]
 
+    def _unavailable_candidates(self, resource_type, provider_id=None):
+        result = []
+        for record in self._inventory.scan().records:
+            if provider_id is not None and record.plugin_id != provider_id:
+                continue
+            if any(cap.resource_type == resource_type for cap in record.visuals):
+                continue
+            issue = next((item for item in record.capability_issues
+                if item["kind"] == "visual" and (item["type"] == resource_type
+                    or (provider_id is not None and not item["type"]))), None)
+            if issue is not None:
+                result.append({"installId": record.install_id, "pluginId": record.plugin_id,
+                    "name": record.name, "type": resource_type, "contract": None,
+                    "hasEditor": False, "reasonCode": issue["reasonCode"]})
+        return result
+
+    @staticmethod
+    def _editor_issue(record, capability):
+        return next((item["reasonCode"] for item in record.capability_issues
+            if item["kind"] == "visual" and item["type"] == capability.resource_type
+            and item["part"] == "editor"), None)
+
     def _reason(self, record: InstalledPluginRecord, capability: VisualCapability) -> str:
         if not record.runtime_eligible:
             return record.reason_code
@@ -233,7 +256,7 @@ class VisualHost:
             "contract": capability.contract,
             "hasEditor": capability.editor is not None,
             "reasonCode": self._reason(record, capability),
-        } for record, capability in self._candidates(resource_type)]
+        } for record, capability in self._candidates(resource_type)] + self._unavailable_candidates(resource_type)
 
     def bind(
         self,
@@ -280,6 +303,15 @@ class VisualHost:
     def resource_choice(self, resource, provider_id=None):
         candidates = self._matching_candidates(resource.type, provider_id)
         record, capability = candidates[0] if len(candidates) == 1 else (None, None)
+        if not candidates:
+            unavailable = self._unavailable_candidates(resource.type, provider_id)
+            if len(unavailable) > 1:
+                return {"id": resource.id, "name": resource.name or "未命名形态",
+                    "providerId": provider_id, "installId": None, "reasonCode": "VISUAL_PROVIDER_SELECTION_REQUIRED"}
+            if len(unavailable) == 1:
+                item = unavailable[0]
+                return {"id": resource.id, "name": resource.name or item["name"],
+                    "providerId": item["pluginId"], "installId": item["installId"], "reasonCode": item["reasonCode"]}
         reason = self._reason(record, capability) if record else ("VISUAL_PROVIDER_MISSING" if not candidates else "VISUAL_PROVIDER_SELECTION_REQUIRED")
         return {"id": resource.id, "name": resource.name or (record.name if record else "未命名形态"),
             "providerId": record.plugin_id if record else provider_id,
@@ -288,7 +320,10 @@ class VisualHost:
     def _select(self, resource_type, provider_id=None):
         candidates = self._matching_candidates(resource_type, provider_id)
         if not candidates:
-            raise VisualHostError("VISUAL_PROVIDER_MISSING")
+            unavailable = self._unavailable_candidates(resource_type, provider_id)
+            if len(unavailable) == 1:
+                raise VisualHostError(unavailable[0]["reasonCode"])
+            raise VisualHostError("VISUAL_PROVIDER_MISSING" if not unavailable else "VISUAL_PROVIDER_SELECTION_REQUIRED")
         # Selection is explicit when several installations claim the format.
         # A disabled or failed preferred provider never causes silent fallback.
         if len(candidates) != 1:
@@ -303,8 +338,9 @@ class VisualHost:
         result = []
         for record in self._inventory.scan().records:
             for capability in record.visuals:
-                if capability.editor is not None:
-                    reason = self._reason(record, capability)
+                editor_issue = self._editor_issue(record, capability)
+                if capability.editor is not None or editor_issue:
+                    reason = editor_issue or self._reason(record, capability)
                     scope = None
                     if reason == "READY":
                         try:
@@ -317,7 +353,7 @@ class VisualHost:
     def editor(self, resource, raw, provider_id=None):
         record, capability = self._select(resource.type, provider_id)
         if capability.editor is None:
-            raise VisualHostError("VISUAL_EDITOR_MISSING")
+            raise VisualHostError(self._editor_issue(record, capability) or "VISUAL_EDITOR_MISSING")
         identity = self._runtime.service_identity(capability.service)
         data = _json_copy(self._runtime.call_service(capability.service, "editorData", resource.to_mapping(), _json_copy(raw)))
         binding = VisualBinding(self._runtime, capability, identity, {"resource": resource.to_mapping()}, {"rendererData": {}, "assets": {}}, record.install_id)

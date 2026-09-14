@@ -195,6 +195,7 @@ class InstalledPluginRecord:
     presentation_category: str = "other"
     presentation_icon: str = ""
     tts_resources: tuple[str, ...] = ()
+    capability_issues: tuple[dict[str, str], ...] = ()
     visuals: tuple[VisualCapability, ...] = ()
 
     @property
@@ -434,14 +435,12 @@ class PluginInventory:
                 )
             services[key] = tuple(dict.fromkeys(value))
         supported = api_version == PLUGIN_API_V4_VERSION
-        try:
-            visuals = visual_capabilities_from_manifest(raw.get("visuals", []), services["provides"], plugin_root=directory)
-            tts_resources = tts_resource_types(raw.get("ttsResources", []))
-        except ValueError:
-            return replace(
-                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
-                desired_enabled=enabled,
-            )
+        capability_issues: list[dict[str, str]] = []
+        visuals = visual_capabilities_from_manifest(
+            raw.get("visuals", []), services["provides"], plugin_root=directory,
+            issues=capability_issues,
+        )
+        tts_resources = tts_resource_types(raw.get("ttsResources", []), issues=capability_issues)
         presentation = raw.get("presentation")
         presentation = presentation if isinstance(presentation, Mapping) else {}
         kind = presentation.get("kind")
@@ -466,6 +465,7 @@ class PluginInventory:
             supported=supported,
             runtime_eligible=supported,
             tts_resources=tts_resources,
+            capability_issues=tuple(capability_issues),
             presentation_kind=kind if kind in ("extension", "provider", "infrastructure") else "extension",
             presentation_category=category if category in ("model", "voice", "memory", "tools", "connectivity", "other") else "other",
             presentation_icon=icon if isinstance(icon, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", icon) else "",

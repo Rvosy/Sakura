@@ -75,3 +75,25 @@ def test_both_shared_models_and_explicit_onnx_are_declared():
         "sakura.tts.genie": {"onnxModelDir": "onnx"},
     }})
     assert {item["type"] for item in requirements} == {GPT_SOVITS_MODELS, GENIE_ONNX}
+
+
+def test_bad_optional_tts_entry_preserves_other_types_and_reports_its_cause(tmp_path):
+    import yaml
+
+    record = genie_record(tmp_path)
+    manifest = tmp_path / "plugins/builtin/genie/plugin.yaml"
+    raw = yaml.safe_load(manifest.read_text())
+    raw["ttsResources"] = [GPT_SOVITS_MODELS, "unversioned"]
+    manifest.write_text(yaml.safe_dump(raw))
+    record = PluginInventory(tmp_path).scan().records[0]
+    assert record.runtime_eligible
+    assert record.tts_resources == (GPT_SOVITS_MODELS,)
+    assert record.capability_issues[0]["reasonCode"] == "TTS_RESOURCE_MANIFEST_INVALID"
+    requirements = [
+        {"kind": "tts", "type": resource_type, "plugins": [{"id": record.plugin_id}]}
+        for resource_type in (GPT_SOVITS_MODELS, GENIE_ONNX)
+    ]
+    result = check_requirements(requirements, [record])
+    assert result[0]["reasonCode"] == "COMPATIBLE"
+    assert result[1]["reasonCode"] == "PLUGIN_INCOMPATIBLE"
+    assert result[1]["candidates"][0]["reasonCode"] == "TTS_RESOURCE_MANIFEST_INVALID"

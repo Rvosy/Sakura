@@ -114,10 +114,9 @@ def plugin_spec_from_manifest(
     if not plugin_id or not entry:
         return None
     provides = _service_keys_value(raw.get("provides"))
-    try:
-        visuals = visual_capabilities_from_manifest(raw.get("visuals", []), provides, plugin_root=plugin_root)
-    except ValueError:
-        return None
+    visuals = visual_capabilities_from_manifest(
+        raw.get("visuals", []), provides, plugin_root=plugin_root, issues=[],
+    )
     return PluginSpec(
         entry=entry,
         plugin_id=plugin_id,

@@ -11,7 +11,6 @@ from typing import Any, Mapping, Sequence
 VISUAL_CONTRACT_VERSION = 1
 RESOURCE_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}@[1-9][0-9]{0,5}$")
 _SERVICE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
-_MODULE_PATH = re.compile(r"^(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.m?js$")
 
 
 def relative_resource_path(value: object, *, allow_root: bool = False) -> str:
@@ -64,43 +63,68 @@ class VisualCapability:
         return result
 
 
+def _visual_module(value: object, plugin_root: Path | None) -> str:
+    try:
+        path = relative_resource_path(value)
+        if Path(path).suffix not in {".js", ".mjs"}:
+            raise ValueError("VISUAL_MODULE_INVALID")
+        if plugin_root is not None and not resolve_resource_path(plugin_root, path).is_file():
+            raise ValueError("VISUAL_MODULE_INVALID")
+        return path
+    except ValueError as error:
+        raise ValueError("VISUAL_MODULE_INVALID") from error
+
+
 def visual_capabilities_from_manifest(
     value: object,
     provides: Sequence[str],
     *,
     plugin_root: Path | None = None,
+    issues: list[dict[str, str]] | None = None,
 ) -> tuple[VisualCapability, ...]:
+    """Collect usable capabilities; callers may retain optional failures locally.
+
+    Startup payloads use strict parsing. Installation discovery supplies an issue
+    list so one broken renderer or editor does not discard unrelated services.
+    """
+    def unavailable(error: ValueError, resource_type: str = "", part: str = "manifest") -> None:
+        if issues is None:
+            raise error
+        issues.append({"kind": "visual", "type": resource_type, "part": part, "reasonCode": str(error)})
+
     if not isinstance(value, list) or len(value) > 32:
-        raise ValueError("VISUAL_MANIFEST_INVALID")
+        unavailable(ValueError("VISUAL_MANIFEST_INVALID"))
+        return ()
     capabilities = []
     seen: set[str] = set()
     for raw in value:
-        if not isinstance(raw, Mapping) or set(raw) - {"type", "service", "contract", "renderer", "editor"}:
-            raise ValueError("VISUAL_MANIFEST_INVALID")
-        resource_type = raw.get("type")
+        resource_type = raw.get("type") if isinstance(raw, Mapping) else None
+        if not isinstance(resource_type, str) or not RESOURCE_TYPE_PATTERN.fullmatch(resource_type):
+            unavailable(ValueError("VISUAL_MANIFEST_INVALID"))
+            continue
         service = raw.get("service")
         contract = raw.get("contract")
         if (
-            not isinstance(resource_type, str)
-            or not RESOURCE_TYPE_PATTERN.fullmatch(resource_type)
-            or resource_type in seen
+            resource_type in seen
             or not isinstance(service, str)
             or not _SERVICE.fullmatch(service)
             or service not in provides
             or type(contract) is not int
             or not 1 <= contract <= 65535
         ):
-            raise ValueError("VISUAL_MANIFEST_INVALID")
-        entries = {}
-        for name in ("renderer", "editor"):
-            if name == "editor" and name not in raw:
-                continue
-            path = relative_resource_path(raw.get(name))
-            if not _MODULE_PATH.fullmatch(path):
-                raise ValueError("VISUAL_MANIFEST_INVALID")
-            if plugin_root is not None and not resolve_resource_path(plugin_root, path).is_file():
-                raise ValueError("VISUAL_MANIFEST_INVALID")
-            entries[name] = path
+            unavailable(ValueError("VISUAL_MANIFEST_INVALID"), resource_type)
+            continue
+        try:
+            renderer = _visual_module(raw.get("renderer"), plugin_root)
+        except ValueError as error:
+            unavailable(error, resource_type, "renderer")
+            continue
+        editor = None
+        if "editor" in raw:
+            try:
+                editor = _visual_module(raw["editor"], plugin_root)
+            except ValueError as error:
+                unavailable(error, resource_type, "editor")
         seen.add(resource_type)
-        capabilities.append(VisualCapability(resource_type, service, contract, entries["renderer"], entries.get("editor")))
+        capabilities.append(VisualCapability(resource_type, service, contract, renderer, editor))
     return tuple(capabilities)
