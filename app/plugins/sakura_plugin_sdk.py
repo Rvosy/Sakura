@@ -1471,6 +1471,8 @@ class PluginContext:
             try:
                 handler(payload)
             except Exception:
+                self.get("sakura.host.logging").error("插件事件处理失败",
+                    fields={"event": "plugin.event.failed", "stage": "event", "event_name": name})
                 continue
 
     def close(self) -> None:
@@ -1482,7 +1484,8 @@ class PluginContext:
             try:
                 cleanup()
             except Exception:
-                pass
+                self.get("sakura.host.logging").warning("插件资源清理失败",
+                    fields={"event": "plugin.cleanup.failed", "stage": "cleanup"})
         if self._logger is not None:
             self._logger.close()
         self._logging_closed = True

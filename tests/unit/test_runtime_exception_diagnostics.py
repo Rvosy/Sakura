@@ -138,6 +138,31 @@ def test_plugin_logging_and_fixed_diagnostics_cross_host_with_original_error(tmp
         assert "private-fixture-secret" not in json.dumps(record)
 
 
+def test_plugin_callback_failures_are_logged_and_do_not_stop_other_callbacks(tmp_path):
+    from app.plugins.sakura_plugin_sdk import PluginContext
+
+    delivered = []
+    completed = []
+    def remote(service, method, args):
+        delivered.extend(args[0])
+        return True
+    context = PluginContext("fixture.callbacks", tmp_path, tmp_path, remote, lambda *_: None)
+    def fail(*_):
+        raise ValueError("callback original failure token=private-callback-token")
+    context.on("fixture.event", fail)
+    context.on("fixture.event", lambda _: completed.append("event"))
+    context.effect(lambda: completed.append("cleanup"))
+    context.effect(fail)
+    context.emit("fixture.event", {})
+    context.close()
+    assert completed == ["event", "cleanup"]
+    assert len(delivered) == 2
+    for row in delivered:
+        assert "callback original failure" in row["fields"]["diagnostic"]
+        assert ":fail:" in row["fields"]["exception_stack"]
+        assert "private-callback-token" not in json.dumps(row)
+
+
 def test_process_failure_excerpt_excludes_previous_launch_and_normal_output(tmp_path):
     from app.plugin_sdk.sakura_process import process_failure_diagnostics
     path = tmp_path / "engine.log"

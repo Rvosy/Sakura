@@ -3828,7 +3828,7 @@ mod tests {
         log.submit(log.prepare_webview("settings", entry).unwrap());
         let snapshot = log.viewer_snapshot(None).unwrap();
         assert_eq!(snapshot.schema_version, 3);
-        assert_eq!(snapshot.records.len(), 9);
+        assert_eq!(snapshot.records.len(), 11);
         assert!(snapshot
             .records
             .windows(2)
@@ -3839,7 +3839,8 @@ mod tests {
                 .iter()
                 .filter(|r| r.plugin_id.as_deref() == Some(id))
                 .collect();
-            assert_eq!(records.len(), 2);
+            assert_eq!(records.len(), 4);
+            assert!(records.iter().any(|r| r.event_code == "plugin.loaded"));
             assert!(records
                 .iter()
                 .all(|r| r.plugin_name.as_deref() == Some("日志示例")));

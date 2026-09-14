@@ -107,7 +107,7 @@ class Plugin:
     assert {r["plugin_id"] for r in lifecycle} == {"fixture.one", "fixture.two"}
     assert all(r.get("plugin_name", "").startswith("示例插件") for r in lifecycle)
     custom = [r for r in records if r.get("custom") and r.get("attributes", {}).get("stage") in {"setup", "run", "cleanup"}]
-    assert len(custom) == 6
+    assert len(custom) == 6, custom
     for name in ("one", "two"):
         rows = [r for r in custom if r["plugin_id"] == f"fixture.{name}"]
         assert all(r["plugin_name"] == f"示例插件 {name}" for r in rows)
@@ -138,6 +138,10 @@ def test_plugin_start_failures_reach_log_bridge_with_identity(tmp_path: Path):
     assert {row["plugin_id"] for row in failures} == {"fixture.missing", "fixture.broken"}
     assert all(row["severity"] == "error" and row["plugin_name"] == row["plugin_id"] for row in failures)
     assert next(row for row in failures if row["plugin_id"] == "fixture.missing")["attributes"]["reason_code"] == "MISSING_SERVICE"
+    broken = next(row for row in failures if row["plugin_id"] == "fixture.broken")["attributes"]
+    assert "fixture setup failed" in broken["diagnostic"]
+    assert "ValueError" in broken["exception_chain"]
+    assert ":setup:" in broken["exception_stack"]
 
 
 def test_plugin_stderr_is_forwarded_before_process_exit(tmp_path: Path, monkeypatch) -> None:
