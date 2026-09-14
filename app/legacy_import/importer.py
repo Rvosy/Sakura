@@ -28,6 +28,7 @@ from .files import (
     copy_file_checked,
     copy_tree_checked,
     copy_tree_fast_checked,
+    sqlite_readonly_uri,
     is_link_or_junction,
     tree_stats,
 )
@@ -1561,7 +1562,7 @@ def _snapshot_sqlite_database(
             },
         )
         step = "open_source"
-        source_uri = _sqlite_readonly_uri(source)
+        source_uri = sqlite_readonly_uri(source)
         with closing(sqlite3.connect(source_uri, uri=True, timeout=10)) as origin:
             row = origin.execute("PRAGMA journal_mode").fetchone()
             journal_mode = str(row[0]) if row else "unknown"
@@ -1633,24 +1634,6 @@ def _safe_file_size(path: Path) -> int:
         return path.stat().st_size if path.is_file() else 0
     except OSError:
         return -1
-
-
-def _sqlite_readonly_uri(path: Path) -> str:
-    r"""Build a SQLite URI from normal or Windows extended-length paths.
-
-    Tauri's directory picker canonicalizes Windows selections to ``\\?\D:\``.
-    ``Path.as_uri`` encodes that prefix as a URI authority named ``%3F``, which
-    SQLite rejects before reading the database.  Strip only the Win32 namespace
-    prefix while retaining the resolved path and read-only URI semantics.
-    """
-
-    resolved = str(path.resolve(strict=True))
-    if os.name == "nt":
-        if resolved.startswith("\\\\?\\UNC\\"):
-            resolved = "\\\\" + resolved[8:]
-        elif resolved.startswith("\\\\?\\"):
-            resolved = resolved[4:]
-    return f"{Path(resolved).as_uri()}?mode=ro"
 
 
 def _exception_log_attributes(

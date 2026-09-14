@@ -140,10 +140,17 @@ def test_preview_permissions_are_private_and_relaxed_directory_is_rejected(tmp_p
     assert path.is_file()
 
 
-def test_incremental_plan_survives_cli_process_exit(tmp_path: Path) -> None:
-    source = _source(tmp_path)
+@pytest.mark.parametrize("extended_paths", [False, True])
+def test_incremental_plan_survives_cli_process_exit(tmp_path: Path, extended_paths: bool) -> None:
+    if extended_paths and os.name != "nt":
+        pytest.skip("Windows namespace paths")
+    source = _source(tmp_path / "旧数据 #100%")
     target = tmp_path / "target"
     target.mkdir()
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").initialize()
+    if extended_paths:
+        source = Path("\\\\?\\" + str(source))
+        target = Path("\\\\?\\" + str(target))
     _write_history(
         source / "data/chat_history/Sakura.jsonl",
         [_record("2026-01-01T00:00:00+08:00", "user", "private source text")],

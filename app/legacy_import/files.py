@@ -590,3 +590,21 @@ def _stop_copy_process(process: subprocess.Popen[bytes]) -> None:
             process.wait(timeout=2)
         except (OSError, subprocess.TimeoutExpired):
             pass
+
+
+def sqlite_readonly_uri(path: Path) -> str:
+    r"""Build a SQLite URI from normal or Windows extended-length paths.
+
+    Tauri's directory picker canonicalizes Windows selections to ``\\?\D:\``.
+    ``Path.as_uri`` encodes that prefix as a URI authority named ``%3F``, which
+    SQLite rejects before reading the database.  Strip only the Win32 namespace
+    prefix while retaining the resolved path and read-only URI semantics.
+    """
+
+    resolved = str(path.resolve(strict=True))
+    if os.name == "nt":
+        if resolved.startswith("\\\\?\\UNC\\"):
+            resolved = "\\\\" + resolved[8:]
+        elif resolved.startswith("\\\\?\\"):
+            resolved = resolved[4:]
+    return f"{Path(resolved).as_uri()}?mode=ro"
