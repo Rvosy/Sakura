@@ -24,6 +24,15 @@ _URL_AUTH = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@")
 _SECRETS: ContextVar[set[str] | None] = ContextVar("diagnostic_secrets", default=None)
 
 
+def diagnostic_token(value: object) -> str | None:
+    """Only accept protocol codes/field names, never serialize their values."""
+    if (isinstance(value, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}", value)
+            and safe_diagnostic_text(value) == value):
+        return value
+    return None
+
+
 @contextmanager
 def diagnostic_secret_scope():
     """Keep known credentials local to one request, including nested logging."""
@@ -145,6 +154,13 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
         "reason_code": reason_code,
         "stage": str(getattr(error, "stage", "") or stage),
     }
+    for key, attribute in (("cause_code", "code"), ("validation_field", "field")):
+        try:
+            value = diagnostic_token(getattr(root, attribute, None))
+        except Exception:
+            continue
+        if value is not None:
+            attributes[key] = value
     if isinstance(error, BaseException):
         summaries = [f"{type(item).__name__}: {_exception_message(item)}" for item in chain]
         provider_error = next((item for item in chain if type(item).__name__ == "ApiRequestError"), None)
@@ -176,6 +192,10 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
         # the worker's original type and frames as well as the host propagation.
         remote = getattr(root, "diagnostics", None)
         if isinstance(remote, dict):
+            for key in ("cause_code", "validation_field"):
+                value = diagnostic_token(remote.get(key))
+                if value is not None:
+                    attributes[key] = value
             for key in ("diagnostic", "cause_type"):
                 if isinstance(remote.get(key), str):
                     attributes[key] = safe_diagnostic_text(remote[key])

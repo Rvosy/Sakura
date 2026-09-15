@@ -984,10 +984,15 @@ def test_service_proxy_routes_success_error_timeout_and_never_replays(
         body="""
 import time
 
+class BoundaryError(RuntimeError):
+    code = "MEMORY_ROUND_TRIP_MISMATCH"
+    field = "category"
+    details = {"content": "private memory fixture"}
+
 class Echo:
     def __init__(self): self.calls = 0
     def echo(self, value): return {"echo": value}
-    def fail(self): raise RuntimeError("boom")
+    def fail(self): raise BoundaryError("boom")
     def slow(self):
         self.calls += 1
         time.sleep(0.2)
@@ -1042,7 +1047,10 @@ class Plugin:
         fields = exception_diagnostics(failed.value, reason_code=failed.value.code, stage="plugin_call")
         assert "boom" in fields["diagnostic"]
         assert "fail:" in fields["exception_stack"]
-        assert fields["cause_type"] == "RuntimeError"
+        assert fields["cause_type"] == "BoundaryError"
+        assert fields["cause_code"] == "MEMORY_ROUND_TRIP_MISMATCH"
+        assert fields["validation_field"] == "category"
+        assert "private memory fixture" not in repr(fields)
         with pytest.raises(PluginRuntimeError) as hidden:
             manager.call_service("fixture.echo", "missing")
         assert hidden.value.code == "SERVICE_METHOD_NOT_EXPORTED"
@@ -1715,6 +1723,119 @@ def test_generation_close_acknowledges_four_real_plugins_without_timeout_multipl
     assert close_acknowledgements == [None] * 4
     _wait_pids_gone(pids)
     manager.close()
+
+
+def test_generation_close_unregisters_provider_from_live_tts_hub(tmp_path: Path) -> None:
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins" / "builtin"
+    hub_source = Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_tts_hub/plugin.py"
+    _plugin_source(
+        bundled, "fixture.tts-hub", "sakura.tts", requires=("sakura.host.logging",),
+        body=hub_source.read_text(encoding="utf-8") + "\nPlugin = SakuraTTSHubPlugin\n",
+    )
+    cleanup_result = tmp_path / "provider-cleanup.json"
+    _plugin_source(
+        bundled, "fixture.tts-provider", "fixture.tts-provider.service", requires=("sakura.tts",),
+        body=f'''
+import json
+from pathlib import Path
+
+class Plugin:
+    def setup(self, context):
+        hub = context.get("sakura.tts")
+        hub.registerProvider({{
+            "providerId": "fixture.tts-provider", "serviceKey": "fixture.tts-provider.service", "label": "Fixture"
+        }})
+        def cleanup():
+            result = hub.unregisterProvider("fixture.tts-provider", "fixture.tts-provider.service")
+            Path({str(cleanup_result)!r}).write_text(json.dumps(result), encoding="utf-8")
+        context.effect(cleanup)
+        context.provide("fixture.tts-provider.service", object(), exports=())
+''',
+    )
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "generation-hub-cleanup", ToolRegistry())
+    try:
+        host.start()
+        assert host.application.wait_until_loaded(timeout=3)
+        snapshot = host.application.public_snapshot()
+        assert all(item["state"] == "active" for item in snapshot["plugins"]), snapshot
+        pids = [item["pid"] for item in snapshot["plugins"]]
+    finally:
+        host.close()
+        bridge.close()
+
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
+               for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    cleanup_failures = [record for record in records
+                        if record.get("attributes", {}).get("event") == "plugin.cleanup.failed"]
+    assert not cleanup_failures, cleanup_failures
+    assert json.loads(cleanup_result.read_text(encoding="utf-8")) == {
+        "removed": True, "providerId": "fixture.tts-provider", "serviceKey": "fixture.tts-provider.service",
+    }
+    _wait_pids_gone(pids)
+
+
+@pytest.mark.parametrize(
+    "condition", ["valid", "external", "undeclared", "inactive_target", "stale_target", "not_draining", "stale_caller", "expired"],
+)
+def test_draining_dependency_calls_keep_identity_scope_and_deadline(
+    tmp_path: Path, condition: str,
+) -> None:
+    from app.plugins.runtime_v4 import _DrainingProcess, _ServiceBinding
+
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins/builtin"
+    for name in ("caller", "dependency"):
+        service_key = f"fixture.{name}.service"
+        _plugin_source(
+            bundled, f"fixture.{name}", service_key,
+            requires=("fixture.dependency.service",) if name == "caller" and condition != "undeclared" else (),
+            body=_simple_service_body(service_key, name),
+        )
+    manager = PluginRuntimeManager(roots, "draining-scope", PluginInventory(roots).scan().runtime_specs)
+    calls = []
+
+    class Dependency:
+        def call_service(self, service_key, method, args, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append((service_key, method, args, kwargs))
+            return {"removed": True}
+
+    caller, dependency = object(), Dependency()
+    target_record = manager._records["fixture.dependency"]
+    target_record.process = object() if condition == "stale_target" else dependency
+    target_record.state = "disabled" if condition == "inactive_target" else "active"
+    manager._services["fixture.dependency.service"] = _ServiceBinding(
+        "fixture.dependency", frozenset({"unregisterProvider"}), process=dependency,
+    )
+    manager._closed = True
+    if condition != "not_draining":
+        manager._draining_processes["fixture.caller"] = _DrainingProcess(
+            caller, time.monotonic() + (-1 if condition == "expired" else 0.5),
+        )
+
+    def invoke():  # type: ignore[no-untyped-def]
+        if condition == "external":
+            return manager.call_service("fixture.dependency.service", "unregisterProvider", "fixture.caller")
+        return manager._handle_plugin_request(
+            "fixture.caller", "service.call",
+            {"serviceKey": "fixture.dependency.service", "method": "unregisterProvider", "args": ["fixture.caller"]},
+            calling_process=object() if condition == "stale_caller" else caller,
+        )
+
+    if condition == "valid":
+        assert invoke() == {"removed": True}
+        assert len(calls) == 1
+        assert 0 < calls[0][3]["timeout"] <= 0.5
+        assert calls[0][3]["caller_id"] == "fixture.caller"
+    else:
+        with pytest.raises((PluginApiError, PluginRuntimeError)) as rejected:
+            invoke()
+        assert rejected.value.code == ("PLUGIN_CALL_TIMEOUT" if condition == "expired" else "GENERATION_INVALIDATED")
+        assert calls == []
 
 
 def test_generation_close_uses_one_deadline_when_plugin_cleanup_blocks(

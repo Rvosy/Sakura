@@ -85,6 +85,68 @@ def test_worker_diagnostic_survives_host_exception_wrapping():
     assert "Remote:" in fields["exception_stack"]
 
 
+@pytest.mark.parametrize("custom", [False, True])
+def test_boundary_metadata_crosses_worker_and_core_log_bridge(custom):
+    class BoundaryError(ValueError):
+        code = "MEMORY_ROUND_TRIP_MISMATCH"
+        field = "category"
+        details = {"content": "private memory fixture"}
+
+    remote = _exception_diagnostics(BoundaryError("round trip mismatch"))
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        try:
+            raise PluginApiError("PLUGIN_CALL_FAILED", diagnostics=remote)
+        except PluginApiError:
+            if custom:
+                log_message("warning", "boundary failed")
+            else:
+                log_event("MEMORY", "boundary failed", event="memory.recall.failed", severity="warning")
+    finally:
+        bridge.close()
+    record = json.loads(stream.getvalue().splitlines()[0][len(CORE_BRIDGE_PREFIX):])
+    assert record["attributes"]["cause_code"] == "MEMORY_ROUND_TRIP_MISMATCH"
+    assert record["attributes"]["validation_field"] == "category"
+    assert "private memory fixture" not in json.dumps(record)
+
+
+def test_boundary_metadata_rejects_free_text_and_does_not_read_arbitrary_details():
+    class BoundaryError(ValueError):
+        code = "private error text"
+        field = "private memory text"
+
+        @property
+        def details(self):
+            raise AssertionError("must not read arbitrary details")
+
+    for fields in (_exception_diagnostics(BoundaryError("failed")),
+                   exception_diagnostics(BoundaryError("failed"), reason_code="FAILED", stage="test")):
+        assert "cause_code" not in fields
+        assert "validation_field" not in fields
+
+
+def test_boundary_metadata_honors_credential_redaction_and_broken_properties():
+    from app.core.diagnostics import diagnostic_secret_scope, register_diagnostic_secret
+
+    class BoundaryError(ValueError):
+        field = "FixtureOpaqueCredential7"
+
+        @property
+        def code(self):
+            raise RuntimeError("broken property")
+
+    with diagnostic_secret_scope():
+        register_diagnostic_secret("FixtureOpaqueCredential7")
+        try:
+            raise BoundaryError("original failure")
+        except BoundaryError as error:
+            fields = exception_diagnostics(error, reason_code="FAILED", stage="test")
+        assert "FixtureOpaqueCredential7" not in json.dumps(fields)
+        assert fields["cause_type"] == "BoundaryError"
+        assert " at " in fields["exception_stack"]
+
+
 def test_exception_group_preserves_independent_failures():
     group = ExceptionGroup("parallel providers failed", [TimeoutError("connection timed out"), OSError(28, "No space left on device")])
     fields = exception_diagnostics(group, reason_code="PROVIDERS_FAILED", stage="load")
