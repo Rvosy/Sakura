@@ -318,6 +318,7 @@ def mirror(
     *,
     rehearsal: bool = False,
     sync_code: bool = False,
+    probe_upload: bool = False,
 ) -> None:
     owner, repo = split_repo(repository)
     tag = safe_tag(tag)
@@ -329,6 +330,8 @@ def mirror(
         raise MirrorError("UPDATER_MANIFEST_MISSING")
     if rehearsal and not tag.startswith("mirror-test-"):
         raise MirrorError("GITCODE_REHEARSAL_TAG_INVALID")
+    if probe_upload and not rehearsal:
+        raise MirrorError("GITCODE_PROBE_REQUIRES_REHEARSAL")
 
     if sync_code:
         sync_source(repository, tag, target_commitish, token)
@@ -375,7 +378,10 @@ def mirror(
         )
         if not files:
             raise MirrorError("GITCODE_RELEASE_ASSETS_EMPTY")
-        files.append(mirror_manifest)  # latest.json is intentionally uploaded last.
+        if probe_upload:
+            files = [min(files, key=lambda path: path.stat().st_size)]
+        else:
+            files.append(mirror_manifest)  # latest.json is intentionally uploaded last.
 
         existing = asset_names(release(owner, repo, token, tag))
         for path in files:
@@ -395,7 +401,8 @@ def mirror(
             )
             if (latest_after or {}).get("tag_name") != (latest_before or {}).get("tag_name"):
                 raise MirrorError("GITCODE_REHEARSAL_CHANGED_LATEST")
-            print(f"Rehearsal passed (pre-release retained): https://gitcode.com/{owner}/{repo}/releases/tag/{tag}")
+            scope = "Small-file connectivity probe" if probe_upload else "Full release rehearsal"
+            print(f"{scope} passed (pre-release retained): https://gitcode.com/{owner}/{repo}/releases/tag/{tag}")
             return
 
         # Only after all files exist do we expose this Release as GitCode's latest.
@@ -436,6 +443,7 @@ def main() -> int:
     parser.add_argument("--target-commitish", required=True)
     parser.add_argument("--rehearsal", action="store_true")
     parser.add_argument("--sync-code", action="store_true")
+    parser.add_argument("--probe-upload", action="store_true")
     parser.add_argument(
         "--token",
         default=os.environ.get("GITCODE_ACCESS_TOKEN", ""),
@@ -451,6 +459,7 @@ def main() -> int:
         args.target_commitish.strip(),
         rehearsal=args.rehearsal,
         sync_code=args.sync_code,
+        probe_upload=args.probe_upload,
     )
     return 0
 

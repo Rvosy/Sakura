@@ -165,7 +165,8 @@ def test_public_download_compares_actual_bytes(tmp_path, monkeypatch, actual, ex
 
 
 @pytest.mark.parametrize("fail_download", [False, True])
-def test_rehearsal_uploads_real_assets_and_never_promotes_latest(tmp_path, monkeypatch, fail_download) -> None:
+@pytest.mark.parametrize("probe_upload", [False, True])
+def test_rehearsal_uploads_real_assets_and_never_promotes_latest(tmp_path, monkeypatch, fail_download, probe_upload) -> None:
     (tmp_path / "latest.json").write_text(json.dumps(_manifest()), encoding="utf-8")
     (tmp_path / "asset.zip").write_bytes(b"package")
     remote = None
@@ -191,11 +192,11 @@ def test_rehearsal_uploads_real_assets_and_never_promotes_latest(tmp_path, monke
     monkeypatch.setattr(gitcode_mirror, "verify_download", verify)
     if fail_download:
         with pytest.raises(MirrorError, match="download failed"):
-            gitcode_mirror.mirror("Rvosy/Sakura", "mirror-test-one", tmp_path, "secret", "a" * 40, rehearsal=True)
+            gitcode_mirror.mirror("Rvosy/Sakura", "mirror-test-one", tmp_path, "secret", "a" * 40, rehearsal=True, probe_upload=probe_upload)
     else:
-        gitcode_mirror.mirror("Rvosy/Sakura", "mirror-test-one", tmp_path, "secret", "a" * 40, rehearsal=True)
-        assert verify.call_count == 2
-    assert uploaded == ["asset.zip", "latest.json"]
+        gitcode_mirror.mirror("Rvosy/Sakura", "mirror-test-one", tmp_path, "secret", "a" * 40, rehearsal=True, probe_upload=probe_upload)
+        assert verify.call_count == (1 if probe_upload else 2)
+    assert uploaded == (["asset.zip"] if probe_upload else ["asset.zip", "latest.json"])
     assert all(method != "PATCH" for method, _, _ in calls)
 
 
