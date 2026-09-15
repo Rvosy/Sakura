@@ -64,5 +64,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0050：当前角色编辑局部更新，角色切换保留 generation 隔离](0050-current-character-local-refresh.md)
 - [ADR-0051：切换角色保留可复用插件与推理进程](0051-character-switch-retains-engines.md)
 
+- [ADR-0052：MCP 客户端作为可复用系统组件](0052-mcp-client-system-component.md)
+
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

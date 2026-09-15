@@ -13,7 +13,6 @@ from pathlib import Path, PureWindowsPath
 
 import yaml
 
-from app.agent.mcp.config import load_mcp_config
 from app.agent.reminders import ReminderStore
 from app.config.character_loader import CharacterRegistry
 from app.config.character_studio import CharacterStudioDoc, CharacterStudioService
@@ -312,7 +311,6 @@ def run_legacy_import(
                 import_id=import_id,
             )
             _validate_current_settings(payload, import_id=import_id)
-            load_mcp_config(payload / "config" / "mcp.yaml")
             compatibility_fallbacks = configuration_counts.get(
                 "configCompatibilityFallbacks", 0
             )
@@ -341,22 +339,17 @@ def run_legacy_import(
                 "completed",
                 files=configuration_counts.get("config", 0),
                 fallbacks=compatibility_fallbacks,
-                quarantined_servers=configuration_counts.get(
-                    "mcpServersQuarantined", 0
-                ),
             )
         except Exception as exc:
             if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
                 raise
             shutil.rmtree(payload / "config", ignore_errors=True)
             from app.plugins.inventory import PluginDesiredStateStore
-            from app.config.web_plugin_migration import PLUGIN_ID
+            web_plugin_id = "sakura.web"
 
-            # Configuration quarantine must not turn an unreadable old MCP
-            # switch into a fresh-install default on the next Core startup.
             existing_switches = PluginDesiredStateStore(target).read()
-            web_enabled = existing_switches.get(PLUGIN_ID, not (source / "data/config/mcp.yaml").exists())
-            PluginDesiredStateStore(payload).set(PLUGIN_ID, web_enabled)
+            web_enabled = existing_switches.get(web_plugin_id, True)
+            PluginDesiredStateStore(payload).set(web_plugin_id, web_enabled)
             quarantine = (
                 payload
                 / "data"
@@ -1871,12 +1864,6 @@ def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
     if config.config_problem is not None and config.config_problem.state == "failed":
         raise LegacyImportError(config.config_problem.code, "validating")
     _validate_current_settings(staged, import_id=import_id)
-    try:
-        load_mcp_config(staged / "config" / "mcp.yaml")
-    except Exception as exc:  # noqa: BLE001 - expose only a stable, content-free code
-        raise LegacyImportError(
-            "LEGACY_MCP_VALIDATION_FAILED", "validating", "config/mcp.yaml"
-        ) from exc
     try:
         ReminderStore(staged / "data" / "reminders.json").list_reminders({})
     except Exception as exc:  # noqa: BLE001 - legacy content must not cross the boundary

@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-15
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -47,7 +47,7 @@ legacy 行为与数据
 
 ## Assistant 与未来 Agent 的边界
 
-当前代码位于 `app/agent/` 下的 Chat Pipeline、Memory、Tools、MCP 和相关插件能力属于现有 Sakura Assistant 产品能力，必须进入本台账。它们不能因为模块名包含 `agent` 而被延期为可选的新平台。
+当前代码位于 `app/agent/` 下的 Chat Pipeline、Memory、Tools 和相关插件能力属于现有 Sakura Assistant 产品能力，必须进入本台账。它们不能因为模块名包含 `agent` 而被延期为可选的新平台。
 
 未来通用自治任务编排、多 Agent Runtime、任务图和通用 Capability Broker 不属于本轮必备功能，可以保持可选或延期。
 
@@ -65,7 +65,7 @@ legacy 行为与数据
 | CAP-008 | Memory 检索、写入、整理和外部存储 | 无 Qt Memory Adapter；错误降级不破坏聊天 | WP-4-01 | 本地模型、Qdrant、SQLite、子进程 | planned |
 | CAP-009 | 内置 Tools 与工具结果 | Core ToolRegistry 直接执行；参数、generation 和 contribution identity 由边界校验 | WP-4-02 | 长任务、路径、错误返回 | implemented |
 | CAP-010 | 工具授权交互 | 当前响应式助手不做二次确认；未来自主 Agent 权限另行设计 | ADR-0031 | 不保留未启用协议 | approved-replacement |
-| CAP-011 | MCP 配置、启动、工具调用和清理 | Core MCP bridge 属于受控 generation 进程树 | WP-4-03 | command、进程组、stdio、凭据 | planned |
+| CAP-011 | MCP 插件注册、调用和清理 | 基础组件提供 Service，配置与界面由消费插件负责；见 [MCP 组件](mcp-system-component.md) | WP-4-03 | command、进程组、stdio、凭据 | implemented |
 | CAP-012 | Python 插件、context/event/tool 扩展 | Plugin v3 一次拓扑加载、三态插件和整 Worker 重建 | WP-4-04 | 插件私有数据、子进程、路径 | implemented |
 | CAP-013 | TTS 合成、参考音频、本地服务 | Python 合成 + 已批准播放 backend | WP-4-05 | 音频设备、codec、模型子进程 | planned |
 | CAP-014 | 播放、停止、队列和设备错误恢复 | `audio.*` 所有权明确；聊天不被播放失败拖垮 | WP-4-05 | Windows/macOS/Linux 音频栈 | planned |

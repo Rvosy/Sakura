@@ -58,11 +58,10 @@ const REQUIRED_CAPABILITIES: [&str; 5] = [
     "core.initialize",
     "core.snapshot",
 ];
-const OPTIONAL_CAPABILITIES: [&str; 7] = [
+const OPTIONAL_CAPABILITIES: [&str; 6] = [
     "transport.concurrent-router",
     "settings.provider-model",
     "assistant.tools-v1",
-    "assistant.mcp-v1",
     "assistant.plugins-v1",
     "assistant.tts-v1",
     "assistant.screen-capture-v2",
@@ -2646,7 +2645,6 @@ mod tests {
                 "transport.concurrent-router",
                 "settings.provider-model",
                 "assistant.tools-v1",
-                "assistant.mcp-v1",
                 "assistant.plugins-v1",
                 "assistant.tts-v1",
                 "assistant.screen-capture-v2"

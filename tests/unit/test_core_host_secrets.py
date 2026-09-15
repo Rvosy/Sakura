@@ -67,7 +67,7 @@ def test_host_config_repr_excludes_generation_credential() -> None:
 def test_reader_and_readiness_repr_hide_provider_secrets(tmp_path: Path) -> None:
     root = _fresh_secret_root(tmp_path)
     read_result = CoreConfigReader().read(root)
-    readiness = AssistantAdapter(root, tool_registry=ToolRegistry(), mcp_provider=None).initialize(Event())
+    readiness = AssistantAdapter(root, tool_registry=ToolRegistry()).initialize(Event())
 
     for output in (repr(read_result), repr(readiness)):
         assert PLANTED_API_KEY not in output
@@ -79,7 +79,7 @@ def test_reader_and_readiness_repr_hide_provider_secrets(tmp_path: Path) -> None
 
 def test_public_projection_contains_no_private_provider_prompt_or_paths(tmp_path: Path) -> None:
     root = _fresh_secret_root(tmp_path)
-    readiness = AssistantAdapter(root, tool_registry=ToolRegistry(), mcp_provider=None).initialize(Event())
+    readiness = AssistantAdapter(root, tool_registry=ToolRegistry()).initialize(Event())
     assert readiness.current_character_summary is not None
     serialized = json.dumps(readiness.current_character_summary, ensure_ascii=False)
 
@@ -120,7 +120,7 @@ def test_sanitized_character_issue_and_failure_surfaces_do_not_leak(
         encoding="utf-8",
     )
 
-    readiness = AssistantAdapter(root, tool_registry=ToolRegistry(), mcp_provider=None).initialize(Event())
+    readiness = AssistantAdapter(root, tool_registry=ToolRegistry()).initialize(Event())
     observed = "\n".join((repr(readiness), readiness.message, capsys.readouterr().err))
 
     for secret in (

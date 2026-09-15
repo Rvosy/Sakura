@@ -458,7 +458,6 @@ def _has_recognizable_legacy_data(source: Path) -> bool:
             "api.yaml",
             "system_config.yaml",
             "characters.yaml",
-            "mcp.yaml",
             "plugins.yaml",
         )
     ):

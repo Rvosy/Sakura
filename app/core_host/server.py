@@ -20,7 +20,6 @@ from app.storage.runtime_roots import RuntimeRoots
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
 
 if TYPE_CHECKING:
-    from app.agent.mcp.provider import MCPToolProvider
     from app.agent.tools import ToolRegistry
 
 
@@ -35,7 +34,6 @@ CAPABILITIES = (
 ROUTER_CAPABILITY = "transport.concurrent-router"
 PROVIDER_SETTINGS_CAPABILITY = "settings.provider-model"
 TOOLS_CAPABILITY = "assistant.tools-v1"
-MCP_CAPABILITY = "assistant.mcp-v1"
 PLUGINS_CAPABILITY = "assistant.plugins-v1"
 TTS_CAPABILITY = "assistant.tts-v1"
 SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"
@@ -44,7 +42,6 @@ SUPPORTED_CAPABILITIES = (
     ROUTER_CAPABILITY,
     PROVIDER_SETTINGS_CAPABILITY,
     TOOLS_CAPABILITY,
-    MCP_CAPABILITY,
     PLUGINS_CAPABILITY,
     TTS_CAPABILITY,
     SCREEN_CAPTURE_CAPABILITY,
@@ -132,11 +129,11 @@ class NegotiationError(ValueError):
 
 
 def _default_initializer_factory(
-    roots: RuntimeRoots, tool_registry: ToolRegistry, mcp_provider: MCPToolProvider | None,
+    roots: RuntimeRoots, tool_registry: ToolRegistry,
 ) -> object:
     from .assistant_adapter import AssistantAdapter
 
-    return AssistantAdapter(roots, tool_registry=tool_registry, mcp_provider=mcp_provider)
+    return AssistantAdapter(roots, tool_registry=tool_registry)
 
 
 @dataclass
@@ -154,7 +151,7 @@ class ReadinessController:
         config: HostConfig,
         *,
         initializer_factory: Callable[
-            [RuntimeRoots, ToolRegistry, MCPToolProvider | None], object
+            [RuntimeRoots, ToolRegistry], object
         ] = _default_initializer_factory,
     ) -> None:
         self._config = config
@@ -176,11 +173,9 @@ class ReadinessController:
         self._initializer_close_thread: threading.Thread | None = None
         self._background_close_error: BaseException | None = None
         self._tools_enabled = False
-        self._mcp_enabled = False
         self._plugins_enabled = False
         self._session_published_callback: Callable[[], None] | None = None
         self._application_tools: ToolRegistry | None = None
-        self._application_mcp: MCPToolProvider | None = None
         self._plugin_application: object | None = None
         self._chat_boundary: object | None = None
 
@@ -205,11 +200,6 @@ class ReadinessController:
                 raise RuntimeError("tools capability must be selected before initialization")
             self._tools_enabled = True
 
-    def enable_mcp(self) -> None:
-        with self._lock:
-            if self._worker is not None:
-                raise RuntimeError("MCP capability must be selected before initialization")
-            self._mcp_enabled = True
 
     def enable_plugins(self) -> None:
         with self._lock:
@@ -279,9 +269,6 @@ class ReadinessController:
                 return None
             return self._plugin_application
 
-    def published_mcp_provider(self) -> MCPToolProvider | None:
-        with self._lock:
-            return None if self._closed else self._application_mcp
 
     def apply_provider_configuration(self) -> None:
         """Apply Provider settings or replace/retire only the Assistant Session."""
@@ -512,8 +499,6 @@ class ReadinessController:
             initializer = self._claim_initializer_close_locked()
             plugin_application = self._plugin_application
             self._plugin_application = None
-            application_mcp = self._application_mcp
-            self._application_mcp = None
         if initializer is not None:
             self._start_initializer_close(initializer)
         if worker is not None:
@@ -522,7 +507,7 @@ class ReadinessController:
             close_thread = self._initializer_close_thread
         if close_thread is not None:
             close_thread.join(timeout=max(0.0, deadline - monotonic()))
-        self._close_application_resources([application_mcp, plugin_application])
+        self._close_application_resources([plugin_application])
         with self._lock:
             background_error = self._background_close_error
             self._background_close_error = None
@@ -566,7 +551,6 @@ class ReadinessController:
         try:
             with self._lock:
                 tools_enabled = self._tools_enabled
-                mcp_enabled = self._mcp_enabled
                 plugins_enabled = self._plugins_enabled
             if tools_enabled:
                 from app.core_host.tools import create_runtime_v2_tool_registry
@@ -576,20 +560,6 @@ class ReadinessController:
                 from app.agent.tools import ToolRegistry
 
                 application_tools = ToolRegistry([])
-            application_mcp: MCPToolProvider | None = None
-            if plugins_enabled:
-                from app.config.web_plugin_migration import prepare_bundled_web_plugin
-
-                prepare_bundled_web_plugin(self._config.roots)
-            if mcp_enabled:
-                from app.agent.mcp.provider import start_mcp_tools_from_config
-
-                application_mcp = start_mcp_tools_from_config(
-                    self._config.user_root,
-                    application_tools,
-                    distribution_root=self._config.distribution_root,
-                )
-                unpublished_resources.append(application_mcp)
             plugin_application: object | None = None
             if plugins_enabled:
                 from app.core_host.plugin_application import PluginApplicationHost
@@ -609,14 +579,13 @@ class ReadinessController:
                 application_closed = self._closed
                 if not application_closed:
                     self._application_tools = application_tools
-                    self._application_mcp = application_mcp
                     self._plugin_application = plugin_application
                     unpublished_resources.clear()
             if application_closed:
                 return
 
             initializer = self._initializer_factory(
-                self._config.roots, application_tools, application_mcp,
+                self._config.roots, application_tools,
             )
             with self._lock:
                 self._initializer = initializer
@@ -930,7 +899,7 @@ class ControlDispatcher:
         config: HostConfig,
         *,
         initializer_factory: Callable[
-            [RuntimeRoots, ToolRegistry, MCPToolProvider | None], object
+            [RuntimeRoots, ToolRegistry], object
         ] = _default_initializer_factory,
         chat_boundary: object | None = None,
     ) -> None:
@@ -1071,8 +1040,6 @@ class ControlDispatcher:
     def published_plugin_application(self) -> object | None:
         return self._readiness.published_plugin_application()
 
-    def published_mcp_provider(self) -> MCPToolProvider | None:
-        return self._readiness.published_mcp_provider()
 
     def apply_provider_configuration(self) -> None:
         self._readiness.apply_provider_configuration()
@@ -1352,8 +1319,6 @@ class ControlDispatcher:
             getattr(self._provider_settings_boundary, "enable")()
         if TOOLS_CAPABILITY in selected:
             self._readiness.enable_tools()
-        if MCP_CAPABILITY in selected:
-            self._readiness.enable_mcp()
         if PLUGINS_CAPABILITY in selected:
             self._readiness.enable_plugins()
         return {
@@ -1417,7 +1382,6 @@ def run_host(
     )
     from .composer_tools import COMPOSER_TOOL_REQUEST_NAMES, ComposerToolsBoundary
     from .history import HISTORY_REQUEST_NAMES, HistoryBoundary
-    from .mcp_status import MCP_STATUS_REQUEST_NAMES, MCPStatusBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .screen_awareness_settings import (
@@ -1506,12 +1470,6 @@ def run_host(
                 )(settings),
             ),
         )
-        mcp_status = MCPStatusBoundary(
-            config.generation_id,
-            config.generation_credential,
-            config.user_root,
-            mcp_provider_getter=getattr(dispatcher, "published_mcp_provider", lambda: None),
-        )
         plugin_settings = PluginSettingsBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1591,19 +1549,6 @@ def run_host(
                             ),
                         )
                     return tool_settings.handle(request)
-                if request.get("name") in MCP_STATUS_REQUEST_NAMES:
-                    if MCP_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "MCP capability was not negotiated",
-                            ),
-                        )
-                    return mcp_status.handle(request)
                 if request.get("name") in PLUGIN_SETTINGS_REQUEST_NAMES:
                     if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
                         return response(
@@ -1689,7 +1634,6 @@ def run_host(
                     "chat.send",
                     *SETTINGS_REQUEST_NAMES,
                     *TOOL_SETTINGS_REQUEST_NAMES,
-                    *MCP_STATUS_REQUEST_NAMES,
                     *PLUGIN_SETTINGS_REQUEST_NAMES,
                     *COMPOSER_TOOL_REQUEST_NAMES,
                     *TTS_REQUEST_NAMES,

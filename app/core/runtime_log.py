@@ -162,17 +162,6 @@ _KEY_EVENT_MESSAGES = {
     ("startup", "后台启动服务已创建"): ("startup.background_services.created", "后台启动服务已创建"),
     ("startup", "后台启动服务已注入窗口"): ("startup.background_services.injected", "后台启动服务已注入窗口"),
     ("pluginmanager", "插件已加载"): ("plugin.loaded", "插件已加载"),
-    ("mcp", "服务器工具注册完成"): ("mcp.server.ready", "MCP 服务器工具注册完成"),
-    ("mcp", "MCP 工具注册完成"): ("mcp.ready", "MCP 工具注册完成"),
-    ("mcp", "MCP 配置未启用"): ("mcp.config.disabled", "MCP 未启用"),
-    ("mcp", "连接服务器并读取工具"): ("mcp.server.connecting", "正在连接 MCP 服务器"),
-    ("mcp", "连接或读取工具失败，已跳过"): ("mcp.server.failed", "MCP 服务器连接失败，已跳过"),
-    ("mcp", "工具名冲突，已跳过"): ("mcp.tool.skipped", "MCP 工具名冲突，已跳过"),
-    ("mcp", "配置读取失败，已跳过 MCP"): ("mcp.config.failed", "MCP 配置读取失败，已跳过"),
-    ("mcp", "没有注册任何 MCP 工具"): ("mcp.ready", "没有可用的 MCP 工具"),
-    ("mcp", "工具调用失败"): ("mcp.tool.failed", "MCP 工具调用失败"),
-    ("mcp", "关闭连接失败"): ("mcp.close.failed", "MCP 连接关闭失败"),
-    ("mcp", "MCP 连接清理超过总时限"): ("mcp.close.timeout", "MCP 连接清理超时"),
     ("context", "Prompt 依赖已就绪"): ("context.dependencies.ready", "Prompt 依赖已就绪"),
     ("context", "Prompt 依赖未就绪，继续降级对话"): ("context.dependencies.degraded", "Prompt 依赖未就绪，继续降级对话"),
     ("memory", "开始后台记忆整理"): ("memory.curation.started", "开始后台记忆整理"),
@@ -193,7 +182,6 @@ _CHANNEL_ALIASES = {
     "toolregistry": "tool",
     "tool": "tool",
     "tts": "tts",
-    "mcp": "mcp",
     "plugin": "plugin",
     "pluginmanager": "plugin",
     "plugineventbus": "plugin",
@@ -537,7 +525,7 @@ def _default_verbosity(
         return 3
     if key in _KEY_EVENT_MESSAGES or event_name == "chat.finished":
         return 1
-    if event_name.startswith(("startup.", "crash.", "api.", "tts.", "tool.", "mcp.", "plugin.")):
+    if event_name.startswith(("startup.", "crash.", "api.", "tts.", "tool.", "plugin.")):
         return 1
     if channel_key in {"ui", "input", "petwindow"}:
         return 5

@@ -871,7 +871,7 @@ fn spawn_and_initialize(
         match commands.try_recv() {
             Ok(ShellCommand::Restart) => {
                 // Settings become writable as soon as Core transport is ready,
-                // while Assistant/MCP initialization may still be running.
+                // while Assistant initialization may still be running.
                 // Coalesce restarts until readiness is stable so shutdown does
                 // not race the initializer and report SHUTDOWN_DURING_INITIALIZE.
                 restart_after_readiness = true;
