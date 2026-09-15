@@ -13,6 +13,7 @@ function fixture(t) {
   const context = vm.createContext({
     presentationError: element,
     recoverableErrorTimer: null,
+    recoverableErrorMessage: "",
     setTimeout,
     clearTimeout,
   });
@@ -26,7 +27,9 @@ test("every bottom warning clears after five seconds, including ASR controls", t
   // The ASR callback replaces the text with a message and action buttons.
   f.element.textContent = "语音识别失败重试打开设置";
   f.element.dataset.asrError = "true";
-  t.mock.timers.tick(4999);
+  t.mock.timers.tick(4000);
+  f.show("语音识别失败");
+  t.mock.timers.tick(999);
   assert.equal(f.element.hidden, false);
   t.mock.timers.tick(1);
   assert.equal(f.element.hidden, true);

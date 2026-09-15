@@ -142,6 +142,7 @@ const chatPhase = document.querySelector("#chat-phase");
 const characterName = document.querySelector("#character-name");
 const presentationError = document.querySelector("#presentation-error");
 let recoverableErrorTimer = null;
+let recoverableErrorMessage = "";
 const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
@@ -252,8 +253,9 @@ async function listenAppEvent(eventName, handler) {
 
 function showRecoverableError(message) {
   const text = String(message || "角色表现暂时不可用");
-  if (!presentationError.hidden && presentationError.textContent === text) return;
+  if (!presentationError.hidden && recoverableErrorMessage === text) return;
   clearRecoverableError();
+  recoverableErrorMessage = text;
   presentationError.textContent = text;
   presentationError.hidden = false;
   recoverableErrorTimer = setTimeout(clearRecoverableError, 5000);
@@ -262,6 +264,7 @@ function showRecoverableError(message) {
 function clearRecoverableError() {
   clearTimeout(recoverableErrorTimer);
   recoverableErrorTimer = null;
+  recoverableErrorMessage = "";
   delete presentationError.dataset.asrError;
   presentationError.hidden = true;
   presentationError.textContent = "";
