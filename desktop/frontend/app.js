@@ -141,6 +141,7 @@ const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
 const characterName = document.querySelector("#character-name");
 const presentationError = document.querySelector("#presentation-error");
+let recoverableErrorTimer = null;
 const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
@@ -250,12 +251,17 @@ async function listenAppEvent(eventName, handler) {
 }
 
 function showRecoverableError(message) {
-  delete presentationError.dataset.asrError;
-  presentationError.textContent = String(message || "角色表现暂时不可用");
+  const text = String(message || "角色表现暂时不可用");
+  if (!presentationError.hidden && presentationError.textContent === text) return;
+  clearRecoverableError();
+  presentationError.textContent = text;
   presentationError.hidden = false;
+  recoverableErrorTimer = setTimeout(clearRecoverableError, 5000);
 }
 
 function clearRecoverableError() {
+  clearTimeout(recoverableErrorTimer);
+  recoverableErrorTimer = null;
   delete presentationError.dataset.asrError;
   presentationError.hidden = true;
   presentationError.textContent = "";
@@ -847,7 +853,7 @@ function visualUnavailable(code, error, stage) {
   currentSurface = { width: 320, height: 480, assetKey: null, assetId: null };
   renderedPortrait = "";
   void activatePortraitHitTest("").then(() => syncPortraitAppearance("")).catch(() => {});
-  showRecoverableError("角色表现暂不可用，你仍可以继续聊天。", { autoHide: true });
+  showRecoverableError("角色表现暂不可用，你仍可以继续聊天。");
   // Core already recorded failed binds. Here only the renderer owns an exception.
   if (error) runtimeDiagnostics.reportError(error, { command: "visual_renderer", code,
     stage: typeof stage === "string" ? stage : "visual.renderer" });
@@ -1041,7 +1047,7 @@ const composerToolRegistry = createComposerToolRegistry({
   list: composerToolList,
   invoke,
   beforeActivate: () => screenAttachment.close(),
-  onError: (message) => showRecoverableError(message, { autoHide: true }),
+  onError: (message) => showRecoverableError(message),
 });
 
 function inputIsPinned() {
@@ -1058,7 +1064,7 @@ screenAttachment = createScreenAttachmentController({
   captureItem: captureScreen,
   attachmentList,
   invoke,
-  onError: (message) => showRecoverableError(message, { autoHide: true }),
+  onError: (message) => showRecoverableError(message),
   onAttachmentsChanged: () => adaptiveSurface.invalidate(),
   onStateChanged: () => surfaceVisibilityController?.setInputPinned(inputIsPinned()),
   beforeOpen: () => composerToolRegistry.refresh(),
@@ -1123,7 +1129,7 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
   surfaceVisibilityController = createSurfaceVisibilityController({
     settings: bubbleAutoHideSettings,
     onVisibilityChange: applySurfaceVisibility,
-    onError: () => showRecoverableError("桌宠控件暂时无法更新。", { autoHide: true }),
+    onError: () => showRecoverableError("桌宠控件暂时无法更新。"),
   });
   surfaceHoverTracker = createSurfaceHoverTracker({
     onHoverChange: (active) => surfaceVisibilityController.setHoverActive(active),
@@ -1996,7 +2002,7 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
       })
       .catch(() => {
         if (!disposed && revision === portraitHitRevision) {
-          showRecoverableError("桌宠缩放预览暂时不可用。", { autoHide: true });
+          showRecoverableError("桌宠缩放预览暂时不可用。");
         }
         return null;
       });
@@ -2034,7 +2040,7 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
     void interactionLatencyTrace.flush();
   }).catch(() => {
     if (!disposed && revision === portraitHitRevision) {
-      showRecoverableError("桌宠裁剪区域恢复失败；再次调整缩放可重试。", { autoHide: true });
+      showRecoverableError("桌宠裁剪区域恢复失败；再次调整缩放可重试。");
     }
   });
 });
@@ -2165,6 +2171,7 @@ document.addEventListener("visibilitychange", () => {
 function dispose() {
   if (disposed) return;
   disposed = true;
+  clearRecoverableError();
   asrController?.dispose();
   asrAvailability.dispose();
   waveform.stop();

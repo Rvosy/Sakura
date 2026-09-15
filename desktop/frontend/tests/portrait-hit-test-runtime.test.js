@@ -47,7 +47,7 @@ test("a late failure from the previous form cannot warn after the replacement su
   assert.deepEqual(f.commits, [surface]);
 });
 
-test("a current failure remains visible until a successful hit-region update", async () => {
+test("a successful hit-region update clears its current warning early", async () => {
   const f = fixture();
   const failed = f.activate("current");
   const failure = new Error("native update failed");
