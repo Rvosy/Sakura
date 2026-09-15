@@ -379,7 +379,12 @@ def mirror(
         if not files:
             raise MirrorError("GITCODE_RELEASE_ASSETS_EMPTY")
         if probe_upload:
-            files = [min(files, key=lambda path: path.stat().st_size)]
+            files = sorted(
+                (path for path in files if path.stat().st_size <= 2 * 1024 * 1024),
+                key=lambda path: path.stat().st_size,
+            )
+            if not files:
+                raise MirrorError("GITCODE_PROBE_SMALL_ASSETS_MISSING")
         else:
             files.append(mirror_manifest)  # latest.json is intentionally uploaded last.
 
