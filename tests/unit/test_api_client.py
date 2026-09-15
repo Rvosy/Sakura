@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import json
+import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -281,6 +284,83 @@ def test_response_format_falls_back_when_provider_rejects(monkeypatch) -> None: 
 
     assert "response_format" in calls[0]
     assert "response_format" not in calls[1]
+
+
+@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
+def test_trailing_system_rejection_retries_and_records_compatibility(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, method: str,
+) -> None:
+    recorder = AgentTraceRecorder(tmp_path)
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", "key", "model"),
+        agent_trace_recorder=recorder,
+    )
+    payloads = []
+    metrics = []
+
+    def read_response(_opener, request, **_kwargs):  # type: ignore[no-untyped-def]
+        payload = json.loads(request.data)
+        payloads.append(payload)
+        if payload["messages"][-1]["role"] == "system":
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "Bad Request", {},
+                io.BytesIO(b'{"error":{"message":"System message must be at the beginning."}}'),
+            )
+        return b'{"choices":[{"message":{"role":"assistant","content":"OK"}}]}', 200
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    monkeypatch.setattr("app.llm.api_client.submit_telemetry_model_call", metrics.append)
+
+    with recorder.operation("trailing-system", finalize_external=True):
+        for _ in range(2):
+            reply = getattr(client, method)(
+                "private system prompt", [{"role": "user", "content": "private user text"}],
+                runtime_context="private runtime context",
+            )
+            assert (reply if method == "complete_raw" else reply.content) == "OK"
+
+    assert [[message["role"] for message in payload["messages"]] for payload in payloads] == [
+        ["system", "user", "system"], ["system", "user", "user"], ["system", "user", "user"],
+    ]
+    assert client.runtime_context_role == "user"
+    assert [metric["outcome"] for metric in metrics] == ["failed", "success", "success"]
+    assert metrics[0]["request"]["httpStatus"] == 400
+    assert metrics[0]["request"]["faultDomain"] == "compatibility"
+    assert metrics[0]["request"]["reasonCode"] == "MODEL_PARAMETER_UNSUPPORTED"
+    assert metrics[1]["request"]["compatibilityFallback"] == "runtime_context_role"
+    assert all(metric["operationId"] == "trailing-system" for metric in metrics)
+    assert [metric["modelCall"] for metric in metrics] == [1, 2, 3]
+    assert "private" not in json.dumps(metrics)
+
+
+@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
+@pytest.mark.parametrize(
+    ("message", "runtime_context", "messages", "attempts"),
+    [
+        ("System message must be at the beginning.", "", [{"role": "user", "content": "hi"}], 1),
+        ("Unknown model", "context", [{"role": "user", "content": "hi"}], 1),
+        ("System message must be at the beginning.", "context", [{"role": "user", "content": "hi"}], 2),
+        ("System message must be at the beginning.", "context", [{"role": "tool", "tool_call_id": "call-1", "content": "ok"}], 1),
+    ],
+)
+def test_runtime_context_fallback_only_changes_an_actual_trailing_system_once(
+    monkeypatch: pytest.MonkeyPatch, method: str, message: str,
+    runtime_context: str, messages: list[dict[str, Any]], attempts: int,
+) -> None:
+    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", "model"))
+    payloads = []
+
+    def read_response(_opener, request, **_kwargs):  # type: ignore[no-untyped-def]
+        payloads.append(json.loads(request.data))
+        raise urllib.error.HTTPError(
+            request.full_url, 400, "Bad Request", {},
+            io.BytesIO(json.dumps({"error": {"message": message}}).encode()),
+        )
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    with pytest.raises(ApiRequestError):
+        getattr(client, method)("system", messages, runtime_context=runtime_context)
+    assert len(payloads) == attempts
 
 
 def test_compatibility_fallback_attempts_are_bounded_by_shared_policy(monkeypatch) -> None:  # type: ignore[no-untyped-def]

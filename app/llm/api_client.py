@@ -364,8 +364,7 @@ class OpenAICompatibleClient:
             )
         except ApiRequestError as exc:
             if (
-                runtime_context.strip()
-                and runtime_context_role == "system"
+                runtime_context_placement == "tail_system"
                 and _is_runtime_context_role_unsupported_error(exc)
             ):
                 self._runtime_context_role = "user"
@@ -504,8 +503,7 @@ class OpenAICompatibleClient:
             )
         except ApiRequestError as exc:
             if (
-                runtime_context.strip()
-                and runtime_context_role == "system"
+                runtime_context_placement == "tail_system"
                 and _is_runtime_context_role_unsupported_error(exc)
             ):
                 self._runtime_context_role = "user"
@@ -1221,6 +1219,8 @@ def _messages_with_runtime_context(
 
 def _is_runtime_context_role_unsupported_error(exc: ApiRequestError) -> bool:
     text = str(exc).lower()
+    if re.search(r"\bsystem messages? must be at the beginning(?:[.!\"']|$)", text):
+        return True
     role_markers = ("system", "role", "messages")
     rejection_markers = (
         "unsupported", "not support", "invalid", "must be first",
