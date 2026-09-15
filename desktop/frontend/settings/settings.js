@@ -978,7 +978,7 @@ function currentCharacterHasDrafts() {
   return hasCharacterScopedDrafts({
     appearanceDirty: runtimeAppearanceController?.isDirty(),
     voiceDirty: runtimeVoiceController?.isDirty(),
-    memoryEditorDraftCount: (runtimePluginController?.characterDraftCount() || 0),
+    collectionDraftCount: (runtimePluginController?.characterCollectionDraftCount() || 0),
   });
 }
 
@@ -1390,8 +1390,9 @@ async function refreshRuntimeVoiceCurrent() {
   await runtimeVoiceController.refreshCurrent({ preserveDraft: true });
 }
 
-async function saveRuntimeSettings() {
-  if (runtimePluginController?.hasCollectionDrafts()) {
+async function saveRuntimeSettings({ keepGlobalCollectionDrafts = false } = {}) {
+  if (runtimePluginController?.hasCollectionDrafts()
+      && (!keepGlobalCollectionDrafts || runtimePluginController.characterCollectionDraftCount() > 0)) {
     throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
   }
   if (runtimeAsrController?.isDirty()) await runtimeAsrController.save();
@@ -1418,7 +1419,7 @@ async function saveRuntimeSettings() {
     result = await runtimeToolsController.save();
   }
   if (runtimePluginController?.isDirty()) {
-    result = await runtimePluginController.save();
+    result = await runtimePluginController.save({ keepGlobalCollectionDrafts });
     await runtimeProviderFeature?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
   }
@@ -1607,7 +1608,7 @@ fields.applyButton.addEventListener("click", async () => {
   setError("");
   setSubmissionBusy(true);
   try {
-    await saveRuntimeSettings();
+    await saveRuntimeSettings({ keepGlobalCollectionDrafts: true });
     notify("已应用。", "success");
   } catch (error) {
     setError(String(error));
@@ -1712,7 +1713,8 @@ async function startSettingsFrontend() {
     applyPreviewTheme: (theme) => runThemeTransition(() => applyThemeTokens(theme)),
     rebindSettings: rebindSettingsAfterCharacterSwitch,
     clearCharacterState: () => runtimePluginController?.clearCharacterState(),
-    renderMemorySurface: () => runtimePluginController?.renderMemorySurface(),
+    invalidateCollectionRequests: () => runtimePluginController?.invalidateCollectionRequests(),
+    renderPluginCollections: () => runtimePluginController?.renderCollections(),
     openPlugin: (installId, configure) => { showPage("plugins"); runtimePluginController?.openPlugin(installId, configure); },
   });
   window.__TAURI__?.event?.listen?.("sakura://character-catalog-changed", ({ payload } = {}) => {
@@ -1855,7 +1857,7 @@ async function startSettingsFrontend() {
         getAsrController: () => runtimeAsrController,
         removeOverlayAfterExit,
         showPage,
-        isMemoryTransitioning: () => runtimeCharacterFeature?.isTransitioning(),
+        isCharacterTransitioning: () => runtimeCharacterFeature?.isTransitioning(),
         hasPendingCharacterSelection: () => Boolean(runtimeCharacterFeature?.pendingCharacterId()),
       });
       runtimePluginController.initialize(await invoke("settings_plugins_get"));

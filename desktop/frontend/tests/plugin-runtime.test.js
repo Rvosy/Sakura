@@ -142,7 +142,7 @@ test("WP-4-04 plugin enable save uses the applied snapshot while the Core is reb
   assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_enabled_set"]);
   assert.deepEqual(controller.draft(), { enabledById: {}, settingsById: {} });
   assert.equal(applied.length, 2);
-  assert.deepEqual(applied[1][1], { preserveDraft: false, draft: null });
+  assert.deepEqual(applied[1][1], { preserveDraft: false, draft: null, keepGlobalCollectionDrafts: false });
 });
 
 test("unchanged plugin polling does not reapply the snapshot or repaint settings", async () => {

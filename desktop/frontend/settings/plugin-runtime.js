@@ -206,14 +206,14 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
   let rebindPromise = null;
   let refreshPromise = null;
 
-  function initialize(input, { preserveDraft = false } = {}) {
+  function initialize(input, { preserveDraft = false, keepGlobalCollectionDrafts = false } = {}) {
     const preserved = preserveDraft && current ? clone(readDraft()) : null;
     current = validatePluginSnapshot(input);
-    applySnapshot(current, { preserveDraft, draft: preserved });
+    applySnapshot(current, { preserveDraft, draft: preserved, keepGlobalCollectionDrafts });
     onDirty();
   }
 
-  async function bindCurrent({ preserveDraft }) {
+  async function bindCurrent({ preserveDraft, keepGlobalCollectionDrafts = false }) {
     if (rebindPromise) return rebindPromise;
     const deadline = Date.now() + 10_000;
     rebindPromise = (async () => {
@@ -225,7 +225,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         try {
           const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
           if (!current || JSON.stringify(next) !== JSON.stringify(current)) {
-            initialize(next, { preserveDraft });
+            initialize(next, { preserveDraft, keepGlobalCollectionDrafts });
           }
           return next;
         } catch (error) { lastError = error; }
@@ -258,7 +258,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     isDirty() {
       return Boolean(current && JSON.stringify(readDraft()) !== JSON.stringify({ enabledById: {}, settingsById: {} }));
     },
-    async save() {
+    async save({ keepGlobalCollectionDrafts = false } = {}) {
       if (!current) throw new Error("Plugin settings are not initialized");
       const settings = editableDraft(current, clone(readDraft()));
       const previousGeneration = current.coreGenerationId;
@@ -306,10 +306,10 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         }
         let next;
         if (hasDetailedSettings) {
-          next = await bindCurrent({ preserveDraft: false });
+          next = await bindCurrent({ preserveDraft: false, keepGlobalCollectionDrafts });
         } else {
           next = current;
-          initialize(next, { preserveDraft: false });
+          initialize(next, { preserveDraft: false, keepGlobalCollectionDrafts });
         }
         return Object.freeze({
           ...next,
