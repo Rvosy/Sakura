@@ -204,15 +204,36 @@ def test_rehearsal_uploads_real_assets_and_never_promotes_latest(tmp_path, monke
 def test_upload_handles_early_response_without_logging_signed_url(tmp_path, monkeypatch, capsys, status, exit_code) -> None:
     path = tmp_path / "asset.zip"
     path.write_bytes(b"package")
-    def run(args, **kwargs):
+    def run(args, config):
         assert "signed-secret" not in " ".join(args)
-        assert 'url = "https://upload.example/?sig=signed-secret"' in kwargs["input"]
-        assert 'header = "Content-Type: application/zip"' in kwargs["input"]
+        assert 'url = "https://upload.example/?sig=signed-secret"' in config
+        assert 'header = "Content-Type: application/zip"' in config
         return Mock(returncode=exit_code, stdout=f"{status}\n0\n0\n0.5\n1.2.3.4\nhttps://redirect.example/?sig=signed-secret")
-    monkeypatch.setattr(gitcode_mirror.subprocess, "run", run)
+    monkeypatch.setattr(gitcode_mirror, "run_upload", run)
     if status == "200":
         gitcode_mirror.put_file("https://upload.example/?sig=signed-secret", {"Content-Type": "application/zip"}, path)
     else:
         with pytest.raises(MirrorError, match=f"HTTP {status}"):
             gitcode_mirror.put_file("https://upload.example/?sig=signed-secret", {"Content-Type": "application/zip"}, path)
     assert "signed-secret" not in capsys.readouterr().out
+
+
+def test_live_upload_logs_only_protocol_status_not_credentials(monkeypatch, capsys) -> None:
+    process = Mock(stdin=Mock(), stdout=io.StringIO("200\n404\n100\n4\n1.2.3.4"),
+                   stderr=io.StringIO(
+                       "> PUT /object?signature=private HTTP/1.1\n"
+                       "> Authorization: secret\n"
+                       "> x-obs-callback: private\n"
+                       "< HTTP/1.1 100 Continue\n"
+                       "* upload completely sent off: 404 bytes\n"
+                       "< HTTP/1.1 200 OK\n"))
+    process.wait.return_value = 0
+    context = Mock()
+    context.__enter__ = Mock(return_value=process)
+    context.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(gitcode_mirror.subprocess, "Popen", Mock(return_value=context))
+    result = gitcode_mirror.run_upload(["curl", "--config", "-"], "private config")
+    assert result.returncode == 0
+    output = capsys.readouterr().out
+    assert "100" in output and "200" in output and "404 bytes" in output
+    assert "private" not in output and "secret" not in output and "Authorization" not in output

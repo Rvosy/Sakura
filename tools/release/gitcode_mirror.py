@@ -246,6 +246,28 @@ def rewrite_manifest(source: Path, destination: Path, *, repository: str, tag: s
     )
 
 
+def run_upload(command: list[str], config: str) -> subprocess.CompletedProcess:
+    """Stream only transport status/progress, never curl's credential headers."""
+    started = last_progress = time.monotonic()
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True) as process:
+        process.stdin.write(config)
+        process.stdin.close()
+        for line in process.stderr:
+            elapsed = time.monotonic() - started
+            status = re.match(r"< HTTP/[\d.]+ \d{3}", line)
+            completed = re.match(r"\* upload completely sent off: \d+ bytes", line)
+            if status or completed:
+                print(f"Upload transport ({elapsed:.0f}s): {(status or completed).group()}", flush=True)
+            elif re.match(r"^\s*\d+\s+\S+\s+\d+\s+\S+\s+\d+\s+\S+", line):
+                now = time.monotonic()
+                if now - last_progress >= 30:
+                    print(f"Upload progress ({elapsed:.0f}s): {line.strip()[:200]}", flush=True)
+                    last_progress = now
+        stdout = process.stdout.read()
+        return subprocess.CompletedProcess(command, process.wait(), stdout=stdout)
+
+
 def put_file(url: str, headers: dict[str, str], path: Path) -> None:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname:
@@ -263,13 +285,13 @@ def put_file(url: str, headers: dict[str, str], path: Path) -> None:
     print(f"Uploading {path.name}: {path.stat().st_size} bytes to {parsed.hostname}", flush=True)
     with tempfile.TemporaryDirectory(prefix="sakura-upload-") as temp:
         response = Path(temp) / "response"
-        result = subprocess.run(
+        result = run_upload(
             ["curl", "--config", "-", "--upload-file", str(path),
-             "--silent", "--show-error", "--fail-with-body",
+             "--verbose", "--show-error", "--fail-with-body",
              "--connect-timeout", "30", "--max-time", "1800",
              "--output", str(response), "--write-out",
              "%{http_code}\n%{size_upload}\n%{speed_upload}\n%{time_total}\n%{remote_ip}\n%{redirect_url}"],
-            input=config, capture_output=True, text=True, timeout=1830,
+            config,
         )
         fields = result.stdout.splitlines()
         status = fields[0] if fields else "000"
@@ -278,7 +300,10 @@ def put_file(url: str, headers: dict[str, str], path: Path) -> None:
             metrics["redirect_host"] = urllib.parse.urlsplit(fields[5]).hostname
         print(f"Upload result: {path.name}; {json.dumps(metrics)}", flush=True)
         if result.returncode or not status.startswith("2"):
-            detail = error_detail(response.read_bytes()[:8192], "") if response.exists() else ""
+            detail = ""
+            if response.exists():
+                with response.open("rb") as body:
+                    detail = error_detail(body.read(8192), "")
             raise MirrorError(f"GITCODE_UPLOAD_FAILED: {path.name}; curl={result.returncode}; HTTP {status}; {detail}")
 
 
