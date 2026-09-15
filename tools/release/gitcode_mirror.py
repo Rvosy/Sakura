@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import http.client
 import json
 import os
 import re
@@ -251,40 +250,36 @@ def put_file(url: str, headers: dict[str, str], path: Path) -> None:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname:
         raise MirrorError("GITCODE_UPLOAD_URL_INVALID")
-    target = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
-    connection = http.client.HTTPSConnection(
-        parsed.hostname,
-        parsed.port or 443,
-        timeout=60,
-    )
-    sent = 0
-    started = time.monotonic()
+
+    def quoted(value: str) -> str:
+        if any(ord(char) < 32 for char in value):
+            raise MirrorError("GITCODE_UPLOAD_HEADER_INVALID")
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    # Keep signed URLs and headers off the command line and out of logs.
+    config = "url = " + quoted(url) + "\n"
+    for key, value in headers.items():
+        config += "header = " + quoted(f"{key}: {value}") + "\n"
     print(f"Uploading {path.name}: {path.stat().st_size} bytes to {parsed.hostname}", flush=True)
-    try:
-        connection.putrequest("PUT", target)
-        lowered = {key.lower() for key in headers}
-        for key, value in headers.items():
-            connection.putheader(key, value)
-        if "content-length" not in lowered:
-            connection.putheader("Content-Length", str(path.stat().st_size))
-        connection.endheaders()
-        with path.open("rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                connection.send(chunk)
-                sent += len(chunk)
-                if sent % (16 * 1024 * 1024) == 0:
-                    print(f"Upload progress: {path.name} {sent} bytes, {time.monotonic() - started:.0f}s", flush=True)
-        response = connection.getresponse()
-        response.read()
-        if not 200 <= response.status < 300:
-            raise MirrorError(f"GITCODE_UPLOAD_HTTP_{response.status}: {path.name}")
-    except (OSError, http.client.HTTPException) as exc:
-        raise MirrorError(
-            f"GITCODE_UPLOAD_FAILED: {path.name}; sent={sent}; "
-            f"elapsed={time.monotonic() - started:.0f}s; {type(exc).__name__}"
-        ) from None
-    finally:
-        connection.close()
+    with tempfile.TemporaryDirectory(prefix="sakura-upload-") as temp:
+        response = Path(temp) / "response"
+        result = subprocess.run(
+            ["curl", "--config", "-", "--upload-file", str(path),
+             "--silent", "--show-error", "--fail-with-body",
+             "--connect-timeout", "30", "--max-time", "1800",
+             "--output", str(response), "--write-out",
+             "%{http_code}\n%{size_upload}\n%{speed_upload}\n%{time_total}\n%{remote_ip}\n%{redirect_url}"],
+            input=config, capture_output=True, text=True, timeout=1830,
+        )
+        fields = result.stdout.splitlines()
+        status = fields[0] if fields else "000"
+        metrics = dict(zip(("http", "bytes", "bytes_per_second", "seconds", "peer"), fields[:5]))
+        if len(fields) > 5 and fields[5]:
+            metrics["redirect_host"] = urllib.parse.urlsplit(fields[5]).hostname
+        print(f"Upload result: {path.name}; {json.dumps(metrics)}", flush=True)
+        if result.returncode or not status.startswith("2"):
+            detail = error_detail(response.read_bytes()[:8192], "") if response.exists() else ""
+            raise MirrorError(f"GITCODE_UPLOAD_FAILED: {path.name}; curl={result.returncode}; HTTP {status}; {detail}")
 
 
 def upload(owner: str, repo: str, token: str, tag: str, path: Path) -> None:
