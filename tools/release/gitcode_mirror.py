@@ -77,6 +77,7 @@ def request_json(
     query: dict[str, str] | None = None,
     payload: dict[str, object] | None = None,
     allow_404: bool = False,
+    allow_missing_latest: bool = False,
 ) -> dict[str, Any] | None:
     params = dict(query or {})
     params["access_token"] = token
@@ -92,7 +93,15 @@ def request_json(
     except urllib.error.HTTPError as exc:
         if allow_404 and exc.code == 404:
             return None
-        detail = error_detail(exc.read(8192), token)
+        error_body = exc.read(8192)
+        if allow_missing_latest and exc.code == 400 and method == "GET" and suffix == "/releases/latest":
+            try:
+                error = json.loads(error_body)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                error = None
+            if isinstance(error, dict) and error.get("error_message") == "No latest release found":
+                return None
+        detail = error_detail(error_body, token)
         message = f"GITCODE_API_HTTP_{exc.code}: {method} {suffix}"
         raise MirrorError(f"{message}; {detail}" if detail else message) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -333,6 +342,7 @@ def mirror(
     if rehearsal:
         latest_before = request_json(
             "GET", owner, repo, token, "/releases/latest", query={"type": "latest"}, allow_404=True,
+            allow_missing_latest=True,
         )
     current = release(owner, repo, token, tag)
     if current is None:
@@ -386,6 +396,7 @@ def mirror(
         if rehearsal:
             latest_after = request_json(
                 "GET", owner, repo, token, "/releases/latest", query={"type": "latest"}, allow_404=True,
+                allow_missing_latest=True,
             )
             if (latest_after or {}).get("tag_name") != (latest_before or {}).get("tag_name"):
                 raise MirrorError("GITCODE_REHEARSAL_CHANGED_LATEST")

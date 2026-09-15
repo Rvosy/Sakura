@@ -134,6 +134,22 @@ def test_code_sync_pushes_only_release_tag_without_credentials_in_arguments(monk
     assert "Authorization: Basic " in run.call_args.kwargs["env"]["GIT_CONFIG_VALUE_1"]
 
 
+@pytest.mark.parametrize("message,allow,missing", [
+    ("No latest release found", True, True),
+    ("No latest release found", False, False),
+    ("Permission denied", True, False),
+])
+def test_latest_baseline_accepts_only_documented_empty_state(monkeypatch, message, allow, missing) -> None:
+    failure = urllib.error.HTTPError("https://api.example", 400, "Bad Request", {},
+                                    io.BytesIO(json.dumps({"error_message": message}).encode()))
+    monkeypatch.setattr(gitcode_mirror.urllib.request, "urlopen", Mock(side_effect=failure))
+    if missing:
+        assert gitcode_mirror.request_json("GET", "Rvosy", "Sakura", "secret", "/releases/latest", allow_missing_latest=allow) is None
+    else:
+        with pytest.raises(MirrorError, match="GITCODE_API_HTTP_400"):
+            gitcode_mirror.request_json("GET", "Rvosy", "Sakura", "secret", "/releases/latest", allow_missing_latest=allow)
+
+
 @pytest.mark.parametrize("actual,expected", [(b"original", None),
     (b"origina", "TRUNCATED"), (b"changed!", "CONTENT_MISMATCH"),
     (b"original-extra", "CONTENT_MISMATCH")])
