@@ -1281,6 +1281,8 @@ class PluginContext:
         self._events: dict[str, list[Callable[[object], object]]] = {}
         self._effects: list[Callable[[], object]] = []
         self._staged: list[_StagedEffect] = []
+        self._stage_lock = threading.RLock()
+        self._committed = False
         self._callbacks: dict[str, tuple[str, Callable[..., object]]] = {}
         self._closed = False
         self.config = PluginConfig(plugin_id, plugin_root, data_dir, self.effect)
@@ -1389,15 +1391,27 @@ class PluginContext:
         self,
         activate: Callable[[], Callable[[], object]],
     ) -> Callable[[], None]:
-        if self._closed or not callable(activate):
-            raise PluginApiError("EFFECT_INVALID", plugin_id=self.plugin_id)
-        staged = _StagedEffect(activate)
-        self._staged.append(staged)
-        return self.effect(staged.dispose)
+        with self._stage_lock:
+            if self._closed or not callable(activate):
+                raise PluginApiError("EFFECT_INVALID", plugin_id=self.plugin_id)
+            staged = _StagedEffect(activate)
+            disposer = self.effect(staged.dispose)
+            if self._committed:
+                try:
+                    staged.commit()
+                except Exception:
+                    disposer()
+                    raise
+            else:
+                self._staged.append(staged)
+            return disposer
 
     def commit(self) -> None:
-        for staged in self._staged:
-            staged.commit()
+        with self._stage_lock:
+            for staged in self._staged:
+                staged.commit()
+            self._staged.clear()
+            self._committed = True
 
     def _register_callback(
         self,
@@ -1489,9 +1503,10 @@ class PluginContext:
                 continue
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        with self._stage_lock:
+            if self._closed:
+                return
+            self._closed = True
         while self._effects:
             cleanup = self._effects.pop()
             try:

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # Sakura Plugin Runtime v4
@@ -214,6 +214,14 @@ Core 接收后的丢弃由 Core 汇总，SDK 不重复累计下游丢弃。
 
 ## 5. ServiceProxy 与跨进程数据
 
+Host 贡献在 setup 提交前暂存，提交后新增贡献立即生效，均由 context.effect 回收。
+提交、动态注册与关闭状态通过同一把锁协调；异步工具发现无需再次调用 commit，关闭后不得产生新贡献。
+
+`context.caller_scope` 为 Core 注入的调用进程生命周期 ID，业务参数不能覆盖；Core 调用为 null。
+调用结束后恢复上下文。插件停用、重载或崩溃完成 scope 清理时，Runtime 向仍活跃的插件发送
+`sakura.host.scope.closed`，内容为 `pluginId` 和 `scopeId`。持有跨插件资源的服务应按两者撤销资源，
+并拒绝已撤销 scope 的迟到注册；同名插件的新进程使用不同 scope。事件处理不得阻塞 Runtime 生命周期。
+
 收到跨进程 Service 调用时，`context.caller_id` 是 Core 根据调用进程注入的插件 ID，Core 消费者为
 `sakura.core`；调用结束恢复为空。它是当前调用的上下文，不从业务参数读取，也不自动传播到新线程。领域
 登记接口可以据此拒绝冒用其他插件身份，例如 ASR Hub 同时核对登记者和目标 Service 所有者。Runtime 只传递
@@ -313,7 +321,7 @@ Tools、Context contributors、Timeline observers、Settings sections 和模型�
 一个强制唯一的总 Service。
 
 工具 descriptor 可指定 `timeoutSeconds`（有限正数，最大 120 秒），省略时使用原有的 15 秒回调期限。
-该字段用于执行期限，不提供给模型作为工具参数。插件和 MCP 工具登记必须原子拒绝同名覆盖并报告
+该字段用于执行期限，不提供给模型作为工具参数。插件工具登记必须原子拒绝同名覆盖并报告
 `TOOL_NAME_CONFLICT`。插件返回含 `isError=true` 的对象时，ToolRegistry 将调用标记为失败，保留结果给模型，
 `reasonCode` 仅接受有界 ASCII 原因码后进入日志；正文与参数继续脱敏。
 
