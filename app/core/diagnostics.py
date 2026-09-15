@@ -192,6 +192,13 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
         # the worker's original type and frames as well as the host propagation.
         remote = getattr(root, "diagnostics", None)
         if isinstance(remote, dict):
+            # RPC wrappers preserve the worker's active exception type. A new
+            # local cleanup failure must keep its own type even when its context
+            # contains an earlier remote cancellation.
+            remote_error_type = diagnostic_token(remote.get("error_type"))
+            if (remote_error_type is not None
+                    and all(type(item).__name__ in {"PluginApiError", "PluginRuntimeError"} for item in chain)):
+                attributes["error_type"] = remote_error_type
             for key in ("cause_code", "validation_field"):
                 value = diagnostic_token(remote.get(key))
                 if value is not None:

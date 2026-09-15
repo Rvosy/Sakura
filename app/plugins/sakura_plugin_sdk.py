@@ -139,7 +139,7 @@ class PluginApiError(RuntimeError):
             for key, value in (diagnostics or {}).items()
             if key in {"diagnostic", "cause_type", "exception_chain", "exception_stack"} and isinstance(value, str)
         }
-        for key in ("cause_code", "validation_field"):
+        for key in ("error_type", "cause_code", "validation_field"):
             value = _diagnostic_token((diagnostics or {}).get(key))
             if value is not None:
                 self.diagnostics[key] = value
@@ -156,8 +156,10 @@ def _exception_diagnostics(error: BaseException) -> dict[str, str]:
     """Stdlib-only worker diagnostics; never serialize exception objects/locals."""
     chain, stacks, seen = [], [], set()
     current = error
+    rpc_wrappers_only = True
     while id(current) not in seen and len(chain) < 16:
         seen.add(id(current))
+        rpc_wrappers_only &= type(current).__name__ in {"PluginApiError", "PluginRuntimeError"}
         text = _safe_exception_message(current)
         chain.append(f"{type(current).__name__}: {text}")
         frames = []
@@ -171,7 +173,7 @@ def _exception_diagnostics(error: BaseException) -> dict[str, str]:
         if cause is None:
             break
         current = cause
-    result = {"diagnostic": _safe_exception_message(current), "cause_type": type(current).__name__,
+    result = {"diagnostic": _safe_exception_message(current), "error_type": type(error).__name__, "cause_type": type(current).__name__,
               "exception_chain": _diagnostic_text("\nCaused by: ".join(chain)), "exception_stack": _diagnostic_text("\n\n".join(stacks))}
     for key, attribute in (("cause_code", "code"), ("validation_field", "field")):
         try:
@@ -182,6 +184,9 @@ def _exception_diagnostics(error: BaseException) -> dict[str, str]:
             result[key] = value
     remote = getattr(current, "diagnostics", None)
     if isinstance(remote, Mapping):
+        remote_error_type = _diagnostic_token(remote.get("error_type"))
+        if rpc_wrappers_only and remote_error_type is not None:
+            result["error_type"] = remote_error_type
         for key in ("cause_code", "validation_field"):
             value = _diagnostic_token(remote.get(key))
             if value is not None:
