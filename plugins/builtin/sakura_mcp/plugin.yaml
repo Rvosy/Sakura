@@ -1,0 +1,15 @@
+api: 4
+id: sakura.mcp
+name: MCP
+author: Rvosy
+description: 为插件提供 MCP 连接与调用接口。
+version: 0.1.0
+entry: plugin:MCPPlugin
+enabled: true
+provides:
+  - sakura.mcp
+requires: []
+presentation:
+  kind: infrastructure
+  category: connectivity
+  icon: plug

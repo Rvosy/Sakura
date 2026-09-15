@@ -377,6 +377,7 @@ class _PluginProcess:
         *,
         timeout: float | None = None,
         caller_id: str = "sakura.core",
+        caller_scope: str | None = None,
     ) -> object:
         peer = self._peer
         if peer is None:
@@ -389,6 +390,7 @@ class _PluginProcess:
                     "method": method,
                     "args": list(args),
                     "callerId": caller_id,
+                    "callerScope": caller_scope,
                 },
                 timeout=self._call_timeout if timeout is None else timeout,
             )
@@ -1276,7 +1278,8 @@ class PluginRuntimeManager:
         ):
             raise PluginApiError("PLUGIN_PROTOCOL_INVALID", plugin_id=caller_id)
         try:
-            return self._route_service_call(caller_id, service_key, method, args)
+            return self._route_service_call(caller_id, service_key, method, args,
+                caller_scope=calling_process.scope_id if calling_process else None)
         except PluginRuntimeError as error:
             raise PluginApiError(
                 error.code,
@@ -1293,6 +1296,7 @@ class PluginRuntimeManager:
         args: Sequence[Any],
         *,
         timeout: float | None = None,
+        caller_scope: str | None = None,
     ) -> object:
         detached_args = json_value(list(args))
         assert isinstance(detached_args, list)
@@ -1319,12 +1323,17 @@ class PluginRuntimeManager:
                 service_key=service_key,
             )
         if binding.process is not None:
+            with self._lock:
+                caller_record = self._records.get(caller_id)
+                caller_process = caller_record.process if caller_record else None
+                caller_scope = caller_scope or (caller_process.scope_id if caller_process else None)
             return binding.process.call_service(
                 service_key,
                 method,
                 detached_args,
                 timeout=timeout,
                 caller_id=caller_id,
+                caller_scope=caller_scope,
             )
         callback = getattr(binding.host_service, method, None)
         if not callable(callback):
@@ -1378,7 +1387,7 @@ class PluginRuntimeManager:
                     item for item in registrations if item.registration_id != args[0]
                 ]
 
-    def _clear_plugin_scope(self, plugin_id: str) -> None:
+    def _clear_plugin_scope(self, plugin_id: str, scope_id: str | None = None) -> None:
         from app.core.runtime_log import log_message
 
         def log_cleanup_failure(stage: str, service_key: str) -> None:
@@ -1389,6 +1398,9 @@ class PluginRuntimeManager:
 
         with self._lock:
             registrations = list(reversed(self._host_registrations.pop(plugin_id, [])))
+            record = self._records.get(plugin_id)
+            process = record.process if record else None
+            scope_id = scope_id or (process.scope_id if process else None)
             self._callbacks = {
                 handle: binding
                 for handle, binding in self._callbacks.items()
@@ -1418,6 +1430,8 @@ class PluginRuntimeManager:
                     callback(plugin_id)
                 except Exception:
                     log_cleanup_failure("revoke_scope", service_key)
+        if scope_id is not None:
+            self.emit_host_event("sakura.host.scope.closed", {"pluginId": plugin_id, "scopeId": scope_id})
 
     def _plugin_exited(self, plugin_id: str, process: _PluginProcess) -> None:
         with self._lock:
@@ -1507,7 +1521,7 @@ class PluginRuntimeManager:
             finally:
                 with self._lock:
                     self._draining_processes.pop(plugin_id, None)
-        self._clear_plugin_scope(plugin_id)
+        self._clear_plugin_scope(plugin_id, process.scope_id if process else None)
         if process is not None or failed:
             self._log_lifecycle(record, "plugin.stopped", "插件已停止", failed=failed)
 

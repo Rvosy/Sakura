@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-15
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -348,4 +348,4 @@ Collection 只呈现在“记忆”页；整理间隔、embedding 下载/状态�
 不得用“关闭并重新打开设置”代替重绑定，也不得让旧 generation 的迟到结果覆盖当前页面。
 
 WP-4-02 只保留 `tools.runtime_limits`。Runtime v2 的确认策略、Action ID、原生确认和桌面 MCP 设置均已
-删除；WP-4-03 只保留通用 MCP 生命周期与只读状态边界。
+删除；旧 Core MCP 生命周期与只读状态边界也已退役。`sakura.mcp` 只提供 Service，没有独立设置页。

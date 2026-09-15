@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-15
 ---
 
 # Runtime v2 热应用规范
@@ -26,8 +26,7 @@ updated: 2026-09-09
   保存。有效 Session 调用 client `update_settings()`；配置变为无效时只退休 Session，恢复有效时在同
   generation 创建 Session 并绑定既有 PluginApplication。
 - Tools：保存后更新 `AgentRuntime` 的 loop settings；当前 Agent 轮使用其既有快照。
-- MCP：Application 持有 Provider 和工具注册，Session 退休与重建只借用该实例。当前只提供状态读取，
-  `mcp.yaml` 的修改在新 Core generation 启动时读取，不提供设置保存或热替换接口。
+- MCP：`sakura.mcp` 只提供 Service，服务器配置与变更由消费插件处理；不读取旧 `mcp.yaml`。
 - Agent Trace：新开关只控制新 trace operation；已开始 operation 必须继续记录并完成 staging commit。
   同一设置通过 Host Event 同步给 Memory 插件 recorder。
 - 插件：enable、disable、install、uninstall、reload 和 `restart_required` 都是当前用户操作内的同步步骤。
@@ -48,5 +47,5 @@ updated: 2026-09-09
 ## 验证
 
 自动测试至少固定同 generation、无关插件 PID/scope、活动操作配置隔离、Snapshot revision、Session 重建时
-MCP 实例和状态不变、插件硬依赖 consumer reload、局部失败不影响无关插件、故障不自动恢复，以及 Memory/TTS 重资源在
+插件硬依赖 consumer reload、局部失败不影响无关插件、故障不自动恢复，以及 Memory/TTS 重资源在
 无关保存后持续可用。聊天边界还需覆盖跨域应用失败后的待办保留，以及同域重复保存只应用最新值。

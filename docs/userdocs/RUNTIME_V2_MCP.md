@@ -3,37 +3,17 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
-# MCP 工具
+# MCP 基础组件
 
-Sakura 会读取用户数据目录下的 `config/mcp.yaml`，连接其中启用的 MCP Server，并把可用工具加入当前聊天。Server 在后台连接；单个 Server 失败不会阻止普通聊天或其他工具。
+MCP 是供其他插件使用的底层组件。它没有独立设置页，也不提供服务器管理或导入功能。
 
-## 配置和状态
+需要 MCP 的服务插件负责自己的配置、授权和具体功能，再调用基础组件连接服务器。
+组件统一处理协议、传输、请求和资源回收。单独启用组件不会启动任何服务器或增加 Assistant 工具。
 
-Sakura 不生成默认 MCP 配置。[联网搜索与网页读取](WEB_SEARCH.md)由内置“联网工具”插件提供，不依赖 MCP。
-Sakura 不内置桌面控制 Server，也不在设置页提供桌面 MCP 开关。运行日志中的
-稳定原因码可用于判断 Server 状态：
+默认不安装具体 MCP 服务，也不恢复旧 mcp.yaml。以后添加服务时，按对应插件的说明配置；
+插件开发者可参考[接口说明](../devdocs/RUNTIME_V2_MCP.md)。
 
-- `disabled`：没有启用；
-- `starting`：正在连接并读取工具；
-- `ready`：工具已经注册；
-- `degraded`：配置、连接或工具发现失败；
-- `stopping` / `stopped`：Core 正在重启或退出。
-
-## 高级配置
-
-`mcp.yaml` 支持 stdio、SSE 和工具过滤。凭据应放在 Server 支持的环境变量或安全配置中，不要写进 URL userinfo。配置文件包含密钥时，不要上传到 Issue。
-
-取消聊天会停止当前工具链。Sakura 不会自动重放失败的 MCP 工具调用，因为工具可能已经产生副作用。
-
-## 排查
-
-- `CONFIG_MISSING`：用户数据目录下的 `config/mcp.yaml` 不存在。
-- `CONFIG_INVALID`：YAML 结构或字段类型不正确。
-- `COMMAND_NOT_FOUND`：stdio 命令不在 bundled Runtime 可解析的路径中。
-- `TIMEOUT`：Server 没有在限定时间内完成连接。
-- `NO_READY_SERVERS`：没有 Server 成功提供工具。
-
-先单独验证 Server 的启动命令，再查看[运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)。日志不会保存 MCP 参数、结果、环境变量或凭据。
+网页搜索和读取仍由[联网工具插件](WEB_SEARCH.md)提供，不需要 MCP。

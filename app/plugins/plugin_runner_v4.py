@@ -156,7 +156,10 @@ class PluginRunner:
             caller_id = payload.get("callerId")
             if not isinstance(caller_id, str) or not caller_id:
                 raise PluginApiError("PLUGIN_PROTOCOL_INVALID")
-            return context.call_local(service_key, method, args, caller_id=caller_id)
+            caller_scope = payload.get("callerScope")
+            if caller_scope is not None and not isinstance(caller_scope, str):
+                raise PluginApiError("PLUGIN_PROTOCOL_INVALID")
+            return context.call_local(service_key, method, args, caller_id=caller_id, caller_scope=caller_scope)
         if name == "event.emit":
             context = self._require_context()
             event_name = payload.get("name")

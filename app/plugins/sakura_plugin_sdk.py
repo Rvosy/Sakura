@@ -1272,6 +1272,7 @@ class PluginContext:
     ) -> None:
         self.plugin_id = plugin_id
         self._caller_id: ContextVar[str | None] = ContextVar("sakura_service_caller", default=None)
+        self._caller_scope: ContextVar[str | None] = ContextVar("sakura_service_scope", default=None)
         self._plugin_root = plugin_root
         self._data_dir = data_dir
         self._remote_call = remote_call
@@ -1450,11 +1451,16 @@ class PluginContext:
         }
 
     @property
+    def caller_scope(self) -> str | None:
+        """Core-authenticated process lifetime of the incoming Service caller."""
+        return self._caller_scope.get()
+
+    @property
     def caller_id(self) -> str | None:
         """Core-authenticated caller during an incoming Service invocation."""
         return self._caller_id.get()
 
-    def call_local(self, service_key: str, method: str, args: Sequence[Any], *, caller_id: str | None = None) -> object:
+    def call_local(self, service_key: str, method: str, args: Sequence[Any], *, caller_id: str | None = None, caller_scope: str | None = None) -> object:
         binding = self._services.get(service_key)
         if binding is None:
             raise PluginApiError("SERVICE_MISSING", service_key=service_key)
@@ -1466,10 +1472,12 @@ class PluginContext:
                 service_key=service_key,
             )
         token = self._caller_id.set(caller_id)
+        scope_token = self._caller_scope.set(caller_scope)
         try:
             return getattr(service, method)(*args)
         finally:
             self._caller_id.reset(token)
+            self._caller_scope.reset(scope_token)
 
     def emit(self, name: str, payload: object) -> None:
         for handler in list(self._events.get(name, ())):

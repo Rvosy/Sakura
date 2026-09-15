@@ -82,9 +82,9 @@ def test_bad_optional_tts_entry_preserves_other_types_and_reports_its_cause(tmp_
 
     record = genie_record(tmp_path)
     manifest = tmp_path / "plugins/builtin/genie/plugin.yaml"
-    raw = yaml.safe_load(manifest.read_text())
+    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     raw["ttsResources"] = [GPT_SOVITS_MODELS, "unversioned"]
-    manifest.write_text(yaml.safe_dump(raw))
+    manifest.write_text(yaml.safe_dump(raw), encoding="utf-8")
     record = PluginInventory(tmp_path).scan().records[0]
     assert record.runtime_eligible
     assert record.tts_resources == (GPT_SOVITS_MODELS,)

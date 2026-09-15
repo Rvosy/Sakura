@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-15
 ---
 
 # Sakura 技术架构
@@ -43,7 +43,7 @@ Shell 用 bundled Python 启动：
 
 进程启动后先从 stdin 读取 16 字节 generation credential，再进入帧协议。stdout 只允许写协议帧；日志经 stderr bridge 交给 Shell。
 
-Core Host 负责角色、供应商、聊天、AgentRuntime、Tools、MCP、TTS 消费边界、设置 DTO 和 Timeline。Memory、
+Core Host 负责角色、供应商、聊天、AgentRuntime、Tools、TTS 消费边界、设置 DTO 和 Timeline。Memory、
 TTS Hub 与 TTS Provider 等可替换实现属于普通插件。主要入口在 `app/core_host/server.py`，真实聊天在
 `app/core_host/real_chat.py`，领域实现位于 `app/agent/`、`app/config/`、`app/storage/` 和 `app/voice/`。
 
@@ -99,7 +99,7 @@ TTS 配置和角色声线清单由各 Provider 插件解析。显式 0.9.x 导�
 
 | 路径 | 内容 |
 |---|---|
-| `config/` | 供应商、模型、界面、MCP 和系统设置 |
+| `config/` | 供应商、模型、界面和系统设置 |
 | `data/chat_history/` | Timeline 与聊天数据 |
 | `data/memory/` | Memory 插件数据和本地向量存储 |
 | `data/plugins/` | 插件私有配置与运行数据 |

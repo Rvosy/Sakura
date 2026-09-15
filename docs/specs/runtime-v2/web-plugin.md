@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-14
+updated: 2026-09-15
 ---
 
 # 联网插件
@@ -59,20 +59,11 @@ URL 与每次重定向均拒绝 localhost、明确的非公网 IP 和 URL userin
 `WEB_HTTP_ERROR`、`WEB_REDIRECT_INVALID`、`WEB_REDIRECT_LIMIT`、`WEB_CONTENT_UNSUPPORTED`、`WEB_INVALID_REQUEST`。
 一次请求失败不代表 Worker 失败，不自动更换搜索引擎或重放调用。
 
-## 迁移与生命周期
+## 初始化与生命周期
 
-升级和旧版导入遵循 [ADR-0047 的初始化规则](../../adr/0047-bundled-web-search-plugin.md)：已有插件开关
-优先；没有 MCP 文件默认开启，持久化的禁用空配置保留关闭。旧版源 MCP 缺失时不再先生成禁用空配置。
-导入目标已有联网插件开关时保留该值。源配置被隔离时也不能因此误用新安装的开启默认值。
+联网插件按自身 manifest 和持久化开关启停，不读取旧 MCP 配置。旧版导入保留目标已有插件开关；
+没有选择时使用插件默认值。旧 MCP 自动交接及 `WEB_MIGRATION_*` 恢复机制已移除。
 
-只有指向已知内置脚本的旧项参与迁移，不按服务器名 `web` 判断。成功迁移保留可表达的工具过滤、风险和
-调用超时，写入插件私有配置；这些字段只用于兼容旧限制，不在设置页开放。旧 MCP 项停用后仍留在原文件，
-自定义 Server、凭据和 MCP 总开关不变。插件配置与开关持久化成功、旧项停用后才交出工具。
-
-写入中断时用插件私有的 `WEB_MIGRATION_INCOMPLETE` 错误阻止未完成接管，下一次显式启动重新执行迁移。
-配置损坏或自定义行为无法承接时保留原配置，记录 `WEB_MIGRATION_CONFIG_INVALID` 或
-`WEB_MIGRATION_CUSTOM_BEHAVIOR`；修正旧配置后重新启动。迁移不计算内容摘要，不运行后台重试或调和。
-
-工具来源为 `plugin`，名称和旧调用记录保持不变。插件与 MCP 注册使用原子的同名拒绝；冲突报告
+工具来源为 `plugin`，名称和旧调用记录保持不变。工具注册使用原子的同名拒绝；冲突报告
 `TOOL_NAME_CONFLICT`，不覆盖已有提供者。插件启动失败撤回已贡献的工具；停用、Worker 退出和 generation
 关闭沿用 v4 的调用失效、工具撤回与进程回收。
