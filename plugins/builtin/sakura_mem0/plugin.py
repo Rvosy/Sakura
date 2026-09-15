@@ -172,6 +172,7 @@ class SakuraMem0Runtime:
             "collections": [
                 {
                     "collectionId": MEMORY_COLLECTION_ID,
+                    "scope": "character",
                     "title": "记忆条目",
                     "description": "当前角色的长期记忆。",
                     "columns": [

@@ -194,6 +194,36 @@ def test_missing_system_config_uses_compatible_defaults(
     assert result.provider_selection is not None
 
 
+@pytest.mark.parametrize("legacy_selection", ["com.example.focus.executor", "{obsolete: true}"])
+def test_legacy_chat_executor_does_not_override_default_assistant(
+    tmp_path: Path, legacy_selection: str,
+) -> None:
+    from threading import Event
+
+    from app.agent.tools import ToolRegistry
+    from app.core_host.assistant_adapter import AssistantAdapter
+
+    root = _fresh_root(tmp_path)
+    system_path = root / "config" / "system_config.yaml"
+    saved = f"config_version: 1\nchat_executor: {legacy_selection}\nother: keep\n"
+    system_path.write_text(saved, encoding="utf-8")
+    adapter = AssistantAdapter(root, tool_registry=ToolRegistry(), mcp_provider=None)
+    try:
+        result = adapter.initialize(Event())
+        assert result.state == "ready"
+        assert result.session is not None
+        assert result.session.provider is not None
+        assert result.session.pipeline is not None
+    finally:
+        adapter.close()
+
+    (root / "config" / "api.yaml").unlink()
+    missing_provider = CoreConfigReader().read(root)
+    assert missing_provider.config_problem is not None
+    assert missing_provider.config_problem.code == "PROVIDER_SETUP_REQUIRED"
+    assert system_path.read_text(encoding="utf-8") == saved
+
+
 def test_invalid_system_config_fails_with_data_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

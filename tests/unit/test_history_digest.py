@@ -71,7 +71,7 @@ class TestCleanRecentDialogue:
 
 
 class TestBuildSessionStateFragment:
-    def test_renders_recent_dialogue_as_untrusted_fact(self) -> None:
+    def test_renders_recent_dialogue_with_session_state_source(self) -> None:
         entries = [
             _entry("user", "继续执行计划"),
             _entry("assistant", "好的，记下下一步。"),
@@ -79,7 +79,6 @@ class TestBuildSessionStateFragment:
         fragment = build_session_state_fragment(entries, recent_message_count=1)
         assert fragment is not None
         assert fragment.source == "session_state"
-        assert fragment.trust == "untrusted"
         assert "最近会话状态" in fragment.content
         assert "继续执行计划" in fragment.content
         assert "用户：" in fragment.content

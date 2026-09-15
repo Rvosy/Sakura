@@ -1364,6 +1364,9 @@ def _context_items(snapshot: ContextSnapshot | None) -> tuple[dict[str, Any], ..
         )
         value: dict[str, Any] = {
             "id": fragment.fragment_id,
+            "provider_id": fragment.provider_id,
+            "required": fragment.required,
+            "cache_scope": fragment.cache_scope,
             "content": _free_text_value(fragment.content, ()),
             "estimated_tokens": decision.estimated_tokens,
         }
@@ -1398,6 +1401,8 @@ def _dropped_context(snapshot: ContextSnapshot | None) -> list[dict[str, Any]]:
             {
                 "id": fragment.fragment_id,
                 "source": fragment.source,
+                "provider_id": fragment.provider_id,
+                "required": fragment.required,
                 "chars": len(fragment.content),
                 "estimated_tokens": decision.estimated_tokens,
                 "reason": decision.drop_reason,

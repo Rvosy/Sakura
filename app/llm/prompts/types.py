@@ -63,12 +63,11 @@ class ContextRequest:
 
 @dataclass(frozen=True)
 class ContextFragment:
-    """一个可预算、可追踪的动态事实片段。"""
+    """一个可预算、可追踪的上下文贡献。"""
 
     fragment_id: str
     source: str
     content: str
-    trust: Literal["trusted", "untrusted"] = "untrusted"
     priority: int = 50
     freshness: str = ""
     token_budget: int = 512
@@ -77,6 +76,7 @@ class ContextFragment:
     provider_order: float = 100.0
     required: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    provider_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,6 +154,7 @@ class PromptSectionInspection:
     included: bool
     truncated: bool = False
     drop_reason: str = ""
+    required: bool = False
 
 
 @dataclass(frozen=True)
