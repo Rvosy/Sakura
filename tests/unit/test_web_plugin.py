@@ -10,11 +10,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-import yaml
 from packaging.requirements import Requirement
 
 from app.agent.tools import Tool, ToolRegistry
-from app.config.web_plugin_migration import migrate_web_configuration
 from app.core_host.plugin_application import PluginApplicationHost
 from app.plugins.inventory import PluginDesiredStateStore
 from app.storage.runtime_roots import RuntimeRoots
@@ -158,7 +156,6 @@ def test_proxy_fetch_in_isolated_worker(tmp_path: Path, monkeypatch) -> None:
 
 def test_real_plugin_calls_and_disable(tmp_path: Path) -> None:
     runtime_roots = roots(tmp_path)
-    migrate_web_configuration(runtime_roots.user_root)
     registry = ToolRegistry()
     application = PluginApplicationHost(runtime_roots, "web-fixture", registry)
     try:
@@ -219,165 +216,20 @@ def test_disable_cancels_pending_worker_and_withdraws_tools(tmp_path: Path) -> N
             worker.join(5)
 
 
-def old_web(**changes):
-    return {"transport": "stdio", "command": "{python}", "args": ["{core_root}/app/agent/mcp/web_search_server.py"], "name_prefix": "web__", "risk": "low", **changes}
-
-
-def write_mcp(root: Path, value: dict) -> Path:
-    path = root / "config/mcp.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(value, allow_unicode=True), encoding="utf-8")
-    return path
-
-
-@pytest.mark.parametrize("config,enabled", [
-    (None, True),
-    ({"enabled": False, "servers": {}}, False),
-    ({"enabled": True, "servers": {"web": old_web()}}, True),
-    ({"enabled": False, "servers": {"web": old_web()}}, False),
-    ({"enabled": True, "servers": {"web": old_web(enabled=False)}}, False),
-    ({"enabled": True, "servers": {"web": {"transport": "stdio", "command": "custom"}}}, True),
-    ({"enabled": False, "servers": {"custom": {"transport": "stdio", "command": "custom"}}}, False),
-])
-def test_migration_initial_state(tmp_path: Path, config, enabled: bool) -> None:
-    if config is not None:
-        write_mcp(tmp_path, config)
-    migrate_web_configuration(tmp_path)
-    assert PluginDesiredStateStore(tmp_path).read()["sakura.web"] is enabled
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    migrate_web_configuration(tmp_path)
-    assert {path: path.read_bytes() for path in before} == before
-    if config and "web" in config["servers"] and config["servers"]["web"].get("command") == "custom":
-        assert yaml.safe_load((tmp_path / "config/mcp.yaml").read_text()) == config
-
-
-def test_migration_preserves_tool_limits_and_explicit_switch(tmp_path: Path) -> None:
-    runtime_roots = roots(tmp_path)
-    root = runtime_roots.user_root
-    external = {"transport": "sse", "url": "https://example.com/mcp", "headers": {"Authorization": "fixture-secret"}}
-    write_mcp(root, {"enabled": True, "default_call_timeout": 25, "servers": {"web": old_web(exclude_tools=["fetch_*"], tool_policies={"web_search": {"risk": "high"}}), "external": external}})
-    PluginDesiredStateStore(root).set("sakura.web", False)
-    migrate_web_configuration(root)
-    assert PluginDesiredStateStore(root).read()["sakura.web"] is False
-    mcp = yaml.safe_load((root / "config/mcp.yaml").read_text())
-    assert mcp["servers"]["external"] == external
-    assert mcp["servers"]["web"]["enabled"] is False
-    PluginDesiredStateStore(root).set("sakura.web", True)
-    registry = ToolRegistry()
-    app = PluginApplicationHost(runtime_roots, "web-limits", registry)
-    try:
-        app.start()
-        assert [tool.name for tool in registry.all()] == ["web__web_search"]
-        assert registry.get("web__web_search").risk == "high"
-    finally:
-        app.close()
-
-
-@pytest.mark.parametrize("custom", [None, {"env": {"CUSTOM": "value"}}, {"args": ["{core_root}/app/agent/mcp/web_search_server.py", "--custom"]}])
-def test_unsupported_migration_preserves_original(tmp_path: Path, custom) -> None:
-    path = write_mcp(tmp_path, {"servers": {"web": old_web(**(custom or {}))}})
-    if custom is None:
-        path.write_text("servers: [broken", encoding="utf-8")
-    before = path.read_bytes()
-    migrate_web_configuration(tmp_path)
-    assert path.read_bytes() == before
-    assert PluginDesiredStateStore(tmp_path).read()["sakura.web"] is False
-    assert json.loads((tmp_path / "data/plugins/sakura.web/config.json").read_text())["migration_error"]
-
-
-def test_interrupted_handoff_never_enables_both(tmp_path: Path, monkeypatch) -> None:
-    from app.config import web_plugin_migration as migration
-    path = write_mcp(tmp_path, {"servers": {"web": old_web()}})
-    original = path.read_bytes()
-    write = migration.atomic_write_text
-    def fail_mcp(target, *args, **kwargs):
-        if target == path:
-            raise OSError("fixture write failure")
-        return write(target, *args, **kwargs)
-    monkeypatch.setattr(migration, "atomic_write_text", fail_mcp)
-    with pytest.raises(OSError):
-        migrate_web_configuration(tmp_path)
-    assert path.read_bytes() == original
-    assert json.loads((tmp_path / "data/plugins/sakura.web/config.json").read_text())["migration_error"] == "WEB_MIGRATION_INCOMPLETE"
-    monkeypatch.setattr(migration, "atomic_write_text", write)
-    migrate_web_configuration(tmp_path)
-    assert yaml.safe_load(path.read_text())["servers"]["web"]["enabled"] is False
-    assert "migration_error" not in json.loads((tmp_path / "data/plugins/sakura.web/config.json").read_text())
-
-
-@pytest.mark.parametrize("old_config,existing", [(None, None), (None, False), ({"servers": {"web": old_web(exclude_tools=["fetch_*"])}}, None)])
-def test_legacy_import_initializes_web_before_losing_source_state(tmp_path: Path, old_config, existing) -> None:
-    from app.legacy_import.configuration import migrate_configuration
-    source = tmp_path / "source"
-    (source / "data/config").mkdir(parents=True)
-    if old_config is not None:
-        write_mcp(source / "data", old_config)
-    current = tmp_path / "current"
-    if existing is not None:
-        PluginDesiredStateStore(current).set("sakura.web", existing)
-    staged = tmp_path / "staged"
-    migrate_configuration(source, staged, new_tts_root=current / "tts", existing_user_root=current)
-    assert PluginDesiredStateStore(staged).read()["sakura.web"] is (existing if existing is not None else True)
-    if old_config is None:
-        assert not (staged / "config/mcp.yaml").exists()
-    else:
-        assert yaml.safe_load((staged / "config/mcp.yaml").read_text())["servers"]["web"]["enabled"] is False
-        assert json.loads((staged / "data/plugins/sakura.web/config.json").read_text())["allowed_tools"] == ["web_search"]
-
-
-@pytest.mark.parametrize("external_first", [True, False])
-def test_external_mcp_collision_never_overwrites_tool(tmp_path: Path, external_first: bool) -> None:
-    from app.agent.mcp.config import MCPConfig, MCPServerConfig
-    from app.agent.mcp.bridge import MCPToolSpec
-    from app.agent.mcp.provider import MCPToolProvider
-    class Bridge:
-        def connect(self):
-            pass
-        def list_tools(self):
-            return [MCPToolSpec("web_search", "external search", {"type": "object"})]
-        def call_tool(self, name, arguments):
-            return {"external": True}
-        def close(self):
-            pass
-    registry = ToolRegistry()
-    provider = MCPToolProvider(MCPConfig(enabled=True, servers=[MCPServerConfig(name="web", transport="stdio", command="custom")]), bridge_factory=lambda *_: Bridge())
-    app = PluginApplicationHost(roots(tmp_path), "web-conflict", registry)
-    try:
-        if external_first:
-            provider.register_tools(registry)
-            original = registry.get("web__web_search")
-            app.start()
-            assert app.public_snapshot()["plugins"][0]["reasonCode"] == "TOOL_NAME_CONFLICT"
-            assert registry.get("web__fetch_url") is None
-        else:
-            app.start()
-            original = registry.get("web__web_search")
-            assert provider.register_tools(registry) == 0
-            assert provider.status_snapshot()["servers"][0]["reasonCode"] == "TOOL_NAME_CONFLICT"
-        assert registry.get("web__web_search") is original
-    finally:
-        app.close()
-        provider.close()
-
-
-@pytest.mark.parametrize("mcp_failure", [False, True])
-def test_production_initialization_offers_plugin_without_mcp(tmp_path: Path, mcp_failure: bool) -> None:
+def test_production_initialization_offers_plugin_without_legacy_setup(tmp_path: Path) -> None:
     from app.core_host.server import HostConfig, ReadinessController
     runtime_roots = roots(tmp_path)
-    if mcp_failure:
-        write_mcp(runtime_roots.user_root, {"servers": {"external": {"transport": "stdio", "command": "definitely-missing-web-fixture"}}})
     seen = []
     class Initializer:
         def initialize(self, cancel):
             raise RuntimeError("fixture: no chat model configured")
         def close(self):
             pass
-    def factory(roots, tools, mcp):
+    def factory(roots, tools):
         seen.extend(tools.all())
         return Initializer()
     controller = ReadinessController(HostConfig(runtime_roots, "web-production", "a" * 32), initializer_factory=factory)
     controller.enable_plugins()
-    controller.enable_mcp()
     try:
         controller.begin({})
         deadline = time.monotonic() + 8
@@ -386,8 +238,6 @@ def test_production_initialization_offers_plugin_without_mcp(tmp_path: Path, mcp
         assert {tool.name for tool in seen} == NAMES
         app = controller.published_plugin_application()
         assert app.public_snapshot()["plugins"][0]["state"] == "active"
-        assert PluginDesiredStateStore(runtime_roots.user_root).read()["sakura.web"] is True
-        assert (runtime_roots.user_root / "config/mcp.yaml").exists() is mcp_failure
     finally:
         controller.close()
 
@@ -424,7 +274,7 @@ def test_tool_deadline_rejects_invalid_limits(timeout) -> None:
         service.call("register", [{"name": "fixture", "description": "fixture", "timeoutSeconds": timeout}, "cb_" + "a" * 32])
 
 
-def test_migrated_tool_deadline_reaches_worker_callback() -> None:
+def test_tool_deadline_reaches_worker_callback() -> None:
     from app.core_host.plugin_host_services import _ToolsHostService
     registry = ToolRegistry()
     calls = []
@@ -442,7 +292,6 @@ def test_corrupt_plugin_config_does_not_fail_core_initialization(tmp_path: Path)
     config = runtime_roots.user_root / "data/plugins/sakura.web/config.json"
     config.parent.mkdir(parents=True)
     config.write_text("{broken", encoding="utf-8")
-    migrate_web_configuration(runtime_roots.user_root)
     app = PluginApplicationHost(runtime_roots, "web-bad-config", ToolRegistry())
     try:
         app.start()

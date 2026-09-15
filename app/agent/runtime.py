@@ -704,7 +704,7 @@ class AgentRuntime:
         execution_results: list[ToolExecutionResult] = []
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
         total_tool_calls = 0
-        active_groups: set[str] = {"default", "mcp", "plugin"}
+        active_groups: set[str] = {"default", "plugin"}
         loop_settings = self.runtime_loop_settings
         use_text_tool_summary = False
         for step_index in range(loop_settings.max_agent_steps_per_turn):
@@ -2258,16 +2258,16 @@ def _redact_tool_images_from_content(content: Any) -> tuple[Any, int]:
     def redact(value: Any) -> Any:
         nonlocal image_count
         if isinstance(value, dict):
-            if _mcp_image_item_to_data_url(value) is not None:
+            if _tool_image_item_to_data_url(value) is not None:
                 image_count += 1
                 return {
                     "type": value.get("type", "image"),
                     "image_attached": True,
-                    "mime_type": _mcp_image_mime_type(value),
+                    "mime_type": _tool_image_mime_type(value),
                 }
             redacted_dict: dict[str, Any] = {}
             for key, item in value.items():
-                if key in {"screenshot_data_url", "mcp_image_data_urls"}:
+                if key == "screenshot_data_url":
                     if isinstance(item, str) and item.startswith("data:image/"):
                         image_count += 1
                     elif isinstance(item, list):
@@ -2295,15 +2295,7 @@ def _extract_image_data_urls_from_value(value: Any) -> list[str]:
         if isinstance(screenshot, str) and screenshot.startswith("data:image/"):
             images.append(screenshot)
 
-        mcp_images = value.get("mcp_image_data_urls")
-        if isinstance(mcp_images, list):
-            images.extend(
-                image_url
-                for image_url in mcp_images
-                if isinstance(image_url, str) and image_url.startswith("data:image/")
-            )
-
-        data_url = _mcp_image_item_to_data_url(value)
+        data_url = _tool_image_item_to_data_url(value)
         if data_url is not None:
             images.append(data_url)
 
@@ -2315,7 +2307,7 @@ def _extract_image_data_urls_from_value(value: Any) -> list[str]:
     return _deduplicate_preserving_order(images)
 
 
-def _mcp_image_item_to_data_url(item: dict[str, Any]) -> str | None:
+def _tool_image_item_to_data_url(item: dict[str, Any]) -> str | None:
     if str(item.get("type", "")).lower() != "image":
         return None
     data = item.get("data")
@@ -2323,13 +2315,13 @@ def _mcp_image_item_to_data_url(item: dict[str, Any]) -> str | None:
         return None
     if data.startswith("data:image/"):
         return data
-    mime_type = _mcp_image_mime_type(item)
+    mime_type = _tool_image_mime_type(item)
     if not mime_type.startswith("image/"):
         return None
     return f"data:{mime_type};base64,{data}"
 
 
-def _mcp_image_mime_type(item: dict[str, Any]) -> str:
+def _tool_image_mime_type(item: dict[str, Any]) -> str:
     mime_type = item.get("mimeType")
     if not isinstance(mime_type, str) or not mime_type.strip():
         mime_type = item.get("mime_type")

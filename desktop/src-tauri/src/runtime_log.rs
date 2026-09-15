@@ -1570,9 +1570,6 @@ fn viewer_record_default_message(record: &RuntimeLogRecord, severity: Severity) 
         "core.spawn.failed" | "first_run.core_start.failed" => "后台程序启动失败",
         "core.error.unhandled" | "shell.error.unhandled" => "后台程序发生错误",
         "ipc.request.failed" => "后台请求失败",
-        "mcp.server.failed" => "工具服务连接失败",
-        "mcp.config.failed" => "工具配置读取失败",
-        "mcp.tool.failed" => "工具调用失败",
         "tts.service.failed" | "tts.service.warmup_failed" => "语音服务启动失败",
         "tts.weights.failed" => "角色语音模型加载失败",
         "tts.service.probe.failed" => "语音服务尚未就绪",
@@ -1604,7 +1601,6 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "settings.provider_model.cancel" => "取消模型测试",
         "tools.settings.get" => "读取工具设置",
         "tools.settings.save" => "保存工具设置",
-        "mcp.status.get" => "读取工具服务状态",
         "plugins.settings.get" => "读取插件设置",
         "plugins.settings.save" => "保存插件设置",
         "plugins.enabled.set" => "更改插件开关",
@@ -1781,18 +1777,7 @@ fn viewer_problem_description(
         return Some("当前 Windows 版本不支持这项视觉效果，输入栏会使用普通背景。");
     }
 
-    if event.starts_with("mcp.")
-        && viewer_has_code(
-            record,
-            &["CONFIG_INVALID", "CONFIG_MISSING", "MCP_CONFIG_LOAD_FAILED"],
-        )
-    {
-        return Some("工具配置无法读取，相关工具没有加载。");
-    }
-    if event.starts_with("mcp.") && viewer_has_code(record, &["NO_READY_SERVERS"]) {
-        return Some("没有可用的 MCP 服务，相关工具没有加载。");
-    }
-    if (event.starts_with("mcp.") || event.starts_with("plugin."))
+    if event.starts_with("plugin.")
         && viewer_has_code(
             record,
             &[
@@ -1860,7 +1845,6 @@ fn viewer_problem_description(
         }
         value
             if value.starts_with("tool.")
-                || value.starts_with("mcp.")
                 || value.starts_with("plugin.") =>
         {
             "相关工具没有正常完成，本次操作可能缺少对应结果。"
@@ -2297,16 +2281,6 @@ fn business_message(event: &str) -> Option<&'static str> {
         "tts.conversion.finished" => "Genie ONNX 转换完成，模型已保存",
         "tts.conversion.failed" => "Genie ONNX 转换失败",
         "tts.conversion.cancelled" => "Genie ONNX 转换已取消",
-        "mcp.server.connecting" => "正在连接 MCP 服务器",
-        "mcp.server.ready" => "MCP 服务器已就绪",
-        "mcp.ready" => "MCP 工具已就绪",
-        "mcp.config.disabled" => "MCP 未启用",
-        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
-        "mcp.tool.skipped" => "MCP 工具已跳过",
-        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
-        "mcp.tool.failed" => "MCP 工具调用失败",
-        "mcp.close.failed" => "MCP 连接关闭失败",
-        "mcp.close.timeout" => "MCP 连接清理超时",
         "plugin.loaded" => "插件已加载",
         "settings.provider_model.slot_save_failed" => "插件模型槽位保存失败",
         "settings.provider_model.slot_save_reconciled" => "插件模型槽位已通过回读确认保存",
@@ -2468,16 +2442,6 @@ fn viewer_message(event: &str, severity: Severity) -> &'static str {
         "tts.service.stderr" => "TTS 服务发生错误",
         "tts.process.cleanup.failed" => "TTS 服务清理失败",
         "tts.recording.failed" => "语音录制保存失败",
-        "mcp.server.connecting" => "正在连接 MCP 服务器",
-        "mcp.server.ready" => "MCP 服务器已就绪",
-        "mcp.ready" => "MCP 工具已就绪",
-        "mcp.config.disabled" => "MCP 未启用",
-        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
-        "mcp.tool.skipped" => "MCP 工具已跳过",
-        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
-        "mcp.tool.failed" => "MCP 工具调用失败",
-        "mcp.close.failed" => "MCP 连接关闭失败",
-        "mcp.close.timeout" => "MCP 连接清理超时",
         "plugin.loaded" => "插件已加载",
         "python.logging.warning" => "Core 运行过程中出现提醒",
         "python.logging.error" => "Core 运行过程中发生错误",
@@ -2534,7 +2498,6 @@ fn display_channel(channel: &str, event: &str) -> String {
         "core" => "CORE".to_string(),
         "interaction" => "LATENCY".to_string(),
         "memory" => "MEMORY".to_string(),
-        "mcp" => "MCP".to_string(),
         "plugin" => "PLUGIN".to_string(),
         "storage" => "STORAGE".to_string(),
         "tool" | "toolregistry" => "TOOL".to_string(),
@@ -3625,16 +3588,6 @@ fn core_message(event: &str) -> &'static str {
         "tts.weights.loading" => "正在加载 TTS 角色权重",
         "tts.weights.ready" => "TTS 角色权重已就绪",
         "tts.weights.failed" => "TTS 角色权重加载失败",
-        "mcp.server.ready" => "MCP 服务器工具已就绪",
-        "mcp.ready" => "MCP 工具已就绪",
-        "mcp.config.disabled" => "MCP 未启用",
-        "mcp.server.connecting" => "正在连接 MCP 服务器",
-        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
-        "mcp.tool.skipped" => "MCP 工具名冲突，已跳过",
-        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
-        "mcp.tool.failed" => "MCP 工具调用失败",
-        "mcp.close.failed" => "MCP 连接关闭失败",
-        "mcp.close.timeout" => "MCP 连接清理超时",
         "plugin.loaded" => "插件已加载",
         "startup.window_services.created" => "窗口服务已创建",
         "startup.background_services.created" => "后台服务已创建",

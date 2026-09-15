@@ -106,8 +106,6 @@ class StoragePaths:
     def characters_config(self) -> Path:
         return self.config_dir / "characters.yaml"
 
-    def mcp_config(self) -> Path:
-        return self.config_dir / "mcp.yaml"
 
     def plugins_config(self) -> Path:
         return self.config_dir / "plugins.yaml"

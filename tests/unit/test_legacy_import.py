@@ -21,7 +21,6 @@ import app.legacy_import.inspector as legacy_inspector
 import app.legacy_import.__main__ as legacy_cli
 from app.config.settings_service import AppSettingsService
 from app.legacy_import.configuration import (
-    _migrate_mcp,
     _write_tts_plugin_config,
     migrate_configuration,
 )
@@ -345,8 +344,6 @@ def _migrate_api_document(
     return migrated, AppSettingsService(staged)
 
 
-
-
 def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
     tmp_path: Path,
 ) -> None:
@@ -376,8 +373,6 @@ def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
     assert providers[0].api_key == "fixture-yaml-credential"
     assert providers[0].base_url == "https://yaml.example/v1"
     assert selection.chat.model == "yaml-model"
-
-
 
 
 @pytest.mark.parametrize(
@@ -453,10 +448,6 @@ def test_configuration_import_converts_pr110_selection_without_model_slots(
     assert selection.vision_chat is not None
     assert selection.vision_chat.profile_id == "vision-provider"
     assert selection.vision_chat.model == expected_vision_model
-
-
-
-
 
 
 def test_exception_diagnostics_do_not_include_free_form_private_messages() -> None:
@@ -616,12 +607,6 @@ def _install_fake_memory_model_runtime(
     return SimpleNamespace(write_model=write_model), calls
 
 
-
-
-
-
-
-
 def test_partial_legacy_source_without_config_imports_surviving_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -776,8 +761,6 @@ def test_internal_symlink_copy_rejects_lexical_escape(tmp_path: Path) -> None:
     assert raised.value.code == "LEGACY_NESTED_LINK_UNSUPPORTED"
 
 
-
-
 def test_memory_copy_uses_consistent_sqlite_snapshot_with_open_wal(tmp_path: Path) -> None:
     source = tmp_path / "legacy"
     memory = source / "data/memory"
@@ -816,8 +799,6 @@ def test_memory_copy_uses_consistent_sqlite_snapshot_with_open_wal(tmp_path: Pat
     source_after.pop("mem0_history.db-shm", None)
     assert source_after == source_before
     connection.close()
-
-
 
 
 def test_memory_validation_uses_runtime_schema_migration_for_legacy_variants(
@@ -1073,10 +1054,7 @@ servers:
         "enabled": False,
         "check_interval_minutes": 2,
     }
-    migrated_mcp = yaml.safe_load((target / "config/mcp.yaml").read_text(encoding="utf-8"))
-    assert migrated_mcp["servers"]["web"]["args"] == [
-        "{core_root}/app/agent/mcp/web_search_server.py"
-    ]
+    assert not (target / "config/mcp.yaml").exists()
     report_text = (target / "data/legacy-imports/test-import-0001/report.json").read_text(encoding="utf-8")
     assert "secret-key" not in report_text
     assert str(source) not in report_text
@@ -1088,8 +1066,6 @@ servers:
         for artifact in report_payload["artifacts"]
     )
     assert not (target / "data/memory/curation_state").exists()
-
-
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
@@ -1132,12 +1108,6 @@ def test_memory_model_preparation_failure_preserves_imported_memory(
     assert (target / "data/memory/mem0_history.db").is_file()
     assert not list(target.glob(".legacy-import-staging-*"))
     assert not list(target.glob(".legacy-import-journal-*"))
-
-
-
-
-
-
 
 
 def test_first_import_merges_and_preserves_all_atomic_target_trees(
@@ -1276,10 +1246,6 @@ def test_first_import_merges_and_preserves_all_atomic_target_trees(
     assert (target_memory / "target-extra.bin").read_bytes() == b"target extra"
     assert (target_memory / "legacy-extra.bin").read_bytes() == b"legacy extra"
     assert not (target_memory / "curation_state").exists()
-
-
-
-
 
 
 def test_first_import_never_overwrites_cross_role_timeline_identity(
@@ -1504,8 +1470,6 @@ def test_optional_domain_does_not_swallow_user_cancellation(
     assert list(target.iterdir()) == []
 
 
-
-
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 def test_import_rejects_invalid_target_timeline_and_keeps_existing_files(tmp_path: Path) -> None:
     source = _legacy_fixture(tmp_path)
@@ -1540,18 +1504,6 @@ def test_import_rejects_invalid_target_timeline_and_keeps_existing_files(tmp_pat
     assert unrelated.read_text(encoding="utf-8") == "keep me"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="Windows retry")
 def test_journal_replace_retries_brief_windows_file_locks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1574,12 +1526,6 @@ def test_journal_replace_retries_brief_windows_file_locks(
 
     assert attempts == 3
     assert json.loads(journal.read_text(encoding="utf-8")) == {"state": "committing"}
-
-
-
-
-
-
 
 
 @pytest.mark.parametrize("cut", ["after_backup", "after_install"])
@@ -1674,8 +1620,6 @@ def test_interrupted_finalize_is_resumed_without_rolling_back_valid_data(
     assert recover_pending_commits(target) == ["test-finalize-resume"]
     assert (target / "config/ui.json").read_text(encoding="utf-8") == "new"
     assert not list(target.glob(".legacy-import-*"))
-
-
 
 
 def test_history_quarantines_unknown_role_at_exact_source_line(tmp_path: Path) -> None:
@@ -1785,245 +1729,6 @@ def test_large_history_streams_binary_lines_with_stable_chunks_and_raw_quarantin
     assert base64.b64decode(issue["rawBase64"]) == invalid_raw
 
 
-def test_mcp_migration_drops_deprecated_confirmation_fields_recursively(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "legacy"
-    config = source / "data/config/mcp.yaml"
-    config.parent.mkdir(parents=True)
-    config.write_text(
-        """enabled: true
-servers:
-  web:
-    transport: stdio
-    command: python
-    args: []
-    risk: low
-    requires_confirmation: false
-    tool_policies:
-      Snapshot:
-        risk: medium
-        requires_confirmation: true
-""",
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 0
-    assert migrated["servers"]["web"]["risk"] == "low"
-    assert "requires_confirmation" not in json.dumps(migrated)
-
-
-def test_mcp_migration_quarantines_source_paths_in_executable_fields(
-    tmp_path: Path,
-) -> None:
-    source = Path(r"C:\foo")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "enabled": True,
-                "servers": {
-                    "command-source": {
-                        "transport": "stdio",
-                        "command": r"C:\foo\tools\server.exe",
-                    },
-                    "args-source": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["--directory", "c:/FOO/tools/server"],
-                    },
-                    "env-source": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "env": {"PYTHONPATH": r"C:\foo\packages"},
-                    },
-                    "source-sibling": {
-                        "transport": "stdio",
-                        "command": r"C:\foobar\tools\server.exe",
-                    },
-                    "source-space-sibling": {
-                        "transport": "stdio",
-                        "command": r"C:\foo archive\tools\server.exe",
-                    },
-                    "unrelated": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["https://example.test/C:/foo/docs", "foo is a label"],
-                        "env": {"DOCS_URL": "https://example.test/legacy-root"},
-                    },
-                },
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 3
-    assert set(migrated["servers"]) == {
-        "source-sibling",
-        "source-space-sibling",
-        "unrelated",
-    }
-
-
-
-
-def test_mcp_migration_quarantines_source_path_in_shell_command(
-    tmp_path: Path,
-) -> None:
-    source = Path(r"C:\legacy-root")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "legacy": {
-                        "transport": "stdio",
-                        "command": "powershell",
-                        "args": ["-Command", r"& C:\legacy-root\server.ps1"],
-                    },
-                    "sibling": {
-                        "transport": "stdio",
-                        "command": "powershell",
-                        "args": ["-Command", r"& C:\legacy-root archive\server.ps1"],
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 1
-    assert set(migrated["servers"]) == {"sibling"}
-
-
-def test_mcp_migration_quarantines_drive_file_uri_but_not_http_or_sibling(
-    tmp_path: Path,
-) -> None:
-    source = Path(r"C:\foo")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "legacy": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["--script=file:///C:/foo/server.py"],
-                    },
-                    "http": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["https://example.test/C:/foo/docs"],
-                    },
-                    "sibling": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["file:///C:/foo%20archive/server.py"],
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 1
-    assert set(migrated["servers"]) == {"http", "sibling"}
-
-
-
-
-
-
-def test_mcp_migration_quarantines_posix_colon_path_list_entries(
-    tmp_path: Path,
-) -> None:
-    source = Path("/legacy-root")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "source-last": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "env": {"PATH": "/other:/legacy-root/bin"},
-                    },
-                    "source-first": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "env": {"PATH": "/legacy-root:/other"},
-                    },
-                    "http": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["https://example.test/legacy-root/docs"],
-                    },
-                    "sibling": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "env": {"PATH": "/legacy-root-backup:/other"},
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 2
-    assert set(migrated["servers"]) == {"http", "sibling"}
-
-
-
-
-def test_mcp_migration_rebinds_legacy_web_server_tokens(
-    tmp_path: Path,
-) -> None:
-    separator = "\\"
-    source = Path(r"C:\legacy-root")
-    config = tmp_path / "mcp.yaml"
-    web_path = separator.join(
-        ["{base_dir}", "app", "agent", "mcp", "web_search_server.py"]
-    )
-    python_path = separator.join(["{base_dir}", "runtime", "python.exe"])
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "web": {
-                        "transport": "stdio",
-                        "command": python_path,
-                        "args": [web_path],
-                    }
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 0
-    assert migrated["servers"]["web"]["command"] == "{python}"
-    assert migrated["servers"]["web"]["args"] == [
-        "{core_root}/app/agent/mcp/web_search_server.py"
-    ]
-
-
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 @pytest.mark.parametrize(
     ("relative", "content", "_legacy_code"),
@@ -2032,7 +1737,7 @@ def test_mcp_migration_rebinds_legacy_web_server_tokens(
         (
             "data/config/mcp.yaml",
             "enabled: true\ndefault_call_timeout: invalid\nservers: {}\n",
-            "LEGACY_MCP_VALIDATION_FAILED",
+            "RETIRED_CONFIGURATION_IGNORED",
         ),
     ],
 )
@@ -2060,10 +1765,7 @@ def test_current_validators_quarantine_invalid_auxiliary_or_configuration_data(
             warning["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED"
             for warning in report.warnings
         )
-        migrated = yaml.safe_load(
-            (target / "config/mcp.yaml").read_text(encoding="utf-8")
-        )
-        assert migrated["default_call_timeout"] == 20
+        assert not (target / "config/mcp.yaml").exists()
     else:
         assert any(
             warning["code"] == "LEGACY_AUXILIARY_DATA_QUARANTINED"
@@ -2292,12 +1994,6 @@ def test_chunked_copy_cancellation_removes_partial_file(tmp_path: Path) -> None:
     assert not target.exists()
 
 
-
-
-
-
-
-
 @pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")
 def test_windows_fast_copy_normalizes_extended_paths_and_reports_robocopy_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2411,8 +2107,6 @@ def test_tts_profile_adaptation_removes_old_install_paths(tmp_path: Path) -> Non
         migrated = yaml.safe_load((config_root / name).read_text(encoding="utf-8"))
         assert migrated["custom"]["t2s_weights_path"] == migrated["v2ProPlus"]["t2s_weights_path"]
         assert migrated["custom"]["vits_weights_path"] == migrated["v2ProPlus"]["vits_weights_path"]
-
-
 
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")
