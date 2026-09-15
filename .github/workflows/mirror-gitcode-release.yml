@@ -12,26 +12,55 @@ on:
         description: GitHub release tag to mirror, for example v1.0.2
         required: true
         type: string
+      mode:
+        description: Rehearse with an isolated pre-release, or publish the real mirror
+        type: choice
+        default: rehearsal
+        options:
+          - rehearsal
+          - publish
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   resolve:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       enabled: ${{ steps.release.outputs.enabled }}
     steps:
+      - name: Check finalized asset publication
+        id: publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          publication="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name == "publish-portable") | .conclusion')"
+          if [[ "$publication" == "success" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo 'Skipping mirror: final asset publication did not succeed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - uses: actions/checkout@v6
-        if: github.event_name == 'workflow_run'
+        if: steps.publication.outputs.ready == 'true' && github.event_name == 'workflow_run'
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Resolve release tag
+        if: steps.publication.outputs.ready == 'true'
         id: release
         shell: bash
         env:
@@ -57,8 +86,15 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.enabled == 'true' && vars.GITCODE_REPOSITORY != ''
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    concurrency:
+      group: gitcode-release-mirror
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@v6
         with:
@@ -72,6 +108,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease > source-release.json
+          jq -e '.isDraft == false and .isPrerelease == false' source-release.json
           gh release download "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir release-assets
@@ -83,7 +121,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITCODE_ACCESS_TOKEN: ${{ secrets.GITCODE_ACCESS_TOKEN }}
           GITCODE_REPOSITORY: ${{ vars.GITCODE_REPOSITORY }}
+          GITCODE_USERNAME: ${{ vars.GITCODE_USERNAME }}
           TAG: ${{ needs.resolve.outputs.tag }}
+          MODE: ${{ inputs.mode || 'publish' }}
         run: |
           set -euo pipefail
           test -n "$GITCODE_ACCESS_TOKEN" || {
@@ -92,8 +132,17 @@ jobs:
           }
           target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq .sha)"
           test -n "$target_sha"
+          target_tag="$TAG"
+          args=(--sync-code)
+          if [[ "$MODE" == "rehearsal" ]]; then
+            target_tag="mirror-test-${TAG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            args+=(--rehearsal)
+          fi
+          echo "Source: ${TAG} (${target_sha})" >> "$GITHUB_STEP_SUMMARY"
+          echo "Mode: ${MODE}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Target: https://gitcode.com/${GITCODE_REPOSITORY}/releases/tag/${target_tag}" >> "$GITHUB_STEP_SUMMARY"
           python tools/release/gitcode_mirror.py \
             --repository "$GITCODE_REPOSITORY" \
-            --tag "$TAG" \
+            --tag "$target_tag" \
             --target-commitish "$target_sha" \
-            --assets-dir release-assets
+            --assets-dir release-assets "${args[@]}"

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import http.client
 import json
 import os
 import re
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -42,6 +44,29 @@ def api_path(owner: str, repo: str, suffix: str) -> str:
     return f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(repo, safe='')}{suffix}"
 
 
+def error_detail(raw: bytes, token: str) -> str:
+    """Retain API diagnostics without echoing credentials or signed URLs."""
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(value, dict):
+        return ""
+    details = []
+    for key in ("error_code", "error_code_name", "error_message", "message", "trace_id"):
+        item = value.get(key)
+        if not isinstance(item, (str, int)):
+            continue
+        clean = str(item)
+        if token:
+            for secret in (token, urllib.parse.quote(token, safe=""), urllib.parse.quote_plus(token)):
+                clean = clean.replace(secret, "[redacted]")
+        clean = re.sub(r"https?://\S+", "[url redacted]", clean)
+        clean = re.sub(r"[\x00-\x1f\x7f]", " ", clean)
+        details.append(f"{key}={' '.join(clean.split())[:400]}")
+    return "; ".join(details)
+
+
 def request_json(
     method: str,
     owner: str,
@@ -67,7 +92,9 @@ def request_json(
     except urllib.error.HTTPError as exc:
         if allow_404 and exc.code == 404:
             return None
-        raise MirrorError(f"GITCODE_API_HTTP_{exc.code}: {method} {suffix}") from exc
+        detail = error_detail(exc.read(8192), token)
+        message = f"GITCODE_API_HTTP_{exc.code}: {method} {suffix}"
+        raise MirrorError(f"{message}; {detail}" if detail else message) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise MirrorError(f"GITCODE_API_UNAVAILABLE: {method} {suffix}") from exc
     if not raw:
@@ -90,6 +117,66 @@ def release(owner: str, repo: str, token: str, tag: str) -> dict[str, Any] | Non
         f"/releases/tags/{urllib.parse.quote(tag, safe='')}",
         allow_404=True,
     )
+
+
+def verify_target(owner: str, repo: str, token: str, tag: str, sha: str) -> None:
+    tag_commit = request_json(
+        "GET", owner, repo, token,
+        f"/commits/{urllib.parse.quote(tag, safe='')}", allow_404=True,
+    )
+    if tag_commit is not None:
+        if tag_commit.get("sha") != sha:
+            raise MirrorError("GITCODE_TAG_TARGET_MISMATCH: refusing to reuse a different commit")
+        return
+    commit = request_json("GET", owner, repo, token, f"/commits/{sha}", allow_404=True)
+    if commit is None:
+        raise MirrorError(
+            f"GITCODE_SOURCE_COMMIT_MISSING: {sha}; "
+            "sync the GitHub release commit and tag to GitCode before mirroring"
+        )
+    if commit.get("sha") != sha:
+        raise MirrorError("GITCODE_TARGET_COMMIT_MISMATCH")
+
+
+def sync_source(repository: str, tag: str, sha: str, token: str) -> None:
+    """Push just the release commit and tag, without overwriting other refs."""
+    owner, _ = split_repo(repository)
+    tag = safe_tag(tag)
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise MirrorError("GITCODE_TARGET_COMMIT_INVALID")
+    username = os.environ.get("GITCODE_USERNAME") or owner
+    auth = base64.b64encode(f"{username}:{token}".encode()).decode()
+    env = dict(os.environ)
+    env.update({
+        "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "http.https://gitcode.com/.extraHeader",
+        "GIT_CONFIG_VALUE_1": f"Authorization: Basic {auth}",
+    })
+    result = subprocess.run(
+        ["git", "push", "--porcelain", f"https://gitcode.com/{repository}.git",
+         f"{sha}:refs/tags/{tag}"],
+        env=env, capture_output=True, text=True, timeout=1200,
+    )
+    if result.returncode:
+        detail = result.stderr.replace(token, "[redacted]").replace(auth, "[redacted]")
+        raise MirrorError(f"GITCODE_SOURCE_SYNC_FAILED: {detail[-2000:]}")
+    print(f"Code synchronized: {tag} -> {sha}", flush=True)
+
+
+def verify_download(repository: str, tag: str, path: Path) -> None:
+    owner, repo = split_repo(repository)
+    url = download_url(owner, repo, tag, path.name)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, path.open("rb") as local:
+            while chunk := response.read(1024 * 1024):
+                if local.read(len(chunk)) != chunk:
+                    raise MirrorError(f"GITCODE_DOWNLOAD_CONTENT_MISMATCH: {path.name}")
+            if local.read(1):
+                raise MirrorError(f"GITCODE_DOWNLOAD_TRUNCATED: {path.name}")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise MirrorError(f"GITCODE_DOWNLOAD_FAILED: {path.name}; {type(exc).__name__}") from None
+    print(f"Public download verified: {path.name} ({path.stat().st_size} bytes)", flush=True)
 
 
 def asset_names(value: dict[str, Any] | None) -> set[str]:
@@ -161,6 +248,9 @@ def put_file(url: str, headers: dict[str, str], path: Path) -> None:
         parsed.port or 443,
         timeout=60,
     )
+    sent = 0
+    started = time.monotonic()
+    print(f"Uploading {path.name}: {path.stat().st_size} bytes to {parsed.hostname}", flush=True)
     try:
         connection.putrequest("PUT", target)
         lowered = {key.lower() for key in headers}
@@ -172,12 +262,18 @@ def put_file(url: str, headers: dict[str, str], path: Path) -> None:
         with path.open("rb") as handle:
             while chunk := handle.read(1024 * 1024):
                 connection.send(chunk)
+                sent += len(chunk)
+                if sent % (16 * 1024 * 1024) == 0:
+                    print(f"Upload progress: {path.name} {sent} bytes, {time.monotonic() - started:.0f}s", flush=True)
         response = connection.getresponse()
         response.read()
         if not 200 <= response.status < 300:
             raise MirrorError(f"GITCODE_UPLOAD_HTTP_{response.status}: {path.name}")
     except (OSError, http.client.HTTPException) as exc:
-        raise MirrorError(f"GITCODE_UPLOAD_FAILED: {path.name}") from exc
+        raise MirrorError(
+            f"GITCODE_UPLOAD_FAILED: {path.name}; sent={sent}; "
+            f"elapsed={time.monotonic() - started:.0f}s; {type(exc).__name__}"
+        ) from None
     finally:
         connection.close()
 
@@ -215,6 +311,9 @@ def mirror(
     assets_dir: Path,
     token: str,
     target_commitish: str,
+    *,
+    rehearsal: bool = False,
+    sync_code: bool = False,
 ) -> None:
     owner, repo = split_repo(repository)
     tag = safe_tag(tag)
@@ -224,7 +323,17 @@ def mirror(
     source = assets_dir / "latest.json"
     if not source.is_file():
         raise MirrorError("UPDATER_MANIFEST_MISSING")
+    if rehearsal and not tag.startswith("mirror-test-"):
+        raise MirrorError("GITCODE_REHEARSAL_TAG_INVALID")
 
+    if sync_code:
+        sync_source(repository, tag, target_commitish, token)
+    verify_target(owner, repo, token, tag, target_commitish)
+    latest_before = None
+    if rehearsal:
+        latest_before = request_json(
+            "GET", owner, repo, token, "/releases/latest", query={"type": "latest"}, allow_404=True,
+        )
     current = release(owner, repo, token, tag)
     if current is None:
         request_json(
@@ -242,6 +351,8 @@ def mirror(
             },
         )
     else:
+        if rehearsal and current.get("release_status") != "pre":
+            raise MirrorError("GITCODE_REHEARSAL_RELEASE_NOT_PRE")
         target = current.get("target_commitish")
         if isinstance(target, str) and target and target != target_commitish:
             raise MirrorError("GITCODE_RELEASE_TARGET_MISMATCH")
@@ -269,6 +380,17 @@ def mirror(
         expected = {path.name for path in files}
         if not expected.issubset(asset_names(release(owner, repo, token, tag))):
             raise MirrorError("GITCODE_RELEASE_ASSET_SET_INCOMPLETE")
+
+        for path in files:
+            verify_download(repository, tag, path)
+        if rehearsal:
+            latest_after = request_json(
+                "GET", owner, repo, token, "/releases/latest", query={"type": "latest"}, allow_404=True,
+            )
+            if (latest_after or {}).get("tag_name") != (latest_before or {}).get("tag_name"):
+                raise MirrorError("GITCODE_REHEARSAL_CHANGED_LATEST")
+            print(f"Rehearsal passed (pre-release retained): https://gitcode.com/{owner}/{repo}/releases/tag/{tag}")
+            return
 
         # Only after all files exist do we expose this Release as GitCode's latest.
         request_json(
@@ -306,6 +428,8 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--assets-dir", required=True, type=Path)
     parser.add_argument("--target-commitish", required=True)
+    parser.add_argument("--rehearsal", action="store_true")
+    parser.add_argument("--sync-code", action="store_true")
     parser.add_argument(
         "--token",
         default=os.environ.get("GITCODE_ACCESS_TOKEN", ""),
@@ -319,6 +443,8 @@ def main() -> int:
         args.assets_dir,
         args.token.strip(),
         args.target_commitish.strip(),
+        rehearsal=args.rehearsal,
+        sync_code=args.sync_code,
     )
     return 0
 
