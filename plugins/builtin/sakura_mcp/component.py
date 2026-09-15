@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import asdict, is_dataclass
 import json
 import math
@@ -78,8 +78,9 @@ def configuration(raw):
 
 
 class Component:
-    def __init__(self, auth_path=None):
+    def __init__(self, auth_path=None, logger=None):
         self.auth_path = auth_path
+        self.logger = logger
         self.loop = asyncio.new_event_loop()
         self.connections = {}
         self.operations = {}
@@ -87,6 +88,29 @@ class Component:
         self.closed = False
         self.thread = threading.Thread(target=self._run, name="mcp-client", daemon=True)
         self.thread.start()
+
+    def _log(self, level, message, conn, **fields):
+        if self.logger is not None:
+            getattr(self.logger, level)(message, fields={
+                "consumerPluginId": conn["owner"][0], "connectionId": conn["handle"],
+                "transport": conn["config"]["transport"], **fields})
+
+    @contextmanager
+    def _stderr(self, conn):
+        reader_fd, writer_fd = os.pipe()
+        reader = os.fdopen(reader_fd, "r", encoding="utf-8", errors="replace")
+        writer = os.fdopen(writer_fd, "w", encoding="utf-8")
+        def drain():
+            with reader:
+                while chunk := reader.readline(4096):
+                    self._log("info", "MCP 服务端诊断输出", conn, output=chunk.rstrip())
+        worker = threading.Thread(target=drain, name="mcp-stderr", daemon=True)
+        worker.start()
+        try:
+            yield writer
+        finally:
+            writer.close()
+            worker.join(timeout=1)
 
     def _run(self):
         asyncio.set_event_loop(self.loop)
@@ -139,14 +163,15 @@ class Component:
 
     async def _connection(self, conn, credential_key, previous):
         config = conn["config"]
+        self._log("info", "MCP 服务连接中", conn)
         try:
             if previous:
                 await asyncio.gather(*previous, return_exceptions=True)
             async with AsyncExitStack() as stack:
                 if config["transport"] == "stdio":
                     params = StdioServerParameters.model_validate({key: config[key] for key in ("command", "args", "env", "cwd", "encoding", "encoding_error_handler") if key in config})
-                    # Server stderr can contain credentials; never copy it into Core logs.
-                    errlog = stack.enter_context(open(os.devnull, "w"))
+                    # Host logging applies bounded queues, redaction and plugin attribution.
+                    errlog = stack.enter_context(self._stderr(conn))
                     transport = stdio_client(params, errlog=errlog)
                 else:
                     auth = None
@@ -183,12 +208,19 @@ class Component:
 
                 async def message(message):
                     if isinstance(message, Exception):
+                        self._log("error", "MCP 传输失败", conn, reason_code="MCP_TRANSPORT_FAILED")
                         self._event(conn, "transportError", {"code": "MCP_TRANSPORT_FAILED"})
                         conn["stop"].set()
                     else:
                         self._event(conn, "notification", message)
 
-                kwargs = {"message_handler": message, "mode": config.get("mode", "auto")}
+                async def logging(params):
+                    level = {"debug": "debug", "warning": "warning", "error": "error",
+                             "critical": "error", "alert": "error", "emergency": "error"}.get(params.level, "info")
+                    self._log(level, "MCP 服务端日志", conn, output=wire(params.data))
+
+                kwargs = {"message_handler": message, "mode": config.get("mode", "auto"),
+                          "logging_callback": logging, "log_level": "info"}
                 if config.get("extensions"):
                     from mcp.client.extension import advertise
                     kwargs["extensions"] = [advertise(key, value) for key, value in config["extensions"].items()]
@@ -212,17 +244,22 @@ class Component:
                             instructions=client.instructions)
                 conn["authorizationUrl"] = None
                 conn["ready"].set()
+                self._log("info", "MCP 服务已连接", conn, protocolVersion=client.protocol_version)
                 await conn["stop"].wait()
                 await self._cancel_operations(conn["handle"])
         except asyncio.CancelledError:
             if conn["state"] == "connecting":
                 conn["error"] = "MCP_CONNECT_TIMEOUT"
+                self._log("error", "MCP 服务连接超时", conn, reason_code=conn["error"])
         except Exception:
             conn["error"] = "MCP_CONNECTION_FAILED"
+            self._log("error", "MCP 服务连接失败", conn, reason_code=conn["error"])
         finally:
             await self._cancel_operations(conn["handle"])
             conn["client"] = None
             conn["state"] = "error" if "error" in conn else "closed"
+            if conn["state"] == "closed":
+                self._log("info", "MCP 服务连接已关闭", conn)
             conn["ready"].set()
             for pending in list(conn["pending"].values()):
                 pending["future"].cancel()
@@ -306,12 +343,16 @@ class Component:
                     stream.seek(0)
                     op["stream"] = stream
                 op["state"] = "completed"
+                if isinstance(value, dict) and value.get("isError") is True:
+                    self._log("error", "MCP 工具返回失败", conn, operationId=op["operationId"], reason_code="MCP_TOOL_ERROR")
         except asyncio.CancelledError:
             op["state"] = "cancelled"
         except TimeoutError:
             op.update(state="error", error="MCP_REQUEST_TIMEOUT")
+            self._log("error", "MCP 请求超时", conn, operationId=op["operationId"], reason_code=op["error"])
         except Exception as error:
             op.update(state="error", error=getattr(error, "code", "MCP_REQUEST_FAILED"))
+            self._log("error", "MCP 请求失败", conn, operationId=op["operationId"], reason_code=op["error"])
 
     @staticmethod
     def _params(params):

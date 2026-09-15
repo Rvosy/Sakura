@@ -1,6 +1,7 @@
 # Windows 操作插件
 
-将 CursorTouch 的 [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) 封装为 Sakura 可选插件。
+将 CursorTouch 的 [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) 封装为独立安装的 Sakura 插件。
+源码放在可选插件目录，单独构建 ZIP，不随 Sakura 安装包分发，也不自动安装或启用。
 需要 Windows 10/11 和已启用的 `sakura.mcp` 基础组件。
 
 插件通过基础组件启动官方 PyPI 包、发现工具并注册为 `windows_mcp_*`，不自行实现 MCP 客户端。
@@ -19,10 +20,16 @@
 另提供 `sakura.windows-mcp` Service：`status`、`catalog`、`begin`、`inspect`、`readResult`、`cancel`、`release`。
 基础组件的句柄归此插件所有，插件退出时统一回收。
 
+## 日志
+
+工具发现、就绪和调用失败写入宿主日志中的“Windows 操作”插件记录。
+连接、协议请求失败及服务端诊断由 MCP 核心组件记录，并附带消费插件 ID 和连接编号。
+两者共用 Sakura 日志窗口、脱敏和文件写入流程，不另建日志文件；不主动记录工具参数、桌面内容或截图。
+
 ## 构建和验证
 
 ```text
-runtime\python.exe tools/release/package_optional_plugin.py --source plugins/optional/windows_mcp --output artifacts/plugins/windows-mcp-0.1.0.zip
+runtime\python.exe tools/release/package_optional_plugin.py --source plugins/optional/windows_mcp --output artifacts/plugins/windows-mcp-0.1.1.zip
 runtime\python.exe -m pytest -q tests/unit/test_windows_mcp_plugin.py
 ```
 

@@ -17,7 +17,8 @@ class MCPPlugin:
 
     def setup(self, context):
         self.context = context
-        self.component = Component(lambda key: context.data_path(f"oauth/{key}.json"))
+        self.component = Component(lambda key: context.data_path(f"oauth/{key}.json"),
+                                   logger=context.get("sakura.host.logging"))
         context.effect(self.component.close)
         context.on("sakura.host.scope.closed", self.scope_closed)
         context.provide("sakura.mcp", self, exports=EXPORTS)

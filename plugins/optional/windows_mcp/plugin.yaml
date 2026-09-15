@@ -3,12 +3,13 @@ id: sakura.windows-mcp
 name: Windows 操作
 author: Sakura
 description: 通过 Windows-MCP 读取和操作 Windows 桌面。
-version: 0.1.0
+version: 0.1.1
 entry: plugin:WindowsMCPPlugin
 enabled: true
 provides:
   - sakura.windows-mcp
 requires:
+  - sakura.host.logging
   - sakura.mcp
   - sakura.host.tools
   - sakura.host.artifacts

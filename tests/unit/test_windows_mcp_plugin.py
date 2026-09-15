@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 from pathlib import Path
 import shutil
@@ -15,6 +16,8 @@ from app.agent.tools import ToolRegistry
 from app.core_host.plugin_application import PluginApplicationHost
 from app.plugins.sakura_plugin_sdk import PluginContext
 from app.storage.runtime_roots import RuntimeRoots
+from app.storage.paths import StoragePaths
+from app.core_host.runtime_logging import install_runtime_logging
 
 
 ROOT = Path(__file__).parents[2]
@@ -57,11 +60,11 @@ def until(check, timeout=30):
 def roots(tmp_path, dependencies):
     dist, user = tmp_path / "distribution", tmp_path / "user"
     user.mkdir()
-    for name, source in (("sakura_mcp", ROOT / "plugins/builtin/sakura_mcp"),
-                         ("windows_mcp", ROOT / "plugins/optional/windows_mcp")):
-        shutil.copytree(source, dist / "plugins/builtin" / name)
+    shutil.copytree(ROOT / "plugins/builtin/sakura_mcp", dist / "plugins/builtin/sakura_mcp")
+    shutil.copytree(ROOT / "plugins/optional/windows_mcp", user / "plugins/user/sakura.windows-mcp")
     for name, source in (("sakura.mcp", CORE_DEPS), ("sakura.windows-mcp", dependencies)):
-        target = dist / "plugins/dependencies" / name
+        target = (dist / "plugins/dependencies" / name if name == "sakura.mcp"
+                  else StoragePaths(user).plugin_dependency_root_for(name))
         shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
         (target / ".sakura-dependencies.json").write_text(json.dumps({
             "schemaVersion": 1, "kind": "requirements.txt", "python": f"{sys.version_info.major}.{sys.version_info.minor}",
@@ -72,24 +75,28 @@ def roots(tmp_path, dependencies):
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only consumer plugin")
 def test_windows_plugin_dynamic_tools_and_cleanup(tmp_path):
     runtime = roots(tmp_path, CORE_DEPS)
-    placeholder = runtime.distribution_root / "plugins/dependencies/sakura.windows-mcp/windows_mcp"
+    placeholder = StoragePaths(runtime.user_root).plugin_dependency_root_for("sakura.windows-mcp") / "windows_mcp"
     placeholder.mkdir()
     (placeholder / "__init__.py").write_text("", encoding="utf-8")
-    server = runtime.distribution_root / "plugins/builtin/windows_mcp/server.py"
+    server = runtime.user_root / "plugins/user/sakura.windows-mcp/server.py"
     server.write_text(FIXTURE, encoding="utf-8")
     registry = ToolRegistry()
     host = PluginApplicationHost(runtime, "windows-mcp-fixture", registry)
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
     try:
         host.start()
         def status():
             return host.application.call_service("sakura.windows-mcp", "status")
         state = until(lambda: (value if (value := status())["state"] != "connecting" else None))
         assert state["state"] == "ready", state
-        assert {tool.name for tool in registry.all()} == {"windows_mcp_result", "windows_mcp_snapshot", "windows_mcp_large"}
+        assert {tool.name for tool in registry.all()} == {"windows_mcp_result", "windows_mcp_snapshot", "windows_mcp_large", "windows_mcp_fail"}
         result = registry.execute("windows_mcp_snapshot", {})
         assert result.success, result
         server_pid = int(result.content["content"][0]["text"])
         assert psutil.pid_exists(server_pid)
+        registry.execute("windows_mcp_fail", {})
+        until(lambda: "MCP 工具返回失败" in stream.getvalue().decode("utf-8"))
         large = registry.execute("windows_mcp_large", {})
         assert large.success
         operation = large.content["operationId"]
@@ -108,12 +115,20 @@ def test_windows_plugin_dynamic_tools_and_cleanup(tmp_path):
         host.set_enabled(record["installId"], False)
         until(lambda: not psutil.pid_exists(server_pid))
         assert registry.all() == []
+        until(lambda: "Windows 操作工具已就绪" in stream.getvalue().decode("utf-8"))
+        logs = stream.getvalue().decode("utf-8")
+        assert "MCP 服务已连接" in logs
+        assert "fixture-stderr" in logs
+        assert "sakura.windows-mcp" in logs and "sakura.mcp" in logs
+        assert "fixture-private-token" not in logs
     finally:
         host.close()
+        bridge.close()
 
 
 FIXTURE = '''
 import sys, os
+print("fixture-stderr token=fixture-private-token", file=sys.stderr, flush=True)
 from pathlib import Path
 dependency = Path(sys.argv[1])
 sys.path[:0] = [str(dependency), str(dependency / "win32"), str(dependency / "win32/lib")]
@@ -125,6 +140,9 @@ def snapshot() -> str:
 @server.tool(name="Large")
 def large() -> str:
     return "大结果" * 20000
+@server.tool(name="Fail")
+def fail() -> str:
+    raise ValueError("fixture tool failure")
 server.run()
 '''
 

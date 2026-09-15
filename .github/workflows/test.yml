@@ -31,6 +31,19 @@ jobs:
         timeout-minutes: 8
         run: python -m pip install --disable-pip-version-check -r tools/requirements-dev.txt
 
+      - name: Prepare private MCP test dependencies
+        timeout-minutes: 3
+        run: |
+          python -m pip install --disable-pip-version-check --target plugins/dependencies/sakura.mcp -r plugins/builtin/sakura_mcp/requirements.txt
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          Path("plugins/dependencies/sakura.mcp/.sakura-dependencies.json").write_text(json.dumps({
+              "schemaVersion": 1, "kind": "requirements.txt",
+              "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+          }), encoding="utf-8")
+          PY
+
       - name: Run Python tests
         timeout-minutes: 12
         env:

@@ -17,6 +17,7 @@ class WindowsMCPPlugin:
         if sys.platform != "win32":
             raise RuntimeError("WINDOWS_MCP_REQUIRES_WINDOWS")
         self.context = context
+        self.logger = context.get("sakura.host.logging")
         self.mcp = context.get("sakura.mcp")
         self.artifacts = context.get("sakura.host.artifacts")
         self.stopping = threading.Event()
@@ -53,6 +54,7 @@ class WindowsMCPPlugin:
             "risk": "low",
         }, self.result_tool)
         self.worker = threading.Thread(target=self._discover, name="windows-mcp-discovery", daemon=True)
+        self.logger.info("Windows 操作工具发现中")
         self.worker.start()
 
     def status(self):
@@ -95,7 +97,10 @@ class WindowsMCPPlugin:
             with self.lock:
                 self.discovered = catalog
                 self.state = "ready"
+            self.logger.info("Windows 操作工具已就绪", fields={"toolCount": len(catalog)})
         except Exception as error:
+            if not self.stopping.is_set():
+                self.logger.error("Windows 操作工具发现失败", fields={"reason_code": getattr(error, "code", "WINDOWS_MCP_DISCOVERY_FAILED")})
             for dispose in reversed(registrations):
                 dispose()
             with self.lock:
@@ -173,6 +178,10 @@ class WindowsMCPPlugin:
                 self.artifacts.release(allocation["artifactId"])
                 raise
             return {"content": without_images, "artifact": descriptor}
+        except Exception:
+            if not self.stopping.is_set():
+                self.logger.error("Windows 操作失败", fields={"tool": name, "operationId": operation})
+            raise
         finally:
             if not retain:
                 self.mcp.release(operation)
@@ -183,3 +192,4 @@ class WindowsMCPPlugin:
             self.mcp.unregisterServer(self.handle)
         if self.worker is not None:
             self.worker.join(timeout=0.5)
+        self.logger.info("Windows 操作插件已停止")
