@@ -577,13 +577,15 @@
     },
     {
       "id": "runtime-v2-memory-tests",
-      "description": "验证 Mem0 普通插件 owner、通用 Context/Tools/Settings/Collection、整理游标与数据边界",
+      "description": "验证 Mem0 与便签记忆的通用 Context/Tools/Collection、整理游标及独立数据边界",
       "argv": [
         "{python}",
         "-m",
         "pytest",
         "tests/unit/test_core_host_memory.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
+        "tests/unit/test_fact_memory_plugin.py",
+        "tests/integration/test_fact_memory_core_protocol.py",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -609,6 +611,11 @@
         "tests/unit/test_mobile_runtime_v4.py",
         "tests/unit/test_core_host_plugins.py",
         "tests/unit/test_plugin_settings_contract.py",
+        "tests/unit/test_plugin_settings_collections.py",
+        "tests/unit/test_plugin_service_binding.py",
+        "tests/unit/test_bound_service_lifecycle.py",
+        "tests/unit/test_context_contributions.py",
+        "tests/integration/test_context_plugin_chat.py",
         "tests/integration/test_wp_4_04_plugin_journey.py",
         "-q"
       ],
@@ -749,11 +756,12 @@
     },
     {
       "id": "runtime-v2-asr-python-journey",
-      "description": "验证独立 ASR Hub/Provider 进程、取消、至多一次结果、授权与资源清理",
+      "description": "验证独立 ASR Hub/Provider 进程、重载隔离、取消、至多一次结果、授权与资源清理",
       "argv": [
         "{python}", "-m", "pytest", "-q",
         "tests/unit/test_asr_input.py",
-        "tests/unit/test_asr_plugins.py"
+        "tests/unit/test_asr_plugins.py",
+        "tests/unit/test_asr_service_binding.py"
       ],
       "timeout_seconds": 180,
       "env": {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"}

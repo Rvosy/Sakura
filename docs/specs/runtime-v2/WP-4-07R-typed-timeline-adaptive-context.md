@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-16
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -219,11 +219,11 @@ tokenizer；不可用时使用现有保守估算器，并在 Trace 标明 estima
 
 `ContextPolicy` 在同一个预算账本中处理历史 Turn 和 Context Fragment：
 
-1. 保留必需 Host facts 和当前 Turn；
+1. 保留必需 Host facts、必需插件片段和当前 Turn；
 2. 在能完整容纳时优先保护最近 8 个真实 human/assistant 完整 Turn；8 是保护尾部，不是历史上限；
 3. 尝试完整选择最新的近期 observation Turn；空间不足时整 Turn 丢弃，不截断摘要或 assistant 回复；
 4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；每个可选 Fragment 的
-   `token_budget` 只约束自身正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 再分配共享额度；
+   `token_budget` 只约束自身正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 再分配共享额度；必需片段必须完整保留；
 5. 用剩余预算从近到远选择其余两小时内 observation Turn，再选择更早的真实对话 Turn；
 6. 输出前恢复为旧到新，并由 Provider adapter 进行最终 role/placement 兼容。
 
@@ -240,6 +240,14 @@ WP-4-07R 的 Runtime v2 路径不得继续把以下值作为总上限：
 ```
 
 Legacy Qt 可以暂时保留旧限制，但不得影响 Runtime v2 resolved budget。
+
+### 7.4 行为贡献与本轮采集
+
+插件通过统一 Context 入口提供自行组织的文本，不声明用途或信任分类；当前合同见
+[Runtime v4 §6.4](sakura-plugin-runtime-v4.md#64-context-行为贡献)。旧可选内容的 16 条/8192 字符裁剪已移到默认消费者，
+Host 传递完整贡献并保留来源与有界传输检查。必需内容完整保留，放不下时报告模型预算不足。
+本轮内容的临时缓存只属于活动调用，供模型各步骤复用；它不改变第 6 节历史投影的无状态要求，也不创建持久 Turn cache。
+回调失败、复用和片段完整性是默认对话实现的消费约定，旧无分类插件保持可选内容行为；默认对话策略尚未迁入独立插件。
 
 ## 8. Memory 与其他插件
 
