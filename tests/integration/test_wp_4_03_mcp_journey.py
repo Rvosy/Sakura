@@ -185,15 +185,21 @@ def test_real_core_mcp_slow_start_is_non_blocking_and_shutdown_has_no_residue(
         assert process.returncode == 0
         _wait_process_gone(child_pid)
     finally:
-        if child_pid is not None:
+        # Let initialization finish even when an assertion fails before READY.
+        release_file.touch()
+        try:
+            if child_pid is not None:
+                try:
+                    child = psutil.Process(child_pid)
+                    child.kill()
+                    child.wait(timeout=5)
+                except psutil.NoSuchProcess:
+                    pass
+        finally:
             try:
-                child = psutil.Process(child_pid)
-                child.kill()
-                child.wait(timeout=5)
-            except psutil.NoSuchProcess:
-                pass
-        _stop(process)
-        _stop_provider(provider, provider_thread)
+                _stop(process)
+            finally:
+                _stop_provider(provider, provider_thread)
 
 
 def test_damaged_config_and_missing_command_degrade_only_mcp(tmp_path: Path) -> None:
@@ -266,3 +272,53 @@ def test_damaged_config_and_missing_command_degrade_only_mcp(tmp_path: Path) -> 
             _stop(missing_process)
     finally:
         _stop_provider(provider, provider_thread)
+
+
+def test_stdio_pid_is_visible_only_after_its_contents_are_complete(tmp_path: Path, monkeypatch) -> None:
+    import os
+    import runpy
+
+    publish = runpy.run_path(str(FIXTURE_SERVER))["_publish_pid"]
+    pid_file = tmp_path / "mcp.pid"
+    visible_during_write = []
+
+    def observe_open_before_write(path, contents, *, encoding):
+        with path.open("w", encoding=encoding) as stream:
+            # Reproduce the reader running after file creation but before write.
+            visible_during_write.append(pid_file.exists())
+            return stream.write(contents)
+
+    monkeypatch.setattr(Path, "write_text", observe_open_before_write)
+    publish(pid_file)
+    assert visible_during_write == [False]
+    assert int(pid_file.read_text(encoding="ascii")) == os.getpid()
+
+
+def test_mcp_pid_read_failure_releases_startup_and_stops_fixture_provider(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+
+    original_read = Path.read_text
+    original_provider = _start_provider
+    providers = []
+    children = []
+
+    def start_provider(outcome):
+        server, thread = original_provider(outcome)
+        providers.append(thread)
+        return server, thread
+
+    def fail_pid_read(path, *args, **kwargs):
+        contents = original_read(path, *args, **kwargs)
+        if path == tmp_path / "mcp.pid":
+            children.append(int(contents))
+            raise ValueError("injected incomplete PID read")
+        return contents
+
+    monkeypatch.setattr(Path, "read_text", fail_pid_read)
+    monkeypatch.setattr(sys.modules[__name__], "_start_provider", start_provider)
+    with pytest.raises(ValueError, match="injected incomplete PID read"):
+        test_real_core_mcp_slow_start_is_non_blocking_and_shutdown_has_no_residue(tmp_path)
+    assert providers and all(not thread.is_alive() for thread in providers)
+    assert children
+    for pid in children:
+        _wait_process_gone(pid)

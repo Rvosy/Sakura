@@ -13,9 +13,15 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _publish_pid(path: Path) -> None:
+    pending = path.with_suffix(".pending")
+    pending.write_text(str(os.getpid()), encoding="ascii")
+    pending.replace(path)
+
+
 def main() -> None:
     arguments = _arguments()
-    arguments.pid_file.write_text(str(os.getpid()), encoding="ascii")
+    _publish_pid(arguments.pid_file)
     while arguments.release_file is not None and not arguments.release_file.exists():
         time.sleep(0.01)
 
