@@ -568,7 +568,7 @@ impl CharacterPresentationState {
                 return Ok(mask);
             }
         }
-        let bytes = read_bounded(&path, 8 * 1024 * 1024)?;
+        let bytes = read_bounded(&path, 16 * 1024 * 1024)?;
         let metadata = inspect_png(&path, bytes.len() as u64)?;
         let mask = decode_png_alpha_mask(&bytes, metadata)?;
         let mut cache = active
@@ -967,6 +967,8 @@ mod tests {
                 .write_image_data(&[255, 0, 0, 0, 0, 255, 0, 255])
                 .unwrap();
         }
+        // Exercise the encoded size boundary while retaining a tiny alpha-mask fixture.
+        bytes.resize(16 * 1024 * 1024, 0);
         fs::write(dir.path().join("characters/model/assets/image.png"), &bytes).unwrap();
         input
             .visual
@@ -982,6 +984,9 @@ mod tests {
             state.active_portrait_alpha_mask("surface", "g").unwrap(),
             mask
         );
+        bytes.push(0);
+        fs::write(dir.path().join("characters/model/assets/image.png"), &bytes).unwrap();
+        assert!(state.active_portrait_alpha_mask("surface", "g").is_err());
     }
     #[test]
     fn editor_assets_are_generic_bounded_and_revoked_with_the_provider() {
