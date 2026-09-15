@@ -266,8 +266,10 @@ export function createRuntimeDiagnostics({
       // Local diagnostics are best effort and never become a product failure.
     } finally {
       sending = false;
-      if (!disposed && pending.length > 0) {
-        if (pending.length >= BATCH_LIMIT) void flush();
+      if (pending.length > 0) {
+        // dispose may enqueue the final entries while another batch is in flight.
+        // Drain them without timers; failed batches have already been removed.
+        if (disposed || pending.length >= BATCH_LIMIT) await flush();
         else schedule();
       }
     }
