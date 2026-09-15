@@ -203,7 +203,7 @@ Core 的 `CharacterPresentation` 使用 schemaVersion 2：角色公共信息、�
 Rust 将资源 URL 编码为 `/v1/{hexGeneration}/{bindingId}-{hexAssetKey}`，模块为
 `/module/{hexGeneration}/{bindingId}/{安装内相对模块路径}`，通过 `sakura-character` 协议提供。
 WebView 不接收安装绝对路径；模块只能来自已安装插件，角色包里的 JavaScript 不会作为模块加载。
-普通资产限 64 MiB，模块限 4 MiB；PNG 命中服务另有限定尺寸、解码预算和小容量缓存。
+普通资产限 64 MiB，模块限 4 MiB。内置立绘插件和原生 PNG 命中服务的单张文件上限均为 16 MiB（16,777,216 字节，含上限）；PNG 宽高各不超过 8192，像素总数不超过 40,000,000。PNG 命中服务另有解码预算和小容量缓存。
 URL 随 generation 与绑定失效；同 generation 的插件重绑同样撤销旧目标。CSP 不允许 eval 或运行时 CDN。
 前端模块是可信插件代码，共享 WebView 权限，不是恶意 JavaScript 沙箱。
 

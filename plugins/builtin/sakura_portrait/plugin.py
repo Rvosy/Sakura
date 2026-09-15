@@ -48,7 +48,7 @@ def portrait_configuration(value, *, legacy=False):
 
 def inspect_png(path):
     size = path.stat().st_size
-    if not 33 <= size <= 8 * 1024 * 1024:
+    if not 33 <= size <= 16 * 1024 * 1024:
         raise ValueError("VISUAL_RESOURCE_INVALID")
     with path.open("rb") as stream:
         header = stream.read(33)
