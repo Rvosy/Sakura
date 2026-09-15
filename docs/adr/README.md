@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-11
+updated: 2026-09-16
 ---
 
 # Architecture Decision Records
@@ -66,3 +66,5 @@ spec 或 plan，验收证据放在 records。
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
+
+- [ADR-0054：开放插件成果整合与 Collection 归属](0054-retire-executor-experiment-and-scope-collections.md)

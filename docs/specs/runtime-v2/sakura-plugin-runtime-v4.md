@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-11
+updated: 2026-09-16
 ---
 
 # Sakura Plugin Runtime v4
@@ -122,7 +122,7 @@ Python 标准库
 第三方插件以及完成迁移的官方插件不得导入 `app.*`、Core 私有 bootstrap 或其他插件的源码目录。需要的
 宿主信息必须通过 `context` 和 `sakura.host.*` 取得；可复用的领域代码应搬入插件自身包或独立的公开库。
 
-SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`。允许因跨进程而收紧参数、返回值和 cleanup
+SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`，增加显式进程绑定 `bind`。允许因跨进程而收紧参数、返回值和 cleanup
 合同，但不把 RPC client、PID、pipe、模块名或进程地址暴露给插件作者。
 
 SDK 提供不依赖 Core 的 `sakura_http.urlopen_direct_for_loopback` 和 `proxy_for_url`。内置插件的 HTTP API
@@ -246,6 +246,30 @@ Manifest `requires` 表示启动和失败传播使用的硬依赖。已知固定
 Service key 可以由 `context.get()` 动态解析，但这种查找只返回当前 ServiceProxy 或明确缺失，不创建硬依赖、
 后台重绑或恢复关系。
 
+### 5.1 显式绑定插件进程
+
+`context.get(service_key)` 的跨进程调用保持动态路由，每次调用解析当前提供者。`context.bind(service_key)` 返回固定到
+当前 active 插件进程的 ServiceProxy，绑定身份为 `providerId + scopeId`。普通插件可以使用该接口，不需要
+经过某个特定领域的 Host 适配器。内置 Host 服务不提供进程绑定，继续使用 `get()`。
+
+Runtime 在绑定创建、派发及返回边界校验身份。停用、退出、同 ID 重载后旧绑定失效，不能把调用路由到替代进程；
+原调用返回时若绑定已失效，也不能交付旧成功结果。过期身份不自动刷新，超时、断连及失效不自动重放。
+新操作由实际消费者显式绑定新实例，旧操作保留原绑定。
+
+| 情况 | 稳定错误 |
+|---|---|
+| 绑定时不存在 active 插件服务 | `SERVICE_MISSING` |
+| 尝试绑定内置 Host 服务 | `SERVICE_BINDING_UNSUPPORTED` |
+| 已绑定进程停用、退出或被同 ID 新进程替代 | `SERVICE_BINDING_EXPIRED` |
+| RPC 携带畸形绑定身份 | `PLUGIN_PROTOCOL_INVALID` |
+
+绑定只固定插件进程，不定义同进程内 Python 服务对象的代次。`provide()` 的 disposer 撤销本地服务后，
+原绑定调用报告 `SERVICE_MISSING`；同一进程重新提供相同 key 和导出合同的服务仍属原绑定。
+导出方法表仍是 setup 产物，本轮不增加服务 revision 或动态方法表。
+
+`bind()` 不创建 Manifest 硬依赖、后台健康探测、重启或业务恢复关系，也不赋予额外权限。
+绑定代理仅在当前消费者进程内使用，普通 Service 参数和结果的 JSON 边界保持不变。
+
 ## 6. 能力组合与替换
 
 ### 6.1 替换型 Service
@@ -291,12 +315,15 @@ cancel(jobId)
 }
 ```
 
-Hub 只保存 descriptor，通过 `serviceKey` 动态取得当前 ServiceProxy，并以 `jobId` 驱动任务。正常 cleanup 时
-Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`；Provider 崩溃时 Hub 对该
-`serviceKey` 的后续调用明确失败并把 Provider 呈现为不可用，不触发 Runtime 自动重启或重绑。
+Hub 保存 descriptor，在创建任务前通过 `context.bind(serviceKey)` 取得固定进程的 ServiceProxy。
+就绪查询 `status`、`begin` 及该任务后续全部 `poll/cancel` 使用同一代理，并以 `jobId` 驱动任务。正常 cleanup 时
+Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`。Provider 崩溃后，即使没有执行 unregister、
+用户又重载同 ID Provider，旧任务仍因绑定失效而失败，不能查询或取消新进程中的同名 `jobId`。
+新的任务可以重新显式绑定；Runtime 不自动重启 Provider、不重绑或重放旧任务。
 
-Hub 不保存 Python Provider 对象、Python Job 对象、callable、callback handle 或通用远端对象引用。
-Generic Runtime 只执行普通 `service.call`，不理解 `providerId`、`jobId`、warmup 或合成状态。
+Hub 持有具名服务的 ServiceProxy；不跨进程交换 Provider 内部 Python 对象、Job 对象、callable、callback handle
+或任意 Python 对象的远端引用。任务身份继续使用有界 JSON 的 `jobId`。
+Generic Runtime 只执行普通服务调用与进程绑定检查，不理解 TTS 的 Provider descriptor、`jobId`、warmup 或合成状态。
 
 失败任务和已接受取消的任务由 Provider 收尾：尚未执行的取消可以立即释放临时 artifact 和 Job Effect；
 正在执行的任务必须等生产者停止写入后再释放。资源回收不依赖 Core 继续 `poll`，终态仍保留到调用方读取，
@@ -320,6 +347,53 @@ Tools、Context contributors、Timeline observers、Settings sections 和模型�
 Memory 默认采用 Contribution 组合。官方 Mem0 可同时提供 Timeline 消费、Context、Tools、Settings 和
 model slot；替代插件可以提供相同或部分贡献。用户既可以关闭 Mem0 完整替换，也可以启用多个不同 Memory
 插件共同工作。Runtime 不预设唯一 `sakura.memory` Store/Search/Recall 协议。
+
+### 6.4 Context 行为贡献
+
+`sakura.host.context` 提供 `register/unregister/describe`。当前 `describe()` 返回
+`{schemaVersion: 2, scopes: ["step", "turn"], failurePolicies: ["skip", "abort"]}`，不包含 `fragmentKinds`。
+新插件在启用时核实版本和所需能力；旧 Host 缺少方法或版本不符时明确失败。版本只通过能力查询检查，
+注册描述不另设版本字段。没有分类字段的旧插件保持兼容。
+
+Context 只提供内容与调用信息，不要求插件区分规则、资料或角色关系。Host 不根据内容判断用途、信任等级或角色卡冲突，
+也不切换默认角色。插件自行组织文本；当前默认对话实现负责组合和模型消息格式，模型 role 降级也使用中性上下文说明。
+文本不授予代码权限，公开操作和结果格式仍由实际能力入口检查。
+
+Host 保留以下边界：
+
+- 注册描述使用 `providerId/description/order/enabled/scope/failurePolicy`；片段必填非空 `content`，
+  `required` 默认为 `false`。未知枚举、非布尔 required、非有限 order 等无效字段明确拒绝。
+  `scope` 属于注册回调，不是片段字段。旧 `kind` 字段无论值为何都报 `CONTEXT_SCHEMA_INCOMPATIBLE`。
+- 从调用身份绑定真实插件来源，从登记绑定 Provider；旧片段自报的 `source/trust` 忽略，不能覆盖实际来源。
+  登记、回调和进程实例的有效性仍由运行底座检查，取消保持可传播。
+- 在有界 JSON 与 IPC 总尺寸允许的范围内，传递全部片段及完整文本。Host 不执行前 16 项或每项 8192 字符的裁剪；
+  结构或传输超限时明确拒绝，不把截断后的结果当作完整传输。
+
+以下是当前默认对话实现的消费约定；裁剪逻辑在该消费者内，代码仍在现有进程内，尚未迁成独立插件：
+
+- 顶层用户或事件互动开始时固定贡献者集合与顺序。`scope: step` 为默认值，每次组装调用；`turn` 首次组装采集，
+  后续工具步骤、最终总结与格式修复复用，退出后释放。配置更新或停用不改写本轮已采集结果，下一轮重新采集。
+  未完成回调可能因插件退出而失败，按失败策略处理。
+- `failurePolicy: skip` 为默认值，回调失败时记录并跳过；`abort` 产生 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮，
+  错误与日志保留实际插件和 Provider，失败不生成助手历史。取消及 `CONTEXT_SCHEMA_INCOMPATIBLE` 不受 `skip` 影响。
+- `required` 内容完整保留，不受旧 16 项和 8192 字符的可选兼容额度限制；模型预算不足时产生
+  `CONTEXT_WINDOW_EXCEEDED`。默认消费者保留前 16 条可选内容及每条前 8192 字符，再按每片段的 `budgetHint` 和全局预算选择或裁剪。
+  `budgetHint` 只约束该片段正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 分配共享额度。
+  `abort` 控制回调失败，`required` 控制完整性，需要完整贡献时同时声明。
+
+Agent Trace 与 Prompt Inspection 保留必需性、采集范围及真实来源，不再输出 Context 的用途或信任分类。
+运行日志只记录诊断信息，不承载内容正文。Context 不自动写入 Timeline，也不改变 Memory 的整理策略。
+接口用法见 [SDK](../../devdocs/SAKURA_PLUGIN_SDK.md)，本次边界见
+[ADR-0054](../../adr/0054-retire-executor-experiment-and-scope-collections.md)；早期薄宿主路线见
+[ADR-0053](../../archive/adr/0053-thin-host-and-plugin-owned-policies.md)，初版取舍保留在
+[ADR-0052](../../archive/adr/0052-unified-context-instructions.md)。
+
+### 6.5 正常对话与插件服务的边界
+
+正常聊天只调用现有 Assistant/ChatPipeline。已撤回的执行器实验不再提供 `sakura.host.executors`、替代 Session 或专用进度协议。
+旧 `chat_executor` 配置直接忽略，不迁移或改写用户文件；缺少模型配置时仍报告需要配置。
+普通插件继续通过公共 Service、Context、Tools 和设置贡献扩展能力，安装或启用服务不会接管聊天。
+未来默认模型与对话迁移必须替换真实调用链。取舍见 [ADR-0054](../../adr/0054-retire-executor-experiment-and-scope-collections.md)。
 
 ## 7. 官方默认插件
 
@@ -362,6 +436,9 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
   替代实现。恢复只能由用户 reload、重新安装/重试或新 Core generation 触发。
 - 正常停止先拒绝新调用并执行有界 LIFO cleanup；超时后只终止目标插件及其受控后代，不结束其他插件或
   扫描无关系统进程。
+- Core 关闭也等待已经进入停用或退出清理的进程；并发、重复关闭不能因 Service 已移除而提前返回。
+  单个插件清理失败时继续停止其余插件，再报告原始清理错误。失败实例保持 `PLUGIN_CLEANUP_FAILED`，
+  不能在旧进程尚未确认退出时启动同 ID 的新实例，也不能把失败当作资源已可释放。
 
 角色切换保持 Core generation，重建 Assistant Session。依赖当前角色服务、且不属于明确按角色参数工作的
 表现/TTS Provider 的旧插件局部重载，详见[安全角色切换](WP-5-03-safe-character-switch.md)。
@@ -439,15 +516,38 @@ Rust 与前端只检查传输形状、总大小和操作身份，不重复解释
 Action 的展示值是局部更新，未返回的字段不补默认值。其他控件和插件继续使用。
 区块身份、Action ID、回调归属、保存和动作输入校验与文件访问边界保持有效；未知写入字段仍被拒绝。
 
+插件的配置和复杂功能优先使用这一容器。当前只支持已经定义的结构化贡献，不提供任意 HTML 或 WebView；
+实际消费者需要更丰富的呈现时，先评估扩展已有容器，不要求先建立独立页面或窗口。
+
 - 未注册 surface 或 `surface=plugin` 的区块放入插件设置窗口；普通字段、Action 和 Collection 保留原调用链。
 - `surface=voice` 仍由 Voice controller 管理；打开插件设置时移动同一组控件，关闭后移回语音页，不复制表单或建立另一套保存接口。
 - `surface=memory` 的内容管理保留在记忆页；历史 `surface=about` 资源的管理操作也放入插件设置窗口。
 - “完成”保留当前草稿，由设置页底栏“应用”或“保存并关闭”提交。“取消”、关闭或 Esc 只恢复本插件打开窗口时的可编辑字段，
   不丢弃其他插件草稿，不回滚已经执行的 Action、Collection 操作或下载任务。底栏提交继续使用原有错误和部分成功结果。
 - 资源状态刷新不得覆盖正在编辑的字段；同一 generation、同一角色的语音草稿在普通插件刷新后保留。
-  插件设置贡献或 Core generation 失效时关闭窗口，不将旧草稿写回新实例。
+  插件设置贡献或 Core generation 失效时关闭窗口，旧回调不得写回新实例。同角色重启时仍存在 Collection 的编辑草稿
+  可随新快照保留，保留草稿不代表重新执行旧写入。
 - 插件页面持有设置弹窗、集合草稿和释放逻辑；根入口只装配语音控件与关闭确认。页面释放时关闭弹窗、
   归还借用的语音控件；尚未完成的退出动画不得在释放后重新渲染页面。
+
+Collection 的数据归属与进程生命周期分别处理：
+
+- descriptor 可声明 `scope: "global" | "character"`，非法值拒绝。未声明时保留 Collection-v0 的 character 行为，旧安装包无需迁移。
+  新贡献应显式声明归属；Host 不从 surface 或插件 ID 推断 scope。Mem0 与便签记忆均为 character。
+- 草稿只比较可编辑字段与原值。打开已有记录、未修改的新建编辑器或改回原值，不算未保存修改。
+  普通“应用”不代替 Collection 写入；可以保留全局草稿并提交其他设置，“保存并关闭”仍须先处理未保存记录。
+- 只有 character 草稿阻止选择另一角色。待应用角色期间暂停 character 的查询和写入，global 仍可使用。
+  实际角色切换、同角色局部刷新和 Core 转场期间所有 Collection 暂停旧请求；在途结果不得回填，绑定新的请求状态。
+  即使 generation 和 Snapshot 内容都未改变，也不能让刷新前的查询、写入回执或编辑器回调重新生效。
+- 实际角色变化时关闭 character 编辑器并清空其条目、筛选、选中项和分页；global 草稿与筛选保留。
+  同角色重启保留仍存在集合的草稿与筛选。插件停用、贡献消失或归属变化时撤销原状态，不自动重放写入。
+- 删除确认返回后仍须复核 Collection、编辑器、实例与当前转场状态。取消待切换选择或切换完成后恢复当前搜索，
+  旧查询、错误及写入回执不得覆盖新状态。
+- 用户停用或卸载插件前，若目标或受影响的依赖消费者仍有 Collection 修改，要求先保存或还原记录。
+  不能因为允许保留全局草稿，就在插件失效后的新快照中静默丢弃它。
+- 普通插件 Collection 删除标题为“删除记录”，Memory 页保留“删除记忆”；确认正文来自插件 `deleteConfirmation`。
+
+scope 只描述设置草稿与角色的关系，数据分区与读写仍由插件实现，不构成权限授权或自动存储管理。
 
 GPT-SoVITS 与 Genie 的现有 `aboutBundle` 区块改为 `surface=plugin`，在各自设置窗口展示整合包资源。
 只迁移入口，保留 section ID、Resource 字段、load callback 和 Action；语音页不重复提供这两项下载。

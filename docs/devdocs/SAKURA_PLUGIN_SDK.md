@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-12
+updated: 2026-09-16
 ---
 
 # 编写 Sakura 插件
@@ -325,7 +325,8 @@ ServiceProxy、回调、资源 descriptor 和文件 artifact 都会失效，不�
 | 成员 | 用途 |
 |---|---|
 | `plugin_id` | 当前 Manifest 中的插件 ID。 |
-| `get(service_key)` | 取得 Host 或其他插件提供的 ServiceProxy。 |
+| `get(service_key)` | 取得 Host 或插件 Service 代理；跨进程调用动态路由到当前提供者。 |
+| `bind(service_key)` | 取得固定到当前插件进程实例的 ServiceProxy，供多次调用组成的同一操作使用。 |
 | `provide(service_key, service, exports=...)` | 发布本插件的 Service。 |
 | `on(event_name, handler)` | 监听 Host 事实事件。 |
 | `effect(cleanup)` | 登记随插件 scope 反向执行的清理函数。 |
@@ -374,6 +375,39 @@ Python 对象 identity、共享内存或无限调用时间。远端调用有 dea
 
 普通 Service 的参数和返回值只使用有界 JSON。不能传 Python 对象、类、异常、callable、文件句柄、生成器、
 pickle、裸本地路径或 Host callback handle。需要交换大文件时使用 artifact descriptor。
+
+### 固定一次操作的服务实例
+
+普通查询可以用 `get()`。开始后台任务后，后续查询和取消必须回到创建该任务的进程，此时先调用 `bind()`，
+并让整项操作使用同一个代理：
+
+```python
+provider = context.bind("other.jobs")
+job_id = provider.begin({"text": "待处理内容"})
+state = provider.poll(job_id)
+# 需要取消时继续使用 provider.cancel(job_id)。
+```
+
+`bind()` 固定当前 active 插件的 `providerId` 与进程 `scopeId`。停用、退出或同 ID 重载后，旧绑定返回
+`SERVICE_BINDING_EXPIRED`，不会把旧任务查询或取消发给新进程。宿主在派发前和返回后检查绑定；
+返回期间进程已更换时，旧结果也不能当作成功。调用超时和失效都不会自动重放，新任务由消费者重新显式绑定。
+
+绑定以插件进程为单位，不区分同一进程内 Python 服务对象的代次。`provide()` 的 disposer 撤销本地服务后，
+调用报告 `SERVICE_MISSING`；同进程重新提供同 key、同导出合同的服务仍可由原绑定访问。导出表仍由 setup 确定，
+本接口不开放动态方法表。`get()` 与 `bind()` 都不会自动增加 Manifest 硬依赖或重启关系。
+
+`bind()` 只适用于插件提供的服务，内置 Host 服务使用 `get()`。绑定时没有 active 服务返回 `SERVICE_MISSING`，
+尝试绑定 Host 服务返回 `SERVICE_BINDING_UNSUPPORTED`；畸形绑定在 RPC 边界报告 `PLUGIN_PROTOCOL_INVALID`。
+插件代码持有代理即可，不需要读取、保存或自行构造绑定身份。
+
+现有 TTS Hub 在 `begin` 前绑定 Provider，就绪查询 `status`、受理以及该任务的全部 `poll/cancel` 使用同一代理。
+Provider 崩溃并由用户重载后，新任务可以绑定新进程；即使新进程重复使用旧 `jobId`，旧任务也不能读到或取消它。
+
+ASR Hub 同样通过 `bind()` 保存每项识别任务的 Provider 代理。Core 输入消费者固定原 Hub 实例，
+在接收成功结果后及首次向 UI 交付文本前核对 Hub 与 Provider 身份，避免重载期间的旧识别结果回填当前草稿。
+单独检查 scope 后再使用 `get()` 调用不能代替绑定：提供者可能在检查与派发之间被替换。
+音频读取仍使用 Host 授权和租约，绑定不增加录音访问权限。ASR 入口将实例失效报告为
+`ASR_PROVIDER_UNAVAILABLE`，取消结果不因迟到返回而改变；详见 [ASR 语音输入](../specs/runtime-v2/asr-voice-input.md)。
 
 ### 配置
 
@@ -433,6 +467,8 @@ Timeline cursor，并在下一次事件或插件启动时调用 `sakura.host.tim
 
 普通配置只需注册 Settings Contribution，宿主会提供独立的“插件设置”窗口。它不是插件自己的前端页面，
 不需要新增 HTML、按钮路由或保存接口。`presentation` 控制列表展示，`surface` 控制设置区块的位置，两者独立。
+复杂功能也优先使用这个容器里的字段、Action 和 Collection。需要当前贡献格式无法表达的界面时，先明确已有容器的缺口，
+再扩展宿主合同；复杂插件本身不要求另建页面或窗口。当前并未开放自定义 HTML 或 WebView。
 
 ### 设置区块
 
@@ -534,7 +570,8 @@ Action ID、回调归属和用户提交的保存或动作参数仍须有效，�
 
 下载中的状态刷新会更新只读状态和进度，不应覆盖正在编辑的普通字段。`voice` 的两个入口复用同一份控件
 和保存链路；普通插件刷新后，同一 generation、同一角色的语音草稿保留。插件设置贡献或 Core generation
-失效时，宿主关闭窗口，旧草稿不会写回新实例。插件不需要自建另一份表单状态或恢复机制。
+失效时，宿主关闭窗口并隔离旧回调。同角色 Core 重启时，仍存在 Collection 的编辑草稿可以随新快照保留，
+重新打开后继续编辑；宿主不会自动重放旧写入。插件不需要自建另一份表单状态或恢复机制。
 
 ### 字段类型
 
@@ -674,6 +711,10 @@ GPT-SoVITS 与 Genie 的 `aboutBundle` 已改为 `plugin`，section ID 和原有
 
 ### 分页 Collection
 
+Collection 可声明 `scope: "global" | "character"`：全局记录的草稿跨角色保留，角色记录的修改才阻止换角色。
+旧 Collection-v0 省略 scope 时保留 character 行为；新插件请明确声明，勿依赖 surface 表达数据归属。
+该字段需要支持它的宿主；旧宿主会按未知字段拒绝登记。它不替插件分区数据库或实现授权。
+
 需要让用户搜索、增删或编辑一组数据时，使用 `sakura.host.settings.collection-v0`。它仍由 Sakura 渲染，
 插件只负责 descriptor 和 CRUD 回调。
 
@@ -686,6 +727,7 @@ collections.register(
         "collectionId": "items",
         "title": "笔记",
         "description": "当前角色的插件笔记。",
+        "scope": "character",
         "columns": [
             {"key": "title", "label": "标题", "type": "string", "maxLength": 120},
             {"key": "updatedAt", "label": "更新时间", "type": "datetime"},
@@ -755,6 +797,10 @@ def delete_note(item_id):
 不支持的操作传 `None` 或省略对应关键字。要提供删除回调，`deleteConfirmation` 不能留空。cursor 是插件
 定义的 opaque 字符串；不要让界面解析它。Collection v0 每页最多 100 项，结果应保持有界。
 
+打开编辑器不算修改，只有可编辑字段偏离原值才产生草稿。角色集合的草稿阻止换角色；全局草稿可在“应用”后保留，
+“保存并关闭”仍须先保存或放弃记录。所有集合在角色切换、同角色局部刷新和 Core 转场时暂停旧请求，重绑定后隔离旧结果；异步删除确认会复核编辑对象。
+完整生命周期规则以 [Runtime Spec](../specs/runtime-v2/sakura-plugin-runtime-v4.md#10-插件管理与设置窗口) 为准。
+
 ## 贡献聊天能力
 
 ### 工具
@@ -793,7 +839,11 @@ tools.register(
 
 ### 动态上下文
 
-上下文贡献者在每次 Prompt 组装时收到有界请求，并返回少量相关事实：
+Context schema 2 只传递内容和调用信息，不分类行为要求与资料，也不判断内容和角色卡的关系。
+插件自行组织文本；当前默认对话实现负责采集、组合、预算和模型消息格式。Host 保留来源绑定、登记有效性及有界 JSON 传输。
+默认对话实现仍在 Core 进程内，迁入独立插件的后续范围见[开放插件生态计划](../plans/runtime-v2/open-plugin-ecosystem.md)。
+
+上下文贡献者收到有界请求，返回少量文本片段。未声明分类的旧检索插件可以保留原写法：
 
 ```python
 context_host = context.get("sakura.host.context")
@@ -828,9 +878,61 @@ context_host.register(
 request 使用 snake_case，常用字段有 `current_input`、`character_id`、`current_turn_id`、`source`、`mode`、
 `recent_messages`、`available_tools`、`visual_summaries`、`screen_context_available` 和 `current_time`。
 
-一次最多返回 16 个 fragment。`content` 必填并最多保留 8192 个字符；`priority` 范围为 0–100，
-`budgetHint` 范围为 1–4096；`sensitivity` 可为 `public`、`private` 或 `sensitive`。Host 会把插件内容标为
-untrusted，并按全局 Prompt 预算决定是否采用。不要把完整数据库、长期历史或无关资料每轮都塞进 Prompt。
+片段必填非空 `content`，`required` 默认 `false`。插件不声明用途或信任等级；Host 从调用身份绑定真实插件来源，
+从登记绑定 Provider，忽略旧片段自报的 `source/trust`。角色说明、教学要求、笔记或引用的组织方式由贡献插件决定。
+
+需要新合同的插件先检查 Host 能力，再登记：
+
+```python
+capabilities = context_host.describe()
+if (
+    capabilities.get("schemaVersion") != 2
+    or "turn" not in capabilities.get("scopes", [])
+    or "abort" not in capabilities.get("failurePolicies", [])
+):
+    raise RuntimeError("CONTEXT_HOST_UNSUPPORTED")
+
+context_host.register(
+    {
+        "providerId": "com.example.language.rules",
+        "scope": "turn",
+        "failurePolicy": "abort",
+    },
+    lambda request: [{
+        "id": "language-rule",
+        "required": True,
+        "content": "主要用日语交流，先纠正明显语法错误，再继续回答。",
+    }],
+)
+```
+
+`describe()` 返回 `{schemaVersion: 2, scopes: ["step", "turn"], failurePolicies: ["skip", "abort"]}`，不再包含
+`fragmentKinds`。版本通过能力查询检查，不在注册描述中另设版本字段。旧 Host 缺少 `describe()` 或返回不同版本时，
+应明确停止启用。旧无分类插件保持兼容；返回 `kind` 的开发版插件需要适配，收到
+`CONTEXT_SCHEMA_INCOMPATIBLE` 时不能吞掉异常继续运行。完整示例见[对话规则插件](../../plugins/optional/context_rules/README.md)。
+
+以下范围、顺序、完整性和失败行为属于当前默认对话实现的消费约定，不是所有执行器必须采用的宿主策略。
+
+注册描述的 `scope` 默认为 `step`，每次组装重新调用；`turn` 在一次顶层互动中只采集一次，工具后续步骤、最终总结和格式修复复用结果。它作用于整个回调结果，不是片段字段。本轮开始固定贡献者集合；已经采集的内容在配置更新或停用后仍用于本轮，下一轮重新采集。需要立即停止当前回复时使用现有取消入口。
+
+`failurePolicy` 默认为 `skip`，回调失败记录后继续；`abort` 报告 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮。它处理“回调未能产生结果”；片段的 `required` 处理“结果必须完整装入上下文”。需要完整贡献时同时使用 `abort` 和 `required: true`。取消和接口版本不兼容始终传播，不按 `skip` 忽略；同步回调返回后再次检查取消。
+
+Host 在 IPC 总大小及 JSON 结构允许的范围内传递完整数量和文本，超过传输边界时明确报错。
+默认消费者保留旧可选内容的兼容处理：只采用前 16 条可选片段，每条最多 8192 字符；这些限制不在 Host 执行。
+`required: true` 的内容不受这两个旧可选额度限制，完整保留或因模型上下文预算不足明确失败。
+
+`priority` 范围为 0–100，`budgetHint` 范围为 1–4096；`sensitivity` 可为 `public`、`private` 或 `sensitive`。
+每个可选片段的 `budgetHint` 只约束自身正文，包装和正文共同消耗模型总预算；不按插件、Provider 或 source 再分配共享额度。
+必需片段不按 `budgetHint` 截断，放不下时报告 `CONTEXT_WINDOW_EXCEEDED`。宿主不从内容推断怎样处理；
+调用权限和公开结果格式仍由实际能力入口执行，提示词内容不授予系统权限。
+
+Context 只影响本次模型请求，不自动写入 Timeline，也不改变长期记忆的学习规则。不要把完整数据库、长期历史或无关资料每轮都塞进 Prompt。
+
+## 正常聊天与插件服务
+
+正常聊天使用现有 Assistant 和 ChatPipeline。未使用的执行器实验及登记服务已移除，普通插件通过 Service、Context、Tools 和设置贡献参与现有能力。
+需要固定进程的长操作使用已有 `context.bind()`；服务超时不表示后台任务已停止，消费者仍应按自己的业务合同收尾。
+插件不应导入宿主的 Agent 或 Pipeline。默认模型与对话实现迁移尚未完成，范围见[当前计划](../plans/runtime-v2/open-plugin-ecosystem.md)。
 
 ## 模型、角色、历史和文件
 
@@ -958,7 +1060,8 @@ cancel(plugin_id, job_id)
 绕过边界。等公共代理和回归测试补齐后，再把它视为可用接口。
 
 插件也不能贡献任意窗口、WebView、HTML、脚本、样式、托盘菜单或原生控件。需要新的宿主界面扩展点时，
-应先在 Sakura 中定义有界 descriptor、回调合同和清理规则，而不是让插件直接进入前端 Runtime。
+优先扩展已有插件设置容器，并在 Sakura 中定义有界 descriptor、回调合同和清理规则，不能让插件直接进入前端 Runtime。
+这是一项后续设计原则，不表示上述自定义呈现已经可用。
 
 ## 写入插件日志
 
@@ -1073,6 +1176,9 @@ Python 标准 `logging`、`print`、stderr 和外部程序输出不会自动进�
 | `PLUGIN_DEPENDENCIES_MISSING/STALE` | 依赖是否安装，声明或 Python ABI 是否变化。 |
 | `MISSING_SERVICE` | `requires` 中的 Service 是否由已启用插件或 Host 提供。 |
 | `SERVICE_CONFLICT` | 是否同时启用了两个同名 Service 提供者。 |
+| `SERVICE_MISSING` | 动态查询或绑定时是否存在 active 服务，同进程内的服务是否已撤销。 |
+| `SERVICE_BINDING_EXPIRED` | 操作绑定的插件进程是否已经退出、停用或重载；旧操作不能改用新进程继续。 |
+| `SERVICE_BINDING_UNSUPPORTED` | 是否对内置 Host 服务使用了 `bind()`；Host 服务应使用 `get()`。 |
 | `DEPENDENCY_CYCLE` | 插件之间的硬依赖是否成环。 |
 | `PLUGIN_CALL_TIMEOUT` | 回调或 Service 方法是否阻塞。 |
 | `PLUGIN_PROCESS_EXITED` | 插件是否崩溃，Effect 是否误杀自身进程。 |
