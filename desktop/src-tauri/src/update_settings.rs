@@ -1,4 +1,5 @@
 use std::{
+    error::Error as StdError,
     ffi::OsString,
     path::Path,
     sync::{Arc, Mutex},
@@ -8,7 +9,7 @@ use std::{
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
@@ -27,6 +28,7 @@ pub const UPDATE_PREFERENCES_CHANGED_EVENT: &str = "sakura://update-preferences-
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const UPDATE_NOTES_LIMIT: usize = 4000;
+const UPDATE_ERROR_CHAIN_LIMIT: usize = 8;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -332,27 +334,27 @@ pub async fn check(
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .map_err(|error| {
-            log_updater_failure(
+            log_updater_error(
                 runtime_log,
                 "updater.check.failed",
                 "configuration",
                 trigger,
                 mode,
                 "UPDATE_CONFIGURATION_INVALID",
-                &error.to_string(),
+                &error,
                 started,
             );
             "UPDATE_CONFIGURATION_INVALID".to_string()
         })?;
     let update = updater.check().await.map_err(|error| {
-        log_updater_failure(
+        log_updater_error(
             runtime_log,
             "updater.check.failed",
             "check",
             trigger,
             mode,
             "UPDATE_CHECK_FAILED",
-            &error.to_string(),
+            &error,
             started,
         );
         "UPDATE_CHECK_FAILED".to_string()
@@ -583,14 +585,14 @@ pub async fn install(
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .map_err(|error| {
-            log_updater_failure(
+            log_updater_error(
                 runtime_log,
                 "updater.install.failed",
                 "configuration",
                 "install",
                 mode,
                 "UPDATE_CONFIGURATION_INVALID",
-                &error.to_string(),
+                &error,
                 operation_started,
             );
             "UPDATE_CONFIGURATION_INVALID".to_string()
@@ -599,14 +601,14 @@ pub async fn install(
         .check()
         .await
         .map_err(|error| {
-            log_updater_failure(
+            log_updater_error(
                 runtime_log,
                 "updater.install.failed",
                 "check",
                 "install",
                 mode,
                 "UPDATE_CHECK_FAILED",
-                &error.to_string(),
+                &error,
                 operation_started,
             );
             "UPDATE_CHECK_FAILED".to_string()
@@ -671,11 +673,10 @@ pub async fn install(
         }),
     );
     let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| {
-        let diagnostic = error.to_string();
-        let reason_code = classify_updater_error(&diagnostic, "download");
-        log_updater_failure_with_reason(
+        let details = updater_error_attributes(&error, "download");
+        log_updater_failure_details(
             runtime_log,
-            if reason_code == "SIGNATURE" {
+            if details["reason_code"] == "SIGNATURE" {
                 "updater.signature.failed"
             } else {
                 "updater.download.failed"
@@ -684,8 +685,7 @@ pub async fn install(
             "install",
             mode,
             "UPDATE_DOWNLOAD_FAILED",
-            reason_code,
-            &diagnostic,
+            details,
             download_started,
         );
         "UPDATE_DOWNLOAD_FAILED".to_string()
@@ -732,14 +732,14 @@ pub async fn install(
         error
     })?;
     update.install(bytes).map_err(|error| {
-        log_updater_failure(
+        log_updater_error(
             runtime_log,
             "updater.install.failed",
             "install",
             "install",
             mode,
             "UPDATE_INSTALL_FAILED",
-            &error.to_string(),
+            &error,
             install_started,
         );
         "UPDATE_INSTALL_FAILED".to_string()
@@ -841,46 +841,80 @@ fn log_updater_failure(
     diagnostic: &str,
     started: Instant,
 ) {
-    log_updater_failure_with_reason(
+    log_updater_failure_details(
         runtime_log,
         event,
         stage,
         trigger,
         mode,
         code,
-        classify_updater_error(diagnostic, stage),
-        diagnostic,
+        Map::from_iter([
+            (
+                "reason_code".to_string(),
+                json!(updater_stage_reason(stage)),
+            ),
+            ("diagnostic".to_string(), json!(diagnostic)),
+        ]),
         started,
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn log_updater_failure_with_reason(
+fn log_updater_error(
     runtime_log: &RuntimeLogService,
     event: &'static str,
     stage: &'static str,
     trigger: &'static str,
     mode: &'static str,
     code: &str,
-    reason_code: &'static str,
-    diagnostic: &str,
+    error: &UpdaterError,
     started: Instant,
 ) {
+    log_updater_failure_details(
+        runtime_log,
+        event,
+        stage,
+        trigger,
+        mode,
+        code,
+        updater_error_attributes(error, stage),
+        started,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_updater_failure_details(
+    runtime_log: &RuntimeLogService,
+    event: &'static str,
+    stage: &'static str,
+    trigger: &'static str,
+    mode: &'static str,
+    code: &str,
+    mut attributes: Map<String, Value>,
+    started: Instant,
+) {
+    attributes.extend([
+        ("stage".to_string(), json!(stage)),
+        ("trigger".to_string(), json!(trigger)),
+        ("mode".to_string(), json!(mode)),
+        ("code".to_string(), json!(code)),
+        ("error_type".to_string(), json!("tauri_updater")),
+        ("elapsed_ms".to_string(), json!(elapsed_ms(started))),
+    ]);
+    if let Some(timeout) = match stage {
+        "check" => Some(UPDATE_CHECK_TIMEOUT),
+        "download" => Some(UPDATE_DOWNLOAD_TIMEOUT),
+        _ => None,
+    } {
+        attributes.insert("timeout_ms".to_string(), json!(timeout.as_millis() as u64));
+    }
+    // The common runtime-log boundary redacts credentials and bounds diagnostic
+    // strings before persistence and telemetry; preserve source text until then.
     submit_updater_event(
         runtime_log,
         Severity::Error,
         event,
         "Updater operation failed",
-        json!({
-            "stage": stage,
-            "trigger": trigger,
-            "mode": mode,
-            "code": code,
-            "reason_code": reason_code,
-            "error_type": "tauri_updater",
-            "diagnostic": sanitize_updater_diagnostic(diagnostic),
-            "elapsed_ms": elapsed_ms(started),
-        }),
+        Value::Object(attributes),
     );
 }
 
@@ -895,79 +929,157 @@ fn submit_updater_event(
         .submit(RuntimeLogEvent::rust(severity, "updater", event, message).attributes(attributes));
 }
 
-fn classify_updater_error(diagnostic: &str, stage: &str) -> &'static str {
-    let normalized = diagnostic.to_ascii_lowercase();
-    if normalized.contains("timed out") || normalized.contains("timeout") {
-        "TIMEOUT"
-    } else if normalized.contains("signature")
-        || normalized.contains("minisign")
-        || normalized.contains("base64")
-    {
-        "SIGNATURE"
-    } else if normalized.contains("status code") || normalized.contains("http status") {
-        "HTTP"
-    } else if normalized.contains("platform")
-        || normalized.contains("architecture")
-        || normalized.contains("unsupported os")
-    {
-        "TARGET"
-    } else if normalized.contains("json")
-        || normalized.contains("deserialize")
-        || normalized.contains("release not found")
-    {
-        "MANIFEST"
-    } else if normalized.contains("dns")
-        || normalized.contains("connect")
-        || normalized.contains("request")
-        || normalized.contains("network")
-        || normalized.contains("tcp")
-        || normalized.contains("tls")
-    {
-        "NETWORK"
-    } else {
-        match stage {
-            "configuration" => "CONFIGURATION",
-            "manifest" => "MANIFEST",
-            "download" => "DOWNLOAD_OR_SIGNATURE",
-            "prepare_exit" => "SHUTDOWN",
-            "install" => "INSTALL",
-            "mode" => "MODE",
-            _ => "UNKNOWN",
-        }
+fn updater_stage_reason(stage: &str) -> &'static str {
+    match stage {
+        "configuration" => "CONFIGURATION",
+        "manifest" => "MANIFEST",
+        "download" => "DOWNLOAD_OR_SIGNATURE",
+        "prepare_exit" => "SHUTDOWN",
+        "install" => "INSTALL",
+        "mode" => "MODE",
+        _ => "UNKNOWN",
     }
 }
 
-fn sanitize_updater_diagnostic(diagnostic: &str) -> String {
-    let clean = diagnostic
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
+fn classify_updater_error(error: &UpdaterError, stage: &str) -> &'static str {
+    match error {
+        UpdaterError::Reqwest(error) => {
+            if error.is_timeout() {
+                "TIMEOUT"
+            } else if error.is_status() {
+                "HTTP"
+            } else if error.is_builder() {
+                "CONFIGURATION"
+            } else if error.is_decode() && matches!(stage, "check" | "manifest") {
+                "MANIFEST"
             } else {
-                character
+                "NETWORK"
             }
-        })
-        .collect::<String>();
-    let mut redacted = String::with_capacity(clean.len().min(320));
-    let mut remaining = clean.as_str();
-    while let Some(index) = remaining.find("://") {
-        let scheme_start = remaining[..index]
-            .rfind(|character: char| {
-                character.is_whitespace() || matches!(character, '(' | '[' | '{' | '\'' | '"')
-            })
-            .map_or(0, |value| value + 1);
-        redacted.push_str(&remaining[..scheme_start]);
-        redacted.push_str("[url]");
-        remaining = &remaining[index + 3..];
-        let end = remaining
-            .find(|character: char| {
-                character.is_whitespace() || matches!(character, ')' | ']' | '}' | '\'' | '"')
-            })
-            .unwrap_or(remaining.len());
-        remaining = &remaining[end..];
+        }
+        UpdaterError::Io(error) if error.kind() == std::io::ErrorKind::TimedOut => "TIMEOUT",
+        UpdaterError::Serialization(_) | UpdaterError::Semver(_) => "MANIFEST",
+        // The upstream checker discards non-success HTTP statuses and can return
+        // this variant without ever attempting JSON parsing.
+        UpdaterError::ReleaseNotFound => "RELEASE_RESPONSE",
+        UpdaterError::Network(message) if updater_download_status(message).is_some() => "HTTP",
+        UpdaterError::Network(_) => "NETWORK",
+        UpdaterError::Minisign(_) | UpdaterError::Base64(_) | UpdaterError::SignatureUtf8(_) => {
+            "SIGNATURE"
+        }
+        UpdaterError::UnsupportedArch
+        | UpdaterError::UnsupportedOs
+        | UpdaterError::TargetNotFound(_)
+        | UpdaterError::TargetsNotFound(_) => "TARGET",
+        UpdaterError::EmptyEndpoints
+        | UpdaterError::UrlParse(_)
+        | UpdaterError::Http(_)
+        | UpdaterError::InvalidHeaderValue(_)
+        | UpdaterError::InvalidHeaderName(_)
+        | UpdaterError::InsecureTransportProtocol => "CONFIGURATION",
+        _ => updater_stage_reason(stage),
     }
-    redacted.push_str(remaining);
-    redacted.chars().take(320).collect()
+}
+
+fn updater_download_status(message: &str) -> Option<u16> {
+    // tauri-plugin-updater 2.10.1 exposes download HTTP errors as this exact
+    // string variant rather than reqwest::Error. Do not infer from arbitrary text.
+    message
+        .strip_prefix("Download request failed with status: ")?
+        .split_whitespace()
+        .next()?
+        .parse::<u16>()
+        .ok()
+        .filter(|status| (100..=599).contains(status))
+}
+
+fn updater_endpoint_alias(url: &reqwest::Url) -> &'static str {
+    match url.host_str() {
+        Some("github.com") if url.path().starts_with("/Rvosy/Sakura/releases/") => "github_release",
+        Some("release-assets.githubusercontent.com" | "objects.githubusercontent.com") => {
+            "github_release_asset"
+        }
+        _ => "other",
+    }
+}
+
+fn updater_error_attributes(error: &UpdaterError, stage: &str) -> Map<String, Value> {
+    let (cause_type, source): (&str, &(dyn StdError + 'static)) = match error {
+        // Transparent variants skip their contained error in Error::source().
+        // Begin there so reqwest/IO facts and their complete source chain survive.
+        UpdaterError::Reqwest(source) => ("Reqwest", source),
+        UpdaterError::Io(source) => ("Io", source),
+        UpdaterError::Serialization(source) => ("Serialization", source),
+        UpdaterError::Semver(_) => ("Semver", error),
+        UpdaterError::ReleaseNotFound => ("ReleaseNotFound", error),
+        UpdaterError::Network(_) => ("Network", error),
+        UpdaterError::Minisign(_) => ("Minisign", error),
+        UpdaterError::Base64(_) => ("Base64", error),
+        UpdaterError::SignatureUtf8(_) => ("SignatureUtf8", error),
+        UpdaterError::UnsupportedArch => ("UnsupportedArch", error),
+        UpdaterError::UnsupportedOs => ("UnsupportedOs", error),
+        UpdaterError::TargetNotFound(_) => ("TargetNotFound", error),
+        UpdaterError::TargetsNotFound(_) => ("TargetsNotFound", error),
+        UpdaterError::EmptyEndpoints => ("EmptyEndpoints", error),
+        UpdaterError::UrlParse(_) => ("UrlParse", error),
+        UpdaterError::Http(_) => ("Http", error),
+        UpdaterError::InvalidHeaderValue(_) => ("InvalidHeaderValue", error),
+        UpdaterError::InvalidHeaderName(_) => ("InvalidHeaderName", error),
+        UpdaterError::InsecureTransportProtocol => ("InsecureTransportProtocol", error),
+        _ => ("Other", error),
+    };
+    let mut attributes = Map::from_iter([
+        (
+            "reason_code".to_string(),
+            json!(classify_updater_error(error, stage)),
+        ),
+        ("cause_type".to_string(), json!(cause_type)),
+        ("diagnostic".to_string(), json!(error.to_string())),
+    ]);
+    let mut chain = Vec::new();
+    let mut next = Some(source);
+    for _ in 0..UPDATE_ERROR_CHAIN_LIMIT {
+        let Some(source) = next else { break };
+        chain.push(source.to_string());
+        if let Some(request) = source.downcast_ref::<reqwest::Error>() {
+            attributes.insert("is_timeout".to_string(), json!(request.is_timeout()));
+            attributes.insert("is_connect".to_string(), json!(request.is_connect()));
+            if let Some(status) = request.status() {
+                attributes.insert("http_status".to_string(), json!(status.as_u16()));
+            }
+            if let Some(url) = request.url() {
+                attributes.insert(
+                    "endpoint_alias".to_string(),
+                    json!(updater_endpoint_alias(url)),
+                );
+            }
+        }
+        if let Some(io) = source.downcast_ref::<std::io::Error>() {
+            attributes.insert(
+                "io_error_kind".to_string(),
+                json!(format!("{:?}", io.kind())),
+            );
+            if let Some(code) = io.raw_os_error() {
+                let field = if cfg!(windows) { "winerror" } else { "errno" };
+                attributes.insert(field.to_string(), json!(code));
+            }
+        }
+        next = source.source();
+    }
+    if next.is_some() {
+        chain.push("[source chain truncated]".to_string());
+    }
+    if chain.len() > 1 {
+        attributes.insert(
+            "exception_chain".to_string(),
+            json!(chain.join("\nCaused by: ")),
+        );
+    }
+    if let UpdaterError::Network(message) = error {
+        if let Some(status) = updater_download_status(message) {
+            attributes.insert("http_status".to_string(), json!(status));
+        }
+    }
+    attributes
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -1489,36 +1601,208 @@ mod tests {
     }
 
     #[test]
-    fn updater_diagnostics_are_bounded_and_redact_urls() {
-        let diagnostic = format!(
-            "request failed for https://user:private@example.test/file?token=secret\r\n{}",
-            "x".repeat(500)
-        );
-        let sanitized = sanitize_updater_diagnostic(&diagnostic);
+    fn updater_request_failure_for_latest_json_keeps_network_classification_and_sources() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 2048];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            stream.write_all(b"invalid HTTP response\r\n\r\n").unwrap();
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime.block_on(async {
+            reqwest::Client::builder()
+                .no_proxy()
+                .retry(reqwest::retry::never())
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/latest.json"))
+                .send()
+                .await
+                .unwrap_err()
+        });
+        server.join().unwrap();
+        let attributes = updater_error_attributes(&UpdaterError::Reqwest(error), "check");
 
-        assert!(sanitized.contains("request failed for [url]"));
-        assert!(!sanitized.contains("private"));
-        assert!(!sanitized.contains("token"));
-        assert!(!sanitized.contains("://"));
-        assert!(!sanitized.chars().any(char::is_control));
-        assert_eq!(sanitized.chars().count(), 320);
+        assert_eq!(attributes["reason_code"], "NETWORK");
+        assert_eq!(attributes["cause_type"], "Reqwest");
+        assert_eq!(attributes["is_timeout"], false);
+        assert_eq!(attributes["is_connect"], false);
+        assert!(attributes["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("latest.json"));
+        assert!(attributes["exception_chain"]
+            .as_str()
+            .unwrap()
+            .contains("Caused by: "));
+        assert!(!attributes.contains_key("http_status"));
     }
 
     #[test]
-    fn updater_errors_keep_actionable_reason_codes() {
+    fn updater_parse_failures_and_missing_release_are_not_network_guesses() {
+        let parsing = serde_json::from_str::<Value>("{").unwrap_err();
+        let attributes = updater_error_attributes(&UpdaterError::Serialization(parsing), "check");
+        assert_eq!(attributes["reason_code"], "MANIFEST");
+        assert_eq!(attributes["cause_type"], "Serialization");
+        assert!(!attributes.contains_key("is_timeout"));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let response: reqwest::Response = tauri::http::Response::builder()
+            .status(200)
+            .body("not JSON")
+            .unwrap()
+            .into();
+        let parsing = runtime.block_on(response.json::<Value>()).unwrap_err();
         assert_eq!(
-            classify_updater_error("operation timed out", "check"),
+            classify_updater_error(&UpdaterError::Reqwest(parsing), "check"),
+            "MANIFEST"
+        );
+        assert_eq!(
+            classify_updater_error(&UpdaterError::ReleaseNotFound, "check"),
+            "RELEASE_RESPONSE"
+        );
+        assert_eq!(
+            classify_updater_error(
+                &UpdaterError::Io(std::io::ErrorKind::TimedOut.into()),
+                "check"
+            ),
             "TIMEOUT"
         );
         assert_eq!(
-            classify_updater_error("error sending request", "check"),
-            "NETWORK"
-        );
-        assert_eq!(
-            classify_updater_error("signature verification failed", "download"),
+            classify_updater_error(
+                &UpdaterError::SignatureUtf8("invalid".to_string()),
+                "download"
+            ),
             "SIGNATURE"
         );
-        assert_eq!(classify_updater_error("unknown", "install"), "INSTALL");
+    }
+
+    #[test]
+    fn updater_http_status_and_target_are_taken_from_known_error_shapes() {
+        let response: reqwest::Response = tauri::http::Response::builder()
+            .status(403)
+            .body("")
+            .unwrap()
+            .into();
+        let error = response.error_for_status().unwrap_err().with_url(
+            "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json?token=private"
+                .parse()
+                .unwrap(),
+        );
+        let attributes = updater_error_attributes(&UpdaterError::Reqwest(error), "check");
+        assert_eq!(attributes["reason_code"], "HTTP");
+        assert_eq!(attributes["http_status"], 403);
+        assert_eq!(attributes["endpoint_alias"], "github_release");
+        let error = UpdaterError::Network(
+            "Download request failed with status: 503 Service Unavailable".to_string(),
+        );
+        let attributes = updater_error_attributes(&error, "download");
+        assert_eq!(attributes["reason_code"], "HTTP");
+        assert_eq!(attributes["http_status"], 503);
+
+        let error = UpdaterError::Network("custom latest.json status code 700".to_string());
+        let attributes = updater_error_attributes(&error, "check");
+        assert_eq!(attributes["reason_code"], "NETWORK");
+        assert!(!attributes.contains_key("http_status"));
+        assert_eq!(
+            updater_endpoint_alias(
+                &"https://github.com.private.test/Rvosy/Sakura/releases/latest"
+                    .parse()
+                    .unwrap()
+            ),
+            "other"
+        );
+    }
+
+    #[derive(Debug)]
+    struct UpdaterTestCause {
+        message: String,
+        source: Option<Box<Self>>,
+    }
+
+    impl std::fmt::Display for UpdaterTestCause {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl StdError for UpdaterTestCause {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            self.source.as_deref().map(|error| error as _)
+        }
+    }
+
+    #[test]
+    fn updater_sources_reach_logs_with_credentials_redacted_and_safe_details_preserved() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("updater.log");
+        let log = RuntimeLogService::start_with_config(
+            crate::runtime_log::RuntimeLogConfig::production(path.clone()),
+        );
+        let cause = UpdaterTestCause {
+            message: "installer request failed".to_string(),
+            source: Some(Box::new(UpdaterTestCause {
+                message: format!(
+                    "{} TLS certificate expired for https://user:private@example.test/latest.json?token=test-secret&channel=stable; api_key=other-private",
+                    "x".repeat(500),
+                ),
+                source: None,
+            })),
+        };
+        let error = UpdaterError::Io(std::io::Error::other(cause));
+        log_updater_error(
+            &log,
+            "updater.check.failed",
+            "check",
+            "manual",
+            "installed",
+            "UPDATE_CHECK_FAILED",
+            &error,
+            Instant::now(),
+        );
+        log.drain_and_shutdown_for_test();
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.contains("TLS certificate expired"));
+        assert!(text.contains("example.test/latest.json"));
+        assert!(text.contains("channel=stable"));
+        for secret in ["user:private", "test-secret", "other-private"] {
+            assert!(!text.contains(secret), "unredacted credential: {secret}");
+        }
+    }
+
+    #[test]
+    fn updater_source_traversal_has_a_depth_bound() {
+        let mut cause = UpdaterTestCause {
+            message: "leaf".to_string(),
+            source: None,
+        };
+        for _ in 0..20 {
+            cause = UpdaterTestCause {
+                message: "nested".to_string(),
+                source: Some(Box::new(cause)),
+            };
+        }
+        let attributes =
+            updater_error_attributes(&UpdaterError::Io(std::io::Error::other(cause)), "install");
+        let chain = attributes["exception_chain"].as_str().unwrap();
+        assert!(chain.ends_with("[source chain truncated]"));
+        assert_eq!(
+            chain.matches("Caused by: ").count(),
+            UPDATE_ERROR_CHAIN_LIMIT
+        );
     }
 
     #[test]

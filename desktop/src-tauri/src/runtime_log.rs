@@ -1154,6 +1154,8 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
                     | "exception_stack"
                     | "recovery_diagnostic"
                     | "cause_type"
+                    | "cause_code"
+                    | "validation_field"
                     | "error_type"
                     | "exception_site"
                     | "errno"
@@ -1211,7 +1213,13 @@ fn sanitize_custom_attributes(value: &Value, secrets: &[String]) -> Option<Value
             raw_diagnostic_field(key)
                 || matches!(
                     key.as_str(),
-                    "cause_type" | "error_type" | "exception_site" | "errno" | "winerror"
+                    "cause_type"
+                        | "cause_code"
+                        | "validation_field"
+                        | "error_type"
+                        | "exception_site"
+                        | "errno"
+                        | "winerror"
                 )
         })
         .map(|(key, value)| (key.clone(), value.clone()))
@@ -1933,7 +1941,7 @@ fn viewer_http_status(record: &RuntimeLogRecord) -> Option<u16> {
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 67] = [
+    const PRIORITY: &[&str] = &[
         "diagnostic",
         "exception_chain",
         "exception_stack",
@@ -1967,10 +1975,16 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         "error_type",
         "provider_error_type",
         "cause_type",
+        "cause_code",
+        "validation_field",
         "exception_site",
         "command",
         "status",
         "http_status",
+        "is_timeout",
+        "is_connect",
+        "endpoint_alias",
+        "io_error_kind",
         "outcome",
         "elapsed_ms",
         "duration_ms",
@@ -2007,7 +2021,7 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
     };
     let mut details = Vec::new();
     let mut labels = Vec::new();
-    for wanted in PRIORITY {
+    for &wanted in PRIORITY {
         let Some((_, value)) = attributes
             .iter()
             .find(|(key, value)| normalize_key(key) == wanted && is_human_scalar(value))
@@ -2128,6 +2142,12 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "detail_stage" => "阶段",
         "error_type" | "provider_error_type" => "类型",
         "cause_type" => "根因类型",
+        "cause_code" => "底层原因码",
+        "validation_field" => "校验字段",
+        "is_timeout" => "请求超时",
+        "is_connect" => "连接失败",
+        "endpoint_alias" => "请求目标",
+        "io_error_kind" => "文件错误类型",
         "exception_site" => "代码位置",
         "status" => "状态",
         "http_status" | "outcome" => "状态",
@@ -3118,6 +3138,12 @@ fn allowed_attribute_key(key: &str) -> bool {
     matches!(
         key,
         "source_file"
+            | "cause_code"
+            | "validation_field"
+            | "is_timeout"
+            | "is_connect"
+            | "endpoint_alias"
+            | "io_error_kind"
             | "source_line"
             | "diagnostic_detail"
             | "timeout_ms"
@@ -3338,6 +3364,12 @@ fn normalize_key(value: &str) -> String {
         .replace("eventperfms", "event_perf_ms")
         .replace("errortype", "error_type")
         .replace("causetype", "cause_type")
+        .replace("causecode", "cause_code")
+        .replace("validationfield", "validation_field")
+        .replace("istimeout", "is_timeout")
+        .replace("isconnect", "is_connect")
+        .replace("endpointalias", "endpoint_alias")
+        .replace("ioerrorkind", "io_error_kind")
         .replace("exceptionsite", "exception_site")
         .replace("exceptionchain", "exception_chain")
         .replace("exceptionstack", "exception_stack")

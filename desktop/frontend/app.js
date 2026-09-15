@@ -1146,7 +1146,25 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
   }
   surfaceVisibilityController.setInputPinned(inputIsPinned());
   surfaceHoverProbe = createSurfaceHoverProbe({
-    readHover: () => invoke("pet_surface_hovered"),
+    // This high-frequency probe owns its failure episode instead of logging every IPC read.
+    readHover: () => nativeInvoke("pet_surface_hovered"),
+    onFailure: (error) => runtimeDiagnostics.reportError(error, {
+      command: "pet_surface_hovered", stage: "surface_hover_probe",
+    }),
+    onStatus: ({ status, count, totalFailures, elapsedMs }) => {
+      const recovered = status === "recovered";
+      const message = recovered ? "原生悬停探测已恢复。" : "原生悬停探测暂时不可用。";
+      runtimeDiagnostics.message(recovered ? "info" : "warn", message, {
+        command: "pet_surface_hovered",
+        stage: "surface_hover_probe",
+        code: recovered ? "PET_SURFACE_HOVER_PROBE_RECOVERED" : "PET_SURFACE_HOVER_PROBE_FAILED",
+        diagnostic: message,
+        count,
+        failed: totalFailures,
+        elapsed_ms: elapsedMs,
+        recovery_outcome: recovered ? "success" : status === "stopped" ? "skipped" : "unknown",
+      });
+    },
     onHoverChange: (active) => {
       if (active) surfaceHoverTracker.enter("native-surface");
       else surfaceHoverTracker.leave("native-surface");

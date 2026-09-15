@@ -109,6 +109,7 @@ struct ReportCount {
     generation: Option<String>,
     count: u64,
     dirty: bool,
+    probe_summary: Option<DiagnosticDetail>,
 }
 
 #[derive(Debug)]
@@ -570,6 +571,7 @@ impl TelemetryService {
             return;
         }
         self.push_breadcrumb(source, severity, channel, event, attributes);
+        let cancelled = expected_cancellation(attributes);
         let runtime_event = match event {
             "core.initialize.completed" => Some("core.ready"),
             "core.readiness.reached"
@@ -591,18 +593,24 @@ impl TelemetryService {
         };
         if let Some(name) = runtime_event {
             let mut details = details_from_attributes(severity, attributes);
-            details.outcome = outcome_attribute(attributes).or_else(|| {
-                Some(
-                    if event.ends_with("failed") {
-                        "failed"
-                    } else if event.ends_with("cancelled") {
-                        "cancelled"
-                    } else {
-                        "success"
-                    }
-                    .into(),
-                )
-            });
+            details.outcome = if cancelled {
+                details.severity = None;
+                details.impact = None;
+                Some("cancelled".into())
+            } else {
+                outcome_attribute(attributes).or_else(|| {
+                    Some(
+                        if event.ends_with("failed") {
+                            "failed"
+                        } else if event.ends_with("cancelled") {
+                            "cancelled"
+                        } else {
+                            "success"
+                        }
+                        .into(),
+                    )
+                })
+            };
             self.submit_detailed_event(name, operation_id, details);
         }
 
@@ -626,6 +634,11 @@ impl TelemetryService {
                 stable_attribute(attributes, "code"),
                 None,
             );
+        }
+        // Cancellation still contributes its business terminal and breadcrumb,
+        // but must not fall through to the generic diagnostic error collector.
+        if cancelled {
+            return;
         }
         let report = allowlisted_runtime_error(source, event, attributes)
             .or_else(|| allowlisted_runtime_warning(source, severity, event, attributes))
@@ -808,36 +821,34 @@ impl TelemetryService {
             .lock()
             .map(|mut reports| {
                 reports
-                    .values_mut()
-                    .filter_map(|r| {
+                    .iter_mut()
+                    .filter_map(|(key, r)| {
                         if !r.dirty {
                             return None;
                         }
                         r.dirty = false;
-                        Some(r.clone())
+                        Some((key.clone(), r.clone()))
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        for report in reports {
+        for (key, report) in reports {
             let accepted = self.submit_detailed_event_generation(
                 "error.repeated",
                 None,
                 DiagnosticDetail {
                     fingerprint: Some(report.fingerprint.clone()),
                     occurrence_count: Some(report.count),
-                    ..Default::default()
+                    ..report.probe_summary.clone().unwrap_or_default()
                 },
                 report.generation.clone(),
             );
             if !accepted {
                 if let Ok(mut reports) = self.inner.reports.lock() {
-                    if let Some(item) = reports.get_mut(&format!(
-                        "{}:{}",
-                        report.generation.as_deref().unwrap_or(""),
-                        report.fingerprint
-                    )) {
-                        item.dirty = true;
+                    if let Some(item) = reports.get_mut(&key) {
+                        if item.fingerprint == report.fingerprint {
+                            item.dirty = true;
+                        }
                     }
                 }
             }
@@ -936,11 +947,30 @@ impl TelemetryService {
             candidate.stack,
         ]))
         .map_err(|_| ())?;
+        // Only the native hover probe defines `failed` as its cumulative read
+        // failures. Keep that count separate from the number of summary records.
+        let probe_summary = (candidate.component == "webview"
+            && candidate.event == "runtime.message"
+            && candidate.code == "PET_SURFACE_HOVER_PROBE_FAILED"
+            && candidate.details.stage.as_deref() == Some("surface_hover_probe")
+            && candidate.evidence.get("command").and_then(Value::as_str)
+                == Some("pet_surface_hovered"))
+        .then(|| DiagnosticDetail {
+            stage: candidate.details.stage.clone(),
+            failed: candidate.evidence.get("failed").and_then(Value::as_u64),
+            elapsed_ms: candidate.details.elapsed_ms,
+            recovery_outcome: candidate.details.recovery_outcome.clone(),
+            ..Default::default()
+        })
+        .filter(|detail| detail.failed.is_some() && validate_detail(detail));
         let fingerprint = Uuid::new_v4().to_string();
         if let Ok(mut reports) = self.inner.reports.lock() {
             if let Some(report) = reports.get_mut(&key) {
                 report.count = report.count.saturating_add(1);
                 report.dirty = true;
+                if probe_summary.is_some() {
+                    report.probe_summary = probe_summary;
+                }
                 return Ok(false);
             }
             if reports.len() < 128 {
@@ -951,6 +981,7 @@ impl TelemetryService {
                         generation,
                         count: 1,
                         dirty: false,
+                        probe_summary,
                     },
                 );
             }
@@ -1929,6 +1960,60 @@ fn feature_for_event(event: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn expected_cancellation(attributes: Option<&Value>) -> bool {
+    // A failed rollback/cleanup is a separate fault even when cancellation was
+    // the original cause. Generation retirement alone is not a cancellation.
+    if attributes
+        .and_then(|a| a.get("recovery_diagnostic"))
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+    {
+        return false;
+    }
+    let is_cancel_code =
+        |code: &str| matches!(code, "REQUEST_CANCELLED" | "TTS_SYNTHESIS_CANCELLED");
+    let primary_codes = ["provider_error_code", "reason_code", "code"]
+        .into_iter()
+        .filter_map(|key| stable_attribute(attributes, key))
+        .collect::<Vec<_>>();
+    if primary_codes.iter().any(|code| {
+        !is_cancel_code(code)
+            && !matches!(
+                code.as_str(),
+                "PLUGIN_CALL_FAILED"
+                    | "RUNTIME_ERROR"
+                    | "PYTHON_EXCEPTION"
+                    | "TTS_SYNTHESIS_FAILED"
+                    | "CHAT_EXECUTION_FAILED"
+            )
+    }) {
+        return false;
+    }
+    let error_type = attributes
+        .and_then(|a| a.get("error_type"))
+        .and_then(Value::as_str);
+    if error_type == Some("OperationCancelled") {
+        return true;
+    }
+    if primary_codes.iter().any(|code| is_cancel_code(code)) {
+        return matches!(
+            error_type,
+            None | Some("RuntimeError" | "PluginApiError" | "PluginRuntimeError")
+        );
+    }
+    // Python's implicit context can be cancellation while the active exception
+    // is a new PermissionError/RuntimeError from cleanup. Only known RPC wrappers
+    // may inherit cancellation from a remote cause without a primary cancel code.
+    matches!(
+        error_type,
+        None | Some("PluginApiError" | "PluginRuntimeError")
+    ) && (stable_attribute(attributes, "cause_code").is_some_and(|code| is_cancel_code(&code))
+        || attributes
+            .and_then(|a| a.get("cause_type"))
+            .and_then(Value::as_str)
+            == Some("OperationCancelled"))
 }
 
 fn allowlisted_runtime_error(
@@ -3458,6 +3543,121 @@ mod tests {
     }
 
     #[test]
+    fn cancellations_keep_terminals_without_entering_error_reports() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "cancelled-diagnostics", 128, TEST_WAIT);
+        for attributes in [
+            json!({"reason_code":"REQUEST_CANCELLED"}),
+            json!({"code":"TTS_SYNTHESIS_CANCELLED"}),
+            json!({"error_type":"OperationCancelled"}),
+            json!({"cause_type":"OperationCancelled", "code":"PLUGIN_CALL_FAILED"}),
+            json!({"cause_code":"TTS_SYNTHESIS_CANCELLED", "code":"PLUGIN_CALL_FAILED"}),
+        ] {
+            let mut fields = attributes.as_object().unwrap().clone();
+            fields.insert("diagnostic".into(), json!("job cancelled"));
+            fields.insert("exception_stack".into(), json!("at cancel:12"));
+            service.observe_runtime_event(
+                "core",
+                "warning",
+                "tts",
+                "runtime.message",
+                None,
+                Some(&Value::Object(fields)),
+            );
+        }
+        assert!(service.inner.reports.lock().unwrap().is_empty());
+        service.observe_runtime_event(
+            "core",
+            "warning",
+            "tts",
+            "tts.synthesis.failed",
+            Some("tts-cancelled"),
+            Some(&json!({"elapsed_ms":25, "reason_code":"TTS_SYNTHESIS_CANCELLED"})),
+        );
+        let (endpoint, body) = server.next_request(&service);
+        assert_eq!(endpoint, "/v2/events");
+        let batch: Value = serde_json::from_slice(&body).unwrap();
+        let terminal = batch["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["event"] == "tts.finished")
+            .unwrap();
+        assert_eq!(terminal["details"]["outcome"], "cancelled");
+        assert_eq!(terminal["durationMs"], 25);
+        assert!(terminal["details"]["severity"].is_null());
+        // Unknown errors and real cleanup failures remain actionable, even if
+        // the surrounding operation was cancelled or its generation retired.
+        for (event, fields) in [
+            (
+                "runtime.message",
+                json!({"code":"GENERATION_INVALIDATED", "stage":"cleanup", "diagnostic":"unregister failed"}),
+            ),
+            (
+                "tts.process.cleanup.failed",
+                json!({"code":"TTS_STALE_PROCESS_KILL_FAILED", "outcome":"cancelled", "diagnostic":"permission denied"}),
+            ),
+            ("future.failed", json!({"diagnostic":"new failure"})),
+            (
+                "runtime.message",
+                json!({"code":"REQUEST_CANCELLED", "recovery_diagnostic":"process cleanup failed", "diagnostic":"job cancelled"}),
+            ),
+            (
+                "runtime.message",
+                json!({"error_type":"PermissionError", "cause_type":"OperationCancelled", "reason_code":"PROCESS_CLEANUP_FAILED", "diagnostic":"cleanup permission denied"}),
+            ),
+            (
+                "runtime.message",
+                json!({"error_type":"RuntimeError", "cause_type":"OperationCancelled", "diagnostic":"cleanup unexpectedly failed"}),
+            ),
+        ] {
+            service.observe_runtime_event("core", "warning", "tts", event, None, Some(&fields));
+            let (endpoint, _) = server.next_request(&service);
+            assert_eq!(endpoint, "/v3/errors");
+        }
+        assert_eq!(service.inner.reports.lock().unwrap().len(), 6);
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_boundary_evidence_survives_core_log_projection() {
+        use crate::runtime_log::{RuntimeLogConfig, RuntimeLogService};
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "boundary-evidence", 128, TEST_WAIT);
+        service.activate_generation("boundary-generation");
+        let log = RuntimeLogService::start_with_config(RuntimeLogConfig::production(
+            root.join("runtime.log"),
+        ));
+        log.attach_telemetry(service.clone());
+        let context = CoreLogContext {
+            generation_id: "boundary-generation".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        let wire = json!({
+            "severity":"warning", "verbosity":"warn", "channel":"memory", "event":"memory.boundary.failed", "message":"Boundary failed",
+            "attributes": {"code":"PLUGIN_CALL_FAILED", "cause_code":"MEMORY_ROUND_TRIP_MISMATCH", "validation_field":"category", "cause_type":"MemoryBoundaryError", "diagnostic":"round trip mismatch", "content":"private fixture"}
+        });
+        assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        let (endpoint, bytes) = server.next_request(&service);
+        assert_eq!(endpoint, "/v3/errors");
+        let report: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            report["evidence"]["cause_code"],
+            "MEMORY_ROUND_TRIP_MISMATCH"
+        );
+        assert_eq!(report["evidence"]["validation_field"], "category");
+        assert!(!report.to_string().contains("private fixture"));
+        log.drain_and_shutdown_for_test();
+        drop(log);
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn successful_and_cancelled_chat_have_real_duration_and_no_error_severity() {
         let server = TestServer::start(202, Duration::ZERO);
         let (root, service) = service_for(&server, "chat-outcomes", 128, TEST_WAIT);
@@ -3536,7 +3736,7 @@ mod tests {
         let (root, service) = service_for(&server, "repeat-v2", 128, TEST_WAIT);
         service.activate_generation("generation-repeat");
         for line in [10, 11, 12] {
-            service.observe_runtime_event("core","warning","tts","tts.service.failed",Some("op-repeat"),Some(&json!({"reason_code":"TTS_RUNTIME_TIMEOUT","source_file":"app/voice/tts.py","source_line":line})));
+            service.observe_runtime_event("core","warning","tts","tts.service.failed",Some("op-repeat"),Some(&json!({"reason_code":"TTS_RUNTIME_TIMEOUT","source_file":"app/voice/tts.py","source_line":line,"failed":999,"count":999})));
         }
         let (_, first) = server.next_request(&service);
         let first: Value = serde_json::from_slice(&first).unwrap();
@@ -3544,6 +3744,7 @@ mod tests {
         let (_, summary) = server.next_request(&service);
         let summary: Value = serde_json::from_slice(&summary).unwrap();
         assert_eq!(summary["items"][0]["details"]["occurrenceCount"], 3);
+        assert!(summary["items"][0]["details"]["failed"].is_null());
         assert_eq!(
             summary["items"][0]["details"]["fingerprint"],
             first["error"]["fingerprint"]
@@ -3556,6 +3757,108 @@ mod tests {
         assert!(wait_for_sender_exit(&service));
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn hover_repeat_summary_keeps_latest_failure_total_and_stop_state() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "hover-repeat-v2", 128, TEST_WAIT);
+        let report_probe = |count, failed, elapsed_ms, recovery_outcome| {
+            service.observe_runtime_event(
+                "webview",
+                "warning",
+                "webview.main",
+                "runtime.message",
+                None,
+                Some(&json!({
+                    "command": "pet_surface_hovered",
+                    "stage": "surface_hover_probe",
+                    "code": "PET_SURFACE_HOVER_PROBE_FAILED",
+                    "diagnostic": "Native hover probe is unavailable.",
+                    "count": count,
+                    "failed": failed,
+                    "elapsed_ms": elapsed_ms,
+                    "recovery_outcome": recovery_outcome,
+                })),
+            );
+        };
+        report_probe(64, 64, 60_500, "unknown");
+        let (endpoint, first) = server.next_request(&service);
+        assert_eq!(endpoint, "/v3/errors");
+        let first: Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(first["evidence"]["failed"], 64);
+
+        // Each new snapshot changes numeric facts but preserves one fault group.
+        // A later episode has a smaller local count and a larger lifetime total.
+        for (occurrences, count, failed, elapsed_ms, recovery) in [
+            (2, 124, 124, 120_500, "unknown"),
+            (3, 128, 128, 125_500, "skipped"),
+            (4, 64, 192, 60_500, "unknown"),
+        ] {
+            report_probe(count, failed, elapsed_ms, recovery);
+            service.flush_summaries(true);
+            let (endpoint, summary) = server.next_request(&service);
+            assert_eq!(endpoint, "/v2/events");
+            let summary: Value = serde_json::from_slice(&summary).unwrap();
+            let item = &summary["items"][0];
+            assert_eq!(item["event"], "error.repeated");
+            assert_eq!(
+                item["details"]["fingerprint"],
+                first["error"]["fingerprint"]
+            );
+            assert_eq!(item["details"]["occurrenceCount"], occurrences);
+            assert_eq!(item["details"]["failed"], failed);
+            assert_eq!(item["details"]["elapsedMs"], elapsed_ms);
+            assert_eq!(item["details"]["recoveryOutcome"], recovery);
+            assert_eq!(item["details"]["stage"], "surface_hover_probe");
+        }
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeat_summary_retries_after_queue_rejection_without_a_new_failure() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "repeat-rejected-v2", 1, TEST_WAIT);
+        for _ in 0..2 {
+            service.observe_runtime_event(
+                "core",
+                "warning",
+                "tts",
+                "tts.service.failed",
+                None,
+                Some(&json!({"reason_code": "TTS_RUNTIME_TIMEOUT"})),
+            );
+        }
+        let (endpoint, first) = server.next_request(&service);
+        assert_eq!(endpoint, "/v3/errors");
+        let first: Value = serde_json::from_slice(&first).unwrap();
+
+        // Reserving the only slot makes rejection deterministic without racing
+        // the sender or adding sleeps. Releasing it restores the same queue.
+        let reserved = service.inner.sender.clone().try_reserve_owned().unwrap();
+        service.flush_summaries(true);
+        drop(reserved);
+        service.flush_summaries(true);
+        let (endpoint, summary) = server.next_request(&service);
+        assert_eq!(endpoint, "/v2/events");
+        let summary: Value = serde_json::from_slice(&summary).unwrap();
+        let repeated = summary["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["event"] == "error.repeated")
+            .expect("the rejected summary remains pending without another failure");
+        assert_eq!(repeated["details"]["occurrenceCount"], 2);
+        assert_eq!(
+            repeated["details"]["fingerprint"],
+            first["error"]["fingerprint"]
+        );
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn event_batches_split_by_serialized_bytes_and_reserve_failure_capacity() {
         let server = TestServer::start(202, Duration::from_millis(150));

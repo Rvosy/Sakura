@@ -15,6 +15,8 @@ pub(super) fn from_attributes(attributes: Option<&Value>) -> ErrorEvidence {
         "exception_site",
         "error_type",
         "cause_type",
+        "cause_code",
+        "validation_field",
         "errno",
         "winerror",
         "plugin_id",
@@ -29,6 +31,11 @@ pub(super) fn from_attributes(attributes: Option<&Value>) -> ErrorEvidence {
         "stderr",
         "exit_code",
         "status",
+        "http_status",
+        "is_timeout",
+        "is_connect",
+        "endpoint_alias",
+        "io_error_kind",
         "stage",
         "command",
         "request_id",
@@ -38,6 +45,9 @@ pub(super) fn from_attributes(attributes: Option<&Value>) -> ErrorEvidence {
         "timeout_ms",
         "repair_reason",
         "repair_outcome",
+        "count",
+        "failed",
+        "elapsed_ms",
     ];
     let mut result = BTreeMap::new();
     for key in FIELDS {
