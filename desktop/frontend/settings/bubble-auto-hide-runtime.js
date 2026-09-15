@@ -51,20 +51,19 @@ export function createBubbleAutoHideSettingsController({ document, invoke, onDir
   }
 
   function read() {
-    return validateBubbleAutoHideValues({
+    const value = delay.value.trim();
+    return {
       autoHideEnabled: enabled.checked,
-      autoHideDelaySeconds: Number.parseInt(delay.value, 10),
-    }, snapshot.limits);
+      autoHideDelaySeconds: value === "" ? NaN : Number(value),
+    };
   }
 
   function changed() {
     if (disposed) return;
-    try {
-      draft = read();
-      delay.disabled = !draft.autoHideEnabled;
-    } finally {
-      onDirty();
-    }
+    // Keep incomplete edits in the draft; only saving requires a valid delay.
+    draft = read();
+    delay.disabled = !draft.autoHideEnabled;
+    onDirty();
   }
 
   return Object.freeze({
@@ -81,9 +80,10 @@ export function createBubbleAutoHideSettingsController({ document, invoke, onDir
     async save() {
       if (!snapshot) throw new Error("气泡自动隐藏设置尚未加载");
       draft = read();
+      const values = validateBubbleAutoHideValues(draft, snapshot.limits);
       const result = await invoke("settings_bubble_auto_hide_save", {
         windowGeneration: snapshot.windowGeneration,
-        values: clone(draft),
+        values: clone(values),
       });
       baseline = clone(validateBubbleAutoHideValues(result, snapshot.limits));
       draft = clone(baseline);

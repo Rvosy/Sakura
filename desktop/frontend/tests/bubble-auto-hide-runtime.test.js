@@ -55,3 +55,49 @@ test("failed save keeps the bubble auto-hide draft dirty", async () => {
   assert.equal(controls.bubbleAutoHide.checked, true);
   assert.equal(controls.bubbleAutoHideDelay.value, "5");
 });
+
+for (const value of ["", "121", "5.5"]) {
+  test(`invalid auto-hide delay ${JSON.stringify(value)} stays editable and cannot be saved`, async () => {
+    const controls = { bubbleAutoHide: control(), bubbleAutoHideDelay: control() };
+    const calls = [];
+    const controller = createBubbleAutoHideSettingsController({
+      document: { getElementById: (id) => controls[id] },
+      invoke: async (command, args) => {
+        calls.push([command, args]);
+        return args.values;
+      },
+      onDirty() {},
+    });
+    controller.initialize(snapshot());
+    controls.bubbleAutoHideDelay.value = value;
+    assert.doesNotThrow(() => controls.bubbleAutoHideDelay.fire("input"));
+    assert.equal(controller.isDirty(), true);
+    await assert.rejects(controller.save());
+    assert.equal(calls.length, 0);
+    assert.equal(controls.bubbleAutoHideDelay.value, value);
+    assert.equal(controller.isDirty(), true);
+
+    controls.bubbleAutoHide.checked = false;
+    assert.doesNotThrow(() => controls.bubbleAutoHide.fire("change"));
+    assert.equal(controls.bubbleAutoHideDelay.disabled, true);
+    controller.discard();
+    assert.equal(controls.bubbleAutoHide.checked, true);
+    assert.equal(controls.bubbleAutoHideDelay.disabled, false);
+    assert.equal(controls.bubbleAutoHideDelay.value, "5");
+    assert.equal(controller.isDirty(), false);
+
+    controls.bubbleAutoHideDelay.value = value;
+    controls.bubbleAutoHideDelay.fire("input");
+    controls.bubbleAutoHideDelay.value = "5";
+    controls.bubbleAutoHideDelay.fire("input");
+    assert.equal(controller.isDirty(), false);
+    controls.bubbleAutoHideDelay.value = "1";
+    controls.bubbleAutoHideDelay.fire("input");
+    await controller.save();
+    assert.deepEqual(calls[0], ["settings_bubble_auto_hide_save", {
+      windowGeneration: 7,
+      values: { autoHideEnabled: true, autoHideDelaySeconds: 1 },
+    }]);
+    assert.equal(controller.isDirty(), false);
+  });
+}
