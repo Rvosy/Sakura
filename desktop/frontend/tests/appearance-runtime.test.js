@@ -236,7 +236,7 @@ test("Studio publication merges only edited appearance fields and saves against 
   }
 });
 
-test("legacy controls preview, save, retain dirty state on failure, and cancel", async () => {
+test("legacy controls preview, save, retain dirty state on failure, cancel, and reset theme", async () => {
   class Control {
     constructor() {
       this.value = "";
@@ -355,6 +355,33 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
     assert.ok(calls.some(([command, args]) => command === "settings_character_appearance_preview" && args.values.portraitScalePercent === 135));
     assert.ok(calls.some(([command, args]) => command === "settings_character_appearance_save" && args.values.themeTokens.accent === themeTokens.accent));
     assert.ok(calls.some(([command]) => command === "settings_character_appearance_cancel_preview"));
+
+    controls.portraitScale.value = "140";
+    controls.portraitScale.fire("input");
+    themes.accent_color.value = "#abcdef";
+    controls.themeColors.fire("input");
+    assert.doesNotThrow(() => controls.resetThemeButton.fire("click"));
+    assert.doesNotThrow(() => controls.resetThemeButton.fire("click"));
+    assert.equal(controls.portraitScale.value, "140", "theme reset retains other appearance edits");
+    assert.equal(themes.accent_color.value, themeTokens.accent);
+    assert.equal(controller.isDirty(), true);
+    nextFrame?.();
+    nextFrame = null;
+    await Promise.resolve();
+    const resetPreview = calls.findLast(([command]) => command === "settings_character_appearance_preview")[1];
+    assert.deepEqual(resetPreview.values.themeTokens, themeTokens);
+    assert.equal(resetPreview.values.portraitScalePercent, 140);
+    await controller.save();
+    const resetSave = calls.findLast(([command]) => command === "settings_character_appearance_save")[1];
+    assert.deepEqual(resetSave.values, resetPreview.values);
+    assert.equal(controller.isDirty(), false);
+    assert.equal(snapshot.appearance.values.portraitScalePercent, 125);
+
+    themes.accent_color.value = "#abcdef";
+    controls.themeColors.fire("input");
+    controls.resetThemeButton.fire("click");
+    assert.equal(controller.isDirty(), false, "resetting a theme-only edit restores the committed values");
+    controller.dispose();
   } finally {
     globalThis.window = previousWindow;
   }
