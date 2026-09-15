@@ -9,4 +9,5 @@ pytest>=8.0.0
 pytest-mock
 pytest-env
 pytest-timeout
+cryptography>=3.4
 psutil>=5.9.0

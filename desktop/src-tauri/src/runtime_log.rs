@@ -1843,10 +1843,7 @@ fn viewer_problem_description(
         value if value.starts_with("appearance.") || value.starts_with("ui.") => {
             "界面效果已改用兼容模式。"
         }
-        value
-            if value.starts_with("tool.")
-                || value.starts_with("plugin.") =>
-        {
+        value if value.starts_with("tool.") || value.starts_with("plugin.") => {
             "相关工具没有正常完成，本次操作可能缺少对应结果。"
         }
         value if value.starts_with("memory.") || value.starts_with("context.") => {
