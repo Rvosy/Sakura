@@ -158,6 +158,7 @@ struct WindowGeometrySession {
     context_menu_hit_regions: Option<window_interaction::PhysicalHitRegions>,
     context_menu_base_application: Option<LayoutApplication>,
     context_menu_base_hit_regions: Option<window_interaction::PhysicalHitRegions>,
+    tool_dock_hit_rect: Option<window_interaction::PhysicalHitRect>,
     control_surface: Option<ControlSurfaceLayout>,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
@@ -213,6 +214,7 @@ impl Default for WindowGeometrySession {
             context_menu_hit_regions: None,
             context_menu_base_application: None,
             context_menu_base_hit_regions: None,
+            tool_dock_hit_rect: None,
             control_surface: None,
             hit_regions: None,
         }
@@ -1949,12 +1951,15 @@ fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> 
             .relax_hit_regions(window)
             .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
     }
-    let hit_regions = geometry
+    let mut hit_regions = geometry
         .context_menu_hit_regions
         .as_ref()
         .or(geometry.hit_regions.as_ref())
         .cloned()
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    if let Some(rect) = geometry.tool_dock_hit_rect {
+        hit_regions.interactive.push(rect);
+    }
     drop(geometry);
 
     apply_precise_hit_regions_with_synchronous_redraw(window, &hit_regions)
@@ -3260,7 +3265,7 @@ fn set_pet_tool_dock_surface(
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    let geometry = session
+    let mut geometry = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
     if rect.is_some() && geometry.context_menu_open {
@@ -3269,29 +3274,44 @@ fn set_pet_tool_dock_surface(
     if geometry.context_menu_open
         && current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow
     {
+        geometry.tool_dock_hit_rect = None;
         drop(geometry);
         return NativeWindowInteractionBackend
             .relax_hit_regions(&window)
             .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
     }
-    let application = geometry
-        .application
-        .clone()
-        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-    let base = geometry
-        .context_menu_hit_regions
-        .as_ref()
-        .or(geometry.hit_regions.as_ref())
-        .cloned()
-        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-    drop(geometry);
-    let next = match rect {
-        Some(rect) => {
-            composer_tool_dock_hit_regions(&layout_contract()?, &application, &base, rect)?
-        }
-        None => base,
-    };
-    apply_precise_hit_regions(&window, &next)
+    geometry.apply_tool_dock_surface(&layout_contract()?, rect, |next| {
+        apply_precise_hit_regions(&window, next)
+    })
+}
+
+impl WindowGeometrySession {
+    fn apply_tool_dock_surface(
+        &mut self,
+        contract: &LayoutContract,
+        rect: Option<[u32; 4]>,
+        apply: impl FnOnce(&window_interaction::PhysicalHitRegions) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let application = self
+            .application
+            .clone()
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+        let base = self
+            .context_menu_hit_regions
+            .as_ref()
+            .or(self.hit_regions.as_ref())
+            .cloned()
+            .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+        let next = match rect {
+            Some(rect) => composer_tool_dock_hit_regions(contract, &application, &base, rect)?,
+            None => base,
+        };
+        apply(&next)?;
+        // The dynamic cursor router reads session state, independently of the native window region.
+        // Publish only after the native update succeeds, and retire it when the dock closes.
+        self.tool_dock_hit_rect = rect.and_then(|_| next.interactive.last().copied());
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -8863,7 +8883,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_tool_dock_uses_the_resident_surface_without_mutating_window_placement() {
+    fn composer_tool_dock_routes_clicks_until_closed_without_mutating_window_placement() {
         let contract = layout_contract().unwrap();
         assert_eq!(composer_resident_viewport(&contract), [900, 1_890]);
         assert_eq!(composer_tool_dock_reserved_bottom(&contract, None), 986);
@@ -8917,6 +8937,50 @@ mod tests {
         assert_eq!(opened.interactive[0].y, 882);
         assert_eq!(opened.interactive[0].corner_radius, 16);
         assert_eq!(application.physical_placement, placement);
+        let mut geometry = WindowGeometrySession {
+            application: Some(application.clone()),
+            hit_regions: Some(base.clone()),
+            ..Default::default()
+        };
+        let point = [200, 900];
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        let open_rect = Some([130, 882, 216, 104]);
+        assert!(geometry
+            .apply_tool_dock_surface(&contract, open_rect, |_| {
+                Err("native update failed".into())
+            })
+            .is_err());
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        geometry
+            .apply_tool_dock_surface(&contract, open_rect, |regions| {
+                assert!(regions.interactive.iter().any(|rect| rect.contains(point)));
+                Ok(())
+            })
+            .unwrap();
+        // All router entry points, including late portrait replies, use this same guard.
+        assert!(dynamic_hit_test::control_contains(&geometry, &base, point));
+        assert!(!dynamic_hit_test::control_contains(
+            &geometry,
+            &base,
+            [400, 900]
+        ));
+        assert!(!dynamic_hit_test::control_contains(
+            &geometry,
+            &base,
+            [130, 882]
+        ));
+        assert!(geometry
+            .apply_tool_dock_surface(&contract, None, |_| { Err("native update failed".into()) })
+            .is_err());
+        assert!(dynamic_hit_test::control_contains(&geometry, &base, point));
+        geometry
+            .apply_tool_dock_surface(&contract, None, |regions| {
+                assert!(!regions.interactive.iter().any(|rect| rect.contains(point)));
+                Ok(())
+            })
+            .unwrap();
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        assert_eq!(geometry.application.unwrap().physical_placement, placement);
         assert_eq!(
             window_interaction::expand_surface_bounds_for_overlay(
                 application.active_bounds,

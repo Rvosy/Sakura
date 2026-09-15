@@ -1,4 +1,23 @@
 //! Point-based input routing for animated Windows surfaces. Rendering regions stay unchanged.
+#[cfg(any(windows, test))]
+pub(crate) fn control_contains(
+    geometry: &crate::WindowGeometrySession,
+    model: &crate::window_interaction::PhysicalHitRegions,
+    point: [i32; 2],
+) -> bool {
+    geometry.context_menu_open
+        || geometry
+            .tool_dock_hit_rect
+            .is_some_and(|rect| rect.contains(point))
+        || model
+            .interactive
+            .iter()
+            .chain(&model.neutral)
+            .chain(&model.extra_native_rectangles)
+            .chain(model.drag.iter().skip(1))
+            .any(|rect| rect.contains(point))
+}
+
 #[cfg(windows)]
 mod native {
     use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -94,14 +113,7 @@ mod native {
         let Some(model) = geometry.hit_regions.as_ref() else {
             return false;
         };
-        let control = geometry.context_menu_open
-            || model
-                .interactive
-                .iter()
-                .chain(&model.neutral)
-                .chain(&model.extra_native_rectangles)
-                .chain(model.drag.iter().skip(1))
-                .any(|rect| rect.contains(point));
+        let control = super::control_contains(&geometry, model, point);
         if control {
             return active.ignored;
         }
@@ -161,14 +173,7 @@ mod native {
         let Some(model) = geometry.hit_regions.as_ref() else {
             return;
         };
-        let control = geometry.context_menu_open
-            || model
-                .interactive
-                .iter()
-                .chain(&model.neutral)
-                .chain(&model.extra_native_rectangles)
-                .chain(model.drag.iter().skip(1))
-                .any(|rect| rect.contains(point));
+        let control = super::control_contains(&geometry, model, point);
         if control {
             route(active, false);
             return;
@@ -320,17 +325,10 @@ mod native {
         let geometry = state.lock().map_err(|e| e.to_string())?;
         let valid = geometry.hit_regions.as_ref().is_some_and(|model| {
             model.drag.first() == Some(&pending.rect)
-                && !geometry.context_menu_open
                 && geometry.applied_revision == pending.layout_revision
                 && geometry.portrait_hit_revision == pending.portrait_revision
                 && window.scale_factor().ok() == Some(pending.dpi)
-                && !model
-                    .interactive
-                    .iter()
-                    .chain(&model.neutral)
-                    .chain(&model.extra_native_rectangles)
-                    .chain(model.drag.iter().skip(1))
-                    .any(|rect| rect.contains(point))
+                && !super::control_contains(&geometry, model, point)
         });
         if valid && point == pending.cursor && origin == pending.origin {
             active.metrics.accepted += 1;
