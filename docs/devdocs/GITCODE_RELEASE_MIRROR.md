@@ -34,7 +34,7 @@ GitHub 仓库配置：
 2. 推送 GitHub tag 对应的提交及其历史到 GitCode 目标 tag，再通过 GitCode API 核对提交。推送被拒绝或已有 tag 指向其他提交时停止，不改用旧提交创建 Release。新 Release 先保持 `pre` 状态。
 3. 将 GitHub Release 中的原始文件逐字节上传到 GitCode。失败后重跑时，已经可见的同名附件直接保留，继续补齐缺失附件，不重新构建文件。
 4. 读取 GitHub 最终 `latest.json`，保留 `version`、`notes`、`pub_date` 和 Tauri `signature`，把安装包及 Portable 的 artifact URL 改为 GitCode Release 附件下载 API。Portable 条目仅包含 URL。
-5. GitCode 版 `latest.json` 最后上传。只有全部预期附件都可见后，Release 才从 `pre` 提升为 `latest`，因此不会先暴露一个指向缺失附件的最新版 manifest。
+5. GitCode 版 `latest.json` 最后上传。所有附件上传和读回比对完成前，Release 保持 `pre`。
 6. 检查附件集合，通过无凭据的公开地址读回全部文件并逐块比较实际内容；正式镜像验证通过后才提升为 latest，再检查 latest tag。镜像失败不会删除或撤回已经发布的 GitHub Release。
 
 GitCode 版 artifact URL 使用其公开 Release 附件下载接口：
@@ -57,6 +57,17 @@ API 返回错误时记录限长、脱敏后的错误码、说明和 trace ID，�
 
 恢复时先确认目标提交在 GitCode 可读，再对已存在的 GitHub Release 执行一次手动镜像验证，保留上传结果。未完成真实附件上传和公开下载验证前，不把 GitCode 地址写入已发布的国内清单。
 
+### 预演验证
+
+- [35001855469](https://github.com/Rvosy/Sakura/actions/runs/35001855469)，提交 `7f19d27f`、attempt 1：成功将 `v1.1.2` 的提交 `cb804c58` 推送到独立测试 tag，GitCode API 校验通过。随后读取正式 latest 基线收到 HTTP 400、`No latest release found`，未进入附件上传。已针对这一确切空状态补充处理和回归测试，其他 HTTP 400 仍报错。
+- [35002242781](https://github.com/Rvosy/Sakura/actions/runs/35002242781)，提交 `2c5095c6`、attempt 1：代码同步、空基线处理及 `pre` Release 创建均成功。第一个 165332642 字节的 macOS 包上传数分钟后仍未输出 16 MiB 进度；为诊断手动取消，结果不能记为上传成功或自然超时。后续改用 curl 做对照，读取提前返回的 HTTP 响应，并记录状态、字节数、速度和耗时，不增加自动重试。
+- [35003762172](https://github.com/Rvosy/Sakura/actions/runs/35003762172)，提交 `0c578ee5`、attempt 1：404 字节签名文件的代码同步、Release 创建、上传和公开读回全部通过，上传 HTTP 200。它只证明小文件连通性。
+- [35004098026](https://github.com/Rvosy/Sakura/actions/runs/35004098026)，提交 `bf3ae877`、attempt 1：扩展探测的 6 个附件全部上传并逐字节读回通过，包括两个约 1.2 MB 的诊断文件（各约 2.6–2.8 秒）、插件包、安装帮助页及签名。另从杭州服务器无凭据下载测试插件包，HTTP 200，9235 字节约 0.83 秒；这项国内访问检查没有单独进行内容比对。
+- [35002885446](https://github.com/Rvosy/Sakura/actions/runs/35002885446)，提交 `8ec7d7c7`、attempt 1：完整预演通过，12 个附件（含 Windows 安装包/Portable、macOS 包、插件包、签名和改写后的 `latest.json`）全部上传并公开读回逐字节比对通过，代码 tag 对应 `cb804c58`，正式 latest 基线未改变。全过程约 28 分钟，测试 Release 保持 `pre`。随后从杭州服务器完整下载 107088597 字节的 Windows 安装包，用时 7.86 秒，大小匹配；完整内容比对证据来自本次 CI。
+- [35005911149](https://github.com/Rvosy/Sakura/actions/runs/35005911149)，提交 `cb614c27`、attempt 1：针对新增的实时日志传输执行一次连通性探测，6 个附件的上传与读回再次通过；日志可见 HTTP 100/200，未输出凭据请求头或签名 URL。这次验证覆盖日志实现变更，没有重复整套大文件测试。
+
+完整预演显示上传速度波动很大：165 MB 的 macOS tar 包耗时 1006.6 秒（约 164 KB/s），167 MB 的 macOS ZIP 耗时 19.6 秒（约 8.5 MB/s），181 MB 的 Windows Portable 耗时 307.7 秒。一次通过证明本次全链路可用，不能证明历史写入超时已经消失；目前没有足够证据把速度差异归因到具体网络节点或服务端机制。实时查询期间附件列表未及时反映进度，最终结果以完整 Actions 日志及读回比对为准。
+
 ## 不发新版本的预演
 
 在 GitHub Actions 中运行 **Mirror Release to GitCode**，选择待测分支，填写已有正式 GitHub Release 的 tag，`mode` 保持默认的 `rehearsal`。也可使用 CLI：
@@ -68,6 +79,8 @@ gh workflow run mirror-gitcode-release.yml --ref codex/sakura-service-console -f
 预演使用 `mirror-test-<源tag>-<run_id>-<attempt>` 独立标签，实际同步该版本代码、创建 `pre` Release、上传现有全部附件并从公开地址读回比对。它不会创建新的 GitHub Release、提升 GitCode latest 或修改国内清单；最后检查正式 latest 标签未改变。测试 Release 保留供检查，入口见 Actions Summary。
 
 这是有真实写入的分发预演，需要代码及 Release 写权限，不是仅打印计划的 dry-run。测试旧版本的大文件可以暴露上传链路问题，但不覆盖新代码编译或签名生成。每次失败先根据日志定位原因，再决定是否有必要继续验证。
+
+`mode=upload-probe` 只传输源 Release 中不超过 2 MiB 的附件，并读回比较；它不上传 `latest.json`，不表示完整安装包通过。连通性探测使用独立测试 tag，可与完整预演同时运行。完整预演和正式镜像仍串行执行。
 
 ## 手动回填正式镜像
 
