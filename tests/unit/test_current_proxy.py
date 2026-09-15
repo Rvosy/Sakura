@@ -173,7 +173,7 @@ def test_search_rejects_private_destination_even_with_proxy(proxy_state):
         assert requests == []
 
 
-def test_web_resolves_each_redirect_target_once(proxy_state, monkeypatch):
+def test_web_resolves_each_direct_redirect_target_once(proxy_state, monkeypatch):
     from plugins.builtin.sakura_web import web
 
     resolved = []
@@ -183,22 +183,21 @@ def test_web_resolves_each_redirect_target_once(proxy_state, monkeypatch):
         if host in {"public.example", "redirected.example"}:
             resolved.append(host)
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
-        return original(host, port, *args, **kwargs)
+        # Route the validated fixture IP to the local server at the socket boundary.
+        return original("127.0.0.1" if host == "93.184.216.34" else host, port, *args, **kwargs)
 
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
     with endpoint(
-        "page", lambda request: "http://redirected.example/end" if request.path.endswith("/start") else None
-    ) as (proxy, requests):
-        proxy_state["http"] = proxy
-        assert web.fetch_url("http://public.example/start")["text"] == "page"
+        "page", lambda request: f"http://redirected.example:{request.server.server_port}/end"
+        if request.path == "/start" else None
+    ) as (direct, requests):
+        port = direct.rsplit(":", 1)[1]
+        assert web.fetch_url(f"http://public.example:{port}/start")["text"] == "page"
         assert resolved == ["public.example", "redirected.example"]
-        assert requests == [
-            ("http://93.184.216.34/start", "public.example"),
-            ("http://93.184.216.34/end", "redirected.example"),
-        ]
+        assert requests == [("/start", f"public.example:{port}"), ("/end", f"redirected.example:{port}")]
 
 
-def test_web_rejects_private_dns_after_redirect_before_connecting(proxy_state, monkeypatch):
+def test_web_rejects_private_dns_after_direct_redirect_before_connecting(proxy_state, monkeypatch):
     from plugins.builtin.sakura_web import web
 
     original = socket.getaddrinfo
@@ -207,14 +206,14 @@ def test_web_rejects_private_dns_after_redirect_before_connecting(proxy_state, m
         if host in {"public.example", "private.example"}:
             address = "127.0.0.1" if host == "private.example" else "93.184.216.34"
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))]
-        return original(host, port, *args, **kwargs)
+        return original("127.0.0.1" if host == "93.184.216.34" else host, port, *args, **kwargs)
 
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
-    with endpoint("page", lambda _request: "http://private.example/secret") as (proxy, requests):
-        proxy_state["http"] = proxy
+    with endpoint("page", lambda _request: "http://private.example/secret") as (direct, requests):
+        port = direct.rsplit(":", 1)[1]
         with pytest.raises(ValueError, match="私有网络"):
-            web.fetch_url("http://public.example/start")
-        assert requests == [("http://93.184.216.34/start", "public.example")]
+            web.fetch_url(f"http://public.example:{port}/start")
+        assert requests == [("/start", f"public.example:{port}")]
 
 
 def test_web_direct_transport_preserves_host_and_bounds_body(proxy_state, monkeypatch):

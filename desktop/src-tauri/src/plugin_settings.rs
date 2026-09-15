@@ -571,19 +571,6 @@ pub(crate) async fn settings_plugins_collection(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn conditional_visibility_accepts_only_boolean_hide() {
-        let key = serde_json::json!("api_key");
-        assert!(super::valid_enabled_when(
-            Some(&serde_json::json!({"field":"provider", "equals":"tavily", "hide":true})),
-            Some(&key)
-        ));
-        assert!(!super::valid_enabled_when(
-            Some(&serde_json::json!({"field":"provider", "equals":"tavily", "hide":"yes"})),
-            Some(&key)
-        ));
-    }
-
     use serde_json::json;
 
     use super::{

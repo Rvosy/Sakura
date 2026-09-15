@@ -177,3 +177,22 @@ class Plugin:
         assert "unsupported" not in {field["key"] for field in section["fields"]}
     finally:
         host.close()
+
+
+def test_conditional_settings_project_hide_and_isolate_invalid_flags() -> None:
+    settings = _SettingsHostService(lambda *_args: {})
+    handle = "cb_" + "c" * 32
+    settings.call("register", ["fixture", {
+        "sectionId": "general", "title": "设置",
+        "fields": [
+            {"key": "mode", "label": "Mode", "type": "string", "default": "ready"},
+            {"key": "conditional", "label": "Conditional", "type": "string",
+             "enabledWhen": {"field": "mode", "equals": "ready", "hide": True}},
+            {"key": "invalid", "label": "Invalid", "type": "string",
+             "enabledWhen": {"field": "mode", "equals": "ready", "hide": "yes"}},
+        ],
+    }, {"load": handle, "save": handle, "actions": {}}])
+    section = settings.sections_for_plugin("fixture")[0]
+    assert [field["key"] for field in section["fields"]] == ["mode", "conditional"]
+    assert section["fields"][1]["enabledWhen"] == {"field": "mode", "equals": "ready", "hide": True}
+    assert section["reasonCode"] == "SETTINGS_DESCRIPTOR_INVALID"
