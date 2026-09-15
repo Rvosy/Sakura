@@ -90,8 +90,8 @@ Manifest 可以声明 `presentation: {kind, category, icon}`。`kind` 为 `exten
 或 `infrastructure`（系统组件）；`category` 为 `model/voice/memory/tools/connectivity/other`。
 未声明、类型不符或未知的值逐字段回退为 `extension/other`，不影响插件的加载资格。
 
-Inventory 将归一化后的分类放入公开 Plugin Settings Snapshot。Rust 和 WebView 接受省略 `presentation` 的旧快照；
-存在时接受上述两个枚举字段及可选的 `icon` 字符串。分类只用于分组、标签和筛选，不进入启动 IPC，也不参与依赖、服务选择、权限或业务判断。
+Inventory 将归一化后的分类放入公开 Plugin Settings Snapshot。Rust 和 WebView 接受省略 `presentation` 的旧快照，
+并直接使用宿主投影的展示元信息。分类只用于分组、标签和筛选，不进入启动 IPC，也不参与依赖、服务选择、权限或业务判断。
 前端不得根据插件 ID、作者或依赖猜测分类；安装来源仍由安装记录决定。
 
 `icon` 从 Sakura 随包提供的 Lucide 图标中选择，例如 `brain`、`smartphone`、`audio-lines`。
@@ -161,8 +161,10 @@ Core 从当前 RPC 调用上下文绑定插件身份，不信任插件传入的 
 `plugin_id`、`plugin_name` 字段，名称由宿主从 manifest 获取。自定义事件规范化为 `runtime.message`；已登记事件仍按固定目录投影。
 Core 补齐交互关联编号，Rust 注入本次运行、generation 与 Core PID。插件不能选择文件路径或目标来源。
 
-消息最多 1024 UTF-8 字节，字段字符串最多 256 字节；字段最多 3 层、每层 8 项、总遍历预算 32 项，
-普通字段编码预算 1800 字节。原始错误使用独立预算：`diagnostic` 4096 字符，异常链和调用栈各 8192 字符。超限明确标记 `truncated`，桥接整行连同前缀和换行最多 32 KiB。
+消息最多 1024 UTF-8 字节，字段字符串最多 256 字节；字段最多 3 层、嵌套集合最多 8 项。
+顶层字段不设 8 项限制，共享含根对象的 32 项总遍历预算；普通字段连同截断标记的编码预算为 1800 字节。
+`record_truncated` 不消耗字段遍历额度，避免 SDK、Core 和宿主重复清洗时继续挤掉诊断字段。
+原始错误使用独立预算：`diagnostic` 4096 字符，异常链和调用栈各 8192 字符。超限明确标记 `truncated`，桥接整行连同前缀和换行最多 32 KiB。
 凭据、敏感内容字段和绝对路径在传出插件进程前清洗，Rust 在文件与 UI 投影前再次清洗。
 自定义文本不是私密 Trace：插件作者不得主动记录对话正文、模型内容、环境变量或原始异常对象，
 文本清洗无法保证识别任意私密内容。UI 按纯文本显示，复制使用同一份清洗结果。
@@ -171,15 +173,15 @@ Rust 依据可信来源分流：插件主动记录写入 `sakura-plugins.log`，
 `sakura-runtime.log`；宿主记录单个插件的加载、停止、启动失败和异常退出时也附带可信插件身份，写入插件日志；应用级汇总仍写入运行日志。两者共用队列、序号、写入线程、
 文本格式化与轮转实现，仅文件状态独立；默认各 10 MiB、5 个备份。窗口以同一快照提供插件筛选。
 
-`sakura.host.diagnostics.emit()` 保留为固定 TTS service/weights/conversion 事件的兼容入口，
-接受 `provider/reason_code/stage/status/error_type/elapsed_ms`，`elapsed_ms` 为非负有界十进制字符串。
-它同样附加可信插件身份，进入统一服务及插件文件；已登记 TTS 事件仅显示在 TTS 页，不在插件页重复显示。
+`sakura.host.diagnostics.emit()` 保留原调用格式，转交 `sakura.host.logging` 同一条日志链。
+插件自行提供事件名和业务字段，事件名保存在消息和 `fields.event` 中；宿主不维护 Provider 名称、事件或源文件白名单，也不重解释耗时等业务字段。
+调用方身份由宿主绑定，诊断采用通用日志的大小限制、凭据清洗和插件文件归属。
 宿主日志适配层按 manifest 的 `sakura.tts` / `sakura.tts.provider.*` 声明将语音插件自定义记录归入 TTS，
 插件名称用于筛选项和日志行展示，插件 ID 保留在详情和复制文本中。
 ASR Hub 和语音输入 Provider 的记录归入“插件”页，按各自插件名称筛选，同样写入 `sakura-plugins.log`。
 Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接入宿主日志。
 插件进程 stderr（包括 runner 重定向的 stdout）由 Core 持续、有界读取并清洗后记录，按 info 显示为“插件诊断输出”，不因输出通道而计入问题数。下载进度和第三方提示保留原文；明确的警告、调用失败与异常退出由 SDK 或宿主对应事件报告。不拦截标准 `logging` 配置。Agent Trace 的实现保持独立。
-SDK 的 warning/error 和固定诊断入口在异常处理期间自动附加原文及调用栈。Service RPC error 通过可选 `diagnostics` 保留跨插件异常链，宿主再次清洗。
+SDK 的 warning/error 和兼容诊断入口在异常处理期间自动附加原文及调用栈。Service RPC error 通过可选 `diagnostics` 保留跨插件异常链，宿主再次清洗。Mem0 事件直接保留在插件日志中，不额外生成一条宿主业务记录。
 插件启动失败在转换为状态码前提取原始异常，启动失败日志保留依赖检查或初始化阶段的异常链与调用栈。事件回调、清理回调和宿主资源回收失败也记录诊断，后续回调及资源回收继续执行。关闭期间允许插件注销自己已登记的宿主资源，随后由宿主完成剩余资源回收。
 
 
@@ -428,6 +430,14 @@ inventory `revision` 直接比较安装记录和结构化开关配置，状态�
 设置窗口只渲染插件已有的 Settings Contribution，不根据展示分类增加字段或动作。字段名称、默认值、校验范围、
 只读属性、`enabledWhen` 与 `placement=advanced` 均沿用声明。`enabledWhen` 可添加布尔字段 `hide`：
 为 true 时，条件不满足的字段隐藏且禁用；默认仍显示为禁用。隐藏不清除已填写的值。长内容在窗口内部滚动，底部操作始终可达。
+
+Settings Contribution 的展示规则由 Python 宿主解析并投影，文案长度按 Unicode 字符计数。
+Rust 与前端只检查传输形状、总大小和操作身份，不重复解释字段枚举、文案长度或字段间约束；新增展示元信息不导致整份快照被拒绝。
+宿主忽略未知展示元信息，省略无效字段或动作，并在该区块标记 `SETTINGS_DESCRIPTOR_INVALID`。
+依赖缺失字段的控件改为只读。加载值与 Action 返回的展示值使用相同投影：未知或已省略控件的值被忽略，
+单个值无效时仅该控件回退到默认值并标记 `SETTINGS_VALUE_INVALID`；已有声明错误提示保留。
+Action 的展示值是局部更新，未返回的字段不补默认值。其他控件和插件继续使用。
+区块身份、Action ID、回调归属、保存和动作输入校验与文件访问边界保持有效；未知写入字段仍被拒绝。
 
 - 未注册 surface 或 `surface=plugin` 的区块放入插件设置窗口；普通字段、Action 和 Collection 保留原调用链。
 - `surface=voice` 仍由 Voice controller 管理；打开插件设置时移动同一组控件，关闭后移回语音页，不复制表单或建立另一套保存接口。

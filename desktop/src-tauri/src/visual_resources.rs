@@ -457,6 +457,92 @@ impl CharacterPresentationState {
         result.presentation.validate(generation)?;
         Ok(result)
     }
+    pub fn protocol_response(
+        &self,
+        request: &tauri::http::Request<Vec<u8>>,
+        current_generation: &str,
+        report_error: impl FnOnce(&str, &str),
+    ) -> tauri::http::Response<Vec<u8>> {
+        use tauri::http::{header, Method, StatusCode};
+        if request.method() != Method::GET || request.uri().query().is_some() {
+            return protocol_error(
+                StatusCode::BAD_REQUEST,
+                "CHARACTER_RESOURCE_REQUEST_REJECTED",
+            );
+        }
+        // Decode each URL path segment once. A literal percent in a filename
+        // remains literal after decoding; encoded separators cannot change routes.
+        let segments: Result<Vec<_>, _> = request
+            .uri()
+            .path()
+            .trim_matches('/')
+            .split('/')
+            .map(|segment| percent_encoding::percent_decode_str(segment).decode_utf8())
+            .collect();
+        let Ok(segments) = segments else {
+            return protocol_error(
+                StatusCode::BAD_REQUEST,
+                "CHARACTER_RESOURCE_REQUEST_REJECTED",
+            );
+        };
+        if !((segments.len() == 3 && segments[0] == "v1")
+            || (segments.len() >= 4 && segments[0] == "module")
+            || (segments.len() == 4 && segments[0] == "editor-assets"))
+            || segments[1].is_empty()
+            || segments[2].is_empty()
+            || segments
+                .iter()
+                .any(|segment| segment.contains(['/', '\\', '\0']))
+        {
+            return protocol_error(
+                StatusCode::BAD_REQUEST,
+                "CHARACTER_RESOURCE_REQUEST_REJECTED",
+            );
+        }
+        let loaded = if segments[0] == "module" {
+            self.load_module(
+                &segments[1],
+                &segments[2],
+                &segments[3..].join("/"),
+                current_generation,
+            )
+        } else if segments[0] == "editor-assets" {
+            self.load_editor_asset(&segments[1], &segments[2], &segments[3], current_generation)
+        } else {
+            self.load_resource(&segments[1], &segments[2], current_generation)
+        };
+        match loaded {
+            Ok(resource) => tauri::http::Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, resource.content_type)
+                .header("Access-Control-Allow-Origin", "*")
+                .header(header::CONTENT_LENGTH, resource.bytes.len().to_string())
+                .header(header::CACHE_CONTROL, "no-store, max-age=0")
+                .header("X-Content-Type-Options", "nosniff")
+                .body(resource.bytes)
+                .expect("validated character resource response"),
+            Err(error) => {
+                let stage = match segments[0].as_ref() {
+                    "module" => "visual.module.read",
+                    "editor-assets" => "studio.visual.asset.read",
+                    _ => "visual.asset.read",
+                };
+                report_error(stage, &error);
+                let code = error
+                    .split_once(':')
+                    .map_or(error.as_str(), |(code, _)| code);
+                let status = if code.contains("GENERATION") {
+                    StatusCode::GONE
+                } else if code.contains("UNKNOWN") || code.contains("NOT_FOUND") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                };
+                protocol_error(status, &code)
+            }
+        }
+    }
+
     pub fn load_resource(
         &self,
         generation_hex: &str,
@@ -724,12 +810,31 @@ fn unhex(s: &str) -> Result<String, String> {
     String::from_utf8(bytes.map_err(|_| "CHARACTER_RESOURCE_ID_UNKNOWN")?)
         .map_err(|_| "CHARACTER_RESOURCE_ID_UNKNOWN".into())
 }
+pub fn protocol_error(
+    status: tauri::http::StatusCode,
+    code: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::header;
+    tauri::http::Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(code.as_bytes().to_vec())
+        .expect("static character protocol response")
+}
+
 fn protocol_url(path: &str) -> String {
-    if cfg!(any(target_os = "windows", target_os = "android")) {
-        format!("http://{CHARACTER_PROTOCOL}.localhost/{path}")
+    let base = if cfg!(any(target_os = "windows", target_os = "android")) {
+        format!("http://{CHARACTER_PROTOCOL}.localhost/")
     } else {
-        format!("{CHARACTER_PROTOCOL}://localhost/{path}")
-    }
+        format!("{CHARACTER_PROTOCOL}://localhost/")
+    };
+    let mut url = tauri::Url::parse(&base).expect("static character protocol URL");
+    url.path_segments_mut()
+        .expect("hierarchical character protocol URL")
+        .extend(path.split('/'));
+    url.into()
 }
 
 #[cfg(test)]
@@ -802,6 +907,145 @@ mod tests {
                 assets: BTreeMap::from([("model".into(), "assets/model.json".into())]),
             }),
         }
+    }
+    #[test]
+    fn protocol_reads_unicode_and_space_module_paths_from_real_files() {
+        let dir = Fixture::new();
+        let state = CharacterPresentationState::new(dir.path().into());
+        let mut input = fixture(dir.path());
+        let module_root = dir.path().join("plugins/builtin/numeric");
+        for entry in ["前端/渲染器.js", "frontend/my editor.mjs"] {
+            let path = module_root.join(entry);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("export const label = '{entry}';")).unwrap();
+        }
+        let visual = input.visual.as_mut().unwrap();
+        visual.renderer = "前端/渲染器.js".into();
+        visual.editor = Some("frontend/my editor.mjs".into());
+        let visual = state
+            .activate(input, "g")
+            .unwrap()
+            .presentation
+            .visual
+            .unwrap();
+        let urls = [visual.renderer, visual.editor.unwrap()];
+        for origin in [
+            "sakura-character://localhost",
+            "http://sakura-character.localhost",
+        ] {
+            let responses = urls.each_ref().map(|url| {
+                // WebViews parse module URLs before issuing a custom-protocol request.
+                let url = tauri::Url::parse(url).unwrap();
+                let request = tauri::http::Request::builder()
+                    .uri(format!("{origin}{}", url.path()))
+                    .body(Vec::new())
+                    .unwrap();
+                state.protocol_response(&request, "g", |_, _| {})
+            });
+            assert_eq!(
+                responses
+                    .each_ref()
+                    .map(|response| response.status().as_u16()),
+                [200, 200]
+            );
+            for (response, entry) in responses
+                .into_iter()
+                .zip(["前端/渲染器.js", "frontend/my editor.mjs"])
+            {
+                assert_eq!(
+                    response.body(),
+                    format!("export const label = '{entry}';").as_bytes()
+                );
+                assert_eq!(
+                    response.headers()["Content-Type"],
+                    "text/javascript; charset=utf-8"
+                );
+            }
+        }
+    }
+    #[test]
+    fn protocol_decodes_once_and_keeps_module_scope_and_path_checks() {
+        let dir = Fixture::new();
+        let state = CharacterPresentationState::new(dir.path().into());
+        let mut input = fixture(dir.path());
+        let module_root = dir.path().join("plugins/builtin/numeric");
+        let entry = "%2e%2e/渲染器 #%.mjs";
+        fs::create_dir_all(module_root.join("%2e%2e")).unwrap();
+        fs::write(
+            module_root.join(entry),
+            b"export const value = 'literal filename';",
+        )
+        .unwrap();
+        fs::write(module_root.join("private.json"), b"private data").unwrap();
+        fs::write(
+            module_root.parent().unwrap().join("secret.js"),
+            b"outside plugin",
+        )
+        .unwrap();
+        input.visual.as_mut().unwrap().renderer = entry.into();
+        let visual = state
+            .activate(input.clone(), "g")
+            .unwrap()
+            .presentation
+            .visual
+            .unwrap();
+        let request = tauri::http::Request::builder()
+            .uri(&visual.renderer)
+            .body(Vec::new())
+            .unwrap();
+        let response = state.protocol_response(&request, "g", |_, _| {});
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(response.body(), b"export const value = 'literal filename';");
+        let prefix = format!("sakura-character://localhost/module/67/{}/", "a".repeat(32));
+        for path in [
+            "../secret.js",
+            "%2e%2e/secret.js",
+            "%2e%2e%2fsecret.js",
+            "frontend%2frenderer.js",
+            "frontend/%5csecret.js",
+            "frontend//renderer.js",
+            "frontend/%00.js",
+            "frontend/%FF.js",
+            "private.json",
+        ] {
+            let request = tauri::http::Request::builder()
+                .uri(format!("{prefix}{path}"))
+                .body(Vec::new())
+                .unwrap();
+            let response = state.protocol_response(&request, "g", |_, _| {});
+            assert!(!response.status().is_success(), "{path}");
+            assert!(
+                !String::from_utf8_lossy(response.body()).contains(dir.path().to_str().unwrap())
+            );
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                module_root.parent().unwrap().join("secret.js"),
+                module_root.join("escape.js"),
+            )
+            .unwrap();
+            let request = tauri::http::Request::builder()
+                .uri(format!("{prefix}escape.js"))
+                .body(Vec::new())
+                .unwrap();
+            assert_eq!(
+                state.protocol_response(&request, "g", |_, _| {}).status(),
+                tauri::http::StatusCode::UNPROCESSABLE_ENTITY
+            );
+        }
+        assert_eq!(
+            state
+                .protocol_response(&request, "next-generation", |_, _| {})
+                .status(),
+            tauri::http::StatusCode::GONE
+        );
+        input.visual = None;
+        state.activate(input, "g").unwrap();
+        assert_eq!(
+            state.protocol_response(&request, "g", |_, _| {}).status(),
+            tauri::http::StatusCode::NOT_FOUND
+        );
     }
     #[test]
     fn resource_io_failure_preserves_system_error_without_a_private_path() {

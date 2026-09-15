@@ -1047,12 +1047,17 @@ async function openVisualEditor(resource, revision = visualEditorRevision, { flu
   } catch (error) {
     if (revision !== visualEditorRevision || selection !== visualSelectionRevision) return;
     visualEditor.clear();
-    const inactive = String(error).match(/VISUAL_PROVIDER_MISSING|PLUGIN_DISABLED/);
+    const inactive = String(error).match(/VISUAL_PROVIDER_MISSING|PLUGIN_DISABLED|VISUAL_MANIFEST_INVALID|VISUAL_MODULE_INVALID|VISUAL_EDITOR_MISSING/);
     if (inactive) {
       const text = document.createElement("p");
-      text.textContent = inactive[0] === "VISUAL_PROVIDER_MISSING"
-        ? "尚未安装支持此形态的插件。资源会随角色保存，安装并启用插件后可编辑和显示。"
-        : "所需插件尚未启用。资源会随角色保存，启用插件后可编辑和显示。";
+      const messages = {
+        VISUAL_PROVIDER_MISSING: "尚未安装支持此形态的插件。资源会随角色保存，安装并启用插件后可编辑和显示。",
+        PLUGIN_DISABLED: "所需插件尚未启用。资源会随角色保存，启用插件后可编辑和显示。",
+        VISUAL_MANIFEST_INVALID: "插件的形态声明有误，请修复或更新插件。已有资源会保留。",
+        VISUAL_MODULE_INVALID: "插件的形态模块缺失或路径无效，请修复或更新插件。已有资源会保留。",
+        VISUAL_EDITOR_MISSING: "插件未提供形态编辑器。已有资源会保留。",
+      };
+      text.textContent = messages[inactive[0]];
       const hints = (resource.pluginRequirements || []).flatMap(item => item.plugins || []);
       if (inactive[0] === "VISUAL_PROVIDER_MISSING" && hints.length) text.textContent += " 可安装：" + hints.map(item => item.name || item.id).join(" 或 ") + "。";
       fields.expressionList.append(text);

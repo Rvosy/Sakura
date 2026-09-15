@@ -8,7 +8,7 @@ import yaml
 from app.config.character_resources import CharacterVisualResource
 from app.core_host.visual_host import VisualHost, VisualHostError
 from app.plugins.discovery import PluginDiscovery
-from app.plugins.installer import LocalPluginInstaller, PluginInstallError
+from app.plugins.installer import LocalPluginInstaller
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory, RuntimePluginSpec
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.storage.runtime_roots import RuntimeRoots
@@ -62,16 +62,22 @@ def test_disabled_visual_declaration_survives_discovery_and_startup_serializatio
     ("type", "example.unversioned"), ("contract", True), ("contract", 0),
     ("service", "example.undeclared"),
 ])
-def test_invalid_visual_declarations_are_rejected_consistently(tmp_path: Path, field: str, value: object) -> None:
+def test_invalid_optional_declarations_do_not_disable_other_plugin_services(tmp_path: Path, field: str, value: object) -> None:
     declaration = {"type": "example.parameters@1", "service": "example.visual.control", "contract": 1, "renderer": "renderer.js"}
     declaration[field] = value
     plugin_root = _plugin(tmp_path, declaration)
     record = PluginInventory(tmp_path).scan().records[0]
-    assert record.reason_code == "PLUGIN_MANIFEST_INVALID"
-    assert record.runtime_spec() is None
-    assert PluginDiscovery(tmp_path).discover() == []
-    with pytest.raises(PluginInstallError, match="PLUGIN_MANIFEST_INVALID"):
-        LocalPluginInstaller(tmp_path)._validated_spec(plugin_root)
+    assert record.reason_code == "READY"
+    assert record.runtime_spec() is not None
+    assert record.provides == ("example.visual.control",)
+    assert len(record.capability_issues) == 1
+    assert len(record.visuals) == (1 if field == "editor" else 0)
+    if field == "editor":
+        assert record.visuals[0].renderer == "renderer.js"
+        assert record.visuals[0].editor is None
+    assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
+    assert LocalPluginInstaller(tmp_path)._validated_spec(plugin_root).visuals == record.visuals
+    assert RuntimePluginSpec.from_private_dict(record.runtime_spec().private_dict()).visuals == record.visuals
 
 
 def test_startup_spec_accepts_older_payload_without_visuals_and_rejects_tampering(tmp_path: Path) -> None:
@@ -234,3 +240,50 @@ def test_conflicting_user_install_does_not_hide_inventory_bundled_winner(binding
     assert {item["reasonCode"] for item in host.candidates(resource.type)} == {"READY", "PLUGIN_ID_CONFLICT"}
     assert host.bind("character", package, resource).presentation()["installId"].startswith("pi_bundled_")
     assert host.bind("character", package, resource, provider_id="example.visual").presentation()["installId"].startswith("pi_bundled_")
+
+
+def test_optional_editor_failure_keeps_renderer_and_reports_editor_unavailable(binding_host):
+    host, _runtime, resource, plugin, package = binding_host
+    (plugin / "editor.mjs").unlink()
+    assert host.bind("character", package, resource).presentation()["renderer"] == "renderer.js"
+    assert host.resource_choice(resource)["reasonCode"] == "READY"
+    assert host.catalog()[0]["reasonCode"] == "VISUAL_MODULE_INVALID"
+    with pytest.raises(VisualHostError, match="VISUAL_MODULE_INVALID"):
+        host.editor(resource, {})
+
+
+def test_bad_renderer_preserves_other_capabilities_and_reports_the_failed_type(binding_host):
+    host, _runtime, resource, plugin, _package = binding_host
+    manifest = plugin / "plugin.yaml"
+    raw = yaml.safe_load(manifest.read_text())
+    raw["visuals"].append({**raw["visuals"][0], "type": "example.other@1", "renderer": "missing.js"})
+    raw["visuals"][0]["displayDescription"] = "额外展示信息"
+    manifest.write_text(yaml.safe_dump(raw))
+    snapshot = PluginInventory(plugin.parents[2]).scan()
+    assert snapshot.records[0].runtime_eligible
+    assert len(snapshot.runtime_specs[0].visuals) == 1
+    assert host.resource_choice(resource)["reasonCode"] == "READY"
+    missing = CharacterVisualResource("other", "example.other@1", ".", "resource.json")
+    assert host.resource_choice(missing)["reasonCode"] == "VISUAL_MODULE_INVALID"
+    with pytest.raises(VisualHostError, match="VISUAL_MODULE_INVALID"):
+        host._select(missing.type)
+
+
+def test_plugin_module_accepts_unicode_names_but_not_symlinks_outside_installation(tmp_path):
+    plugin = _plugin(tmp_path)
+    manifest = plugin / "plugin.yaml"
+    raw = yaml.safe_load(manifest.read_text())
+    (plugin / "角色 渲染.js").write_text("export function mount() {}")
+    raw["visuals"][0]["renderer"] = "角色 渲染.js"
+    manifest.write_text(yaml.safe_dump(raw, allow_unicode=True))
+    assert PluginInventory(tmp_path).scan().records[0].visuals[0].renderer == "角色 渲染.js"
+    outside = tmp_path / "outside.js"
+    outside.write_text("export function mount() {}")
+    (plugin / "角色 渲染.js").unlink()
+    try:
+        (plugin / "角色 渲染.js").symlink_to(outside)
+    except OSError:
+        pytest.skip("host does not allow creating symlinks")
+    record = PluginInventory(tmp_path).scan().records[0]
+    assert record.runtime_eligible and not record.visuals
+    assert record.capability_issues[0]["reasonCode"] == "VISUAL_MODULE_INVALID"

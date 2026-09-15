@@ -3271,6 +3271,97 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
+    fn complete_plugin_failure_fields_reach_log_file_and_telemetry() {
+        use crate::runtime_log::{CoreLogContext, RuntimeLogService};
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "complete-plugin-failure", 16, TEST_WAIT);
+        let log = RuntimeLogService::start(root.join("runtime.log"));
+        log.attach_telemetry(service.clone());
+        let context = CoreLogContext {
+            generation_id: "generation-plugin-failure".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        log.activate_telemetry_generation(&context.generation_id);
+        for (code, extra, elapsed) in [
+            (
+                "TTS_RUNTIME_TIMEOUT",
+                json!({"probe_outcome": "timeout"}),
+                90001,
+            ),
+            (
+                "TTS_RUNTIME_EXITED",
+                json!({"child_exited": true, "exit_code": 7}),
+                1234,
+            ),
+        ] {
+            // Complete GPT-SoVITS service-failure record at the Core bridge,
+            // including the adapter's generic plugin attribution.
+            let mut attributes = json!({
+                "component": "tts", "event": "tts.service.failed",
+                "provider": "sakura.tts.gpt-sovits",
+                "stage": "runtime_start", "status": "failed",
+                "source_file": "plugins/builtin/sakura_gpt_sovits/_support.py",
+                "source_line": 400, "code": code, "reason_code": code,
+                "timeout_ms": 90000, "error_type": "RuntimeError",
+                "elapsed_ms": elapsed,
+                "diagnostic": "service startup failed token=fixture-private",
+                "exception_stack": "_support.py:400 in ensure_ready"
+            });
+            attributes
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let wire = json!({
+                "severity": "warning", "verbosity": "warn", "channel": "tts",
+                "event": "runtime.message", "custom": true,
+                "plugin_id": "sakura.tts.gpt-sovits", "plugin_name": "GPT-SoVITS",
+                "message": "TTS service startup failed", "attributes": attributes
+            });
+            assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+            let (endpoint, bytes) = server.next_request(&service);
+            assert_eq!(endpoint, "/v3/errors");
+            let report: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(report["details"]["reasonCode"], code);
+            assert_eq!(report["details"]["timeoutMs"], 90000);
+            assert_eq!(report["details"]["elapsedMs"], elapsed);
+            for (key, value) in extra.as_object().unwrap() {
+                let remote_key = match key.as_str() {
+                    "probe_outcome" => "probeOutcome",
+                    "child_exited" => "childExited",
+                    "exit_code" => "exitCode",
+                    _ => unreachable!(),
+                };
+                assert_eq!(&report["details"][remote_key], value);
+            }
+            assert_eq!(
+                report["evidence"]["diagnostic"],
+                "service startup failed token=[REDACTED]"
+            );
+        }
+        log.drain_and_shutdown_for_test();
+        drop(log);
+        let contents = fs::read_to_string(root.join("sakura-plugins.log")).unwrap();
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+        for field in [
+            "timeout_ms=90000",
+            "probe_outcome=timeout",
+            "child_exited=true",
+            "exit_code=7",
+            "elapsed_ms=90001",
+            "elapsed_ms=1234",
+        ] {
+            assert!(
+                contents.contains(field),
+                "missing failure detail: {field}\n{contents}"
+            );
+        }
+        assert!(!contents.contains("fixture-private"));
+    }
+
+    #[test]
     fn original_errors_cross_log_projection_and_keep_distinct_causes() {
         use crate::runtime_log::{
             RuntimeLogConfig, RuntimeLogEvent, RuntimeLogService, Severity, Verbosity,

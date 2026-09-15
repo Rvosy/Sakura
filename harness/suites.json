@@ -608,6 +608,7 @@
         "tests/unit/test_sakura_mobile_plugin_v4.py",
         "tests/unit/test_mobile_runtime_v4.py",
         "tests/unit/test_core_host_plugins.py",
+        "tests/unit/test_plugin_settings_contract.py",
         "tests/integration/test_wp_4_04_plugin_journey.py",
         "-q"
       ],

@@ -9,7 +9,10 @@ export function requirementSummary(item) {
     label, names: names(installed), status: "未启用", state: "disabled", detail: "在设置中启用后可使用。",
   };
   if (item.reasonCode === "PLUGIN_INCOMPATIBLE") return {
-    label, names: names(item.candidates || []), status: "不可用", state: "unsupported", detail: "请更新插件，或安装支持此资源的其他插件。",
+    label, names: names(item.candidates || []), status: "不可用", state: "unsupported",
+    detail: (item.candidates || []).some(plugin => ["VISUAL_MANIFEST_INVALID", "VISUAL_MODULE_INVALID", "TTS_RESOURCE_MANIFEST_INVALID"].includes(plugin.reasonCode))
+      ? "插件的资源能力声明或模块有误，请修复或更新插件。"
+      : "请更新插件，或安装支持此资源的其他插件。",
   };
   const suggested = names(item.plugins || []);
   return {

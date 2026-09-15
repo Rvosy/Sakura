@@ -222,8 +222,8 @@ tokenizer；不可用时使用现有保守估算器，并在 Trace 标明 estima
 1. 保留必需 Host facts 和当前 Turn；
 2. 在能完整容纳时优先保护最近 8 个真实 human/assistant 完整 Turn；8 是保护尾部，不是历史上限；
 3. 尝试完整选择最新的近期 observation Turn；空间不足时整 Turn 丢弃，不截断摘要或 assistant 回复；
-4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；同一 Contributor 的额度按
-   `plugin_id/source` 聚合，不能拆 Fragment 绕过限制；
+4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；每个可选 Fragment 的
+   `token_budget` 只约束自身正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 再分配共享额度；
 5. 用剩余预算从近到远选择其余两小时内 observation Turn，再选择更早的真实对话 Turn；
 6. 输出前恢复为旧到新，并由 Provider adapter 进行最终 role/placement 兼容。
 

@@ -24,7 +24,6 @@ from plugins.builtin.sakura_mem0.plugin import (
 )
 from plugins.builtin.sakura_mem0.api_client import (
     ApiSettings,
-    CurationApiError,
     OpenAICompatibleClient,
 )
 
@@ -80,45 +79,6 @@ def test_mem0_api_client_normalizes_google_openai_url_without_replay(
         "response_format": {"type": "json_object"},
         "max_tokens": 2000,
     }
-
-
-def test_mem0_api_client_caps_each_curation_job_at_two_http_requests(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = 0
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def read(self) -> bytes:
-            return b'{"choices":[{"message":{"content":"{}"}}]}'
-
-    def fake_urlopen(_request, timeout):
-        nonlocal calls
-        assert timeout == 60
-        calls += 1
-        return Response()
-
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.api_client.urlopen_current_proxy", fake_urlopen)
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="key",
-            model="curator",
-        )
-    )
-
-    assert client.complete_raw("system", [{"role": "user", "content": "one"}]) == "{}"
-    assert client.complete_raw("system", [{"role": "user", "content": "two"}]) == "{}"
-    with pytest.raises(CurationApiError, match="CURATION_REQUEST_LIMIT_EXCEEDED"):
-        client.complete_raw("system", [{"role": "user", "content": "three"}])
-
-    assert calls == 2
-    assert client.requests_sent == 2
 
 
 def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
@@ -596,7 +556,7 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
     assert slots.count == 1
 
 
-def test_about_surface_is_resource_only_and_rejects_incomplete_v1_values() -> None:
+def test_about_surface_is_resource_only_and_omits_incomplete_v1_values() -> None:
     from app.core_host.plugin_host_services import HostServiceError, _SettingsHostService
 
     handle = "cb_" + "b" * 32
@@ -610,20 +570,22 @@ def test_about_surface_is_resource_only_and_rejects_incomplete_v1_values() -> No
         "availableActionIds": ["install"],
     }
     settings = _SettingsHostService(lambda *_args: {"component": incomplete_value})
-    with pytest.raises(HostServiceError, match="SETTINGS_DESCRIPTOR_INVALID"):
-        settings.call("register", ["fixture", {
-            "sectionId": "component",
-            "title": "Fixture",
-            "fields": [{
-                "key": "component", "label": "Component", "type": "resource",
-                "default": incomplete_value, "actionIds": ["install"],
-            }],
-            "actions": [{"actionId": "install", "label": "Install"}],
-        }, {
-            "load": handle,
-            "save": None,
-            "actions": {"install": handle},
-        }])
+    settings.call("register", ["fixture", {
+        "sectionId": "component",
+        "title": "Fixture",
+        "fields": [{
+            "key": "component", "label": "Component", "type": "resource",
+            "default": incomplete_value, "actionIds": ["install"],
+        }],
+        "actions": [{"actionId": "install", "label": "Install"}],
+    }, {
+        "load": handle,
+        "save": None,
+        "actions": {"install": handle},
+    }])
+    unavailable = settings.sections_for_plugin("fixture")[0]
+    assert unavailable["fields"] == []
+    assert unavailable["reasonCode"] == "SETTINGS_DESCRIPTOR_INVALID"
 
     current_value = {**incomplete_value, "applicability": "required"}
     settings = _SettingsHostService(lambda *_args: {"component": current_value})

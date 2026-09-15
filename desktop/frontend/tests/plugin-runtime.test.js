@@ -74,23 +74,14 @@ test("plugin snapshots carry encoded directory IDs and reject malformed IDs", ()
   }
 });
 
-test("plugin snapshots accept bounded presentation metadata without requiring it from old sources", () => {
+test("plugin snapshots accept Unicode and additive producer display metadata", () => {
   const value = snapshot();
-  assert.doesNotThrow(() => validatePluginSnapshot(value));
-  value.plugins[0].presentation = { kind: "infrastructure", category: "voice" };
-  assert.doesNotThrow(() => validatePluginSnapshot(value));
-  for (const icon of ["", "brain", "future-icon"]) {
-    value.plugins[0].presentation.icon = icon;
-    assert.doesNotThrow(() => validatePluginSnapshot(value));
-  }
-  for (const icon of [null, [], "../brain.svg", "<svg>", "x".repeat(65), "brain\n"]) {
-    value.plugins[0].presentation.icon = icon;
-    assert.throws(() => validatePluginSnapshot(value), /invalid/);
-  }
-  for (const presentation of [null, { kind: "provider", category: "unknown" }, { kind: "provider", category: "voice", path: "private" }]) {
-    value.plugins[0].presentation = presentation;
-    assert.throws(() => validatePluginSnapshot(value), /invalid/);
-  }
+  value.plugins[0].name = "🌸".repeat(120);
+  value.plugins[0].presentation = { kind: "provider", category: "future", extra: true };
+  value.plugins[0].sections[0].fields[0].futureDisplayField = "额外说明";
+  assert.equal(validatePluginSnapshot(value).plugins[0].name, value.plugins[0].name);
+  value.plugins[0].sections = {};
+  assert.throws(() => validatePluginSnapshot(value), /invalid/);
 });
 
 function activitySnapshot(state) {
@@ -572,10 +563,8 @@ test("Plugin API v3 restart-required config is applied by local plugin reload", 
   assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
 });
 
-test("conditional settings preserve optional hide behavior and reject malformed flags", () => {
+test("conditional settings preserve hide behavior projected by the host", () => {
   const value = snapshot();
   value.plugins[0].sections[0].fields[0].enabledWhen = { field: "running", equals: "ready", hide: true };
   assert.equal(validatePluginSnapshot(value).plugins[0].sections[0].fields[0].enabledWhen.hide, true);
-  value.plugins[0].sections[0].fields[0].enabledWhen.hide = "yes";
-  assert.throws(() => validatePluginSnapshot(value));
 });

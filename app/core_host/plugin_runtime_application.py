@@ -305,7 +305,7 @@ class PluginRuntimeApplication:
             try:
                 record, capability = self.visuals._select(resource.type, character.visual_providers.get(resource.id))
             except VisualHostError as error:
-                if error.code in {"VISUAL_PROVIDER_MISSING", "PLUGIN_DISABLED", "VISUAL_PROVIDER_SELECTION_REQUIRED", "VISUAL_SERVICE_UNAVAILABLE", "VISUAL_CONTRACT_UNSUPPORTED", "API_VERSION_UNSUPPORTED"}:
+                if error.code in VISUAL_INACTIVE_REASONS:
                     continue
                 raise
             token = self._host_services.grant_visual_workspace(record.plugin_id, character.package_dir)

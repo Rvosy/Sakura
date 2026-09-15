@@ -428,36 +428,20 @@ def test_high_detail_image_estimate_uses_known_dimensions_and_model_profile() ->
     )
 
 
-def test_fragment_budget_is_aggregated_by_contributor_source() -> None:
+@pytest.mark.parametrize("second_source", ["plugin:memory", "plugin:other"])
+def test_fragment_budgets_do_not_depend_on_provider_packaging(second_source) -> None:
     fragments = [
         ContextFragment("a", "plugin:memory", "甲" * 80, token_budget=100),
-        ContextFragment("b", "plugin:memory", "乙" * 80, token_budget=100),
+        ContextFragment("b", second_source, "乙" * 80, token_budget=50),
         ContextFragment("c", "plugin:other", "丙" * 80, token_budget=100),
     ]
-    budget = ContextBudget(
-        context_window_tokens=4_096,
-        window_source="user",
-        input_target=3_000,
-        output_reserve=1_000,
-        safety_margin=1_024,
-        required_tokens=0,
-        context_budget=500,
-    )
-
-    snapshot = ContextPolicy().select(ContextRequest(), fragments, budget=budget)
-
-    memory_tokens = sum(
-        estimate_prompt_tokens(item.fragment.content)
-        for item in snapshot.selected
-        if item.fragment.source == "plugin:memory"
-    )
-    other_tokens = sum(
-        estimate_prompt_tokens(item.fragment.content)
-        for item in snapshot.selected
-        if item.fragment.source == "plugin:other"
-    )
-    assert memory_tokens <= 100
-    assert other_tokens == 80
+    snapshot = ContextPolicy(total_budget=2_000).select(ContextRequest(), fragments)
+    assert [item.fragment.fragment_id for item in snapshot.selected] == ["a", "b", "c"]
+    first, second, third = snapshot.selected
+    assert first.fragment.content == "甲" * 80
+    assert second.truncated and 0 < estimate_prompt_tokens(second.fragment.content) <= 50
+    assert third.fragment.content == "丙" * 80
+    assert snapshot.dropped == ()
 
 
 def test_optional_fragment_envelopes_share_the_global_budget() -> None:

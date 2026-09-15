@@ -4034,6 +4034,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-quartz-core",
  "objc2-web-kit",
+ "percent-encoding",
  "png 0.18.1",
  "regex",
  "reqwest",

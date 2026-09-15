@@ -15,7 +15,6 @@ from plugins.builtin.sakura_mem0 import memory as memory_module
 from plugins.builtin.sakura_mem0 import support as memory_support_module
 from plugins.builtin.sakura_mem0.api_client import (
     ApiSettings,
-    CurationApiError,
     OpenAICompatibleClient,
 )
 from plugins.builtin.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
@@ -1058,8 +1057,6 @@ def test_partial_backend_success_is_idempotent_when_same_entries_are_retried() -
                     "confidence": 0.9,
                 },
             ]
-            if self.calls > 1:
-                operations = operations[1:]
             return json.dumps(
                 {"operations": operations},
                 ensure_ascii=False,
@@ -1116,7 +1113,7 @@ def test_partial_backend_success_is_idempotent_when_same_entries_are_retried() -
     result = curator.curate_entries(entries)
 
     assert result.created == 1
-    assert result.ignored == 0
+    assert result.ignored == 1
     assert [record["content"] for record in store.records] == [
         "用户喜欢樱花",
         "用户在学习日语",
@@ -1214,7 +1211,69 @@ def test_backend_write_failure_does_not_advance_curation_cursor(
         boundary.close()
 
 
-def test_failed_repair_opens_request_fuse_and_blocks_later_timeline_events(
+def test_curation_preserves_completed_page_cursor_and_retries_only_failed_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    timeline = _timeline(root)
+    initial_cursor = timeline.store.latest_cursor("sakura")
+    for index in range(1, 6):
+        _append_timeline_turn(timeline, index)
+
+    # A byte-limited host response can end partway through a logical Turn.
+    read_since = timeline.read_since
+    monkeypatch.setattr(
+        timeline, "read_since", lambda request: read_since({**request, "limit": 3})
+    )
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    boundary._curation_state.mark_timeline_processed(initial_cursor)  # noqa: SLF001
+    calls: list[list[str]] = []
+
+    class FakeCurator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            calls.append([entry.entry_id for entry in entries])
+            if len(calls) == 2:
+                raise OSError("second page failed")
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    def run_inline(target, **_kwargs):
+        target()
+        return object()
+
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr(boundary._curation_threads, "spawn", run_inline)  # noqa: SLF001
+    first_page = [f"{role}-{index}" for index in range(1, 4) for role in ("human", "assistant")]
+    second_page = [f"{role}-{index}" for index in range(4, 6) for role in ("human", "assistant")]
+    try:
+        boundary.note_timeline_changed(timeline)
+        assert calls == [first_page, second_page]
+        remaining = timeline.store.read_since(
+            "sakura", boundary._curation_state.curation_cursor(), 500  # noqa: SLF001
+        )[0]
+        assert [entry.entry_id for entry in remaining] == second_page
+        assert boundary._curation_state.pending_turns() == 2  # noqa: SLF001
+
+        boundary.note_timeline_changed(timeline)
+        assert calls == [first_page, second_page, second_page]
+        assert boundary._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
+        assert boundary._curation_state.pending_turns() == 0  # noqa: SLF001
+    finally:
+        boundary.close()
+
+
+def test_failed_repair_stops_current_job_and_later_event_can_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1222,13 +1281,14 @@ def test_failed_repair_opens_request_fuse_and_blocks_later_timeline_events(
 
     class FakeClient:
         def __init__(self, _settings) -> None:
-            self.requests_sent = 0
+            pass
 
         def complete_raw(self, *_args, **_kwargs):
             nonlocal calls
             calls += 1
-            self.requests_sent += 1
-            return "not-json"
+            if calls == 1:
+                boundary.note_timeline_changed(timeline)
+            return "not-json" if calls <= 2 else '{"operations":[]}'
 
         def close(self) -> None:
             pass
@@ -1248,24 +1308,25 @@ def test_failed_repair_opens_request_fuse_and_blocks_later_timeline_events(
         "plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient",
         FakeClient,
     )
+    def run_inline(target, **_kwargs):
+        target()
+        return object()
+
+    monkeypatch.setattr(boundary._curation_threads, "spawn", run_inline)  # noqa: SLF001
     try:
         boundary.note_timeline_changed(timeline)
-        deadline = time.monotonic() + 2
-        while boundary._curation_active and time.monotonic() < deadline:  # noqa: SLF001
-            time.sleep(0.01)
 
         assert calls == 2
-        assert boundary._curation_request_fuse_open  # noqa: SLF001
         assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
 
         boundary.note_timeline_changed(timeline)
-        time.sleep(0.05)
-        assert calls == 2
+        assert calls == 3
+        assert boundary._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
     finally:
         boundary.close()
 
 
-def test_chunk_loop_cannot_bypass_curation_http_request_limit(
+def test_each_curation_chunk_has_its_own_generation_and_repair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
@@ -1278,7 +1339,8 @@ def test_chunk_loop_cannot_bypass_curation_http_request_limit(
             return None
 
         def read(self) -> bytes:
-            return b'{"choices":[{"message":{"content":"{\\"operations\\":[]}"}}]}'
+            content = "not-json" if calls == 1 else '{"operations":[]}'
+            return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
 
     def fake_urlopen(_request, timeout):
         nonlocal calls
@@ -1303,14 +1365,13 @@ def test_chunk_loop_cannot_bypass_curation_http_request_limit(
             turn_id=f"turn-{index}",
             origin="chat",
         )
-        for index in range(100)
+        for index in range(15)
     ]
 
-    with pytest.raises(CurationApiError, match="CURATION_REQUEST_LIMIT_EXCEEDED"):
-        MemoryCurator(client, FakeMemoryStore()).curate_entries(entries)
+    result = MemoryCurator(client, FakeMemoryStore()).curate_entries(entries)
 
-    assert calls == 2
-    assert client.requests_sent == 2
+    assert result.processed_entries == 15
+    assert calls == 4  # Three chunks plus one repair for the first chunk.
 
 
 

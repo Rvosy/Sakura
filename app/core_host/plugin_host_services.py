@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from app.agent.tools import Tool
-from app.core.runtime_log import log_event, log_message
+from app.core.runtime_log import log_message
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_LOGGING_SERVICE
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
@@ -50,51 +50,6 @@ _SETTINGS_RESOURCE_TASK_STATES = frozenset(
 _SETTINGS_RESOURCE_APPLICABILITY = frozenset(
     {"required", "not_required", "unsupported"}
 )
-_PLUGIN_DIAGNOSTIC_EVENTS = frozenset(
-    {
-        "tts.service.started",
-        "tts.service.waiting_ready",
-        "tts.service.ready",
-        "tts.service.failed",
-        "tts.synthesis.failed",
-        "tts.service.warmup_failed",
-        "tts.weights.loading",
-        "tts.weights.ready",
-        "tts.weights.failed",
-        "tts.conversion.checking",
-        "tts.conversion.reused",
-        "tts.conversion.cache_hit",
-        "tts.conversion.started",
-        "tts.conversion.running",
-        "tts.conversion.finished",
-        "tts.conversion.failed",
-        "tts.conversion.cancelled",
-    }
-)
-_PLUGIN_DIAGNOSTIC_SEVERITIES = frozenset({"debug", "info", "warning", "error"})
-_PLUGIN_DIAGNOSTIC_ATTRIBUTES = frozenset(
-    {
-        "provider",
-        "reason_code",
-        "stage",
-        "status",
-        "error_type",
-        "elapsed_ms",
-        "code",
-        "timeout_ms",
-        "exit_code",
-        "child_exited",
-        "probe_outcome",
-        "source_file",
-        "source_line",
-        "diagnostic",
-        "cause_type",
-        "exception_chain",
-        "exception_stack",
-    }
-)
-_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
-_ELAPSED_MS = re.compile(r"^[0-9]{1,9}(?:\.[0-9]{1,2})?$")
 
 
 class HostServiceError(RuntimeError):
@@ -104,77 +59,23 @@ class HostServiceError(RuntimeError):
 
 
 class _DiagnosticsHostService:
-    """Accept fixed events and bounded, redacted local exception diagnostics."""
+    """Compatibility adapter for plugins using the original diagnostic API."""
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         if method != "emit" or len(args) != 2:
             raise HostServiceError("HOST_METHOD_INVALID")
-        plugin_id = HOST_CALLER.get() or _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(args[1], "DIAGNOSTIC_DESCRIPTOR_INVALID")
-        if set(descriptor) != {"event", "severity", "attributes"}:
+        event = descriptor.get("event")
+        attributes = descriptor.get("attributes")
+        if not isinstance(event, str) or not event.strip() or not isinstance(attributes, Mapping):
             raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-        event_name = descriptor.get("event")
-        severity = descriptor.get("severity")
-        raw_attributes = descriptor.get("attributes")
-        if (
-            event_name not in _PLUGIN_DIAGNOSTIC_EVENTS
-            or severity not in _PLUGIN_DIAGNOSTIC_SEVERITIES
-            or not isinstance(raw_attributes, Mapping)
-            or not set(raw_attributes).issubset(_PLUGIN_DIAGNOSTIC_ATTRIBUTES)
-        ):
-            raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-        attributes: dict[str, object] = {"component": plugin_id}
-        for key, value in raw_attributes.items():
-            if key in {"diagnostic", "exception_chain", "exception_stack"}:
-                from app.core.diagnostics import safe_diagnostic_text
-
-                if not isinstance(value, str):
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-                value = safe_diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
-            elif key in {"elapsed_ms", "timeout_ms", "exit_code", "source_line"}:
-                if isinstance(value, str) and _ELAPSED_MS.fullmatch(value):
-                    value = round(float(value))
-                low = (
-                    -(2**31) if key == "exit_code" else 1 if key == "source_line" else 0
-                )
-                high = (
-                    10_000_000
-                    if key == "source_line"
-                    else 2**32 - 1
-                    if key == "exit_code"
-                    else 2**53 - 1
-                )
-                if type(value) is not int or not low <= value <= high:
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif key == "child_exited":
-                if type(value) is not bool:
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif key == "source_file":
-                # Source identifiers are supplied only by the bundled provider, never arbitrary plugin paths.
-                if plugin_id != "sakura.tts.gpt-sovits" or value not in {
-                    "plugins/builtin/sakura_gpt_sovits/_support.py",
-                    "plugins/builtin/sakura_gpt_sovits/_runtime_profile.py",
-                }:
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif not isinstance(value, str) or not value or len(value) > 128:
-                raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif key in {"reason_code", "code"}:
-                if _ERROR_CODE.fullmatch(value) is None:
-                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif _IDENTIFIER.fullmatch(value) is None:
-                raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            attributes[key] = value
-        log_event(
-            "TTS",
-            "Plugin TTS runtime diagnostic",
-            attributes,
-            event=str(event_name),
-            severity=str(severity),
-            verbosity=3 if severity == "debug" else 1,
-            plugin_id=plugin_id,
-            plugin_name=HOST_CALLER_LOG_METADATA.get()[0] or None,
-        )
-        return {"accepted": True}
+        # Identity, redaction, size limits and persistence all use the logger.
+        # args[0] is retained for wire compatibility; the caller owns identity.
+        return _LoggingHostService().call("emit", [[{
+            "severity": descriptor.get("severity"),
+            "message": event,
+            "fields": {"event": event, **attributes},
+        }], 0])
 
     def clear(self) -> None:
         return None
@@ -202,49 +103,6 @@ class _LoggingHostService:
             log_message("warning", "插件日志发送拥塞或中断，部分记录已丢弃",
                 fields={"dropped_count": dropped}, component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         for item in batch:
-            fields = item["fields"]
-            event = fields.get("event")
-            if plugin_id == "sakura.memory.mem0" and event in {
-                "memory.recall.started",
-                "memory.recall.finished",
-                "memory.recall.failed",
-                "memory.recall.unavailable",
-                "memory.curation.started",
-                "memory.curation.finished",
-                "memory.curation.failed",
-            }:
-                from app.core_host.runtime_logging import _safe_attributes
-
-                safe = _safe_attributes(
-                    {
-                        k: v
-                        for k, v in fields.items()
-                        if k
-                        in {
-                            "elapsed_ms",
-                            "status",
-                            "reason_code",
-                            "error_type",
-                            "candidates",
-                            "selected",
-                            "code",
-                        }
-                    }
-                )
-                safe["stage"] = (
-                    "memory_recall"
-                    if event.startswith("memory.recall.")
-                    else "memory_curation"
-                )
-                # Core-owned projection carries no custom plugin name, content, or tool data.
-                log_event(
-                    "Memory",
-                    "Memory diagnostic",
-                    safe,
-                    event=event,
-                    severity=item["severity"],
-                    verbosity=1,
-                )
             log_message(item["severity"], item["message"], fields=item["fields"],
                 component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         # Core owns downstream loss accounting; the SDK counts transport loss only.
@@ -699,6 +557,7 @@ class _SettingsRegistration:
     surface: str | None
     application_state: str = "applied"
     reason_code: str = "READY"
+    descriptor_invalid: bool = False
 
 
 @dataclass(frozen=True)
@@ -911,15 +770,6 @@ class _SettingsHostService:
     ) -> dict[str, str]:
         plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(raw_descriptor, "SETTINGS_DESCRIPTOR_INVALID")
-        allowed_descriptor = {
-            "sectionId",
-            "title",
-            "fields",
-            "actions",
-            "order",
-        }
-        if any(key not in allowed_descriptor for key in descriptor):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         section_id = _bounded_identifier(
             descriptor.get("sectionId"),
             "SETTINGS_DESCRIPTOR_INVALID",
@@ -941,26 +791,43 @@ class _SettingsHostService:
             or len(raw_actions) > 15
         ):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-        fields = tuple(_settings_field(item) for item in raw_fields)
+        fields = []
+        field_keys = set()
+        descriptor_invalid = False
+        for item in raw_fields:
+            try:
+                field = _settings_field(item)
+                if field["key"] in field_keys:
+                    raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+            except HostServiceError:
+                descriptor_invalid = True
+                continue
+            fields.append(field)
+            field_keys.add(field["key"])
+        actions = []
+        declared_action_ids = set()
+        for item in raw_actions:
+            try:
+                action = _settings_action(item)
+                if action["actionId"] in declared_action_ids:
+                    raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+            except HostServiceError:
+                descriptor_invalid = True
+                continue
+            actions.append(action)
+            declared_action_ids.add(action["actionId"])
+        valid_fields = [field for field in fields if set(field["actionIds"]).issubset(declared_action_ids)]
+        descriptor_invalid |= len(valid_fields) != len(fields)
+        fields = valid_fields
         field_keys = {field["key"] for field in fields}
-        if len(field_keys) != len(fields) or any(
-            field["enabledWhen"] is not None
-            and (
-                field["enabledWhen"]["field"] not in field_keys
-                or field["enabledWhen"]["field"] == field["key"]
-            )
-            for field in fields
-        ):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-        actions = tuple(_settings_action(item) for item in raw_actions)
-        if len({action["actionId"] for action in actions}) != len(actions):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-        declared_action_ids = {action["actionId"] for action in actions}
-        if any(
-            not set(field["actionIds"]).issubset(declared_action_ids)
-            for field in fields
-        ):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+        for field in fields:
+            condition = field["enabledWhen"]
+            if condition is not None and (
+                condition["field"] not in field_keys or condition["field"] == field["key"]
+            ):
+                field["readonly"] = True
+                field["enabledWhen"] = None
+                descriptor_invalid = True
         handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
         if set(handles) != {"load", "save", "actions"}:
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
@@ -971,11 +838,11 @@ class _SettingsHostService:
             "SETTINGS_CALLBACK_INVALID",
         )
         action_ids = {action["actionId"] for action in actions}
-        if set(raw_action_handles) != action_ids:
+        if not action_ids.issubset(raw_action_handles):
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
         action_handles = {
-            action_id: _callback_handle(handle)
-            for action_id, handle in raw_action_handles.items()
+            action_id: _callback_handle(raw_action_handles[action_id])
+            for action_id in action_ids
         }
         if any(not field["readonly"] for field in fields) and save_handle is None:
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
@@ -984,14 +851,15 @@ class _SettingsHostService:
             plugin_id=plugin_id,
             section_id=section_id,
             title=title,
-            fields=fields,
-            actions=actions,
+            fields=tuple(fields),
+            actions=tuple(actions),
             collections=(),
             load_handle=load_handle,
             save_handle=save_handle,
             action_handles=action_handles,
             order=float(order),
             surface=None,
+            descriptor_invalid=descriptor_invalid,
         )
         with self._lock:
             if any(
@@ -1146,6 +1014,8 @@ class _SettingsHostService:
     def _section_snapshot(self, registration: _SettingsRegistration) -> dict[str, Any]:
         values: Mapping[str, Any] = {}
         reason_code = registration.reason_code
+        if reason_code in {"READY", "SETTINGS_VALUE_INVALID"} and registration.descriptor_invalid:
+            reason_code = "SETTINGS_DESCRIPTOR_INVALID"
         if registration.load_handle is not None:
             try:
                 loaded = self._invoke_callback(
@@ -1160,16 +1030,13 @@ class _SettingsHostService:
                     else "SETTINGS_LOAD_FAILED"
                 )
                 values = {}
-        fields = []
-        projected_values: dict[str, Any] = {}
-        for spec in registration.fields:
-            value = values.get(spec["key"], spec["default"])
-            if not _settings_value_valid(spec, value):
-                value = spec["default"]
-            public = dict(spec)
-            public["value"] = value
-            fields.append(public)
-            projected_values[spec["key"]] = value
+        projected_values, invalid_value = _settings_display_values(registration.fields, values)
+        if invalid_value and reason_code == "READY":
+            reason_code = "SETTINGS_VALUE_INVALID"
+        fields = [
+            {**spec, "value": projected_values[spec["key"]]}
+            for spec in registration.fields
+        ]
         actions = [dict(action) for action in registration.actions]
         with self._lock:
             surface = next(
@@ -1337,18 +1204,15 @@ class _SettingsHostService:
         ):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
         public = dict(result)
+        invalid_value = False
         if "values" in public:
             if not isinstance(public["values"], Mapping):
                 raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-            fields = {field["key"]: field for field in registration.fields}
-            if any(key not in fields for key in public["values"]):
-                raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-            projected_values = {}
-            for key, value in public["values"].items():
-                if not _settings_value_valid(fields[key], value):
-                    raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-                projected_values[key] = value
-            public["values"] = projected_values
+            # Action values are a display patch, not another write request.
+            # Omitted controls and plugin-private keys cannot invalidate an
+            # already executed action; absent fields must not reset UI drafts.
+            fields = [field for field in registration.fields if field["key"] in public["values"]]
+            public["values"], invalid_value = _settings_display_values(fields, public["values"])
         if "message" in public and (
             not isinstance(public["message"], str)
             or len(public["message"]) > 240
@@ -1356,6 +1220,12 @@ class _SettingsHostService:
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
         if not _json_compatible(public, 64 * 1024):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
+        if "values" in public:
+            with self._lock:
+                if registration in self._registrations.values() and registration.reason_code in {
+                    "READY", "SETTINGS_VALUE_INVALID",
+                }:
+                    registration.reason_code = "SETTINGS_VALUE_INVALID" if invalid_value else "READY"
         return True, public
 
     def _find(self, plugin_id: str, section_id: str) -> _SettingsRegistration | None:
@@ -1844,27 +1714,6 @@ def _settings_field(
     allow_display_types: bool = True,
 ) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    allowed = {
-        "key",
-        "label",
-        "type",
-        "default",
-        "description",
-        "options",
-        "minimum",
-        "maximum",
-        "step",
-        "required",
-        "readonly",
-        "copyable",
-        "restartRequired",
-        "maxLength",
-        "placement",
-        "actionIds",
-        "enabledWhen",
-    }
-    if any(key not in allowed for key in raw):
-        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
     label = raw.get("label")
     kind = raw.get("type")
@@ -1889,6 +1738,7 @@ def _settings_field(
         not isinstance(label, str)
         or not label
         or len(label) > 120
+        or not isinstance(kind, str)
         or kind not in kind_map
         or not isinstance(description, str)
         or len(description) > 240
@@ -1920,7 +1770,7 @@ def _settings_field(
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     placement = raw.get("placement", "row")
-    if placement not in {"row", "advanced", "section_header"} or (
+    if not isinstance(placement, str) or placement not in {"row", "advanced", "section_header"} or (
         placement == "section_header" and public_kind != "status"
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
@@ -1942,7 +1792,7 @@ def _settings_field(
     enabled_when = None
     if raw_enabled_when is not None:
         condition = _mapping(raw_enabled_when, "SETTINGS_DESCRIPTOR_INVALID")
-        if set(condition) not in ({"field", "equals"}, {"field", "equals", "hide"}) or ("hide" in condition and not isinstance(condition["hide"], bool)):
+        if "hide" in condition and not isinstance(condition["hide"], bool):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         condition_field = _bounded_identifier(
             condition.get("field"),
@@ -1999,8 +1849,6 @@ def _settings_options(value: object) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     for item in value:
         raw = _mapping(item, "SETTINGS_DESCRIPTOR_INVALID")
-        if set(raw) != {"label", "value"}:
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         label = raw.get("label")
         option_value = raw.get("value")
         if (
@@ -2017,9 +1865,6 @@ def _settings_options(value: object) -> list[dict[str, Any]]:
 
 def _settings_action(value: object) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    allowed = {"actionId", "label", "description", "danger"}
-    if any(key not in allowed for key in raw):
-        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     action_id = _bounded_identifier(
         raw.get("actionId"),
         "SETTINGS_DESCRIPTOR_INVALID",
@@ -2353,7 +2198,7 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
             maximum = 4096
         return isinstance(value, str) and len(value) <= maximum
     if kind == "select":
-        return value in {item["value"] for item in field.get("options", [])}
+        return any(value == item["value"] for item in field.get("options", []))
     if kind == "boolean":
         return isinstance(value, bool)
     if kind == "integer":
@@ -2379,7 +2224,8 @@ def _settings_status_value_valid(value: object) -> bool:
     label = value.get("label")
     message = value.get("message")
     return (
-        state in _SETTINGS_STATUS_STATES
+        isinstance(state, str)
+        and state in _SETTINGS_STATUS_STATES
         and isinstance(label, str)
         and 1 <= len(label) <= 120
         and isinstance(message, str)
@@ -2406,10 +2252,12 @@ def _settings_resource_value_valid(
     available_action_ids = value.get("availableActionIds")
     allowed_action_ids = set(field.get("actionIds", []))
     return (
-        value.get("applicability") in _SETTINGS_RESOURCE_APPLICABILITY
+        isinstance(value.get("applicability"), str)
+        and value.get("applicability") in _SETTINGS_RESOURCE_APPLICABILITY
         and isinstance(value.get("subtitle"), str)
         and len(value["subtitle"]) <= 512
         and isinstance(value.get("ready"), bool)
+        and isinstance(value.get("taskState"), str)
         and value.get("taskState") in _SETTINGS_RESOURCE_TASK_STATES
         and isinstance(value.get("message"), str)
         and len(value["message"]) <= 240
@@ -2432,6 +2280,21 @@ def _settings_resource_value_valid(
             for action_id in available_action_ids
         )
     )
+
+
+def _settings_display_values(
+    fields: Sequence[Mapping[str, Any]],
+    values: Mapping[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    projected: dict[str, Any] = {}
+    invalid = False
+    for field in fields:
+        value = values.get(field["key"], field["default"])
+        if not _settings_value_valid(field, value):
+            value = field["default"]
+            invalid = True
+        projected[field["key"]] = value
+    return projected, invalid
 
 
 def _editable_settings_values(

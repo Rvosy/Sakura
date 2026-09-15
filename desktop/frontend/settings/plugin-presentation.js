@@ -127,6 +127,9 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
       reasonCode,
     );
   }
+  if (reasonCode === "SETTINGS_DESCRIPTOR_INVALID" || reasonCode === "SETTINGS_VALUE_INVALID") {
+    return result("部分设置不可用", "部分设置格式有误。", reasonCode);
+  }
   return result(
     state === "failed" ? "启动失败" : "暂时无法使用",
     "这个插件暂时无法使用。",

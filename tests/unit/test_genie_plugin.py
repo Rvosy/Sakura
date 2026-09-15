@@ -1040,15 +1040,22 @@ def test_conversion_cancelled_at_export_completion_does_not_commit(tmp_path: Pat
 def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Path, monkeypatch, terminal: str) -> None:
     from app.core_host.plugin_host_services import _DiagnosticsHostService
     from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+    from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
     from plugins.builtin.sakura_genie import plugin as p
 
     work = tmp_path / "work"
     work.mkdir()
+    release = work / "converter-release"
     (work / "convert.py").write_text(
         "import argparse,time\nfrom pathlib import Path\n"
         "p=argparse.ArgumentParser()\n"
         "p.add_argument('--pth');p.add_argument('--ckpt');p.add_argument('--out')\n"
-        "args=p.parse_args()\nprint('converter active')\ntime.sleep(0.15)\n"
+        "args=p.parse_args()\nprint('converter active', flush=True)\n"
+        f"release=Path({str(release)!r})\n"
+        "deadline=time.monotonic()+10\n"
+        "while not release.exists():\n"
+        "    if time.monotonic() >= deadline: raise RuntimeError('test did not acknowledge live output')\n"
+        "    time.sleep(0.01)\n"
         "Path(args.out, 'model.onnx').write_bytes(b'onnx')\n"
         + ("raise SystemExit(7)\n" if terminal == "failed" else ""),
         encoding="utf-8",
@@ -1063,12 +1070,21 @@ def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Pa
     host = _DiagnosticsHostService()
 
     def report(descriptor):
-        host.call("emit", [p.PROVIDER_ID, descriptor])
+        caller = HOST_CALLER.set(p.PROVIDER_ID)
+        metadata = HOST_CALLER_LOG_METADATA.set(("Genie TTS", (p.SERVICE_KEY,)))
+        try:
+            host.call("emit", [p.PROVIDER_ID, descriptor])
+        finally:
+            HOST_CALLER_LOG_METADATA.reset(metadata)
+            HOST_CALLER.reset(caller)
         if descriptor["event"] == "tts.conversion.running":
             output = raw_log.read_text(encoding="utf-8")
             live_output.append(output)
-            if terminal == "cancelled" and "converter active" in output:
-                operation.cancel()
+            if "converter active" in output:
+                if terminal == "cancelled":
+                    operation.cancel()
+                else:
+                    release.touch()
 
     coordinator = p._Coordinator(config, tmp_path / "cache", tmp_path / "logs/genie.log", report)
     stream = io.BytesIO()
@@ -1089,14 +1105,17 @@ def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Pa
         bridge.close()
     records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
                for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
-    events = [record["event"] for record in records]
+    assert records
+    assert all(record["event"] == "runtime.message" and record["plugin_id"] == p.PROVIDER_ID
+               and record["channel"] == "tts" for record in records)
+    events = [record["attributes"]["event"] for record in records]
     assert events[:2] == ["tts.conversion.checking", "tts.conversion.started"]
     assert "tts.conversion.running" in events
     assert f"tts.conversion.{terminal}" in events
     assert events.count("tts.conversion.started") == 1
     noisy_events = {"tts.conversion.checking", "tts.conversion.cache_hit", "tts.conversion.reused", "tts.conversion.running"}
     assert all(record["severity"] == "debug" and record["verbosity"] == "debug"
-               for record in records if record["event"] in noisy_events)
+               for record in records if record["attributes"]["event"] in noisy_events)
     if terminal == "finished":
         assert events[-4:] == ["tts.conversion.checking", "tts.conversion.cache_hit",
                                "tts.conversion.checking", "tts.conversion.reused"]
