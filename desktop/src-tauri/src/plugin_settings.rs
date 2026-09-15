@@ -703,6 +703,7 @@ mod tests {
             "actions": [],
             "collections": [{
                 "collectionId": "entries",
+                "scope": "global",
                 "title": "Entries",
                 "description": "Fixture rows",
                 "columns": [{"key": "content", "label": "Content", "type": "string", "maxLength": 16384}],

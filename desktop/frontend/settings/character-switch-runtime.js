@@ -8,25 +8,13 @@ export const CHARACTER_SWITCH_TIMEOUT_MS = 60_000;
 export function hasCharacterScopedDrafts({
   appearanceDirty = false,
   voiceDirty = false,
-  memorySettingsDirty = false,
-  memoryDraft = null,
-  memoryEditorDraftCount = 0,
+  collectionDraftCount = 0,
 } = {}) {
   return Boolean(
     appearanceDirty
     || voiceDirty
-    || memorySettingsDirty
-    || memoryDraft
-    || memoryEditorDraftCount > 0
+    || collectionDraftCount > 0
   );
-}
-
-export function countCharacterScopedCollectionDrafts(states = []) {
-  let count = 0;
-  for (const state of states) {
-    if (state?.surface === "memory" && state.editor) count += 1;
-  }
-  return count;
 }
 
 export function setCharacterSwitchLock({ pages = [], submitControls = [] } = {}, switching) {

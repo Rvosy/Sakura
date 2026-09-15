@@ -83,7 +83,7 @@ def run():
               const dirty=()=>{fields.applyButton.disabled=submissionBusy||!feature?.isDirty();fields.saveButton.disabled=submissionBusy||!feature?.isDirty();};
               function refreshDirty(){dirty();}
               /* PRODUCTION_BUSY_FUNCTION */
-              feature=createCharacterSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:message=>{document.getElementById('characterArchiveHint').textContent=message;},notify:()=>{},enhanceSelect,refreshSelect,hasCharacterDrafts:()=>false,isSubmitting:()=>submissionBusy,applyPreviewTheme:()=>{},rebindSettings:async()=>{},clearCharacterState:()=>{},renderMemorySurface:()=>{},openPlugin:(id,configure)=>{window.pluginRequest={id,configure};}});
+              feature=createCharacterSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:message=>{document.getElementById('characterArchiveHint').textContent=message;},notify:()=>{},enhanceSelect,refreshSelect,hasCharacterDrafts:()=>false,isSubmitting:()=>submissionBusy,applyPreviewTheme:()=>{},rebindSettings:async()=>{},clearCharacterState:()=>{},renderPluginCollections:()=>{},openPlugin:(id,configure)=>{window.pluginRequest={id,configure};}});
               const runtimeCharacterFeature=feature;
               window.feature=feature;
               await feature.initialize(); feature.prepareControls();

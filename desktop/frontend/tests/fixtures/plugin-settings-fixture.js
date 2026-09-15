@@ -183,7 +183,7 @@ export function snapshot(coreGenerationId = "generation-a", label = "fixture") {
       }, {
         sectionId: "archive", title: "Memory", surface: "memory", reasonCode: "READY",
         fields: [], values: {}, actions: [], collections: [{
-          collectionId: "entries", title: "Memory", description: "",
+          collectionId: "entries", scope: "character", title: "Memory", description: "",
           columns: [{ key: "content", label: "内容", type: "string", maxLength: 1000 }],
           fields: [field("content", { required: true })], filters: [], searchable: true,
           pageSize: 20, canCreate: true, canUpdate: true, canDelete: true, deleteConfirmation: "删除？",
@@ -202,7 +202,7 @@ export function featureFixture(invoke, options = {}) {
     onDirty: () => { dirtyNotifications += 1; }, onError: (error) => { if (error) errors.push(error); },
     notify() {}, confirmAction: async () => true, enhanceSelect() {},
     removeOverlayAfterExit: async (overlay) => overlay.remove(), showPage() {},
-    isMemoryTransitioning: () => false, hasPendingCharacterSelection: () => false,
+    isCharacterTransitioning: () => false, hasPendingCharacterSelection: () => false,
     refreshSelect() {}, closeSelects() {}, focusSelect: (control) => control?.focus(),
     replayMotion() {}, getVoiceController: () => null,
     ...options,
