@@ -7,6 +7,7 @@ import re
 import shutil
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -453,7 +454,7 @@ class CharacterStudioService:
         current_character_id: str = "",
         cancel_check: Callable[[], None] | None = None,
         commit_started: Callable[[], None] | None = None,
-        quiesce_current: Callable[[], None] | None = None,
+        prepare_current: Callable[..., Any] | None = None,
     ) -> dict[str, Any]:
         saved = self.save_draft(doc_payload, package_dir)
         _operation_checkpoint(cancel_check)
@@ -477,9 +478,16 @@ class CharacterStudioService:
             )
             if allocated_id != profile.id:
                 raise ValueError(f"角色 ID 已存在：{profile.id}。请直接打开该角色进行编辑。")
-        if existing_profile is not None and _package_trees_equal(
-            draft_dir, target_dir, cancel_check=cancel_check
-        ):
+        is_current = existing_profile is not None and profile.id == str(current_character_id or "")
+        changed_files = (
+            _changed_package_files(draft_dir, target_dir, cancel_check=cancel_check)
+            if is_current else None
+        )
+        unchanged = (
+            not changed_files if is_current else existing_profile is not None
+            and _package_trees_equal(draft_dir, target_dir, cancel_check=cancel_check)
+        )
+        if unchanged:
             _operation_checkpoint(cancel_check)
             if commit_started is not None:
                 commit_started()
@@ -488,6 +496,11 @@ class CharacterStudioService:
             )
             self._cleanup_publish_backups(target_dir, profile.id, result)
             return result
+        if is_current:
+            return self._publish_current_files(
+                draft_dir, target_dir, profile, existing_profile, current_character_id,
+                prepare_current, cancel_check, commit_started, changed_files,
+            )
         transaction_id = uuid.uuid4().hex
         transaction_root = self._publish_transactions_root / transaction_id
         staging_dir = transaction_root / "staging"
@@ -513,8 +526,6 @@ class CharacterStudioService:
             journal_written = True
             if commit_started is not None:
                 commit_started()
-            if profile.id == str(current_character_id or "") and quiesce_current is not None:
-                quiesce_current()
             if target_existed:
                 rename_with_retry(target_dir, rollback_dir)
             rename_with_retry(staging_dir, target_dir)
@@ -538,6 +549,68 @@ class CharacterStudioService:
             raise
         finally:
             if committed or not journal_written:
+                shutil.rmtree(transaction_root, ignore_errors=True)
+
+    def _publish_current_files(
+        self, draft_dir: Path, target_dir: Path, profile: CharacterProfile,
+        previous: CharacterProfile, current_character_id: str,
+        prepare_current: Callable[..., Any] | None,
+        cancel_check: Callable[[], None] | None,
+        commit_started: Callable[[], None] | None,
+        changed: set[str],
+    ) -> dict[str, Any]:
+        transaction_id = uuid.uuid4().hex
+        transaction_root = self._publish_transactions_root / transaction_id
+        staging = transaction_root / "staging"
+        rollback = transaction_root / "rollback"
+        backup = self._backup_path(target_dir)
+        journal = {
+            "version": PUBLISH_JOURNAL_VERSION,
+            "transaction_id": transaction_id,
+            "character_id": profile.id,
+            "workspace_id": profile.id,
+            "target_name": target_dir.name,
+            "backup_name": backup.name,
+            "target_existed": True,
+            "changed_files": sorted(changed),
+        }
+        journal_written = False
+        try:
+            transaction_root.mkdir(parents=True, exist_ok=False)
+            # Only changed files are staged; the full old package remains a recoverable backup.
+            staging.mkdir()
+            for relative in changed:
+                source = _resolve_workspace_path(draft_dir, relative, "角色资源")
+                if source.is_file():
+                    destination = staging / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    _copy_file_cancellable(source, destination, cancel_check=cancel_check)
+            _copytree_cancellable(target_dir, rollback, cancel_check=cancel_check)
+            _operation_checkpoint(cancel_check)
+            scope = prepare_current(previous, profile, changed) if prepare_current else nullcontext()
+            with scope as runtime_errors:
+                try:
+                    self._write_publish_journal(journal)
+                    journal_written = True
+                    if commit_started is not None:
+                        commit_started()
+                    _apply_changed_files(staging, target_dir, changed)
+                    saved_profile = _load_profile(target_dir / "character.json")
+                    result = self._complete_publish(draft_dir, saved_profile, current_character_id, changed=True)
+                    rename_with_retry(rollback, backup)
+                    self._clear_publish_journal()
+                    journal_written = False
+                except Exception:
+                    if journal_written:
+                        self._recover_publish(journal)
+                        journal_written = False
+                    raise
+            if runtime_errors:
+                result["apply_error"] = "角色已保存，但语音服务恢复失败，请查看插件运行日志。"
+            self._cleanup_publish_backups(target_dir, profile.id, result, newest=backup)
+            return result
+        finally:
+            if not journal_written:
                 shutil.rmtree(transaction_root, ignore_errors=True)
 
     def _complete_publish(
@@ -1200,6 +1273,30 @@ class CharacterStudioService:
             if backup_name
             else None
         )
+        if "changed_files" in journal:
+            changed = journal["changed_files"]
+            if (
+                not target_existed or not isinstance(changed, list) or not changed
+                or any(not isinstance(item, str) for item in changed)
+            ):
+                raise ValueError("角色增量发布恢复记录无效。")
+            source = rollback if rollback.exists() else backup
+            if source is None or not source.is_dir():
+                raise ValueError("角色发布中断，且原角色备份不可用。")
+            _require_recovery_character(source, character_id)
+            for relative in changed:
+                original = _resolve_workspace_path(source, relative, "角色恢复资源")
+                _resolve_workspace_path(target, relative, "角色恢复资源")
+                if original.is_file():
+                    destination = recovery / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.unlink(missing_ok=True)
+                    _copy_file_cancellable(original, destination, cancel_check=None)
+            _apply_changed_files(recovery, target, changed)
+            self._mark_workspace_dirty(workspace_id)
+            self._clear_publish_journal()
+            shutil.rmtree(transaction_root, ignore_errors=True)
+            return
         if target_existed:
             source = rollback if rollback.exists() else backup
             if source is not None and source.is_dir():
@@ -1428,6 +1525,42 @@ def _files_equal_cancellable(
                 return False
             if not source_chunk:
                 return True
+
+
+def _changed_package_files(source: Path, target: Path, *, cancel_check=None) -> set[str]:
+    def files(root):
+        result = {}
+        for item in root.rglob("*"):
+            _operation_checkpoint(cancel_check)
+            if item.is_symlink() or item.is_junction():
+                raise ValueError("角色资源不能经过符号链接或目录联接。")
+            if item.is_file():
+                result[item.relative_to(root).as_posix()] = item
+        return result
+    new, old = files(source), files(target)
+    return {name for name in new.keys() | old.keys() if name not in new or name not in old
+            or not _files_equal_cancellable(new[name], old[name], cancel_check=cancel_check)}
+
+
+def _apply_changed_files(source: Path, target: Path, changed) -> None:
+    # Remove old leaves first so a resource may change between a file and directory.
+    for relative in sorted(changed, key=lambda item: (-len(Path(item).parts), item)):
+        incoming = _resolve_workspace_path(source, relative, "角色发布资源")
+        destination = _resolve_workspace_path(target, relative, "角色发布资源")
+        if not incoming.is_file() and destination.is_file():
+            destination.unlink()
+    # Publish the manifest last, after every resource it can reference is in place.
+    for relative in sorted(changed, key=lambda item: (item == "character.json", item)):
+        incoming = _resolve_workspace_path(source, relative, "角色发布资源")
+        destination = _resolve_workspace_path(target, relative, "角色发布资源")
+        if incoming.is_file():
+            if destination.is_dir():
+                for directory in sorted(destination.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+                    if directory.is_dir():
+                        directory.rmdir()
+                destination.rmdir()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            replace_with_retry(incoming, destination)
 
 
 def _package_trees_equal(

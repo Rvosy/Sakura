@@ -54,7 +54,7 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
     if fields is not None and not isinstance(fields, Mapping):
         raise ValueError("LOG_FIELDS_INVALID")
     budget = 32
-    truncated = False
+    truncated = (fields or {}).get("record_truncated") is True
 
     def visit(value: object, depth: int) -> object:
         nonlocal budget, truncated
@@ -72,14 +72,17 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
             return safe_text(value, 256)
         if isinstance(value, Mapping):
             result = {}
-            for key, child in itertools.islice(value.items(), 9):
-                if len(result) >= 8 or budget <= 0:
+            # Flat diagnostic metadata shares the total budget; the eight-item
+            # limit applies to nested collections, not the whole event.
+            limit = 32 if depth == 0 else 8
+            for key, child in itertools.islice(value.items(), limit + 1):
+                if len(result) >= limit or budget <= 0:
                     truncated = True
                     break
                 if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", key):
                     truncated = True
                     continue
-                result[key] = "[REDACTED]" if _PRIVATE.search(key) else visit(child, depth + 1)
+                result[key] = visit("[REDACTED]" if _PRIVATE.search(key) else child, depth + 1)
             return result
         if isinstance(value, (list, tuple)):
             if len(value) > 8:
@@ -91,12 +94,14 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
     diagnostics = {key: _diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
                    for key, value in (fields or {}).items()
                    if key in _DIAGNOSTIC_KEYS and isinstance(value, str)}
-    result = visit({key: value for key, value in (fields or {}).items() if key not in _DIAGNOSTIC_KEYS}, 0)
+    result = visit({key: value for key, value in (fields or {}).items()
+                    if key not in _DIAGNOSTIC_KEYS and key != "record_truncated"}, 0)
     assert isinstance(result, dict)
-    while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 1800:
-        result.pop(next(reversed(result)))
-        truncated = True
     if truncated:
+        result["record_truncated"] = True
+    while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 1800:
+        result.pop("record_truncated", None)
+        result.pop(next(reversed(result)))
         result["record_truncated"] = True
     result.update(diagnostics)
     return safe_text(message), result
@@ -553,6 +558,7 @@ class PluginConfig:
         self._data_dir = data_dir
         self._effect = effect
         self._handlers: list[Callable[[dict[str, Any]], str]] = []
+        self._applied_config = self.get()
 
     def get(self) -> dict[str, Any]:
         merged = self._read(self._plugin_root / "config.json")
@@ -598,8 +604,12 @@ class PluginConfig:
         return value
 
     def _write(self, overrides: Mapping[str, Any]) -> str:
-        self._data_dir.mkdir(parents=True, exist_ok=True)
+        effective = self._read(self._plugin_root / "config.json")
+        effective.update(overrides)
         target = self._data_dir / "config.json"
+        if dict(overrides) == self._read(target) and effective == self._applied_config:
+            return "applied"
+        self._data_dir.mkdir(parents=True, exist_ok=True)
         temporary = self._data_dir / f".config-{uuid.uuid4().hex}.tmp"
         try:
             temporary.write_text(
@@ -612,7 +622,10 @@ class PluginConfig:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-        effective = self.get()
+        if effective == self._applied_config:
+            return "applied"
+        # A handler may partly apply before failing; neither old nor new is known active.
+        self._applied_config = None
         if not self._handlers:
             return "restart_required"
         results: list[str] = []
@@ -628,6 +641,7 @@ class PluginConfig:
             return "error"
         if "restart_required" in results:
             return "restart_required"
+        self._applied_config = effective
         return "applied"
 
 
@@ -1462,6 +1476,8 @@ class PluginContext:
             try:
                 handler(payload)
             except Exception:
+                self.get("sakura.host.logging").error("插件事件处理失败",
+                    fields={"event": "plugin.event.failed", "stage": "event", "event_name": name})
                 continue
 
     def close(self) -> None:
@@ -1473,7 +1489,8 @@ class PluginContext:
             try:
                 cleanup()
             except Exception:
-                pass
+                self.get("sakura.host.logging").warning("插件资源清理失败",
+                    fields={"event": "plugin.cleanup.failed", "stage": "cleanup"})
         if self._logger is not None:
             self._logger.close()
         self._logging_closed = True

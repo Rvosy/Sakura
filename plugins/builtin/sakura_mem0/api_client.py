@@ -22,9 +22,6 @@ class ApiSettings:
     timeout_seconds: int = 60
 
 
-MAX_CURATION_HTTP_REQUESTS_PER_JOB = 2
-
-
 class CurationApiError(RuntimeError):
     """Stable, content-free failure raised by the curator's narrow client."""
 
@@ -38,11 +35,6 @@ class OpenAICompatibleClient:
 
     def __init__(self, settings: ApiSettings, **_kwargs: object) -> None:
         self._settings = settings
-        self._requests_sent = 0
-
-    @property
-    def requests_sent(self) -> int:
-        return self._requests_sent
 
     def complete_raw(
         self,
@@ -80,11 +72,6 @@ class OpenAICompatibleClient:
             },
             method="POST",
         )
-        if self._requests_sent >= MAX_CURATION_HTTP_REQUESTS_PER_JOB:
-            raise CurationApiError("CURATION_REQUEST_LIMIT_EXCEEDED")
-        # Reserve the request before urlopen: timeouts and transport failures may
-        # still consume provider quota and must count against the job fuse.
-        self._requests_sent += 1
         with urlopen_current_proxy(
             request,
             timeout=max(1, int(self._settings.timeout_seconds)),
@@ -121,6 +108,5 @@ def _normalize_openai_base_url(base_url: str) -> str:
 __all__ = [
     "ApiSettings",
     "CurationApiError",
-    "MAX_CURATION_HTTP_REQUESTS_PER_JOB",
     "OpenAICompatibleClient",
 ]

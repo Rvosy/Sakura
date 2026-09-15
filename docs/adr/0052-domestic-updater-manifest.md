@@ -6,7 +6,7 @@ source_of_truth: self
 updated: 2026-09-13
 ---
 
-# ADR-0049：国内服务器提供更新清单，GitHub 继续分发安装包
+# ADR-0052：国内服务器提供更新清单，GitHub 继续分发安装包
 
 ## 背景
 

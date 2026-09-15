@@ -60,12 +60,15 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0048：以原始错误证据为遥测主体](0048-original-error-reports.md)
 
 - [ADR-0048：语音资源与应用运行选择分离](0048-voice-resources-and-local-selection.md)
+- [ADR-0049：动画表现使用单点命中，宿主管理原生穿透](0049-animated-point-hit-testing.md)
+- [ADR-0050：当前角色编辑局部更新，角色切换保留 generation 隔离](0050-current-character-local-refresh.md)
+- [ADR-0051：切换角色保留可复用插件与推理进程](0051-character-switch-retains-engines.md)
 
-- [ADR-0049：国内服务器提供更新清单，GitHub 继续分发安装包](0049-domestic-updater-manifest.md)
+- [ADR-0052：国内服务器提供更新清单，GitHub 继续分发安装包](0052-domestic-updater-manifest.md)
 
-- [ADR-0050：统一服务域名与独立私人控制台](0050-private-console-and-service-domains.md)
+- [ADR-0053：统一服务域名与独立私人控制台](0053-private-console-and-service-domains.md)
 
-- [ADR-0051：Release Action 导入草稿，维护者确认国内发布](0051-ci-imports-private-release-drafts.md)
+- [ADR-0054：Release Action 导入草稿，维护者确认国内发布](0054-ci-imports-private-release-drafts.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

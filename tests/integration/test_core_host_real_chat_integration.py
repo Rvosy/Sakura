@@ -40,11 +40,13 @@ class _ProviderHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
     outcome = "complete"
     release = threading.Event()
+    received = threading.Event()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length))
         type(self).requests.append(body)
+        type(self).received.set()
         if type(self).outcome == "compatibility" and len(type(self).requests) == 1:
             assert "response_format" in body
             response = b'{"error":{"message":"response_format unsupported"}}'
@@ -303,6 +305,7 @@ def _configure_app_root(tmp_path: Path, port: int) -> Path:
 
 def _start_provider(outcome: str) -> tuple[ThreadingHTTPServer, threading.Thread]:
     _ProviderHandler.requests = []
+    _ProviderHandler.received.clear()
     _ProviderHandler.outcome = outcome
     _ProviderHandler.release = threading.Event()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ProviderHandler)
@@ -833,7 +836,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
         _request(
             "attach-screen",
             "screen.attach",
-            {
+            {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                 "resource": {
                     "generationId": GENERATION_ID,
                     "resourceToken": token,
@@ -857,7 +860,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
         _request(
             "attach-screen-2",
             "screen.attach",
-            {
+            {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                 "resource": {
                     "generationId": GENERATION_ID,
                     "resourceToken": second_token,
@@ -956,7 +959,7 @@ def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
             _request(
                 f"attach-{index}",
                 "screen.attach",
-                {
+                {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -1004,7 +1007,7 @@ def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
             _request(
                 "attach-over-limit",
                 "screen.attach",
-                {
+                {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -1209,7 +1212,7 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         timeline_store=timeline,
     )
     attach = boundary.handle_screen_attach_batch(
-        _request("attach-batch", "screen.attachBatch", {"resources": resources})
+        _request("attach-batch", "screen.attachBatch", {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"], "resources": resources})
     )
     assert attach["payload"]["count"] == 2
     assert not any(root.glob("*.jpg"))
@@ -1297,7 +1300,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
             _request(
                 "attach-real-screen",
                 "screen.attach",
-                {
+                {"sessionId": _exchange(process, _request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -1318,7 +1321,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
             _request(
                 "attach-real-screen-2",
                 "screen.attach",
-                {
+                {"sessionId": _exchange(process, _request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": second_token,
@@ -1964,6 +1967,124 @@ def test_eof_during_blocked_provider_read_drains_terminal_and_process(tmp_path: 
         ) == 1
         assert process.wait(timeout=5) == 0
         assert process.stdout is not None and process.stdout.read() == b""
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+@pytest.mark.parametrize("switch_role", [False, True])
+def test_studio_publish_updates_live_character_without_restarting_core_or_plugins(tmp_path, switch_role):
+    import psutil
+    server, provider_thread = _start_provider("complete")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    distribution = tmp_path / "distribution"
+    for plugin in ("sakura_portrait", "sakura_spine", "sakura_gpt_sovits", "sakura_tts_hub"):
+        shutil.copytree(REPO_ROOT / "plugins/builtin" / plugin, distribution / "plugins/builtin" / plugin)
+    dependencies = distribution / "plugins/dependencies/sakura.tts.gpt-sovits"
+    dependencies.mkdir(parents=True)
+    (dependencies / ".sakura-dependencies.json").write_text(json.dumps({
+        "schemaVersion": 1, "kind": "requirements.txt",
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+    }), encoding="utf-8")
+    package = app_root / "characters/sakura"
+    shutil.copyfile(REPO_ROOT / "desktop/frontend/prototypes/asr/assets/navi.png", package / "portraits/neutral.png")
+    manifest = json.loads((package / "character.json").read_text(encoding="utf-8"))
+    manifest["portrait"] = {"default": "portraits/neutral.png", "expressions": {"neutral": "portraits/neutral.png"}}
+    (package / "character.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if switch_role:
+        role_plugin = distribution / "plugins/builtin/fixture_role"
+        role_plugin.mkdir()
+        (role_plugin / "plugin.yaml").write_text(
+            "api: 4\nid: fixture.role\nname: Role fixture\nversion: 1.0.0\nentry: plugin:Plugin\nprovides: []\nrequires: [sakura.host.character]\n",
+            encoding="utf-8",
+        )
+        (role_plugin / "plugin.py").write_text(
+            'from pathlib import Path\nclass Plugin:\n    def setup(self, context):\n        role = context.get("sakura.host.character").current()["id"]\n        Path(context.data_path("current.txt")).write_text(role, encoding="utf-8")\n',
+            encoding="utf-8",
+        )
+        second = app_root / "characters/beta"
+        shutil.copytree(package, second)
+        second_manifest = {**manifest, "id": "beta", "display_name": "Beta"}
+        (second / "character.json").write_text(json.dumps(second_manifest), encoding="utf-8")
+        # The same card-relative path belongs to a separate character package.
+        from app.config.character_loader import CharacterRegistry
+        CharacterRegistry(app_root).get("beta").card_path.write_text("You are Beta with a golden book.", encoding="utf-8")
+    process = _start_host(app_root, distribution_root=distribution)
+    stderr = []
+    drain = threading.Thread(target=lambda: stderr.extend(iter(process.stderr.readline, b"")), daemon=True)
+    drain.start()
+    def plugin_process_ids():
+        return {child.pid for child in psutil.Process(process.pid).children()
+                if "--plugin-id" in child.cmdline() and "fixture.role" not in child.cmdline()}
+    try:
+        _wait_ready(process, ["transport.concurrent-router", "assistant.plugins-v1"])
+        deadline = time.monotonic() + 5
+        index = 0
+        while True:
+            response = _exchange(process, _request(f"plugins-ready-{index}", "plugins.settings.get", {}))
+            assert response["ok"], response
+            plugins = response["payload"]["plugins"]
+            before = _exchange(process, _request(f"presentation-ready-{index}", "core.snapshot", {}))["payload"]
+            if len(plugins) == 4 + int(switch_role) and all(item["state"] == "active" for item in plugins) and before["characterPresentation"]["visual"]:
+                break
+            assert time.monotonic() < deadline, [(item["pluginId"], item["state"], item["reasonCode"]) for item in plugins]
+            index += 1
+        plugin_pids = plugin_process_ids()
+        assert len(plugin_pids) == 4
+        opened = _exchange(process, _request("open-role", "studio.character.open", {"characterId": "sakura"}))["payload"]
+        doc = opened["doc"]
+        doc["displayName"] = "更新后的角色"
+        doc["cardText"] = "You are a character with a purple umbrella."
+        doc["theme"]["primaryColor"] = "#123456"
+        doc["visuals"]["resources"][0]["name"] = "新的形态名称"
+        published = _exchange(process, _request("publish-role", "studio.character.publish", {"workspaceId": opened["workspaceId"], "doc": doc}))
+        assert published["ok"], published
+        assert published["payload"]["changePlan"] == "character_refresh"
+        assert "applyError" not in published["payload"]
+        after = _exchange(process, _request("after-save", "core.snapshot", {}))["payload"]
+        assert after["generationId"] == before["generationId"]
+        assert after["currentCharacterSummary"]["displayName"] == "更新后的角色"
+        assert after["characterPresentation"]["themeTokens"]["primary"] == "#123456"
+        assert after["characterPresentation"]["visual"]["bindingId"] != before["characterPresentation"]["visual"]["bindingId"]
+        assert plugin_process_ids() == plugin_pids
+        _send(process, _request("chat-after-save", "chat.send", {"message": "hello", "operationId": "chat-after-save"}))
+        frames = [_read(process), _read(process), _read(process)]
+        assert any(frame.get("name") == "chat.completed" for frame in frames), frames
+        assert "purple umbrella" in json.dumps(_ProviderHandler.requests)
+        assert plugin_process_ids() == plugin_pids
+        if switch_role:
+            _ProviderHandler.outcome = "blocked-read"
+            _ProviderHandler.received.clear()
+            _send(process, _request("old-role-chat", "chat.send", {"message": "old role pending", "operationId": "old-role-chat"}))
+            assert _read(process)["name"] == "chat.started"
+            assert _ProviderHandler.received.wait(2)
+            for character_id, prompt in (("beta", "golden book"), ("sakura", "purple umbrella")):
+                switch_request = _request(f"switch-{character_id}", "characters.settings.select", {"characterId": character_id})
+                if character_id == "beta":
+                    _send(process, switch_request)
+                    frames = [_read(process), _read(process), _read(process)]
+                    assert any(frame.get("name") == "chat.cancelled" for frame in frames), frames
+                    switched = next(frame for frame in frames if frame.get("id") == "switch-beta")
+                    _ProviderHandler.release.set()
+                    _ProviderHandler.outcome = "complete"
+                else:
+                    switched = _exchange(process, switch_request)
+                assert switched["ok"], switched
+                assert switched["payload"]["changePlan"] == "character_switch"
+                snapshot = _exchange(process, _request(f"state-{character_id}", "core.snapshot", {}))["payload"]
+                assert snapshot["generationId"] == before["generationId"]
+                assert snapshot["currentCharacterSummary"]["id"] == character_id
+                assert snapshot["characterPresentation"]["characterId"] == character_id
+                assert (app_root / "data/plugins/fixture.role/current.txt").read_text(encoding="utf-8") == character_id
+                assert plugin_process_ids() == plugin_pids
+                _send(process, _request(f"chat-{character_id}", "chat.send", {"message": f"hello {character_id}", "operationId": f"chat-{character_id}"}))
+                reply = [_read(process), _read(process), _read(process)]
+                assert any(frame.get("name") == "chat.completed" for frame in reply), reply
+                assert prompt in json.dumps(_ProviderHandler.requests[-1])
+            assert "hello beta" not in json.dumps(_ProviderHandler.requests[-1])
+        _exchange(process, _request("shutdown-after-save", "system.shutdown", {}))
+        process.wait(timeout=5)
+        drain.join(2)
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)

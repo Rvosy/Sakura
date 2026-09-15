@@ -88,7 +88,7 @@ export function normalizeCharacterExportReceipt(receipt) {
 }
 
 export function normalizeCharacterSwitchReceipt(receipt) {
-  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).filter(key => key !== "pluginRequirements").sort() : [];
+  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).filter(key => !["pluginRequirements", "characterChanged"].includes(key)).sort() : [];
   const expected = [
     "previousCoreGenerationId",
     "restartState",
@@ -103,6 +103,7 @@ export function normalizeCharacterSwitchReceipt(receipt) {
     || typeof receipt.previousCoreGenerationId !== "string"
     || !receipt.previousCoreGenerationId
     || !["not_required", "requested"].includes(receipt.restartState)
+    || (receipt.characterChanged !== undefined && typeof receipt.characterChanged !== "boolean")
     || (receipt.targetCharacterId !== null && typeof receipt.targetCharacterId !== "string")
   ) fail(CHARACTER_ERROR);
   const requirements = receipt.pluginRequirements ?? [];
@@ -120,6 +121,7 @@ export function normalizeCharacterSwitchReceipt(receipt) {
     ...normalized,
     previousCoreGenerationId: receipt.previousCoreGenerationId,
     restartState: receipt.restartState,
+    characterChanged: receipt.characterChanged === true,
     targetCharacterId: receipt.targetCharacterId,
     pluginRequirements: requirements,
   });
@@ -167,7 +169,7 @@ export function normalizeLegacyDataImportPlan(plan) {
     || typeof plan.selectionId !== "string"
     || !plan.selectionId
     || typeof plan.planToken !== "string"
-    || !/^[a-f0-9]{64}$/.test(plan.planToken)
+    || !plan.planToken
     || typeof plan.sourceLabel !== "string"
     || !Array.isArray(plan.characters)
     || plan.characters.length > 256
@@ -207,7 +209,9 @@ export function legacyDataImportPlanHasWork(plan) {
   return Boolean(
     totals
     && (
-      totals.historyNew
+      (plan.packagesNew || 0)
+      + (plan.reassociatedRecords || 0)
+      + totals.historyNew
       + totals.memoryNew
       + totals.historyConflicts
       + totals.memoryConflicts
@@ -337,8 +341,8 @@ export function createRootSettingsClient({ invoke }) {
     async storageResetTtsRoot() {
       return normalizeStorageSettingsSnapshot(await invoke("settings_storage_reset_tts_root"));
     },
-    async legacyRoleDataImportChoose() {
-      const plan = await invoke("settings_legacy_data_import_choose");
+    async legacyRoleDataImportChoose(selectionId = null, roleMapping = {}) {
+      const plan = await invoke("settings_legacy_data_import_choose", { selectionId, roleMapping });
       return plan === null ? null : normalizeLegacyDataImportPlan(plan);
     },
     async legacyRoleDataImportApply(selectionId, planToken, overwriteConflicts) {

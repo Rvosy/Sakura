@@ -81,7 +81,7 @@ test("plus control opens the toolbar overlay and starts one native capture actio
 
   env.captureItem.emit("click");
   await new Promise(setImmediate);
-  assert.deepEqual(env.calls, [["start_screen_capture"]]);
+  assert.deepEqual(env.calls, [["start_screen_capture", { payload: { captureRevision: 0 } }]]);
   assert.equal(env.controller.isOpen(), false);
   assert.equal(env.toggle.disabled, true);
   assert.equal(env.menu.hidden, true);
@@ -90,7 +90,7 @@ test("plus control opens the toolbar overlay and starts one native capture actio
 test("voice input borrows the same plus control without opening tools or consuming attachments", async () => {
   const env = harness();
   const attachmentId = `screen-${"a".repeat(32)}`;
-  env.controller.handleAttached({ attachmentId, itemId: `shot-${"a".repeat(32)}`, width: 640, height: 480, count: 1 });
+  env.controller.handleAttached({ captureRevision: 0, attachmentId, itemId: `shot-${"a".repeat(32)}`, width: 640, height: 480, count: 1 });
   env.composer.dataset.voiceActive = "true";
   env.controller.refreshControls();
   env.toggle.emit("click");
@@ -152,13 +152,13 @@ test("opaque screenshot items append to one group and the sent group is consumed
   const firstItem = `shot-${"1".repeat(32)}`;
   const secondItem = `shot-${"2".repeat(32)}`;
 
-  assert.equal(env.controller.handleAttached({
+  assert.equal(env.controller.handleAttached({ captureRevision: 0,
     attachmentId: first, itemId: firstItem, width: 640, height: 480, count: 1,
   }), true);
   assert.equal(env.controller.attachmentId(), first);
   assert.equal(env.toggle.dataset.attached, "true");
   assert.equal(env.toggle.dataset.attachmentCount, "1");
-  assert.equal(env.controller.handleAttached({
+  assert.equal(env.controller.handleAttached({ captureRevision: 0,
     attachmentId: first, itemId: secondItem, width: 320, height: 200, count: 2,
   }), true);
   assert.equal(env.controller.attachments().length, 2);
@@ -179,8 +179,8 @@ test("one screenshot can be removed without releasing the remaining group", asyn
       ? { accepted: true, ...value.payload, count: value.payload.itemId === firstItem ? 1 : 0 }
       : undefined,
   });
-  env.controller.handleAttached({ attachmentId, itemId: firstItem, width: 640, height: 480, count: 1 });
-  env.controller.handleAttached({ attachmentId, itemId: secondItem, width: 320, height: 200, count: 2 });
+  env.controller.handleAttached({ captureRevision: 0, attachmentId, itemId: firstItem, width: 640, height: 480, count: 1 });
+  env.controller.handleAttached({ captureRevision: 0, attachmentId, itemId: secondItem, width: 320, height: 200, count: 2 });
 
   assert.equal(await env.controller.removeAttachment(firstItem), true);
   assert.deepEqual(env.controller.attachments(), [{ itemId: secondItem, width: 320, height: 200 }]);
@@ -196,7 +196,7 @@ test("six screenshots disable capture but keep the attachment menu available", (
   const env = harness();
   const attachmentId = `screen-${"a".repeat(32)}`;
   for (let index = 1; index <= 6; index += 1) {
-    assert.equal(env.controller.handleAttached({
+    assert.equal(env.controller.handleAttached({ captureRevision: 0,
       attachmentId,
       itemId: `shot-${index.toString(16).padStart(32, "0")}`,
       width: 100,
@@ -212,7 +212,7 @@ test("six screenshots disable capture but keep the attachment menu available", (
 test("a pending send locks attachment controls and a rejected send retains the group", () => {
   const env = harness();
   const attachmentId = `screen-${"a".repeat(32)}`;
-  env.controller.handleAttached({
+  env.controller.handleAttached({ captureRevision: 0,
     attachmentId,
     itemId: `shot-${"b".repeat(32)}`,
     width: 640,
@@ -232,7 +232,7 @@ test("a pending send locks attachment controls and a rejected send retains the g
 test("generation invalidation releases an unsent attachment best-effort", async () => {
   const env = harness();
   const attachmentId = `screen-${"a".repeat(32)}`;
-  env.controller.handleAttached({
+  env.controller.handleAttached({ captureRevision: 0,
     attachmentId, itemId: `shot-${"b".repeat(32)}`, width: 100, height: 100, count: 1,
   });
   env.controller.invalidate();
@@ -243,4 +243,38 @@ test("generation invalidation releases an unsent attachment best-effort", async 
   ]]);
   assert.equal(env.controller.attachmentId(), null);
   assert.equal(env.menu.hidden, true);
+});
+
+test("role invalidation rejects late capture events and late start failures", async () => {
+  let rejectStart;
+  const env = harness({ invokeImpl: command => command === "start_screen_capture"
+    ? new Promise((_, reject) => { rejectStart = reject; }) : undefined });
+  const started = env.controller.startCapture();
+  await new Promise(setImmediate);
+  env.controller.invalidate(); // A -> B
+  env.controller.invalidate(); // B -> A still belongs to a different session
+  rejectStart(new Error("late failure"));
+  assert.equal(await started, false);
+  assert.deepEqual(env.errors, []);
+  const item = { captureRevision: 0, attachmentId: `screen-${"a".repeat(32)}`,
+    itemId: `shot-${"a".repeat(32)}`, width: 30, height: 20, count: 1 };
+  assert.equal(env.controller.handleAttached(item), false);
+  assert.equal(env.controller.attachmentId(), null);
+  assert.equal(env.controller.handleAttached({ ...item, captureRevision: 2 }), true);
+});
+
+test("late cancellation cannot unlock a capture from the next role session", async () => {
+  const env = harness();
+  await env.controller.startCapture();
+  const oldRevision = env.calls.at(-1)[1].payload.captureRevision;
+  env.controller.invalidate(); // A -> B
+  env.controller.invalidate(); // B -> A
+  await env.controller.startCapture();
+  const currentRevision = env.calls.at(-1)[1].payload.captureRevision;
+
+  env.controller.handleCancelled({ captureRevision: oldRevision });
+  assert.equal(env.toggle.disabled, true);
+  assert.equal(await env.controller.startCapture(), false);
+  env.controller.handleCancelled({ captureRevision: currentRevision });
+  assert.equal(env.toggle.disabled, false);
 });

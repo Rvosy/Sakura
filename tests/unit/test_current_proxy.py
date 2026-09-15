@@ -24,6 +24,7 @@ def endpoint(label, on_request=None):
             self.send_response(302 if location else 200)
             if location:
                 self.send_header("Location", location)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -144,19 +145,22 @@ def test_mcp_client_refreshes_proxy_per_request_with_open_stream(proxy_state):
         asyncio.run(run(direct, a, b))
 
 
-def test_search_proxy_pins_public_ip_and_preserves_host(proxy_state, monkeypatch):
+def test_search_proxy_preserves_hostname_and_owns_destination_dns(proxy_state, monkeypatch):
     from plugins.builtin.sakura_web import web
 
-    monkeypatch.setattr(web, "_resolve_public_addresses", lambda *_: ["93.184.216.34"])
+    def reject_local_dns(*_):
+        pytest.fail("Proxy destination must not use local DNS")
+
+    monkeypatch.setattr(web, "_resolve_public_addresses", reject_local_dns)
     with endpoint("a") as (a, requests_a), endpoint("b") as (b, requests_b):
         for proxy, expected in [(a, b"a"), (b, b"b")]:
             proxy_state["http"] = proxy
             assert web._request_public_url_once("http://public.example/path", 20)[3] == expected
-        assert requests_a == requests_b == [("http://93.184.216.34/path", "public.example")]
+        assert requests_a == requests_b == [("http://public.example/path", "public.example")]
         proxy_state["https"] = b
         with pytest.raises(RuntimeError):
             web._request_public_url_once("https://public.example/path", 20)
-        assert requests_b[-1][0] == "93.184.216.34:443"
+        assert requests_b[-1][0] == "public.example:443"
 
 
 def test_search_rejects_private_destination_even_with_proxy(proxy_state):
@@ -167,3 +171,117 @@ def test_search_rejects_private_destination_even_with_proxy(proxy_state):
         with pytest.raises(ValueError):
             web._request_public_url_once("http://127.0.0.1/private", 20)
         assert requests == []
+
+
+def test_web_resolves_each_direct_redirect_target_once(proxy_state, monkeypatch):
+    from plugins.builtin.sakura_web import web
+
+    resolved = []
+    original = socket.getaddrinfo
+
+    def resolve(host, port, *args, **kwargs):
+        if host in {"public.example", "redirected.example"}:
+            resolved.append(host)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+        # Route the validated fixture IP to the local server at the socket boundary.
+        return original("127.0.0.1" if host == "93.184.216.34" else host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    with endpoint(
+        "page", lambda request: f"http://redirected.example:{request.server.server_port}/end"
+        if request.path == "/start" else None
+    ) as (direct, requests):
+        port = direct.rsplit(":", 1)[1]
+        assert web.fetch_url(f"http://public.example:{port}/start")["text"] == "page"
+        assert resolved == ["public.example", "redirected.example"]
+        assert requests == [("/start", f"public.example:{port}"), ("/end", f"redirected.example:{port}")]
+
+
+def test_web_rejects_private_dns_after_direct_redirect_before_connecting(proxy_state, monkeypatch):
+    from plugins.builtin.sakura_web import web
+
+    original = socket.getaddrinfo
+
+    def resolve(host, port, *args, **kwargs):
+        if host in {"public.example", "private.example"}:
+            address = "127.0.0.1" if host == "private.example" else "93.184.216.34"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))]
+        return original("127.0.0.1" if host == "93.184.216.34" else host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    with endpoint("page", lambda _request: "http://private.example/secret") as (direct, requests):
+        port = direct.rsplit(":", 1)[1]
+        with pytest.raises(ValueError, match="私有网络"):
+            web.fetch_url(f"http://public.example:{port}/start")
+        assert requests == [("/start", f"public.example:{port}")]
+
+
+def test_web_direct_transport_preserves_host_and_bounds_body(proxy_state, monkeypatch):
+    from plugins.builtin.sakura_web import web
+
+    # Only the fixture address mapping bypasses the public-address policy.
+    monkeypatch.setattr(web, "_resolve_public_addresses", lambda *_: ["127.0.0.1"])
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    with endpoint("direct response") as (direct, requests):
+        url = direct.replace("127.0.0.1", "public.example") + "/article"
+        text, _content_type, final_url, truncated = web._read_url_text_with_metadata(url, 4)
+        assert (text, final_url, truncated) == ("dire", url, True)
+        assert requests == [("/article", url.split("/")[2])]
+
+
+def test_web_pinned_https_validates_original_hostname(proxy_state, monkeypatch, tmp_path):
+    import ssl
+    from plugins.builtin.sakura_web import web
+
+    # Test-only self-signed Ed25519 identity, valid 2020-2100; no extra test dependency.
+    certificate = """-----BEGIN CERTIFICATE-----
+MIH/MIGyoAMCAQICAQEwBQYDK2VwMBkxFzAVBgNVBAMMDnB1YmxpYy5leGFtcGxl
+MCAXDTIwMDEwMTAwMDAwMFoYDzIxMDAwMTAxMDAwMDAwWjAZMRcwFQYDVQQDDA5w
+dWJsaWMuZXhhbXBsZTAqMAUGAytlcAMhAHd0g6kedU7fNafuKH1x0DRML7QMbSP6
+G01nTphtUoTNox0wGzAZBgNVHREEEjAQgg5wdWJsaWMuZXhhbXBsZTAFBgMrZXAD
+QQANnAJUvcNu/NJeD0tmJVF7cZdj8TzFYIEO7EwJmkuoNRmXk8ROTwaBWYm0FgVS
+x/ELpDYq0WDQA/toCtQuNikK
+-----END CERTIFICATE-----
+"""
+    private_key = """-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIGAFnxPUQ6Oqx0wnlfUs+SJdVWfG6DVdLa4QKdlRXRUf
+-----END PRIVATE KEY-----
+"""
+    cert_path = tmp_path / "test-cert.pem"
+    key_path = tmp_path / "test-key.pem"
+    cert_path.write_text(certificate)
+    key_path.write_text(private_key)
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(cert_path, key_path)
+    server_names = []
+    server_context.set_servername_callback(lambda _socket, name, _context: server_names.append(name))
+    client_context = ssl.create_default_context(cadata=certificate)
+    monkeypatch.setattr(web.ssl, "create_default_context", lambda: client_context)
+    monkeypatch.setattr(web, "_resolve_public_addresses", lambda *_: ["127.0.0.1"])
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = self.headers["Host"].encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.socket = server_context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        authority = f"public.example:{server.server_port}"
+        assert web._request_public_url_once(f"https://{authority}/", 100)[3] == authority.encode()
+        with pytest.raises(web.WebError) as failure:
+            web._request_public_url_once(f"https://wrong.example:{server.server_port}/", 100)
+        assert failure.value.code == "WEB_NETWORK_ERROR"
+        assert server_names == ["public.example", "wrong.example"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)

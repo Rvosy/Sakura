@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-15
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
@@ -13,6 +13,8 @@ updated: 2026-09-05
 2026-09-12 起，本文原有固定 portrait/portraitChoices 投影与宿主图片选择由[表现插件合同](visual-plugin-boundary.md)取代。
 CharacterPresentation 使用 schemaVersion 2 的可空 visual；公共 Profile 不提供图片候选。立绘兼容、切图、
 解码和过渡归入内置插件，宿主在实际分段播放时派发 control；历史浏览只读文字。以下旧 WP 实施与验收记录保留历史语境。
+
+气泡底部的警告提示（`presentation-error`）统一显示 5 秒后清除，语音识别错误附带的重试和设置按钮同时移除。不同的新提示从出现时重新计时；同一条可见提示重复上报不延长显示时间。恢复成功或窗口退出时提前清除提示及计时器。
 
 ## 目标与依赖
 

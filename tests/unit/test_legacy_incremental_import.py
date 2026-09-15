@@ -53,7 +53,7 @@ def _write_history(path: Path, records: list[dict[str, str]], *, tail: bytes = b
 
 @pytest.mark.parametrize("linked", [False, True])
 def test_preview_refuses_precreated_token_directory(tmp_path: Path, linked: bool) -> None:
-    plan = legacy_incremental._Plan("fixture", comparison_items=["private-preview-content"])
+    plan = legacy_incremental._Plan("fixture")
     path = legacy_incremental._plan_path(plan.token)
     destination = tmp_path / "precreated"
     destination.mkdir()
@@ -127,7 +127,7 @@ def test_preview_permissions_are_private_and_relaxed_directory_is_rejected(tmp_p
 
     previous_umask = os.umask(0)
     try:
-        plan = legacy_incremental._Plan("fixture", comparison_items=["private-preview-content"])
+        plan = legacy_incremental._Plan("fixture")
         legacy_incremental._save_plan(plan, tmp_path, tmp_path, tmp_path)
     finally:
         os.umask(previous_umask)
@@ -140,14 +140,33 @@ def test_preview_permissions_are_private_and_relaxed_directory_is_rejected(tmp_p
     assert path.is_file()
 
 
-def test_incremental_plan_survives_cli_process_exit(tmp_path: Path) -> None:
-    source = _source(tmp_path)
+@pytest.mark.parametrize("extended_paths", [False, True])
+def test_incremental_plan_survives_cli_process_exit(tmp_path: Path, extended_paths: bool) -> None:
+    if extended_paths and os.name != "nt":
+        pytest.skip("Windows namespace paths")
+    source = _source(tmp_path / "旧数据 #100%")
     target = tmp_path / "target"
     target.mkdir()
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").initialize()
+    if extended_paths:
+        source = Path("\\\\?\\" + str(source))
+        target = Path("\\\\?\\" + str(target))
     _write_history(
         source / "data/chat_history/Sakura.jsonl",
         [_record("2026-01-01T00:00:00+08:00", "user", "private source text")],
     )
+    from contextlib import closing
+    from qdrant_client import QdrantClient, models
+
+    point_id = "00000000-0000-0000-0000-000000000091"
+    client = QdrantClient(path=str(source / "data/memory/qdrant"))
+    client.create_collection("sakura_memories", vectors_config=models.VectorParams(size=4, distance=models.Distance.COSINE))
+    client.upsert("sakura_memories", [models.PointStruct(id=point_id, vector=[1.0, 0.0, 0.0, 0.0], payload={"user_id": "Sakura"})])
+    client.close()
+    with closing(sqlite3.connect(source / "data/memory/mem0_history.db")) as connection:
+        connection.execute("CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT, user_id TEXT)")
+        connection.execute("INSERT INTO history VALUES ('event-cli', ?, 'ADD', 'Sakura')", (point_id,))
+        connection.commit()
     command = [sys.executable, "-m", "app.legacy_import"]
     scope = ["--source", str(source), "--target", str(target)]
     inspected = subprocess.run(
@@ -155,6 +174,7 @@ def test_incremental_plan_survives_cli_process_exit(tmp_path: Path) -> None:
         encoding="utf-8", check=True, timeout=60,
     )
     plan = json.loads(inspected.stdout)["plan"]
+    assert plan["totals"]["memoryNew"] == 2
     assert "private source text" not in inspected.stdout
     applied = subprocess.run(
         [*command, "apply-data", *scope, "--import-id", "cross-process",
@@ -169,6 +189,7 @@ def test_incremental_plan_survives_cli_process_exit(tmp_path: Path) -> None:
     repeated = inspect_character_data_import(source, target)
     assert repeated["totals"]["historyIdentical"] == 1
     assert repeated["totals"]["historyNew"] == 0
+    assert repeated["totals"]["memoryIdentical"] == 2
 
 
 def test_pre_registry_ids_are_reused_and_mapping_preserves_conflict_identity(
@@ -216,7 +237,7 @@ def test_pre_registry_ids_are_reused_and_mapping_preserves_conflict_identity(
     assert [entry.payload["text"] for entry in entries] == ["first", "edited"]
 
 
-def test_incremental_plan_rejects_same_size_source_change_and_missing_preview(tmp_path: Path) -> None:
+def test_incremental_import_accepts_changed_source_but_requires_saved_selection(tmp_path: Path) -> None:
     source = _source(tmp_path)
     target = tmp_path / "target"
     target.mkdir()
@@ -224,20 +245,13 @@ def test_incremental_plan_rejects_same_size_source_change_and_missing_preview(tm
     records = [_record("2026-01-01T00:00:00+08:00", "user", "before")]
     _write_history(history, records)
     plan = inspect_character_data_import(source, target)
-    stat = history.stat()
     records[0]["content"] = "after!"
     _write_history(history, records)
-    os.utime(history, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("Sakura")[0].payload["text"] == "after!"
     with pytest.raises(LegacyImportError, match="LEGACY_DATA_IMPORT_PLAN_STALE"):
-        run_character_data_import(
-            source, target, plan_token=plan["planToken"], overwrite_conflicts=True,
-        )
-    legacy_incremental._plan_path(plan["planToken"]).unlink()
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_IMPORT_PLAN_STALE"):
-        run_character_data_import(
-            source, target, plan_token=plan["planToken"], overwrite_conflicts=True,
-        )
-    assert not list(target.glob(".legacy-import-*"))
+        run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=True)
 
 
 def test_incremental_history_salvages_dirty_rows_skips_identical_and_prompts_on_conflict(
@@ -403,7 +417,7 @@ def test_incremental_import_rejects_provably_active_legacy_source(
     assert inspect_character_data_import(source, target)["schemaVersion"] == 1
 
 
-def test_incremental_plan_is_stale_after_target_conflict_changes(tmp_path: Path) -> None:
+def test_incremental_import_uses_current_records_after_confirmed_conflict_changes(tmp_path: Path) -> None:
     source = _source(tmp_path)
     target = tmp_path / "target"
     target.mkdir()
@@ -431,14 +445,15 @@ def test_incremental_plan_is_stale_after_target_conflict_changes(tmp_path: Path)
             (json.dumps({"text": "target changed"}),),
         )
 
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_IMPORT_PLAN_STALE"):
-        run_character_data_import(
-            source,
-            target,
-            import_id="incremental-stale-02",
-            plan_token=str(conflict["planToken"]),
-            overwrite_conflicts=True,
-        )
+    connection.close()
+    report, pending = run_character_data_import(
+        source, target, import_id="incremental-current-02",
+        plan_token=str(conflict["planToken"]), overwrite_conflicts=True,
+    )
+    finalize_commit(pending)
+    assert report["plan"]["totals"]["historyConflicts"] == 1
+    with sqlite3.connect(timeline) as connection:
+        assert "source changed" in connection.execute("SELECT payload_json FROM timeline_entries").fetchone()[0]
 
 
 def test_incremental_cross_role_history_identity_is_never_overwritable(
@@ -464,15 +479,17 @@ def test_incremental_cross_role_history_identity_is_never_overwritable(
         connection.execute("UPDATE timeline_entries SET character_id = 'Beta'")
 
     blocked = inspect_character_data_import(source, target)
-    assert blocked["blocked"] is True
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
-        run_character_data_import(
-            source,
-            target,
-            import_id="incremental-scope-02",
-            plan_token=str(blocked["planToken"]),
-            overwrite_conflicts=True,
-        )
+    assert blocked["blocked"] is False
+    connection.close()
+    _, pending = run_character_data_import(
+        source,
+        target,
+        import_id="incremental-scope-02",
+        plan_token=str(blocked["planToken"]),
+        overwrite_conflicts=True,
+    )
+    finalize_commit(pending)
+    assert list((target / "data/legacy-imports").rglob("*scope-conflicts.jsonl"))
 
 
 def test_incremental_memory_merges_qdrant_history_and_profiles_by_role(tmp_path: Path) -> None:
@@ -591,7 +608,7 @@ def test_incremental_unreadable_target_memory_fails_closed(tmp_path: Path) -> No
     assert not (target / "data/legacy-imports").exists()
 
 
-def test_incremental_memory_plan_is_stale_after_source_changes(tmp_path: Path) -> None:
+def test_incremental_memory_import_accepts_source_changes(tmp_path: Path) -> None:
     source = _source(tmp_path)
     target = tmp_path / "target"
     target.mkdir()
@@ -607,14 +624,13 @@ def test_incremental_memory_plan_is_stale_after_source_changes(tmp_path: Path) -
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE history SET event = 'UPDATE' WHERE id = 'event-1'")
 
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_IMPORT_PLAN_STALE"):
-        run_character_data_import(
-            source,
-            target,
-            import_id="incremental-memory-stale-01",
-            plan_token=str(plan["planToken"]),
-            overwrite_conflicts=False,
-        )
+    _, pending = run_character_data_import(
+        source, target, import_id="incremental-memory-current-01",
+        plan_token=str(plan["planToken"]), overwrite_conflicts=False,
+    )
+    finalize_commit(pending)
+    with sqlite3.connect(target / "data/memory/mem0_history.db") as connection:
+        assert connection.execute("SELECT event FROM history").fetchone()[0] == "UPDATE"
 
 
 def test_incremental_cross_role_memory_identity_is_never_overwritable(
@@ -640,16 +656,18 @@ def test_incremental_cross_role_memory_identity_is_never_overwritable(
         )
 
     blocked = inspect_character_data_import(source, target)
-    assert blocked["blocked"] is True
-    assert blocked["totals"]["memoryConflicts"] == 1
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
-        run_character_data_import(
-            source,
-            target,
-            import_id="incremental-memory-scope-01",
-            plan_token=str(blocked["planToken"]),
-            overwrite_conflicts=True,
-        )
+    assert blocked["blocked"] is False
+    assert blocked["totals"]["recoverableErrors"] >= 1
+    connection.close()
+    _, pending = run_character_data_import(
+        source,
+        target,
+        import_id="incremental-memory-scope-01",
+        plan_token=str(blocked["planToken"]),
+        overwrite_conflicts=True,
+    )
+    finalize_commit(pending)
+    assert list((target / "data/legacy-imports").rglob("*scope-conflicts.jsonl"))
 
 
 def test_incremental_history_scope_must_match_referenced_point(tmp_path: Path) -> None:
@@ -687,20 +705,23 @@ def test_incremental_history_scope_must_match_referenced_point(tmp_path: Path) -
         )
 
     plan = inspect_character_data_import(source, target)
-    assert plan["blocked"] is True
-    assert plan["totals"]["memoryConflicts"] >= 1
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
-        run_character_data_import(
-            source,
-            target,
-            import_id="incremental-source-scope-conflict",
-            plan_token=str(plan["planToken"]),
-            overwrite_conflicts=True,
-        )
+    assert plan["blocked"] is False
+    assert plan["totals"]["recoverableErrors"] >= 1
+    connection.close()
+    _, pending = run_character_data_import(
+        source,
+        target,
+        import_id="incremental-source-scope-conflict",
+        plan_token=str(plan["planToken"]),
+        overwrite_conflicts=True,
+    )
+    finalize_commit(pending)
+    assert list((target / "data/legacy-imports").rglob("*scope-conflicts.jsonl"))
 
 
+@pytest.mark.parametrize("source_point", [False, True])
 def test_incremental_history_scope_must_match_preserved_target_point(
-    tmp_path: Path,
+    tmp_path: Path, source_point: bool,
 ) -> None:
     qdrant_client = pytest.importorskip("qdrant_client")
     models = pytest.importorskip("qdrant_client.models")
@@ -726,6 +747,11 @@ def test_incremental_history_scope_must_match_preserved_target_point(
     )
     client.close()
     (target_memory / "qdrant/.lock").unlink(missing_ok=True)
+    if source_point:
+        client = qdrant_client.QdrantClient(path=str(source / "data/memory/qdrant"))
+        client.create_collection("sakura_memories", vectors_config=models.VectorParams(size=4, distance=models.Distance.COSINE))
+        client.upsert("sakura_memories", [models.PointStruct(id=point_id, vector=[0.0] * 4, payload={"user_id": "Beta"})])
+        client.close()
     with sqlite3.connect(source / "data/memory/mem0_history.db") as connection:
         connection.execute(
             "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT, user_id TEXT)"
@@ -737,16 +763,19 @@ def test_incremental_history_scope_must_match_preserved_target_point(
 
     plan = inspect_character_data_import(source, target)
 
-    assert plan["blocked"] is True
-    assert plan["totals"]["memoryConflicts"] == 1
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
-        run_character_data_import(
-            source,
-            target,
-            import_id="incremental-target-scope-conflict",
-            plan_token=str(plan["planToken"]),
-            overwrite_conflicts=True,
-        )
+    assert plan["blocked"] is False
+    assert plan["totals"]["recoverableErrors"] == (2 if source_point else 1)
+    assert plan["totals"]["memoryNew"] == 0
+    connection.close()
+    _, pending = run_character_data_import(
+        source,
+        target,
+        import_id="incremental-target-scope-conflict",
+        plan_token=str(plan["planToken"]),
+        overwrite_conflicts=True,
+    )
+    finalize_commit(pending)
+    assert list((target / "data/legacy-imports").rglob("*scope-conflicts.jsonl"))
 
 
 def test_incremental_history_uses_one_canonical_row_for_inspect_and_apply(
@@ -986,3 +1015,181 @@ def test_commit_rejects_target_parent_symlink(tmp_path: Path) -> None:
     with pytest.raises(LegacyImportError, match="LEGACY_COMMIT_TARGET_LINK_UNSUPPORTED"):
         commit_payload(target, "link-test-0001", payload)
     assert not (external / "ui.json").exists()
+
+def _role_package(root: Path, role: str, name: str = "测试角色") -> Path:
+    directory = root / "characters" / role
+    directory.mkdir(parents=True)
+    (directory / "card.md").write_text("You are a test character.", encoding="utf-8")
+    (directory / "character.json").write_text(json.dumps({
+        "id": role, "display_name": name, "card": "card.md",
+    }), encoding="utf-8")
+    return directory
+
+
+def test_package_and_dirty_history_import_together_and_rollback(tmp_path: Path) -> None:
+    from app.config.character_loader import CharacterRegistry
+    from app.legacy_import.transaction import rollback_commit
+
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    package = _role_package(source, "OldRole")
+    original_manifest = (package / "character.json").read_bytes()
+    _write_history(source / "data/chat_history/OldRole.jsonl", [
+        _record("2026-01-01T00:00:00+08:00", "user", "salvaged text"),
+    ], tail=b"invalid json\n")
+    broken = source / "characters/Broken"
+    broken.mkdir()
+    (broken / "character.json").write_bytes(b"{broken")
+    plan = inspect_character_data_import(source, target)
+    assert plan["packagesNew"] == 1
+    assert not plan["requiresMapping"]
+    assert plan["totals"]["recoverableErrors"] == 1
+    assert plan["packageIssues"]
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    assert CharacterRegistry(target).get("OldRole").id == "OldRole"
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("OldRole")[0].payload["text"] == "salvaged text"
+    rollback_commit(pending)
+    assert not (target / "characters/OldRole").exists()
+    assert not (target / "data/chat_history/timeline.sqlite3").exists()
+    assert (package / "character.json").read_bytes() == original_manifest
+
+
+def test_explicit_role_mapping_imports_history_points_and_profiles_under_existing_role(tmp_path: Path) -> None:
+    from contextlib import closing
+    from qdrant_client import models
+    from app.config.character_loader import CharacterRegistry
+
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    _role_package(source, "OldRole")
+    current = _role_package(target, "CurrentRole")
+    target_card = (current / "card.md").read_bytes()
+    _write_history(source / "data/chat_history/OldRole.jsonl", [
+        _record("2026-01-01T00:00:00+08:00", "user", "linked history"),
+    ])
+    memory = source / "data/memory"
+    point_id = "00000000-0000-0000-0000-000000000091"
+    client = legacy_incremental._qdrant_client(memory / "qdrant")
+    client.create_collection("sakura_memories", vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE))
+    client.upsert("sakura_memories", [models.PointStruct(id=point_id, vector=[1.0] * 384, payload={"user_id": "OldRole", "scope": "OldRole", "metadata": {"scope": "OldRole"}, "data": "linked memory"})])
+    client.close()
+    with closing(sqlite3.connect(memory / "mem0_history.db")) as connection:
+        connection.execute("CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT, user_id TEXT)")
+        connection.execute("INSERT INTO history VALUES ('event', ?, 'ADD', 'OldRole')", (point_id,))
+        connection.commit()
+    (memory / "core_profiles.json").write_text(json.dumps({"OldRole": {"content": "linked profile", "metadata": {"scope": "OldRole"}}}), encoding="utf-8")
+    initial = inspect_character_data_import(source, target)
+    assert initial["requiresMapping"]
+    mapping = {"OldRole": "CurrentRole"}
+    plan = inspect_character_data_import(source, target, role_mapping=mapping)
+    assert not plan["requiresMapping"]
+    assert plan["packagesNew"] == 0
+    assert {row["characterId"] for row in plan["characters"]} == {"CurrentRole"}
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    active = CharacterRegistry(target).get("CurrentRole")
+    assert (active.package_dir / "card.md").read_bytes() == target_card
+    assert not (target / "characters/OldRole").exists()
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all(active.id)[0].payload["text"] == "linked history"
+    points, client = legacy_incremental._qdrant_points(target / "data/memory")
+    try:
+        assert points[point_id][1]["user_id"] == active.id
+        assert points[point_id][1]["scope"] == active.id
+        from plugins.builtin.sakura_mem0.memory import _normalize_memory_record
+        assert _normalize_memory_record({**points[point_id][1], "id": point_id})["scope"] == active.id
+    finally:
+        client.close()
+    with closing(sqlite3.connect(target / "data/memory/mem0_history.db")) as connection:
+        assert connection.execute("SELECT user_id FROM history").fetchone()[0] == active.id
+    profiles = json.loads((target / "data/memory/core_profiles.json").read_text(encoding="utf-8"))
+    assert profiles[active.id]["metadata"]["scope"] == active.id
+    repeated = inspect_character_data_import(source, target, role_mapping=mapping)
+    assert repeated["totals"]["historyIdentical"] == 1
+    assert repeated["totals"]["memoryIdentical"] == 3
+    assert repeated["totals"]["memoryNew"] == 0
+
+
+def test_unloadable_package_and_broken_memory_do_not_block_mapped_chat(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    package = _role_package(source, "OldRole")
+    (package / "card.md").unlink()
+    _role_package(target, "CurrentRole")
+    (source / "data/memory/mem0_history.db").write_bytes(b"broken sqlite")
+    _write_history(source / "data/chat_history/OldRole.jsonl", [
+        _record("2026-01-01T00:00:00+08:00", "user", "still usable"),
+    ])
+    plan = inspect_character_data_import(source, target, role_mapping={"OldRole": "CurrentRole"})
+    assert plan["totals"]["recoverableErrors"] >= 1
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False, import_id="dirty-map")
+    finalize_commit(pending)
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("CurrentRole")[0].payload["text"] == "still usable"
+    assert (target / "data/legacy-imports/dirty-map/quarantine/memory/mem0_history.db").read_bytes() == b"broken sqlite"
+
+
+def test_package_only_import_is_supported(tmp_path: Path) -> None:
+    from app.config.character_loader import CharacterRegistry
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    _role_package(source, "OnlyRole")
+    plan = inspect_character_data_import(source, target)
+    assert plan["packagesNew"] == 1
+    assert plan["totals"]["historyNew"] == 0
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    assert CharacterRegistry(target).get("OnlyRole").id == "OnlyRole"
+
+def test_mapping_reconnects_previously_imported_orphan_records(tmp_path: Path) -> None:
+    from contextlib import closing
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    _role_package(target, "CurrentRole")
+    _write_history(source / "data/chat_history/OldRole.jsonl", [
+        _record("2026-01-01T00:00:00+08:00", "user", "orphan history"),
+    ])
+    with closing(sqlite3.connect(source / "data/memory/mem0_history.db")) as connection:
+        connection.execute("CREATE TABLE history (id TEXT PRIMARY KEY, event TEXT, user_id TEXT)")
+        connection.execute("INSERT INTO history VALUES ('old-event', 'ADD', 'OldRole')")
+        connection.commit()
+    plan = inspect_character_data_import(source, target)
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    remapped = inspect_character_data_import(source, target, role_mapping={"OldRole": "CurrentRole"})
+    assert remapped["reassociatedRecords"] == 2
+    assert remapped["totals"]["historyIdentical"] == 1
+    assert remapped["totals"]["memoryIdentical"] == 1
+    _, pending = run_character_data_import(source, target, plan_token=remapped["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    timeline = TimelineStore(target / "data/chat_history/timeline.sqlite3")
+    assert len(timeline.read_all("CurrentRole")) == 1
+    assert not timeline.read_all("OldRole")
+    with closing(sqlite3.connect(target / "data/memory/mem0_history.db")) as connection:
+        assert connection.execute("SELECT user_id FROM history").fetchone()[0] == "CurrentRole"
+
+def test_aliases_can_join_package_imported_in_same_operation(tmp_path: Path) -> None:
+    from app.config.character_loader import CharacterRegistry
+    source = _source(tmp_path)
+    target = tmp_path / 'target'
+    target.mkdir()
+    _role_package(source, 'Sakura')
+    _role_package(source, 'sakura1', '旧角色包')
+    for index, role in enumerate(('sakura', 'sakura1')):
+        _write_history(source / f'data/chat_history/{role}.jsonl', [
+            _record(f'2026-01-01T00:00:0{index}+08:00', 'user', role),
+        ])
+    initial = inspect_character_data_import(source, target)
+    assert any(item['characterId'] == 'Sakura' for item in initial['targetCharacters'])
+    mapping = {'sakura': 'Sakura', 'sakura1': 'Sakura'}
+    plan = inspect_character_data_import(source, target, role_mapping=mapping)
+    _, pending = run_character_data_import(source, target, plan_token=plan['planToken'], overwrite_conflicts=False)
+    finalize_commit(pending)
+    assert CharacterRegistry(target).get('Sakura').id == 'Sakura'
+    store = TimelineStore(target / 'data/chat_history/timeline.sqlite3')
+    assert len(store.read_all('Sakura')) == 2
+    assert not store.read_all('sakura')
+    assert not store.read_all('sakura1')

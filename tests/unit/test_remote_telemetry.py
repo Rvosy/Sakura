@@ -228,36 +228,39 @@ def test_safe_stack_keeps_sixteen_frames_within_local_bridge_limit() -> None:
     assert len(line) <= runtime_logging.TELEMETRY_BRIDGE_MAX_LINE_BYTES
 
 
-def test_plugin_source_and_deadline_survive_host_and_core_bridge(monkeypatch):
+def test_plugin_source_and_deadline_survive_host_and_core_bridge():
     from app.core_host import plugin_host_services
+    from app.plugins.host_services import HOST_CALLER
 
-    captured = []
-    monkeypatch.setattr(
-        plugin_host_services, "log_event", lambda *a, **k: captured.append(a[2])
-    )
-    service = plugin_host_services._DiagnosticsHostService()
-    service.call(
-        "emit",
-        [
-            "sakura.tts.gpt-sovits",
-            {
-                "event": "tts.synthesis.failed",
-                "severity": "warning",
-                "attributes": {
-                    "reason_code": "TTS_HTTP_TIMEOUT",
-                    "source_file": "plugins/builtin/sakura_gpt_sovits/_support.py",
-                    "source_line": 690,
-                    "timeout_ms": 60000,
-                    "elapsed_ms": 60200,
-                    "stage": "synthesis_http",
-                    "child_exited": False,
-                },
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    token = HOST_CALLER.set("third.party.voice")
+    try:
+        plugin_host_services._DiagnosticsHostService().call("emit", ["spoofed", {
+            "event": "voice.render.failed",
+            "severity": "warning",
+            "attributes": {
+                "source_file": "voice/engine.py", "source_line": 690,
+                "timeout_ms": 60000, "child_exited": False,
+                "diagnostic": "weights missing token=fixture-secret",
             },
-        ],
-    )
-    safe = runtime_logging._safe_attributes(captured[0])
-    assert safe["source_file"] == "plugins/builtin/sakura_gpt_sovits/_support.py"
-    assert safe["timeout_ms"] == 60000 and safe["child_exited"] is False
+        }])
+    finally:
+        HOST_CALLER.reset(token)
+        bridge.close()
+    records = [json.loads(line.removeprefix(runtime_logging.CORE_BRIDGE_PREFIX))
+               for line in stream.getvalue().splitlines()
+               if line.startswith(runtime_logging.CORE_BRIDGE_PREFIX)]
+    assert len(records) == 1
+    record = records[0]
+    assert record["plugin_id"] == "third.party.voice"
+    assert record["custom"] is True
+    assert record["attributes"]["event"] == "voice.render.failed"
+    assert record["attributes"]["source_file"] == "voice/engine.py"
+    assert record["attributes"]["timeout_ms"] == 60000
+    assert record["attributes"]["child_exited"] is False
+    assert "weights missing" in record["attributes"]["diagnostic"]
+    assert "fixture-secret" not in json.dumps(record)
 
 
 def test_model_failures_classify_http_timeout_and_wrapped_causes():
@@ -281,37 +284,29 @@ def test_model_failures_classify_http_timeout_and_wrapped_causes():
     assert api_client._request_failure(timeout)["reasonCode"] == "MODEL_READ_TIMEOUT"
 
 
-def test_real_mem0_logging_boundary_projects_only_controlled_recall_event(monkeypatch):
+def test_mem0_logs_once_through_the_same_plugin_pipeline():
     from app.core_host import plugin_host_services
     from app.plugins.host_services import HOST_CALLER
 
-    records = []
-    monkeypatch.setattr(
-        plugin_host_services, "log_event", lambda *a, **k: records.append((a, k))
-    )
-    monkeypatch.setattr(plugin_host_services, "log_message", lambda *a, **k: None)
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
     token = HOST_CALLER.set("sakura.memory.mem0")
     try:
-        plugin_host_services._LoggingHostService().call(
-            "emit",
-            [
-                [
-                    {
-                        "severity": "info",
-                        "message": "PRIVATE_MEMORY_BODY",
-                        "fields": {
-                            "event": "memory.recall.finished",
-                            "elapsed_ms": 31,
-                            "selected": 2,
-                            "content": "PRIVATE_CHAT_BODY",
-                        },
-                    }
-                ],
-                0,
-            ],
-        )
+        plugin_host_services._LoggingHostService().call("emit", [[{
+            "severity": "info", "message": "记忆检索完成",
+            "fields": {"event": "memory.recall.finished", "elapsed_ms": 31,
+                       "selected": 2, "content": "PRIVATE_CHAT_BODY"},
+        }], 0])
     finally:
         HOST_CALLER.reset(token)
-    assert records[0][1]["event"] == "memory.recall.finished"
-    assert records[0][0][2]["selected"] == 2
-    assert "PRIVATE" not in json.dumps(records)
+        bridge.close()
+    records = [json.loads(line.removeprefix(runtime_logging.CORE_BRIDGE_PREFIX))
+               for line in stream.getvalue().splitlines()
+               if line.startswith(runtime_logging.CORE_BRIDGE_PREFIX)]
+    assert len(records) == 1
+    assert records[0]["plugin_id"] == "sakura.memory.mem0"
+    assert records[0]["custom"] is True
+    assert records[0]["attributes"]["event"] == "memory.recall.finished"
+    assert records[0]["attributes"]["selected"] == 2
+    assert "PRIVATE_CHAT_BODY" not in json.dumps(records)
+    assert _telemetry_payloads(stream) == []

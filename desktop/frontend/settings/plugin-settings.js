@@ -65,6 +65,7 @@ export function createPluginSettingsFeature({
   }
   let pluginActivityRefreshTimer = null;
   let pluginActivityRefreshInFlight = false;
+  let pluginActivityRefreshFailed = false;
   let aboutComponentsReadError = "";
 
   let pluginView = { items: [] };
@@ -1259,6 +1260,9 @@ export function createPluginSettingsFeature({
       (section.fields || []).filter((field) => field !== headerStatusField).forEach((field) => {
         const row = document.createElement("div");
         row.className = field.type === "resource" ? "plugin-resource-row" : "form-row";
+        if (field.type === "status" && field.placement === "row") {
+          row.hidden = pluginFieldValue(plugin, section, field)?.state === "neutral";
+        }
         const control = pluginSettingControl(plugin, section, field);
         if (!pluginFieldEditable(field)) control.dataset.pluginLiveField = field.key;
         if (field.type !== "boolean" && field.description) {
@@ -1288,6 +1292,7 @@ export function createPluginSettingsFeature({
       const syncAvailability = () => {
         for (const { field, input, row } of conditional) {
           input.disabled = String(inputs.get(field.enabledWhen.field)?.value) !== field.enabledWhen.equals;
+          row.hidden = field.enabledWhen.hide === true && input.disabled;
           row.classList.toggle("is-disabled", input.disabled); refreshSelect(input);
         }
       };
@@ -1340,7 +1345,10 @@ export function createPluginSettingsFeature({
 
   function selectedPluginHasTransientActivity() {
     const plugin = (pluginView?.items || []).find((item) => item.id === pluginState.selectedId);
-    return Boolean(plugin && projectPluginActivity(plugin).isTransient);
+    return Boolean(plugin && (projectPluginActivity(plugin).isTransient
+      || pluginSettingsSections(plugin).some((section) => (section.fields || []).some(
+        (field) => field.type === "status" && pluginFieldValue(plugin, section, field)?.state === "working",
+      ))));
   }
 
   function pluginActivityPageVisible() {
@@ -1365,7 +1373,7 @@ export function createPluginSettingsFeature({
 
   function schedulePluginActivityRefresh() {
     clearPluginActivityRefresh();
-    if (!runtimePluginController || !visiblePluginActivityIsTransient()) return;
+    if (pluginActivityRefreshFailed || !runtimePluginController || !visiblePluginActivityIsTransient()) return;
     pluginActivityRefreshTimer = setTimer(refreshPluginActivityCurrent, 1200);
   }
 
@@ -1374,8 +1382,11 @@ export function createPluginSettingsFeature({
     pluginActivityRefreshInFlight = true;
     try {
       await runtimePluginController.refreshCurrent();
+      pluginActivityRefreshFailed = false;
       aboutComponentsReadError = "";
     } catch {
+      pluginActivityRefreshFailed = true;
+      clearPluginActivityRefresh();
       aboutComponentsReadError = "暂时无法读取组件状态，请稍后刷新。";
       renderAboutComponents();
     } finally {
@@ -2046,6 +2057,7 @@ export function createPluginSettingsFeature({
     const restoreAboutResourceKey = focusResourceKey
       || document.activeElement?.dataset?.aboutResourceKey
       || "";
+    pluginActivityRefreshFailed = false;
     const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
     pluginState.actionBusyKey = busyKey;
     renderPluginPage();
@@ -2516,6 +2528,9 @@ export function createPluginSettingsFeature({
       const field = section?.fields.find((field) => field.key === current.dataset.pluginLiveField);
       if (!field) continue;
       const value = pluginFieldValue(plugin, section, field);
+      if (field.type === "status" && field.placement === "row") {
+        current.closest(".form-row").hidden = value?.state === "neutral";
+      }
       const signature = JSON.stringify([value, pluginState.actionBusyKey, pluginState.managementBusy]);
       if (current.dataset.liveSignature === signature) continue;
       const next = field.placement === 'section_header' ? renderSemanticStatus(value, 'plugin-section-status')

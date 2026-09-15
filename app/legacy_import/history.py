@@ -21,6 +21,7 @@ from app.storage.timeline import (
 )
 
 from .errors import LegacyImportError
+from .files import sqlite_readonly_uri
 
 
 _MANUAL_MARKER = re.compile(
@@ -507,7 +508,7 @@ def read_history_identities(root: Path) -> dict[tuple[str, str], str]:
     path = root / "data/chat_history/timeline.sqlite3"
     if not path.is_file():
         return {}
-    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+    with closing(sqlite3.connect(sqlite_readonly_uri(path), uri=True)) as connection:
         exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_history_identities'"
         ).fetchone()
@@ -557,7 +558,7 @@ class _HistoryIdentities:
         path = root / "data/chat_history/timeline.sqlite3"
         if path.is_file():
             assigned = set(self.values.values())
-            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            with closing(sqlite3.connect(sqlite_readonly_uri(path), uri=True)) as connection:
                 for entry_id, turn_id, scope, kind, timestamp in connection.execute(
                     "SELECT entry_id, turn_id, character_id, kind, created_at "
                     "FROM timeline_entries ORDER BY seq"

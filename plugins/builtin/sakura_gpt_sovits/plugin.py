@@ -294,6 +294,8 @@ class _Coordinator:
         self._supervisor: GptSovitsEndpointSupervisor | None = None
         self._loaded_weights: tuple[str, str] | None = None
         self._pending_config: _ProviderConfig | None = None
+        self._paused = False
+        self._idle = threading.Condition(self._lock)
         self._thread = threading.Thread(
             target=self._run,
             name="sakura-gpt-sovits-coordinator",
@@ -305,7 +307,7 @@ class _Coordinator:
         # Serialize submit with close so a job cannot be queued after close has
         # already drained the queue and stopped the coordinator.
         with self._lock:
-            if self._closed.is_set():
+            if self._closed.is_set() or self._paused:
                 raise RuntimeError("TTS_PROVIDER_CLOSED")
             try:
                 self._queue.put_nowait(job)
@@ -314,7 +316,7 @@ class _Coordinator:
 
     def warmup(self, voice: _CharacterVoice) -> None:
         with self._lock:
-            if self._closed.is_set():
+            if self._closed.is_set() or self._paused:
                 raise RuntimeError("TTS_PROVIDER_CLOSED")
             try:
                 self._queue.put_nowait(_Warmup(voice))
@@ -332,6 +334,8 @@ class _Coordinator:
                     continue
                 with self._lock:
                     self._active = item
+                    if self._paused:
+                        item.cancel()
                 if isinstance(item, _Warmup):
                     self._execute_warmup(item)
                 else:
@@ -344,7 +348,43 @@ class _Coordinator:
                     self._pending_config = None
                 if pending_config is not None:
                     self._apply_config(pending_config)
+                with self._idle:
+                    self._queue.task_done()
+                    self._idle.notify_all()
+
+    def prepare_resources(self) -> bool:
+        from time import monotonic
+        deadline = monotonic() + 2.0
+        with self._idle:
+            self._paused = True
+            if self._active is not None:
+                self._active.cancel()
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(item, _Job):
+                    item.cancel()
+                elif isinstance(item, _Warmup):
+                    item.cancel()
                 self._queue.task_done()
+            while self._queue.unfinished_tasks:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    self._paused = False
+                    raise RuntimeError("TTS_RESOURCE_UPDATE_BUSY")
+                self._idle.wait(remaining)
+        return True
+
+    def finish_resources(self) -> bool:
+        with self._idle:
+            self._loaded_weights = None
+            runtime = self._resolver.runtime if self._resolver is not None else None
+            if runtime is not None:
+                runtime._weights_ready = False
+            self._paused = False
+        return True
 
     def reconfigure(self, config: _ProviderConfig) -> None:
         with self._lock:
@@ -614,6 +654,12 @@ class GPTSoVITSProvider:
             "stage": stage,
         }
 
+    def prepareResourceUpdate(self) -> bool:
+        return self._coordinator.prepare_resources() if self._coordinator else True
+
+    def finishResourceUpdate(self) -> bool:
+        return self._coordinator.finish_resources() if self._coordinator else True
+
     def begin(self, request: Mapping[str, Any]) -> str | dict[str, str]:
         if self._config is None or not self._config.enabled or self._coordinator is None:
             return {"errorCode": "TTS_PROVIDER_UNAVAILABLE"}
@@ -760,7 +806,7 @@ class GPTSoVITSPlugin:
         context.provide(
             SERVICE_KEY,
             provider,
-            exports=("status", "warmup", "begin", "poll", "cancel"),
+            exports=("status", "warmup", "begin", "poll", "cancel", "prepareResourceUpdate", "finishResourceUpdate"),
         )
         hub.registerProvider(
             {

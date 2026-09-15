@@ -2,13 +2,15 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/icon.ico");
     println!("cargo:rerun-if-changed=icons/icon.png");
     println!("cargo:rerun-if-env-changed=SAKURA_BUILD_ID");
+    println!("cargo:rerun-if-env-changed=SAKURA_REQUIRE_DIAGNOSTIC_MAPPING");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=release-staging/diagnostic-build-id.txt");
-    let release = std::env::var("PROFILE").unwrap_or_default() == "release";
+    println!("cargo:rerun-if-changed=release-staging/diagnostic-build.json");
+    let packaged = std::env::var("SAKURA_REQUIRE_DIAGNOSTIC_MAPPING").as_deref() == Ok("1");
     let mut environment = "development".to_string();
-    let build_id = if release {
+    let build_id = if packaged {
         let staged = std::fs::read_to_string("release-staging/diagnostic-build-id.txt")
-            .expect("release requires stage_distribution.py diagnostic mapping")
+            .expect("packaging requires stage_distribution.py diagnostic mapping")
             .trim()
             .to_string();
         if let Ok(explicit) = std::env::var("SAKURA_BUILD_ID") {
@@ -51,6 +53,9 @@ fn main() {
         }
         staged
     } else {
+        if std::env::var("PROFILE").as_deref() == Ok("release") {
+            println!("cargo:warning=Local release build uses development diagnostics; packaging must set SAKURA_REQUIRE_DIAGNOSTIC_MAPPING=1");
+        }
         let commit = std::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
             .output()

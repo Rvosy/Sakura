@@ -30,13 +30,13 @@ export function createCharacterVisualSettings({ document, invoke, refreshSelect,
     select.value = selected;
     select.disabled = locked || busy || !snapshot?.resources.length;
     const resource = snapshot?.resources.find(item => item.id === (selected || snapshot.defaultResourceId));
-    const reasons = { PLUGIN_DISABLED: "所需插件尚未启用。", VISUAL_PROVIDER_MISSING: "尚未安装所需插件。", VISUAL_PROVIDER_SELECTION_REQUIRED: "多个插件支持此形态，请在角色工坊选择。", API_VERSION_UNSUPPORTED: "所需插件与当前版本不兼容。" };
+    const reasons = { VISUAL_MANIFEST_INVALID: "插件的形态声明有误，请修复或更新插件。", VISUAL_MODULE_INVALID: "插件的形态模块缺失或路径无效，请修复或更新插件。", PLUGIN_DISABLED: "所需插件尚未启用。", VISUAL_PROVIDER_MISSING: "尚未安装所需插件。", VISUAL_PROVIDER_SELECTION_REQUIRED: "多个插件支持此形态，请在角色工坊选择。", API_VERSION_UNSUPPORTED: "所需插件与当前版本不兼容。" };
     message.textContent = error || (resource && resource.reasonCode !== "READY" ? reasons[resource.reasonCode] || "所需插件暂不可用。" : selected && !resource ? "所选形态已移除，请重新选择。" : "");
     status.hidden = !message.textContent;
     action.hidden = !resource || resource.reasonCode === "READY";
     action.textContent = "查看插件";
     action.disabled = locked || busy;
-    configure.disabled = locked || busy || !resource?.installId || resource.reasonCode !== "READY";
+    configure.disabled = locked || busy || !resource;
     refreshSelect(select);
   }
   async function refresh(target = characterId) {
@@ -68,7 +68,17 @@ export function createCharacterVisualSettings({ document, invoke, refreshSelect,
   const resource = () => { const snapshot = snapshots.get(characterId); return snapshot?.resources.find(item => item.id === (preference() || snapshot.defaultResourceId)); };
   const change = () => { drafts.set(characterId, select.value || null); render(); onDirty(); };
   const showPlugin = () => openPlugin(resource()?.installId, false);
-  const settings = () => openPlugin(resource()?.installId, true);
+  const settings = async () => {
+    const selected = resource();
+    if (disposed || locked || busy || !selected) return;
+    busy = true; error = ""; render();
+    try {
+      await invoke("open_character_studio", { characterId, resourceId: selected.id });
+    } catch (failure) {
+      reportError(failure, { command: "open_character_studio", code: "STUDIO_OPEN_FAILED" });
+      error = "打开角色工坊失败，请重试。";
+    } finally { busy = false; if (!disposed) render(); }
+  };
   select.addEventListener("change", change); action.addEventListener("click", showPlugin); configure.addEventListener("click", settings);
   const selections = () => Object.fromEntries([...drafts].filter(([id, value]) => value !== savedSelection(id)));
   return {

@@ -18,8 +18,9 @@ import yaml
 
 from app.storage.timeline import TimelineDataError, TimelineStore
 
+from .character_transfer import prepare_packages, public_packages, install_packages, remap_frozen_data
 from .errors import LegacyImportError
-from .files import copy_tree_checked
+from .files import copy_tree_checked, sqlite_readonly_uri
 from .history import import_history, read_history_identities, write_history_identities
 from .inspector import detect_legacy_version, legacy_source_is_active
 from .transaction import PendingCommit, commit_payload
@@ -86,8 +87,8 @@ def _save_plan(plan: "_Plan", source: Path, target: Path, converted: Path) -> No
     # A pre-created directory or link must fail before any private data is written.
     path.parent.mkdir(mode=0o700, exist_ok=False)
     value = {
-        "source": str(source), "target": str(target),
-        "public": plan.public(), "contents": sorted(plan.comparison_items),
+        "source": str(source), "target": str(target), "roleMapping": plan.role_mapping,
+        "public": plan.public(),
         "identities": [
             [identity, kind, item_id]
             for (identity, kind), item_id in read_history_identities(converted).items()
@@ -144,8 +145,16 @@ class _Plan:
     conflicts: list[dict[str, str]] = field(default_factory=list)
     recoverable_errors: int = 0
     blocked: bool = False
-    comparison_items: list[str] = field(default_factory=list)
     token: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    role_mapping: dict[str, str] = field(default_factory=dict)
+    packages: dict = field(default_factory=dict)
+    package_records: list[dict] = field(default_factory=list)
+    target_characters: list[dict] = field(default_factory=list)
+    package_issues: list[dict] = field(default_factory=list)
+    current_scope: str = ""
+    merge_target: Path | None = None
+    reassociated_records: int = 0
 
     def classify(
         self,
@@ -154,15 +163,14 @@ class _Plan:
         character_id: str,
         item_id: str,
         status: str,
-        content: str,
         hard: bool = False,
     ) -> None:
         counts = self.by_character[character_id]
+        if hard:
+            self.recoverable_errors += 1
+            return
         field_name = f"{domain}_{status}"
         setattr(counts, field_name, getattr(counts, field_name) + 1)
-        self.comparison_items.append(
-            _canonical_content([domain, character_id, item_id, status, content, hard])
-        )
         if status == "conflicts":
             if len(self.conflicts) < _MAX_PUBLIC_CONFLICTS:
                 self.conflicts.append(
@@ -199,6 +207,12 @@ class _Plan:
                 "memoryConflicts": totals.memory_conflicts,
                 "recoverableErrors": self.recoverable_errors,
             },
+            "packages": self.package_records,
+            "targetCharacters": self.target_characters,
+            "packageIssues": self.package_issues,
+            "reassociatedRecords": self.reassociated_records,
+            "packagesNew": sum(item["packageStatus"] == "new" for item in self.package_records),
+            "requiresMapping": any(item["requiresMapping"] for item in self.package_records),
             "conflicts": self.conflicts,
             "requiresConflictConfirmation": bool(self.conflicts),
             "blocked": self.blocked,
@@ -211,13 +225,13 @@ class _ScopeResolution:
     conflict: bool = False
 
 
-def inspect_character_data_import(source: Path, target: Path) -> dict[str, object]:
+def inspect_character_data_import(source: Path, target: Path, *, role_mapping: dict[str, str] | None = None) -> dict[str, object]:
     source = Path(source).resolve(strict=True)
     target = Path(target).resolve(strict=True)
     _validate_source(source, target)
     with tempfile.TemporaryDirectory(prefix="sakura-data-import-inspect-") as temporary:
         converted = Path(temporary) / "converted"
-        plan = _inspect_into_plan(source, target, converted)
+        plan = _inspect_into_plan(source, target, converted, role_mapping=role_mapping)
         _save_plan(plan, source, target, converted)
         return plan.public()
 
@@ -251,23 +265,18 @@ def run_character_data_import(
         identities = {
             (identity, kind): item_id for identity, kind, item_id in previous["identities"]
         }
-        previous_public = previous["public"]
-        previous_contents = previous["contents"]
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise LegacyImportError("LEGACY_DATA_IMPORT_PLAN_STALE", "inspect") from exc
     try:
-        plan = _inspect_into_plan(source, target, converted, identities=identities)
+        plan = _inspect_into_plan(source, target, converted, identities=identities, role_mapping=previous.get("roleMapping", {}))
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
     plan.token = plan_token
     public_plan = plan.public()
-    if (
-        sorted(plan.comparison_items) != previous_contents
-        or public_plan != previous_public
-    ):
+    if public_plan["requiresMapping"]:
         shutil.rmtree(staging, ignore_errors=True)
-        raise LegacyImportError("LEGACY_DATA_IMPORT_PLAN_STALE", "inspect")
+        raise LegacyImportError("LEGACY_DATA_MAPPING_REQUIRED", "inspect")
     if plan.blocked:
         shutil.rmtree(staging, ignore_errors=True)
         raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "inspect")
@@ -276,13 +285,14 @@ def run_character_data_import(
         raise LegacyImportError("LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "inspect")
 
     try:
-        _copy_current_domains(target, payload)
-        _merge_timeline(converted, payload, overwrite_conflicts=overwrite_conflicts)
+        _copy_current_domains(plan.merge_target or target, payload)
+        install_packages(plan.packages, target, payload)
+        _merge_timeline(converted, payload, overwrite_conflicts=overwrite_conflicts, quarantine=payload / "data/legacy-imports" / import_id / "quarantine")
         _merge_memory(
             converted,
             payload,
             overwrite_conflicts=overwrite_conflicts,
-            current_scope=_legacy_current_scope(source),
+            current_scope=plan.current_scope,
             quarantine=payload
             / "data"
             / "legacy-imports"
@@ -343,7 +353,11 @@ def _validate_source(source: Path, target: Path) -> None:
 def _inspect_into_plan(
     source: Path, target: Path, converted: Path,
     *, identities: dict[tuple[str, str], str] | None = None,
+    role_mapping: dict[str, str] | None = None,
 ) -> _Plan:
+    role_mapping = dict(role_mapping or {})
+    if any(not isinstance(k, str) or not isinstance(v, str) or not k or not v for k, v in role_mapping.items()):
+        raise LegacyImportError("LEGACY_DATA_MAPPING_INVALID", "inspect")
     character_ids = _discover_scopes(source)
     stats = import_history(
         source,
@@ -356,8 +370,32 @@ def _inspect_into_plan(
     plan = _Plan(source.name[:120])
     plan.recoverable_errors += stats.errors_quarantined
     plan.recoverable_errors += _snapshot_source_memory(source, converted)
-    _inspect_timeline(converted, target, plan)
-    _inspect_memory(converted, target, plan, current_scope=_legacy_current_scope(source))
+    plan.role_mapping = role_mapping
+    plan.packages, targets, plan.package_issues = prepare_packages(source, target, converted, role_mapping)
+    plan.current_scope, mapping_errors, _mapped = remap_frozen_data(converted, role_mapping, _legacy_current_scope(source))
+    plan.recoverable_errors += mapping_errors
+    # Explicitly reconnect already-imported orphan scopes. Never take data away
+    # from another installed character; the copied target participates in commit.
+    orphan_mapping = {key: value for key, value in role_mapping.items() if key not in targets and value in targets and key != value}
+    effective_target = target
+    if orphan_mapping:
+        effective_target = converted / "target-view"
+        _copy_current_domains(target, effective_target)
+        _, _, plan.reassociated_records = remap_frozen_data(effective_target, orphan_mapping, "", existing=True)
+        plan.merge_target = effective_target
+    _inspect_timeline(converted, effective_target, plan)
+    _inspect_memory(converted, effective_target, plan, current_scope=plan.current_scope)
+    mapped_targets = set(role_mapping.values())
+    scopes = set(character_ids) | (set(plan.by_character) - mapped_targets)
+    scopes.update(key for key, value in role_mapping.items() if value in plan.by_character)
+    if set(role_mapping) - (scopes | set(plan.packages)):
+        raise LegacyImportError("LEGACY_DATA_MAPPING_INVALID", "inspect")
+    plan.package_records = public_packages(plan.packages, targets, scopes, role_mapping)
+    plan.target_characters = [{"characterId": role, "displayName": profile.display_name} for role, profile in sorted(targets.items())]
+    plan.target_characters.extend(
+        {"characterId": role, "displayName": entry["displayName"]}
+        for role, entry in plan.packages.items() if entry.get("staged") and role not in targets
+    )
     return plan
 
 
@@ -445,7 +483,6 @@ def _legacy_current_scope(source: Path) -> str:
 def _timeline_rows(path: Path) -> dict[str, tuple[str, ...]]:
     if not path.is_file():
         return {}
-    TimelineStore(path).assert_activated()
     with closing(sqlite3.connect(path)) as connection:
         rows = connection.execute(
             f"SELECT {', '.join(_TIMELINE_COLUMNS)} FROM timeline_entries"
@@ -476,7 +513,6 @@ def _inspect_timeline(converted: Path, target: Path, plan: _Plan) -> None:
             character_id=character_id,
             item_id=entry_id,
             status=status,
-            content=_canonical_content({"source": row, "target": existing}),
             hard=hard,
         )
 
@@ -488,7 +524,7 @@ def _copy_current_domains(target: Path, payload: Path) -> None:
             copy_tree_checked(source, payload / relative, cancelled=lambda: False)
 
 
-def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool) -> None:
+def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool, quarantine: Path) -> None:
     source_path = converted / "data/chat_history/timeline.sqlite3"
     if not source_path.is_file():
         return
@@ -507,7 +543,8 @@ def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool
             if (existing is not None and existing[2] != row[2]) or (
                 row[1] in target_turns and target_turns[row[1]] != row[2]
             ):
-                raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
+                _append_memory_quarantine(quarantine / "history-scope-conflicts.jsonl", dict(zip(_TIMELINE_COLUMNS, row, strict=True)))
+                continue
             if existing is not None and not overwrite_conflicts:
                 raise LegacyImportError("LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "staging")
             connection.execute(
@@ -526,7 +563,6 @@ def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool
             target_turns[row[1]] = row[2]
         write_history_identities(connection, read_history_identities(converted))
         connection.commit()
-    store.assert_activated()
 
 
 def _inspect_memory(source: Path, target: Path, plan: _Plan, *, current_scope: str) -> None:
@@ -542,12 +578,10 @@ def _inspect_memory(source: Path, target: Path, plan: _Plan, *, current_scope: s
         point_scopes = {}
         target_point_scopes = {}
         plan.recoverable_errors += 1
-        plan.comparison_items.append("memory\0qdrant-unreadable")
     except Exception:  # noqa: BLE001 - other Memory subdomains remain inspectable
         point_scopes = {}
         target_point_scopes = {}
         plan.recoverable_errors += 1
-        plan.comparison_items.append("memory\0qdrant-unreadable")
     try:
         _inspect_history_database(
             source_memory,
@@ -561,20 +595,16 @@ def _inspect_memory(source: Path, target: Path, plan: _Plan, *, current_scope: s
         if exc.code == "LEGACY_DATA_TARGET_MEMORY_INVALID":
             raise
         plan.recoverable_errors += 1
-        plan.comparison_items.append("memory\0history-unreadable")
     except Exception:  # noqa: BLE001 - preserve and report at apply time
         plan.recoverable_errors += 1
-        plan.comparison_items.append("memory\0history-unreadable")
     try:
         _inspect_profiles(source_memory, target_memory, plan)
     except LegacyImportError as exc:
         if exc.code == "LEGACY_DATA_TARGET_MEMORY_INVALID":
             raise
         plan.recoverable_errors += 1
-        plan.comparison_items.append("memory\0profiles-unreadable")
     except Exception:  # noqa: BLE001 - preserve and report at apply time
         plan.recoverable_errors += 1
-        plan.comparison_items.append("memory\0profiles-unreadable")
 
 
 def _merge_memory(
@@ -587,7 +617,6 @@ def _merge_memory(
 ) -> None:
     source_memory = source / "data/memory"
     target_memory = payload / "data/memory"
-    _validate_target_memory(target_memory)
     target_memory.mkdir(parents=True, exist_ok=True)
     try:
         point_scopes, target_point_scopes = _merge_qdrant(
@@ -630,33 +659,6 @@ def _merge_memory(
     # Imported Timeline invalidates every old cursor. Core will rebuild role by
     # role from the merged authoritative stores.
     shutil.rmtree(target_memory / "curation_state", ignore_errors=True)
-
-
-def _validate_target_memory(memory: Path) -> None:
-    """Fail closed before any source record can mutate a copied target store."""
-
-    client = None
-    try:
-        _points, client = _qdrant_points(memory)
-    except Exception as exc:
-        raise LegacyImportError(
-            "LEGACY_DATA_TARGET_MEMORY_INVALID", "staging"
-        ) from exc
-    finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
-            (memory / "qdrant/.lock").unlink(missing_ok=True)
-    with tempfile.TemporaryDirectory(prefix="sakura-target-memory-validation-") as temporary:
-        try:
-            _history_rows(memory, Path(temporary) / "history.sqlite3")
-            _profiles(memory)
-        except Exception as exc:
-            raise LegacyImportError(
-                "LEGACY_DATA_TARGET_MEMORY_INVALID", "staging"
-            ) from exc
 
 
 def _quarantine_memory_path(source: Path, destination: Path) -> None:
@@ -804,15 +806,11 @@ def _inspect_qdrant(
                     character_id=scope or "scope-conflict",
                     item_id=point_id,
                     status="conflicts",
-                    content=_canonical_content((vector, payload)),
                     hard=True,
                 )
                 continue
             if not scope:
                 plan.recoverable_errors += 1
-                plan.comparison_items.append(
-                    f"memory\0unscoped-point\0{point_id}\0{_canonical_content((vector, payload))}"
-                )
                 continue
             scopes[point_id] = resolution
             payload = {**payload, "user_id": scope}
@@ -832,14 +830,12 @@ def _inspect_qdrant(
             )
             if hard:
                 status = "conflicts"
+                scopes[point_id] = _ScopeResolution(scope, conflict=True)
             plan.classify(
                 domain="memory",
                 character_id=scope,
                 item_id=point_id,
                 status=status,
-                content=_canonical_content(
-                    {"source": source_content, "target": existing}
-                ),
                 hard=hard,
             )
     finally:
@@ -898,7 +894,9 @@ def _merge_qdrant(
         payload = dict(raw_payload)
         resolution = _point_scope(payload, current_scope)
         if resolution.conflict:
-            raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
+            scopes[point_id] = resolution
+            _append_memory_quarantine(quarantine / "point-scope-conflicts.jsonl", {"id": point_id, "vector": vector, "payload": raw_payload})
+            continue
         if not resolution.scope:
             _append_memory_quarantine(
                 quarantine / "unscoped-qdrant-points.jsonl",
@@ -962,7 +960,9 @@ def _merge_qdrant(
                     or not existing_scope.scope
                     or existing_scope.scope != scope
                 ):
-                    raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
+                    scopes[point_id] = _ScopeResolution(scope, conflict=True)
+                    _append_memory_quarantine(quarantine / "point-scope-conflicts.jsonl", {"id": point_id, "vector": vector, "payload": payload})
+                    continue
                 if _canonical_content(existing) == _canonical_content((vector, payload)):
                     continue
                 if not overwrite_conflicts:
@@ -998,7 +998,7 @@ def _sqlite_snapshot(source: Path, destination: Path) -> bool:
     if not source.is_file():
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as original:
+    with closing(sqlite3.connect(sqlite_readonly_uri(source), uri=True)) as original:
         with closing(sqlite3.connect(destination)) as copied:
             original.backup(copied)
     from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
@@ -1084,9 +1084,6 @@ def _inspect_history_database(
         scope = source_resolution.scope
         if not scope:
             plan.recoverable_errors += 1
-            plan.comparison_items.append(
-                f"memory\0unscoped-history\0{row_id}\0{_canonical_content(source_map)}"
-            )
             continue
         existing = target_rows.get(row_id)
         target_map: dict[str, Any] | None = None
@@ -1117,7 +1114,6 @@ def _inspect_history_database(
             character_id=scope,
             item_id=f"history:{row_id}",
             status=status,
-            content=_canonical_content({"source": source_map, "target": target_map}),
             hard=hard,
         )
 
@@ -1158,7 +1154,8 @@ def _merge_history_database(
                 current_scope,
             )
             if resolution.conflict:
-                raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
+                _append_memory_quarantine(quarantine / "history-scope-conflicts.jsonl", source_map)
+                continue
             if not resolution.scope:
                 _append_memory_quarantine(
                     quarantine / "unscoped-history-rows.jsonl",
@@ -1211,7 +1208,8 @@ def _merge_history_database(
                             or not target_resolution.scope
                             or target_resolution.scope != scope
                         ):
-                            raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
+                            _append_memory_quarantine(quarantine / "history-scope-conflicts.jsonl", source_map)
+                            continue
                         target_values = [target_map.get(name) for name in canonical_columns]
                         if _canonical_content(target_values) == _canonical_content(values):
                             continue
@@ -1276,7 +1274,6 @@ def _inspect_profiles(source: Path, target: Path, plan: _Plan) -> None:
             character_id=scope,
             item_id=f"profile:{scope}",
             status=status,
-            content=_canonical_content({"source": profile, "target": existing}),
         )
 
 

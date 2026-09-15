@@ -9,6 +9,7 @@
 @import url("../core/icons.css");
 @import url("../core/selection.css");
 @import url("./visual-settings.css");
+@import url("./legacy-data-import.css");
 @import url("../core/tooltip.css");
 
 :root {
@@ -3161,6 +3162,7 @@ button:active:not(:disabled) {
 }
 
 .plugin-readonly-output {
+  white-space: pre-wrap;
   display: block;
   min-width: 0;
   padding: 3px 0;

@@ -109,9 +109,8 @@ async def run():
                 async with async_playwright() as playwright:
                     browser = await playwright.chromium.launch(channel=os.environ.get("SAKURA_BROWSER_CHANNEL") or ("msedge" if sys.platform == "win32" else None))
                     page = await browser.new_page(viewport={"width": 1274, "height": 820})
-                    errors, premature = [], []
-                    state = {"restarting": False, "mode": "late", "publish_count": 0, "fail_catalog": False, "catalog_error": None, "opens": 0}
-                    publication = asyncio.Event()
+                    errors = []
+                    state = {"publish_count": 0, "fail_catalog": False, "catalog_error": None, "opens": 0}
                     page.on("pageerror", lambda error: errors.append(str(error)))
 
                     async def wait_images():
@@ -120,10 +119,6 @@ async def run():
                                 return
                             await asyncio.sleep(0.1)
                         raise AssertionError({"message": "Portrait thumbnails did not load", "images": await page.evaluate("[...document.querySelectorAll('.expression-thumbnail img')].map(i=>({src:i.src,width:i.naturalWidth}))"), "error": await page.locator("#errorText").inner_text(), "pageErrors": errors})
-
-                    async def ready():
-                        state["restarting"] = False
-                        await page.evaluate("window.emitNative('sakura://studio-runtime-reload',{state:'ready',generationId:'next'})")
 
                     async def invoke(command, params=None):
                         params = params or {}
@@ -138,9 +133,6 @@ async def run():
                         if method == "studio.visual.catalog" and state["fail_catalog"] and state["publish_count"] == 3:
                             state["fail_catalog"] = False
                             raise RuntimeError("ROUTER_QUEUE_FULL")
-                        if state["restarting"]:
-                            premature.append(method)
-                            raise RuntimeError("STUDIO_CORE_UNAVAILABLE")
                         result = await bridge.request(method, params["params"])
                         if method == "studio.visual.open":
                             state["opens"] += 1
@@ -159,10 +151,7 @@ async def run():
                                     item["previewUrl"] = origin + path + "/" + source.name.encode().hex()
                         if method == "studio.character.publish":
                             state["publish_count"] += 1
-                            state["restarting"] = True
-                            result["runtimeReload"] = "requested"
-                            if state["mode"] == "early": await ready()
-                            publication.set()
+                            result["runtimeReload"] = "not_required"
                         return result
 
                     await page.expose_function("nativeInvoke", invoke)
@@ -220,7 +209,7 @@ async def run():
                     await expect(rows).to_have_count(40)
                     await expect(page.locator("#errorText")).to_be_empty()
                     # Observe actual painted frames across saves, including the
-                    # native restart wait and image decoding in the new editor.
+                    # local publication and image decoding in the new editor.
                     await page.evaluate("""() => {
                       window.blankFrames = 0;
                       function check() {
@@ -230,19 +219,9 @@ async def run():
                       }
                       window.frameCheck = requestAnimationFrame(check);
                     }""")
-                    for index, mode in enumerate(["late", "early"]):
-                        state["mode"] = mode
-                        publication.clear()
+                    for index in range(2):
                         await page.locator("#visualName").fill(f"日常立绘 {index + 1}")
                         await page.locator("#saveButton").click()
-                        if mode == "late":
-                            await expect(rows).to_have_count(40)
-                            await asyncio.wait_for(publication.wait(), 10)
-                            await asyncio.sleep(0.1)
-                            assert state["publish_count"] == 1
-                            assert not premature, premature
-                            await expect(page.locator("#saveButton")).to_be_disabled()
-                            await ready()
                         await expect(page.locator("#saveButton")).to_be_enabled()
                         await expect(rows).to_have_count(40)
                         await wait_images()
@@ -275,14 +254,13 @@ async def run():
                     assert await page.evaluate("document.adoptedStyleSheets.length") == 1, await page.evaluate("document.adoptedStyleSheets.length")
                     assert not await page.evaluate("window.cspViolations")
                     assert not bridge.errors, bridge.errors
-                    assert not premature, premature
                     assert not errors, errors
                     assert await page.evaluate("window.blankFrames") == 0
                     assert await page.evaluate("window.blankCoverFrames") == 0
                     saved = json.loads((package / "character.json").read_text(encoding="utf-8"))
                     assert saved["visuals"]["resources"][0]["name"] == "保存后刷新"
                     await browser.close()
-                    print("PASS: both covers load before selection, unchanged cover nodes/requests across four switches, zero blank cover/save frames, desktop CSP, 40 portraits, no image RPC, transient catalog timeout, early/late reload events, responsive layout")
+                    print("PASS: both covers load before selection, unchanged cover nodes/requests across four switches, zero blank cover/save frames, desktop CSP, 40 portraits, no image RPC, transient catalog timeout, local publication without reload events, responsive layout")
             finally:
                 bridge.close()
                 application.close()

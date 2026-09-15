@@ -174,19 +174,19 @@ def test_model_inventory_updates_after_import_and_draft_asset_removal(tmp_path: 
     assert cleared["modelFiles"] == []
 
 
-def test_publish_reports_restart_only_for_current_character(tmp_path: Path) -> None:
+def test_publish_refreshes_only_changed_current_character(tmp_path: Path) -> None:
     _write_character(tmp_path, "alpha")
     _write_character(tmp_path, "beta")
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "characters.yaml").write_text(
         yaml.safe_dump({"current_character_id": "alpha"}), encoding="utf-8"
     )
-    quiesced: list[str] = []
+    refreshed: list[str] = []
     boundary = CharacterStudioBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        quiesce_generation=lambda: quiesced.append("alpha"),
+        apply_current=lambda: refreshed.append("alpha"),
     )
     opened = boundary.handle(
         _request("studio.character.open", {"characterId": "alpha"})
@@ -202,8 +202,8 @@ def test_publish_reports_restart_only_for_current_character(tmp_path: Path) -> N
     )
 
     assert current["ok"] is True
-    assert current["payload"]["changePlan"] == "core_restart_required"
-    assert quiesced == ["alpha"]
+    assert current["payload"]["changePlan"] == "character_refresh"
+    assert refreshed == ["alpha"]
 
     repeated = boundary.handle(
         _request(
@@ -214,7 +214,7 @@ def test_publish_reports_restart_only_for_current_character(tmp_path: Path) -> N
     assert repeated["ok"] is True
     assert repeated["payload"]["changePlan"] == "unchanged"
     assert repeated["payload"]["isDirty"] is False
-    assert quiesced == ["alpha"]
+    assert refreshed == ["alpha"]
 
     other = boundary.handle(
         _request("studio.character.open", {"characterId": "beta"})
@@ -226,87 +226,22 @@ def test_publish_reports_restart_only_for_current_character(tmp_path: Path) -> N
         )
     )
     assert other_result["payload"]["changePlan"] == "unchanged"
-    assert quiesced == ["alpha"]
+    assert refreshed == ["alpha"]
 
 
-def test_publish_failure_after_quiesce_marks_generation_invalidated(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_publish_failure_keeps_generation_available(tmp_path: Path, monkeypatch):
     _write_character(tmp_path, "alpha")
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "characters.yaml").write_text(
-        yaml.safe_dump({"current_character_id": "alpha"}), encoding="utf-8"
-    )
-    quiesced: list[str] = []
-    boundary = CharacterStudioBoundary(
-        GENERATION,
-        CREDENTIAL,
-        tmp_path,
-        quiesce_generation=lambda: quiesced.append("alpha"),
-    )
-    opened = boundary.handle(
-        _request("studio.character.open", {"characterId": "alpha"})
-    )["payload"]
-
-    def fail_after_quiesce(*_args, quiesce_current=None, **_kwargs):  # type: ignore[no-untyped-def]
-        assert quiesce_current is not None
-        quiesce_current()
+    (tmp_path / "config/characters.yaml").write_text(yaml.safe_dump({"current_character_id": "alpha"}), encoding="utf-8")
+    boundary = CharacterStudioBoundary(GENERATION, CREDENTIAL, tmp_path)
+    opened = boundary.handle(_request("studio.character.open", {"characterId": "alpha"}))["payload"]
+    def fail(*args, **kwargs):
         raise OSError("simulated publish failure")
-
-    monkeypatch.setattr(boundary._service, "save_character", fail_after_quiesce)  # noqa: SLF001
-
-    result = boundary.handle(
-        _request(
-            "studio.character.publish",
-            {"workspaceId": opened["workspaceId"], "doc": opened["doc"]},
-        )
-    )
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "STUDIO_OPERATION_FAILED"
-    assert result["error"]["details"]["generationInvalidated"] is True
-    assert quiesced == ["alpha"]
-
-
-def test_quiesce_failure_is_public_and_still_marks_generation_invalidated(
-    tmp_path: Path,
-) -> None:
-    _write_character(tmp_path, "alpha")
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "characters.yaml").write_text(
-        yaml.safe_dump({"current_character_id": "alpha"}), encoding="utf-8"
-    )
-
-    def fail_quiesce() -> None:
-        raise RuntimeError("close failed: token=quiesce-test-secret")
-
-    boundary = CharacterStudioBoundary(
-        GENERATION,
-        CREDENTIAL,
-        tmp_path,
-        quiesce_generation=fail_quiesce,
-    )
-    opened = boundary.handle(
-        _request("studio.character.open", {"characterId": "alpha"})
-    )["payload"]
-
-    result = boundary.handle(
-        _request(
-            "studio.character.publish",
-            {"workspaceId": opened["workspaceId"], "doc": opened["doc"]},
-        )
-    )
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "STUDIO_OPERATION_FAILED"
-    assert result["error"]["message"] == "停止当前角色的运行任务失败。"
-    assert result["error"]["details"]["generationInvalidated"] is True
-    diagnostics = result["error"]["details"]["diagnostics"]
-    assert "close failed" in diagnostics["diagnostic"]
-    assert "RuntimeError" in diagnostics["exception_chain"]
-    assert "fail_quiesce" in diagnostics["exception_stack"]
-    assert "quiesce-test-secret" not in json.dumps(result)
+    monkeypatch.setattr(boundary._service, "save_character", fail)
+    result = boundary.handle(_request("studio.character.publish", {"workspaceId": opened["workspaceId"], "doc": opened["doc"]}))
+    assert not result["ok"]
+    assert "generationInvalidated" not in result["error"]["details"]
+    assert boundary.handle(_request("studio.bootstrap", {}))["ok"]
 
 
 def test_boundary_rejects_unknown_dto_fields_and_generation(tmp_path: Path) -> None:

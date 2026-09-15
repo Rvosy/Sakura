@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-14
 ---
 
 # WP-4-06 手动截图、受控图像资源与平台权限规范
@@ -46,10 +46,16 @@ updated: 2026-08-29
   和伪造 ID 必须拒绝或返回未接受，不能读取资源。
 - 聊天历史只保存手动截图 marker 和可追问视觉记录，不保存原图、base64、resource token 或
   `attachmentId`。Pipeline 使用现有多模态消息和视觉摘要链。
+- 捕获开始前通过 `screen.session {}` 读取 `{ sessionId }`。该随机标记属于角色会话，每次开始切换就失效，
+  即使随后切回同名角色也不复用。原生覆盖层保存此标记，`screen.attach` 接收 `{ resource, sessionId }`；
+  Core 在读取资源前和接纳附件前都检查标记，切换期间或标记过期时返回 `SCREEN_ATTACHMENT_REJECTED`，
+  原因是 `SCREEN_SESSION_STALE`。旧资源仍由原生所有者清理，不允许兼容缺少会话标记的提交。
+- `start_screen_capture` 接收前端当前的 `captureRevision`，原生完成、取消和错误事件带回此值。前端失效截图时递增
+  该版本，拒绝旧版本的迟到结果；旧截图的取消事件也不得改变新截图的进行中状态。原生提交前、完成后确认角色会话标记仍有效。
 
 ## 接口与平台门
 
-- Core capability 为 `assistant.screen-capture-v2`，allowlist 增加 `screen.attach`、`screen.remove`、
+- Core capability 为 `assistant.screen-capture-v2`，allowlist 增加 `screen.session`、`screen.attach`、`screen.remove`、
   `screen.release` 和带可选组级 `attachmentId` 的 `chat.send`。`screen.attach` 返回
   `{ attached, attachmentId, itemId, width, height, count }`；`screen.remove` 接受
   `{ attachmentId, itemId }` 并返回 `{ accepted, attachmentId, itemId, count }`。`itemId` 为不可预测的

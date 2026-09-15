@@ -368,27 +368,14 @@ class ContextPolicy:
         if observation_turns:
             select_turn(observation_turns[-1])
 
-        source_limits: dict[str, int] = {}
-        source_used: dict[str, int] = {}
         for fragment in optional:
-            source_limits[fragment.source] = max(
-                source_limits.get(fragment.source, 0),
-                max(1, fragment.token_budget),
-            )
-        for fragment in optional:
-            source_remaining = source_limits[fragment.source] - source_used.get(
-                fragment.source, 0
-            )
-            remaining_total, content_used, included = _select_fragment(
+            remaining_total, _used, included = _select_fragment(
                 fragment,
                 remaining_total,
                 selected,
                 dropped,
-                content_budget=source_remaining,
+                content_budget=max(1, fragment.token_budget),
                 has_runtime_context=has_runtime_context,
-            )
-            source_used[fragment.source] = (
-                source_used.get(fragment.source, 0) + content_used
             )
             has_runtime_context = has_runtime_context or included
 

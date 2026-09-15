@@ -179,6 +179,8 @@ jobs:
       - name: Build the Runtime v2 platform bundle
         working-directory: desktop/src-tauri
         shell: bash
+        env:
+          SAKURA_REQUIRE_DIAGNOSTIC_MAPPING: "1"
         run: |
           if [[ "${{ steps.apple_signing.outputs.enabled }}" != "true" ]]; then
             unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD

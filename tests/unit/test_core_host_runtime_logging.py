@@ -4,6 +4,8 @@ import io
 import json
 import logging
 
+import pytest
+
 from app.core.interaction import get_interaction_id, interaction_context
 from app.core.runtime_log import (
     RUNTIME_LOG_EXTERNAL_ONLY_KEY,
@@ -53,6 +55,27 @@ def test_missing_host_sink_never_opens_a_fallback_file(monkeypatch) -> None:
     monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("file write")))
     assert log_message("info", "没有宿主时丢弃") is False
     log_event("APP", "Sakura startup", event="core.process.started")
+
+
+@pytest.mark.parametrize("value", [12, "字段" * 100])
+def test_custom_field_budget_is_stable_across_sdk_and_core_cleaning(value) -> None:
+    from app.plugins.sakura_plugin_sdk import prepare_log_payload
+
+    message, fields = prepare_log_payload(
+        "诊断元数据", {"api_key": "private-budget-secret", **{f"metric_{i}": value for i in range(40)}},
+    )
+    assert fields["record_truncated"] is True
+    assert fields["api_key"] == "[REDACTED]"
+    assert len(fields) <= 32  # 31 ordinary scalar fields plus the marker.
+    assert len(json.dumps(fields, ensure_ascii=False).encode("utf-8")) <= 1800
+    assert prepare_log_payload(message, fields) == (message, fields)
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        assert log_message("warning", message, fields=fields)
+    finally:
+        bridge.close()
+    assert _records(stream)[0]["attributes"] == fields
 
 
 def _records(stream: io.BytesIO) -> list[dict[str, object]]:

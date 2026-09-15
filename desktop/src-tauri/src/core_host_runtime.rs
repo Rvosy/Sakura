@@ -4381,8 +4381,8 @@ mod tests {
 
     #[test]
     fn polling_logs_are_debug_while_rejections_and_deadlines_remain_visible() {
+        use super::{ConcurrentRequestHandle, CoreHostRouter};
         use crate::runtime_log::{RuntimeLogConfig, Severity, Verbosity};
-        let _test_lock = lifecycle_test_lock();
         let root =
             std::env::temp_dir().join(format!("sakura-asr-ipc-log-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -4391,21 +4391,30 @@ mod tests {
             let mut config = RuntimeLogConfig::production(path.clone());
             config.level = level;
             let log = RuntimeLogService::start_with_config(config);
-            let mut layout = development_layout();
-            layout.user_root = root.canonicalize().unwrap();
-            let mut host =
-                CoreHostRuntime::launch_observed(&layout, GENERATION_ID, 1, log.clone()).unwrap();
-            request_predecessor_hello(&mut host, "asr-log-hello", Duration::from_secs(3)).unwrap();
-            let handle = host.concurrent_request_handle().unwrap();
-            let availability = handle
-                .request(
-                    "asr-log-availability",
-                    "asr.input.availability",
-                    json!({}),
-                    Duration::from_secs(3),
-                )
-                .unwrap();
-            assert_eq!(availability["ok"], true);
+            // Log policy must not depend on a Python process completing its cold start.
+            let router = CoreHostRouter::new(
+                null_file(),
+                Box::new(EofPipeReader),
+                GENERATION_ID,
+                "log-test-credential",
+            )
+            .unwrap();
+            let handle = ConcurrentRequestHandle {
+                router: router.handle(),
+                generation_id: GENERATION_ID.into(),
+                generation_credential: "log-test-credential".into(),
+                protocol_minor: 2,
+                generation_number: 1,
+                core_pid: 0,
+                runtime_log: Some(log.clone()),
+            };
+            handle.log_request_result(
+                "asr-log-availability",
+                "asr.input.availability",
+                &Ok(json!({"ok": true, "payload": {"enabled": false}})),
+                1,
+                Duration::from_secs(3),
+            );
             // Exercise the same producer and real writer without opening a microphone.
             for command in [
                 "asr.input.poll",
@@ -4426,15 +4435,13 @@ mod tests {
                     None,
                 );
             }
-            let rejected = handle
-                .request(
-                    "asr-log-rejected",
-                    "asr.input.poll",
-                    json!({"recordingId": "missing-test-recording"}),
-                    Duration::from_secs(3),
-                )
-                .unwrap();
-            assert_eq!(rejected["ok"], false);
+            handle.log_request_result(
+                "asr-log-rejected",
+                "asr.input.poll",
+                &Ok(json!({"ok": false, "error": {"code": "ASR_RECORDING_NOT_FOUND"}})),
+                1,
+                Duration::from_secs(3),
+            );
             handle.log_request_result(
                 "asr-log-deadline",
                 "asr.input.capture_status",
@@ -4512,7 +4519,8 @@ mod tests {
                 .iter()
                 .any(|detail| detail.label == "请求编号"
                     && detail.value == "character-import-original-error"));
-            host.shutdown().unwrap();
+            drop(handle);
+            drop(router);
             log.drain_and_shutdown_for_test();
             let text = fs::read_to_string(&path).unwrap();
             assert_eq!(text.lines().filter(|line| line.contains("outcome=completed") && line.contains("asr.input.")).count(),

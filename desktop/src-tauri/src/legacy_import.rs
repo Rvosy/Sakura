@@ -583,23 +583,47 @@ pub fn legacy_import_cancel(
 #[tauri::command]
 pub async fn settings_legacy_data_import_choose(
     window: WebviewWindow,
+    selection_id: Option<String>,
+    role_mapping: Option<std::collections::BTreeMap<String, String>>,
     state: State<'_, Arc<LegacyImportState>>,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Option<Value>, String> {
     product_shell::validate_settings_window(&window)?;
-    let selected = tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_title("选择 Sakura 0.9.x 目录")
-            .pick_folder()
-    })
-    .await
-    .map_err(|_| "LEGACY_DATA_SOURCE_CHOOSER_FAILED".to_string())?;
-    let Some(source) = selected else {
-        return Ok(None);
+    let source = if let Some(id) = selection_id {
+        let mut inner = state
+            .inner
+            .lock()
+            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let selection = inner
+            .data_selection
+            .as_ref()
+            .filter(|selection| selection.id == id)
+            .cloned()
+            .ok_or_else(|| "LEGACY_DATA_IMPORT_SELECTION_INVALID".to_string())?;
+        inner.data_selection = None;
+        selection.source
+    } else {
+        let selected = tauri::async_runtime::spawn_blocking(|| {
+            rfd::FileDialog::new()
+                .set_title("选择 Sakura 0.9.x 目录")
+                .pick_folder()
+        })
+        .await
+        .map_err(|_| "LEGACY_DATA_SOURCE_CHOOSER_FAILED".to_string())?;
+        let Some(source) = selected else {
+            return Ok(None);
+        };
+        state
+            .inner
+            .lock()
+            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?
+            .data_selection = None;
+        source
+            .canonicalize()
+            .map_err(|_| "LEGACY_SOURCE_UNAVAILABLE".to_string())?
     };
-    let source = source
-        .canonicalize()
-        .map_err(|_| "LEGACY_SOURCE_UNAVAILABLE".to_string())?;
+    let mapping_json = serde_json::to_string(&role_mapping.unwrap_or_default())
+        .map_err(|_| "LEGACY_DATA_MAPPING_INVALID".to_string())?;
     let request = state.request.clone();
     let handle = lifecycle
         .handle
@@ -617,6 +641,7 @@ pub async fn settings_legacy_data_import_choose(
             &[
                 ("--source", work_source.to_string_lossy().as_ref()),
                 ("--target", request.user_root.to_string_lossy().as_ref()),
+                ("--role-mapping", mapping_json.as_str()),
             ],
         );
         if inspected
@@ -643,7 +668,7 @@ pub async fn settings_legacy_data_import_choose(
     let plan_token = plan
         .get("planToken")
         .and_then(Value::as_str)
-        .filter(|value| value.len() == 64)
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?
         .to_string();
     let selection_id = uuid::Uuid::new_v4().simple().to_string();

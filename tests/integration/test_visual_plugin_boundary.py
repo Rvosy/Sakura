@@ -20,7 +20,7 @@ _PLUGIN = (_FIXTURE / "plugin.py").read_text(encoding="utf-8")
 
 
 @contextmanager
-def numeric_application(tmp_path: Path, plugin_code: str = _PLUGIN):
+def numeric_application(tmp_path: Path, plugin_code: str = _PLUGIN, *, manifest_extra=None):
     distribution, user = tmp_path / "distribution", tmp_path / "user"
     plugin = distribution / "plugins/builtin/numeric"
     plugin.mkdir(parents=True)
@@ -31,6 +31,7 @@ def numeric_application(tmp_path: Path, plugin_code: str = _PLUGIN):
         "api": 4, "id": "fixture.numeric", "entry": "plugin:Plugin",
         "provides": ["fixture.numeric.control"], "requires": ["sakura.host.character"],
         "visuals": [{"type": "fixture.numeric@1", "service": "fixture.numeric.control", "contract": 1, "renderer": "renderer.js", "editor": "editor.js"}],
+        **(manifest_extra or {}),
     }), encoding="utf-8")
     package = user / "characters/character"
     model = package / "numeric"
@@ -68,7 +69,7 @@ def test_static_model_cover_needs_no_renderer_or_editor(tmp_path, cover):
     plugin_code = plugin_code.replace('"exportResource"))', '"exportResource", "previewImage"))')
     with numeric_application(tmp_path, plugin_code) as (application, package, resource):
         (package / "numeric/cover.webp").write_bytes(b"static model cover")
-        (package / "numeric/model.json").write_text("{}")
+        (package / "numeric/model.json").write_text("{}", encoding="utf-8")
         (package / "outside.png").write_bytes(b"outside resource")
         (package / "numeric/resource.json").write_text(json.dumps({"maxAngle": 20, "cover": cover}), encoding="utf-8")
         boundary = CharacterStudioBoundary("g", "c", package.parents[1], plugin_application_provider=lambda: application)
@@ -110,7 +111,7 @@ def test_studio_can_repair_missing_resource_entry(visual_application):
     assert editor["data"] == {"maxAngle": 20}
     opened["doc"]["visualData"] = {resource.id: {"maxAngle": 25}}
     boundary._dispatch("studio.character.publish", {"workspaceId": "character", "doc": opened["doc"]})
-    assert json.loads((package / resource.root / resource.entry).read_text())["maxAngle"] == 25
+    assert json.loads((package / resource.root / resource.entry).read_text(encoding="utf-8"))["maxAngle"] == 25
 
 
 def test_settings_visual_selection_is_personal_and_rebinds_control(visual_application):
@@ -118,7 +119,7 @@ def test_settings_visual_selection_is_personal_and_rebinds_control(visual_applic
     from app.core_host.character_settings import CharacterSettingsBoundary, CharacterSettingsError
     application, package, resource = visual_application
     path = package / "character.json"
-    manifest = json.loads(path.read_text())
+    manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["visuals"]["resources"][0]["name"] = "日常形态"
     manifest["visuals"]["resources"].append({**resource.to_mapping(), "id": "numeric-2", "name": "另一种形态"})
     path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -248,7 +249,7 @@ def test_numeric_studio_private_draft_publish_full_archive_and_component_roundtr
     export_character_archive(profile, archive, include_voice=False)
     imported = import_character_archive(archive, tmp_path / "imported")
     assert not (imported.package_dir / "default.png").exists()
-    assert json.loads((imported.package_dir / "numeric/resource.json").read_text())["privatePascalCase"] == {"Keep_This": True}
+    assert json.loads((imported.package_dir / "numeric/resource.json").read_text(encoding="utf-8"))["privatePascalCase"] == {"Keep_This": True}
     component = tmp_path / "component.visual"
     opened = request("studio.character.open", {"characterId": "character"})
     request("studio.visual.export", {"workspaceId": opened["workspaceId"], "resourceId": "numeric-1", "path": str(component)})
@@ -258,7 +259,7 @@ def test_numeric_studio_private_draft_publish_full_archive_and_component_roundtr
     result = request("studio.visual.import", {"workspaceId": "other", "path": str(component)})
     assert result["doc"]["id"] == "other"
     assert result["doc"]["cardText"] == "B 的人格"
-    assert result["doc"]["visuals"]["default"] != "numeric-1"
+    assert result["doc"]["visuals"]["default"] == result["doc"]["visuals"]["resources"][0]["id"]
     # Import is draft-only and reversible until the normal publish transaction.
     assert "other" not in CharacterRegistry(root).profiles
     request("studio.draft.discard", {"workspaceId": "other"})
@@ -286,15 +287,17 @@ def test_missing_plugin_visual_import_survives_publish_and_later_install(visual_
     result = boundary._dispatch("studio.visual.import", {"workspaceId": "character", "path": str(archive)})
     doc = result["doc"]
     imported = CharacterVisualResource.from_mapping(doc["visuals"]["resources"][-1])
-    assert doc["visuals"]["default"] == imported.id
+    assert doc["visuals"]["default"] == "numeric-1"
     assert application.application.visuals.resource_choice(imported)["reasonCode"] == "VISUAL_PROVIDER_MISSING"
     assert not application.application.visuals.candidates(imported.type)
     with pytest.raises(VisualHostError, match="VISUAL_PROVIDER_MISSING"):
         boundary._dispatch("studio.visual.open", {"workspaceId": "character", "resourceId": imported.id})
+    # The user explicitly selects the unavailable form before publishing.
+    doc["visuals"]["default"] = imported.id
     boundary._dispatch("studio.character.publish", {"workspaceId": "character", "doc": doc})
-    assert json.loads((package / imported.root / imported.entry).read_text()) == data
+    assert json.loads((package / imported.root / imported.entry).read_text(encoding="utf-8")) == data
     assert (package / imported.root / "mesh.bin").read_bytes() == b"private model data"
-    assert (package / "card.md").read_text() == "角色人设"
+    assert (package / "card.md").read_text(encoding="utf-8") == "角色人设"
     assert (package / "numeric/resource.json").is_file()
     application.bind_character_presentation("character")
     assert application.visual_presentation()["visualReasonCode"] == "VISUAL_PROVIDER_MISSING"
@@ -304,7 +307,7 @@ def test_missing_plugin_visual_import_survives_publish_and_later_install(visual_
     shutil.copytree(tmp_path / "distribution/plugins/builtin/numeric", plugin)
     for name in ["plugin.yaml", "plugin.py"]:
         path = plugin / name
-        path.write_text(path.read_text().replace("fixture.numeric", "fixture.later"))
+        path.write_text(path.read_text(encoding="utf-8").replace("fixture.numeric", "fixture.later"), encoding="utf-8")
     installed = LocalPluginInstaller(RuntimeRoots(tmp_path / "distribution", root)).install(plugin, "folder")
     application.install_plugin(installed.install_id)
     application.set_enabled(installed.install_id, True)
@@ -312,7 +315,7 @@ def test_missing_plugin_visual_import_survives_publish_and_later_install(visual_
     binding = application.application.visuals.bind(profile.id, package, profile.current_visual_resource)
     assert binding.description["rendererData"]["maxAngle"] == 35
     assert binding.parse_control(_control(imported, {"angle": 30})).control["state"] == {"angle": 30}
-    assert json.loads((package / imported.root / imported.entry).read_text()) == data
+    assert json.loads((package / imported.root / imported.entry).read_text(encoding="utf-8")) == data
 
 
 def test_unbinding_chat_keeps_a_fresh_independent_visual_presentation(visual_application):
@@ -522,3 +525,23 @@ def test_visual_plugin_failures_retain_remote_diagnostics(tmp_path, method, sign
     assert "Remote:" in diagnostic["exception_stack"]
     assert method in diagnostic["exception_stack"]
     assert "private-value" not in json.dumps(diagnostic)
+
+
+def test_bad_optional_declarations_keep_real_plugin_services_and_renderer_running(tmp_path):
+    declaration = {"type": "fixture.numeric@1", "service": "fixture.numeric.control", "contract": 1,
+        "renderer": "renderer.js", "editor": "missing-editor.js", "displayName": "数值角色"}
+    with numeric_application(tmp_path, manifest_extra={
+        "visuals": [declaration, {**declaration, "type": "fixture.other@1", "renderer": "../outside.js"}],
+        "ttsResources": ["fixture.voice@1", "unversioned"],
+    }) as (application, package, resource):
+        host = application.application.visuals
+        assert host._runtime.service_identity("fixture.numeric.control")["providerId"] == "fixture.numeric"
+        binding = host.bind("character", package, resource)
+        assert binding.presentation()["renderer"] == "renderer.js"
+        assert binding.parse_control(_control(resource, {"angle": 7})).control["state"]["angle"] == 7
+        with pytest.raises(VisualHostError, match="VISUAL_MODULE_INVALID"):
+            host.editor(resource, {})
+        assert host.resource_choice(resource)["reasonCode"] == "READY"
+        record = host._inventory.scan().records[0]
+        assert record.tts_resources == ("fixture.voice@1",)
+        assert len(record.capability_issues) == 3

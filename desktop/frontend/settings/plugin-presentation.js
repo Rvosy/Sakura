@@ -127,6 +127,9 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
       reasonCode,
     );
   }
+  if (reasonCode === "SETTINGS_DESCRIPTOR_INVALID" || reasonCode === "SETTINGS_VALUE_INVALID") {
+    return result("部分设置不可用", "部分设置格式有误。", reasonCode);
+  }
   return result(
     state === "failed" ? "启动失败" : "暂时无法使用",
     "这个插件暂时无法使用。",
@@ -278,7 +281,7 @@ export function projectPluginActivity(plugin = {}) {
   pluginSections(plugin).forEach((section) => {
     (section.fields || []).forEach((field) => {
       const value = projectedFieldValue(section, field);
-      if (field.type === "status" && Object.hasOwn(ACTIVITY_STATE_PRIORITY, value?.state)) {
+      if (field.type === "status" && field.placement !== "row" && Object.hasOwn(ACTIVITY_STATE_PRIORITY, value?.state)) {
         if (!projectedStatus
             || ACTIVITY_STATE_PRIORITY[value.state] > ACTIVITY_STATE_PRIORITY[projectedStatus.state]) {
           projectedStatus = value;

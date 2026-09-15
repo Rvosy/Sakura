@@ -39,7 +39,6 @@ from app.legacy_import.importer import (
     _sanitize_tts_runtime_pth_files,
     _sanitize_tts_runtime_profiles,
     _validate_current_settings,
-    _validate_memory,
 )
 from app.legacy_import.transaction import (
     PendingCommit,
@@ -133,7 +132,7 @@ def test_cli_streams_structured_diagnostics_to_rust_parent(
                 "diagnostic": "database disk image is malformed",
                 "error_type": "DatabaseError",
                 "reason_code": "SQLITE_CORRUPT",
-                "stage": "quick_check",
+                "stage": "backup",
             },
             "error",
         )
@@ -162,7 +161,7 @@ def test_cli_streams_structured_diagnostics_to_rust_parent(
             "diagnostic": "database disk image is malformed",
             "error_type": "DatabaseError",
             "reason_code": "SQLITE_CORRUPT",
-            "stage": "quick_check",
+            "stage": "backup",
         },
         "severity": "error",
     }
@@ -845,7 +844,8 @@ def test_memory_validation_uses_runtime_schema_migration_for_legacy_variants(
     staged = tmp_path / "staged-memory"
     copy_tree_checked(source, staged, cancelled=lambda: False)
 
-    _validate_memory(staged)
+    from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
+    normalize_existing_history_database(staged / "mem0_history.db")
 
     with sqlite3.connect(staged / "mem0_history.db") as connection:
         history_columns = {
@@ -897,7 +897,8 @@ def test_memory_validation_rebuilds_only_unidentifiable_message_cache(
         connection.execute("CREATE TABLE messages (role TEXT, content TEXT)")
         connection.execute("INSERT INTO messages VALUES ('human', 'disposable cache')")
 
-    _validate_memory(database.parent)
+    from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
+    normalize_existing_history_database(database)
 
     with sqlite3.connect(database) as connection:
         columns = {
@@ -1308,18 +1309,16 @@ def test_first_import_never_overwrites_cross_role_timeline_identity(
     )
     with sqlite3.connect(timeline.path) as connection:
         write_history_identities(connection, read_history_identities(converted))
-    before = _tree_state(target)
+    connection.close()
     monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
 
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
-        run_legacy_import(
-            source,
-            target,
-            import_id="test-first-import-cross-role",
-            finalize=True,
-        )
-
-    assert _tree_state(target) == before
+    run_legacy_import(
+        source, target, import_id="test-first-import-cross-role", finalize=True,
+    )
+    beta = TimelineStore(timeline.path).read_all("Beta")
+    assert len(beta) == 1
+    assert beta[0].payload["text"] == "beta owns this identity"
+    assert (target / "data/legacy-imports/test-first-import-cross-role/quarantine/history-scope-conflicts.jsonl").is_file()
     assert not list(target.glob(".legacy-import-*"))
 
 
@@ -2342,48 +2341,41 @@ def test_windows_fast_copy_normalizes_extended_paths_and_reports_robocopy_failur
 
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")
-def test_windows_fast_copy_reports_post_scan_mismatch(
+def test_windows_fast_copy_keeps_successful_copy_despite_stat_difference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
-    (source / "model.bin").write_bytes(b"expected")
+    (source / "model.bin").write_bytes(b"model")
+    for name in ("old-state-a", "old-state-b"):
+        (source / name).write_bytes(b"x" * 178)
     target = tmp_path / "target"
     diagnostics: list[tuple[str, dict[str, object]]] = []
 
-    class IncompleteProcess:
+    class SuccessfulProcess:
         returncode = 1
 
         def poll(self) -> int:
             return self.returncode
 
-    def popen(_command: list[str], **_kwargs: object) -> IncompleteProcess:
+    def popen(_command: list[str], **_kwargs: object) -> SuccessfulProcess:
         target.mkdir()
-        (target / "model.bin").write_bytes(b"x")
-        return IncompleteProcess()
+        (target / "model.bin").write_bytes(b"model")
+        return SuccessfulProcess()
 
     monkeypatch.setattr(legacy_files.shutil, "which", lambda _name: "robocopy.exe")
     monkeypatch.setattr(legacy_files.subprocess, "Popen", popen)
 
-    with pytest.raises(LegacyImportError, match="LEGACY_COPY_FAILED"):
-        copy_tree_fast_checked(
-            source,
-            target,
-            cancelled=lambda: False,
-            diagnostic=lambda event, attributes: diagnostics.append((event, dict(attributes))),
-        )
-
-    failure = next(
-        attributes
-        for event, attributes in diagnostics
-        if event == "failed" and attributes.get("detail_stage") == "post_scan"
-    )
-    assert failure["expected_files"] == 1
-    assert failure["expected_bytes"] == len(b"expected")
-    assert failure["actual_files"] == 1
-    assert failure["actual_bytes"] == 1
-
-
+    assert copy_tree_fast_checked(
+        source, target, cancelled=lambda: False,
+        diagnostic=lambda event, attributes: diagnostics.append((event, dict(attributes))),
+    ) == (1, 5)
+    assert (target / "model.bin").read_bytes() == b"model"
+    completed = next(attributes for event, attributes in diagnostics
+                     if event == "completed" and attributes.get("detail_stage") == "post_scan")
+    assert completed["expected_files"] - completed["actual_files"] == 2
+    assert completed["expected_bytes"] - completed["actual_bytes"] == 356
+    assert not any(event == "failed" for event, _ in diagnostics)
 
 
 def test_tts_profile_adaptation_removes_old_install_paths(tmp_path: Path) -> None:
@@ -2465,3 +2457,28 @@ def test_windows_fast_copy_cancellation_terminates_process_and_cleans_target(
         copy_tree_fast_checked(source, target, cancelled=cancelled)
     assert process.terminated
     assert not target.exists()
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='legacy fixture uses Windows layout')
+def test_first_import_preserves_readable_memory_with_legacy_vector_dimensions(tmp_path: Path) -> None:
+    from qdrant_client import QdrantClient, models
+    from app.legacy_import.incremental import _qdrant_points
+
+    source = _legacy_fixture(tmp_path)
+    client = QdrantClient(path=str(source / 'data/memory/qdrant'))
+    client.create_collection('sakura_memories', vectors_config=models.VectorParams(size=4, distance=models.Distance.COSINE))
+    point_id = '00000000-0000-0000-0000-000000000092'
+    client.upsert('sakura_memories', [models.PointStruct(id=point_id, vector=[1.0, 0.0, 0.0, 0.0], payload={'user_id': 'Sakura', 'data': 'preserved memory'})])
+    client.close()
+    target = tmp_path / 'target'
+    target.mkdir()
+    report, pending = run_legacy_import(source, target, import_id='legacy-vector-shape', finalize=True)
+    assert pending is None
+    points, client = _qdrant_points(target / 'data/memory')
+    try:
+        assert points[point_id][1]['data'] == 'preserved memory'
+        assert len(points[point_id][0]) == 4
+    finally:
+        if client is not None:
+            client.close()
+    assert TimelineStore(target / 'data/chat_history/timeline.sqlite3').read_all('Sakura')
+    assert not any(item['code'] == 'LEGACY_MEMORY_RECORDS_QUARANTINED' for item in report.warnings)

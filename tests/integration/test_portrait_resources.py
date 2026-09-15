@@ -103,7 +103,10 @@ def test_portrait_editor_and_component_preserve_target_identity_and_voice(tmp_pa
         assert after["id"] == b["doc"]["id"]
         assert after["voice"] == b["doc"]["voice"]
         assert after["cardText"] == b["doc"]["cardText"]
-        assert after["visuals"]["default"] != "portrait-default"
+        assert after["visuals"]["default"] == "portrait-default"
+        assert len(after["visuals"]["resources"]) == 2
+        reopened = request("studio.character.open", {"characterId": "b"})
+        assert reopened["doc"]["visuals"]["default"] == "portrait-default"
         assert (user / "characters/b/character.json").read_bytes() == before
         request("studio.draft.discard", {"workspaceId": "b"})
         assert (user / "characters/b/character.json").read_bytes() == before
@@ -196,3 +199,22 @@ def test_portrait_decode_error_uses_plugin_logging_with_original_cause(tmp_path)
     assert "JSONDecodeError" in record["attributes"]["exception_chain"]
     assert "Expecting property name" in record["attributes"]["diagnostic"]
     assert "_describe" in record["attributes"]["exception_stack"]
+
+
+@pytest.mark.parametrize("byte_length", [8 * 1024 * 1024 + 1, 16 * 1024 * 1024, 16 * 1024 * 1024 + 1])
+def test_portrait_encoded_size_limit(tmp_path: Path, byte_length: int) -> None:
+    import importlib.util
+
+    source = Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_portrait/plugin.py"
+    spec = importlib.util.spec_from_file_location("portrait_size_test", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    image = tmp_path / "portrait.png"
+    with image.open("wb") as stream:
+        stream.write(PNG)
+        stream.truncate(byte_length)
+    if byte_length <= 16 * 1024 * 1024:
+        assert module.inspect_png(image) == {"width": 1, "height": 1, "byteLength": byte_length}
+    else:
+        with pytest.raises(ValueError, match="VISUAL_RESOURCE_INVALID"):
+            module.inspect_png(image)

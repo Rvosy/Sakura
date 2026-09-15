@@ -62,6 +62,26 @@ function commands(env, name) {
   return env.calls.filter(([command]) => command === name);
 }
 
+test("a capture finishing after same-generation character changes cannot restore the old batch", async () => {
+  let clock = 0;
+  let finishCapture;
+  const controller = createScreenAwarenessController({
+    invoke: async command => command === "capture_screen_awareness_frame"
+      ? new Promise(resolve => { finishCapture = resolve; }) : true,
+    send: async () => assert.fail("old capture must not send"),
+    isIdle: () => true, generationId: () => "same-core", now: () => clock,
+  });
+  controller.applySettings(settings());
+  clock = 60_000;
+  const tick = controller.tick();
+  controller.generationChanged("same-core");
+  controller.generationChanged("same-core");
+  finishCapture({ count: 1 });
+  await tick;
+  assert.equal(controller.snapshot().batchCount, 0);
+  controller.dispose();
+});
+
 test("disabled screen awareness never captures", async () => {
   const env = harness({ enabled: false });
   env.setClock(10 * 60_000);

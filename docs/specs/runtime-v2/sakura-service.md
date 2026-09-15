@@ -177,5 +177,5 @@ Telemetry Edge 接收：公网请求经过多吉云 CDN 后进入独立的 VPS N
 - 国内清单故障不能影响本地功能；隔离测试中阻断 GitHub 后仍能从国内清单检测更新，但不能冒充下载成功。
 - CI 的 prerelease 路径不得更新稳定版控制面。
 
-相关决策见 [ADR-0049](../../adr/0049-domestic-updater-manifest.md)，维护入口见
+相关决策见 [ADR-0052](../../adr/0052-domestic-updater-manifest.md)，维护入口见
 [Sakura Service 运维与发布](../../devdocs/SAKURA_SERVICE.md)。

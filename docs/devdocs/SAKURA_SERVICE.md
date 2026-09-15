@@ -183,4 +183,4 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
   已有新客户端发布后，不要删除国内 `latest.json`；回退导入程序前先暂停导入 job，不恢复 CI 自动发布。
 
 产品合同见 [Sakura Service 静态控制面合同](../specs/runtime-v2/sakura-service.md)，选择理由见
-[ADR-0049](../adr/0049-domestic-updater-manifest.md)。
+[ADR-0052](../adr/0052-domestic-updater-manifest.md)。

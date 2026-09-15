@@ -15,6 +15,7 @@ mod core_host_protocol;
 mod core_host_router;
 mod core_host_runtime;
 mod core_supervisor;
+mod dynamic_hit_test;
 mod history_window;
 mod input_visual_effect;
 mod interaction_latency;
@@ -157,6 +158,7 @@ struct WindowGeometrySession {
     context_menu_hit_regions: Option<window_interaction::PhysicalHitRegions>,
     context_menu_base_application: Option<LayoutApplication>,
     context_menu_base_hit_regions: Option<window_interaction::PhysicalHitRegions>,
+    tool_dock_hit_rect: Option<window_interaction::PhysicalHitRect>,
     control_surface: Option<ControlSurfaceLayout>,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
@@ -212,6 +214,7 @@ impl Default for WindowGeometrySession {
             context_menu_hit_regions: None,
             context_menu_base_application: None,
             context_menu_base_hit_regions: None,
+            tool_dock_hit_rect: None,
             control_surface: None,
             hit_regions: None,
         }
@@ -1948,12 +1951,15 @@ fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> 
             .relax_hit_regions(window)
             .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
     }
-    let hit_regions = geometry
+    let mut hit_regions = geometry
         .context_menu_hit_regions
         .as_ref()
         .or(geometry.hit_regions.as_ref())
         .cloned()
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    if let Some(rect) = geometry.tool_dock_hit_rect {
+        hit_regions.interactive.push(rect);
+    }
     drop(geometry);
 
     apply_precise_hit_regions_with_synchronous_redraw(window, &hit_regions)
@@ -3259,7 +3265,7 @@ fn set_pet_tool_dock_surface(
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    let geometry = session
+    let mut geometry = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
     if rect.is_some() && geometry.context_menu_open {
@@ -3268,29 +3274,44 @@ fn set_pet_tool_dock_surface(
     if geometry.context_menu_open
         && current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow
     {
+        geometry.tool_dock_hit_rect = None;
         drop(geometry);
         return NativeWindowInteractionBackend
             .relax_hit_regions(&window)
             .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
     }
-    let application = geometry
-        .application
-        .clone()
-        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-    let base = geometry
-        .context_menu_hit_regions
-        .as_ref()
-        .or(geometry.hit_regions.as_ref())
-        .cloned()
-        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-    drop(geometry);
-    let next = match rect {
-        Some(rect) => {
-            composer_tool_dock_hit_regions(&layout_contract()?, &application, &base, rect)?
-        }
-        None => base,
-    };
-    apply_precise_hit_regions(&window, &next)
+    geometry.apply_tool_dock_surface(&layout_contract()?, rect, |next| {
+        apply_precise_hit_regions(&window, next)
+    })
+}
+
+impl WindowGeometrySession {
+    fn apply_tool_dock_surface(
+        &mut self,
+        contract: &LayoutContract,
+        rect: Option<[u32; 4]>,
+        apply: impl FnOnce(&window_interaction::PhysicalHitRegions) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let application = self
+            .application
+            .clone()
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+        let base = self
+            .context_menu_hit_regions
+            .as_ref()
+            .or(self.hit_regions.as_ref())
+            .cloned()
+            .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+        let next = match rect {
+            Some(rect) => composer_tool_dock_hit_regions(contract, &application, &base, rect)?,
+            None => base,
+        };
+        apply(&next)?;
+        // The dynamic cursor router reads session state, independently of the native window region.
+        // Publish only after the native update succeeds, and retire it when the dock closes.
+        self.tool_dock_hit_rect = rect.and_then(|_| next.interactive.last().copied());
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -3414,6 +3435,7 @@ async fn chat_cancel(
 #[tauri::command]
 async fn start_screen_capture(
     window: WebviewWindow,
+    payload: capture::CaptureStartRequest,
     lifecycle: State<'_, ShellLifecycleState>,
     captures: State<'_, Arc<capture::CaptureManager>>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
@@ -3438,15 +3460,22 @@ async fn start_screen_capture(
         .unwrap_or_else(|| "#4b9ac4".to_string());
     let task_generation_id = generation_id.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
+        let character_session_id = screen_session_id(&handle)?;
         let monitors = capture::monitor_descriptors()?;
         let monitor_count = monitors.len();
-        let (session_id, labels, previous) =
-            capture_manager.begin_session(&task_generation_id, &monitors)?;
+        let (session_id, labels, previous) = capture_manager.begin_session(
+            &task_generation_id,
+            &character_session_id,
+            payload.capture_revision,
+            &monitors,
+        )?;
         capture::close_windows(&app, &previous);
         if let Err(error) =
             capture::show_overlays(&app, &session_id, &labels, &monitors, &theme_primary)
         {
-            if let Some(active_labels) = capture_manager.cancel_session(&session_id, &labels[0]) {
+            if let Some((_, active_labels)) =
+                capture_manager.cancel_session(&session_id, &labels[0])
+            {
                 capture::close_windows(&app, &active_labels);
             }
             return Err(error);
@@ -3478,6 +3507,21 @@ async fn start_screen_capture(
     Ok(())
 }
 
+fn screen_session_id(handle: &shell_lifecycle::ShellLifecycleHandle) -> Result<String, String> {
+    let payload = settings_response_payload(handle.settings_request(
+        None,
+        "screen.session",
+        json!({}),
+        std::time::Duration::from_secs(5),
+    )?)?;
+    payload
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .ok_or_else(|| "SCREEN_SESSION_INVALID".to_string())
+}
+
 #[tauri::command]
 async fn capture_selected_region(
     window: WebviewWindow,
@@ -3503,16 +3547,22 @@ async fn capture_selected_region(
         {
             return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
         }
+        if screen_session_id(&handle)? != task_claim.character_session_id {
+            return Err("SCREEN_SESSION_STALE".to_string());
+        }
         let descriptor = manager.capture(&task_claim, local_rect)?;
         let token = descriptor.resource_token.clone();
         let response = handle.settings_request(
             None,
             "screen.attach",
-            json!({"resource": descriptor}),
+            json!({"resource": descriptor, "sessionId": task_claim.character_session_id}),
             std::time::Duration::from_secs(10),
         );
         manager.release(&token, &task_generation_id);
         let payload = settings_response_payload(response?)?;
+        if screen_session_id(&handle)? != task_claim.character_session_id {
+            return Err("SCREEN_SESSION_STALE".to_string());
+        }
         let attachment_id = payload
             .get("attachmentId")
             .and_then(Value::as_str)
@@ -3542,6 +3592,7 @@ async fn capture_selected_region(
             .filter(|value| (1..=6).contains(value))
             .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
         Ok(capture::ScreenAttachmentPublication {
+            capture_revision: task_claim.capture_revision,
             attachment_id: attachment_id.to_string(),
             item_id: item_id.to_string(),
             width,
@@ -3571,15 +3622,16 @@ async fn capture_selected_region(
             Ok(())
         }
         Err(code) => {
-            let (stable_code, public_message) =
-                if code.contains("manual screen attachment limit exceeded") {
-                    (
-                        "SCREEN_ATTACHMENT_LIMIT_EXCEEDED",
-                        "每条消息最多附加 6 张截图。",
-                    )
-                } else {
-                    (code.as_str(), "截图失败，请检查系统屏幕录制权限后重试。")
-                };
+            let (stable_code, public_message) = if code.contains("SCREEN_SESSION_STALE") {
+                ("SCREEN_SESSION_STALE", "角色已切换，截图已取消。")
+            } else if code.contains("manual screen attachment limit exceeded") {
+                (
+                    "SCREEN_ATTACHMENT_LIMIT_EXCEEDED",
+                    "每条消息最多附加 6 张截图。",
+                )
+            } else {
+                (code.as_str(), "截图失败，请检查系统屏幕录制权限后重试。")
+            };
             record_screen_capture(
                 &runtime_log,
                 &generation_id,
@@ -3590,7 +3642,7 @@ async fn capture_selected_region(
             let _ = app.emit_to(
                 "main",
                 capture::ERROR_EVENT,
-                json!({"message": public_message}),
+                json!({"message": public_message, "captureRevision": claim.capture_revision}),
             );
             Err(public_message.to_string())
         }
@@ -3604,7 +3656,7 @@ async fn cancel_screen_capture(
     lifecycle: State<'_, ShellLifecycleState>,
     captures: State<'_, Arc<capture::CaptureManager>>,
 ) -> Result<(), String> {
-    let labels = captures
+    let (capture_revision, labels) = captures
         .cancel_session(&payload.session_id, window.label())
         .ok_or_else(|| "SCREEN_CAPTURE_SESSION_STALE".to_string())?;
     capture::close_windows(window.app_handle(), &labels);
@@ -3620,9 +3672,11 @@ async fn cancel_screen_capture(
         Severity::Info,
         json!({"outcome": "cancelled"}),
     );
-    let _ = window
-        .app_handle()
-        .emit_to("main", capture::CANCELLED_EVENT, ());
+    let _ = window.app_handle().emit_to(
+        "main",
+        capture::CANCELLED_EVENT,
+        json!({"captureRevision": capture_revision}),
+    );
     Ok(())
 }
 
@@ -3738,8 +3792,10 @@ async fn capture_screen_awareness_frame(
     let manager = captures.inner().clone();
     let task_generation_id = generation_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let character_session_id = screen_session_id(&handle)?;
         manager.capture_screen_awareness_frame(
             &task_generation_id,
+            &character_session_id,
             cursor.x.round() as i32,
             cursor.y.round() as i32,
             &payload.resolution,
@@ -3778,12 +3834,14 @@ async fn attach_screen_awareness_batch(
         .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
     let manager = captures.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let descriptors = manager.materialize_screen_awareness_batch(&generation_id)?;
+        let character_session_id = screen_session_id(&handle)?;
+        let descriptors =
+            manager.materialize_screen_awareness_batch(&generation_id, &character_session_id)?;
         let count = descriptors.len();
         let response = handle.settings_request(
             None,
             "screen.attachBatch",
-            json!({"resources": descriptors}),
+            json!({"resources": descriptors, "sessionId": character_session_id}),
             std::time::Duration::from_secs(15),
         );
         manager.release_descriptors(&descriptors, &generation_id);
@@ -4576,7 +4634,11 @@ fn validate_character_settings_change(value: Value) -> Result<(Value, String, Va
         .filter(|value| {
             matches!(
                 *value,
-                "unchanged" | "core_restart_required" | "visual_rebind"
+                "unchanged"
+                    | "core_restart_required"
+                    | "visual_rebind"
+                    | "character_refresh"
+                    | "character_switch"
             )
         })
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?
@@ -4678,51 +4740,6 @@ fn observe_character_restart(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-        });
-}
-
-fn observe_studio_character_restart(
-    app_handle: tauri::AppHandle,
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    previous_generation_id: String,
-    previous_generation_number: u64,
-    target_character_id: String,
-) {
-    let _ = std::thread::Builder::new()
-        .name("studio-character-reload-ready".to_string())
-        .spawn(move || {
-            for _ in 0..1300 {
-                if let Some(generation_id) = handle
-                    .ready_character_generation(
-                        &previous_generation_id,
-                        previous_generation_number,
-                        &target_character_id,
-                    )
-                    .ok()
-                    .flatten()
-                {
-                    let _ = app_handle.emit_to(
-                        character_studio_window::STUDIO_WINDOW_LABEL,
-                        "sakura://studio-runtime-reload",
-                        json!({"state": "ready", "generationId": generation_id}),
-                    );
-                    let _ = app_handle.emit_to(
-                        product_shell::SETTINGS_WINDOW_LABEL,
-                        character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
-                        json!({"generationId": generation_id}),
-                    );
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            let _ = app_handle.emit_to(
-                character_studio_window::STUDIO_WINDOW_LABEL,
-                "sakura://studio-runtime-reload",
-                json!({
-                    "state": "failed",
-                    "message": "角色已保存，但修改暂时未能生效。请重启 Sakura。"
-                }),
-            );
         });
 }
 
@@ -5138,7 +5155,7 @@ async fn settings_character_select(
     }
     let (
         snapshot,
-        _change_plan,
+        change_plan,
         handle,
         previous_generation_id,
         previous_generation_number,
@@ -5150,7 +5167,7 @@ async fn settings_character_select(
         &lifecycle,
         "characters.settings.select",
         payload,
-        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(60),
     )
     .await?;
     if let Some(target_character_id) = target_character_id {
@@ -5178,7 +5195,22 @@ async fn settings_character_select(
         );
         return character_switch_receipt(snapshot, previous_generation_id, "requested");
     }
-    character_switch_receipt(snapshot, previous_generation_id, "not_required")
+    let mut receipt =
+        character_switch_receipt(snapshot, previous_generation_id.clone(), "not_required")?;
+    if change_plan == "character_switch" {
+        audio_state.shutdown();
+        receipt["characterChanged"] = json!(true);
+        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
+            let _ = history.emit(
+                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+                json!({
+                    "previousGenerationId": previous_generation_id,
+                    "characterId": receipt["targetCharacterId"], "reset": true, "ready": true,
+                }),
+            );
+        }
+    }
+    Ok(receipt)
 }
 
 fn validate_storage_settings_snapshot(value: &Value) -> Result<(), String> {
@@ -6736,6 +6768,7 @@ fn studio_method_name(method: &str) -> Result<&'static str, String> {
         "studio.visual.catalog" => Ok("studio.visual.catalog"),
         "studio.visual.previews" => Ok("studio.visual.previews"),
         "studio.visual.open" => Ok("studio.visual.open"),
+        "studio.visual.thumbnail" => Ok("studio.visual.thumbnail"),
         "studio.visual.create" => Ok("studio.visual.create"),
         "studio.visual.export" => Ok("studio.visual.export"),
         "studio.visual.import" => Ok("studio.visual.import"),
@@ -6780,6 +6813,7 @@ fn validate_studio_payload(payload: &Value) -> Result<(), String> {
 async fn open_character_studio(
     window: WebviewWindow,
     character_id: String,
+    resource_id: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, character_studio_window::CharacterStudioWindowState>,
     topmost: State<'_, product_shell::PetTopmostState>,
@@ -6789,12 +6823,19 @@ async fn open_character_studio(
     if character_id.is_empty() || character_id.len() > 128 {
         return Err("STUDIO_CHARACTER_ID_INVALID".to_string());
     }
+    if resource_id
+        .as_ref()
+        .is_some_and(|id| id.trim().is_empty() || id.len() > 128)
+    {
+        return Err("STUDIO_RESOURCE_ID_INVALID".to_string());
+    }
     // Tauri 同步命令运行在 WebView 事件循环线程。WebView2 处理当前 IPC 时不能在同一线程
     // 创建另一个 WebView，否则设置请求会一直等待，角色控件也会保持禁用。异步命令会先离开
     // 当前 WebView 回调栈，再创建工坊窗口。
     character_studio_window::show_or_focus(
         &app_handle,
         character_id,
+        resource_id.as_deref(),
         state.inner(),
         topmost.inner(),
     )
@@ -6834,6 +6875,8 @@ async fn studio_bootstrap(
     .await?;
     let mut payload = settings_response_payload(response)?;
     validate_studio_payload(&payload)?;
+    payload["initialResourceId"] =
+        serde_json::to_value(state.initial_resource_id()?).map_err(|error| error.to_string())?;
     payload["shellThemeTokens"] = serde_json::to_value(shell_appearance.values.theme_tokens)
         .map_err(|error| format!("STUDIO_THEME_SERIALIZE_FAILED: {error}"))?;
     Ok(payload)
@@ -6846,7 +6889,6 @@ async fn studio_request(
     params: Value,
     app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
-    audio_state: State<'_, audio::AudioState>,
     state: State<'_, character_studio_window::CharacterStudioWindowState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
 ) -> Result<Value, String> {
@@ -6858,17 +6900,8 @@ async fn studio_request(
     if name == "studio.bootstrap" {
         return Err("STUDIO_COMMAND_UNKNOWN".to_string());
     }
-    let publish_target_character_id = if name == "studio.character.publish" {
-        params
-            .pointer("/doc/id")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    } else {
-        None
-    };
     let handle = settings_core_handle(&lifecycle)?;
-    let (previous_generation_id, previous_generation_number) = handle
+    let (previous_generation_id, _) = handle
         .available_generation_identity()
         .map_err(str::to_string)?
         .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
@@ -6886,38 +6919,9 @@ async fn studio_request(
         std::time::Duration::from_secs(30)
     };
     let response = dispatch_settings_request(handle.clone(), None, name, params, deadline).await?;
-    if name == "studio.character.publish"
-        && response
-            .pointer("/error/details/generationInvalidated")
-            .and_then(Value::as_bool)
-            == Some(true)
-    {
-        let target_character_id =
-            publish_target_character_id.ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?;
-        handle
-            .restart()
-            .map_err(|error| format!("STUDIO_PUBLISH_RECOVERY_RESTART_FAILED: {error}"))?;
-        audio_state.shutdown();
-        state.bind_generation("")?;
-        observe_studio_character_restart(
-            app_handle.clone(),
-            handle.clone(),
-            previous_generation_id.clone(),
-            previous_generation_number,
-            target_character_id.clone(),
-        );
-        observe_character_restart(
-            app_handle,
-            handle,
-            previous_generation_id,
-            previous_generation_number,
-            target_character_id,
-        );
-        return settings_response_payload(response);
-    }
     let mut payload = settings_response_payload(response)?;
 
-    if name == "studio.visual.open" {
+    if name == "studio.visual.open" || name == "studio.visual.thumbnail" {
         let presentation = character_presentation::CharacterPresentation::from_value(
             &payload["presentation"],
             &previous_generation_id,
@@ -6937,7 +6941,13 @@ async fn studio_request(
             .ok_or("VISUAL_EDITOR_INVALID")?
             .binding_id
             .clone();
-        payload["presentation"] = serde_json::to_value(resources.authorize_editor(
+        let authorize = if name == "studio.visual.thumbnail" {
+            character_presentation::CharacterPresentationState::authorize_thumbnail
+        } else {
+            character_presentation::CharacterPresentationState::authorize_editor
+        };
+        payload["presentation"] = serde_json::to_value(authorize(
+            &resources,
             presentation,
             &previous_generation_id,
             &scope_id,
@@ -7020,49 +7030,19 @@ async fn studio_request(
     validate_studio_payload(&payload)?;
 
     if name == "studio.character.publish" {
-        if payload.get("changePlan").and_then(Value::as_str) == Some("core_restart_required") {
-            let target_character_id = payload
-                .get("savedCharacterId")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?
-                .to_string();
-            let restart = handle.restart();
-            if restart.is_ok() {
-                audio_state.shutdown();
-                state.bind_generation("")?;
-                observe_studio_character_restart(
-                    app_handle.clone(),
-                    handle.clone(),
-                    previous_generation_id.clone(),
-                    previous_generation_number,
-                    target_character_id.clone(),
-                );
-                observe_character_restart(
-                    app_handle,
-                    handle,
-                    previous_generation_id,
-                    previous_generation_number,
-                    target_character_id,
-                );
-                payload["runtimeReload"] = json!("requested");
-            } else {
-                payload["runtimeReload"] = json!("failed");
-                payload["reloadError"] = json!("角色已保存，但修改暂时未能生效。请重启 Sakura。");
-                let _ = app_handle.emit_to(
-                    product_shell::SETTINGS_WINDOW_LABEL,
-                    character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
-                    (),
-                );
-            }
+        payload["runtimeReload"] = if payload.get("applyError").is_some() {
+            json!("failed")
         } else {
-            payload["runtimeReload"] = json!("not_required");
-            let _ = app_handle.emit_to(
-                product_shell::SETTINGS_WINDOW_LABEL,
-                character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
-                (),
-            );
+            json!("not_required")
+        };
+        if let Some(error) = payload.get("applyError").cloned() {
+            payload["reloadError"] = error;
         }
+        let _ = app_handle.emit_to(
+            product_shell::SETTINGS_WINDOW_LABEL,
+            character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+            (),
+        );
     }
     Ok(payload)
 }
@@ -7357,36 +7337,9 @@ fn character_protocol_response(
     context: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
-    use tauri::http::{header, Method, StatusCode};
+    use tauri::http::StatusCode;
+    use visual_resources::protocol_error as fail;
 
-    let fail = |status: StatusCode, code: &str| {
-        tauri::http::Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .header(header::CACHE_CONTROL, "no-store")
-            .header("X-Content-Type-Options", "nosniff")
-            .body(code.as_bytes().to_vec())
-            .expect("static character protocol response")
-    };
-    if request.method() != Method::GET || request.uri().query().is_some() {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "CHARACTER_RESOURCE_REQUEST_REJECTED",
-        );
-    }
-    let segments: Vec<_> = request.uri().path().trim_matches('/').split('/').collect();
-    if !((segments.len() == 3 && segments[0] == "v1")
-        || (segments.len() >= 4 && segments[0] == "module")
-        || (segments.len() == 4 && segments[0] == "editor-assets"))
-        || segments[1].is_empty()
-        || segments[2].is_empty()
-        || segments.iter().any(|segment| segment.contains('%'))
-    {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "CHARACTER_RESOURCE_REQUEST_REJECTED",
-        );
-    }
     let lifecycle = context.app_handle().state::<ShellLifecycleState>();
     let Some(handle) = lifecycle.handle.as_ref() else {
         return fail(
@@ -7417,48 +7370,9 @@ fn character_protocol_response(
             }
         }
     }
-    let loaded = if segments[0] == "module" {
-        resources.load_module(
-            segments[1],
-            segments[2],
-            &segments[3..].join("/"),
-            &current_generation,
-        )
-    } else if segments[0] == "editor-assets" {
-        resources.load_editor_asset(segments[1], segments[2], segments[3], &current_generation)
-    } else {
-        resources.load_resource(segments[1], segments[2], &current_generation)
-    };
-    match loaded {
-        Ok(resource) => tauri::http::Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, resource.content_type)
-            .header("Access-Control-Allow-Origin", "*")
-            .header(header::CONTENT_LENGTH, resource.bytes.len().to_string())
-            .header(header::CACHE_CONTROL, "no-store, max-age=0")
-            .header("X-Content-Type-Options", "nosniff")
-            .body(resource.bytes)
-            .expect("validated character resource response"),
-        Err(error) => {
-            let stage = match segments[0] {
-                "module" => "visual.module.read",
-                "editor-assets" => "studio.visual.asset.read",
-                _ => "visual.asset.read",
-            };
-            log_visual_resource_error(&lifecycle.runtime_log, stage, &error);
-            let code = error
-                .split_once(':')
-                .map_or(error.as_str(), |(code, _)| code);
-            let status = if code.contains("GENERATION") {
-                StatusCode::GONE
-            } else if code.contains("UNKNOWN") || code.contains("NOT_FOUND") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::UNPROCESSABLE_ENTITY
-            };
-            fail(status, &code)
-        }
-    }
+    resources.protocol_response(&request, &current_generation, |stage, error| {
+        log_visual_resource_error(&lifecycle.runtime_log, stage, error);
+    })
 }
 
 #[tauri::command]
@@ -8450,6 +8364,9 @@ fn main() {
             begin_portrait_scale_preview,
             prepare_portrait_transition,
             activate_portrait_hit_test,
+            dynamic_hit_test::configure_dynamic_hit_test,
+            dynamic_hit_test::submit_dynamic_hit_test,
+            dynamic_hit_test::dynamic_hit_test_status,
             commit_portrait_transition,
             settle_portrait_scale_surface,
             interaction_latency_diagnostics_enabled,
@@ -8765,14 +8682,16 @@ mod tests {
             "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
             "pluginRequirements": [{"kind": "tts", "type": "gpt-sovits.models@1", "reasonCode": "READY"}],
         })).is_err());
-        let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
-            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "visual_rebind",
-        }))
-        .unwrap();
-        assert_eq!(
-            character_restart_target(&hot_snapshot, &hot_plan).unwrap(),
-            None
-        );
+        for plan in ["visual_rebind", "character_refresh", "character_switch"] {
+            let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
+                "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": plan,
+            }))
+            .unwrap();
+            assert_eq!(
+                character_restart_target(&hot_snapshot, &hot_plan).unwrap(),
+                None
+            );
+        }
 
         assert_eq!(
             validate_character_settings_change(json!({
@@ -8964,7 +8883,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_tool_dock_uses_the_resident_surface_without_mutating_window_placement() {
+    fn composer_tool_dock_routes_clicks_until_closed_without_mutating_window_placement() {
         let contract = layout_contract().unwrap();
         assert_eq!(composer_resident_viewport(&contract), [900, 1_890]);
         assert_eq!(composer_tool_dock_reserved_bottom(&contract, None), 986);
@@ -9018,6 +8937,50 @@ mod tests {
         assert_eq!(opened.interactive[0].y, 882);
         assert_eq!(opened.interactive[0].corner_radius, 16);
         assert_eq!(application.physical_placement, placement);
+        let mut geometry = WindowGeometrySession {
+            application: Some(application.clone()),
+            hit_regions: Some(base.clone()),
+            ..Default::default()
+        };
+        let point = [200, 900];
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        let open_rect = Some([130, 882, 216, 104]);
+        assert!(geometry
+            .apply_tool_dock_surface(&contract, open_rect, |_| {
+                Err("native update failed".into())
+            })
+            .is_err());
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        geometry
+            .apply_tool_dock_surface(&contract, open_rect, |regions| {
+                assert!(regions.interactive.iter().any(|rect| rect.contains(point)));
+                Ok(())
+            })
+            .unwrap();
+        // All router entry points, including late portrait replies, use this same guard.
+        assert!(dynamic_hit_test::control_contains(&geometry, &base, point));
+        assert!(!dynamic_hit_test::control_contains(
+            &geometry,
+            &base,
+            [400, 900]
+        ));
+        assert!(!dynamic_hit_test::control_contains(
+            &geometry,
+            &base,
+            [130, 882]
+        ));
+        assert!(geometry
+            .apply_tool_dock_surface(&contract, None, |_| { Err("native update failed".into()) })
+            .is_err());
+        assert!(dynamic_hit_test::control_contains(&geometry, &base, point));
+        geometry
+            .apply_tool_dock_surface(&contract, None, |regions| {
+                assert!(!regions.interactive.iter().any(|rect| rect.contains(point)));
+                Ok(())
+            })
+            .unwrap();
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        assert_eq!(geometry.application.unwrap().physical_placement, placement);
         assert_eq!(
             window_interaction::expand_surface_bounds_for_overlay(
                 application.active_bounds,

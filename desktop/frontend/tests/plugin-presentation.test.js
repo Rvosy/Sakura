@@ -172,3 +172,14 @@ test("plugin activity keeps warning and failure stable", () => {
   assert.equal(errorWithWorkingDetail.state, "error");
   assert.equal(errorWithWorkingDetail.isTransient, false);
 });
+
+test("search test progress does not replace plugin lifecycle status", () => {
+  for (const state of ["neutral", "working", "ready", "error"]) {
+    const activity = projectPluginActivity({state: "active", sections: [{fields: [
+      {key: "test", type: "status", placement: "row", value: {state, label: "搜索", message: ""}},
+    ]}]});
+    assert.equal(activity.state, "neutral");
+    assert.equal(activity.label, "");
+    assert.equal(activity.isTransient, false);
+  }
+});

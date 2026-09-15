@@ -980,33 +980,7 @@ impl RuntimeLogService {
                 trace_id: correlation.trace_id,
                 attributes: event.attributes.as_ref().and_then(|value| {
                     if event.custom {
-                        let mut budget = 32;
-                        let mut fields =
-                            sanitize_log_fields(value, &self.inner.secrets, 0, &mut budget);
-                        if let (Some(target), Some(safe)) = (
-                            fields.as_object_mut(),
-                            sanitize_attributes(value, &self.inner.secrets),
-                        ) {
-                            if let Some(safe) = safe.as_object() {
-                                for (key, value) in safe {
-                                    if matches!(
-                                        key.as_str(),
-                                        "diagnostic"
-                                            | "exception_chain"
-                                            | "exception_stack"
-                                            | "recovery_diagnostic"
-                                            | "cause_type"
-                                            | "error_type"
-                                            | "exception_site"
-                                            | "errno"
-                                            | "winerror"
-                                    ) {
-                                        target.insert(key.clone(), value.clone());
-                                    }
-                                }
-                            }
-                        }
-                        Some(fields)
+                        sanitize_custom_attributes(value, &self.inner.secrets)
                     } else {
                         sanitize_attributes(value, &self.inner.secrets)
                     }
@@ -1171,7 +1145,7 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
         .as_ref()
         .and_then(Value::as_object)
         .into_iter()
-        .flat_map(|fields| fields.iter().take(24))
+        .flat_map(|fields| fields.iter())
         .map(|(key, value)| RuntimeLogViewerDetail {
             label: if matches!(
                 key.as_str(),
@@ -1202,43 +1176,127 @@ fn sanitize_log_text(value: &str, secrets: &[String], maximum: usize) -> String 
     sanitize_diagnostic(value, secrets, maximum)
 }
 
+fn raw_diagnostic_field(key: &str) -> bool {
+    matches!(
+        key,
+        "diagnostic" | "exception_chain" | "exception_stack" | "recovery_diagnostic"
+    )
+}
+
+fn sanitize_custom_attributes(value: &Value, secrets: &[String]) -> Option<Value> {
+    let source = value.as_object()?;
+    let ordinary = source
+        .iter()
+        .filter(|(key, _)| !raw_diagnostic_field(key) && key.as_str() != "record_truncated")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let mut budget = 32;
+    let mut truncated = source.get("record_truncated").and_then(Value::as_bool) == Some(true);
+    let mut fields = sanitize_log_fields(
+        &Value::Object(ordinary),
+        secrets,
+        0,
+        &mut budget,
+        &mut truncated,
+    );
+    let target = fields.as_object_mut()?;
+    if truncated {
+        target.insert("record_truncated".into(), json!(true));
+    }
+    // Raw exception text has its own limits. Ordinary error metadata keeps its
+    // existing specialized sanitation only when it survived the ordinary budget.
+    let diagnostics = source
+        .iter()
+        .filter(|(key, _)| {
+            raw_diagnostic_field(key)
+                || matches!(
+                    key.as_str(),
+                    "cause_type" | "error_type" | "exception_site" | "errno" | "winerror"
+                )
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let safe = sanitize_attributes(&Value::Object(diagnostics), secrets);
+    if let Some(Value::Object(safe)) = &safe {
+        for (key, value) in safe {
+            if !raw_diagnostic_field(key) && target.contains_key(key) {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    // The truncation marker belongs to the byte budget, not the traversal budget.
+    while serde_json::to_vec(target).ok()?.len() > 1800 {
+        let key = target
+            .keys()
+            .rev()
+            .find(|key| key.as_str() != "record_truncated")?
+            .clone();
+        target.remove(&key);
+        target.insert("record_truncated".into(), json!(true));
+    }
+    if let Some(Value::Object(safe)) = safe {
+        for (key, value) in safe {
+            if raw_diagnostic_field(&key) {
+                target.insert(key, value);
+            }
+        }
+    }
+    Some(fields)
+}
+
 fn sanitize_log_fields(
     value: &Value,
     secrets: &[String],
     depth: usize,
     budget: &mut usize,
+    truncated: &mut bool,
 ) -> Value {
     if depth > 3 || *budget == 0 {
+        *truncated = true;
         return json!("[truncated]");
     }
     *budget -= 1;
     match value {
         Value::String(text) => json!(sanitize_log_text(text, secrets, 256)),
         Value::Array(items) => {
-            let mut result: Vec<_> = items
-                .iter()
-                .take(8)
-                .map(|item| sanitize_log_fields(item, secrets, depth + 1, budget))
-                .collect();
-            if items.len() > 8 {
-                result.push(json!("[truncated]"));
+            let mut result = Vec::new();
+            for item in items {
+                if result.len() >= 8 || *budget == 0 {
+                    *truncated = true;
+                    break;
+                }
+                result.push(sanitize_log_fields(
+                    item,
+                    secrets,
+                    depth + 1,
+                    budget,
+                    truncated,
+                ));
             }
             Value::Array(result)
         }
         Value::Object(fields) => {
             let mut result = Map::new();
-            for (key, item) in fields.iter().take(8) {
+            for (key, item) in fields {
+                if key == "record_truncated" && item.as_bool() == Some(true) {
+                    *truncated = true;
+                    continue;
+                }
+                if (depth > 0 && result.len() >= 8) || *budget == 0 {
+                    *truncated = true;
+                    break;
+                }
                 if normalize_token(key, 64).is_none() || forbidden_key(&normalize_key(key)) {
-                    result.insert("redacted".to_string(), json!("[REDACTED]"));
+                    if !result.contains_key("redacted") {
+                        *budget -= 1;
+                        result.insert("redacted".to_string(), json!("[REDACTED]"));
+                    }
                     continue;
                 }
                 result.insert(
                     key.clone(),
-                    sanitize_log_fields(item, secrets, depth + 1, budget),
+                    sanitize_log_fields(item, secrets, depth + 1, budget, truncated),
                 );
-            }
-            if fields.len() > 8 || *budget == 0 {
-                result.insert("record_truncated".to_string(), json!(true));
             }
             Value::Object(result)
         }
@@ -3828,7 +3886,7 @@ mod tests {
         log.submit(log.prepare_webview("settings", entry).unwrap());
         let snapshot = log.viewer_snapshot(None).unwrap();
         assert_eq!(snapshot.schema_version, 3);
-        assert_eq!(snapshot.records.len(), 9);
+        assert_eq!(snapshot.records.len(), 11);
         assert!(snapshot
             .records
             .windows(2)
@@ -3839,7 +3897,8 @@ mod tests {
                 .iter()
                 .filter(|r| r.plugin_id.as_deref() == Some(id))
                 .collect();
-            assert_eq!(records.len(), 2);
+            assert_eq!(records.len(), 4);
+            assert!(records.iter().any(|r| r.event_code == "plugin.loaded"));
             assert!(records
                 .iter()
                 .all(|r| r.plugin_name.as_deref() == Some("日志示例")));
@@ -3864,6 +3923,84 @@ mod tests {
         assert!(plugins.contains("插件资源加载完成") && plugins.contains("插件清理完成"));
         assert!(plugins.contains("fixture.one") && plugins.contains("fixture.two"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn custom_field_budget_survives_repeated_sanitation_and_file_projection() {
+        let root = temp_root("custom-field-budget");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let mut fields = Map::new();
+        for index in 0..31 {
+            fields.insert(format!("metric_{index:02}"), json!(index));
+        }
+        fields.insert("api_key".into(), json!("fixture-private"));
+        fields.insert("record_truncated".into(), json!(true));
+        fields.insert(
+            "diagnostic".into(),
+            json!(format!(
+                "{} token=fixture-private",
+                "startup context ".repeat(30)
+            )),
+        );
+        let first = log
+            .normalize_event(RuntimeLogEvent::message(
+                Severity::Warning,
+                "runtime",
+                "诊断记录",
+                Value::Object(fields),
+            ))
+            .record
+            .attributes
+            .unwrap();
+        let second = log
+            .normalize_event(RuntimeLogEvent::message(
+                Severity::Warning,
+                "runtime",
+                "诊断记录",
+                first.clone(),
+            ))
+            .record
+            .attributes
+            .unwrap();
+        assert_eq!(
+            first, second,
+            "repeated sanitation must not consume another field"
+        );
+        assert_eq!(second["metric_29"], 29);
+        assert!(second.get("metric_30").is_none());
+        assert_eq!(second["redacted"], "[REDACTED]");
+        assert_eq!(second["record_truncated"], true);
+        assert!(second["diagnostic"].as_str().unwrap().len() > 256);
+        assert!(!second.to_string().contains("fixture-private"));
+        assert!(log.submit(RuntimeLogEvent::message(
+            Severity::Warning,
+            "runtime",
+            "诊断记录",
+            second,
+        )));
+        log.drain_and_shutdown_for_test();
+        let contents = fs::read_to_string(path).unwrap();
+        for index in 0..30 {
+            assert!(contents.contains(&format!("metric_{index:02}={index}")));
+        }
+        let _ = fs::remove_dir_all(root);
+
+        let oversized = (0..10)
+            .map(|index| (format!("field_{index:02}"), json!("界".repeat(256))))
+            .collect::<Map<String, Value>>();
+        for fields in [
+            Value::Object(oversized),
+            json!({"nested": (0..10).collect::<Vec<_>>()}),
+        ] {
+            let safe = sanitize_custom_attributes(&fields, &[]).unwrap();
+            assert!(serde_json::to_vec(&safe).unwrap().len() <= 1800);
+            assert_eq!(safe["record_truncated"], true);
+            assert_eq!(sanitize_custom_attributes(&safe, &[]), Some(safe.clone()));
+            if let Some(nested) = safe.get("nested") {
+                assert_eq!(nested, &json!((0..8).collect::<Vec<_>>()));
+            }
+        }
     }
 
     #[test]

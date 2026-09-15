@@ -39,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     inspect_data = sub.add_parser("inspect-data")
     inspect_data.add_argument("--source", required=True)
     inspect_data.add_argument("--target", required=True)
+    inspect_data.add_argument("--role-mapping", default="{}")
     apply_data = sub.add_parser("apply-data")
     apply_data.add_argument("--source", required=True)
     apply_data.add_argument("--target", required=True)
@@ -134,7 +135,13 @@ def _run(args: argparse.Namespace) -> int:
             _emit({"type": "inspection", "inspection": inspection.to_public_dict()})
             return 0
         if args.command == "inspect-data":
-            plan = inspect_character_data_import(Path(args.source), Path(args.target))
+            try:
+                role_mapping = json.loads(args.role_mapping)
+                if not isinstance(role_mapping, dict):
+                    raise ValueError
+            except ValueError as exc:
+                raise LegacyImportError("LEGACY_DATA_MAPPING_INVALID", "inspect") from exc
+            plan = inspect_character_data_import(Path(args.source), Path(args.target), role_mapping=role_mapping)
             _emit({"type": "data-import-plan", "plan": plan})
             return 0
         if args.command == "apply-data":

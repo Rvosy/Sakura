@@ -39,11 +39,22 @@ def parse_requirements(value):
     return result
 
 
-def tts_resource_types(value):
-    if (not isinstance(value, list) or len(value) > 32
-        or any(not isinstance(item, str) or not RESOURCE_TYPE_PATTERN.fullmatch(item) for item in value)):
-        raise ValueError("TTS_RESOURCE_MANIFEST_INVALID")
-    return tuple(dict.fromkeys(value))
+def tts_resource_types(value, *, issues=None):
+    def invalid():
+        if issues is None:
+            raise ValueError("TTS_RESOURCE_MANIFEST_INVALID")
+        issues.append({"kind": "tts", "type": "", "part": "manifest", "reasonCode": "TTS_RESOURCE_MANIFEST_INVALID"})
+
+    if not isinstance(value, list) or len(value) > 32:
+        invalid()
+        return ()
+    result = []
+    for item in value:
+        if not isinstance(item, str) or not RESOURCE_TYPE_PATTERN.fullmatch(item):
+            invalid()
+        elif item not in result:
+            result.append(item)
+    return tuple(result)
 
 
 def requirements_for_manifest(manifest, *, include_tts=True):
@@ -95,7 +106,14 @@ def check_requirements(requirements, records):
                 if item["kind"] == "visual" else record.tts_resources)
 
         hinted_ids = {hint["id"] for hint in item["plugins"]}
-        candidates = [record for record in records if supports(record) or record.plugin_id in hinted_ids]
+        def issue_for(record):
+            return next((issue["reasonCode"] for issue in record.capability_issues
+                if issue["kind"] == item["kind"] and issue["part"] != "editor"
+                and issue["type"] in {"", item["type"]}), None)
+
+        candidates = [record for record in records if supports(record) or record.plugin_id in hinted_ids
+            or any(issue["kind"] == item["kind"] and issue["type"] == item["type"]
+                for issue in record.capability_issues)]
         # A valid user installation supersedes a bundled/duplicate record.
         eligible_ids = {record.plugin_id for record in candidates if record.runtime_eligible}
         candidates = [record for record in candidates if record.runtime_eligible or record.plugin_id not in eligible_ids]
@@ -108,5 +126,7 @@ def check_requirements(requirements, records):
             reason = "PLUGIN_INCOMPATIBLE" if candidates else "PLUGIN_MISSING"
         results.append({**item, "reasonCode": reason, "candidates": [
             {"id": record.plugin_id, "name": record.name, "enabled": record.desired_enabled,
-             "compatible": supports(record) and record.runtime_eligible, "installId": record.install_id} for record in candidates]})
+             "compatible": supports(record) and record.runtime_eligible, "installId": record.install_id,
+             **({"reasonCode": issue_for(record)} if not supports(record) and issue_for(record) else {})}
+            for record in candidates]})
     return results

@@ -39,9 +39,15 @@ visuals:
 `contract` 是宿主合同版本，当前支持 1。其他正整数合同保留在 Inventory 中，绑定时报不兼容。
 `presentation` 仍仅用于插件列表展示。资源 ID、类型和提供者 ID 各自独立。
 
-`renderer` 必填，`editor` 可省略。模块必须是安装目录内已有的 `.js` 或 `.mjs`，路径各段以 ASCII 字母、数字、
-下划线或短横线开头，其余字符限同组字符及点。路径使用 `/`，不含空段、点段、驱动器、网络地址或穿越。
-Discovery、Inventory、安装器共用校验，不在发现阶段执行模块。资源数据路径不受模块字符集限制。
+`renderer` 必填，`editor` 可省略。模块必须是安装目录内已有的 `.js` 或 `.mjs`，允许中文和空格文件名。
+路径使用 `/`，不含空段、点段、驱动器、网络地址或穿越；实际访问继续检查解析后的路径包含关系。
+Discovery、Inventory、安装器共用解析，不在发现阶段执行模块。未知展示元信息忽略。
+
+可选声明按能力处理失败：无效形态不参与绑定，其他形态和普通 Service 继续可用；无效编辑模块只关闭该编辑入口，
+已有形态仍可显示。Inventory 保留 `capability_issues`，形态与编辑查询分别返回 `VISUAL_MANIFEST_INVALID`
+或 `VISUAL_MODULE_INVALID`，不把已安装插件误报成缺失。合法插件入口和 API 仍是插件启动前提。
+`ttsResources` 中无效条目同样只影响对应兼容能力，保留其他合法类型；需求查询返回该候选的
+`TTS_RESOURCE_MANIFEST_INVALID` 原因。修复声明或模块后重新扫描即可恢复，用户资源无需迁移。
 
 新角色清单的表现区如下；最多 32 份资源，同时只选一份：
 
@@ -70,7 +76,8 @@ Discovery、Inventory、安装器共用校验，不在发现阶段执行模块�
 
 设置的“角色”页在当前角色下显示“显示方式”。列表只包含包内形态，直接显示当前实际选择；已有配置未指定个人
 选择时显示包默认形态，不另设“跟随角色默认”选项。选中项用勾号标记，字重与其他选项一致。旁边的“设置”打开
-实际提供者的插件设置。插件缺失、停用或不兼容时显示状态并提供“查看插件”，不隐式安装或更换提供者。
+角色工坊的“形态”页，选中当前下拉框对应的角色形态，包括尚未应用的选择；跳转不保存设置。
+形态存在即可跳转，不要求插件处于可用状态。插件缺失、停用或不兼容时显示状态并提供“查看插件”，不隐式安装或更换提供者。
 进入角色页、窗口重新获得焦点或工坊保存后重新读取状态，保留尚未应用的选择。
 同一角色的并发读取共用在途请求，避免页面切换、焦点与目录刷新重复占用请求槽位。
 
@@ -136,7 +143,13 @@ Service 调用前后检查 provider 与进程 scope，清理或重启后的在�
 
 旧 `portrait` 继续作为兼容数据读取。没有新封装时交由所选插件解释；存在非法新封装时也不退回旧值。
 内置立绘插件按“显式 key/旧 portrait → 本段 tone 对应图片 → 默认图”选择。其他插件可以拒绝旧字段。
-旧历史不批量重写。历史页只投影可读文字；浏览、分页、UI 重绘和 `chat.completed` 不执行控制。
+旧历史不批量重写。历史页只投影可读文字；历史分页、UI 重绘和 `chat.completed` 不执行控制。
+桌宠气泡的上翻、下翻恢复该片段实际展示时的持续状态，不重播一次性动作、语音或打字动画。
+RendererHost 在片段状态应用后通过可选 `snapshotState()` 保存完整状态；没有控制的片段也记录当时状态，
+因此省略皮肤等字段时仍能回看实际继承的表情。快照以当前会话的片段对象关联，宿主不合并或解释插件私有字段，
+不修改 Timeline。缺少快照的片段只切换文字，不尝试重放原始控制。
+快照仅属于当前绑定；切换形态、重载插件或 Core generation 变化时失效。
+快速翻阅会中止前一次恢复；开始新回复时先恢复最新实际播放状态，避免历史预览改变后续省略字段的含义。
 
 宿主在 TTS 确认开始播放、或静音段开始展示时派发该段控制；不是合成开始时派发。同一 operation 的相同
 segmentIndex 最多执行一次。取消先中止 operation signal，再调用插件 cancel；新 generation、资源绑定、
@@ -146,13 +159,16 @@ segmentIndex 最多执行一次。取消先中止 operation signal，再调用�
 
 ```javascript
 export function mount({ container, resource, host, signal }) {
-  return { ready, applyState(state, context), perform(action, context), cancel(context), destroy() };
+  return { ready, applyState(state, context), snapshotState(), perform(action, context), cancel(context), destroy() };
 }
 ```
 
 `resource` 是当前 VisualPresentation，含 bindingId、resourceId、type、providerId、私有 data 和受控 assets URL。
 `ready` 可以是 Promise；`applyState`、`destroy` 必须存在，其他回调按需要实现。控制 context 包含
 `operationId`、`segmentIndex` 与 operation `signal`。挂载 signal 表示整份绑定的生命期。
+`snapshotState()` 同步返回可交给 `applyState` 的完整持续状态（有限 JSON，连同路由封装最多 64 KiB）。
+它不包含一次动作、计时器或 GPU 对象。未实现此方法的插件仍能播放新回复，回看只更新文字；
+快照失败不阻止本段动作执行。回看和返回实时状态的 context 使用独立 operation signal，`segmentIndex` 为 -1。
 RendererHost 限制模块加载、mount 和 ready 等待各为 10 秒，销毁迟到实例，并隔离旧回调及宿主服务调用。
 切换 generation 或形态时先撤销旧控制，保留旧实例的静态画面；新实例完成资源加载和 ready 后再替换并销毁旧实例。
 插件负责停止自己的动画、计时器、监听和资源；长异步工作在 await 后复核 signal。
@@ -162,6 +178,7 @@ RendererHost 限制模块加载、mount 和 ready 等待各为 10 秒，销毁�
 ```text
 prepareSurface({assetKey}) -> boolean
 setSurface({assetKey?, width, height}) -> boolean
+setHitTest(point => Promise<boolean>) -> boolean
 finishSurface() -> boolean
 cancelSurface()
 reportError(reasonCode)
@@ -169,6 +186,15 @@ unavailable(reasonCode)
 ```
 
 尺寸为 1–8192 的整数。不提供 assetKey 时使用矩形表面；提供 key 时由原生 PNG alpha-mask 原语生成命中数据。
+Windows 上的动态表现可在 `setSurface` 成功后调用可选的 `setHitTest`，提供当前画面的一点命中函数。
+参数为表现容器内从左上角起算的归一化 `[x,y]`；true 接收鼠标，false 穿透。宿主负责屏幕坐标、DPI 和 CSS 缩放转换。
+换算必须使用当前绑定实际挂载的表面容器，包含其按比例适配、底部对齐和个人缩放；不能使用外层角色占位区域的矩形。
+此服务不更改显示裁剪，也不写入角色资源。当前仅 Windows 实现；其他平台返回 false，继续使用已声明的表面。
+宿主在角色范围内按最多约 60 Hz 发起请求，在范围外只检查原生鼠标位置；最多一个请求在途，150 ms 超时恢复矩形命中。
+按钮、气泡和菜单优先命中，鼠标按键保持期间不切换事件归属。绑定退出时撤销监听并恢复普通命中。
+回复必须属于当前绑定和请求，且鼠标位置、窗口原点、布局版本、角色表面版本、DPI 均未变化，否则丢弃。
+异步检测存在快速移动后立即点击的旧状态窗口，不保证逐事件同步命中，不向其他应用重放点击。
+`dynamic_hit_test_status` 提供当前会话的 UI 唤醒数、请求数、接受数、过期丢弃数、状态切换数及回包耗时累计值，供本地性能诊断。
 宿主将挂载容器按声明的表面比例放入角色区域，底部居中，并在容器上统一应用个人缩放；插件不重复应用该缩放。
 宿主保留 DPI、拖拽、窗口裁剪与透明穿透，视觉容器与命中区域采用相同尺寸和缩放。取消时恢复最后已提交的表面；
 晚到的准备或提交不能更换画面。内置立绘插件自行创建图片 DOM、解码、缓存和交叉淡入，并在取消或提交失败时清理过渡层。
@@ -182,8 +208,10 @@ Core 的 `CharacterPresentation` 使用 schemaVersion 2：角色公共信息、�
 插件停用或渲染失败等确定结果时才显示不可用状态，诊断使用现有运行日志事件并携带稳定错误码。
 Rust 将资源 URL 编码为 `/v1/{hexGeneration}/{bindingId}-{hexAssetKey}`，模块为
 `/module/{hexGeneration}/{bindingId}/{安装内相对模块路径}`，通过 `sakura-character` 协议提供。
+模块路径按 UTF-8 路径段进行 URL 编码；协议读取时只解码一次，再检查包内路径和模块类型。
+中文、空格及文件名中的字面 `%`、`#` 可正常读取；编码后的分隔符和越界路径仍被拒绝。
 WebView 不接收安装绝对路径；模块只能来自已安装插件，角色包里的 JavaScript 不会作为模块加载。
-普通资产限 64 MiB，模块限 4 MiB；PNG 命中服务另有限定尺寸、解码预算和小容量缓存。
+普通资产限 64 MiB，模块限 4 MiB。内置立绘插件和原生 PNG 命中服务的单张文件上限均为 16 MiB（16,777,216 字节，含上限）；PNG 宽高各不超过 8192，像素总数不超过 40,000,000。PNG 命中服务另有解码预算和小容量缓存。
 URL 随 generation 与绑定失效；同 generation 的插件重绑同样撤销旧目标。CSP 不允许 eval 或运行时 CDN。
 前端模块是可信插件代码，共享 WebView 权限，不是恶意 JavaScript 沙箱。
 
@@ -196,16 +224,24 @@ export function mountEditor({ container, data, host, signal }) {
 ```
 
 私有 data 不经过 snake/camel 转换。编辑器通过 `host.changed(data)` 更新该资源草稿，`host.error(error)` 显示错误，
+可选的 `snapshotView()` / `restoreView(value)` 用于保存缩放、平移等临时视图状态。宿主按提供方和资源 ID 缓存，
+保存后重新挂载或切回该形态时恢复；清空编辑器或切换工作区时清除，不写入资源配置。
 `host.importFiles({multiple?,folder?})` 使用宿主文件选择和复制，`host.assetUrl(relativePath)` 获取资源文件 URL，可供图片或模型文件读取。
 工坊打开资源列表时，通过 `studio.visual.previews` 一次获取各插件可选的 `previewImage(resource, raw)` 结果，
 不需要先打开各形态的编辑器，也不调用 describe 或挂载渲染器。参数与 editorData 相同；结果是资源根内的
 PNG、JPEG、WebP、GIF 相对路径或 null，单图上限 20 MiB。未导出该方法、图片缺失或插件不可用时显示占位图标，
 不影响其他形态。Core 校验路径，Rust 复用工坊媒体预览协议注册图片，绝对路径不传入 WebView。
-立绘插件返回默认图；Live2D、3D 等插件可以返回包内模型截图，不要求宿主实时生成模型快照。
+立绘插件返回默认图；Live2D、3D 等插件可以返回包内模型截图。没有静态图片时，工坊按顺序调用
+`studio.visual.thumbnail` 获取资源的只读编辑描述，再调用编辑器模块可选的
+`renderThumbnail({container,data,host,signal})`。插件可通过 `host.assetUrl` 读取资源，返回 PNG data URL 或 null；
+未导出该函数时保留占位图。每次只生成一张缩略图，插件在完成或取消时销毁临时渲染器，不持续播放卡片动画。
+PNG data URL 上限 2 MiB，仅图片 CSP 允许 data URL，脚本授权不变。
 编辑期间可调用 `host.previewImage(relativePath或null)` 更新当前卡片；只接受本编辑器最后一次请求的结果，
 跨编辑器或工作区的旧回包不能更新封面。同资源的封面路径未变时保留已加载的图片节点，不因编辑器地址换绑而重载；
 封面变化时先解码新图片，再替换旧图。异步初始列表不能覆盖编辑期间的新封面。
-打开编辑器时，Core 将草稿资源根交给 Rust；Rust 校验其位于草稿目录内，再向前端返回绑定范围内的 `assetBaseUrl`。
+打开编辑器或请求缩略图描述时，Core 将草稿资源根交给 Rust；Rust 校验其位于草稿目录内，再向前端返回绑定范围内的 `assetBaseUrl`。
+选中编辑器与缩略图任务各保留一个独立授权槽；替换缩略图不撤销编辑器，替换编辑器不打断缩略图。
+关闭工坊或提供方失效时一并撤销两者。生成结果仅保存在当前工作区的前端缓存，不写入角色资源或草稿。保存或切换选中项时复用已有缩略图和图片节点；资源配置实际变化后才重新生成，生成期间保留旧图。缩略图使用固定视口，不从正在缩放或重新布局的编辑器画布截取。
 `host.assetUrl` 在本地生成稳定 URL 并复用同路径结果，图片和模型文件直接经原生资源协议读取，不逐张请求 Core，
 也不占用草稿写锁。协议复核 generation、编辑器授权和路径包含关系，单文件上限 64 MiB。
 路径编码为 `/editor-assets/{hexGeneration}/{bindingId}/{hexUtf8RelativePath}`；JSON 返回 application/json，
@@ -251,12 +287,14 @@ catalog 返回编辑器提供者的 scopeId，open 返回 providerScopeId。工�
 形态组件使用 `.visual` 后缀、version 2、kind `resource`，manifest 的 resource 为 `{type,entry,name?,pluginRequirements?}`，文件在 `resource/` 下；
 可选名称随导出、导入保留，旧版 `.char` 形态组件仍可读取。导出统一写 `.visual`，完整角色保持 `.char`，语音包保持 `.voice`。
 原生“导入形态”选择器提供 `.visual` 与旧版 `.char` 过滤项；归档内容仍按 format/version/kind 校验，改后缀不能把完整角色变成形态组件。
-组件入口由 exportResource 投影，附件由 describe.assets 声明；导入生成新资源 ID，仅加入目标角色草稿并设为默认。
+组件入口由 exportResource 投影，附件由 describe.assets 声明；导入生成新资源 ID，仅加入目标角色草稿，保留已有默认形态；目标原本没有形态时，首次导入的形态成为默认。
+导入先写入该新 ID 的未引用目录，文件完整且通过最后取消检查后才返回资源描述，由调用者加入草稿。
+不通过重命名整个资源目录提交，避免 Windows 上子文件被读取时拒绝目录改名。失败仅清理本次新建目录，既有资源不受影响。
 不覆盖目标人格、voice、角色 ID 或已安装包。未知类型组件仍可保存并随完整角色包转交，缺失插件不触发隐式安装。
 组件可声明 `resource.pluginRequirements`，完整角色在 `character.pluginRequirements` 汇总需求；格式和检测规则见下节。
 宿主按资源 `type` 匹配能力，插件 ID 是安装建议；完整角色的 `visuals.providers` 仍可指定实际提供者 ID。
 缺少匹配插件时，工坊保留名称、配置和所有文件，并提示“尚未安装支持此形态的插件”；不能编辑、渲染或通过插件单独导出该形态。
-导入仍将新形态设为包默认；保存后若实际选中它，绑定返回 `VISUAL_PROVIDER_MISSING`、visual 为 null，不自动回退其他形态。
+导入缺失插件的形态同样保留已有默认形态；保存后若实际选中它，绑定返回 `VISUAL_PROVIDER_MISSING`、visual 为 null，不自动回退其他形态。
 用户可以选择已有可用形态，或安装并启用兼容插件后重新打开，无需重复导入。插件已安装但停用时单独提示未启用。
 ZIP 穿越、重复路径、符号链接与超限归档被拒绝；中途取消清理临时文件，提交前最后一次取消检查防止覆盖既有导出。
 

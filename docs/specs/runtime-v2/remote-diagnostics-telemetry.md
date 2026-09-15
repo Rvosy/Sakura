@@ -90,6 +90,8 @@ TTS、迁移、修复继续记录已有业务结果，source/repair/recovery 等
 
 buildId 映射由维护者的发布产物提供；源码定位使用对应 commit。没有 sourcemap/符号文件时保留原始编译位置并注明未知，不能假装已经符号化。当前不采集 native minidump，也不部署新的第三方诊断平台。
 
+普通本地 Release 编译使用 `development-<commit>` 和 development 环境，不依赖诊断映射。正式打包入口（Release/Package 流水线和 Windows 打包脚本）设置 `SAKURA_REQUIRE_DIAGNOSTIC_MAPPING=1`，要求暂存的 buildId、映射与资源一致；缺失或不一致时终止打包。编译优化等级不决定是否属于正式发行。
+
 ## 部署与兼容
 
 生产服务先支持 v3，再发布客户端。Nginx 为 `/v3/errors` 增加精确路由和 128 KiB 上限，沿用 Origin Secret、Host 隔离和管理端 Basic Auth；不开放任意 `/v3/*`。v1/v2 原接口、上限和校验保持兼容。生产部署不由代码合入自动代表完成。

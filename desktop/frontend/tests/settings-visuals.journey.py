@@ -43,9 +43,13 @@ def run():
             boundary.select("character")
             generation = 1
             visual_reads = 0
+            studio_requests = []
             def invoke(command, params=None):
                 nonlocal generation, visual_reads
                 params = params or {}
+                if command == "open_character_studio":
+                    studio_requests.append(params)
+                    return None
                 if command == "settings_characters_get": return boundary.snapshot()
                 if command == "settings_character_visuals_get":
                     visual_reads += 1
@@ -100,6 +104,10 @@ def run():
             page.get_by_role("option", name="另一套形态", exact=True).click()
             expect(page.locator("#applyButton")).to_be_enabled()
             assert boundary.visual_snapshot("character")["preferenceResourceId"] is None
+            page.locator("#visualConfigure").click()
+            expect(page.locator("#visualConfigure")).to_be_enabled()
+            assert studio_requests[-1] == {"characterId": "character", "resourceId": "numeric-2"}
+            assert boundary.visual_snapshot("character")["preferenceResourceId"] is None
             page.evaluate("window.discard()")
             expect(page.locator("#visualSelect")).to_have_value("numeric-1")
             page.get_by_role("combobox", name="显示方式", exact=True).click()
@@ -117,12 +125,13 @@ def run():
             page.reload()
             expect(page.locator("#visualSelect")).to_have_value("numeric-1")
             page.locator("#visualConfigure").click()
-            assert page.evaluate("window.pluginRequest.configure") is True
+            expect(page.locator("#visualConfigure")).to_be_enabled()
+            assert studio_requests[-1] == {"characterId": "character", "resourceId": "numeric-1"}
             install_id = boundary.visual_snapshot("character")["resources"][0]["installId"]
             application.set_enabled(install_id, False)
             page.evaluate("window.feature.onPageChanged('character')")
             expect(page.locator("#visualStatus")).to_be_visible()
-            expect(page.locator("#visualConfigure")).to_be_disabled()
+            expect(page.locator("#visualConfigure")).to_be_enabled()
             page.locator("#visualPluginAction").click()
             assert page.evaluate("window.pluginRequest") == {"id": install_id, "configure": False}
             application.set_enabled(install_id, True)

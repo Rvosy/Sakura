@@ -1,5 +1,6 @@
-import { requirementMessage } from "../core/plugin-requirements.js";
-import { createVisualEditorHost } from "./visual-editor-host.js";
+import { requirementSummary } from "../core/plugin-requirements.js";
+import { createVisualEditorHost, renderVisualThumbnail } from "./visual-editor-host.js";
+import { observeSelects } from "../settings/select-control.js";
 import { createIcon } from "../core/icons.js";
 import {
   characterOptionGroup,
@@ -8,7 +9,6 @@ import {
   isValidCharacterId,
   normalizeColorText,
   operationCancelState,
-  runtimeReloadState,
   selectBootstrapCharacter,
   uniqueReplyTones,
   validateStudioResponse,
@@ -131,13 +131,13 @@ let themeEditor = {};
 let previewAudio = null;
 let draftAutosaveTimer = null;
 let draftAutosavePromise = null;
+let discardingDraft = false;
 let renderingEditor = false;
 let createCharacterResolve = null;
 let createCharacterPreviousFocus = null;
 let createDisplayNameEdited = false;
 let closingStudio = false;
 let activeOperationId = "";
-let completeStudioReload = null;
 
 const cancellableOperationLabels = Object.freeze({
   "studio.import_voice_model": "正在复制语音模型…",
@@ -529,10 +529,6 @@ function isDirty() {
   return Boolean(currentDoc) && editorSnapshot() !== baseline;
 }
 
-function confirmDiscardChanges() {
-  return !isDirty() || window.confirm("继续将丢失未保存的修改，是否继续？");
-}
-
 function currentCharacterEntry() {
   return (request?.characters || []).find((item) => item.id === editingCharacterId) || null;
 }
@@ -642,7 +638,7 @@ function handleEditorChanged() {
 }
 
 function scheduleDraftAutosave() {
-  if (!currentWorkspaceId || !currentDoc) {
+  if (discardingDraft || !currentWorkspaceId || !currentDoc) {
     return;
   }
   window.clearTimeout(draftAutosaveTimer);
@@ -654,12 +650,12 @@ function scheduleDraftAutosave() {
 async function flushDraftAutosave() {
   window.clearTimeout(draftAutosaveTimer);
   draftAutosaveTimer = null;
-  if (renderingEditor || !currentWorkspaceId || !currentDoc || !isDirty()) {
+  if (discardingDraft || renderingEditor || !currentWorkspaceId || !currentDoc || !isDirty()) {
     return null;
   }
   if (draftAutosavePromise) {
     await draftAutosavePromise;
-    if (!isDirty()) {
+    if (discardingDraft || !isDirty()) {
       return null;
     }
   }
@@ -737,7 +733,17 @@ async function refreshPluginRequirements() {
     if (revision !== requirementsRevision || workspaceId !== currentWorkspaceId) return;
     list.replaceChildren();
     for (const item of result.items) {
-      const row = document.createElement("li"); row.textContent = requirementMessage(item); list.append(row);
+      const summary = requirementSummary(item);
+      const row = document.createElement("li"); row.className = "plugin-requirement";
+      const text = document.createElement("div"); text.className = "plugin-requirement-text";
+      const name = document.createElement("strong"); name.textContent = summary.names.join("、") || `支持此${summary.label}的插件`;
+      row.setAttribute("aria-label", `${summary.label}：${name.textContent}`);
+      text.append(name);
+      if (summary.detail) {
+        const detail = document.createElement("p"); detail.textContent = summary.detail; text.append(detail);
+      }
+      const status = document.createElement("span"); status.className = `plugin-requirement-status is-${summary.state}`; status.textContent = summary.status;
+      row.append(text, status); list.append(row);
     }
     panel.hidden = !result.items.length;
   } catch (error) {
@@ -805,6 +811,8 @@ function renderModelFiles(modelFiles = []) {
 let selectedVisualId = "";
 let visualWorkspace = "";
 const visualPreviews = new Map();
+let visualPreviewAbort = new AbortController();
+let visualThumbnailQueue = Promise.resolve();
 let visualCatalog = [];
 let visualEditorRevision = 0;
 let visualSelectionRevision = 0;
@@ -820,6 +828,9 @@ const visualEditor = createVisualEditorHost({
     if (!currentDoc || !selectedVisualId) return;
     ensureVisualReferences();
     currentDoc.visual_data ||= {};
+    const cover = visualPreviews.get(selectedVisualId);
+    if (cover?.generated && JSON.stringify(currentDoc.visual_data[selectedVisualId]) !== JSON.stringify(data))
+      visualPreviews.set(selectedVisualId, { ...cover, dirty: true });
     currentDoc.visual_data[selectedVisualId] = data;
     handleEditorChanged();
   },
@@ -840,6 +851,8 @@ const visualEditor = createVisualEditorHost({
     return result;
   },
 });
+const stopObservingVisualSelects = observeSelects(fields.expressionList);
+window.addEventListener('pagehide', stopObservingVisualSelects, { once: true });
 function visualReferences() {
   return currentDoc?.visuals || { resources: [], default: null };
 }
@@ -853,23 +866,49 @@ function visualName(resource) { return resource.name || visualProvider(resource)
 function updateVisualPreview(url, resourceId, path) {
   const previous = visualPreviews.get(resourceId);
   // Opening another editor changes its authorization URL, not this card's image.
-  if (previous?.path === path && (previous.url || !url)) return;
-  visualPreviews.set(resourceId, { path, url });
+  if (previous?.path === path && (previous.url || !url)) { previous.dirty = false; return; }
+  visualPreviews.set(resourceId, { path, url, generated: Boolean(url?.startsWith('data:image/png;base64,')), dirty: false });
   const cover = fields.visualResourceList.querySelector(`[data-visual-id="${CSS.escape(resourceId)}"] .form-card-cover`);
   if (cover) fillVisualCover(cover, resourceId);
 }
 async function loadVisualPreviews() {
+  visualPreviewAbort.abort();
+  visualPreviewAbort = new AbortController();
+  const signal = visualPreviewAbort.signal;
   const workspaceId = currentWorkspaceId;
   const revision = visualEditorRevision;
   const previous = new Map(visualPreviews);
   try {
     const result = await invoke("studio_request", { method: "studio.visual.previews", params: { workspaceId } });
-    if (workspaceId !== currentWorkspaceId || revision !== visualEditorRevision) return;
+    if (signal.aborted || workspaceId !== currentWorkspaceId || revision !== visualEditorRevision) return;
     for (const item of result.items) {
       // An editor may have changed the cover while the initial list was loading.
       if (visualPreviews.get(item.resourceId) !== previous.get(item.resourceId)) continue;
+      if (!item.previewUrl && visualPreviews.get(item.resourceId)?.generated) continue;
       if (visualReferences().resources.some(resource => resource.id === item.resourceId)) updateVisualPreview(item.previewUrl || null, item.resourceId, item.relativePath);
     }
+    // Generate one static cover at a time, keeping at most one extra WebGL
+    // context and one native thumbnail authorization alongside the editor.
+    visualThumbnailQueue = visualThumbnailQueue.catch(() => {}).then(async () => {
+      for (const item of result.items) {
+        if (signal.aborted || workspaceId !== currentWorkspaceId || revision !== visualEditorRevision) return;
+        const cached = visualPreviews.get(item.resourceId);
+        if (cached?.url && !cached.dirty) continue;
+        const resource = visualReferences().resources.find(resource => resource.id === item.resourceId);
+        if (!resource) continue;
+        const before = visualPreviews.get(item.resourceId);
+        try {
+          const providerId = currentDoc.visuals?.providers?.[resource.id];
+          const descriptor = await invoke("studio_request", { method: "studio.visual.thumbnail", params: { workspaceId, resourceId: resource.id, ...(providerId ? { providerId } : {}) } });
+          if (signal.aborted || workspaceId !== currentWorkspaceId) return;
+          const url = await renderVisualThumbnail(descriptor, signal);
+          if (!signal.aborted && workspaceId === currentWorkspaceId && revision === visualEditorRevision && url && visualPreviews.get(resource.id) === before)
+            updateVisualPreview(url, resource.id, url);
+        } catch (error) {
+          if (!signal.aborted) runtimeDiagnostics.reportError(error, { command: "studio_visual_cover", code: "VISUAL_PREVIEW_FAILED" });
+        }
+      }
+    });
   } catch (error) {
     if (workspaceId === currentWorkspaceId && revision === visualEditorRevision)
       runtimeDiagnostics.reportError(error, { command: "studio_visual_previews", code: "VISUAL_PREVIEW_FAILED" });
@@ -949,9 +988,14 @@ function renderVisualMeta(resource) {
     provider.onchange = () => { ensureVisualReferences(); currentDoc.visuals.providers ||= {}; if (provider.value) currentDoc.visuals.providers[resource.id] = provider.value; else delete currentDoc.visuals.providers[resource.id]; handleEditorChanged(); void openVisualEditor(resource, visualEditorRevision, { force: true }); };
     actions.append(provider); enhanceSelect(provider);
   }
-  const makeDefault = visualButton(visualReferences().default === resource.id ? "默认形态" : "设为默认", () => {
+  const isDefault = visualReferences().default === resource.id;
+  const makeDefault = visualButton(isDefault ? "默认形态" : "设为默认", () => {
     currentDoc.visuals.default = resource.id; handleEditorChanged(); renderVisualCards(); renderVisualMeta(resource);
-  }); makeDefault.id = "defaultVisualButton"; makeDefault.disabled = visualReferences().default === resource.id;
+  }); makeDefault.id = "defaultVisualButton"; makeDefault.disabled = isDefault;
+  if (isDefault) {
+    makeDefault.classList.add("form-default-state");
+    makeDefault.prepend(createIcon(document, "check"));
+  }
   const remove = visualButton("移除", () => {
     const modal = visualDialog(`移除「${visualName(visualReferences().resources.find(item => item.id === resource.id) || resource)}」`);
     const note = document.createElement("p"); note.textContent = visualReferences().default === resource.id ? "移除此形态后，默认形态将改为列表中的下一项；没有其他形态时将不显示角色。" : "移除此形态，保留角色人设和其他形态。";
@@ -1003,12 +1047,17 @@ async function openVisualEditor(resource, revision = visualEditorRevision, { flu
   } catch (error) {
     if (revision !== visualEditorRevision || selection !== visualSelectionRevision) return;
     visualEditor.clear();
-    const inactive = String(error).match(/VISUAL_PROVIDER_MISSING|PLUGIN_DISABLED/);
+    const inactive = String(error).match(/VISUAL_PROVIDER_MISSING|PLUGIN_DISABLED|VISUAL_MANIFEST_INVALID|VISUAL_MODULE_INVALID|VISUAL_EDITOR_MISSING/);
     if (inactive) {
       const text = document.createElement("p");
-      text.textContent = inactive[0] === "VISUAL_PROVIDER_MISSING"
-        ? "尚未安装支持此形态的插件。资源会随角色保存，安装并启用插件后可编辑和显示。"
-        : "所需插件尚未启用。资源会随角色保存，启用插件后可编辑和显示。";
+      const messages = {
+        VISUAL_PROVIDER_MISSING: "尚未安装支持此形态的插件。资源会随角色保存，安装并启用插件后可编辑和显示。",
+        PLUGIN_DISABLED: "所需插件尚未启用。资源会随角色保存，启用插件后可编辑和显示。",
+        VISUAL_MANIFEST_INVALID: "插件的形态声明有误，请修复或更新插件。已有资源会保留。",
+        VISUAL_MODULE_INVALID: "插件的形态模块缺失或路径无效，请修复或更新插件。已有资源会保留。",
+        VISUAL_EDITOR_MISSING: "插件未提供形态编辑器。已有资源会保留。",
+      };
+      text.textContent = messages[inactive[0]];
       const hints = (resource.pluginRequirements || []).flatMap(item => item.plugins || []);
       if (inactive[0] === "VISUAL_PROVIDER_MISSING" && hints.length) text.textContent += " 可安装：" + hints.map(item => item.name || item.id).join(" 或 ") + "。";
       fields.expressionList.append(text);
@@ -1096,7 +1145,11 @@ window.addEventListener("pagehide", () => { window.clearInterval(visualStatusTim
 
 async function exportVisualComponent(resourceId) {
   await flushDraftAutosave();
-  const path = await invoke("studio_choose_export", { defaultName: `${resourceId}.visual` });
+  const resource = visualReferences().resources.find(item => item.id === resourceId);
+  if (!resource) throw new Error("目标形态已移除，请重新选择。");
+  let name = visualName(resource).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim().replace(/[. ]+$/g, "") || "未命名形态";
+  if (/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name)) name = `_${name}`;
+  const path = await invoke("studio_choose_export", { defaultName: `${name}.visual` });
   if (!path) return;
   await runBusy(() => invokeStudio("studio.visual.export", { workspaceId: currentWorkspaceId, resourceId, path }, "正在导出表现组件…"));
 }
@@ -1617,6 +1670,18 @@ async function openCharacter(characterId) {
   });
 }
 
+async function navigateToVisual({ characterId, resourceId }) {
+  if (!characterId || !resourceId) return;
+  if (editingCharacterId !== characterId) await selectCharacter(characterId);
+  if (editingCharacterId !== characterId) return;
+  switchPage("portrait");
+  if (!visualReferences().resources.some(item => item.id === resourceId)) {
+    setError("目标形态已移除，请重新选择。");
+    return;
+  }
+  await renderVisualResources({ preferredId: resourceId });
+}
+
 async function selectCharacter(characterId) {
   const previousId = editingCharacterId;
   if (!characterId || characterId === previousId) {
@@ -1748,31 +1813,56 @@ async function discardCurrentDraft() {
   if (published && !entry?.has_draft && !entry?.is_dirty && !isDirty()) {
     return;
   }
-  const action = published ? "放弃草稿修改" : "删除草稿角色";
-  const detail = published
-    ? ""
-    : "删除后无法恢复。";
-  if (!window.confirm(`${action}「${currentDoc.display_name || currentDoc.id}」？${detail ? `\n${detail}` : ""}`)) {
-    return;
-  }
   await runBusy(async () => {
-    const result = await hostCall("studio.discard_draft", {
-      workspace_id: currentWorkspaceId,
-      current_character_id: request.initial_character_id || "",
+    const action = published ? "放弃修改" : "删除草稿";
+    const modal = visualDialog(action);
+    const note = document.createElement("p");
+    note.textContent = published
+      ? `放弃「${currentDoc.display_name || currentDoc.id}」的修改，恢复已保存的角色内容？`
+      : `删除「${currentDoc.display_name || currentDoc.id}」的草稿？删除后无法恢复。`;
+    modal.body.append(note);
+    const confirmed = await new Promise(resolve => {
+      const cancel = visualButton("继续编辑", modal.close);
+      const accept = visualButton(action, () => { resolve(true); modal.close(); });
+      accept.classList.add("danger-button");
+      modal.actions.append(cancel, accept);
+      modal.dialog.addEventListener("close", () => resolve(false), { once: true });
+      cancel.focus();
     });
-    request.characters = result.characters || [];
-    if (result.doc) {
-      setCurrentDoc(result);
-      return;
+    if (!confirmed) return;
+    discardingDraft = true;
+    window.clearTimeout(draftAutosaveTimer);
+    ++visualSelectionRevision;
+    visualEditorScope = null;
+    visualEditor.freeze();
+    try {
+      // Finish an existing write before removing its draft; do not start a new
+      // autosave with the contents the user has just chosen to discard.
+      await draftAutosavePromise?.catch(() => {});
+      const result = await hostCall("studio.discard_draft", {
+        workspace_id: currentWorkspaceId,
+        current_character_id: request.initial_character_id || "",
+      });
+      request.characters = result.characters || [];
+      if (result.doc) {
+        setCurrentDoc(result);
+        return;
+      }
+      currentWorkspaceId = "";
+      currentDoc = null;
+      visualEditor.clear();
+      renderModelFiles();
+      editingCharacterId = "";
+      temporaryCharacter = null;
+      renderCharacterOptions();
+      renderEditor();
+      markBaseline();
+    } catch (error) {
+      void renderVisualResources({ flush: false });
+      throw error;
+    } finally {
+      discardingDraft = false;
     }
-    currentWorkspaceId = "";
-    currentDoc = null;
-    renderModelFiles();
-    editingCharacterId = "";
-    temporaryCharacter = null;
-    renderCharacterOptions();
-    renderEditor();
-    markBaseline();
   });
 }
 
@@ -1986,9 +2076,6 @@ async function commitCharacter({ publish = false } = {}) {
     ++visualSelectionRevision;
     visualEditorScope = null;
     visualEditor.freeze();
-    // Subscribe before publishing: the ready event may precede the IPC reply.
-    const reload = new Promise(resolve => { completeStudioReload = resolve; });
-    let reloadTimer;
     let payload;
     let reloadFailure = "";
     try {
@@ -1997,14 +2084,8 @@ async function commitCharacter({ publish = false } = {}) {
         current_character_id: request.initial_character_id || "",
         doc: collectDoc(),
       });
-      if (payload.runtime_reload === "requested") {
-        notify("角色已保存，正在应用修改。", "info");
-        const result = await Promise.race([reload, new Promise(resolve => {
-          reloadTimer = window.setTimeout(() => resolve({ state: "failed" }), 70000);
-        })]);
-        if (result.state !== "ready") reloadFailure = result.message || "修改已保存但未生效，请重启 Sakura。";
-      } else if (payload.runtime_reload === "failed") {
-        reloadFailure = payload.reload_error || "修改已保存但未生效，请重启 Sakura。";
+      if (payload.runtime_reload === "failed") {
+        reloadFailure = payload.reload_error || "角色已保存，但运行态更新失败，请查看运行日志。";
       }
       if (!reloadFailure) {
         try { await loadVisualCatalog(); }
@@ -2013,9 +2094,6 @@ async function commitCharacter({ publish = false } = {}) {
     } catch (error) {
       void renderVisualResources({ flush: false });
       throw error;
-    } finally {
-      completeStudioReload = null;
-      window.clearTimeout(reloadTimer);
     }
     if (Array.isArray(payload.characters)) {
       request.characters = payload.characters;
@@ -2180,6 +2258,7 @@ async function load() {
   renderCharacterOptions();
   if (initialId) {
     await openCharacter(initialId);
+    if (request.initial_resource_id) await navigateToVisual({ characterId: initialId, resourceId: request.initial_resource_id });
   } else {
     renderEditor();
     refreshControls();
@@ -2256,18 +2335,12 @@ fields.operationCancelButton.addEventListener("click", cancelActiveOperation);
   fields.textLang,
 ].forEach((element) => element.addEventListener("input", handleEditorChanged));
 
+window.__TAURI__?.event?.listen?.("sakura://studio-navigate", ({ payload }) => {
+  void navigateToVisual(payload || {}).catch(error => setError(String(error)));
+});
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);
 window.__TAURI__?.event?.listen?.("sakura://studio-exit-requested", () => {
   void closeStudio({ exitAfter: true });
-});
-window.__TAURI__?.event?.listen?.("sakura://studio-runtime-reload", ({ payload }) => {
-  const state = runtimeReloadState(payload?.state);
-  if (state === "ready" || state === "failed") completeStudioReload?.(payload);
-  if (state === "ready") {
-    notify("角色修改已生效。", "success");
-  } else if (state === "failed") {
-    setError(payload.message || "修改已保存但未生效，请重启 Sakura。");
-  }
 });
 enhanceSelect(fields.studioCharacterSelect);
 

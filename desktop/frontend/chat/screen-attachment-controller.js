@@ -42,6 +42,7 @@ export function createScreenAttachmentController({
   let attachments = [];
   const removing = new Set();
   let layoutRevision = 0;
+  let captureRevision = 0;
 
   function releaseAttachment(value) {
     if (!value) return;
@@ -169,11 +170,14 @@ export function createScreenAttachmentController({
     }
     capturing = true;
     renderControls();
+    const revision = captureRevision;
     await setOpen(false);
+    if (revision !== captureRevision) return false;
     try {
-      await invoke("start_screen_capture");
-      return true;
+      await invoke("start_screen_capture", { payload: { captureRevision: revision } });
+      return revision === captureRevision;
     } catch {
+      if (revision !== captureRevision) return false;
       capturing = false;
       renderControls();
       onError("无法开始截图，请检查系统屏幕录制权限。");
@@ -253,6 +257,7 @@ export function createScreenAttachmentController({
     attachments: () => attachments.map((item) => ({ ...item })),
     removeAttachment,
     handleAttached(value) {
+      if (value?.captureRevision !== captureRevision) return false;
       const nextAttachmentId = String(value?.attachmentId || "");
       const itemId = String(value?.itemId || "");
       const width = Number(value?.width);
@@ -271,11 +276,13 @@ export function createScreenAttachmentController({
       renderControls();
       return true;
     },
-    handleCancelled() {
+    handleCancelled(value) {
+      if (value?.captureRevision !== captureRevision) return;
       capturing = false;
       renderControls();
     },
-    handleError(message) {
+    handleError(message, revision = captureRevision) {
+      if (revision !== captureRevision) return;
       capturing = false;
       renderControls();
       onError(String(message || "截图失败，请重试。"));
@@ -295,6 +302,7 @@ export function createScreenAttachmentController({
       return true;
     },
     invalidate() {
+      captureRevision += 1;
       releaseAttachment(attachmentId);
       attachmentId = null;
       attachments = [];

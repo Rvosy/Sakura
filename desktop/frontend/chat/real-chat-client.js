@@ -48,6 +48,7 @@ export function createRealChatClient({
   let currentIdentity = null;
   let interactionEpoch = 0;
   let preparedGenerationId = null;
+  let preparedCharacterId = null;
   let pendingSend = null;
   let active = null;
   let pendingCancel = null;
@@ -98,6 +99,7 @@ export function createRealChatClient({
       preparedGenerationId = supervisor.generationId === initialPreparedGenerationId
         ? supervisor.generationId
         : null;
+      preparedCharacterId = null;
       initialPreparedGenerationId = null;
     }
     return true;
@@ -145,11 +147,14 @@ export function createRealChatClient({
       if (isChatReadyLifecycle(lifecycleStatus) && !isChatReadyLifecycle(view.status)) sealInteraction();
 
       const snapshotMatches = publication.snapshot?.generationId === supervisor.generationId;
+      const characterId = publication.characterPresentation?.characterId || null;
+      const characterChanged = characterId !== preparedCharacterId;
       if (
         STABLE_LIFECYCLE.has(view.status)
         && snapshotMatches
-        && preparedGenerationId !== supervisor.generationId
+        && (preparedGenerationId !== supervisor.generationId || characterChanged)
       ) {
+        if (characterChanged) sealInteraction();
         emitLifecycle("rehydrating", supervisor, lifecycleSignatureFor(publication, "rehydrating"), false, null);
         const attemptIdentity = currentIdentity;
         const attemptEpoch = interactionEpoch;
@@ -160,6 +165,8 @@ export function createRealChatClient({
             generationId: supervisor.generationId,
             generationNumber: supervisor.generationNumber,
             snapshotRevision: publication.snapshot.revision,
+            characterId,
+            refresh: preparedGenerationId === supervisor.generationId,
           })) !== false;
         } catch {
           prepared = false;
@@ -180,10 +187,12 @@ export function createRealChatClient({
         if (
           !sameIdentity(supervisor?.generationId, supervisor?.generationNumber)
           || publication.snapshot?.generationId !== supervisor.generationId
+          || (publication.characterPresentation?.characterId || null) !== characterId
         ) return;
         view = projectLifecycle(publication);
         if (!STABLE_LIFECYCLE.has(view.status)) return;
         preparedGenerationId = supervisor.generationId;
+        preparedCharacterId = characterId;
       }
       emitLifecycle(view.status, supervisor, lifecycleSignatureFor(publication, view.status), view.canRetry, view.failure);
     } finally {

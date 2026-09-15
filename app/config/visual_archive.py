@@ -77,7 +77,11 @@ def import_visual_archive(archive_path: Path, package: Path, *, cancel_check=Non
     target = (package / resource_root).resolve()
     if not target.is_relative_to(package):
         raise CharacterArchiveError("表现组件目录超出角色包。")
-    staging = package / f".visual-import-{uuid.uuid4().hex}"
+    # This fresh resource is unpublished until the caller receives its descriptor.
+    # Do not rename a populated directory: Windows rejects that while a reader
+    # holds any descendant, even when the reader permits shared deletion.
+    staging = target
+    created = committed = False
     try:
         with zipfile.ZipFile(archive_path) as archive:
             _validate_zip_resource_limits(archive, "表现组件", destination=package)
@@ -93,7 +97,9 @@ def import_visual_archive(archive_path: Path, package: Path, *, cancel_check=Non
                 raise CharacterArchiveError("请选择表现组件。")
             descriptor = manifest.get("resource", {})
             resource = CharacterVisualResource.from_mapping({"id": resource_id, "type": descriptor.get("type"), "root": resource_root, "entry": descriptor.get("entry"), "name": descriptor.get("name", ""), "pluginRequirements": descriptor.get("pluginRequirements", [])})
+            staging.parent.mkdir(parents=True, exist_ok=True)
             staging.mkdir(exist_ok=False)
+            created = True
             for info in archive.infolist():
                 _check(cancel_check)
                 relative = _safe_archive_path(info.filename.rstrip("/"), "组件文件")
@@ -111,14 +117,13 @@ def import_visual_archive(archive_path: Path, package: Path, *, cancel_check=Non
             if not (staging / resource.entry).is_file():
                 raise CharacterArchiveError("表现组件缺少入口文件。")
             _check(cancel_check)
-            target.parent.mkdir(parents=True, exist_ok=True)
             _check(commit_started)
-            staging.rename(target)
+            committed = True
             return resource
     finally:
         primary = sys.exception()
         try:
-            if staging.exists():
+            if created and not committed and staging.exists():
                 shutil.rmtree(staging)
         except OSError as recovery:
             if primary is None:

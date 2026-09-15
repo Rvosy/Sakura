@@ -51,13 +51,15 @@ updated: 2026-08-29
 ## 接口
 
 - Core：`screen_awareness.settings.get`、`screen_awareness.settings.save`、
-  `screen.attachBatch { resources: ScreenResourceDescriptor[1..20] }`。
+  `screen.attachBatch { resources: ScreenResourceDescriptor[1..20], sessionId }`。
+- 每帧采集前读取 `screen.session`，原生内存批次保留该会话标记；发送时仅物化当前会话的帧。
+  Core 读取资源前及接纳批次前检查 `sessionId`。前端切换角色或清空批次后，旧采集和附件请求的迟到结果不得触发发送。
 - `screen.attachBatch` 返回 `{ attached: true, attachmentId, count }`。
 - Tauri：`settings_screen_awareness_get`、`settings_screen_awareness_save`、
   `capture_screen_awareness_frame`、`attach_screen_awareness_batch`、`clear_screen_awareness_batch`。
 - 设置保存成功后发布一次 `sakura://screen-awareness-settings`。事件失败不重试；持久化值在下次启动生效。
 - 主动屏幕感知设置归入“交互”页，不再单列“隐私”导航；设置 capability 在 `interaction` section
-  暴露 `privacy.screen_awareness = available`。不修改既有配置键、`chat.send`、聊天事件、TTS 或手动截图公开结构。
+  暴露 `privacy.screen_awareness = available`。保留既有配置键、`chat.send`、聊天事件和 TTS 接口。
 
 ## 失败与验收
 

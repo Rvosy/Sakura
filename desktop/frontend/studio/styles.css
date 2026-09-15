@@ -500,3 +500,13 @@ body.has-modal-open .settings-shell {
     justify-content: flex-end;
   }
 }
+
+#pluginRequirementsList { display: grid; gap: 7px; list-style: none; margin: 0; padding: 0; }
+.plugin-requirement { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--sakura-border); border-radius: 8px; }
+.plugin-requirement-text { flex: 1; min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.plugin-requirement-text strong { font-size: 12px; font-weight: 500; }
+.plugin-requirement-text p { margin: 0; color: var(--sakura-muted-text); font-size: 12px; line-height: 1.5; }
+.plugin-requirement-status { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: 11px; line-height: 18px; color: var(--sakura-muted-text); }
+.plugin-requirement-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.plugin-requirement-status.is-enabled { color: var(--sakura-primary); }
+.plugin-requirement-status.is-missing, .plugin-requirement-status.is-unsupported { color: var(--sakura-accent); }

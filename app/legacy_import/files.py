@@ -256,9 +256,9 @@ def copy_tree_fast_checked(
 
     Legacy TTS bundles contain tens of thousands of small files.  Calling
     ``fsync`` once per file is needlessly slow for an isolated staging tree,
-    while robocopy can populate that empty tree concurrently.  Preflight and
-    post-copy scans retain the importer's link, exclusion, count, and size
-    invariants. Existing destinations keep the precise Python conflict
+    while robocopy can populate that empty tree concurrently. Scans enforce
+    path boundaries and provide progress totals, not content equivalence.
+    Existing destinations keep the precise Python conflict
     semantics, and non-Windows hosts use the normal copier. macOS bundle
     imports may preserve only relative symlinks whose lexical targets remain
     inside the copied tree; absolute symlinks are intentionally omitted.
@@ -460,7 +460,7 @@ def copy_tree_fast_checked(
         )
         shutil.rmtree(target, ignore_errors=True)
         raise
-    comparison = {
+    statistics = {
         "detail_stage": "post_scan",
         "copy_method": "robocopy",
         "expected_files": expected_files,
@@ -468,11 +468,7 @@ def copy_tree_fast_checked(
         "actual_files": actual_files,
         "actual_bytes": actual_bytes,
     }
-    if (actual_files, actual_bytes) != (expected_files, expected_bytes):
-        _emit_copy_diagnostic(diagnostic, "failed", comparison)
-        shutil.rmtree(target, ignore_errors=True)
-        raise LegacyImportError("LEGACY_COPY_FAILED", "staging")
-    _emit_copy_diagnostic(diagnostic, "completed", comparison)
+    _emit_copy_diagnostic(diagnostic, "completed", statistics)
     if byte_progress is not None:
         byte_progress(actual_bytes, expected_bytes)
     return actual_files, actual_bytes
@@ -594,3 +590,21 @@ def _stop_copy_process(process: subprocess.Popen[bytes]) -> None:
             process.wait(timeout=2)
         except (OSError, subprocess.TimeoutExpired):
             pass
+
+
+def sqlite_readonly_uri(path: Path) -> str:
+    r"""Build a SQLite URI from normal or Windows extended-length paths.
+
+    Tauri's directory picker canonicalizes Windows selections to ``\\?\D:\``.
+    ``Path.as_uri`` encodes that prefix as a URI authority named ``%3F``, which
+    SQLite rejects before reading the database.  Strip only the Win32 namespace
+    prefix while retaining the resolved path and read-only URI semantics.
+    """
+
+    resolved = str(path.resolve(strict=True))
+    if os.name == "nt":
+        if resolved.startswith("\\\\?\\UNC\\"):
+            resolved = "\\\\" + resolved[8:]
+        elif resolved.startswith("\\\\?\\"):
+            resolved = resolved[4:]
+    return f"{Path(resolved).as_uri()}?mode=ro"

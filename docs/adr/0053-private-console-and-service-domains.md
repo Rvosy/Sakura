@@ -6,7 +6,7 @@ source_of_truth: self
 updated: 2026-09-13
 ---
 
-# ADR-0050：统一服务域名与独立私人控制台
+# ADR-0053：统一服务域名与独立私人控制台
 
 ## 背景
 
@@ -15,7 +15,7 @@ updated: 2026-09-13
 
 ## 决策
 
-本决策 supersedes [ADR-0049](0049-domestic-updater-manifest.md) 的新客户端清单域名，以及
+本决策 supersedes [ADR-0052](0052-domestic-updater-manifest.md) 的新客户端清单域名，以及
 [ADR-0041](0041-static-sakura-service-control-plane.md) 将管理操作限定为 CI 推送的部分。
 保留公开清单静态读取、受限 CI 发布通道、本地功能独立与现有安装包验签合同。
 

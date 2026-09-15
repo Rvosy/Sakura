@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createRealChatClient } from "../chat/real-chat-client.js";
+import { createChatPresentationReducer } from "../chat/chat-presentation.js";
+import { rebindCharacterPresentation } from "../pet/character-generation.js";
 
 function deferred() {
   let resolve;
@@ -65,6 +67,54 @@ function harness(sendResponses = []) {
     },
   };
 }
+
+test("same-generation role switch waits for binding, then starts the new greeting without another lifecycle change", async () => {
+  const env = harness();
+  const binding = deferred();
+  const entered = deferred();
+  let reducer = createChatPresentationReducer({ initialMessage: "hello alpha" });
+  let currentCharacterId = "alpha";
+  let greetingPending = false;
+  let greeting = null;
+  const publication = role => ({ ...lifecyclePublication(), characterPresentation: { characterId: role } });
+  env.setPublication(publication("alpha"));
+  const client = env.create(event => {
+    reducer.reduce(event);
+    if (greetingPending && event.status === "ready") {
+      greetingPending = false;
+      greeting = reducer.beginGreeting();
+    }
+  }, { prepareGeneration: async ({ characterId, refresh }) => {
+    assert.equal(refresh, true);
+    if (characterId === "beta") {
+      entered.resolve();
+      await binding.promise;
+      const rebound = rebindCharacterPresentation({ currentCharacterId, currentReducer: reducer,
+        nextPresentation: { characterId, initialMessage: "hello beta" } });
+      reducer = rebound.reducer;
+      greetingPending = rebound.greetingPending;
+      currentCharacterId = characterId;
+    }
+    return true;
+  } });
+  try {
+    await client.start();
+    env.setPublication(publication("beta"));
+    const tick = env.tick();
+    await entered.promise;
+    await assert.rejects(client.send({ message: "too early" }), /CHAT_NOT_READY/);
+    binding.resolve();
+    await tick;
+    assert.equal(greeting.applied, true);
+    assert.equal(reducer.current().lifecycle, "ready");
+    assert.equal(greeting.state.segments[0].text, "hello beta");
+    await env.tick();
+    assert.equal(reducer.current().phase, "typing");
+  } finally {
+    binding.resolve();
+    client.dispose();
+  }
+});
 
 test("started and terminal events may win the send response race without leaving a duplicate active turn", async () => {
   const response = deferred();

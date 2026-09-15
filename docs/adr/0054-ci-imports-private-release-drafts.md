@@ -6,12 +6,12 @@ source_of_truth: self
 updated: 2026-09-13
 ---
 
-# ADR-0051：Release Action 导入草稿，维护者确认国内发布
+# ADR-0054：Release Action 导入草稿，维护者确认国内发布
 
 ## 决策
 
-本决策 supersedes [ADR-0050](0050-private-console-and-service-domains.md) 与
-[ADR-0049](0049-domestic-updater-manifest.md) 中 CI 直接发布国内公开清单的部分。
+本决策 supersedes [ADR-0053](0053-private-console-and-service-domains.md) 与
+[ADR-0052](0052-domestic-updater-manifest.md) 中 CI 直接发布国内公开清单的部分。
 GitHub 正式资产全部上传后，Action 通过原受限 SSH 通道提交完整版本资料与 updater 清单，只创建私人草稿。
 维护者登录控制台确认发布，国内更新入口才切换。GitHub 自身的 Release 和旧客户端更新入口继续原有行为。
 

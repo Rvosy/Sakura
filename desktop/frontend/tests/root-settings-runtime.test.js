@@ -67,7 +67,7 @@ const defaultStorage = Object.freeze({
 const legacyDataPlan = Object.freeze({
   schemaVersion: 1,
   selectionId: "selection-a",
-  planToken: "a".repeat(64),
+  planToken: "a".repeat(32),
   sourceLabel: "Sakura-0.9.10",
   characters: [{
     characterId: "Sakura",
@@ -239,7 +239,7 @@ test("legacy role data plan exposes only bounded counts and opaque identities", 
   assert.deepEqual(normalizeLegacyDataImportPlan(legacyDataPlan), legacyDataPlan);
   assert.throws(() => normalizeLegacyDataImportPlan({
     ...legacyDataPlan,
-    planToken: "/private/source",
+    planToken: "",
   }), /LEGACY_DATA_IMPORT_RESPONSE_INVALID/);
   assert.throws(() => normalizeLegacyDataImportPlan({
     ...legacyDataPlan,
@@ -380,4 +380,25 @@ test("typed root settings client uses only frozen character storage, update, and
     ["settings_macos_open_system_settings", undefined],
     ["settings_macos_open_apple_support", undefined],
   ]);
+});
+
+test("package-only and orphan reassociation plans have executable work", () => {
+  const totals = Object.fromEntries(Object.keys(legacyDataPlan.totals).map(key => [key, 0]));
+  assert.equal(legacyDataImportPlanHasWork({ ...legacyDataPlan, totals, packagesNew: 1 }), true);
+  assert.equal(legacyDataImportPlanHasWork({ ...legacyDataPlan, totals, reassociatedRecords: 2 }), true);
+  assert.equal(legacyDataImportPlanHasWork({ ...legacyDataPlan, totals }), false);
+});
+
+test("role mapping is sent for a fresh plan before apply uses its token", async () => {
+  const calls = [];
+  const client = createRootSettingsClient({ invoke: async (command, args) => {
+    calls.push({command,args});
+    if (command === "settings_legacy_data_import_choose") return legacyDataPlan;
+    return { schemaVersion:1, outcome:"completed", importId:"import-result", plan:legacyDataPlan };
+  }});
+  const mapping = { OldRole:"CurrentRole" };
+  const plan = await client.legacyRoleDataImportChoose("old-selection", mapping);
+  await client.legacyRoleDataImportApply(plan.selectionId, plan.planToken, false);
+  assert.deepEqual(calls[0], {command:"settings_legacy_data_import_choose", args:{selectionId:"old-selection",roleMapping:mapping}});
+  assert.deepEqual(calls[1].args, {selectionId:plan.selectionId,planToken:plan.planToken,overwriteConflicts:false});
 });

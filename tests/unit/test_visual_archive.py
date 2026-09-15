@@ -37,6 +37,31 @@ def test_import_cancel_at_commit_rolls_back_staging(tmp_path):
     assert not list(package.glob(".visual-import-*"))
 
 
+def test_import_publishes_resource_while_a_reader_holds_its_completed_file(tmp_path):
+    from contextlib import ExitStack
+    package = tmp_path / "package"
+    package.mkdir()
+    with ExitStack() as readers:
+        def commit():
+            path = next(package.rglob("resource.json"))
+            reader = readers.enter_context(path.open("rb"))
+            assert json.load(reader) == {"Private_Key": 12}
+        resource = import_visual_archive(component(tmp_path / "shape.visual"), package, commit_started=commit)
+        assert json.loads((package / resource.root / resource.entry).read_text(encoding="utf-8")) == {"Private_Key": 12}
+
+
+def test_import_resource_id_collision_never_removes_existing_directory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("app.config.visual_archive.uuid.uuid4", lambda: SimpleNamespace(hex="a" * 32))
+    package = tmp_path / "package"
+    existing = package / "visuals" / ("visual-" + "a" * 12)
+    existing.mkdir(parents=True)
+    (existing / "keep.bin").write_bytes(b"existing resource")
+    with pytest.raises(FileExistsError):
+        import_visual_archive(component(tmp_path / "shape.visual"), package)
+    assert (existing / "keep.bin").read_bytes() == b"existing resource"
+
+
 def test_export_cancel_preserves_existing_destination(tmp_path):
     package = tmp_path / "package"
     package.mkdir()

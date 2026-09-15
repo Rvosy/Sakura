@@ -570,6 +570,40 @@ def _boundary(tmp_path: Path, events: list[dict]) -> TTSBoundary:
     return boundary
 
 
+def test_character_reset_revokes_pending_and_late_synthesis(tmp_path, monkeypatch):
+    events = []
+    boundary = _boundary(tmp_path, events)
+    for index in (0, 1):
+        boundary.authorize_segment(operation_id="old", segment_index=index, text="old role",
+            tone="happy", portrait="smile", character_id="sakura", history_entry_id=f"entry-{index}")
+    ready, release = threading.Event(), threading.Event()
+    synthesize = boundary._synthesize_with_plugin
+    def delayed(*args):
+        result = synthesize(*args)
+        ready.set()
+        assert release.wait(3)
+        return result
+    monkeypatch.setattr(boundary, "_synthesize_with_plugin", delayed)
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(boundary.handle(_request(
+        "tts.synthesis.start", {"operationId": "old", "segmentIndex": 0}))))
+    thread.start()
+    try:
+        assert ready.wait(3)
+        boundary.reset_character()
+        release.set()
+        thread.join(3)
+        assert not thread.is_alive()
+        assert result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
+        assert not any(event["name"] == "tts.synthesis.ready" for event in events)
+        pending = boundary.handle(_request("tts.synthesis.start", {"operationId": "old", "segmentIndex": 1}))
+        assert pending["error"]["code"] == "TTS_SEGMENT_NOT_AUTHORIZED"
+    finally:
+        release.set()
+        thread.join(3)
+        boundary.close()
+
+
 def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) -> None:
     events: list[dict] = []
     boundary = _boundary(tmp_path, events)
