@@ -507,7 +507,7 @@ def test_proxy_redirect_rejects_explicit_local_target(monkeypatch, target):
         calls.append(url)
         return 302, "Found", {"Location": target}, b""
 
-    monkeypatch.setattr(web, "_request_through_proxy", proxy)
+    monkeypatch.setattr(web, "_request_at_address", proxy)
     with pytest.raises(ValueError, match="私有网络"):
         web.fetch_url("https://public.example/")
     assert calls == ["https://public.example/"]
