@@ -53,6 +53,7 @@ def _new_cancellation_token() -> CancellationToken:
 @dataclass
 class _Execution:
     operation_id: str
+    session: object = field(repr=False)
     cancel: CancellationToken = field(default_factory=_new_cancellation_token)
     started: bool = False
     cancel_requested: bool = False
@@ -127,7 +128,8 @@ class RealChatBoundary:
                 raise RealChatRejection("CHARACTER_SWITCH_IN_PROGRESS", "角色正在切换", retryable=True)
             if self._closed:
                 raise RealChatRejection("GENERATION_INVALIDATED", "chat generation is closing")
-            if self._session_provider() is None:
+            session = self._session_provider()
+            if session is None:
                 raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
             if operation_id in self._executions:
                 raise RealChatRejection("DUPLICATE_CHAT_IDENTITY", "chat identity is already in use")
@@ -138,6 +140,9 @@ class RealChatBoundary:
                     retryable=True,
                 )
             self._apply_pending_runtime_updates_locked()
+            session = self._session_provider()
+            if session is None:
+                raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
             attachment_id = payload.get("attachmentId")
             screen_attachment = None
             if attachment_id is not None:
@@ -151,6 +156,7 @@ class RealChatBoundary:
                 self._pending_screen_attachment = None
             self._executions[operation_id] = _Execution(
                 operation_id,
+                session=session,
                 screen_attachment=screen_attachment,
             )
             self._revision += 1
@@ -279,10 +285,9 @@ class RealChatBoundary:
             from app.storage.timeline import NewTimelineEntry, TimelineKind
 
             execution.cancel.throw_if_cancelled()
-            session = self._session_provider()
-            if session is None:
-                raise _BoundaryFailure("ASSISTANT_NOT_READY", "Assistant is not ready", False)
+            session = execution.session
             character = getattr(session, "character")
+            pipeline = getattr(session, "pipeline")
             runtime = getattr(session, "runtime", None)
             wait_dependencies = getattr(session, "wait_prompt_dependencies", None)
             if callable(wait_dependencies):
@@ -339,7 +344,7 @@ class RealChatBoundary:
                 execution.cancel.throw_if_cancelled()
                 stage = "pipeline"
                 with suppress_runtime_logs():
-                    result = getattr(session, "pipeline").run_event(
+                    result = pipeline.run_event(
                         AgentEvent(type="update_available", payload=dict(event_payload)),
                         cancel_checker=execution.cancel.throw_if_cancelled,
                     )
@@ -493,23 +498,19 @@ class RealChatBoundary:
                     }
                     if visual_observation_jobs:
                         pipeline_kwargs["visual_observation_jobs"] = visual_observation_jobs
-                    result = getattr(session, "pipeline").run_user_message(
+                    result = pipeline.run_user_message(
                         messages,
                         **pipeline_kwargs,
                     )
             stage = "reply_processing"
             execution.cancel.throw_if_cancelled()
             allowed_action_types = {"tool_call", "event"} if is_update_event else {"tool_call"}
-            unsupported = [
-                action
+            if any(
+                getattr(action, "type", "") not in allowed_action_types
                 for action in getattr(result, "actions", [])
-                if getattr(action, "type", "") not in allowed_action_types
-            ]
-            if unsupported:
+            ):
                 raise _BoundaryFailure(
-                    "UNEXPECTED_CHAT_ACTION",
-                    "Assistant returned an unsupported action",
-                    False,
+                    "UNEXPECTED_CHAT_ACTION", "Assistant 返回了不支持的动作。", False,
                 )
             if plugin_application is not None:
                 try:
@@ -622,6 +623,10 @@ class RealChatBoundary:
                     raise _BoundaryFailure(
                         "TIMELINE_WRITE_FAILED", "Assistant reply could not be saved", False
                     ) from exc
+            else:
+                with self._changed:
+                    execution.cancel.throw_if_cancelled()
+                    execution.completion_claimed = True
             terminal = "chat.completed"
             terminal_payload = {
                 "operationId": operation_id,
@@ -1631,7 +1636,10 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     if isinstance(error, _BoundaryFailure):
         return error.code, error.public_message, error.retryable
     from app.llm.prompts.runtime import ContextWindowExceededError
+    from app.agent.context_orchestrator import ContextContributionError
 
+    if isinstance(error, ContextContributionError):
+        return error.code, error.public_message(), False
     if isinstance(error, ContextWindowExceededError):
         return (
             "CONTEXT_WINDOW_EXCEEDED",
@@ -1677,6 +1685,7 @@ def _safe_diagnostic(error: BaseException, *, code: str, stage: str, operation_i
     try:
         from app.core.runtime_log import external_runtime_sink_active, log_event, diagnostic_attributes
         from app.llm.prompts.runtime import ContextWindowExceededError
+        from app.agent.context_orchestrator import ContextContributionError
 
         if external_runtime_sink_active():
             attributes: dict[str, Any] = {
@@ -1686,7 +1695,7 @@ def _safe_diagnostic(error: BaseException, *, code: str, stage: str, operation_i
                 "error_type": type(error).__name__,
                 **diagnostic_attributes(error, reason_code=code, stage=stage),
             }
-            if isinstance(error, ContextWindowExceededError):
+            if isinstance(error, (ContextWindowExceededError, ContextContributionError)):
                 attributes.update(error.log_attributes())
             elif (status := provider_http_status(error)) is not None:
                 attributes["http_status"] = status

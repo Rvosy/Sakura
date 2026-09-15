@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -171,6 +173,86 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
         assert disabled["applicationState"] == "applied"
         assert controller.published_session() is None
     finally:
+        controller.close()
+
+
+@pytest.mark.parametrize("binding_fails", [False, True])
+def test_session_is_published_only_after_application_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binding_fails: bool,
+) -> None:
+    from app.config import web_plugin_migration
+    from app.core_host import plugin_application
+    from app.core_host.assistant_adapter import ReadinessResult
+    from app.core_host.server import HostConfig, ReadinessController
+
+    entered = threading.Event()
+    release = threading.Event()
+    retired = []
+    published = []
+    session = SimpleNamespace()
+
+    class Initializer:
+        def initialize(self, _cancel):
+            return ReadinessResult(
+                state="ready", code="READY", message="", retryable=False,
+                current_character_summary=None, current_character_presentation=None,
+                session=session,
+            )
+
+        def retire_session(self):
+            retired.append(True)
+
+        def close(self):
+            release.set()
+
+    class Application:
+        unbound = 0
+
+        def start(self):
+            pass
+
+        def bind_session(self, _session):
+            entered.set()
+            assert release.wait(3)
+            if binding_fails:
+                raise RuntimeError("binding failed")
+
+        def unbind_session(self):
+            self.unbound += 1
+
+        def close(self):
+            pass
+
+    application = Application()
+    monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_: application)
+    monkeypatch.setattr(web_plugin_migration, "prepare_bundled_web_plugin", lambda *_: None)
+    controller = ReadinessController(
+        HostConfig(RuntimeRoots(tmp_path, tmp_path), "session-binding-test", "a" * 32),
+        initializer_factory=lambda *_: Initializer(),
+    )
+    controller.set_session_published_callback(lambda: published.append(controller.published_session()))
+    controller.enable_plugins()
+    try:
+        controller.begin({})
+        assert entered.wait(2)
+        assert controller.published_session() is None
+        assert controller.readiness() == "initializing"
+        assert published == []
+        release.set()
+        controller._worker.join(2)
+        assert not controller._worker.is_alive()
+        if binding_fails:
+            assert controller.published_session() is None
+            assert controller.snapshot()["components"]["assistant"]["code"] == "SESSION_BIND_FAILED"
+            assert retired == [True]
+            assert application.unbound == 1
+            assert published == []
+        else:
+            assert controller.published_session() is session
+            assert retired == []
+            assert published == [session]
+    finally:
+        release.set()
         controller.close()
 
 

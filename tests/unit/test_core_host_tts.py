@@ -1582,7 +1582,7 @@ def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> 
     )
     context = SimpleNamespace(get=lambda service_key: (
         provider if service_key == "com.example.provider.service" else None
-    ))
+    ), bind=lambda _service_key: provider)
     hub = SakuraTTSHub(context, Config())
     hub.registerProvider({
         "providerId": "com.example.provider",

@@ -46,7 +46,7 @@ _HOST_EXPORTS = {
     HOST_DIAGNOSTICS_SERVICE: ("emit",),
     HOST_CHARACTER_SERVICE: ("current", "get", "update", "resolve_resource"),
     HOST_TOOLS_SERVICE: ("register", "unregister"),
-    HOST_CONTEXT_SERVICE: ("register", "unregister"),
+    HOST_CONTEXT_SERVICE: ("register", "unregister", "describe"),
     HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve"),
     HOST_STORAGE_SERVICE: ("resolve",),
     HOST_SETTINGS_SERVICE: ("register", "unregister"),
@@ -195,6 +195,12 @@ class PluginRuntimeApplication:
 
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         return self._manager.call_service(service_key, method, *args)
+
+    def call_bound_service(self, service_key, identity, method, *args):
+        return self._manager.call_bound_service(service_key, identity, method, *args)
+
+    def commit_bound_service(self, service_key, identity, commit):
+        return self._manager.commit_bound_service(service_key, identity, commit)
 
     def service_identity(self, service_key: str) -> dict[str, str]:
         return self._manager.service_identity(service_key)
@@ -528,8 +534,8 @@ class PluginRuntimeApplication:
         self._loaded.set()
 
     def _current_character_id(self) -> str | None:
-        runtime_character = getattr(self._runtime, "character_id", None)
-        return runtime_character if isinstance(runtime_character, str) and runtime_character else None
+        character_id = getattr(getattr(self._session, "character", None), "id", None)
+        return character_id if isinstance(character_id, str) and character_id else None
 
     def _host_context_changed(self, providers: list[object]) -> None:
         runtime = self._runtime

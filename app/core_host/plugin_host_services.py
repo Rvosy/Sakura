@@ -469,6 +469,12 @@ class _ContextHostService:
         self._registrations: dict[str, _ContextRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "describe" and not args:
+            return {
+                "schemaVersion": 2,
+                "scopes": ["step", "turn"],
+                "failurePolicies": ["skip", "abort"],
+            }
         if method == "register" and len(args) == 2:
             return self._register(args[0], args[1])
         if method == "unregister" and len(args) == 1:
@@ -482,6 +488,8 @@ class _ContextHostService:
         description = descriptor.get("description", "")
         order = descriptor.get("order", 100.0)
         enabled = descriptor.get("enabled", True)
+        scope = descriptor.get("scope", "step")
+        failure_policy = descriptor.get("failurePolicy", "skip")
         if (
             not isinstance(provider_id, str)
             or not _IDENTIFIER.fullmatch(provider_id)
@@ -489,7 +497,10 @@ class _ContextHostService:
             or len(description) > 240
             or not isinstance(order, (int, float))
             or isinstance(order, bool)
+            or not math.isfinite(order)
             or not isinstance(enabled, bool)
+            or scope not in ("step", "turn")
+            or failure_policy not in ("skip", "abort")
         ):
             raise HostServiceError("CONTEXT_DESCRIPTOR_INVALID")
         if any(
@@ -507,8 +518,8 @@ class _ContextHostService:
             if not isinstance(payload, list):
                 raise HostServiceError("CONTEXT_RESULT_INVALID")
             return tuple(
-                _context_fragment(item, index)
-                for index, item in enumerate(payload[:16])
+                _context_fragment(item, index, scope=scope)
+                for index, item in enumerate(payload)
             )
 
         contribution = ContextProviderContribution(
@@ -517,6 +528,9 @@ class _ContextHostService:
             build_context=build_context,
             order=float(order),
             enabled=enabled,
+            scope=scope,
+            failure_policy=failure_policy,
+            plugin_id=HOST_CALLER.get() or "",
         )
         registration_id = _new_registration_id(self._registrations)
         self._registrations[registration_id] = _ContextRegistration(contribution)
@@ -565,6 +579,7 @@ class _SettingsCollection:
     collection_id: str
     title: str
     description: str
+    scope: str
     columns: tuple[dict[str, Any], ...]
     fields: tuple[dict[str, Any], ...]
     filters: tuple[dict[str, Any], ...]
@@ -1678,17 +1693,21 @@ def _new_registration_id(existing: Mapping[str, Any]) -> str:
     return registration_id
 
 
-def _context_fragment(value: object, index: int) -> ContextFragment:
+def _context_fragment(value: object, index: int, *, scope: str = "step") -> ContextFragment:
     raw = _mapping(value, "CONTEXT_RESULT_INVALID")
+    if "kind" in raw:
+        raise HostServiceError("CONTEXT_SCHEMA_INCOMPATIBLE")
     content = raw.get("content")
     if not isinstance(content, str) or not content.strip():
+        raise HostServiceError("CONTEXT_RESULT_INVALID")
+    required = raw.get("required", False)
+    if not isinstance(required, bool):
         raise HostServiceError("CONTEXT_RESULT_INVALID")
     sensitivity = raw.get("sensitivity", "private")
     return ContextFragment(
         fragment_id=str(raw.get("id") or index)[:64],
         source="plugin",
-        content=content[:8192],
-        trust="untrusted",
+        content=content,
         priority=_bounded_int(raw.get("priority"), 0, 100, 50),
         token_budget=_bounded_int(raw.get("budgetHint"), 1, 4096, 512),
         sensitivity=(
@@ -1696,8 +1715,8 @@ def _context_fragment(value: object, index: int) -> ContextFragment:
             if sensitivity in {"public", "private", "sensitive"}
             else "private"
         ),
-        cache_scope="step",
-        required=False,
+        cache_scope=scope,
+        required=required,
     )
 
 
@@ -1896,6 +1915,7 @@ def _settings_collection(value: object) -> dict[str, Any]:
         "collectionId",
         "title",
         "description",
+        "scope",
         "columns",
         "fields",
         "filters",
@@ -1912,6 +1932,9 @@ def _settings_collection(value: object) -> dict[str, Any]:
     )
     title = raw.get("title")
     description = raw.get("description", "")
+    # Collection v0 originally treated every collection as character-owned.
+    # Keep that default for already installed plugins; global data opts in.
+    scope = raw.get("scope", "character")
     searchable = raw.get("searchable", False)
     page_size = raw.get("pageSize", 25)
     delete_confirmation = raw.get("deleteConfirmation", "")
@@ -1924,6 +1947,8 @@ def _settings_collection(value: object) -> dict[str, Any]:
         or len(title) > 120
         or not isinstance(description, str)
         or len(description) > 240
+        or not isinstance(scope, str)
+        or scope not in {"global", "character"}
         or not isinstance(searchable, bool)
         or not isinstance(page_size, int)
         or isinstance(page_size, bool)
@@ -1958,6 +1983,7 @@ def _settings_collection(value: object) -> dict[str, Any]:
         "collectionId": collection_id,
         "title": title,
         "description": description,
+        "scope": scope,
         "columns": columns,
         "fields": fields,
         "filters": filters,
@@ -2027,6 +2053,7 @@ def _collection_with_handles(
         collection_id=str(descriptor["collectionId"]),
         title=str(descriptor["title"]),
         description=str(descriptor["description"]),
+        scope=str(descriptor["scope"]),
         columns=tuple(descriptor["columns"]),
         fields=tuple(descriptor["fields"]),
         filters=tuple(descriptor["filters"]),
@@ -2045,6 +2072,7 @@ def _public_collection(collection: _SettingsCollection) -> dict[str, Any]:
         "collectionId": collection.collection_id,
         "title": collection.title,
         "description": collection.description,
+        "scope": collection.scope,
         "columns": [dict(item) for item in collection.columns],
         "fields": [dict(item) for item in collection.fields],
         "filters": [dict(item) for item in collection.filters],

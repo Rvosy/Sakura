@@ -41,7 +41,7 @@ def jobs(request: pytest.FixtureRequest, tmp_path: Path):
     provider.begin = begin
     provider.status = lambda: {"available": True}
     hub = SakuraTTSHub(
-        SimpleNamespace(get=lambda _key: provider),
+        SimpleNamespace(get=lambda _key: provider, bind=lambda _key: provider),
         SimpleNamespace(get=lambda: {"selections": {"fixture": {"enabled": True, "provider": module.PROVIDER_ID}}}),
     )
     hub.registerProvider({
