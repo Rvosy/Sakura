@@ -109,7 +109,6 @@ struct ReportCount {
     generation: Option<String>,
     count: u64,
     dirty: bool,
-    probe_summary: Option<DiagnosticDetail>,
 }
 
 #[derive(Debug)]
@@ -839,7 +838,7 @@ impl TelemetryService {
                 DiagnosticDetail {
                     fingerprint: Some(report.fingerprint.clone()),
                     occurrence_count: Some(report.count),
-                    ..report.probe_summary.clone().unwrap_or_default()
+                    ..Default::default()
                 },
                 report.generation.clone(),
             );
@@ -947,30 +946,11 @@ impl TelemetryService {
             candidate.stack,
         ]))
         .map_err(|_| ())?;
-        // Only the native hover probe defines `failed` as its cumulative read
-        // failures. Keep that count separate from the number of summary records.
-        let probe_summary = (candidate.component == "webview"
-            && candidate.event == "runtime.message"
-            && candidate.code == "PET_SURFACE_HOVER_PROBE_FAILED"
-            && candidate.details.stage.as_deref() == Some("surface_hover_probe")
-            && candidate.evidence.get("command").and_then(Value::as_str)
-                == Some("pet_surface_hovered"))
-        .then(|| DiagnosticDetail {
-            stage: candidate.details.stage.clone(),
-            failed: candidate.evidence.get("failed").and_then(Value::as_u64),
-            elapsed_ms: candidate.details.elapsed_ms,
-            recovery_outcome: candidate.details.recovery_outcome.clone(),
-            ..Default::default()
-        })
-        .filter(|detail| detail.failed.is_some() && validate_detail(detail));
         let fingerprint = Uuid::new_v4().to_string();
         if let Ok(mut reports) = self.inner.reports.lock() {
             if let Some(report) = reports.get_mut(&key) {
                 report.count = report.count.saturating_add(1);
                 report.dirty = true;
-                if probe_summary.is_some() {
-                    report.probe_summary = probe_summary;
-                }
                 return Ok(false);
             }
             if reports.len() < 128 {
@@ -981,7 +961,6 @@ impl TelemetryService {
                         generation,
                         count: 1,
                         dirty: false,
-                        probe_summary,
                     },
                 );
             }
@@ -3753,64 +3732,6 @@ mod tests {
             summary["items"][0]["diagnostics"]["generation"],
             "generation-repeat"
         );
-        service.shutdown();
-        assert!(wait_for_sender_exit(&service));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn hover_repeat_summary_keeps_latest_failure_total_and_stop_state() {
-        let server = TestServer::start(202, Duration::ZERO);
-        let (root, service) = service_for(&server, "hover-repeat-v2", 128, TEST_WAIT);
-        let report_probe = |count, failed, elapsed_ms, recovery_outcome| {
-            service.observe_runtime_event(
-                "webview",
-                "warning",
-                "webview.main",
-                "runtime.message",
-                None,
-                Some(&json!({
-                    "command": "pet_surface_hovered",
-                    "stage": "surface_hover_probe",
-                    "code": "PET_SURFACE_HOVER_PROBE_FAILED",
-                    "diagnostic": "Native hover probe is unavailable.",
-                    "count": count,
-                    "failed": failed,
-                    "elapsed_ms": elapsed_ms,
-                    "recovery_outcome": recovery_outcome,
-                })),
-            );
-        };
-        report_probe(64, 64, 60_500, "unknown");
-        let (endpoint, first) = server.next_request(&service);
-        assert_eq!(endpoint, "/v3/errors");
-        let first: Value = serde_json::from_slice(&first).unwrap();
-        assert_eq!(first["evidence"]["failed"], 64);
-
-        // Each new snapshot changes numeric facts but preserves one fault group.
-        // A later episode has a smaller local count and a larger lifetime total.
-        for (occurrences, count, failed, elapsed_ms, recovery) in [
-            (2, 124, 124, 120_500, "unknown"),
-            (3, 128, 128, 125_500, "skipped"),
-            (4, 64, 192, 60_500, "unknown"),
-        ] {
-            report_probe(count, failed, elapsed_ms, recovery);
-            service.flush_summaries(true);
-            let (endpoint, summary) = server.next_request(&service);
-            assert_eq!(endpoint, "/v2/events");
-            let summary: Value = serde_json::from_slice(&summary).unwrap();
-            let item = &summary["items"][0];
-            assert_eq!(item["event"], "error.repeated");
-            assert_eq!(
-                item["details"]["fingerprint"],
-                first["error"]["fingerprint"]
-            );
-            assert_eq!(item["details"]["occurrenceCount"], occurrences);
-            assert_eq!(item["details"]["failed"], failed);
-            assert_eq!(item["details"]["elapsedMs"], elapsed_ms);
-            assert_eq!(item["details"]["recoveryOutcome"], recovery);
-            assert_eq!(item["details"]["stage"], "surface_hover_probe");
-        }
         service.shutdown();
         assert!(wait_for_sender_exit(&service));
         let _ = fs::remove_dir_all(root);

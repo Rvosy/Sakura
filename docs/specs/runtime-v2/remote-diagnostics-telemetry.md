@@ -46,7 +46,6 @@ Rust 是唯一 HTTP 出站 owner。Core 和插件通过现有日志/遥测 bridg
 - `errno/winerror/exit_code/status/http_status/timeout_ms`：系统、子进程与请求事实。更新请求另保留 `is_timeout/is_connect/endpoint_alias/io_error_kind`；类型和状态来自实际异常，不能按 URL 中的 `.json` 判断解析失败。上游已经丢弃状态的 `ReleaseNotFound` 记为 `RELEASE_RESPONSE`，不推断 HTTP 状态。
 - `plugin_id/plugin_name/provider/model/endpoint/url/path`：发生故障的实际组件、模型、请求目标和路径，不上传完整插件清单。
 - `stderr/stage/command/request_id/window_label/provider_error_code/provider_error_type/repair_reason/repair_outcome`：有关现场字段。
-- `count/failed/elapsed_ms`：探测失败摘要中，本次连续失败次数、当前探测器累计失败次数和本次故障持续时间。
 
 Core 的进程边界复用 `exception_diagnostics` 的结果，不再为遥测另造一个只有类型和安全栈的摘要。Rust 在本地日志显示属性过滤之前取得诊断；本地日志等级不会阻断遥测。WebView 保留 message、原始 stack 和 cause 链；Rust panic 保留 panic 原文、位置和 backtrace。
 
@@ -68,7 +67,7 @@ Python、插件 SDK、WebView、Rust 遵循相同的定向处理原则。服务�
 
 客户端在同 generation 内比较组件、事件、代码、原因、阶段、原始 message/chain/stack 和旧位置帧。不同底层原因保留独立样本；完全重复的样本保留首份报告并累计重复次数。`fingerprintVersion=3` 中 fingerprint 是随机样本组 ID，沿用旧字段名供累计次数关联，不计算自制内容摘要。服务端用实际分组字段比较跨 run 的报告，旧 v1/v2 fingerprint 保持可读。
 
-原生悬停探测正常时每 50 ms 读取一次。连续失败保留首次异常，后续间隔从 100 ms 逐步增加到最多 1 秒，每分钟及停止时记录固定摘要；次数和耗时不参与错误分组。后续 `error.repeated` 使用现有 `failed/elapsedMs/recoveryOutcome` 保留最新累计及停止状态，`occurrenceCount` 仍表示摘要条数。队列拒绝摘要后保留待发送状态。恢复后回到正常探测频率，恢复信息进入本地日志和后续错误的 breadcrumb；未出现周期或停止摘要的短故障，不保证远端能还原完整探测次数。
+原生悬停探测正常时每 50 ms 读取一次，失败时每秒读取一次。连续失败只记录首次原始异常，成功后恢复正常频率；不生成周期摘要、累计计数或恢复事件。DOM 悬停仍可用，停止探测后忽略尚未完成的读取结果。
 
 WebView 退出时，已经发送中的诊断批次完成后继续排空尾批。失败批次不无限重试，原生窗口提前销毁或进程被强制终止仍可能丢失未送达的记录。
 

@@ -45,9 +45,6 @@ pub(super) fn from_attributes(attributes: Option<&Value>) -> ErrorEvidence {
         "timeout_ms",
         "repair_reason",
         "repair_outcome",
-        "count",
-        "failed",
-        "elapsed_ms",
     ];
     let mut result = BTreeMap::new();
     for key in FIELDS {

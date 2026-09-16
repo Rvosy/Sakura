@@ -10,38 +10,13 @@ export function createSurfaceHoverProbe({
   readHover,
   onHoverChange,
   onFailure = () => {},
-  onStatus = () => {},
-  now = () => performance.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = (handle) => globalThis.clearTimeout(handle),
 } = {}) {
   let disposed = false;
   let timer = null;
   let previous = false;
-  let failureCount = 0;
-  let totalFailures = 0;
-  let failureStarted = 0;
-  let lastSummary = 0;
-  let retryDelay = 50;
-
-  function report(callback, value) {
-    try {
-      callback(value);
-    } catch {
-      // Diagnostic observers must not interrupt hover polling or teardown.
-    }
-  }
-
-  function reportStatus(status) {
-    const time = now();
-    report(onStatus, {
-      status,
-      count: failureCount,
-      totalFailures,
-      elapsedMs: Math.max(0, Math.round(time - failureStarted)),
-    });
-    lastSummary = time;
-  }
+  let failed = false;
 
   async function poll() {
     timer = null;
@@ -49,21 +24,11 @@ export function createSurfaceHoverProbe({
     try {
       hovered = await readHover() === true;
       if (disposed) return;
-      if (failureCount > 0) reportStatus("recovered");
-      failureCount = 0;
-      retryDelay = 50;
+      failed = false;
     } catch (error) {
       if (disposed) return;
-      failureCount += 1;
-      totalFailures += 1;
-      if (failureCount === 1) {
-        failureStarted = now();
-        lastSummary = failureStarted;
-        report(onFailure, error);
-      } else if (now() - lastSummary >= 60_000) {
-        reportStatus("retrying");
-      }
-      retryDelay = Math.min(retryDelay * 2, 1000);
+      if (!failed) onFailure(error);
+      failed = true;
       // DOM hover remains available if the native window is not ready.
     }
     if (disposed) return;
@@ -71,7 +36,7 @@ export function createSurfaceHoverProbe({
       previous = hovered;
       onHoverChange(hovered);
     }
-    timer = setTimer(poll, retryDelay);
+    timer = setTimer(poll, failed ? 1000 : 50);
   }
 
   void poll();
@@ -81,7 +46,6 @@ export function createSurfaceHoverProbe({
       disposed = true;
       if (timer !== null) clearTimer(timer);
       timer = null;
-      if (failureCount > 0) reportStatus("stopped");
     },
   });
 }
