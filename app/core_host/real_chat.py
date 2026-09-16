@@ -206,11 +206,14 @@ class RealChatBoundary:
                 with interaction_context(operation_id):
                     self.handle_send(request, _on_started=started.set)
             except BaseException as error:  # noqa: BLE001 - owned generation worker
-                if not started.is_set():
-                    kickoff_errors.append(error)
-                else:
-                    _safe_diagnostic(error)
-                self._drop_execution(operation_id)
+                try:
+                    if not started.is_set():
+                        kickoff_errors.append(error)
+                    else:
+                        code, _, _ = _classify_error(error)
+                        _safe_diagnostic(error, code=code, stage="worker", operation_id=operation_id)
+                finally:
+                    self._drop_execution(operation_id)
             finally:
                 started.set()
 
@@ -269,6 +272,7 @@ class RealChatBoundary:
         runtime = None
         completed_fact: dict[str, Any] | None = None
         plugin_application: object | None = None
+        stage = "prepare"
         try:
             from app.core.runtime_log import suppress_runtime_logs
             from app.agent.trace import traced_message
@@ -284,6 +288,7 @@ class RealChatBoundary:
             if callable(wait_dependencies):
                 from app.core.runtime_log import log_event
 
+                stage = "prompt_dependencies"
                 dependency_results = wait_dependencies(
                     cancel_checker=execution.cancel.throw_if_cancelled
                 )
@@ -296,6 +301,7 @@ class RealChatBoundary:
                         severity="info" if ready else "warning",
                         verbosity=1 if ready else 0,
                     )
+            stage = "timeline_read"
             timeline = self._timeline
             if timeline is None:
                 history_status = "degraded"
@@ -304,6 +310,7 @@ class RealChatBoundary:
                     "Chat history database is unavailable",
                     False,
                 ) from self._timeline_error
+            stage = "input_prepare"
             proactive_event = payload.get("event")
             is_update_event = isinstance(proactive_event, Mapping)
             message = "" if is_update_event else str(payload["message"])
@@ -330,12 +337,14 @@ class RealChatBoundary:
                 event_payload = proactive_event.get("payload")
                 assert isinstance(event_payload, Mapping)
                 execution.cancel.throw_if_cancelled()
+                stage = "pipeline"
                 with suppress_runtime_logs():
                     result = getattr(session, "pipeline").run_event(
                         AgentEvent(type="update_available", payload=dict(event_payload)),
                         cancel_checker=execution.cancel.throw_if_cancelled,
                     )
             else:
+                stage = "timeline_read"
                 try:
                     history_now = datetime.now().astimezone()
                     history_projection = assemble_recent_turns(
@@ -354,6 +363,7 @@ class RealChatBoundary:
                     raise _BoundaryFailure(
                         "TIMELINE_READ_FAILED", "Chat history could not be read", False
                     ) from exc
+                stage = "input_prepare"
                 request_user_message: dict[str, Any] = {"role": "user", "content": message}
                 if screen_attachment is None or screen_attachment.source != "screen_awareness":
                     input_entries.append(
@@ -463,6 +473,7 @@ class RealChatBoundary:
                     history_drops=history_projection.dropped,
                 )
                 messages = [*recent_messages, request_user_message]
+                stage = "timeline_write"
                 try:
                     execution.cancel.throw_if_cancelled()
                     timeline.append_many(input_entries)
@@ -475,6 +486,7 @@ class RealChatBoundary:
                     ) from exc
 
                 execution.cancel.throw_if_cancelled()
+                stage = "pipeline"
                 with suppress_runtime_logs():
                     pipeline_kwargs: dict[str, Any] = {
                         "cancel_checker": execution.cancel.throw_if_cancelled,
@@ -485,6 +497,7 @@ class RealChatBoundary:
                         messages,
                         **pipeline_kwargs,
                     )
+            stage = "reply_processing"
             execution.cancel.throw_if_cancelled()
             allowed_action_types = {"tool_call", "event"} if is_update_event else {"tool_call"}
             unsupported = [
@@ -543,6 +556,7 @@ class RealChatBoundary:
                     )
             assistant_entry_id = uuid.uuid4().hex
             authorized_segments: list[tuple[int, dict[str, Any]]] = []
+            stage = "segment_authorization"
             for segment_index, segment in enumerate(segments):
                 if not segment["text"].strip():
                     continue
@@ -560,6 +574,7 @@ class RealChatBoundary:
                     if tts_authorized is False:
                         segment["suppressTts"] = True
                 authorized_segments.append((segment_index, segment))
+            stage = "reply_processing"
             if is_update_event and not authorized_segments:
                 raise _BoundaryFailure(
                     "UPDATE_ANNOUNCEMENT_EMPTY",
@@ -568,6 +583,7 @@ class RealChatBoundary:
                 )
             if authorized_segments:
                 execution.cancel.throw_if_cancelled()
+                stage = "timeline_write"
                 try:
                     assistant_entry = NewTimelineEntry(
                         entry_id=assistant_entry_id,
@@ -632,7 +648,7 @@ class RealChatBoundary:
                 }
             else:
                 code, message, retryable = _classify_error(error)
-                _safe_diagnostic(error, code=code, message=message)
+                _safe_diagnostic(error, code=code, stage=stage, operation_id=operation_id)
                 terminal_payload = {
                     "operationId": operation_id,
                     "error": {
@@ -647,11 +663,17 @@ class RealChatBoundary:
         resolved_terminal = self._finish(operation_id, terminal)
         if resolved_terminal is not None:
             from app.core.runtime_log import log_event
-            log_event("Chat", "对话已结束", {
+            finished_attributes: dict[str, Any] = {
                 "operation_id": operation_id,
                 "outcome": {"chat.completed": "success", "chat.cancelled": "cancelled"}.get(resolved_terminal, "failed"),
                 "elapsed_ms": int((monotonic() - started_at) * 1000),
-            }, event="chat.finished", severity="info")
+            }
+            if resolved_terminal == "chat.failed":
+                finished_attributes.update(
+                    reason_code=terminal_payload["error"]["code"],
+                    stage=stage,
+                )
+            log_event("Chat", "对话已结束", finished_attributes, event="chat.finished", severity="info")
         try:
             if resolved_terminal == "chat.completed":
                 if plugin_application is not None and completed_fact is not None:
@@ -1651,17 +1673,18 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     return "CHAT_EXECUTION_FAILED", "Chat execution failed", False
 
 
-def _safe_diagnostic(error: BaseException, *, code: str, message: str) -> None:
+def _safe_diagnostic(error: BaseException, *, code: str, stage: str, operation_id: str) -> None:
     try:
         from app.core.runtime_log import external_runtime_sink_active, log_event, diagnostic_attributes
         from app.llm.prompts.runtime import ContextWindowExceededError
 
         if external_runtime_sink_active():
             attributes: dict[str, Any] = {
+                "operation_id": operation_id,
                 "code": code,
                 "reason_code": code,
                 "error_type": type(error).__name__,
-                **diagnostic_attributes(error, reason_code=code, stage="chat"),
+                **diagnostic_attributes(error, reason_code=code, stage=stage),
             }
             if isinstance(error, ContextWindowExceededError):
                 attributes.update(error.log_attributes())

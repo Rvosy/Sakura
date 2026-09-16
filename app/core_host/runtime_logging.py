@@ -84,6 +84,8 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "candidates",
         "category",
         "cause_type",
+        "cause_code",
+        "validation_field",
         "child_pid",
         "code",
         "command",
@@ -838,7 +840,7 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     if record.custom:
         from app.plugins.sakura_plugin_sdk import prepare_log_payload
         message, safe_attributes = prepare_log_payload(record.message, attributes)
-        safe_attributes.update(_safe_attributes({key: value for key, value in attributes.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "error_type", "exception_site", "errno", "winerror"}}))
+        safe_attributes.update(_safe_attributes({key: value for key, value in attributes.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "cause_code", "validation_field", "error_type", "exception_site", "errno", "winerror"}}))
         wire.update(custom=True, message=message, event="runtime.message")
     else:
         safe_attributes = _safe_attributes(attributes)
@@ -907,7 +909,7 @@ def _encode_wire_record(wire: Mapping[str, object]) -> bytes | None:
     candidate["attributes"] = {
         key: safe_diagnostic_text(value, 1024) if isinstance(value, str) else value
         for key, value in dict(candidate.get("attributes") or {}).items()
-        if key in DIAGNOSTIC_TEXT_KEYS or key in {"code", "reason_code", "error_type", "cause_type", "stage", "exception_site"}
+        if key in DIAGNOSTIC_TEXT_KEYS or key in {"code", "reason_code", "error_type", "cause_type", "cause_code", "validation_field", "stage", "exception_site"}
     }
     candidate["attributes"]["record_truncated"] = True
     line = _json_line(candidate)

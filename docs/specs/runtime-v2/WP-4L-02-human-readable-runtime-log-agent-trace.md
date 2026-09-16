@@ -145,6 +145,9 @@ runtime context role 或合并 system 后，必须记录实际重发的最终 pa
   额外保留召回 `score/source`。
 - 若 tool-message 兼容逻辑把尾部 runtime context 合并进首条 system，则不生成虚构尾消息，而在对应
   `system_prompt` 中增加 `appended_runtime_context`；回退为尾部 user 时按真实末尾位置记录。
+- Provider 明确拒绝非首位 system 消息时，兼容回退涵盖带内部来源标记的 `runtime_context` 和
+  `recent_proactive`，改用 user role 后保留原有事实边界、正文和来源，不将主动发言历史并入主 system。
+  支持多条 system 的端点保留默认请求；未标记的消息不触发这项转换。重发及后续请求的 Trace 必须反映实际 role。
 - 待发送 message 必须携带 Python 内部 provenance；最终 payload 构建同时剥离全部内部字段并生成 trace
   part。测试必须断言 Provider 捕获的 payload 零 provenance 字段。
 

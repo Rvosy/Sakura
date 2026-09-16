@@ -85,6 +85,129 @@ def test_worker_diagnostic_survives_host_exception_wrapping():
     assert "Remote:" in fields["exception_stack"]
 
 
+@pytest.mark.parametrize("cleanup_failed", [False, True])
+def test_worker_active_error_type_survives_rpc_and_core_log_bridge(cleanup_failed):
+    from app.core.cancellation import OperationCancelled
+    from app.plugins.runtime_v4 import PluginRuntimeError
+
+    try:
+        try:
+            raise OperationCancelled("request cancelled")
+        except OperationCancelled:
+            if cleanup_failed:
+                raise PermissionError("cleanup permission denied")
+            raise
+    except Exception as error:
+        remote = _exception_diagnostics(error)
+    expected = "PermissionError" if cleanup_failed else "OperationCancelled"
+    assert remote["error_type"] == expected
+    assert remote["cause_type"] == "OperationCancelled"
+
+    # Exercise two RPC hops: the intermediate plugin must retain the worker's
+    # active exception type rather than replacing it with PluginApiError.
+    remote = json.loads(json.dumps(remote))
+    intermediate = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=remote)
+    forwarded = _exception_diagnostics(intermediate)
+    assert forwarded["error_type"] == expected
+    received = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=json.loads(json.dumps(forwarded)))
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        try:
+            raise PluginRuntimeError.from_api(received) from received
+        except PluginRuntimeError:
+            log_event("TTS", "synthesis failed", event="tts.synthesis.failed", severity="warning")
+    finally:
+        bridge.close()
+    record = json.loads(stream.getvalue().splitlines()[0][len(CORE_BRIDGE_PREFIX):])
+    fields = record["attributes"]
+    assert fields["error_type"] == expected
+    assert fields["cause_type"] == "OperationCancelled"
+    assert "PluginRuntimeError" in fields["exception_chain"]
+    if cleanup_failed:
+        assert "cleanup permission denied" in fields["exception_chain"]
+
+
+def test_local_cleanup_type_is_not_overwritten_by_remote_cancellation():
+    from app.core.cancellation import OperationCancelled
+
+    received = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=_exception_diagnostics(OperationCancelled()))
+    try:
+        try:
+            raise received
+        except PluginApiError:
+            raise PermissionError("local cleanup denied")
+    except PermissionError as error:
+        local = exception_diagnostics(error, reason_code="RUNTIME_ERROR", stage="cleanup")
+        worker = _exception_diagnostics(error)
+    for fields in (local, worker):
+        assert fields["error_type"] == "PermissionError"
+        assert fields["cause_type"] == "OperationCancelled"
+        assert "local cleanup denied" in fields["exception_chain"]
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_boundary_metadata_crosses_worker_and_core_log_bridge(custom):
+    class BoundaryError(ValueError):
+        code = "MEMORY_ROUND_TRIP_MISMATCH"
+        field = "category"
+        details = {"content": "private memory fixture"}
+
+    remote = _exception_diagnostics(BoundaryError("round trip mismatch"))
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        try:
+            raise PluginApiError("PLUGIN_CALL_FAILED", diagnostics=remote)
+        except PluginApiError:
+            if custom:
+                log_message("warning", "boundary failed")
+            else:
+                log_event("MEMORY", "boundary failed", event="memory.recall.failed", severity="warning")
+    finally:
+        bridge.close()
+    record = json.loads(stream.getvalue().splitlines()[0][len(CORE_BRIDGE_PREFIX):])
+    assert record["attributes"]["cause_code"] == "MEMORY_ROUND_TRIP_MISMATCH"
+    assert record["attributes"]["validation_field"] == "category"
+    assert "private memory fixture" not in json.dumps(record)
+
+
+def test_boundary_metadata_rejects_free_text_and_does_not_read_arbitrary_details():
+    class BoundaryError(ValueError):
+        code = "private error text"
+        field = "private memory text"
+
+        @property
+        def details(self):
+            raise AssertionError("must not read arbitrary details")
+
+    for fields in (_exception_diagnostics(BoundaryError("failed")),
+                   exception_diagnostics(BoundaryError("failed"), reason_code="FAILED", stage="test")):
+        assert "cause_code" not in fields
+        assert "validation_field" not in fields
+
+
+def test_boundary_metadata_honors_credential_redaction_and_broken_properties():
+    from app.core.diagnostics import diagnostic_secret_scope, register_diagnostic_secret
+
+    class BoundaryError(ValueError):
+        field = "FixtureOpaqueCredential7"
+
+        @property
+        def code(self):
+            raise RuntimeError("broken property")
+
+    with diagnostic_secret_scope():
+        register_diagnostic_secret("FixtureOpaqueCredential7")
+        try:
+            raise BoundaryError("original failure")
+        except BoundaryError as error:
+            fields = exception_diagnostics(error, reason_code="FAILED", stage="test")
+        assert "FixtureOpaqueCredential7" not in json.dumps(fields)
+        assert fields["cause_type"] == "BoundaryError"
+        assert " at " in fields["exception_stack"]
+
+
 def test_exception_group_preserves_independent_failures():
     group = ExceptionGroup("parallel providers failed", [TimeoutError("connection timed out"), OSError(28, "No space left on device")])
     fields = exception_diagnostics(group, reason_code="PROVIDERS_FAILED", stage="load")

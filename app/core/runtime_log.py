@@ -664,7 +664,7 @@ def log_message(
         if current_error is not None and severity in {"warning", "warn", "error"}:
             diagnostics = diagnostic_attributes(current_error, reason_code="RUNTIME_ERROR", stage=component)
         if isinstance(fields, dict):
-            diagnostics.update({key: value for key, value in fields.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "error_type", "exception_site", "errno", "winerror"}})
+            diagnostics.update({key: value for key, value in fields.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "cause_code", "validation_field", "error_type", "exception_site", "errno", "winerror"}})
         attributes.update({key: safe_diagnostic_text(value, TRACE_LIMIT) if isinstance(value, str) else value for key, value in diagnostics.items()})
         attributes = _attach_interaction_id(attributes)
         return submit_external_log_event(LogEvent(

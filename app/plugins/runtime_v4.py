@@ -164,6 +164,12 @@ class _HostRegistration:
     registration_id: str
 
 
+@dataclass(frozen=True)
+class _DrainingProcess:
+    process: "_PluginProcess"
+    deadline: float
+
+
 class _PluginProcess:
     def __init__(
         self,
@@ -601,7 +607,7 @@ class PluginRuntimeManager:
         self._start_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._closed = False
-        self._draining_processes: dict[str, _PluginProcess] = {}
+        self._draining_processes: dict[str, _DrainingProcess] = {}
         for value in specs:
             spec = value.to_plugin_spec(self._roots) if isinstance(value, RuntimePluginSpec) else value
             if spec.plugin_id in self._records:
@@ -1238,7 +1244,10 @@ class PluginRuntimeManager:
         if calling_process is not None:
             with self._lock:
                 record = self._records.get(caller_id)
-                if (record is None or record.process is not calling_process) and self._draining_processes.get(caller_id) is not calling_process:
+                draining = self._draining_processes.get(caller_id)
+                if (record is None or record.process is not calling_process) and (
+                    draining is None or draining.process is not calling_process
+                ):
                     raise PluginApiError("GENERATION_INVALIDATED", plugin_id=caller_id)
         if name == "callback.register":
             shape = payload.get("shape")
@@ -1298,18 +1307,36 @@ class PluginRuntimeManager:
         assert isinstance(detached_args, list)
         with self._lock:
             binding = self._services.get(service_key)
+            draining = self._draining_processes.get(caller_id)
+            caller_record = self._records.get(caller_id)
+            provider_record = self._records.get(binding.provider_id) if binding is not None else None
             draining_log = (binding is not None
                 and getattr(binding.host_service, "allow_during_shutdown", False) is True
-                and caller_id in self._draining_processes)
+                and draining is not None)
             # A closing worker must be able to release its own registrations
             # before Core performs the final scope sweep.
             draining_unregister = (binding is not None and binding.host_service is not None
-                and caller_id in self._draining_processes and method == "unregister"
+                and draining is not None and method == "unregister"
                 and len(detached_args) == 1
                 and any(item.service_key == service_key and item.registration_id == detached_args[0]
                         for item in self._host_registrations.get(caller_id, ())))
-            if self._closed and not (draining_log or draining_unregister):
+            # Reverse dependency shutdown keeps a worker's declared services
+            # alive until its cleanup finishes. Unrelated or stale callers
+            # must still lose access as soon as the generation closes.
+            draining_dependency = (
+                draining is not None and caller_record is not None
+                and service_key in caller_record.spec.requires
+                and binding is not None and binding.process is not None
+                and provider_record is not None and provider_record.state == "active"
+                and provider_record.process is binding.process
+            )
+            if self._closed and not (draining_log or draining_unregister or draining_dependency):
                 raise PluginRuntimeError("GENERATION_INVALIDATED")
+            if draining_dependency:
+                remaining = draining.deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT", service_key=service_key)
+                timeout = min(self._call_timeout if timeout is None else timeout, remaining)
         if binding is None:
             raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
         if method not in binding.exports:
@@ -1490,7 +1517,8 @@ class PluginRuntimeManager:
                 return
             process = record.process
             if process is not None:
-                self._draining_processes[plugin_id] = process
+                deadline = time.monotonic() + CLOSE_TIMEOUT_SECONDS if deadline is None else deadline
+                self._draining_processes[plugin_id] = _DrainingProcess(process, deadline)
             record.process = None
             record.pid = None
             record.state = "failed" if failed else "disabled"

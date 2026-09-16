@@ -9,19 +9,26 @@ const BUBBLE_ACTIVE_PHASES = new Set(["thinking", "typing"]);
 export function createSurfaceHoverProbe({
   readHover,
   onHoverChange,
+  onFailure = () => {},
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = (handle) => globalThis.clearTimeout(handle),
 } = {}) {
   let disposed = false;
   let timer = null;
   let previous = false;
+  let failed = false;
 
   async function poll() {
     timer = null;
     let hovered = false;
     try {
       hovered = await readHover() === true;
-    } catch {
+      if (disposed) return;
+      failed = false;
+    } catch (error) {
+      if (disposed) return;
+      if (!failed) onFailure(error);
+      failed = true;
       // DOM hover remains available if the native window is not ready.
     }
     if (disposed) return;
@@ -29,12 +36,13 @@ export function createSurfaceHoverProbe({
       previous = hovered;
       onHoverChange(hovered);
     }
-    timer = setTimer(poll, 50);
+    timer = setTimer(poll, failed ? 1000 : 50);
   }
 
   void poll();
   return Object.freeze({
     dispose() {
+      if (disposed) return;
       disposed = true;
       if (timer !== null) clearTimer(timer);
       timer = null;

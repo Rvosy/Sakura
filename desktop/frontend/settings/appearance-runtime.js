@@ -686,8 +686,7 @@ export function createRuntimeAppearanceController({
     document.getElementById("visualEffectMode").addEventListener("change", changed);
     document.getElementById("bubbleAutoExpand").addEventListener("change", changed);
     document.getElementById("resetThemeButton").addEventListener("click", () => {
-      draft.themeTokens = clone(snapshot.presentation.themeTokens);
-      fill(draft);
+      fill({ ...draft, themeTokens: clone(snapshot.presentation.themeTokens) });
       changed();
     });
     generationTimer = window.setInterval(async () => {

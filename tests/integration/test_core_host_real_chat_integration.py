@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import queue
@@ -512,8 +513,131 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path, m
     assert finished[0][0][2]["outcome"] == ("cancelled" if cancelled else "success")
     assert finished[0][0][2]["operation_id"] == "slow-accepted"
     assert finished[0][0][2]["elapsed_ms"] >= 0
+    assert "reason_code" not in finished[0][0][2]
+    assert "stage" not in finished[0][0][2]
     assert finished[0][1]["severity"] == "info"
     boundary.close()
+
+
+@pytest.mark.parametrize(
+    ("failure", "cancelled", "reason_code", "stage"),
+    [
+        ("provider", False, "PROVIDER_REQUEST_FAILED", "pipeline"),
+        ("reply", False, "INVALID_CHAT_REPLY", "reply_processing"),
+        ("provider", True, None, None),
+    ],
+)
+def test_chat_finished_bridge_records_only_the_resolved_terminal_failure(
+    tmp_path: Path, failure: str, cancelled: bool, reason_code: str | None, stage: str | None,
+) -> None:
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+    from app.llm.api_client import ApiRequestError
+
+    operation_id = "terminal-diagnostic"
+    events = []
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            if cancelled:
+                assert boundary.handle_cancel(
+                    _request("cancel", "chat.cancel", {"operationId": operation_id})
+                )["payload"]["accepted"]
+            if failure == "provider":
+                raise ApiRequestError("API HTTP 400: private provider response")
+            return SimpleNamespace(reply=SimpleNamespace(), actions=[])
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura"), pipeline=Pipeline(),
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID, GENERATION_CREDENTIAL, tmp_path, session_provider=lambda: session,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"), event_publisher=events.append,
+    )
+    request = _request(operation_id, "chat.send", {"message": "private user message", "operationId": operation_id})
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        boundary.reserve_send(request)
+        boundary.handle_send(request)
+    finally:
+        boundary.close()
+        bridge.close()
+
+    records = [
+        json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
+        for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)
+    ]
+    finished = [record for record in records if record["event"] == "chat.finished"]
+    assert len(finished) == 1
+    assert finished[0]["operation_id"] == operation_id
+    assert finished[0]["severity"] == "info"
+    attributes = finished[0]["attributes"]
+    assert attributes["elapsed_ms"] >= 0
+    assert attributes["outcome"] == ("cancelled" if cancelled else "failed")
+    assert events[-1]["name"] == ("chat.cancelled" if cancelled else "chat.failed")
+    if cancelled:
+        assert "reason_code" not in attributes
+        assert "stage" not in attributes
+        assert "error" not in events[-1]["payload"]
+    else:
+        assert attributes["reason_code"] == events[-1]["payload"]["error"]["code"] == reason_code
+        assert attributes["stage"] == stage
+    assert "private" not in json.dumps(finished)
+
+
+def test_started_worker_failure_logs_and_releases_chat_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_finished = threading.Event()
+    background_errors = []
+    logs = []
+    operation_id = "worker-failed"
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura"),
+        pipeline=SimpleNamespace(run_user_message=lambda *_args, **_kwargs: SimpleNamespace(
+            reply=ChatReply([ChatSegment("reply")]), actions=[],
+        )),
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID, GENERATION_CREDENTIAL, tmp_path, session_provider=lambda: session,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
+    )
+    drop_execution = boundary._drop_execution
+
+    def capture_log(_channel, _message, attributes, **kwargs):  # type: ignore[no-untyped-def]
+        if kwargs.get("event") == "chat.finished":
+            raise OSError("fixture terminal logging failure")
+        logs.append((attributes, kwargs))
+
+    def observe_release(identity):  # type: ignore[no-untyped-def]
+        drop_execution(identity)
+        worker_finished.set()
+
+    def capture_background_error(args):  # type: ignore[no-untyped-def]
+        background_errors.append(args.exc_value)
+        worker_finished.set()
+
+    monkeypatch.setattr("app.core.runtime_log.log_event", capture_log)
+    monkeypatch.setattr("app.core.runtime_log.external_runtime_sink_active", lambda: True)
+    monkeypatch.setattr(boundary, "_drop_execution", observe_release)
+    monkeypatch.setattr(threading, "excepthook", capture_background_error)
+    request = _request(operation_id, "chat.send", {"message": "hi", "operationId": operation_id})
+    next_request = _request("worker-next", "chat.send", {"message": "next", "operationId": "worker-next"})
+    try:
+        boundary.reserve_send(request)
+        assert boundary.start_send(request)["payload"]["accepted"]
+        assert worker_finished.wait(2)
+        assert background_errors == []
+        failures = [attributes for attributes, kwargs in logs if kwargs.get("event") == "chat.request.failed"]
+        assert len(failures) == 1
+        assert failures[0]["reason_code"] == "CHAT_EXECUTION_FAILED"
+        assert failures[0]["operation_id"] == operation_id
+        assert failures[0]["stage"] == "worker"
+        boundary.reserve_send(next_request)
+    finally:
+        drop_execution(operation_id)
+        boundary.abandon_send(next_request)
+        boundary.close()
 
 
 def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
@@ -1089,6 +1213,8 @@ def test_timeline_deleted_during_runtime_fails_without_recreating_or_writing_jso
     assert len(finished) == 1
     assert finished[0][0][2]["outcome"] == "failed"
     assert finished[0][0][2]["operation_id"] == "timeline-deleted"
+    assert finished[0][0][2]["reason_code"] == "TIMELINE_READ_FAILED"
+    assert finished[0][0][2]["stage"] == "timeline_read"
     assert events[-1]["payload"]["error"]["code"] == "TIMELINE_READ_FAILED"  # type: ignore[index]
     assert pipeline_calls == 0
     assert not timeline.path.exists()

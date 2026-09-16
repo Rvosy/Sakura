@@ -56,22 +56,18 @@ export function createChatTimingController({ document, invoke, onDirty }) {
   }
 
   function read() {
-    return validateChatTimingValues(
-      Object.fromEntries(Object.entries(FIELDS).map(([field, id]) => [
-        field,
-        Number.parseInt(document.getElementById(id).value, 10),
-      ])),
-      snapshot.limits,
-    );
+    return Object.fromEntries(Object.entries(FIELDS).map(([field, id]) => {
+      const value = document.getElementById(id).value.trim();
+      return [field, value === "" ? NaN : Number(value)];
+    }));
   }
 
   function changed() {
     if (disposed) return;
-    try {
-      draft = read();
-    } finally {
-      onDirty();
-    }
+    // An in-progress number edit may be empty or out of range. Keep it dirty and
+    // validate at save time, without turning an input event into a global error.
+    draft = read();
+    onDirty();
   }
 
   return Object.freeze({
@@ -89,9 +85,10 @@ export function createChatTimingController({ document, invoke, onDirty }) {
     async save() {
       if (!snapshot) throw new Error("聊天表现时间设置尚未加载");
       draft = read();
+      const values = validateChatTimingValues(draft, snapshot.limits);
       const result = await invoke("settings_chat_presentation_timing_save", {
         windowGeneration: snapshot.windowGeneration,
-        values: clone(draft),
+        values: clone(values),
       });
       baseline = clone(validateChatTimingValues(result, snapshot.limits));
       draft = clone(baseline);

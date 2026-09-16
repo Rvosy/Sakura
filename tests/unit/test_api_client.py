@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import json
+import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -281,6 +284,149 @@ def test_response_format_falls_back_when_provider_rejects(monkeypatch) -> None: 
 
     assert "response_format" in calls[0]
     assert "response_format" not in calls[1]
+
+
+@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
+def test_trailing_system_rejection_retries_and_records_compatibility(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, method: str,
+) -> None:
+    recorder = AgentTraceRecorder(tmp_path)
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", "key", "model"),
+        agent_trace_recorder=recorder,
+    )
+    payloads = []
+    metrics = []
+
+    def read_response(_opener, request, **_kwargs):  # type: ignore[no-untyped-def]
+        payload = json.loads(request.data)
+        payloads.append(payload)
+        if payload["messages"][-1]["role"] == "system":
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "Bad Request", {},
+                io.BytesIO(b'{"error":{"message":"System message must be at the beginning."}}'),
+            )
+        return b'{"choices":[{"message":{"role":"assistant","content":"OK"}}]}', 200
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    monkeypatch.setattr("app.llm.api_client.submit_telemetry_model_call", metrics.append)
+
+    with recorder.operation("trailing-system", finalize_external=True):
+        for _ in range(2):
+            reply = getattr(client, method)(
+                "private system prompt", [{"role": "user", "content": "private user text"}],
+                runtime_context="private runtime context",
+            )
+            assert (reply if method == "complete_raw" else reply.content) == "OK"
+
+    assert [[message["role"] for message in payload["messages"]] for payload in payloads] == [
+        ["system", "user", "system"], ["system", "user", "user"], ["system", "user", "user"],
+    ]
+    assert client.runtime_context_role == "user"
+    assert [metric["outcome"] for metric in metrics] == ["failed", "success", "success"]
+    assert metrics[0]["request"]["httpStatus"] == 400
+    assert metrics[0]["request"]["faultDomain"] == "compatibility"
+    assert metrics[0]["request"]["reasonCode"] == "MODEL_PARAMETER_UNSUPPORTED"
+    assert metrics[1]["request"]["compatibilityFallback"] == "runtime_context_role"
+    assert all(metric["operationId"] == "trailing-system" for metric in metrics)
+    assert [metric["modelCall"] for metric in metrics] == [1, 2, 3]
+    assert "private" not in json.dumps(metrics)
+
+
+@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
+@pytest.mark.parametrize("scenario", ["no_runtime", "tail_runtime", "tool_runtime", "supported"])
+def test_proactive_history_fallback_preserves_context_and_provider_defaults(
+    monkeypatch: pytest.MonkeyPatch, method: str, scenario: str,
+) -> None:
+    from types import SimpleNamespace
+    from app.agent.context_orchestrator import messages_for_context_snapshot
+    from app.core_host.real_chat import _ProjectedTurn, _TurnProjection, _messages_from_turn_projection
+
+    messages = _messages_from_turn_projection(_TurnProjection(
+        (_ProjectedTurn("conversation", (
+            {"role": "user", "content": "previous user"},
+            {"role": "assistant", "content": "previous assistant"},
+        ), "conversation"),), (),
+        (_ProjectedTurn("proactive", ({"role": "assistant", "content": "previous proactive reply"},), "proactive"),),
+    ))
+    messages.append({"role": "user", "content": "current user"})
+    messages = messages_for_context_snapshot(
+        messages, SimpleNamespace(selected_turns=[SimpleNamespace(turn_id="conversation")]),
+    )
+    if scenario == "tool_runtime":
+        messages.extend([
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call-1", "type": "function", "function": {"name": "fixture", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call-1", "content": "tool result"},
+        ])
+    original_messages = [dict(message) for message in messages]
+    payloads = []
+
+    def read_response(_opener, request, **_kwargs):  # type: ignore[no-untyped-def]
+        payload = json.loads(request.data)
+        payloads.append(payload)
+        if scenario != "supported" and any(message["role"] == "system" for message in payload["messages"][1:]):
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "Bad Request", {},
+                io.BytesIO(b'{"error":{"message":"System message must be at the beginning."}}'),
+            )
+        return b'{"choices":[{"message":{"role":"assistant","content":"OK"}}]}', 200
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", "model"))
+    for _ in range(2):
+        reply = getattr(client, method)(
+            "primary system", messages, runtime_context="" if scenario == "no_runtime" else "runtime facts",
+        )
+        assert (reply if method == "complete_raw" else reply.content) == "OK"
+
+    assert messages == original_messages
+    assert payloads[0]["messages"][3]["role"] == "system"
+    if scenario == "supported":
+        assert len(payloads) == 2
+        assert payloads[0] == payloads[1]
+        assert client.runtime_context_role == "system"
+    else:
+        assert len(payloads) == 3
+        assert payloads[1] == payloads[2]
+        assert [message["role"] for message in payloads[1]["messages"]].count("system") == 1
+        proactive = payloads[1]["messages"][3]
+        assert proactive["role"] == "user"
+        assert proactive["content"] == original_messages[2]["content"]
+        assert "previous proactive reply" not in payloads[1]["messages"][0]["content"]
+        assert client.runtime_context_role == "user"
+
+
+@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
+@pytest.mark.parametrize(
+    ("message", "runtime_context", "messages", "attempts"),
+    [
+        ("System message must be at the beginning.", "", [{"role": "user", "content": "hi"}], 1),
+        ("Unknown model", "context", [{"role": "user", "content": "hi"}], 1),
+        ("System message must be at the beginning.", "", [{"role": "system", "content": "unmarked input"}], 1),
+        ("System message must be at the beginning.", "context", [{"role": "user", "content": "hi"}], 2),
+        ("System message must be at the beginning.", "context", [{"role": "tool", "tool_call_id": "call-1", "content": "ok"}], 1),
+    ],
+)
+def test_runtime_context_fallback_only_changes_an_actual_trailing_system_once(
+    monkeypatch: pytest.MonkeyPatch, method: str, message: str,
+    runtime_context: str, messages: list[dict[str, Any]], attempts: int,
+) -> None:
+    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", "model"))
+    payloads = []
+
+    def read_response(_opener, request, **_kwargs):  # type: ignore[no-untyped-def]
+        payloads.append(json.loads(request.data))
+        raise urllib.error.HTTPError(
+            request.full_url, 400, "Bad Request", {},
+            io.BytesIO(json.dumps({"error": {"message": message}}).encode()),
+        )
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    with pytest.raises(ApiRequestError):
+        getattr(client, method)("system", messages, runtime_context=runtime_context)
+    assert len(payloads) == attempts
 
 
 def test_compatibility_fallback_attempts_are_bounded_by_shared_policy(monkeypatch) -> None:  # type: ignore[no-untyped-def]

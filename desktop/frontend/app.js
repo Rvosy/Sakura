@@ -439,12 +439,11 @@ try {
   if (!sessionBlockedAtStartup) runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
   presentationUnavailable = true;
   if (!sessionBlockedAtStartup) showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
-  characterPresentation = Object.freeze({
+  characterPresentation = validateCharacterPresentation({
     generationId: "unavailable",
     characterId: "unavailable",
     displayName: "当前角色",
     initialMessage: "当前角色表现暂时不可用。",
-    themeTokens: Object.freeze({}),
     schemaVersion: 2, visual: null, visualReasonCode: "VISUAL_NOT_BOUND",
   });
 }
@@ -1147,7 +1146,11 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
   }
   surfaceVisibilityController.setInputPinned(inputIsPinned());
   surfaceHoverProbe = createSurfaceHoverProbe({
-    readHover: () => invoke("pet_surface_hovered"),
+    // Report only the first failed read until native hover becomes available again.
+    readHover: () => nativeInvoke("pet_surface_hovered"),
+    onFailure: (error) => runtimeDiagnostics.reportError(error, {
+      command: "pet_surface_hovered", stage: "surface_hover_probe",
+    }),
     onHoverChange: (active) => {
       if (active) surfaceHoverTracker.enter("native-surface");
       else surfaceHoverTracker.leave("native-surface");

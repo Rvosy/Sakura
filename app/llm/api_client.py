@@ -364,8 +364,7 @@ class OpenAICompatibleClient:
             )
         except ApiRequestError as exc:
             if (
-                runtime_context.strip()
-                and runtime_context_role == "system"
+                _has_system_runtime_facts(payload, prompt_provenance)
                 and _is_runtime_context_role_unsupported_error(exc)
             ):
                 self._runtime_context_role = "user"
@@ -385,10 +384,10 @@ class OpenAICompatibleClient:
                 )
                 log_event(
                     "API",
-                    "端点不支持尾部 system 上下文，已回退为 user 上下文",
+                    "端点不支持非首位 system 上下文，已回退为 user 上下文",
                     diagnostic_attributes(
                         exc,
-                        reason_code="TRAILING_SYSTEM_UNSUPPORTED",
+                        reason_code="SYSTEM_CONTEXT_ROLE_UNSUPPORTED",
                         stage="compatibility_fallback",
                     ),
                 )
@@ -504,8 +503,7 @@ class OpenAICompatibleClient:
             )
         except ApiRequestError as exc:
             if (
-                runtime_context.strip()
-                and runtime_context_role == "system"
+                _has_system_runtime_facts(payload, prompt_provenance)
                 and _is_runtime_context_role_unsupported_error(exc)
             ):
                 self._runtime_context_role = "user"
@@ -526,10 +524,10 @@ class OpenAICompatibleClient:
                 )
                 log_event(
                     "API",
-                    "端点不支持尾部 system 上下文，已回退为 user 上下文",
+                    "端点不支持非首位 system 上下文，已回退为 user 上下文",
                     diagnostic_attributes(
                         exc,
-                        reason_code="TRAILING_SYSTEM_UNSUPPORTED",
+                        reason_code="SYSTEM_CONTEXT_ROLE_UNSUPPORTED",
                         stage="compatibility_fallback",
                     ),
                 )
@@ -1201,8 +1199,19 @@ def _messages_with_runtime_context(
     *,
     runtime_items: tuple[dict[str, Any], ...] = (),
 ) -> list[ChatMessage]:
+    request_messages = [*messages]
+    if role == "user":
+        for index, message in enumerate(request_messages):
+            provenance = message_provenance(message)
+            if (
+                message.get("role") == "system"
+                and provenance is not None and provenance.kind == "recent_proactive"
+            ):
+                # Keep the existing untrusted-facts wrapper and provenance;
+                # these past utterances are not a new user request.
+                request_messages[index] = {**message, "role": "user"}
     if not runtime_context.strip():
-        return [*messages]
+        return request_messages
     content = runtime_context.strip()
     if role == "user":
         content = (
@@ -1210,7 +1219,7 @@ def _messages_with_runtime_context(
             + content
         )
     return [
-        *messages,
+        *request_messages,
         traced_message(
             {"role": role, "content": content},
             "runtime_context",
@@ -1219,8 +1228,20 @@ def _messages_with_runtime_context(
     ]
 
 
+def _has_system_runtime_facts(
+    payload: Mapping[str, Any], provenance: Sequence[MessageProvenance | None],
+) -> bool:
+    return any(
+        message.get("role") == "system"
+        and source is not None and source.kind in {"runtime_context", "recent_proactive"}
+        for message, source in zip(payload["messages"][1:], provenance[1:])
+    )
+
+
 def _is_runtime_context_role_unsupported_error(exc: ApiRequestError) -> bool:
     text = str(exc).lower()
+    if re.search(r"\bsystem messages? must be at the beginning(?:[.!\"']|$)", text):
+        return True
     role_markers = ("system", "role", "messages")
     rejection_markers = (
         "unsupported", "not support", "invalid", "must be first",

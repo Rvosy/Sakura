@@ -120,6 +120,45 @@ test("flush never sends more than sixty-four entries per command", async () => {
   assert.equal(batches.every((size) => size >= 1 && size <= 64), true);
 });
 
+for (const transportFails of [false, true]) {
+  test(`dispose drains queued diagnostics after an in-flight ${transportFails ? "failed" : "successful"} send`, async () => {
+    const batches = [];
+    let finishFirst;
+    let timer = null;
+    const diagnostics = createRuntimeDiagnostics({
+      invoke: (command, args) => {
+        assert.equal(command, RUNTIME_DIAGNOSTICS_COMMAND);
+        batches.push(args.entries);
+        if (batches.length === 1) return new Promise((resolve, reject) => {
+          finishFirst = () => transportFails ? reject(new Error("TRANSPORT_FAILED")) : resolve();
+        });
+        if (transportFails) return Promise.reject(new Error("TRANSPORT_FAILED"));
+        return Promise.resolve();
+      },
+      setTimer: (callback) => { timer = callback; return 1; },
+      clearTimer: () => { timer = null; },
+      windowObject: null,
+    });
+    diagnostics.message("info", "first batch");
+    const inFlight = diagnostics.flush();
+    for (let count = 1; count <= 70; count += 1) {
+      diagnostics.message("warn", "probe summary", { count });
+    }
+    diagnostics.dispose();
+    assert.equal(batches.length, 1, "diagnostic sends remain serialized");
+    finishFirst();
+    await inFlight;
+    assert.deepEqual(batches.map((batch) => batch.length), [1, 64, 7]);
+    assert.deepEqual(batches.flat().filter((entry) => entry.fields?.count).map((entry) => entry.fields.count),
+      Array.from({ length: 70 }, (_, index) => index + 1));
+    assert.equal(batches.at(-1).at(-1).event, "webview.lifecycle.unloading");
+    assert.equal(timer, null);
+    await diagnostics.flush();
+    assert.equal(batches.length, 3, "failed transport batches are dropped, not retried indefinitely");
+    assert.equal(diagnostics.message("info", "after dispose"), false);
+  });
+}
+
 
 test("custom messages are bounded and cleaned before IPC without changing plain HTML text", async () => {
   const env = harness();
