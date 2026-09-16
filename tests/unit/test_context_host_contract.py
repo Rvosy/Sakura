@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.core_host.plugin_host_services import HostServiceError, _ContextHostService
+from app.agent.context_orchestrator import ContextContributionError, ContextOrchestrator
 from app.llm.prompts.types import ContextRequest
 from app.plugins.host_services import HOST_CALLER
 
@@ -78,8 +79,12 @@ def test_context_rejects_invalid_fragments(fragment: dict) -> None:
 @pytest.mark.parametrize("kind", ["instruction", "data", "system", None])
 def test_context_rejects_removed_classification_with_explicit_compatibility_error(kind) -> None:
     _service, _registration, provider = _register([{"kind": kind, "content": "旧插件内容"}])
-    with pytest.raises(HostServiceError, match="CONTEXT_SCHEMA_INCOMPATIBLE"):
-        provider.build_context(ContextRequest())
+    with pytest.raises(ContextContributionError) as raised:
+        ContextOrchestrator().build_snapshot(ContextRequest(), providers=[provider])
+    assert provider.failure_policy == "skip"
+    assert isinstance(raised.value.__cause__, HostServiceError)
+    assert raised.value.__cause__.code == "CONTEXT_SCHEMA_INCOMPATIBLE"
+    assert raised.value.provider_id == provider.provider_id
 
 
 @pytest.mark.parametrize("descriptor", [

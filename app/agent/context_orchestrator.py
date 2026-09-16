@@ -305,7 +305,8 @@ def _collect_provider_fragments(
             raise
         except Exception as exc:  # noqa: BLE001
             check_cancelled(cancel_checker)
-            if provider.failure_policy == "abort":
+            if (provider.failure_policy == "abort"
+                    or getattr(exc, "code", None) == "CONTEXT_SCHEMA_INCOMPATIBLE"):
                 raise ContextContributionError(
                     provider.provider_id, provider.plugin_id
                 ) from exc
