@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-09
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -16,6 +15,36 @@ updated: 2026-08-29
 已关闭硬门：WP-3U-02 已于 2026-07-29 accepted
 当前设置执行项：只以 docs/plans/runtime-v2/work-packages.md 为准，本文不复制当前状态
 ```
+
+## 文字选择与主题色
+
+各产品 WebView 的文字选中高亮沿用聊天气泡规则：主题主色以 28% 不透明度混合，文字使用主题正文色，并随主题切换更新。文字选择与卡片、导航、日志记录的业务选中状态分别处理。
+
+| 界面 | 文字选择行为 |
+| --- | --- |
+| 设置、插件配置弹窗、确认弹窗 | 标题、标签、状态和帮助文字不参与选择；输入框、文本域、已有只读输出和路径保留选择复制能力 |
+| 角色工作室 | 沿用设置规则；模型文件名、路径和编辑内容可选择复制 |
+| 聊天气泡、历史记录 | 正文和展开的消息详情可选择复制；工具栏、标题和操作按钮不参与选择 |
+| 运行日志 | 保留记录选中及“复制选中”操作；筛选输入文字使用主题高亮，普通界面文字不参与选择 |
+| 首次启动引导 | 普通说明和操作区域不参与选择；编辑字段保留文字选择 |
+| 截图、屏幕取色 | 保持禁止文字选择，拖动或点击用于截图与取色 |
+
+模态 `dialog` 和弹出层须显式禁用普通文字选择，不能仅依赖 `body`。输入字段仍支持光标定位、拖选和全选，不拦截原生编辑快捷键。
+
+## 界面说明
+
+正式界面以标题、字段标签和操作按钮说明用途。标签和选项已经表达的内容不再附注；设置页不重复列举本页功能，
+资源卡不重复展示同一状态。没有说明的字段和卡片不保留空段落或占位间距。
+
+补充说明只交代选择所需的信息，例如不直观的参数作用、费用或远端数据去向、不可逆操作影响，以及特殊的保存
+方式。每处尽量一句，同一弹窗只说明一次。“未安装”“正在下载”等状态按实际状态显示，失败时给出可执行的
+恢复办法。普通设置不展示 Worker、generation、迁移进度等实现细节；诊断信息保留在技术详情和运行日志中。
+
+麦克风测试音量条使用当前主题色、圆角和低对比轨道，显示真实采集音量；保留可访问名称与数值。主题调整不改变
+采集频率，不使用固定绿色的浏览器默认外观。
+
+文案取舍参考 [Windows 界面文本指南](https://learn.microsoft.com/en-us/windows/win32/uxguide/text-ui)：
+删除重复说明，不解释显而易见的操作，必要内容保持简短。
 
 ## 1. 架构依据
 
@@ -110,7 +139,7 @@ Capability manifest 只保留 feature 级结构，schema 固定为 v1：
 | 11 | 剩余外观/布局与跨域配置一致性 | WP-5-01 | 中 | 对已迁移仓库做缺口收口；冲突旧控件需明确替代决定 |
 | 12 | 首次设置编排、逐域结果和页面迁移关闭清单 | WP-5-02 | 中高 | 只编排已 accepted 的切片，不在此重新造巨型后端 |
 | 13 | 角色切换与会话/历史联动 | WP-5-03 | 很高 | 仅设置页开放；原子保存后完整重启 Core generation，角色草稿阻断且 Memory/历史/TTS 不跨角色 |
-| 14 | 快捷键、开机启动等系统设置 | WP-5-04 | 高 | 桌宠置顶已由 WP-3U-01 的 2026-08-29 后续决定交付；其余能力需在对应原生平台服务拥有真实读写和撤销语义后开放 |
+| 14 | 快捷键、开机启动等系统设置 | WP-5-04 | 高 | 桌宠置顶和 `system.launch_at_login` 已分别交付；快捷键等剩余能力仍需对应原生平台服务拥有真实读写和撤销语义后再开放 |
 | 15 | 诊断、日志与 Repair 设置 | WP-5-06 | 高 | 诊断/修复所有者、权限和失败安全门完成后开放 |
 | 16 | 角色导入导出、Studio 修改与发布 | WP-6-01 至 06-04 | 很高 | Workspace/Draft、资源校验、原子发布和回滚完成后开放 |
 
@@ -160,6 +189,16 @@ TTS、名字与回复状态仍绑定正式角色，放弃时恢复正式角色�
 会清除该草稿；暂存期间锁定仍属于当前正式角色的外观、语音和 Memory 页面。只有收到已提交的 restart
 receipt 后才进入 switching，并关闭 Memory editor portal、失效在途查询、清空角色级页面再重新水合。
 
+### 5.3 开机启动设置契约
+
+`system.launch_at_login` 由 Rust 原生平台服务拥有，支持 Windows、macOS 和 Linux。公开 Snapshot 只包含
+`schemaVersion`、`windowGeneration` 和 `launchAtLogin`。设置窗口打开时必须读取操作系统中的真实注册状态，
+不能用旧 Python 配置里的 `startup.launch_at_login` 代替。
+
+开关只在设置窗口内形成草稿。“应用”或“保存并关闭”调用平台服务注册或移除当前 Sakura 可执行文件，
+随后再次读取系统状态；回读值与目标不一致时返回稳定错误，前端保留草稿和未保存状态。取消或放弃设置不
+修改系统启动项。移动便携版文件后，已有启动项不会自动改写路径，用户需要关闭再重新开启该设置。
+
 ## 6. WP-3S-01：供应商与模型设置纵向链
 
 ### 6.1 目标
@@ -175,6 +214,8 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 - 密钥输入采用“空白保持原值 + 显式清除动作”；`configured=true` 可以显示，密钥本体不能回显。
 - 使用新输入或 Core 内已保存凭据执行有界 `list_models`/`test_connection`；错误必须脱敏，control/
   shutdown 不得被网络探测阻塞。
+- 模型发现仅向当前 Provider 对象交付最新请求的结果。删除 Provider、快照回读替换对象或 generation
+  重绑后，旧发现的成功和失败结果失效，已打开的模型选择弹窗关闭；弹窗提交时再次确认目标与请求仍有效。
 - 保存 Core 与当前 active 插件注册的动态 Chat Completion 模型槽；引用不存在 Provider/模型或遗漏必选
   槽位时，在任何 owner 写入前拒绝。
 - Provider、Core-owned 槽与当前 PluginApplication 的插件槽在一次请求中保存，并按稳定 identity 顺序调用插件槽位
@@ -204,12 +245,13 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 - 不实现角色切换、Studio、导入导出或完整首次设置。
 - 不整体复用 `app/ui/tauri_settings.py` 的 Qt/线程/进程宿主，不恢复旧 stdio HostRpc。
 - 不建立跨 `api.yaml`、`system_config.yaml`、`characters.yaml` 和 v2 `ui.json` 的“保存全部”事务。
-- 不因配置保存而改变聊天、Provider fallback 或模型选择的既有业务语义；需要语义变更时另行批准。
+- 配置保存保持聊天、Provider fallback 和模型选择的既有业务语义。用户明确要求改变这些行为时，随实现更新
+  对应契约与回归；未授权的行为变化需要先说明影响并确认。
 
-### 6.5 实施顺序
+### 6.5 纵向验证范围
 
-WP-3S-01 是单一 Work Package，以下顺序是其内部提交与验证顺序，不表示前一项完成后即可单独宣告
-feature 已迁移：
+以下各层共同提供完整的设置能力，按本次改动选择相关验证，不限定提交顺序。
+单层完成不能证明 feature 已迁移：
 
 1. **数据门与夹具**：冻结当前 v1 `system_config.yaml`/`api.yaml` schema、损坏 YAML、
    unknown-field preservation 和未修改 secret bytes。
@@ -268,9 +310,18 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 该 feature 不读写 `system_config.yaml`，只使用当前 v1 `ui.json`。
 
 `appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。
-`bubble_auto_hide_enabled`、`bubble_auto_hide_delay_seconds`、气泡高度、输入栏偏移和自由布局字段继续
-`unavailable`：它们会破坏 WP-3-03 冻结的常驻气泡、常驻输入和固定窗口包络。Enter 发送、Shift+Enter
-换行与 IME composition 门禁是固定产品交互；Runtime v2 不提供“立即显示”控件，也不新增对应配置开关。
+Windows 开放 `chat.bubble_auto_hide`，公开 DTO 只包含 `auto_hide_enabled` 和
+`auto_hide_delay_seconds`。延时范围为 1–120 秒，默认值为 5 秒。两项设置原子写入 Runtime v2
+`ui.json.settings.bubble_auto_hide_enabled` 和 `bubble_auto_hide_delay_seconds`，保存成功后立即发布给主
+WebView。`ui.json` 尚无这两个键时，只读 `system_config.yaml.ui` 中的 0.9.x 值作为启动回退；首次保存后以
+`ui.json` 为准，不反向改写旧文件。macOS 和 Linux 暂时保持 `unavailable`，解除能力门前必须完成各自的
+动态窗口包络和输入路由验收。
+
+输入栏悬停浮现是 Windows 固定交互，不新增设置项。光标进入立绘有效 alpha、气泡或输入栏当前位置的
+并集时显示输入栏，隐藏的气泡和输入栏也参与唤出判定，区域之间的空隙不参与；输入
+框有焦点、有文本，或附件工具仍有未完成操作时保持显示。回复等待状态本身不固定输入栏。Enter 发送、
+Shift+Enter 换行与 IME composition 门禁保持不变。气泡高度、输入栏偏移和自由布局字段继续由
+`appearance.character` 管理。
 
 回退时先把 `chat.presentation_timing` 和 `chat.subtitle_language` capability 恢复为 `unavailable`，停止新的
 预览 timer，回退 Gateway/前端接线；不得删除、恢复或重写用户已有 `ui.json`。

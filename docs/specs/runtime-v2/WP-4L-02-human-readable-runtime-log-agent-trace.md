@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-11
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -18,39 +18,54 @@ updated: 2026-08-29
 
 本 WP 本身不新增日志查看器、目录或清除按钮、远程 telemetry、Runtime 结构化 sidecar、聊天历史源或请求
 回放源；后续本次运行内存查看器由 WP-5-06 独立规范。Trace 不记录完整静态 system/persona 正文，也不允许
-因 trace 失败改变任何产品结果。
+因 trace 失败改变任何产品结果。远程诊断从内存事件提取原始错误和明确的上下文字段，不能读取本规范定义的日志文件；
+具体边界见 [远程诊断与匿名统计](remote-diagnostics-telemetry.md)。
 
 ## 2. 人类可读 Runtime 日志
 
-- Rust 继续是 `sakura-runtime.log` 唯一打开、追加、轮转和刷新者；Core、插件 worker 与 WebView 继续走
+- Rust 继续是普通日志唯一打开、追加、轮转和刷新者，统一服务按来源写入 `sakura-runtime.log` 与 `sakura-plugins.log`；Core、插件 worker 与 WebView 继续走
   ADR-0012 的受控 bridge。插件 worker 的诊断只允许通过 generation 私有、有界且经过 Core 二次校验的
   日志帧转发；bridge 不可用时丢弃，不得回退为 Python 文件写入。共享应用锁成功前对日志零写入。
 - 每个事件占一行 UTF-8 文本：
 
   ```text
-  [15:56:45] [API] 模型请求失败 │ status=400 elapsed_ms=2789ms
+  [15:56:45] [API] [warning] 模型请求失败 │ status=400 elapsed_ms=2789ms
   ```
 
-- 时间是本地时区 `HH:MM:SS`；频道和中文消息来自固定注册表。属性按注册顺序输出为 `key=value`，使用
-  空格分隔；没有属性时省略 ` │ `。换行、控制字符、ANSI 和分隔符必须规范化，单行保持有界。
+- 时间是本地时区 `HH:MM:SS`；等级独立显示；已登记事件的频道和中文消息来自固定注册表。自定义消息经统一清洗后显示。
+  插件来源追加可信 `plugin=ID`。固定事件属性按注册顺序输出为 `key=value`，使用
+  自定义字段以有界 JSON 值展开，仍使用同一文本 writer。字段使用空格分隔；没有属性时省略 ` │ `。换行、控制字符、ANSI 和分隔符必须规范化，单行保持有界。
 - polling、heartbeat、所有通用 WebView command 成功和高频进度事件为 debug/trace；失败、降级、重启、退出异常和用户需要
-  关注的状态使用 info/warning/error。重要事件必须使用固定中文。失败事件必须保留稳定错误码、异常类型、
-  阶段和经过凭据/控制字符清洗且限长的 `diagnostic`；不得把完整 traceback、请求/回复正文或任意异常对象落盘。
+  关注的状态使用 info/warning/error。已登记业务事件继续使用固定中文，自定义消息采用 `runtime.message`。失败事件必须保留稳定错误码、异常类型、
+  阶段和清洗后的原始 `diagnostic`。本地日志允许保存有界异常链和调用栈，不记录 locals、请求/回复正文或异常对象。
 - `elapsed_ms` 等耗时最多显示两位小数并移除末尾零，不得把 JavaScript 浮点误差直接写入文本日志。
 - 首次启动发现活动文件或 `.1` 至 `.5` 的任意一行仍是旧 JSON 记录（包括纯文本后混入 JSON）时，把
   整组文件原样移动到带时间戳的 `sakura-runtime-jsonl-archive-*` 归档名，再创建纯文本活动文件；不得
   解析、重写、截断或继续混写。
 - 保留 ADR-0012 的 1024 有界队列、优先级淘汰、丢弃摘要、250 ms 刷新、warning/error 即时刷新、
-  500 ms shutdown 和写入故障隔离。文本日志仍按 10 MiB、5 个备份轮转。
+  500 ms shutdown 和写入故障隔离。两个普通日志文件各按 10 MiB、5 个备份轮转。一个文件失败不影响另一文件或 UI 缓冲。
+- Python warning/error 在异常处理期间自动提取原始错误、异常链和调用栈；异步任务在捕获处记录或保存诊断，
+  不等到只剩业务错误码时再推测原因。失败响应通过 `error.details.diagnostics` 传给 Rust，稳定业务错误码不变。
+- `diagnostic` 最多 4096 字符，`exception_chain`、`exception_stack` 和 `recovery_diagnostic` 最多 8192 字符；
+  Python 最多提取 16 层异常及每层最后 32 帧，简短位置使用 `模块:函数:行号`，调用栈保留实际文件路径。保留 `errno`、`winerror`，
+  回滚失败与首次失败分别记录。超限必须显示截断标记，不生成问题哈希或 `failure_id`。
+- 普通日志 bridge 和文本事件上限为 32 KiB，遥测错误 bridge 上限为 128 KiB。多行诊断在查看器中保留换行，写入文本文件时将换行转义，
+  仍保持一个事件一行。桥接超限时缩短诊断并标记 `record_truncated`，不直接丢掉所有诊断字段。
+- 原文同时供本地日志和已开启的远程错误报告使用。凭据按已知值和常见格式局部替换；保留 URL 的非凭据部分和实际路径。
+  Provider JSON 错误提取 error.message/code/type，非 JSON 或解析失败保留有界错误片段。完整请求、正常模型输出和 locals 不自动采集。
+  远程报告使用独立的字段和字节预算，遵循 [远程诊断](remote-diagnostics-telemetry.md)。
+- Core 与插件进程的 stderr 经有界读取和脱敏进入日志，不能只保留第一行而丢掉后续异常。日志拥塞继续按现有队列策略
+  丢弃并计数，不能阻塞业务进程。无底层异常的业务拒绝保留原有错误码，不伪造调用栈。
 
 ### 2.1 用户可观察事件目录与关联字段
 
 默认 info 日志必须围绕用户可观察的业务链，而不是 IPC、轮询或框架调用组织。一次普通对话至少能够观察
 请求接收、记忆召回、上下文构建、Provider 请求与回复、Agent 解析以及回复送达；发生工具、截图或 TTS 时
-追加相应阶段。普通日志不记录对话正文、Prompt、工具参数/结果、绝对路径或二进制，只记录安全元数据。
+追加相应阶段。普通日志不主动采集对话正文、Prompt、工具参数/结果或二进制；原始异常片段和故障路径可进入专用诊断字段。
 
 稳定事件族如下：
 
+- `shell.started`：每次桌面进程启动，并携带发行包的 `current_version`；
 - `chat.request.received/completed/cancelled/failed`：用户请求进入、最终送达或终止；
 - `memory.recall.started/finished/failed`：召回状态、候选/选中数量和耗时；
 - `context.dependencies.ready/degraded`：Prompt 构建前 Memory/MCP 的实际就绪状态、等待耗时和稳定原因；
@@ -61,12 +76,15 @@ updated: 2026-08-29
 - `tool.execution.started/finished/failed`：工具名、序号、耗时与稳定错误码；
 - `screen.capture.started/attached/cancelled/failed`：截图动作、数量、尺寸和耗时，不含图片/path；
 - `reply.processing.finished` 与 `reply.display.completed/failed`：解析结果、segments、变更和展示终态；
-- `tts.service.*`、`tts.synthesis.*` 与 `tts.playback.*`：服务、合成和播放的开始、完成或失败。
+- `tts.service.*`、`tts.weights.*`、`tts.synthesis.*` 与 `tts.playback.*`：服务启动/等待、角色权重加载、
+  合成和播放的开始、完成或失败；托管运行时轮询不进入 info 目录。
 - `first_run.*` 与 `legacy_import.recovery.*`：首次状态读取、导航打开、配置完成、Core 首启及中断迁移恢复。
 
-固定业务事件目录是 Core 注册、Rust 中文消息和查看器投影的共同契约。已登记的 info 业务事件必须在查看器可见；
+固定业务事件目录是 Core 注册、Rust 中文消息和查看器投影的共同契约。已登记的用户可观察 info 业务事件必须在
+查看器可见；`tts.service.warmup_queued` 等仅表示内部排队的诊断事件允许保留在文本日志而不进入查看器；
 新增或改名时，完整性测试必须同时验证三处，禁止仅让事件落盘而在查看器中消失。业务失败属性使用有界、脱敏的
-`diagnostic + error_type + reason_code + stage`，不得重新引入裸 `error`/`reason` 或任意异常对象。
+`diagnostic + error_type + reason_code + stage`，并在可用时附加
+`cause_type + exception_site`。不生成 `failure_id`，也不序列化任意异常对象；原始消息、实际路径和调用栈走上述专用诊断字段。
 
 每个属于交互的事件必须尽可能携带相同 `operation_id`，文本投影为最多 8 个字符的 `op`；每次模型调用
 同时携带 Agent Trace 的 `trace` 和 `model_call`，文本投影为 `trace`、`call`。事件属性按事件专属字段顺序
@@ -127,6 +145,9 @@ runtime context role 或合并 system 后，必须记录实际重发的最终 pa
   额外保留召回 `score/source`。
 - 若 tool-message 兼容逻辑把尾部 runtime context 合并进首条 system，则不生成虚构尾消息，而在对应
   `system_prompt` 中增加 `appended_runtime_context`；回退为尾部 user 时按真实末尾位置记录。
+- Provider 明确拒绝非首位 system 消息时，兼容回退涵盖带内部来源标记的 `runtime_context` 和
+  `recent_proactive`，改用 user role 后保留原有事实边界、正文和来源，不将主动发言历史并入主 system。
+  支持多条 system 的端点保留默认请求；未标记的消息不触发这项转换。重发及后续请求的 Trace 必须反映实际 role。
 - 待发送 message 必须携带 Python 内部 provenance；最终 payload 构建同时剥离全部内部字段并生成 trace
   part。测试必须断言 Provider 捕获的 payload 零 provenance 字段。
 
@@ -144,8 +165,8 @@ Reply 顶层字段按 `type/trace/model_call/purpose/time` 输出，并保留 na
 `processing`。在解析、tone 清洗或 UI 投影前先记录 Provider 原始 message：
 
 - `content` 是合法 JSON 时解析为内部 `model_output` 嵌套值，保持对象、数组、数字、布尔和 null 类型；
-  活动文件按层级展示，数组使用有序编号，布尔显示“是/否”，null 显示“无”。记录 `raw_chars` 与
-  SHA-256，不把整段 JSON 作为转义字符串或 JSON 语法重复保存。
+  活动文件按层级展示，数组使用有序编号，布尔显示“是/否”，null 显示“无”。记录 `raw_chars`，
+  不生成摘要，也不把整段 JSON 作为转义字符串或 JSON 语法重复保存。
 - 普通非 JSON 文本使用 `raw_text` 自由文本行数组；看起来是结构化回复但 JSON 非法时同样保存
   `raw_text`，并令 `processing.parse_status` 为 `invalid_json`、记录稳定原因。完整 `json/jsonc` 代码围栏、正文中
   首个 JSON object 和确定性引号修复必须先经过共同解析层；Trace 分别记录 `raw_json_status`、
@@ -164,18 +185,21 @@ Reply 顶层字段按 `type/trace/model_call/purpose/time` 输出，并保留 na
 `ChatCompletionTurn` 必须保存原始 content、原始 Provider message、usage、解析状态和实际 runtime-context
 placement，使 request 在最终 payload 确定后记录，reply 在业务解析前记录。
 
+Prompt inspection 使用 section ID、source、cache scope、字符数和 token 估算定位内容，不输出 `static_hash`。
+Trace 使用已有 operation ID、trace/model call 序号关联记录，staging 文件名使用 trace 序号，不计算内容或 ID 摘要。
+
 ## 6. 自由文本、隐私与二进制
 
 - history 内单行短文本使用字符串，多行或长文本按约 100 个显示列拆成字符串数组；活动文件把这些值
   显示为连续正文行，不暴露内部数组语法。结构化模型回复在内部保持原字段类型，活动文件只做人类可读
   的递归投影，不改写字符串内容。
-- 单个自由文本值 UTF-8 超过 1 MiB 时保留有界头尾，附原始字符数、字节数、SHA-256 与
+- 单个自由文本值 UTF-8 超过 1 MiB 时保留有界头尾，附原始字符数、字节数与
   `truncated: true`。不得先把超大值完整复制进多个中间结构。
 - 普通用户文本、历史、实际选中记忆、动态上下文、普通工具参数/结果和模型输出不脱敏。
 - 任意层级字段名匹配 API key、Authorization、Cookie、password、secret、credential、access/refresh
   token 等凭据时删除值；URL userinfo 永久移除。即使用户正文里出现 secret-shaped 普通自然语言也不做
   泛化遮盖，只有明确的凭据键值模式和已知当前 Provider secret 才删除，避免破坏 Prompt 取证。
-- bytes、data URL、base64 图片/音频和工具二进制块只记录 mime/type、尺寸、字节数和 SHA-256；正文在
+- bytes、data URL、base64 图片/音频和工具二进制块只记录 mime/type、尺寸和字节数；正文在
   活动 trace、staging 和 Runtime 日志均必须零命中。
 
 ## 7. 设置与故障隔离

@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sakura-telemetry-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sakura-telemetry",
+      "database_id": "2b684f67-ab0c-4a70-b02a-46dee0b348d2"
+    }
+  ]
+}

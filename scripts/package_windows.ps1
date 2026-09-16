@@ -70,6 +70,9 @@ New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $env:PIP_CACHE_DIR = Join-Path $cacheRoot "pip"
 $env:UV_CACHE_DIR = Join-Path $cacheRoot "uv"
+if (-not $env:PIP_INDEX_URL) {
+    $env:PIP_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple"
+}
 $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
 $env:PYTHONUTF8 = "1"
 if ($Updater -and $UpdaterArtifacts) {
@@ -165,7 +168,14 @@ try {
             $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw -LiteralPath $privateKeyPath
             $privateKeyLoadedFromPath = $true
         }
-        Invoke-Checked "npx" @("--yes", "@tauri-apps/cli@2.11.4", "build", "--config", "tauri.release.json")
+        $previousDiagnosticRequirement = $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING
+        try {
+            $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING = "1"
+            Invoke-Checked "npx" @("--yes", "@tauri-apps/cli@2.11.4", "build", "--config", "tauri.release.json")
+        }
+        finally {
+            $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING = $previousDiagnosticRequirement
+        }
     }
     finally {
         Pop-Location
@@ -213,15 +223,6 @@ try {
         "--source", (Join-Path $projectRoot "plugins\optional\playwright_browser"),
         "--output", $plugin
     )
-    $reportArguments = @(
-        (Join-Path $projectRoot "tools\release\artifact_report.py"),
-        "--inventory", (Join-Path $releaseStage "release-inventory.json"),
-        "--output", (Join-Path $outputRoot "windows-x64-size-report.json"),
-        "--installed-path", $portableStage,
-        "--artifact", $setup,
-        "--artifact", $portable
-    )
-    Invoke-Checked $python $reportArguments
 
     Write-Host ""
     Write-Host "打包完成：$outputRoot"

@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-08
+updated: 2026-09-07
 ---
 
 # WP-1P-01：跨平台 target、平台契约与错误分类
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-22
 > 规范来源：ADR-0001、ADR-0003、ADR-0004
 > 适用实现：`desktop/src-tauri/src/platform/`
@@ -52,47 +51,44 @@ WebView 是受安全更新影响的系统组件，表中的版本是兼容下限
 | `macos-arm64` | `python-build-standalone/20250106/cpython-3.12.8+aarch64-apple-darwin-install_only` | Astral `python-build-standalone` release `20250106` 的 arm64 Apple Darwin install-only 工件 |
 | `linux-x64` | `python-build-standalone/20250106/cpython-3.12.8+x86_64-unknown-linux-gnu-install_only` | Astral `python-build-standalone` release `20250106` 的 x86_64 GNU/Linux install-only 工件 |
 
-WP-1P-02 已在 `desktop/src-tauri/runtime-layouts/` 为上述精确工件建立受版本控制的 SHA-256 manifest、归档顶层结构和 golden install tree；source ID、版本或 target 不匹配必须报 `integrity_mismatch` 或 `incompatible_architecture`，不能选择同一 release 中另一个模糊匹配的 asset。macOS 现有 legacy workflow 以字符串包含关系选择 asset，只能作为历史输入，不能直接成为 Runtime v2 的可重复 locator。
+WP-1P-02 在 `desktop/src-tauri/runtime-layouts/` 为上述精确工件维护版本、大小、来源 manifest、归档顶层结构和 golden install tree，不保存内容摘要；source ID、版本或 target 不匹配必须报 `integrity_mismatch` 或 `incompatible_architecture`，不能选择同一 release 中另一个模糊匹配的 asset。macOS 现有 legacy workflow 以字符串包含关系选择 asset，只能作为历史输入，不能直接成为 Runtime v2 的可重复 locator。
 
 ## 4. 公共层与平台层依赖方向
 
 ```text
-Tauri composition root
-  -> PlatformRuntime（每个进程只选择一次 target backend）
-       -> InstanceLockBackend
-       -> RuntimeLocator
-       -> ManagedProcessTreeBackend
-       -> WindowInteractionBackend
-       -> NativeDiagnosticsBackend
-
-CoreSupervisor -> ManagedProcessTreeBackend
-Shell lifecycle -> InstanceLockBackend + RuntimeLocator
+Tauri composition root -> InstanceLockBackend + Shell lifecycle
+Shell lifecycle -> CoreSupervisor + RuntimeLocator + CoreHostRuntime
+CoreHostRuntime -> ManagedProcessTreeBackend
 Window commands -> 共享布局/命中纯模型 -> WindowInteractionBackend
 Diagnostics route -> NativeDiagnosticsBackend + 结构化 PlatformError
 ```
 
 调用方向只能从 composition/common/runtime 层指向平台契约，再由契约分派到当前 target backend。平台 backend 可以持有 Win32 handle、POSIX fd/process group、NSWindow/X11/Wayland/Tauri window reference，但不得：
 
-- 调用或拥有 `CoreSupervisor`、generation、restart budget、IPC Router 或 Python Snapshot。
+- 调用或拥有 `CoreSupervisor`、generation、IPC Router 或 Python Snapshot。
 - 构造 Assistant 业务状态、修改用户配置、执行 schema migration 或写聊天/Memory 数据。
 - 反向调用 WebView command，或把 OS 特有字段放入 Core IPC Envelope。
 - 在正式支持 target 上以公共 `cfg(not(windows)) => Unsupported` 作为最终实现。
 
-唯一选择平台 backend 的位置是 Tauri composition root。业务和生命周期模块不得自行读取 `target_os` 后改变语义。
+平台 backend 的实现由 Rust 条件编译选择，Tauri 装配入口和使用该服务的现有模块直接构造具体 backend。
+业务和生命周期模块保持同一套契约，不按 `target_os` 改变 generation、请求或退出语义。
 
 ## 5. 五类平台服务契约
 
-Rust 真相源位于 `desktop/src-tauri/src/platform/`。trait 必须保持 object-safe，使 composition root 能注入一个 backend 集合，而不把 target 泛型扩散到 Supervisor、Shell command 或测试。
+Rust 真相源位于 `desktop/src-tauri/src/platform/`。各服务保留 object-safe trait，生产代码使用当前平台的具体
+backend，测试可注入所需的单项实现；target 泛型不扩散到 Supervisor 或 Shell command。
 
 | 契约 | 输入/输出与资源所有权 | 保持的语义 |
 |---|---|---|
 | `InstanceLockBackend` | 输入稳定 application ID；返回 `Acquired(lease)`、`AlreadyRunning` 或结构化错误；lease 的 Drop 是最后释放保险 | 锁必须早于任何共享数据/日志/配置动作；`AlreadyRunning` 是确定性结果，不进入 Core restart |
 | `RuntimeLocator` | 输入显式 `ExplicitDevelopment` 或 `Packaged` 模式、target、exe/resource root；输出唯一 Python、应用根、Core module 和 source ID | packaged 不查 PATH；development 必须给显式 root；架构、完整性和布局错误可诊断 |
 | `ManagedProcessTreeBackend` | 输入 program/args/cwd/env override/stdio；返回完整树控制权及可选三条 pipe；tree 句柄拥有终止和验证责任 | 根退出不等于树退出；新 generation 前旧树必须 verified exited；release 前不得仍有后代 |
-| `WindowInteractionBackend` | 操作 Tauri 主窗口，消费共享物理 placement/hit regions；拥有原生 bounds、命中、拖动、显示、焦点/IME 激活 | 共享布局与固定立绘锚点不按平台 fork；失败恢复为全窗口可交互或明确 diagnostics，不静默失能 |
+| `WindowInteractionBackend` | 操作 Tauri 主窗口，消费共享物理 placement/hit regions；拥有原生 bounds、命中、拖动和显示 | 共享布局与固定立绘锚点不按平台 fork；失败恢复为全窗口可交互或明确 diagnostics，不静默失能 |
 | `NativeDiagnosticsBackend` | 输入可选稳定 window label；输出 target、window backend、display server、WebView 版本和脱敏 facts | 不返回 credential、用户内容或可任意读取的裸路径；Linux 必须明确 X11/Wayland |
 
-`PlatformRuntime` 只聚合这五个 service 和当前 `PlatformTarget`，不拥有它们的业务调用顺序。调用顺序仍由 Tauri 生命周期根和现有 Supervisor 决定。
+这五类服务分别使用，没有额外的 `PlatformRuntime` 聚合对象。Tauri 生命周期根和现有 Supervisor 决定调用
+顺序，持有资源的模块负责回收。
+输入焦点由 WebView 输入控制器和实际调用处的 Tauri 窗口聚焦操作配合处理，不设独立的原生输入聚焦接口。
 
 ## 6. 稳定错误模型
 
@@ -107,13 +103,15 @@ Rust 真相源位于 `desktop/src-tauri/src/platform/`。trait 必须保持 obje
 | `incompatible_architecture` | Python/sidecar/包 CPU 与 target 不一致 | `Never`；换正确工件 |
 | `integrity_mismatch` | hash、source ID、布局或入口校验失败 | `AfterUserAction`；不得执行损坏工件 |
 | `resource_busy` | 原生资源被占用但不等同共享实例冲突 | `AfterExternalChange`；应用锁冲突仍用 `AlreadyRunning` |
-| `resource_exhausted` | handle/fd/process/内存等资源耗尽 | 只有明确瞬时故障才可 `WithinSupervisorBudget` |
-| `temporarily_unavailable` | spawn、WebView/native service 的已知瞬时失败 | `WithinSupervisorBudget`，必须受现有 budget/deadline 约束 |
-| `timed_out` | wait、terminate、native operation 超过调用方 deadline | 是否 budgeted 由调用场景写入 `retry`；不能自行无限重试 |
+| `resource_exhausted` | handle/fd/process/内存等资源耗尽 | `AfterExternalChange`；释放资源后由用户重试 |
+| `temporarily_unavailable` | spawn、WebView/native service 的已知瞬时失败 | `AfterUserAction`；保留首因并等待用户重试 |
+| `timed_out` | wait、terminate、native operation 超过调用方 deadline | 由调用场景写入 `retry`；先完成受控清理，不自动重建 Core |
 | `identity_changed` | PID/PGID/window identity 与已持有资源不再一致 | `Never`；放弃旧资源并由上层建立新 generation |
 | `native_failure` | 无法安全映射到更窄类别的 OS API 失败 | 默认 `Never`，保留脱敏 native code 供诊断 |
 
-`RetryAdvice` 固定为 `Never`、`AfterUserAction`、`AfterExternalChange`、`WithinSupervisorBudget`。category 不直接授权重试；backend 在构造错误时必须同时给出 retry，只有 Supervisor 可以消费 `WithinSupervisorBudget`，并继续使用现有 restart budget。
+`RetryAdvice` 为 `Never`、`AfterUserAction`、`AfterExternalChange`。backend 在构造错误时同时给出 category
+和 retry，表示修复所需条件。Core 按 [ADR-0030](../../adr/0030-core-explicit-failure-and-manual-retry.md) 在失败后
+完成旧进程树回收，等待用户 Retry；设置应用使用显式 Restart，不再使用自动 restart budget。
 
 ## 7. CI 与实机证据责任
 
@@ -130,7 +128,7 @@ compile-only、mock、cross-compile、Xvfb 或嵌套 compositor 可以补充诊�
 
 ## 8. Windows 既有实现逐文件迁移清单
 
-以下迁移只允许在标注的后续 Work Package 发生。WP-1P-01 不移动代码，不改变当前调用路径。
+下表保留平台化迁移时的调用边界与兼容要求。执行 WP 一栏用于追溯，不限定后续修改的文件或先后顺序。
 
 | 当前文件/区域 | 目标边界 | 执行 WP | 无语义变化约束 |
 |---|---|---|---|
@@ -146,7 +144,7 @@ compile-only、mock、cross-compile、Xvfb 或嵌套 compositor 可以补充诊�
 | `.github/workflows/` Runtime v2 job | 三平台持续门禁 | WP-1P-06 | 不修改 legacy 发布 job 的产品语义；Runtime v2 required checks 独立命名 |
 | `.github/workflows/package.yml`、`release.yml` 的 Python 下载逻辑 | 精确 source manifest 的输入证据 | WP-1P-02；正式发布接线仍属 WP-7-04 | 禁止字符串模糊匹配 asset、PATH 回退和在线运行时修复 |
 
-`core_supervisor.rs`、`core_host_protocol.rs`、Python Core Host、共享数据 schema 和产品功能代码不在这份迁移清单中，因为平台化不需要改动它们。如果后续 backend 迁移要求修改这些文件，必须先停止当前 WP、解释不可避免性并更新 ADR/Work Package，而不是顺手扩大范围。
+Supervisor、协议、Python Core 和数据格式分别有对应契约。平台问题涉及这些模块时，沿真实调用链修复并补充相关验证；只有产生新的重要架构取舍才新增 ADR，无需先调整工作包文件范围。
 
 ## 9. WP-1P-01 可验证退出条件
 

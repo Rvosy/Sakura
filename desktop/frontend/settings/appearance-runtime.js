@@ -1,3 +1,5 @@
+import { toLegacyThemeTokens } from "../core/theme-runtime.js";
+
 const THEME_FIELDS = Object.freeze([
   ["primary", "primary_color", "主题色"],
   ["primaryHover", "primary_hover_color", "按钮悬停色"],
@@ -78,6 +80,10 @@ export function validateAppearanceValues(values, limits) {
     throw new Error("输入栏外观效果无效");
   }
   output.visualEffectMode = values.visualEffectMode;
+  if (typeof values.bubbleAutoExpand !== "boolean") {
+    throw new Error("气泡扩展设置无效");
+  }
+  output.bubbleAutoExpand = values.bubbleAutoExpand;
   const theme = values.themeTokens;
   if (
     !theme
@@ -107,9 +113,6 @@ export function validateAppearanceSnapshot(snapshot) {
     || publication.schemaVersion !== 1
     || publication.coreGenerationId !== presentation.generationId
     || publication.characterId !== presentation.characterId
-    || !Array.isArray(presentation.portraitKeys)
-    || presentation.portraitKeys.length === 0
-    || !presentation.portraitKeys.every((key) => typeof presentation.portraitResourceUrls?.[key] === "string")
   ) {
     throw new Error("角色外观 identity 不一致");
   }
@@ -123,7 +126,7 @@ export function validateAppearanceSnapshot(snapshot) {
 }
 
 export function toLegacyTheme(themeTokens) {
-  return Object.fromEntries(THEME_FIELDS.map(([field, legacyField]) => [legacyField, themeTokens[field]]));
+  return toLegacyThemeTokens(themeTokens);
 }
 
 function setRange(input, limit, value) {
@@ -180,6 +183,7 @@ export function createRuntimeAppearanceController({
   let layoutFrameDrainPromise = Promise.resolve();
   let layoutGestureTrace = null;
   let layoutGestureRevision = 0;
+  let layoutGestureOwner = null;
   let previewTrace = null;
 
   const scalarControls = Object.freeze({
@@ -205,6 +209,7 @@ export function createRuntimeAppearanceController({
     const visualEffect = document.getElementById("visualEffectMode");
     visualEffect.value = values.visualEffectMode;
     visualEffect.dispatchEvent?.(new Event("runtime-value-applied"));
+    document.getElementById("bubbleAutoExpand").checked = values.bubbleAutoExpand;
     fillTheme(toLegacyTheme(values.themeTokens));
   }
 
@@ -212,6 +217,7 @@ export function createRuntimeAppearanceController({
     const values = {
       themeTokens: {},
       visualEffectMode: document.getElementById("visualEffectMode").value,
+      bubbleAutoExpand: document.getElementById("bubbleAutoExpand").checked,
     };
     for (const [field, inputId] of Object.entries(scalarControls)) {
       values[field] = Number.parseInt(document.getElementById(inputId).value, 10);
@@ -254,7 +260,7 @@ export function createRuntimeAppearanceController({
     } catch (error) {
       if (!rebinding) {
         onError(transientCharacterPresentationError(error)
-          ? "Core 正在切换，请稍后再调整外观；当前改动已保留。"
+          ? "正在切换角色，请稍后调整外观。"
           : String(error));
       }
     } finally {
@@ -468,6 +474,7 @@ export function createRuntimeAppearanceController({
   function beginLayoutGesture(event = undefined) {
     if (layoutGestureActive || disposed || rebinding) return;
     layoutGestureActive = true;
+    layoutGestureOwner = event?.currentTarget || null;
     layoutGestureRevision = 0;
     const field = Object.entries(scalarControls)
       .find(([, inputId]) => inputId === event?.currentTarget?.id)?.[0];
@@ -489,6 +496,7 @@ export function createRuntimeAppearanceController({
     layoutGestureStartPromise = start.catch((error) => {
       layoutGestureBackendActive = false;
       layoutGestureActive = false;
+      layoutGestureOwner = null;
       if (!rebinding) onError(String(error));
     });
   }
@@ -502,6 +510,7 @@ export function createRuntimeAppearanceController({
       { event },
     );
     layoutGestureActive = false;
+    layoutGestureOwner = null;
     await layoutGestureStartPromise;
     await flushLayoutFrames();
     await flushPreview();
@@ -522,6 +531,13 @@ export function createRuntimeAppearanceController({
     return endLayoutGesture(event).catch((error) => {
       if (!rebinding) onError(String(error));
     });
+  }
+
+  function finishOwnedLayoutGesture(event = undefined) {
+    // Focusing a new range input emits its pointerdown before the previously focused input's
+    // blur. That late blur belongs to the old control and must not close the new gesture.
+    if (layoutGestureOwner && event?.currentTarget !== layoutGestureOwner) return;
+    return finishLayoutGesture(event);
   }
 
   function changed(event = undefined, field = undefined) {
@@ -560,13 +576,27 @@ export function createRuntimeAppearanceController({
   function applySnapshot(input, { preserveDraft = false } = {}) {
     const next = validateAppearanceSnapshot(input);
     const previousDraft = draft ? clone(draft) : null;
+    const previousBaseline = baseline;
     const previousCharacterId = snapshot?.presentation?.characterId || "";
     snapshot = next;
     baseline = clone(snapshot.appearance.values);
     draft = clone(baseline);
-    if (preserveDraft && previousDraft && previousCharacterId === snapshot.presentation.characterId) {
+    if (preserveDraft && previousDraft && previousBaseline
+        && previousCharacterId === snapshot.presentation.characterId) {
       try {
-        draft = clone(validateAppearanceValues(previousDraft, snapshot.limits));
+        // Keep edits made in Settings, while accepting untouched values published by Studio.
+        for (const key of Object.keys(draft)) {
+          if (key === "themeTokens") {
+            for (const token of Object.keys(draft.themeTokens)) {
+              if (previousDraft.themeTokens[token] !== previousBaseline.themeTokens[token]) {
+                draft.themeTokens[token] = previousDraft.themeTokens[token];
+              }
+            }
+          } else if (previousDraft[key] !== previousBaseline[key]) {
+            draft[key] = previousDraft[key];
+          }
+        }
+        draft = clone(validateAppearanceValues(draft, snapshot.limits));
       } catch {
         draft = clone(baseline);
       }
@@ -611,7 +641,7 @@ export function createRuntimeAppearanceController({
       }
       throw new Error(`APPEARANCE_CORE_REBIND_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
     })().catch((error) => {
-      onError("Core 正在恢复外观设置，请稍后再试。已有改动仍会保留。");
+      onError("正在恢复外观设置，请稍后重试。");
       throw error;
     }).finally(() => {
       rebinding = false;
@@ -644,19 +674,19 @@ export function createRuntimeAppearanceController({
       const control = document.getElementById(scalarControls[field]);
       control.addEventListener("pointerdown", beginLayoutGesture);
       for (const eventName of ["pointerup", "pointercancel", "lostpointercapture", "blur"]) {
-        control.addEventListener(eventName, finishLayoutGesture);
+        control.addEventListener(eventName, finishOwnedLayoutGesture);
       }
       control.addEventListener("keydown", (event) => {
         if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]
           .includes(event.key)) beginLayoutGesture(event);
       });
-      control.addEventListener("keyup", finishLayoutGesture);
+      control.addEventListener("keyup", finishOwnedLayoutGesture);
     }
     document.getElementById("themeColors").addEventListener("input", changed);
     document.getElementById("visualEffectMode").addEventListener("change", changed);
+    document.getElementById("bubbleAutoExpand").addEventListener("change", changed);
     document.getElementById("resetThemeButton").addEventListener("click", () => {
-      draft.themeTokens = clone(snapshot.presentation.themeTokens);
-      fill(draft);
+      fill({ ...draft, themeTokens: clone(snapshot.presentation.themeTokens) });
       changed();
     });
     generationTimer = window.setInterval(async () => {
@@ -733,6 +763,7 @@ export function createRuntimeAppearanceController({
       }
       if (layoutGestureBackendActive) {
         layoutGestureActive = false;
+        layoutGestureOwner = null;
         layoutGestureBackendActive = false;
         void layoutGestureTransition
           .then(() => invoke("settings_character_appearance_layout_gesture", { active: false }))

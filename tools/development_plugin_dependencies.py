@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -16,8 +15,10 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app/plugin_sdk"))
+from sakura_downloads import uv_download_environment
 
-PLUGIN_DIRECTORIES = ("sakura_genie", "sakura_gpt_sovits", "sakura_mem0")
+PLUGIN_DIRECTORIES = ("sakura_genie", "sakura_gpt_sovits", "sakura_mem0", "sakura_asr_sensevoice", "sakura_web")
 _PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
@@ -83,13 +84,12 @@ def prepare(repo: Path, python: Path) -> None:
                 ],
                 check=True,
                 cwd=plugin_root,
-                env=environment,
+                env=uv_download_environment(plugin_root, environment),
                 timeout=600,
             )
             marker = {
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
             (dependency_root / ".sakura-dependencies.json").write_text(

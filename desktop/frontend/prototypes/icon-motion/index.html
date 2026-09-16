@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sakura · 输入栏动效预览</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <main class="workspace">
+    <header class="page-heading"><span>SAKURA / MOTION STUDY</span><h1>让每一步，自然接上。</h1><p>语音、发送与输入栏的连续状态预览</p></header>
+    <section class="scene" aria-label="桌宠交互预览">
+      <div class="pet"><img class="portrait" src="../asr/assets/navi.png" alt="N.A.V.I." draggable="false">
+        <div id="reply" class="reply" role="status" data-visible="false"><span class="reply-name">N.A.V.I.</span><p id="reply-text"></p></div>
+        <div class="input-anchor">
+          <div id="tool-menu" class="tool-menu" inert><button type="button" id="add-attachment"><span class="sakura-icon icon-scan-line" aria-hidden="true"></span>截图（示例）</button></div>
+          <form id="composer" class="composer" data-voice="idle" data-chat="idle" data-expanded="false" aria-label="聊天输入">
+            <div class="editor-area">
+              <textarea id="draft" rows="1" aria-label="消息草稿" placeholder="和 N.A.V.I. 说点什么……"></textarea>
+              <div id="voice-label" class="voice-label" role="status"></div>
+              <div id="waveform" class="waveform" aria-hidden="true"></div>
+            </div>
+            <button type="button" id="attachment" class="action attachment" aria-label="添加附件" aria-expanded="false" aria-controls="tool-menu"><span class="sakura-icon icon-plus" aria-hidden="true"></span></button>
+            <div id="attachment-chip" class="attachment-chip" hidden><span>示例截图</span><button type="button" id="remove-attachment" aria-label="移除附件"><span class="sakura-icon icon-x" aria-hidden="true"></span></button></div>
+            <button type="button" id="voice" class="action voice" aria-label="开始语音输入"><span class="icon-stage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path/></svg></span></button>
+            <button type="submit" id="send" class="action send" aria-label="发送消息" disabled><span class="icon-stage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path/></svg></span></button>
+          </form>
+          <div id="feedback" class="feedback" role="status"><span id="feedback-text"></span><button type="button" id="retry" hidden>重试</button></div>
+        </div>
+      </div>
+      <div class="scene-caption"><span class="status-dot"></span><span id="scene-status">可以输入，也可以点击麦克风</span></div>
+    </section>
+    <aside class="review" aria-label="预览控制">
+      <div class="review-heading"><h2>体验完整过程</h2><button type="button" id="reset">重置</button></div>
+      <p class="aside-copy">直接操作输入栏，或选择一段演示。</p>
+      <div class="scenarios">
+        <button type="button" data-demo="voice"><span class="sakura-icon icon-mic" aria-hidden="true"></span><span><strong>语音输入</strong><small>准备 → 录音 → 识别 → 回填</small></span><span class="sakura-icon icon-arrow-right" aria-hidden="true"></span></button>
+        <button type="button" data-demo="send"><span class="sakura-icon icon-send-horizontal" aria-hidden="true"></span><span><strong>发送与回复</strong><small>纸飞机 → 等待 → 回复 → 就绪</small></span><span class="sakura-icon icon-arrow-right" aria-hidden="true"></span></button>
+        <button type="button" data-demo="stop"><span class="sakura-icon icon-x" aria-hidden="true"></span><span><strong>中途停止</strong><small>等待 → 停止 → 恢复输入</small></span><span class="sakura-icon icon-arrow-right" aria-hidden="true"></span></button>
+        <button type="button" data-demo="error"><span class="sakura-icon icon-refresh-cw" aria-hidden="true"></span><span><strong>识别失败与重试</strong><small>保留草稿，重新开始</small></span><span class="sakura-icon icon-arrow-right" aria-hidden="true"></span></button>
+      </div>
+      <div class="timeline" aria-label="语音流程"><span data-step="preparing">准备</span><i></i><span data-step="recording">录音</span><i></i><span data-step="recognizing">识别</span><i></i><span data-step="complete">回填</span></div>
+      <div class="options">
+        <label><span>慢放<small>形变与过渡放慢至 2.5 倍</small></span><input type="checkbox" id="slow"></label>
+        <label><span>深色承载背景</span><input type="checkbox" id="dark"></label>
+      </div>
+      <p class="footnote">附件保留原版 225° 旋转。<br>仅前端模拟，不启用麦克风、不发送消息。</p>
+      <a href="../asr/" target="_blank" rel="noopener">查看此前的语音原型 ↗</a>
+    </aside>
+  </main>
+</body>
+</html>

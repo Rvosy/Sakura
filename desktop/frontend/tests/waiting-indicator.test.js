@@ -31,18 +31,22 @@ test("waiting indicator advances frames every 360ms", () => {
   assert.deepEqual(rendered, WAITING_INDICATOR_FRAMES);
 });
 
-test("reduced motion keeps a stable ellipsis and stop rejects stale callbacks", () => {
-  const timers = [];
-  const rendered = [];
+test("stopping rejects stale waiting frames after another run starts", () => {
+  const timers = [], rendered = [];
   const indicator = createWaitingIndicator({
-    reducedMotion: true,
-    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    setTimer(callback) { timers.push(callback); return timers.length; },
     clearTimer() {},
     onFrame(frame) { rendered.push(frame); },
   });
   indicator.start();
-  assert.deepEqual(rendered, ["..."]);
-  assert.equal(timers.length, 0);
+  const stale = timers.shift();
+  indicator.stop();
+  indicator.start();
+  const count = rendered.length;
+  stale();
+  assert.equal(rendered.length, count);
+  timers.shift()();
+  assert.equal(rendered.at(-1), "..");
   indicator.stop();
   assert.equal(indicator.active(), false);
 });

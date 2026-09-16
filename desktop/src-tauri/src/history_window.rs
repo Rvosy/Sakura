@@ -1,7 +1,15 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::webview::Color;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+
+use crate::{
+    character_appearance, character_presentation, chat_settings,
+    shell_lifecycle::{
+        self, dispatch_settings_request, load_current_character_presentation, settings_core_handle,
+        settings_response_payload, ShellLifecycleState,
+    },
+};
 
 pub const HISTORY_WINDOW_LABEL: &str = "history";
 pub const HISTORY_REFRESH_REQUESTED_EVENT: &str = "sakura://history-refresh-requested";
@@ -124,7 +132,7 @@ pub fn show_or_focus(app: &AppHandle) -> Result<(), String> {
         HISTORY_WINDOW_LABEL,
         WebviewUrl::App("history/index.html".into()),
     )
-    .title("Sakura 历史记录")
+    .title("Sakura 聊天记录")
     .background_color(Color(248, 252, 254, 255))
     .visible(false)
     .inner_size(620.0, 680.0)
@@ -140,6 +148,119 @@ pub fn show_or_focus(app: &AppHandle) -> Result<(), String> {
     .build()
     .map(|_| ())
     .map_err(|error| format!("HISTORY_WINDOW_CREATE_FAILED: {error}"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HistoryBootstrap {
+    core_generation_id: String,
+    character_id: String,
+    assistant_name: String,
+    subtitle_language: chat_settings::SubtitleLanguage,
+    theme_tokens: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct HistoryPageRequest {
+    core_generation_id: String,
+    character_id: String,
+    before_cursor: Option<String>,
+}
+
+async fn request_history_page(
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    character_id: String,
+    before_cursor: Option<String>,
+) -> Result<HistoryPage, String> {
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "ui.history.page",
+        json!({
+            "expectedCharacterId": character_id,
+            "beforeCursor": before_cursor,
+            "limit": HISTORY_PAGE_LIMIT,
+        }),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    validate_page(settings_response_payload(response)?)
+}
+
+#[tauri::command]
+pub(crate) fn history_bootstrap(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+    subtitle: State<'_, chat_settings::SubtitleLanguageState>,
+) -> Result<HistoryBootstrap, String> {
+    validate_history_window(&window)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    let active_appearance = appearance.persisted(&presentation.presentation)?;
+    if active_appearance.core_generation_id != presentation.presentation.generation_id
+        || active_appearance.character_id != presentation.presentation.character_id
+    {
+        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
+    }
+    Ok(HistoryBootstrap {
+        core_generation_id: presentation.presentation.generation_id,
+        character_id: presentation.presentation.character_id,
+        assistant_name: presentation.presentation.display_name,
+        subtitle_language: subtitle.get()?,
+        theme_tokens: active_appearance.values.theme_tokens,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn history_page(
+    window: WebviewWindow,
+    request: HistoryPageRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+) -> Result<HistoryPage, String> {
+    validate_history_window(&window)?;
+    if request.core_generation_id.trim().is_empty()
+        || request.character_id.trim().is_empty()
+        || request
+            .before_cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.trim().is_empty())
+    {
+        return Err("HISTORY_REQUEST_INVALID".to_string());
+    }
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    if presentation.presentation.generation_id != request.core_generation_id
+        || presentation.presentation.character_id != request.character_id
+    {
+        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
+    }
+    let page = request_history_page(
+        settings_core_handle(&lifecycle)?,
+        request.character_id.clone(),
+        request.before_cursor,
+    )
+    .await?;
+    if page.core_generation_id != request.core_generation_id
+        || page.character_id != request.character_id
+    {
+        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
+    }
+    Ok(page)
+}
+
+#[tauri::command]
+pub(crate) fn close_history_window(window: WebviewWindow) -> Result<(), String> {
+    validate_history_window(&window)?;
+    window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn reveal_history_window(window: WebviewWindow) -> Result<(), String> {
+    validate_history_window(&window)?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

@@ -159,12 +159,12 @@ def _validate_settings(raw: object) -> RuntimeLoopSettings:
         "maxToolCallsPerStep",
         "maxToolCallsPerTurn",
     }:
-        raise ToolSettingsError("INVALID_REQUEST", "工具循环上限字段无效。")
+        raise ToolSettingsError("INVALID_REQUEST", "工具调用限制字段无效。")
     values: list[int] = []
     for field in ("maxAgentStepsPerTurn", "maxToolCallsPerStep", "maxToolCallsPerTurn"):
         value = limits.get(field)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ToolSettingsError("FIELD_INVALID", "工具循环上限必须是正整数。", field=field)
+            raise ToolSettingsError("FIELD_INVALID", "工具调用限制必须是正整数。", field=field)
         values.append(value)
     normalized = normalize_runtime_loop_settings(RuntimeLoopSettings(*values))
     if tuple(values) != (
@@ -172,7 +172,7 @@ def _validate_settings(raw: object) -> RuntimeLoopSettings:
         normalized.max_tool_calls_per_step,
         normalized.max_tool_calls_per_turn,
     ):
-        raise ToolSettingsError("FIELD_INVALID", "工具循环上限超出允许范围。", field="runtimeLimits")
+        raise ToolSettingsError("FIELD_INVALID", "工具调用限制超出允许范围。", field="runtimeLimits")
     return normalized
 
 

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-09-05
 ---
 
 # Sakura 技术架构
@@ -86,6 +86,15 @@ WebView chat.send
 
 截图和音频通过 generation 私有 Artifact 传递。生产边界只交换 opaque ID 和受限元数据，不把临时绝对路径交给 WebView。
 
+## 配置所有权
+
+供应商和模型由 `ProviderModelSettingsRepository` 保存到 `config/api.yaml`，界面设置由 Rust
+`UiConfigRepository` 保存到 `config/ui.json`；工具设置和插件配置分别由对应的 Core 边界与 Plugin Runtime
+处理。`AppSettingsService` 保留 Core 和旧版导入使用的 YAML 读取方法，只写入当前角色选择和屏幕感知设置。
+
+TTS 配置和角色声线清单由各 Provider 插件解析。显式 0.9.x 导入通过 `app/legacy_import/configuration.py`
+生成插件配置，再由 `importer.py` 调用各插件的 `_parse_config` 校验；普通启动不读取旧 `api.yaml.tts`。
+
 ## 数据目录
 
 | 路径 | 内容 |
@@ -111,6 +120,16 @@ macOS/Linux 的 `scripts/start.sh` 与 Windows 的 `scripts/start.bat` 都会增
 
 退出由 Shell 协调：停止接收新请求，排空终态事件，Core 有界关闭各插件进程，再回收 Core 后代进程并释放
 单实例锁。单个插件 cleanup 不能让退出无限等待。
+
+## Sakura Service
+
+`https://sakura.cialloo.cn/service/v1/` 是可选静态控制面，当前只公开版本、空公告和空已知问题 JSON。它不属于
+Shell → Core → Plugin 的本地运行链，不处理模型或用户数据；不可用时不得影响启动、聊天、设置或 GitHub Updater。
+安装资产与签名 `latest.json` 继续由 GitHub Release 持有，阿里云只提供很小的控制元数据。
+
+正式稳定版的全部 GitHub 资产完成后，Release CI 使用只能调用服务端校验程序的 SSH forced command 原子更新版本
+JSON。详细 schema 与失败语义见 [Sakura Service 静态控制面合同](../specs/runtime-v2/sakura-service.md)，维护操作见
+[Sakura Service 运维与发布](SAKURA_SERVICE.md)。
 
 ## 验证
 

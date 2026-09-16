@@ -33,15 +33,20 @@ pub enum PlatformErrorCategory {
     UnsupportedEnvironment,
     IncompatibleArchitecture,
     IntegrityMismatch,
+    // Reserved diagnostic categories remain part of the stable platform contract.
+    #[cfg_attr(not(test), allow(dead_code))]
     ResourceBusy,
+    #[cfg_attr(not(test), allow(dead_code))]
     ResourceExhausted,
     TemporarilyUnavailable,
     TimedOut,
+    #[cfg_attr(windows, allow(dead_code))]
     IdentityChanged,
     NativeFailure,
 }
 
 impl PlatformErrorCategory {
+    #[cfg(test)]
     pub const ALL: [Self; 12] = [
         Self::InvalidInput,
         Self::NotFound,
@@ -81,7 +86,6 @@ pub enum RetryAdvice {
     Never,
     AfterUserAction,
     AfterExternalChange,
-    WithinSupervisorBudget,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

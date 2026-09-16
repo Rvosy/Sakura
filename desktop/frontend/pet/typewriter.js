@@ -20,7 +20,6 @@ export function createTypewriter({
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
   clearTimer = (timer) => window.clearTimeout(timer),
   language = "zh",
-  reducedMotion = false,
   onStart = () => {},
   onText = () => {},
   onSegment = () => {},
@@ -75,7 +74,7 @@ export function createTypewriter({
       run.characters = Array.from(run.text);
       run.characterIndex = 0;
       onText("", Object.freeze({ reason: "segment", forceEnd: true }));
-      if (reducedMotion || run.characters.length === 0) {
+      if (run.characters.length === 0) {
         run.visible = run.text;
         if (run.text) onText(run.visible, Object.freeze({ reason: "typing", forceEnd: true }));
         scheduleNextSegment(run);

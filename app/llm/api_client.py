@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import http.client
 import json
 import re
@@ -9,10 +11,13 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse
 
-from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
+from app.config.app_version import read_app_version
+from app.core.cancellation import CancelChecker, OperationCancelled, cancellable_sleep, check_cancelled
+from app.core_host.runtime_logging import submit_telemetry_model_call
 from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
 from app.llm.chat_reply import (
     ChatReply,
@@ -52,11 +57,6 @@ SUPPORTED_CHAT_COMPLETION_PARAMS = {
     "tool_choice",
 }
 
-_DIAGNOSTIC_CREDENTIAL_RE = re.compile(
-    r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*([^\s,;]+)"
-)
-_DIAGNOSTIC_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
-_DIAGNOSTIC_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
 
 
 class ApiConfigError(RuntimeError):
@@ -113,8 +113,13 @@ class OpenAICompatibleClient:
         settings: ApiSettings,
         *,
         agent_trace_recorder: AgentTraceRecorder | None = None,
+        app_version: str | None = None,
+        retry_requests: bool = True,
     ) -> None:
         self.settings = settings
+        self._request_attempts = MAX_AUTO_RETRY_ATTEMPTS if retry_requests else 1
+        resolved_version = app_version or read_app_version(Path(__file__).resolve().parents[2])
+        self._app_version = resolved_version.strip().removeprefix("v")
         self._unsupported_chat_params: set[str] = set()
         self._runtime_context_role = "system"
         # 可选事件发射器（由宿主注入），用于派发 llm.request.* 插件事件。
@@ -187,7 +192,7 @@ class OpenAICompatibleClient:
         self._ensure_chat_config("缺少 API_KEY。请在设置中填写 API Key。")
 
         # 连通性检测只需验证 Base URL / API Key / 模型可用，不发送 temperature：
-        # 部分模型（如 o1/o3/gpt-5 等推理模型）只接受默认温度，显式传值会直接报错。
+        # 部分推理模型只接受默认温度；也不限制输出 token，避免挤占思考预算。
         payload = {
             "model": self.settings.model,
             "messages": [
@@ -196,7 +201,6 @@ class OpenAICompatibleClient:
                     "content": "Reply with only OK.",
                 },
             ],
-            "max_tokens": 8,
         }
         data = self._post_chat_completions_with_compatibility_fallbacks(
             payload,
@@ -219,9 +223,7 @@ class OpenAICompatibleClient:
         request = urllib.request.Request(
             url=url,
             method="GET",
-            headers={
-                "Authorization": f"Bearer {self.settings.api_key}",
-            },
+            headers=self._request_headers(),
         )
         log_event(
             "API",
@@ -260,13 +262,13 @@ class OpenAICompatibleClient:
         system_prompt: str,
         messages: list[ChatMessage],
         reply_tones: list[str] | None = None,
-        reply_portraits: list[str] | None = None,
+        reply_visual: Mapping[str, Any] | None = None,
         *,
         cancel_checker: CancelChecker | None = None,
         runtime_context: str = "",
         trace_metadata: PromptTraceMetadata | None = None,
     ) -> ChatReply:
-        segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_portraits)
+        segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_visual)
         temperature, extra_params = self.resolve_dialogue_params()
         content = self.complete_raw(
             f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
@@ -362,11 +364,11 @@ class OpenAICompatibleClient:
             )
         except ApiRequestError as exc:
             if (
-                runtime_context.strip()
-                and runtime_context_role == "system"
+                _has_system_runtime_facts(payload, prompt_provenance)
                 and _is_runtime_context_role_unsupported_error(exc)
             ):
                 self._runtime_context_role = "user"
+                self._trace_local.pending_fallback = "runtime_context_role"
                 payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
                     model=self.settings.model,
                     system_prompt=system_prompt,
@@ -382,10 +384,10 @@ class OpenAICompatibleClient:
                 )
                 log_event(
                     "API",
-                    "端点不支持尾部 system 上下文，已回退为 user 上下文",
+                    "端点不支持非首位 system 上下文，已回退为 user 上下文",
                     diagnostic_attributes(
                         exc,
-                        reason_code="TRAILING_SYSTEM_UNSUPPORTED",
+                        reason_code="SYSTEM_CONTEXT_ROLE_UNSUPPORTED",
                         stage="compatibility_fallback",
                     ),
                 )
@@ -501,11 +503,11 @@ class OpenAICompatibleClient:
             )
         except ApiRequestError as exc:
             if (
-                runtime_context.strip()
-                and runtime_context_role == "system"
+                _has_system_runtime_facts(payload, prompt_provenance)
                 and _is_runtime_context_role_unsupported_error(exc)
             ):
                 self._runtime_context_role = "user"
+                self._trace_local.pending_fallback = "runtime_context_role"
                 runtime_context_role = "user"
                 payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
                     model=self.settings.model,
@@ -522,10 +524,10 @@ class OpenAICompatibleClient:
                 )
                 log_event(
                     "API",
-                    "端点不支持尾部 system 上下文，已回退为 user 上下文",
+                    "端点不支持非首位 system 上下文，已回退为 user 上下文",
                     diagnostic_attributes(
                         exc,
-                        reason_code="TRAILING_SYSTEM_UNSUPPORTED",
+                        reason_code="SYSTEM_CONTEXT_ROLE_UNSUPPORTED",
                         stage="compatibility_fallback",
                     ),
                 )
@@ -614,7 +616,12 @@ class OpenAICompatibleClient:
         fallback_payload = dict(payload)
         for param in self._unsupported_chat_params:
             fallback_payload.pop(param, None)
+        fallback_kind = getattr(self._trace_local, "pending_fallback", None)
+        self._trace_local.pending_fallback = None
         for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
+            self._trace_local.request_diagnostic = (
+                {"compatibilityFallback": fallback_kind} if fallback_kind else {}
+            )
             check_cancelled(cancel_checker)
             trace_call = None
             if self._agent_trace_recorder is not None:
@@ -630,19 +637,21 @@ class OpenAICompatibleClient:
                 metadata=trace_metadata,
                 model=self.settings.model,
             )
+            metric_estimate = _safe_prompt_runtime_summary(
+                fallback_payload,
+                prompt_provenance,
+            )
             log_event(
                 "Context",
                 "模型上下文已构建",
                 {
                     **call_attributes,
-                    **_safe_prompt_runtime_summary(
-                        fallback_payload,
-                        prompt_provenance,
-                    ),
+                    **metric_estimate,
                 },
                 event="context.prompt.prepared",
                 verbosity=1,
             )
+            metric_started_at = time.perf_counter()
             log_event(
                 "API",
                 "发送模型请求",
@@ -654,16 +663,42 @@ class OpenAICompatibleClient:
                 verbosity=1,
             )
             try:
-                return self._post_chat_completions(
+                response = self._post_chat_completions(
                     fallback_payload,
                     cancel_checker=cancel_checker,
                 )
             except ApiRequestError as exc:
+                if (
+                    _is_response_format_unsupported_error(exc)
+                    or _is_temperature_unsupported_error(exc)
+                    or _is_runtime_context_role_unsupported_error(exc)
+                ):
+                    self._trace_local.request_diagnostic.update(
+                        faultDomain="compatibility",
+                        reasonCode="MODEL_PARAMETER_UNSUPPORTED",
+                        stage="response",
+                    )
+                elif self._trace_local.request_diagnostic.get("faultDomain") not in {
+                    "context",
+                    "protocol",
+                }:
+                    self._trace_local.request_diagnostic.update(_request_failure(exc))
+                _submit_model_call_metric(
+                    trace_call,
+                    request=getattr(self._trace_local, "request_diagnostic", {}),
+                    settings=self.settings,
+                    estimate=metric_estimate,
+                    usage=None,
+                    latency_ms=int((time.perf_counter() - metric_started_at) * 1000),
+                    outcome="failed",
+                    error_code="MODEL_REQUEST_FAILED",
+                )
                 if trace_call is not None and trace_call.auto_operation:
                     self._agent_trace_recorder.finish_operation(
                         trace_call.operation_id, status="failed"
                     )
                 if "response_format" in fallback_payload and _is_response_format_unsupported_error(exc):
+                    fallback_kind = "response_format"
                     self._unsupported_chat_params.add("response_format")
                     fallback_payload.pop("response_format", None)
                     log_event(
@@ -681,6 +716,7 @@ class OpenAICompatibleClient:
                     )
                     continue
                 if "temperature" in fallback_payload and _is_temperature_unsupported_error(exc):
+                    fallback_kind = "temperature"
                     self._unsupported_chat_params.add("temperature")
                     fallback_payload.pop("temperature", None)
                     log_event(
@@ -698,6 +734,35 @@ class OpenAICompatibleClient:
                     )
                     continue
                 raise
+            except BaseException as error:
+                self._trace_local.request_diagnostic.update(_request_failure(error))
+                _submit_model_call_metric(
+                    trace_call,
+                    request=getattr(self._trace_local, "request_diagnostic", {}),
+                    settings=self.settings,
+                    estimate=metric_estimate,
+                    usage=None,
+                    latency_ms=int((time.perf_counter() - metric_started_at) * 1000),
+                    outcome="cancelled"
+                    if isinstance(error, OperationCancelled)
+                    else "failed",
+                    error_code="REQUEST_CANCELLED"
+                    if isinstance(error, OperationCancelled)
+                    else "MODEL_REQUEST_FAILED",
+                )
+                raise
+            else:
+                _submit_model_call_metric(
+                    trace_call,
+                    request=getattr(self._trace_local, "request_diagnostic", {}),
+                    settings=self.settings,
+                    estimate=metric_estimate,
+                    usage=_summarize_token_usage(response.get("usage")),
+                    latency_ms=int((time.perf_counter() - metric_started_at) * 1000),
+                    outcome="success",
+                    error_code=None,
+                )
+                return response
         raise ApiRequestError("API 兼容性自动回退已达到最大次数。")
 
     def _ensure_chat_config(self, api_key_message: str) -> None:
@@ -714,6 +779,17 @@ class OpenAICompatibleClient:
         if not self.settings.base_url:
             raise ApiConfigError("缺少 BASE_URL。")
 
+    def _request_headers(self, *, json_content: bool = False) -> dict[str, str]:
+        if not self._app_version:
+            raise ApiConfigError("无法读取 Sakura 版本号。")
+        headers = {
+            "Authorization": f"Bearer {self.settings.api_key}",
+            "User-Agent": f"Sakura/{self._app_version}",
+        }
+        if json_content:
+            headers["Content-Type"] = "application/json"
+        return headers
+
     def _post_chat_completions(
         self,
         payload: dict[str, Any],
@@ -729,10 +805,7 @@ class OpenAICompatibleClient:
             url=url,
             data=body,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self.settings.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=self._request_headers(json_content=True),
         )
 
         model_name = payload.get("model")
@@ -744,6 +817,19 @@ class OpenAICompatibleClient:
                 data: dict[str, Any] = json.loads(response_body)
             except json.JSONDecodeError as exc:
                 raise ApiRequestError(f"API 返回格式无法解析：{response_body}") from exc
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("choices"), list)
+                or not data["choices"]
+                or not isinstance(data["choices"][0], dict)
+                or not isinstance(data["choices"][0].get("message"), dict)
+            ):
+                self._trace_local.request_diagnostic.update(
+                    faultDomain="protocol",
+                    reasonCode="MODEL_RESPONSE_INVALID",
+                    stage="decode",
+                )
+                raise ApiRequestError("API 返回的消息结构无效。")
         except Exception as exc:  # noqa: BLE001 — 仅用于派发失败事件，随后原样抛出
             self._emit_llm_event(
                 "llm.request.failed",
@@ -768,8 +854,12 @@ class OpenAICompatibleClient:
         cancel_checker: CancelChecker | None = None,
     ) -> str:
         last_error: BaseException | None = None
-        for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
+        for attempt in range(1, self._request_attempts + 1):
             check_cancelled(cancel_checker)
+            self._trace_local.request_diagnostic = {
+                **getattr(self._trace_local, "request_diagnostic", {}),
+                "attemptCount": attempt,
+            }
             started_at = time.perf_counter()
             try:
                 response_bytes, response_status = read_url_cancellable(
@@ -778,6 +868,7 @@ class OpenAICompatibleClient:
                     timeout=self.settings.timeout_seconds,
                     cancel_checker=cancel_checker,
                 )
+                self._trace_local.request_diagnostic["httpStatus"] = response_status
                 response_body = response_bytes.decode("utf-8")
                 log_event(
                     "API",
@@ -786,6 +877,8 @@ class OpenAICompatibleClient:
                         **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
+                        "endpoint": request.full_url,
+                        "model": self.last_trace_call.model if self.last_trace_call is not None else self.settings.model,
                         "status": response_status,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "response_body": response_body,
@@ -795,7 +888,22 @@ class OpenAICompatibleClient:
                 )
                 return response_body
             except urllib.error.HTTPError as exc:
+                self._trace_local.request_diagnostic["httpStatus"] = exc.code
                 error_body = exc.read().decode("utf-8", errors="replace")
+                lower = error_body.lower()
+                if any(
+                    marker in lower
+                    for marker in (
+                        "context_length_exceeded",
+                        "maximum context length",
+                        "context window",
+                    )
+                ):
+                    self._trace_local.request_diagnostic.update(
+                        faultDomain="context",
+                        reasonCode="MODEL_CONTEXT_REJECTED",
+                        stage="request",
+                    )
                 diagnostic = _provider_error_diagnostic(error_body, self.settings.api_key)
                 log_event(
                     "API",
@@ -814,8 +922,15 @@ class OpenAICompatibleClient:
                     severity="warning",
                     verbosity=0,
                 )
-                if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_AUTO_RETRY_ATTEMPTS:
-                    raise ApiRequestError(_format_api_http_error(exc.code, error_body, request.full_url)) from exc
+                if exc.code not in {429, 500, 502, 503, 504} or attempt == self._request_attempts:
+                    raise ApiRequestError(
+                        _format_api_http_error(
+                            exc.code,
+                            error_body,
+                            request.full_url,
+                            self.settings.api_key,
+                        )
+                    ) from exc
                 last_error = exc
             except urllib.error.URLError as exc:
                 diagnostic = _safe_diagnostic_text(str(exc.reason), self.settings.api_key)
@@ -827,7 +942,7 @@ class OpenAICompatibleClient:
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "retryable": attempt < self._request_attempts,
                         "error_type": type(exc.reason).__name__,
                         "reason_code": "NETWORK_UNAVAILABLE",
                         "stage": "provider_request",
@@ -837,7 +952,7 @@ class OpenAICompatibleClient:
                     severity="warning",
                     verbosity=0,
                 )
-                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                if attempt == self._request_attempts:
                     raise ApiRequestError(f"API 请求失败：{exc.reason}") from exc
                 last_error = exc
             except TimeoutError as exc:
@@ -849,7 +964,7 @@ class OpenAICompatibleClient:
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "retryable": attempt < self._request_attempts,
                         "error_type": type(exc).__name__,
                         "diagnostic": f"Provider 在 {self.settings.timeout_seconds}s 内未返回响应",
                     },
@@ -857,7 +972,7 @@ class OpenAICompatibleClient:
                     severity="warning",
                     verbosity=0,
                 )
-                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                if attempt == self._request_attempts:
                     raise ApiRequestError("API 请求超时。") from exc
                 last_error = exc
             except (ssl.SSLError, ConnectionError, http.client.RemoteDisconnected) as exc:
@@ -870,7 +985,7 @@ class OpenAICompatibleClient:
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "retryable": attempt < self._request_attempts,
                         "error_type": type(exc).__name__,
                         "reason_code": "CONNECTION_INTERRUPTED",
                         "stage": "provider_request",
@@ -880,7 +995,7 @@ class OpenAICompatibleClient:
                     severity="warning",
                     verbosity=0,
                 )
-                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                if attempt == self._request_attempts:
                     raise ApiRequestError(f"API 连接中断：{exc}") from exc
                 last_error = exc
 
@@ -889,7 +1004,7 @@ class OpenAICompatibleClient:
                 "准备重试请求",
                 {
                     "attempt": attempt,
-                    "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                    "max_attempts": self._request_attempts,
                     "delay_seconds": API_RETRY_DELAY_SECONDS * attempt,
                     "last_error": str(last_error),
                 },
@@ -901,9 +1016,9 @@ class OpenAICompatibleClient:
 
 def _build_segmented_reply_instruction(
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None = None,
+    reply_visual: Mapping[str, Any] | None = None,
 ) -> str:
-    return build_segmented_reply_instruction(reply_tones, reply_portraits)
+    return build_segmented_reply_instruction(reply_tones, reply_visual)
 
 
 def _parse_model_ids(data: dict[str, Any]) -> list[str]:
@@ -930,22 +1045,27 @@ def _normalize_openai_base_url(base_url: str) -> str:
     if parsed.netloc.lower() != "generativelanguage.googleapis.com":
         return normalized
     parts = [part for part in parsed.path.split("/") if part]
-    if parts and parts[0] in {"v1", "v1beta"} and "openai" not in parts:
-        parts.append("openai")
-        return urlunparse(parsed._replace(path="/" + "/".join(parts))).rstrip("/")
+    if parts in ([], ["v1"], ["v1beta"], ["v1", "openai"], ["v1beta", "openai"]):
+        return urlunparse(parsed._replace(path="/v1beta/openai")).rstrip("/")
     return normalized
 
 
-def _format_api_http_error(status_code: int, error_body: str, url: str) -> str:
-    if _looks_like_google_ai_studio_auth_error(error_body, url):
+def _format_api_http_error(
+    status_code: int,
+    error_body: str,
+    url: str,
+    api_key: str = "",
+) -> str:
+    safe_error_body = error_body.replace(api_key, "[REDACTED]") if api_key else error_body
+    if _looks_like_google_ai_studio_auth_error(safe_error_body, url):
         return (
             f"API HTTP {status_code}: Google AI Studio 认证失败。"
             "请确认填写的是 AI Studio API Key，并使用 Google Generative Language 的 OpenAI 兼容接口；"
             "Sakura 会把 https://generativelanguage.googleapis.com/v1beta 自动转换为 "
             "https://generativelanguage.googleapis.com/v1beta/openai。"
-            f"\n原始响应：{error_body}"
+            f"\n原始响应：{safe_error_body}"
         )
-    return f"API HTTP {status_code}: {error_body}"
+    return f"API HTTP {status_code}: {safe_error_body}"
 
 
 def _provider_error_diagnostic(error_body: str, api_key: str) -> dict[str, str]:
@@ -979,16 +1099,8 @@ def _provider_error_diagnostic(error_body: str, api_key: str) -> dict[str, str]:
 
 
 def _safe_diagnostic_text(value: str, api_key: str = "") -> str:
-    text = str(value or "").replace("\r", " ").replace("\n", " ")
-    if api_key:
-        text = text.replace(api_key, "[REDACTED]")
-    text = _DIAGNOSTIC_URL_USERINFO_RE.sub(r"\1[REDACTED]@", text)
-    text = _DIAGNOSTIC_BEARER_RE.sub("Bearer [REDACTED]", text)
-    text = _DIAGNOSTIC_CREDENTIAL_RE.sub(
-        lambda match: f"{match.group(1)}=[REDACTED]", text
-    )
-    text = " ".join(text.split())
-    return text[:320]
+    from app.core.diagnostics import safe_diagnostic_text
+    return safe_diagnostic_text(value, 4096, secrets=(api_key,))
 
 
 def _looks_like_google_ai_studio_auth_error(error_body: str, url: str) -> bool:
@@ -1087,8 +1199,19 @@ def _messages_with_runtime_context(
     *,
     runtime_items: tuple[dict[str, Any], ...] = (),
 ) -> list[ChatMessage]:
+    request_messages = [*messages]
+    if role == "user":
+        for index, message in enumerate(request_messages):
+            provenance = message_provenance(message)
+            if (
+                message.get("role") == "system"
+                and provenance is not None and provenance.kind == "recent_proactive"
+            ):
+                # Keep the existing untrusted-facts wrapper and provenance;
+                # these past utterances are not a new user request.
+                request_messages[index] = {**message, "role": "user"}
     if not runtime_context.strip():
-        return [*messages]
+        return request_messages
     content = runtime_context.strip()
     if role == "user":
         content = (
@@ -1096,7 +1219,7 @@ def _messages_with_runtime_context(
             + content
         )
     return [
-        *messages,
+        *request_messages,
         traced_message(
             {"role": role, "content": content},
             "runtime_context",
@@ -1105,8 +1228,20 @@ def _messages_with_runtime_context(
     ]
 
 
+def _has_system_runtime_facts(
+    payload: Mapping[str, Any], provenance: Sequence[MessageProvenance | None],
+) -> bool:
+    return any(
+        message.get("role") == "system"
+        and source is not None and source.kind in {"runtime_context", "recent_proactive"}
+        for message, source in zip(payload["messages"][1:], provenance[1:])
+    )
+
+
 def _is_runtime_context_role_unsupported_error(exc: ApiRequestError) -> bool:
     text = str(exc).lower()
+    if re.search(r"\bsystem messages? must be at the beginning(?:[.!\"']|$)", text):
+        return True
     role_markers = ("system", "role", "messages")
     rejection_markers = (
         "unsupported", "not support", "invalid", "must be first",
@@ -1140,9 +1275,197 @@ def _summarize_token_usage(usage: Any) -> dict[str, Any]:
         "input_tokens",
         "output_tokens",
     ):
-        if key in usage:
-            summary[key] = usage[key]
+        value = usage.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            summary[key] = value
+    prompt_details = usage.get("prompt_tokens_details")
+    completion_details = usage.get("completion_tokens_details")
+    if isinstance(prompt_details, dict):
+        cached = prompt_details.get("cached_tokens")
+        if isinstance(cached, int) and not isinstance(cached, bool) and cached >= 0:
+            summary["cached_input_tokens"] = cached
+    if isinstance(completion_details, dict):
+        reasoning = completion_details.get("reasoning_tokens")
+        if isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning >= 0:
+            summary["reasoning_tokens"] = reasoning
     return summary
+
+
+def _request_failure(error: BaseException) -> dict[str, Any]:
+    """Classify types/status only; never project provider text or URLs."""
+    chain = error
+    seen: set[int] = set()
+    while chain.__cause__ is not None and id(chain) not in seen:
+        seen.add(id(chain))
+        chain = chain.__cause__
+    if isinstance(error, OperationCancelled):
+        return {
+            "faultDomain": "cancelled",
+            "reasonCode": "REQUEST_CANCELLED",
+            "stage": "request",
+        }
+    if isinstance(chain, urllib.error.HTTPError):
+        status = chain.code
+        domain = (
+            "authentication"
+            if status in {401, 403}
+            else "rate_limit"
+            if status == 429
+            else "provider"
+        )
+        code = (
+            "MODEL_AUTHENTICATION_FAILED"
+            if status in {401, 403}
+            else "MODEL_RATE_LIMITED"
+            if status == 429
+            else "MODEL_HTTP_FAILED"
+        )
+        return {
+            "faultDomain": domain,
+            "reasonCode": code,
+            "httpStatus": status,
+            "stage": "request",
+        }
+    if isinstance(chain, (json.JSONDecodeError, UnicodeDecodeError)):
+        return {
+            "faultDomain": "protocol",
+            "reasonCode": "MODEL_RESPONSE_INVALID",
+            "stage": "decode",
+        }
+    if isinstance(chain, TimeoutError):
+        stage = getattr(chain, "sakura_request_stage", "unknown")
+        return {
+            "faultDomain": "transport",
+            "reasonCode": "MODEL_READ_TIMEOUT"
+            if stage == "read"
+            else "MODEL_REQUEST_TIMEOUT",
+            "stage": stage,
+        }
+    if isinstance(chain, urllib.error.URLError) and isinstance(
+        chain.reason, TimeoutError
+    ):
+        return {
+            "faultDomain": "transport",
+            "reasonCode": "MODEL_CONNECTION_TIMEOUT",
+            "stage": "connect",
+        }
+    if isinstance(
+        chain, (urllib.error.URLError, ssl.SSLError, ConnectionError, OSError)
+    ):
+        return {
+            "faultDomain": "transport",
+            "reasonCode": "MODEL_CONNECTION_FAILED",
+            "stage": "connect",
+        }
+    return {
+        "faultDomain": "unknown",
+        "reasonCode": "MODEL_REQUEST_FAILED",
+        "stage": "unknown",
+    }
+
+
+def _submit_model_call_metric(
+    call: TraceCall | None,
+    *,
+    settings: ApiSettings,
+    estimate: Mapping[str, Any],
+    usage: Mapping[str, Any] | None,
+    latency_ms: int,
+    outcome: str,
+    error_code: str | None,
+    request: Mapping[str, Any] | None = None,
+) -> None:
+    if call is None:
+        return
+    try:
+        candidate = _model_call_metric_candidate(
+            call,
+            settings=settings,
+            estimate=estimate,
+            usage=usage,
+            latency_ms=latency_ms,
+            outcome=outcome,
+            error_code=error_code,
+            request=request,
+        )
+        submit_telemetry_model_call(candidate)
+    except Exception:  # noqa: BLE001 - telemetry must never affect the model call
+        return
+
+
+def _model_call_metric_candidate(
+    call: TraceCall,
+    *,
+    settings: ApiSettings,
+    estimate: Mapping[str, Any],
+    usage: Mapping[str, Any] | None,
+    latency_ms: int,
+    outcome: str,
+    error_code: str | None,
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    usage_keys = (
+        "prompt_tokens", "completion_tokens", "total_tokens", "input_tokens",
+        "output_tokens", "cached_input_tokens", "reasoning_tokens",
+    )
+    usage_value = None if not usage else {
+        _camel_case_metric(key): (
+            value if isinstance((value := usage.get(key)), int)
+            and not isinstance(value, bool) and value >= 0 else None
+        )
+        for key in usage_keys
+    }
+    estimate_value = {
+        "requestTokens": _nonnegative_metric(estimate.get("request_estimated_tokens")),
+        "historyTokens": _nonnegative_metric(estimate.get("history_estimated_tokens")),
+        "memoryTokens": _nonnegative_metric(estimate.get("memory_estimated_tokens")),
+        "dynamicContextTokens": _nonnegative_metric(estimate.get("dynamic_context_estimated_tokens")),
+        "toolSchemaTokens": _nonnegative_metric(estimate.get("tool_schema_estimated_tokens")),
+        "historyMessages": _nonnegative_metric(estimate.get("history_messages")),
+        "memories": _nonnegative_metric(estimate.get("memories")),
+        "toolCount": _nonnegative_metric(estimate.get("tool_count")),
+    }
+    source = str(settings.context_window_source or "fallback")
+    source = "configured" if source == "user" else source
+    if source not in {"provider", "configured", "fallback"}:
+        source = "unknown"
+    return {
+        "schema": 2,
+        "request": dict(request or {}),
+        "operationId": call.operation_id or None,
+        "modelCall": call.model_call,
+        "purpose": call.purpose,
+        "modelFamily": _model_family(call.model),
+        "outcome": outcome,
+        "errorCode": error_code,
+        "latencyMs": max(0, int(latency_ms)),
+        "contextWindowTokens": max(0, int(settings.context_window_tokens)),
+        "contextWindowSource": source,
+        "usage": usage_value,
+        "estimate": estimate_value,
+    }
+
+
+def _camel_case_metric(value: str) -> str:
+    head, *tail = value.split("_")
+    return head + "".join(part.title() for part in tail)
+
+
+def _nonnegative_metric(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _model_family(model: object) -> str:
+    value = str(model or "").strip().lower()
+    if value.startswith(("gpt-", "chatgpt-", "o1", "o3", "o4")):
+        return "openai"
+    if value.startswith("claude"):
+        return "anthropic"
+    if value.startswith("gemini"):
+        return "gemini"
+    if value.startswith("deepseek"):
+        return "deepseek"
+    return "custom" if value else "unknown"
 
 
 def _model_call_log_attributes(
@@ -1196,6 +1519,7 @@ def _chat_reply_trace_mapping(reply: ChatReply) -> dict[str, Any]:
                 "zh": segment.translation,
                 "tone": segment.tone,
                 "portrait": segment.portrait,
+                **({"control": segment.control} if segment.control is not None else {}),
             }
             for segment in reply.segments
         ]

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default-deny capability for the first-party product windows.",
-  "windows": ["main", "settings", "history", "capture-*"],
+  "windows": ["main", "settings", "studio", "history", "capture-*", "studio-color-*"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten"

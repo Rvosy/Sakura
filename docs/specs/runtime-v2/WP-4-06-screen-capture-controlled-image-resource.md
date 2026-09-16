@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-14
 ---
 
 # WP-4-06 手动截图、受控图像资源与平台权限规范
@@ -14,7 +14,7 @@ updated: 2026-08-29
 - Runtime v2 输入栏左侧显示 `+`。点击后加号旋转 45°，附件菜单从加号右侧以工具栏内浮层展开；它不
   参与输入栏高度测量，也不得移动气泡或改变原生命中矩形。当前唯一可用项为“截图”。菜单支持鼠标、
   Enter/Space、Escape 和外部点击关闭，不能破坏草稿、输入焦点、IME、发送/取消或桌宠拖动语义；
-  `prefers-reduced-motion` 下立即切换最终状态。
+  系统减少动态效果设置不改变工具面板的打开、关闭动画和原生命中区域交接。
 - 点击“截图”后进入框选模式。Windows、macOS、Linux 的每块显示器各有一个覆盖本显示器的框选层；一次
   选择只属于一块显示器，避免用单一跨屏 WebView 的 scale factor 换算混合 DPI 坐标。拖动不足 8 个逻辑
   像素、右键或 Escape 均为取消，不产生附件。选区边框和半透明填充使用当前角色主题的 `primary` 颜色；
@@ -46,10 +46,16 @@ updated: 2026-08-29
   和伪造 ID 必须拒绝或返回未接受，不能读取资源。
 - 聊天历史只保存手动截图 marker 和可追问视觉记录，不保存原图、base64、resource token 或
   `attachmentId`。Pipeline 使用现有多模态消息和视觉摘要链。
+- 捕获开始前通过 `screen.session {}` 读取 `{ sessionId }`。该随机标记属于角色会话，每次开始切换就失效，
+  即使随后切回同名角色也不复用。原生覆盖层保存此标记，`screen.attach` 接收 `{ resource, sessionId }`；
+  Core 在读取资源前和接纳附件前都检查标记，切换期间或标记过期时返回 `SCREEN_ATTACHMENT_REJECTED`，
+  原因是 `SCREEN_SESSION_STALE`。旧资源仍由原生所有者清理，不允许兼容缺少会话标记的提交。
+- `start_screen_capture` 接收前端当前的 `captureRevision`，原生完成、取消和错误事件带回此值。前端失效截图时递增
+  该版本，拒绝旧版本的迟到结果；旧截图的取消事件也不得改变新截图的进行中状态。原生提交前、完成后确认角色会话标记仍有效。
 
 ## 接口与平台门
 
-- Core capability 为 `assistant.screen-capture-v2`，allowlist 增加 `screen.attach`、`screen.remove`、
+- Core capability 为 `assistant.screen-capture-v2`，allowlist 增加 `screen.session`、`screen.attach`、`screen.remove`、
   `screen.release` 和带可选组级 `attachmentId` 的 `chat.send`。`screen.attach` 返回
   `{ attached, attachmentId, itemId, width, height, count }`；`screen.remove` 接受
   `{ attachmentId, itemId }` 并返回 `{ accepted, attachmentId, itemId, count }`。`itemId` 为不可预测的

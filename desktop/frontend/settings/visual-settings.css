@@ -1,0 +1,11 @@
+#page-character .setting-row { grid-template-columns: clamp(132px, 18vw, 160px) minmax(0, 1fr); gap: 10px 16px; }
+#page-character .setting-row > .character-select-controls,
+#page-character .setting-row > .slider-control { width: 100%; max-width: none; }
+.visual-status-row { display: flex; align-items: center; gap: 14px; padding: 10px 14px; border: 1px solid var(--sakura-border); border-radius: 9px; margin: 3px 0 12px; background: var(--sakura-panel-bg); font-size: 13px; }
+.visual-status-row[hidden] { display: none; }
+.visual-status-row span { flex: 1; }
+.visual-status-row button { flex-shrink: 0; }
+@media (max-width: 700px) {
+  #page-character .setting-row { grid-template-columns: minmax(0, 1fr); }
+  .visual-status-row { flex-wrap: wrap; }
+}

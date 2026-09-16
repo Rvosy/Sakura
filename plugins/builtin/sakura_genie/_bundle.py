@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import logging
@@ -11,12 +10,13 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,6 @@ class TTSBundleEntry:
     filename: str
     download_url: str
     size: int
-    sha256: str
     supported_systems: tuple[str, ...] = ()
 
 
@@ -67,7 +66,6 @@ GENIE_TTS = TTSBundleEntry(
         "resolve/master/Genie-TTS%20Server.7z"
     ),
     size=1041915345,
-    sha256="8f06077b6102aa29f1c9473926db9a74890d627f077393aa8ebb928b52f15de1",
     supported_systems=("windows",),
 )
 
@@ -112,15 +110,6 @@ def _format_size(size: int) -> str:
     return f"约 {size / 1_000_000_000:.1f} GB" if size >= 1_000_000_000 else f"约 {size / 1_000_000:.0f} MB"
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
-            digest.update(chunk)
-            time.sleep(0)
-    return digest.hexdigest()
-
-
 def _download(
     entry: TTSBundleEntry,
     archive: Path,
@@ -140,7 +129,7 @@ def _download(
         if offset:
             headers["Range"] = f"bytes={offset}-"
         request = urllib.request.Request(entry.download_url, headers=headers)
-        with urllib.request.urlopen(request, timeout=600) as response:
+        with urlopen_current_proxy(request, timeout=600) as response:
             status = getattr(response, "status", None)
             if offset and status != 206:
                 offset = 0
@@ -158,16 +147,12 @@ def _download(
                     on_download(TTSBundleDownloadProgress(downloaded, entry.size))
     if downloaded != entry.size:
         raise RuntimeError("TTS_BUNDLE_SIZE_MISMATCH")
-    if _sha256(part).lower() != entry.sha256.lower():
-        part.unlink(missing_ok=True)
-        raise RuntimeError("TTS_BUNDLE_SHA256_MISMATCH")
     os.replace(part, archive)
 
 
 def _failure_code(error: Exception, stage: str) -> str:
     known = {
         "TTS_BUNDLE_SIZE_MISMATCH": "DOWNLOAD_SIZE_MISMATCH",
-        "TTS_BUNDLE_SHA256_MISMATCH": "DOWNLOAD_CHECKSUM_MISMATCH",
         "TTS_BUNDLE_EXTRACTOR_MISSING": "EXTRACTOR_MISSING",
         "TTS_BUNDLE_RUNTIME_INVALID": "DOWNLOAD_CONTENT_INVALID",
         "TTS_BUNDLE_PLATFORM_UNSUPPORTED": "PLATFORM_UNSUPPORTED",
@@ -192,7 +177,6 @@ def _failure_detail(code: str) -> str:
     messages = {
         "DOWNLOAD_NETWORK_FAILED": "无法连接组件下载服务，请检查网络或代理后重试。",
         "DOWNLOAD_SIZE_MISMATCH": "下载文件大小不匹配，可保留分片后重试。",
-        "DOWNLOAD_CHECKSUM_MISMATCH": "下载文件校验失败，损坏分片已清理。",
         "DOWNLOAD_CONTENT_INVALID": "下载内容不是有效的 Genie TTS 组件。",
         "EXTRACTOR_MISSING": "缺少 7z 解压组件，请修复 Sakura Runtime。",
         "EXTRACT_FAILED": "组件解压失败，请确认磁盘空间充足后重试。",
@@ -274,7 +258,7 @@ def install_bundle(
     archive.parent.mkdir(parents=True, exist_ok=True)
     on_status("verify")
     on_progress(0)
-    if not archive.is_file() or archive.stat().st_size != entry.size or _sha256(archive) != entry.sha256:
+    if not archive.is_file() or archive.stat().st_size != entry.size:
         on_status("download")
         _download(
             entry,
@@ -335,7 +319,6 @@ class TTSBundleResource:
                 "key": "bundleResource",
                 "label": label,
                 "type": "resource",
-                "description": "由此插件安装和维护的本地运行组件。",
                 "actionIds": ["installBundle", "retryBundle", "cancelBundle"],
                 "default": {
                     "applicability": "required",
@@ -349,9 +332,9 @@ class TTSBundleResource:
                 },
             }],
             "actions": [
-                {"actionId": "installBundle", "label": "安装", "description": "下载并安装推荐组件。"},
-                {"actionId": "retryBundle", "label": "重试", "description": "重新尝试安装推荐组件。"},
-                {"actionId": "cancelBundle", "label": "取消", "description": "取消下载并保留可续传分片。"},
+                {"actionId": "installBundle", "label": "安装"},
+                {"actionId": "retryBundle", "label": "重试"},
+                {"actionId": "cancelBundle", "label": "取消", "description": "保留下载进度。"},
             ],
         }
 
@@ -359,14 +342,14 @@ class TTSBundleResource:
         config = dict(self._config_get())
         entry = self._entry()
         if self._custom_endpoint(config):
-            return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "当前配置连接已有服务。", [])}
+            return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "", [])}
         if entry is None:
             return {"bundleResource": self._value("unsupported", "当前平台", False, "不支持一键安装", "当前平台没有兼容安装包，可连接已有服务。", [])}
-        if _runtime_ready(_install_dir(self._user_root)):
-            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry.size)}", True, "已安装", "组件已就绪。", [], terminal="succeeded")}
         with self._lock:
             state = self._state
             error_code = self._error_code
+        if state in {"idle", "succeeded"} and _runtime_ready(_install_dir(self._user_root)):
+            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry.size)}", True, "已安装", "", [], terminal="succeeded")}
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
         message = {"queued": "等待下载", "running": self._stage or "正在安装", "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
         detail = (
@@ -374,9 +357,9 @@ class TTSBundleResource:
             if state == "failed"
             else f"已下载 {self._downloaded:,} / {self._total:,} 字节"
             if self._downloaded and self._total
-            else "下载只会在点击安装或重试后开始。"
+            else ""
         )
-        return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry.size)}", False, message, detail, actions)}
+        return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry.size)}", False, message, detail, actions, terminal=state)}
 
     def start(self, _values: Mapping[str, object]) -> dict[str, object]:
         entry = self._entry()

@@ -1,0 +1,72 @@
+/* Sakura desktop/frontend/core/theme.js and settings/styles.css, 2026-09-05. */
+@font-face {
+  font-family: "Sakura Noto Sans SC";
+  src: url("./assets/sakura-ui.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+:root {
+  --sakura-primary: #4b9ac4;
+  --sakura-primary-hover: #3b83aa;
+  --sakura-accent: #e36c96;
+  --sakura-text: #27445a;
+  --sakura-secondary-text: #54768b;
+  --sakura-muted-text: #7d99a9;
+  --sakura-page-bg: #f8fcfe;
+  --sakura-panel-bg: #eaf5fa;
+  --sakura-input-bg: #ffffff;
+  --sakura-bubble-bg: #e3f1f7;
+  --sakura-border: #accfde;
+  --surface-soft: color-mix(
+    in srgb,
+    var(--sakura-input-bg) 88%,
+    var(--sakura-panel-bg)
+  );
+  --surface-raised: var(--sakura-input-bg);
+  --surface-nav: color-mix(
+    in srgb,
+    var(--sakura-panel-bg) 62%,
+    var(--surface-raised)
+  );
+  --hairline: color-mix(in srgb, var(--sakura-border) 70%, transparent);
+  --tint-faint: color-mix(in srgb, var(--sakura-primary) 8%, transparent);
+  --tint-soft: color-mix(in srgb, var(--sakura-primary) 14%, transparent);
+  --ring: color-mix(in srgb, var(--sakura-primary) 30%, transparent);
+  --danger: color-mix(in srgb, var(--sakura-accent) 72%, var(--sakura-text));
+  --danger-bg: color-mix(
+    in srgb,
+    var(--sakura-accent) 9%,
+    var(--surface-raised)
+  );
+  --warning: #997123;
+  --warning-bg: #faf4e7;
+  --success: #477d66;
+  --radius-lg: 16px;
+  --radius-md: 11px;
+  --radius-sm: 9px;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-medium: 260ms;
+  --font-system:
+    "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI",
+    sans-serif;
+  --font-ui: "Sakura Noto Sans SC", var(--font-system);
+  --font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --tblr-font-sans-serif: var(--font-ui);
+  --tblr-body-font-family: var(--font-ui);
+  --tblr-body-bg: var(--sakura-page-bg);
+  --tblr-body-color: var(--sakura-text);
+  --tblr-primary: var(--sakura-primary);
+  --tblr-primary-rgb: 75, 154, 196;
+  --tblr-link-color: var(--sakura-primary-hover);
+  --tblr-link-hover-color: var(--sakura-primary-hover);
+  --tblr-border-color: var(--hairline);
+  --primary: var(--sakura-primary);
+  --ink: var(--sakura-text);
+  --muted: var(--sakura-secondary-text);
+  --line: var(--hairline);
+  --surface: var(--surface-raised);
+  font-synthesis: none;
+}

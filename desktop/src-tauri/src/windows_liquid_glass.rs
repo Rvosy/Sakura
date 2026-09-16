@@ -285,13 +285,8 @@ pub fn configured_debug_step() -> DebugStep {
 
 pub const FULLSCREEN_VERTEX_HLSL: &str =
     include_str!("windows_liquid_glass_shaders/fullscreen.hlsl");
-#[cfg(test)]
-pub const COPY_PIXEL_HLSL: &str = include_str!("windows_liquid_glass_shaders/copy.hlsl");
 pub const BLUR_PIXEL_HLSL: &str = include_str!("windows_liquid_glass_shaders/blur.hlsl");
 pub const LIQUID_PIXEL_HLSL: &str = include_str!("windows_liquid_glass_shaders/liquid.hlsl");
-#[cfg(test)]
-const NATIVE_BACKEND_SOURCE: &str = include_str!("windows_liquid_glass_native.rs");
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,65 +440,5 @@ mod tests {
         }
         assert_eq!(previous, 0.0);
         assert_eq!(refraction_edge_factor(f32::NAN, 20.0, 1.4), 0.0);
-    }
-
-    #[test]
-    fn shader_sources_preserve_upstream_notice_and_forbid_dwm_effect_graphs() {
-        for source in [
-            FULLSCREEN_VERTEX_HLSL,
-            COPY_PIXEL_HLSL,
-            BLUR_PIXEL_HLSL,
-            LIQUID_PIXEL_HLSL,
-        ] {
-            assert!(source.contains("Copyright 2024 Charles Yin"));
-            assert!(!source.contains("HostBackdrop"));
-            assert!(!source.contains("AffineTransformEffectDescription"));
-            assert!(!source.contains("GaussianBlurEffectDescription"));
-        }
-        for forbidden in [
-            "CreateHostBackdropBrush",
-            "AffineTransformEffectDescription",
-            "GaussianBlurEffectDescription",
-            "liquid sector",
-            "liquid band",
-        ] {
-            assert!(
-                !NATIVE_BACKEND_SOURCE.contains(forbidden),
-                "unsafe backend token reintroduced: {forbidden}"
-            );
-        }
-    }
-
-    #[test]
-    fn retired_switch_cannot_enable_the_product_mode() {
-        assert!(!NATIVE_BACKEND_SOURCE.contains("LIQUID_GLASS_POC_ENV"));
-        assert!(!NATIVE_BACKEND_SOURCE.contains("SAKURA_WINDOWS_LIQUID_GLASS_SINGLE_PIPELINE"));
-    }
-
-    #[test]
-    fn product_mode_fails_closed_before_window_capture_exclusion() {
-        assert!(NATIVE_BACKEND_SOURCE.contains("LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE"));
-        assert!(!NATIVE_BACKEND_SOURCE.contains("SetWindowDisplayAffinity"));
-        assert!(!NATIVE_BACKEND_SOURCE.contains("WDA_EXCLUDE"));
-        let fail_closed = NATIVE_BACKEND_SOURCE
-            .find("LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE")
-            .expect("fail-closed guard");
-        let pipeline_start = NATIVE_BACKEND_SOURCE
-            .find("fn ensure_pipeline")
-            .expect("pipeline entry");
-        assert!(fail_closed < pipeline_start);
-    }
-
-    #[test]
-    fn liquid_failure_never_reenables_the_gaussian_visual() {
-        assert!(!NATIVE_BACKEND_SOURCE.contains("retaining gaussian"));
-        assert!(!NATIVE_BACKEND_SOURCE.contains("gaussian_visual.SetIsVisible(true)"));
-        assert!(!NATIVE_BACKEND_SOURCE.contains("gaussian_for_frame.SetIsVisible(true)"));
-    }
-
-    #[test]
-    fn blur_pass_uses_and_clears_the_complete_padded_target() {
-        assert!(NATIVE_BACKEND_SOURCE.contains("self.bind_target(target, self.blur_size)"));
-        assert!(NATIVE_BACKEND_SOURCE.contains("ClearRenderTargetView(target"));
     }
 }

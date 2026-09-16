@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import logging
@@ -13,12 +12,13 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
 
 try:
     from ._runtime_profile import managed_profile_path, prepare_managed_profile
@@ -50,7 +50,6 @@ class TTSBundleEntry:
     filename: str = ""
     download_url: str = ""
     size: int = 0
-    sha256: str = ""
     supported_systems: tuple[str, ...] = ()
     install_method: str = "archive"
     installer_script: str | None = None
@@ -81,7 +80,6 @@ GPT_SOVITS_STANDARD = TTSBundleEntry(
         "resolve/master/GPT-SoVITS-v2pro-20250604.7z"
     ),
     size=8185086602,
-    sha256="bd60d0796553ff05d8568136e199c13e0dc22ebe2ed24273134e34ed6f215cd6",
     supported_systems=("windows",),
 )
 GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
@@ -93,7 +91,6 @@ GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
         "resolve/master/GPT-SoVITS-v2pro-20250604-nvidia50.7z"
     ),
     size=8835144925,
-    sha256="97b4edcd451c42357db7e26e6c1c877ca5d85144fe97beaff6d7005d35bee008",
     supported_systems=("windows",),
 )
 GPT_SOVITS_MACOS = TTSBundleEntry(
@@ -181,19 +178,22 @@ def _installed(entry: TTSBundleEntry, user_root: Path) -> bool:
     return True
 
 
+def installed_bundle_result(user_root: Path) -> TTSBundleInstallResult | None:
+    """Return the currently recommended managed bundle when it is ready."""
+
+    entry = recommend_gpt_sovits_bundle()
+    if entry is None:
+        return None
+    try:
+        return _result(entry, _install_dir(entry, user_root))
+    except RuntimeError:
+        return None
+
+
 def _format_size(entry: TTSBundleEntry) -> str:
     if entry.install_method == "script":
         return "在线安装"
     return f"约 {entry.size / 1_000_000_000:.1f} GB"
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
-            digest.update(chunk)
-            time.sleep(0)
-    return digest.hexdigest()
 
 
 def _download(
@@ -214,7 +214,7 @@ def _download(
         headers = {"User-Agent": "Sakura-Desktop-Pet/1.0"}
         if offset:
             headers["Range"] = f"bytes={offset}-"
-        with urllib.request.urlopen(urllib.request.Request(entry.download_url, headers=headers), timeout=600) as response:
+        with urlopen_current_proxy(urllib.request.Request(entry.download_url, headers=headers), timeout=600) as response:
             if offset and getattr(response, "status", None) != 206:
                 offset = 0
                 downloaded = 0
@@ -231,16 +231,12 @@ def _download(
                     on_download(TTSBundleDownloadProgress(downloaded, entry.size))
     if downloaded != entry.size:
         raise RuntimeError("TTS_BUNDLE_SIZE_MISMATCH")
-    if _sha256(part).lower() != entry.sha256.lower():
-        part.unlink(missing_ok=True)
-        raise RuntimeError("TTS_BUNDLE_SHA256_MISMATCH")
     os.replace(part, archive)
 
 
 def _failure_code(error: Exception, stage: str) -> str:
     known = {
         "TTS_BUNDLE_SIZE_MISMATCH": "DOWNLOAD_SIZE_MISMATCH",
-        "TTS_BUNDLE_SHA256_MISMATCH": "DOWNLOAD_CHECKSUM_MISMATCH",
         "TTS_BUNDLE_EXTRACTOR_MISSING": "EXTRACTOR_MISSING",
         "TTS_BUNDLE_RUNTIME_INVALID": "DOWNLOAD_CONTENT_INVALID",
         "TTS_BUNDLE_PYTHON_INVALID": "DOWNLOAD_CONTENT_INVALID",
@@ -272,7 +268,6 @@ def _failure_detail(code: str) -> str:
     messages = {
         "DOWNLOAD_NETWORK_FAILED": "无法连接组件下载服务，请检查网络或代理后重试。",
         "DOWNLOAD_SIZE_MISMATCH": "下载文件大小不匹配，可保留分片后重试。",
-        "DOWNLOAD_CHECKSUM_MISMATCH": "下载文件校验失败，损坏分片已清理。",
         "DOWNLOAD_CONTENT_INVALID": "下载内容不是有效的 GPT-SoVITS 组件。",
         "DOWNLOAD_DEPENDENCY_MISSING": "安装脚本或运行依赖缺失，请修复 Sakura Runtime。",
         "EXTRACTOR_MISSING": "缺少 7z 解压组件，请修复 Sakura Runtime。",
@@ -399,7 +394,7 @@ def _install_archive(
     archive.parent.mkdir(parents=True, exist_ok=True)
     on_status("verify")
     on_progress(0)
-    if not archive.is_file() or archive.stat().st_size != entry.size or _sha256(archive) != entry.sha256:
+    if not archive.is_file() or archive.stat().st_size != entry.size:
         on_status("download")
         _download(entry, archive, check_cancel=check_cancel, on_progress=on_progress, on_download=on_download_progress)
     check_cancel()
@@ -507,16 +502,14 @@ class TTSBundleResource:
 
     @staticmethod
     def descriptor(section_id: str, title: str, label: str) -> dict[str, object]:
-        return {"sectionId": section_id, "title": title, "order": 100, "fields": [{"key": "bundleResource", "label": label, "type": "resource", "description": "由此插件安装和维护的本地运行组件。", "actionIds": ["installBundle", "retryBundle", "cancelBundle"], "default": {"applicability": "required", "subtitle": "", "ready": False, "taskState": "idle", "message": "", "detail": "", "progress": None, "availableActionIds": []}}], "actions": [{"actionId": "installBundle", "label": "安装", "description": "下载并安装推荐组件。"}, {"actionId": "retryBundle", "label": "重试", "description": "重新尝试安装推荐组件。"}, {"actionId": "cancelBundle", "label": "取消", "description": "取消安装。"}]}
+        return {"sectionId": section_id, "title": title, "order": 100, "fields": [{"key": "bundleResource", "label": label, "type": "resource", "actionIds": ["installBundle", "retryBundle", "cancelBundle"], "default": {"applicability": "required", "subtitle": "", "ready": False, "taskState": "idle", "message": "", "detail": "", "progress": None, "availableActionIds": []}}], "actions": [{"actionId": "installBundle", "label": "安装"}, {"actionId": "retryBundle", "label": "重试"}, {"actionId": "cancelBundle", "label": "取消"}]}
 
     def load(self) -> dict[str, object]:
         entry = self._entry()
         if self._custom_endpoint(dict(self._config_get())):
-            return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "当前配置连接已有服务。", [])}
+            return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "", [])}
         if entry is None:
             return {"bundleResource": self._value("unsupported", "当前平台", False, "不支持一键安装", "当前平台没有兼容安装包，可连接已有服务。", [])}
-        if _installed(entry, self._user_root):
-            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "组件已就绪。", [], terminal="succeeded")}
         with self._lock:
             state = self._state
             error_code = self._error_code
@@ -525,11 +518,13 @@ class TTSBundleResource:
                 if state == "failed"
                 else f"已下载 {self._downloaded:,} / {self._total:,} 字节"
                 if self._downloaded and self._total
-                else "下载只会在点击安装或重试后开始。"
+                else ""
             )
+        if state in {"idle", "succeeded"} and _installed(entry, self._user_root):
+            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "", [], terminal="succeeded")}
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
         message = {"queued": "等待下载", "running": self._stage or "正在安装", "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
-        return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions)}
+        return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions, terminal=state)}
 
     def start(self, _values: Mapping[str, object]) -> dict[str, object]:
         entry = self._entry()
@@ -566,11 +561,20 @@ class TTSBundleResource:
     def _run(self, entry: TTSBundleEntry) -> None:
         try:
             result = self._installer(entry, self._user_root, check_cancel=self._check_cancel, on_progress=self._set_progress, on_status=self._set_stage, on_download_progress=self._set_download)
-            patch: dict[str, object] = {"workDir": _external_path(result.work_dir)}
-            if result.python_path:
-                patch["pythonPath"] = _external_path(result.python_path)
-            if result.tts_config_path:
-                patch["ttsConfigPath"] = _external_path(result.tts_config_path)
+            patch: dict[str, object] = {
+                "workDir": _external_path(result.work_dir),
+                # Clear optional overrides left by an older/different runtime.
+                # The Windows bundle intentionally discovers its interpreter
+                # under workDir when python_path is absent.
+                "pythonPath": (
+                    _external_path(result.python_path) if result.python_path else ""
+                ),
+                "ttsConfigPath": (
+                    _external_path(result.tts_config_path)
+                    if result.tts_config_path
+                    else ""
+                ),
+            }
             self._config_update(patch)
             self._set_state("succeeded", "安装完成", 100)
         except DownloadCancelledError:

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createPortraitController } from "../pet/portrait-controller.js";
+import { createPortraitController } from "../../../plugins/builtin/sakura_portrait/frontend/renderer.js";
 
 function deferred() {
   let resolve;
@@ -68,6 +68,34 @@ test("decode failure keeps an already committed portrait visible", async () => {
   assert.deepEqual(commits, ["A"]);
   assert.deepEqual(fallbacks, []);
   assert.equal(controller.current(), "A");
+});
+
+test("system reduced-motion preference does not bypass portrait transitions", async () => {
+  const previews = [];
+  const commits = [];
+  const timers = [];
+  const controller = createPortraitController({
+    assets: { A: "a.png", B: "b.png" },
+    defaultKey: "A",
+    loadImage: async () => ({}),
+    reducedMotion: true,
+    preview(value) { previews.push(value.key); },
+    commit(value) { commits.push(value.key); },
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+  });
+  controller.beginGeneration("g1");
+  await controller.show("A", { immediate: true, generation: "g1" });
+
+  const shown = controller.show("B", { generation: "g1" });
+  await Promise.resolve();
+  assert.deepEqual(previews, ["B"]);
+  assert.deepEqual(commits, ["A"]);
+  assert.equal(timers.at(-1).delay, 300);
+
+  timers.at(-1).callback();
+  await shown;
+  assert.deepEqual(commits, ["A", "B"]);
 });
 
 test("same key is a no-op and preloading is reused by show", async () => {
@@ -165,4 +193,18 @@ test("visual readiness follows the transition start and still releases text on d
     onVisualReady() { events.push("failed-text"); },
   });
   assert.deepEqual(events, ["preview", "text", "failed-text"]);
+});
+
+
+test("portrait image failures keep the original exception for host diagnostics", async () => {
+  const failure = new DOMException("PNG decoder rejected image", "EncodingError");
+  const errors = [];
+  const controller = createPortraitController({ assets: { A: "a.png" }, defaultKey: "A",
+    loadImage: async () => { throw failure; }, reportError: error => errors.push(error),
+  });
+  controller.beginGeneration("g");
+  assert.equal((await controller.show("A", { generation: "g" })).failed, true);
+  assert.equal(errors[0].error, failure);
+  assert.equal(errors[0].code, "PORTRAIT_DECODE_FAILED");
+  controller.dispose();
 });

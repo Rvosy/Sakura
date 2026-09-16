@@ -33,7 +33,7 @@ def _select(root: Path, character_id: str) -> None:
     )
 
 
-def test_current_character_is_frozen_for_the_generation(tmp_path: Path) -> None:
+def test_current_character_changes_only_at_explicit_session_boundary(tmp_path: Path) -> None:
     _write_character(tmp_path, "alpha")
     _write_character(tmp_path, "beta")
     _select(tmp_path, "alpha")
@@ -50,3 +50,5 @@ def test_current_character_is_frozen_for_the_generation(tmp_path: Path) -> None:
         "id": "beta",
         "systemPrompt": "You are beta.",
     }
+    old_generation.set_current("beta")
+    assert old_generation.current("fixture.plugin") == new_generation.current("fixture.plugin")

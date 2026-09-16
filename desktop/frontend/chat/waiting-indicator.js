@@ -4,7 +4,6 @@ export const WAITING_INDICATOR_FRAMES = Object.freeze([".", "..", "...", "....",
 export function createWaitingIndicator({
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
   clearTimer = (timer) => window.clearTimeout(timer),
-  reducedMotion = false,
   onFrame = () => {},
 } = {}) {
   let generation = 0;
@@ -18,7 +17,7 @@ export function createWaitingIndicator({
   }
 
   function schedule(token) {
-    if (!running || reducedMotion || token !== generation) return;
+    if (!running || token !== generation) return;
     timer = setTimer(() => {
       timer = null;
       if (!running || token !== generation) return;
@@ -40,7 +39,7 @@ export function createWaitingIndicator({
       clearActiveTimer();
       running = true;
       frameIndex = 0;
-      onFrame(reducedMotion ? "..." : WAITING_INDICATOR_FRAMES[frameIndex]);
+      onFrame(WAITING_INDICATOR_FRAMES[frameIndex]);
       schedule(generation);
     },
     stop,

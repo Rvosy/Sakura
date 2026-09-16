@@ -30,6 +30,8 @@ class PlaywrightBrowserPlugin:
     """Optional browser automation through ordinary Plugin API v4 Host Services."""
 
     def setup(self, context: object) -> None:
+        logger = getattr(context, "get")("sakura.host.logging")
+        browser.set_logger(logger)
         config = getattr(context, "config")
         runtime_config = config_from_mapping(getattr(config, "get")())
 
@@ -43,6 +45,8 @@ class PlaywrightBrowserPlugin:
                 browser.shutdown_browser()
             finally:
                 browser.set_config_loader(None)
+                logger.info("浏览器插件已停止")
+                browser.set_logger(None)
 
         getattr(context, "effect")(cleanup_browser)
         def reconfigure(values: Mapping[str, Any]) -> str:
@@ -51,6 +55,7 @@ class PlaywrightBrowserPlugin:
             if updated != runtime_config:
                 browser.shutdown_browser()
                 runtime_config = updated
+                logger.info("浏览器配置已更新")
             return "applied"
 
         getattr(config, "on_change")(reconfigure)
@@ -58,13 +63,25 @@ class PlaywrightBrowserPlugin:
         tools = getattr(context, "get")("sakura.host.tools")
         artifacts = getattr(context, "get")("sakura.host.artifacts")
         for descriptor, callback in _tool_registrations(artifacts):
-            tools.register(descriptor, callback)
+            tools.register(descriptor, _logged_tool(logger, descriptor["name"], callback))
 
+        logger.info("浏览器工具已就绪")
         getattr(context, "get")("sakura.host.settings").register(
             _settings_descriptor(),
             load=lambda: config_to_mapping(saved_config()),
             save=lambda values: _save_settings(config, values),
         )
+
+
+def _logged_tool(logger: Any, name: str, callback: Callable[..., Any]) -> Callable[..., Any]:
+    def run(args: Mapping[str, Any]) -> Any:
+        try:
+            return callback(args)
+        except Exception as error:
+            # URLs, selectors, page content, form values and scripts stay out of logs.
+            logger.error("浏览器操作失败", fields={"tool": name, "error_type": type(error).__name__, "reason_code": "BROWSER_TIMEOUT" if isinstance(error, TimeoutError) else "BROWSER_OPERATION_FAILED"})
+            raise
+    return run
 
 
 def _tool_registrations(

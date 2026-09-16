@@ -14,6 +14,22 @@ const THEME_KEYS = Object.freeze([
 ]);
 const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur", "liquid_glass"]);
 
+export function createAppearanceMutationGuard() {
+  let revision = 0;
+  return Object.freeze({
+    begin() {
+      revision += 1;
+      return revision;
+    },
+    supersede() {
+      revision += 1;
+    },
+    isCurrent(candidate) {
+      return candidate === revision;
+    },
+  });
+}
+
 export function validateAppearancePublication(publication, presentation) {
   if (
     publication?.schemaVersion !== 1
@@ -25,10 +41,10 @@ export function validateAppearancePublication(publication, presentation) {
   const values = publication.values;
   for (const [field, minimum, maximum] of [
     ["portraitScalePercent", 50, 150],
-    ["controlPanelWidth", 420, 760],
-    ["bubbleMaxHeight", 96, 260],
-    ["controlPanelVerticalOffset", -60, 160],
-    ["inputBarOffset", 0, 60],
+    ["controlPanelWidth", 420, 860],
+    ["bubbleMaxHeight", 96, 400],
+    ["controlPanelVerticalOffset", -400, 400],
+    ["inputBarOffset", 0, 400],
     ["speechFontSize", 10, 24],
     ["nameFontSize", 10, 20],
     ["inputFontSize", 12, 20],
@@ -46,6 +62,9 @@ export function validateAppearancePublication(publication, presentation) {
   }
   if (!VISUAL_EFFECT_MODES.has(values.visualEffectMode)) {
     throw new Error("APPEARANCE_FIELD_INVALID:visualEffectMode");
+  }
+  if (typeof values.bubbleAutoExpand !== "boolean") {
+    throw new Error("APPEARANCE_FIELD_INVALID:bubbleAutoExpand");
   }
   return Object.freeze({
     ...values,
@@ -90,7 +109,7 @@ export function appearanceChanges(previous, next) {
   const theme = THEME_KEYS.some((key) => previous?.themeTokens?.[key] !== next?.themeTokens?.[key]);
   const fonts = ["speechFontSize", "nameFontSize", "inputFontSize"]
     .some((field) => previous?.[field] !== next?.[field]);
-  const layout = ["controlPanelWidth", "bubbleMaxHeight", "controlPanelVerticalOffset", "inputBarOffset"]
+  const layout = ["controlPanelWidth", "bubbleMaxHeight", "bubbleAutoExpand", "controlPanelVerticalOffset", "inputBarOffset"]
     .some((field) => previous?.[field] !== next?.[field]);
   return Object.freeze({
     theme,

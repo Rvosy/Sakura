@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,29 @@ from app.storage.timeline import (
 
 
 NOW = "2026-08-26T12:00:00+08:00"
+
+
+@pytest.mark.parametrize("field,value", [
+    (0, 1), (0, True), (2, True), (3, True), (3, -1), (3, 2**63),
+    (4, "x" * 129), (4, " "),
+])
+def test_cursor_rejects_invalid_fields(field: int, value: object, tmp_path: Path) -> None:
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    store.initialize()
+    cursor = store.latest_cursor("sakura")
+    decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    decoded[field] = value
+    invalid = base64.urlsafe_b64encode(json.dumps(decoded).encode()).decode().rstrip("=")
+    with pytest.raises(TimelineDataError, match="TIMELINE_CURSOR_INVALID"):
+        store.read_since("sakura", invalid, 1)
+
+
+@pytest.mark.parametrize("cursor", ["x" * 513, "not base64!", "W10", "bnVsbA"])
+def test_cursor_rejects_oversized_or_malformed_format(tmp_path: Path, cursor: str) -> None:
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    store.initialize()
+    with pytest.raises(TimelineDataError, match="TIMELINE_CURSOR_INVALID"):
+        store.read_since("sakura", cursor, 1)
 
 
 def _entry(kind: TimelineKind, payload: dict[str, object], *, character_id: str = "sakura") -> NewTimelineEntry:

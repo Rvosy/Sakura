@@ -1,5 +1,9 @@
 import { createChatPresentationReducer } from "../chat/chat-presentation.js";
 
+export function isNewCharacterGeneration(previous, next) {
+  return Boolean(previous && next !== previous);
+}
+
 export function rebindCharacterPresentation({
   currentCharacterId,
   nextPresentation,
@@ -16,9 +20,6 @@ export function rebindCharacterPresentation({
     characterChanged: true,
     reducer: createChatPresentationReducer({
       initialMessage: nextPresentation.initialMessage,
-      defaultPortraitKey: nextPresentation.defaultPortraitKey,
-      thinkingPortraitKey: nextPresentation.thinkingPortraitKey,
-      concernedPortraitKey: nextPresentation.concernedPortraitKey,
     }),
     greetingPending: true,
   });

@@ -393,7 +393,7 @@ def _build_web_tool_capability_rule(visible_browser_mode: bool) -> str:
             "- 网页：本轮是显式可见浏览器任务，使用 playwright_*；"
             "后台 web__ 搜索/抓取只用于非可见浏览器的轻量公开资料。"
         )
-    return "- 网页：轻量公开资料用 web__web_search / web__fetch_url；可见浏览器操作用 playwright_*。"
+    return "- 网页：轻量公开资料使用本轮 API tools 列表中提供的搜索或网页读取工具；可见浏览器操作用 playwright_*。"
 
 
 def _build_screen_and_desktop_routing_rule(allow_screen_observation: bool) -> str:

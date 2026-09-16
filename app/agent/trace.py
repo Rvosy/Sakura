@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import base64
 import json
 import os
@@ -123,6 +122,10 @@ def summarize_prompt_payload(
 
     messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
     history_messages = 0
+    history_tokens = 0
+    dynamic_context_tokens = 0
+    memory_tokens = 0
+    memories = 0
     message_tokens = 0
     for index, raw_message in enumerate(messages):
         if not isinstance(raw_message, Mapping):
@@ -134,13 +137,34 @@ def summarize_prompt_payload(
         kind = provenance.kind if provenance else _fallback_message_kind(index, raw_message, messages)
         if kind == "history":
             history_messages += 1
+            history_tokens += tokens
+        if provenance is not None:
+            for item in provenance.runtime_items:
+                if not isinstance(item, Mapping) or not item:
+                    continue
+                item_kind, value = next(iter(item.items()))
+                if not isinstance(value, Mapping):
+                    continue
+                estimated = value.get("estimated_tokens")
+                if not isinstance(estimated, int) or isinstance(estimated, bool) or estimated < 0:
+                    continue
+                dynamic_context_tokens += estimated
+                if item_kind == "memory":
+                    memory_tokens += estimated
+                    memories += 1
     tools = payload.get("tools") if isinstance(payload.get("tools"), list) else []
     schema_text = json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=str)
     tool_tokens = estimate_prompt_tokens(schema_text)
     return {
         "history_messages": history_messages,
+        "history_estimated_tokens": history_tokens,
+        "memory_estimated_tokens": memory_tokens,
+        "memories": memories,
+        "dynamic_context_estimated_tokens": dynamic_context_tokens,
+        "tool_schema_estimated_tokens": tool_tokens,
         "tool_count": len(tools),
         "estimated_tokens": message_tokens + tool_tokens,
+        "request_estimated_tokens": message_tokens + tool_tokens,
     }
 
 
@@ -354,8 +378,7 @@ class AgentTraceRecorder:
         trace = self._next_trace
         self._next_trace += 1
         self.staging_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:24]
-        path = self.staging_dir / f"{trace:08d}-{safe_name}.stage"
+        path = self.staging_dir / f"{trace:08d}.stage"
         path.touch(exist_ok=True)
         try:
             os.chmod(path, 0o600)
@@ -604,7 +627,6 @@ class AgentTraceRecorder:
     ) -> dict[str, Any]:
         content_value = raw_message.get("content")
         content = "" if content_value is None else str(content_value).strip()
-        raw_bytes = content.encode("utf-8")
         document: dict[str, Any] = {
             "type": "reply",
             "trace": call.trace,
@@ -630,7 +652,6 @@ class AgentTraceRecorder:
         else:
             document["raw_text"] = []
         document["raw_chars"] = len(content)
-        document["raw_sha256"] = hashlib.sha256(raw_bytes).hexdigest()
         tool_calls = [_tool_call_value(item) for item in parsed_tool_calls]
         document["tool_calls"] = _sanitize_trace_value(
             tool_calls, self._known_secrets, structured=True
@@ -828,7 +849,6 @@ _TRACE_FIELD_LABELS = {
     "content": "正文",
     "chars": "字符数",
     "bytes": "字节数",
-    "sha256": "SHA-256",
     "truncated": "已截断",
     "head": "开头",
     "tail": "结尾",
@@ -1249,9 +1269,8 @@ def _human_trace_document(document: Mapping[str, Any]) -> str:
         else:
             lines.extend(_text_lines(output, "  "))
         lines.extend([
-            TRACE_SECTION_RULE, "原始数据校验",
+            TRACE_SECTION_RULE, "原始数据大小",
             _field("原始字符数", document.get("raw_chars", 0)),
-            _field("原始 SHA-256", document.get("raw_sha256", "")),
             TRACE_SECTION_RULE, "工具调用",
         ])
         tool_calls = document.get("tool_calls")
@@ -1481,7 +1500,6 @@ def _free_text_value(text: str, secrets: Sequence[str]) -> list[str] | dict[str,
         "tail": _wrap_display_lines(tail),
         "chars": len(sanitized),
         "bytes": len(encoded),
-        "sha256": hashlib.sha256(encoded).hexdigest(),
         "truncated": True,
     }
 
@@ -1512,7 +1530,6 @@ def _sanitize_trace_value(value: Any, secrets: Sequence[str], *, structured: boo
         return {
             "type": "binary",
             "bytes": len(value),
-            "sha256": hashlib.sha256(value).hexdigest(),
         }
     if isinstance(value, str):
         data_url = _DATA_URL_RE.match(value)
@@ -1526,7 +1543,6 @@ def _sanitize_trace_value(value: Any, secrets: Sequence[str], *, structured: boo
                 "type": "binary",
                 "mime": data_url.group("mime") or "application/octet-stream",
                 "bytes": len(body),
-                "sha256": hashlib.sha256(body).hexdigest(),
             }
         sanitized = _sanitize_text(value, secrets)
         if len(sanitized.encode("utf-8")) > TRACE_TEXT_VALUE_MAX_BYTES:

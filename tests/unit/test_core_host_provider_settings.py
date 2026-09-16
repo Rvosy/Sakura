@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import io
+import json
+import shutil
 import sys
 import threading
 import time
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -130,12 +134,11 @@ def test_dynamic_plugin_slots_are_sorted_validated_and_saved_by_owner(tmp_path: 
             return {"applicationState": "applied"}
 
     worker = Worker()
-    session = type("Session", (), {"plugin_application": worker})()
     boundary = ProviderSettingsBoundary(
         GENERATION,
         CREDENTIAL,
         _root(tmp_path),
-        session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
     )
     boundary.enable()
 
@@ -218,12 +221,11 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
             return {"applicationState": "applied"}
 
     worker = Worker()
-    session = type("Session", (), {"plugin_application": worker})()
     boundary = ProviderSettingsBoundary(
         GENERATION,
         CREDENTIAL,
         _root(tmp_path),
-        session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
     )
     boundary.enable()
     current = boundary.handle(_request("get", "settings.provider_model.get", {}))["payload"]
@@ -249,6 +251,33 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
         return real_save(raw)
 
     monkeypatch.setattr(boundary._repository, "save", count_save)
+    draft["model_slots"]["plugin:com.example.first:first"] = {
+        "profile_id": "fixture",
+        "model": "fixture-model",
+    }
+    draft["model_slots"]["plugin:com.example.second:second"] = {
+        "profile_id": "fixture",
+        "model": "",
+    }
+    incomplete = boundary.handle(
+        _request("incomplete", "settings.provider_model.save", {"draft": draft})
+    )
+    assert incomplete["error"]["code"] == "MODEL_SLOT_INCOMPLETE"
+    assert {key: incomplete["error"]["details"][key] for key in ("feature", "field")} == {
+        "feature": "model.slots",
+        "field": "plugin:com.example.second:second",
+    }
+    assert writes == 0
+    assert worker.saved == []
+
+    draft["model_slots"]["plugin:com.example.first:first"] = {
+        "profile_id": "",
+        "model": "",
+    }
+    draft["model_slots"]["plugin:com.example.second:second"] = {
+        "profile_id": "",
+        "model": "",
+    }
     missing = boundary.handle(
         _request("missing-required", "settings.provider_model.save", {"draft": draft})
     )
@@ -451,23 +480,51 @@ def test_generation_identity_mismatch_fails_closed(tmp_path: Path) -> None:
         boundary.handle(invalid)
 
 
-def test_probe_errors_are_stable_and_redacted(
+@pytest.mark.parametrize(
+    ("status", "expected_code"),
+    [(401, "AUTHENTICATION_FAILED"), (403, "PROVIDER_ACCESS_FORBIDDEN")],
+)
+def test_probe_http_errors_keep_status_and_provider_details_after_redaction(
     tmp_path: Path,
     monkeypatch,
+    status: int,
+    expected_code: str,
 ) -> None:  # type: ignore[no-untyped-def]
     boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
     boundary.enable()
 
     def fail(_self: OpenAICompatibleClient, **_kwargs: object) -> list[str]:
-        raise ApiRequestError(f"401 response echoed {SECRET}")
+        body = json.dumps(
+            {
+                "error": {
+                    "message": "Invalid credential PRIVATE_PROVIDER_FAILURE",
+                    "code": "invalid_api_key",
+                    "type": "authentication_error",
+                }
+            }
+        )
+        http_error = urllib.error.HTTPError(
+            "https://fixture.invalid/v1/models",
+            status,
+            "failed",
+            {},
+            io.BytesIO(body.encode("utf-8")),
+        )
+        raise ApiRequestError(f"API HTTP {status}: {body}") from http_error
 
     monkeypatch.setattr(OpenAICompatibleClient, "list_models", fail)
     result = boundary.handle(
         _request("probe", "settings.provider_model.list_models", _profile("probe"))
     )
     assert result["ok"] is False
-    assert result["error"]["code"] == "AUTHENTICATION_FAILED"
+    assert result["error"]["code"] == expected_code
+    assert result["error"]["message"] == (
+        f"API HTTP {status}: Invalid credential [REDACTED] "
+        "(code: invalid_api_key; type: authentication_error)"
+    )
+    assert result["error"]["details"]["feature"] == "providers.list_models"
     assert SECRET not in repr(result)
+    assert "Invalid credential PRIVATE_PROVIDER_FAILURE" in result["error"]["details"]["diagnostics"]["diagnostic"]
 
 
 @pytest.mark.parametrize(
@@ -680,6 +737,18 @@ def test_provider_readiness_transitions_replace_only_the_session(
     from app.core_host.assistant_adapter import ReadinessResult
     from app.core_host.server import HostConfig, ReadinessController
 
+    presentation = {
+        "schemaVersion": 1,
+        "generationId": "initializer-owned",
+        "characterId": "fixture-character",
+        "displayName": "Fixture Character",
+        "initialMessage": "hello",
+        "themeTokens": {},
+        "defaultPortraitKey": "__default__",
+        "portraitKeys": ["__default__"],
+        "portraitResourceIds": {"__default__": "fixture-resource"},
+    }
+
     class Provider:
         def __init__(self) -> None:
             self.settings: list[object] = []
@@ -701,6 +770,7 @@ def test_provider_readiness_transitions_replace_only_the_session(
                 message="ready",
                 retryable=False,
                 current_character_summary=None,
+                current_character_presentation=presentation,
                 session=SimpleNamespace(provider=provider),
             )
 
@@ -742,7 +812,7 @@ def test_provider_readiness_transitions_replace_only_the_session(
     initializer = Initializer()
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), GENERATION, CREDENTIAL),
-        initializer_factory=lambda _root: initializer,
+        initializer_factory=lambda _root, _tools, _mcp: initializer,
     )
     controller.begin({})
     deadline = time.monotonic() + 2
@@ -750,6 +820,8 @@ def test_provider_readiness_transitions_replace_only_the_session(
         time.sleep(0.01)
     assert controller.readiness() == "ready"
     initial_revision = controller.snapshot()["revision"]
+    expected_presentation = {**presentation, "generationId": GENERATION}
+    assert controller.snapshot()["characterPresentation"] == expected_presentation
     original_session = controller.published_session()
     plugin_application = PluginApplication()
     with controller._lock:
@@ -765,6 +837,7 @@ def test_provider_readiness_transitions_replace_only_the_session(
     assert controller.readiness() == "setup_required"
     assert controller.published_session() is None
     assert controller.snapshot()["revision"] == initial_revision + 1
+    assert controller.snapshot()["characterPresentation"] == expected_presentation
     assert initializer.retired == 1
     assert plugin_application.unbound == 1
 
@@ -776,3 +849,109 @@ def test_provider_readiness_transitions_replace_only_the_session(
     assert controller.snapshot()["revision"] == initial_revision + 2
     assert plugin_application.bound == [replacement]
     controller.close()
+
+
+def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from app.agent.mcp import provider
+    from app.core_host.mcp_status import MCPStatusBoundary
+    from app.core_host.server import HostConfig, ReadinessController
+
+    fixture = Path(__file__).parents[1] / "fixtures/runtime_v2/wp_3_01/ready"
+    root = tmp_path / "application"
+    shutil.copytree(fixture, root)
+    registrations: list[object] = []
+
+    class MCP:
+        close_count = 0
+
+        def status_snapshot(self):
+            return {"configState": "valid", "reasonCode": "READY", "servers": []}
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    mcp = MCP()
+
+    def start_mcp(_root, tools, **_kwargs):
+        registrations.append(tools)
+        return mcp
+
+    monkeypatch.setattr(provider, "start_mcp_tools_from_config", start_mcp)
+    controller = ReadinessController(HostConfig(RuntimeRoots(root, root), GENERATION, CREDENTIAL))
+    controller.enable_tools()
+    controller.enable_mcp()
+    status = MCPStatusBoundary(
+        GENERATION, CREDENTIAL, root, mcp_provider_getter=controller.published_mcp_provider,
+    )
+    try:
+        controller.begin({})
+        controller._worker.join(2)
+        first = controller.published_session()
+        assert first is not None
+        assert first.runtime.tools is registrations[0]
+        assert first.mcp_provider is mcp
+        assert first.runtime.tools.get("get_current_time") is not None
+        assert status.snapshot()["reasonCode"] == "READY"
+
+        api_path = root / "config/api.yaml"
+        saved = api_path.read_text(encoding="utf-8")
+        api_path.write_text("api_profiles: []\n", encoding="utf-8")
+        controller.apply_provider_configuration()
+        assert controller.readiness() == "setup_required"
+        assert controller.published_session() is None
+        assert mcp.close_count == 0
+        assert status.snapshot()["reasonCode"] == "READY"
+
+        api_path.write_text(saved, encoding="utf-8")
+        controller.apply_provider_configuration()
+        second = controller.published_session()
+        assert second is not None and second is not first
+        assert second.provider is not first.provider
+        assert second.runtime.tools is first.runtime.tools
+        assert second.mcp_provider is mcp
+        assert len(registrations) == 1
+        assert mcp.close_count == 0
+        assert status.snapshot()["reasonCode"] == "READY"
+    finally:
+        controller.close()
+    assert mcp.close_count == 1
+
+
+@pytest.mark.parametrize("kind", ["list_models", "test_connection"])
+@pytest.mark.parametrize("latency", [8, 16])
+def test_google_probe_uses_full_timeout_without_restarting_request(
+    tmp_path: Path, monkeypatch, kind: str, latency: int,
+) -> None:
+    boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
+    boundary.enable()
+    calls = []
+
+    def read_response(_opener, request, *, timeout, cancel_checker):
+        calls.append(request)
+        cancel_checker()
+        # 用虚拟供应商耗时复现：8 秒生成应落在 15 秒预算内，不应被缩成 5 秒。
+        if latency > timeout:
+            raise TimeoutError()
+        assert request.get_header("Authorization") == f"Bearer {SECRET}"
+        if kind == "list_models":
+            assert request.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/models"
+            return b'{"data":[{"id":"gemini-2.5-flash"}]}', 200
+        assert request.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        payload = json.loads(request.data)
+        assert payload == {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Reply with only OK."}]}
+        return b'{"choices":[{"message":{"content":"OK"}}]}', 200
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    profile = _profile("google-probe")
+    profile["profile"].update(base_url="https://generativelanguage.googleapis.com/v1", model="gemini-2.5-flash", timeout_seconds=15)
+    result = boundary.handle(_request("google-probe", f"settings.provider_model.{kind}", profile))
+    assert len(calls) == 1
+    assert result["ok"] is (latency <= 15)
+    if latency > 15:
+        assert result["error"]["code"] == "PROVIDER_TIMEOUT"
+    elif kind == "list_models":
+        assert result["payload"]["models"] == ["gemini-2.5-flash"]
+    else:
+        assert result["payload"]["message"] == "OK"

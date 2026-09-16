@@ -1,4 +1,13 @@
-use serde_json::Value;
+use serde_json::{json, Value};
+use tauri::{State, WebviewWindow};
+
+use crate::{
+    product_shell::{self, assert_settings_identity},
+    shell_lifecycle::{
+        dispatch_settings_request, settings_core_handle, settings_response_payload,
+        ShellLifecycleState,
+    },
+};
 
 const SNAPSHOT_KEYS: [&str; 2] = ["schemaVersion", "runtimeLimits"];
 const LIMIT_KEYS: [&str; 3] = [
@@ -20,14 +29,14 @@ fn bounded_integer(value: &Value, minimum: u64, maximum: u64) -> bool {
         .is_some_and(|number| (minimum..=maximum).contains(&number))
 }
 
-pub fn validate_draft(value: &Value) -> Result<(), String> {
+fn validate_draft(value: &Value) -> Result<(), String> {
     if !has_exact_keys(value, &["runtimeLimits"]) {
         return Err("TOOLS_SETTINGS_DRAFT_INVALID".to_string());
     }
     validate_values(value)
 }
 
-pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
+fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
     let keys = if saved {
         vec!["schemaVersion", "runtimeLimits", "saved", "changePlan"]
     } else {
@@ -61,6 +70,65 @@ fn validate_values(value: &Value) -> Result<(), String> {
         return Err("TOOLS_SETTINGS_DRAFT_INVALID".to_string());
     }
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn settings_tools_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "tools.settings.get",
+        json!({}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let mut payload = settings_response_payload(response)?;
+    validate_snapshot(&payload, false)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "TOOLS_SETTINGS_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+pub(crate) async fn settings_tools_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    settings: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    validate_draft(&settings)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "tools.settings.save",
+        json!({"settings": settings}),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    let payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    validate_snapshot(&payload, true)?;
+    Ok(payload)
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ import pytest
 
 from app.core_host.plugin_artifacts import PluginArtifactStore
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
+from app.core_host import tts_boundary as tts_boundary_module
 from app.core_host.tts_boundary import TTSBoundary
 from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
@@ -140,7 +141,8 @@ def test_voice_settings_report_partial_provider_save_without_claiming_atomicity(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(plugin_application=worker, character=character),
+        session_provider=lambda: SimpleNamespace(character=character),
+        plugin_application_provider=lambda: worker,
     )
     result = boundary.handle(
         _request(
@@ -213,14 +215,15 @@ def test_voice_settings_strip_generic_surface_routing_metadata(tmp_path: Path) -
                 "collections": [],
             }]
 
+    worker = Worker()
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=Worker(),
             character=SimpleNamespace(id="alpha", display_name="Alpha"),
         ),
+        plugin_application_provider=lambda: worker,
     )
 
     result = boundary.handle(
@@ -286,7 +289,8 @@ def test_voice_settings_without_character_keep_provider_management_available(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(plugin_application=worker),
+        session_provider=lambda: None,
+        plugin_application_provider=lambda: worker,
     )
 
     result = boundary.handle(
@@ -357,6 +361,95 @@ def test_voice_settings_without_character_keep_provider_management_available(
     assert worker.service_calls == [("listProviders", ()), ("listProviders", ())]
 
 
+def test_voice_settings_use_published_character_before_chat_provider_is_configured(
+    tmp_path: Path,
+) -> None:
+    class Worker:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def call_service(self, service_key: str, method: str, *args: object):
+            assert service_key == "sakura.tts"
+            self.calls.append((method, args))
+            if method == "status":
+                assert args == ("alpha",)
+                return {
+                    "configured": False,
+                    "enabled": False,
+                    "providerId": None,
+                    "available": False,
+                    "providers": [{
+                        "providerId": "com.example.first",
+                        "label": "First",
+                        "available": True,
+                    }],
+                }
+            if method == "configure":
+                assert args == (
+                    "alpha",
+                    {"enabled": True, "provider": "com.example.first"},
+                )
+                return {"configured": True}
+            raise AssertionError(f"unexpected method: {method}")
+
+        def settings_sections(self, surface: str) -> list[dict[str, object]]:
+            assert surface == "voice"
+            return []
+
+    worker = Worker()
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: None,
+        character_presentation_provider=lambda: {
+            "characterId": "alpha",
+            "displayName": "Alpha",
+        },
+        plugin_application_provider=lambda: worker,
+    )
+
+    loaded = boundary.handle(
+        _request("tts.settings.get", {}, request_id="voice-provider-setup-required")
+    )
+
+    assert loaded["ok"] is True
+    assert loaded["payload"]["character"] == {
+        "characterId": "alpha",
+        "displayName": "Alpha",
+    }
+    assert loaded["payload"]["selection"] == {
+        "configured": False,
+        "enabled": False,
+        "providerId": None,
+        "available": False,
+    }
+
+    saved = boundary.handle(
+        _request(
+            "tts.settings.save",
+            {"settings": {
+                "characterId": "alpha",
+                "enabled": True,
+                "providerId": "com.example.first",
+                "sections": [],
+            }},
+            request_id="voice-save-before-chat-provider",
+        )
+    )
+
+    assert saved["ok"] is True
+    assert saved["payload"]["selectionSaved"] is True
+    assert worker.calls == [
+        ("status", ("alpha",)),
+        (
+            "configure",
+            ("alpha", {"enabled": True, "provider": "com.example.first"}),
+        ),
+        ("status", ("alpha",)),
+    ]
+
+
 def test_voice_settings_validate_all_sections_before_the_first_write(tmp_path: Path) -> None:
     class Worker:
         def __init__(self) -> None:
@@ -375,9 +468,9 @@ def test_voice_settings_validate_all_sections_before_the_first_write(tmp_path: P
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="alpha", display_name="Alpha"),
         ),
+        plugin_application_provider=lambda: worker,
     )
     result = boundary.handle(
         _request(
@@ -429,14 +522,15 @@ def test_voice_settings_report_partial_when_character_selection_save_fails(
                 "providers": [],
             }
 
+    worker = Worker()
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=Worker(),
             character=SimpleNamespace(id="alpha", display_name="Alpha"),
         ),
+        plugin_application_provider=lambda: worker,
     )
     result = boundary.handle(
         _request(
@@ -468,12 +562,46 @@ def _boundary(tmp_path: Path, events: list[dict]) -> TTSBoundary:
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
         event_publisher=events.append,
     )
     return boundary
+
+
+def test_character_reset_revokes_pending_and_late_synthesis(tmp_path, monkeypatch):
+    events = []
+    boundary = _boundary(tmp_path, events)
+    for index in (0, 1):
+        boundary.authorize_segment(operation_id="old", segment_index=index, text="old role",
+            tone="happy", portrait="smile", character_id="sakura", history_entry_id=f"entry-{index}")
+    ready, release = threading.Event(), threading.Event()
+    synthesize = boundary._synthesize_with_plugin
+    def delayed(*args):
+        result = synthesize(*args)
+        ready.set()
+        assert release.wait(3)
+        return result
+    monkeypatch.setattr(boundary, "_synthesize_with_plugin", delayed)
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(boundary.handle(_request(
+        "tts.synthesis.start", {"operationId": "old", "segmentIndex": 0}))))
+    thread.start()
+    try:
+        assert ready.wait(3)
+        boundary.reset_character()
+        release.set()
+        thread.join(3)
+        assert not thread.is_alive()
+        assert result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
+        assert not any(event["name"] == "tts.synthesis.ready" for event in events)
+        pending = boundary.handle(_request("tts.synthesis.start", {"operationId": "old", "segmentIndex": 1}))
+        assert pending["error"]["code"] == "TTS_SEGMENT_NOT_AUTHORIZED"
+    finally:
+        release.set()
+        thread.join(3)
+        boundary.close()
 
 
 def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) -> None:
@@ -561,9 +689,9 @@ def test_explicit_tts_service_disable_skips_segment_authorization(tmp_path: Path
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
     )
 
     authorized = boundary.authorize_segment(
@@ -617,9 +745,9 @@ def test_replacement_tts_service_failure_is_exposed_by_synthesis_start(
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
     )
 
     assert boundary.authorize_segment(
@@ -669,11 +797,13 @@ def test_authorized_plugin_artifact_is_committed_by_core_before_playback(
             artifact = store.resolve_committed_by_id(artifact_id)
             return store.release(artifact.plugin_id, artifact_id)
 
+    worker = Worker()
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(plugin_application=Worker()),
+        session_provider=lambda: None,
+        plugin_application_provider=lambda: worker,
     )
     boundary.authorize_segment(
         operation_id="operation-plugin",
@@ -728,9 +858,9 @@ def test_synthesis_rejects_disconnected_custom_tts_storage_without_fallback(
         CREDENTIAL,
         user_root,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
     )
     assert boundary.authorize_segment(
         operation_id="operation-storage",
@@ -938,14 +1068,14 @@ class InstantTTSPlugin:
         GENERATION,
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=0.1,
     )
-    session = SimpleNamespace(plugin_application=worker, character=SimpleNamespace(id="sakura"))
+    session = SimpleNamespace(character=SimpleNamespace(id="sakura"))
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         root,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
     )
     try:
         worker.start()
@@ -954,6 +1084,12 @@ class InstantTTSPlugin:
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts"]["state"] == "active"
         assert by_id["com.example.instant-tts"]["state"] == "active"
+        manifest_before = (character_root / "character.json").read_bytes()
+        assert worker.call_service("sakura.tts", "status", "sakura")["enabled"] is False
+        worker.call_service("sakura.tts", "configure", "sakura", {"enabled": True, "provider": "com.example.instant-tts"})
+        assert (character_root / "character.json").read_bytes() == manifest_before
+        selection = json.loads((root / "data/plugins/sakura.tts/config.json").read_text())["selections"]["sakura"]
+        assert selection == {"enabled": True, "provider": "com.example.instant-tts"}
         status = worker.call_service("sakura.tts", "status", "sakura")
         assert status["enabled"] is True
         assert status["providerId"] == "com.example.instant-tts"
@@ -1261,9 +1397,9 @@ def test_recording_os_error_is_reported_as_audio_recording_invalid(tmp_path: Pat
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
         event_publisher=events.append,
         recording_store=FailingRecordingStore(),  # type: ignore[arg-type]
     )
@@ -1319,7 +1455,8 @@ def test_rust_playback_observation_publishes_only_bounded_plugin_summary(tmp_pat
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(plugin_application=worker),
+        session_provider=lambda: None,
+        plugin_application_provider=lambda: worker,
     )
 
     started = boundary.handle(
@@ -1390,9 +1527,9 @@ def test_plugin_cutover_never_falls_back_when_tts_is_unavailable(
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
     )
     boundary.authorize_segment(
         operation_id="operation-no-fallback",
@@ -1421,10 +1558,9 @@ def test_plugin_cutover_never_falls_back_when_tts_is_unavailable(
 def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> None:
     from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
 
-    class Character:
-        def get(self, character_id: str):
-            assert character_id == "sakura"
-            return {"enabled": True, "provider": "com.example.provider"}
+    class Config:
+        def get(self):
+            return {"selections": {"sakura": {"enabled": True, "provider": "com.example.provider"}}}
 
     class Job:
         def __init__(self) -> None:
@@ -1447,7 +1583,7 @@ def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> 
     context = SimpleNamespace(get=lambda service_key: (
         provider if service_key == "com.example.provider.service" else None
     ))
-    hub = SakuraTTSHub(context, Character())
+    hub = SakuraTTSHub(context, Config())
     hub.registerProvider({
         "providerId": "com.example.provider",
         "serviceKey": "com.example.provider.service",
@@ -1467,20 +1603,36 @@ def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> 
     assert hub.poll("request-dispose")["errorCode"] == "TTS_JOB_NOT_FOUND"
 
 
+def test_hub_selection_is_local_persistent_and_independent_per_character(tmp_path: Path) -> None:
+    from app.plugins.sakura_plugin_sdk import PluginConfig
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+
+    config = PluginConfig("sakura.tts", tmp_path / "plugin", tmp_path / "data/plugins/sakura.tts", lambda callback: callback)
+    context = SimpleNamespace(get=lambda _key: SimpleNamespace(status=lambda: {"available": True}))
+    hub = SakuraTTSHub(context, config)
+    assert hub.status("a")["enabled"] is False
+    assert hub.status("a")["providerId"] is None
+    hub.configure("a", {"enabled": True, "provider": "example.first"})
+    hub.configure("b", {"enabled": True, "provider": "example.second"})
+    hub.configure("a", {"enabled": False, "provider": "example.first"})
+
+    restarted = SakuraTTSHub(context, PluginConfig("sakura.tts", tmp_path / "plugin", tmp_path / "data/plugins/sakura.tts", lambda callback: callback))
+    assert restarted.status("a")["enabled"] is False
+    assert restarted.status("a")["providerId"] == "example.first"
+    assert restarted.status("b")["enabled"] is True
+    assert restarted.status("b")["providerId"] == "example.second"
+
+
 def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
     from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
 
-    class Character:
+    class Config:
         enabled = True
 
-        def get(self, character_id: str):
-            assert character_id == "sakura"
-            return {
-                "enabled": self.enabled,
-                "provider": "com.example.provider",
-            }
+        def get(self):
+            return {"selections": {"sakura": {"enabled": self.enabled, "provider": "com.example.provider"}}}
 
-    character = Character()
+    config = Config()
     warmed: list[str] = []
     provider = SimpleNamespace(
         status=lambda: {"available": True},
@@ -1489,7 +1641,7 @@ def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
     context = SimpleNamespace(get=lambda service_key: (
         provider if service_key == "com.example.provider.service" else None
     ))
-    hub = SakuraTTSHub(context, character)
+    hub = SakuraTTSHub(context, config)
     hub.registerProvider({
         "providerId": "com.example.provider",
         "serviceKey": "com.example.provider.service",
@@ -1503,10 +1655,48 @@ def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
     }
     assert warmed == ["sakura"]
 
-    character.enabled = False
+    def fail(_character_id):
+        raise RuntimeError("TTS_ONNX_CONVERSION_UNAVAILABLE")
+
+    provider.warmup = fail
+    assert hub.warmup("sakura")["reasonCode"] == "TTS_ONNX_CONVERSION_UNAVAILABLE"
+
+    config.enabled = False
     assert hub.warmup("sakura")["reasonCode"] == "TTS_DISABLED"
     assert warmed == ["sakura"]
 
+
+def test_hub_warmup_preserves_provider_readiness_diagnostic() -> None:
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+
+    config = SimpleNamespace(get=lambda: {"selections": {"sakura": {
+        "enabled": True, "provider": "sakura.tts.gpt-sovits",
+    }}})
+    provider = SimpleNamespace(
+        status=lambda: {
+            "available": False,
+            "reasonCode": "TTS_RUNTIME_PYTHON_MISSING",
+            "stage": "python",
+        }
+    )
+    hub = SakuraTTSHub(
+        SimpleNamespace(get=lambda _service_key: provider),
+        config,
+    )
+    hub.registerProvider(
+        {
+            "providerId": "sakura.tts.gpt-sovits",
+            "serviceKey": "sakura.tts.provider.gpt-sovits",
+            "label": "GPT-SoVITS",
+        }
+    )
+
+    assert hub.warmup("sakura") == {
+        "accepted": False,
+        "providerId": "sakura.tts.gpt-sovits",
+        "reasonCode": "TTS_RUNTIME_PYTHON_MISSING",
+        "stage": "python",
+    }
 
 def test_tts_boundary_queues_current_character_warmup(tmp_path: Path) -> None:
     calls: list[tuple[object, ...]] = []
@@ -1534,6 +1724,46 @@ def test_tts_boundary_queues_current_character_warmup(tmp_path: Path) -> None:
     assert calls == [("sakura.tts", "warmup", "sakura")]
 
 
+def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        tts_boundary_module,
+        "log_event",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+
+    class Worker:
+        def call_service(self, *_args: object) -> dict[str, object]:
+            return {
+                "accepted": False,
+                "providerId": "sakura.tts.gpt-sovits",
+                "reasonCode": "TTS_RUNTIME_PYTHON_MISSING",
+                "stage": "python",
+                "errorType": "RuntimeConfigurationError",
+            }
+
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        plugin_application_provider=Worker,
+    )
+
+    boundary.warmup_current_selection()
+
+    assert captured[-1][1]["event"] == "tts.service.warmup_failed"
+    assert captured[-1][1]["severity"] == "warning"
+    assert captured[-1][0][2] == {
+        "generation": GENERATION,
+        "provider": "sakura.tts.gpt-sovits",
+        "status": "failed",
+        "reason_code": "TTS_RUNTIME_PYTHON_MISSING",
+        "stage": "python",
+        "error_type": "RuntimeConfigurationError",
+    }
+
+
 def test_cancel_is_rejected_after_synthesis_enters_recording_commit(tmp_path: Path) -> None:
     events: list[dict] = []
     worker = _ImmediatePluginApplication(tmp_path)
@@ -1542,9 +1772,9 @@ def test_cancel_is_rejected_after_synthesis_enters_recording_commit(tmp_path: Pa
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
         event_publisher=events.append,
     )
     boundary.authorize_segment(

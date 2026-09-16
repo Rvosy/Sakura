@@ -78,7 +78,7 @@ class TTSBundleResource:
             "actions": [
                 {"actionId": "installBundle", "label": "安装", "description": "下载并安装推荐组件。"},
                 {"actionId": "retryBundle", "label": "重试", "description": "重新尝试安装推荐组件。"},
-                {"actionId": "cancelBundle", "label": "取消", "description": "取消下载并保留可续传分片。"},
+                {"actionId": "cancelBundle", "label": "取消", "description": "取消下载，已下载的部分会保留，下次可以继续。"},
             ],
         }
 

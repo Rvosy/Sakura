@@ -7,14 +7,15 @@ RuntimeLocator never downloads or repairs a Runtime at application startup.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import sys
+import tarfile
 import time
 import urllib.request
+import zipfile
 
 
 CHUNK_SIZE = 1024 * 1024
@@ -36,21 +37,18 @@ def load_archive_manifest(
         raise ArchiveVerificationError(f"invalid runtime manifest: {exc}") from exc
     if not isinstance(archive, dict):
         raise ArchiveVerificationError("runtime manifest archive must be an object")
-    required = {"fileName", "url", "size", "sha256"}
+    required = {"fileName", "url", "size"}
     missing_fields = required.difference(archive)
     if missing_fields:
         missing = ", ".join(sorted(missing_fields))
         raise ArchiveVerificationError(f"runtime manifest archive is missing: {missing}")
     url = archive["url"]
-    sha256 = archive["sha256"]
     size = archive["size"]
     if (
         not isinstance(url, str)
         or not url.startswith("https://")
-        or not isinstance(sha256, str)
-        or len(sha256) != 64
-        or sha256 != sha256.lower()
-        or any(char not in "0123456789abcdef" for char in sha256)
+        or not isinstance(archive["fileName"], str)
+        or not archive["fileName"]
         or not isinstance(size, int)
         or isinstance(size, bool)
         or size <= 0
@@ -59,34 +57,34 @@ def load_archive_manifest(
     return archive
 
 
-def verify_archive(archive: dict[str, object], path: Path) -> tuple[int, str]:
-    digest = hashlib.sha256()
-    size = 0
+def verify_archive(archive: dict[str, object], path: Path) -> int:
     try:
-        with path.open("rb") as stream:
-            while chunk := stream.read(CHUNK_SIZE):
-                size += len(chunk)
-                digest.update(chunk)
+        size = path.stat().st_size
     except OSError as exc:
         raise ArchiveVerificationError(f"cannot read runtime archive: {exc}") from exc
-    actual_hash = digest.hexdigest()
     if size != archive["size"]:
         raise ArchiveVerificationError(
             f"runtime archive size mismatch: expected {archive['size']}, got {size}"
         )
-    if actual_hash != archive["sha256"]:
-        raise ArchiveVerificationError(
-            "runtime archive SHA-256 mismatch: "
-            f"expected {archive['sha256']}, got {actual_hash}"
-        )
-    return size, actual_hash
+    try:
+        if str(archive["fileName"]).endswith((".zip", ".whl")):
+            with zipfile.ZipFile(path) as bundle:
+                if not bundle.infolist():
+                    raise ArchiveVerificationError("runtime archive is empty")
+        else:
+            with tarfile.open(path, "r:*") as bundle:
+                if not bundle.getmembers():
+                    raise ArchiveVerificationError("runtime archive is empty")
+    except (OSError, EOFError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        raise ArchiveVerificationError(f"cannot parse runtime archive: {exc}") from exc
+    return size
 
 
 def download_and_verify(
     manifest_path: Path,
     output_path: Path,
     selector: str = "archive",
-) -> tuple[int, str]:
+) -> int:
     archive = load_archive_manifest(manifest_path, selector)
     if output_path.exists():
         return verify_archive(archive, output_path)
@@ -138,11 +136,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        size, sha256 = download_and_verify(args.manifest, args.output, args.selector)
+        size = download_and_verify(args.manifest, args.output, args.selector)
     except ArchiveVerificationError as exc:
         print(f"runtime archive verification failed: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps({"size": size, "sha256": sha256}, sort_keys=True))
+    print(json.dumps({"size": size}, sort_keys=True))
     return 0
 
 

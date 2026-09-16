@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -14,7 +14,9 @@ import psutil
 import pytest
 
 from app.agent.tools import ToolRegistry
+from app.config.character_loader import CharacterProfile
 from app.core_host.plugin_application import PluginApplicationHost
+from app.core_host import plugin_host_services
 from app.core_host.plugin_settings import PluginSettingsBoundary
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
@@ -22,6 +24,232 @@ from app.plugins.runtime_v4 import PluginRuntimeError, PluginRuntimeManager
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
+
+
+@pytest.mark.parametrize("retry_port", [8000, 8001])
+def test_unchanged_config_does_not_reload_and_failed_apply_remains_retryable(tmp_path, retry_port):
+    from app.plugins.sakura_plugin_sdk import PluginConfig
+    root, data = tmp_path / "plugin", tmp_path / "data"
+    root.mkdir()
+    (root / "config.json").write_text('{"port": 8000}', encoding="utf-8")
+    config = PluginConfig("fixture", root, data, lambda cleanup: cleanup)
+    # Explicitly pinning a default persists the override without restarting.
+    assert config.update({"port": 8000}) == "applied"
+    assert json.loads((data / "config.json").read_text(encoding="utf-8")) == {"port": 8000}
+    calls = []
+    def apply(values):
+        calls.append(values)
+        return "error" if len(calls) == 1 else "applied"
+    config.on_change(apply)
+    assert config.update({"port": 8000}) == "applied"
+    assert not calls
+    assert config.update({"port": 8001}) == "error"
+    assert config.update({"port": retry_port}) == "applied"
+    assert len(calls) == 2
+    assert config.replace({"port": retry_port}) == "applied"
+    assert len(calls) == 2
+    fresh = PluginConfig("fixture", root, data, lambda cleanup: cleanup)
+    assert fresh.update({"port": retry_port}) == "applied"
+    assert fresh.update({"port": 8002}) == "restart_required"
+    assert fresh.update({"port": 8002}) == "restart_required"
+
+
+def test_unified_logging_two_real_plugins_keep_identity_and_flush_cleanup(tmp_path: Path) -> None:
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+
+    roots = _roots(tmp_path)
+    services = {"one": "fixture.one.service", "two": "sakura.tts.provider.fixture"}
+    for name in ("one", "two"):
+        service_key = services[name]
+        plugin_root = _plugin_source(roots.distribution_root / "plugins" / "builtin", f"fixture.{name}", service_key,
+            requires=("sakura.host.logging", "sakura.host.settings", "sakura.host.model_slots"), body=f'''
+class Plugin:
+    def setup(self, context):
+        context.get("sakura.host.settings").register(
+            {{"sectionId": "fixture_{name}", "title": "示例设置", "fields": []}},
+            load=lambda: {{}},
+        )
+        context.get("sakura.host.model_slots").register(
+            {{"slotId": "summary", "label": "摘要模型", "description": "", "modelKind": "chat_completion", "required": False, "order": 50}},
+            load=lambda: {{"profileId": "", "model": ""}},
+            save=lambda values: None,
+        )
+        original_id = context.plugin_id
+        context.plugin_id = "fixture.spoofed"
+        logger = context.get("sakura.host.logging")
+        logger.info("插件已启动", fields={{"stage": "setup", "elapsed_ms": 12}})
+        context.plugin_id = original_id
+        context.effect(lambda: logger.info("插件已清理", fields={{"stage": "cleanup"}}))
+        class Service:
+            def emit(self):
+                return logger.error("业务调用失败", fields={{"stage": "run", "nested": {{"api_key": "private-credential", "count": 2}}}})
+        context.provide("{service_key}", Service(), exports=("emit",))
+''')
+        manifest = plugin_root / 'plugin.yaml'
+        manifest.write_text(manifest.read_text(encoding='utf-8').replace(f'name: fixture.{name}', f'name: 示例插件 {name}'), encoding='utf-8')
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "generation-logging", ToolRegistry())
+    try:
+        host.start()
+        assert host.application.wait_until_loaded(timeout=3)
+        current = host.application.public_snapshot()
+        assert all(item["state"] == "active" for item in current["plugins"]), current
+        for name in ("one", "two"):
+            assert host.application.call_service(services[name], "emit") is True
+    finally:
+        host.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines()
+        if line.startswith(CORE_BRIDGE_PREFIX)]
+    lifecycle = [r for r in records if r.get("event") == "plugin.loaded" or r.get("attributes", {}).get("event") == "plugin.stopped"]
+    assert len(lifecycle) == 4
+    assert {r["plugin_id"] for r in lifecycle} == {"fixture.one", "fixture.two"}
+    assert all(r.get("plugin_name", "").startswith("示例插件") for r in lifecycle)
+    custom = [r for r in records if r.get("custom") and r.get("attributes", {}).get("stage") in {"setup", "run", "cleanup"}]
+    assert len(custom) == 6, custom
+    for name in ("one", "two"):
+        rows = [r for r in custom if r["plugin_id"] == f"fixture.{name}"]
+        assert all(r["plugin_name"] == f"示例插件 {name}" for r in rows)
+        assert all(r["channel"] == ("tts" if name == "two" else "plugin") for r in rows)
+        assert {r["attributes"]["stage"] for r in rows} == {"setup", "run", "cleanup"}
+    assert b"fixture.spoofed" not in stream.getvalue()
+    assert b"private-credential" not in stream.getvalue()
+    assert all(len(line) + 1 <= 4096 for line in stream.getvalue().splitlines())
+
+
+def test_plugin_start_failures_reach_log_bridge_with_identity(tmp_path: Path):
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+    roots = _roots(tmp_path)
+    parent = roots.distribution_root / "plugins/builtin"
+    _plugin_source(parent, "fixture.missing", "fixture.missing.service", requires=("fixture.absent",), body="class Plugin: pass")
+    _plugin_source(parent, "fixture.broken", "fixture.broken.service", body="class Plugin:\n    def setup(self, context): raise ValueError('fixture setup failed')")
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "failure-log-test", ToolRegistry())
+    try:
+        host.start()
+        assert host.application.wait_until_loaded(timeout=3)
+    finally:
+        host.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    failures = [row for row in records if row.get("attributes", {}).get("event") in {"plugin.start.blocked", "plugin.start.failed"}]
+    assert {row["plugin_id"] for row in failures} == {"fixture.missing", "fixture.broken"}
+    assert all(row["severity"] == "error" and row["plugin_name"] == row["plugin_id"] for row in failures)
+    assert next(row for row in failures if row["plugin_id"] == "fixture.missing")["attributes"]["reason_code"] == "MISSING_SERVICE"
+    broken = next(row for row in failures if row["plugin_id"] == "fixture.broken")["attributes"]
+    assert "fixture setup failed" in broken["diagnostic"]
+    assert "ValueError" in broken["exception_chain"]
+    assert ":setup:" in broken["exception_stack"]
+
+
+def test_plugin_stderr_is_forwarded_before_process_exit(tmp_path: Path, monkeypatch) -> None:
+    from app.core import runtime_log
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.stderr", "fixture.stderr.service", body='''class Plugin:
+    def setup(self, context):
+        print("small stderr diagnostic", flush=True)
+        context.provide("fixture.stderr.service", object(), exports=())
+''')
+    received = threading.Event()
+    captured = []
+    def capture(level, message, **kwargs):
+        captured.append({**kwargs, "level": level})
+        if kwargs.get("fields", {}).get("event") == "plugin.process.stderr":
+            received.set()
+    monkeypatch.setattr(runtime_log, "log_message", capture)
+    host = PluginApplicationHost(roots, "stderr-test", ToolRegistry())
+    try:
+        host.start()
+        assert host.application.wait_until_loaded(timeout=3)
+        assert received.wait(3), "short stderr output must arrive while the plugin is alive"
+        row = next(row for row in captured if row.get("fields", {}).get("event") == "plugin.process.stderr")
+        assert row["plugin_id"] == "fixture.stderr"
+        assert row["plugin_name"] == "fixture.stderr"
+        assert row["level"] == "info"
+        assert row["fields"]["diagnostic"] == "small stderr diagnostic"
+    finally:
+        host.close()
+
+
+@pytest.mark.parametrize("output", [
+    "Fetching 18 files: 100%| 18/18 [00:01<00:00, 13.43it/s]",
+    "Warning: You are sending unauthenticated requests to the HF Hub.",
+    "Failed to load spaCy lemma model: spaCy is not installed.",
+])
+def test_raw_plugin_diagnostics_do_not_imply_failure(output, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from app.core import runtime_log
+    from app.plugins.runtime_v4 import _PluginProcess
+
+    captured = []
+    monkeypatch.setattr(runtime_log, "log_message", lambda level, message, **kwargs:
+                        captured.append((level, kwargs)))
+    worker = _PluginProcess.__new__(_PluginProcess)
+    worker._spec = SimpleNamespace(plugin_id="fixture.stderr", name="Fixture")
+    worker._drain_stderr(SimpleNamespace(stderr=io.BytesIO((output + "\n").encode())))
+    assert len(captured) == 1
+    level, row = captured[0]
+    assert level == "info"
+    assert row["fields"]["diagnostic"] == output
+
+
+def test_unified_logging_sdk_queue_is_bounded_and_does_not_block(tmp_path: Path) -> None:
+    from app.plugins.sakura_plugin_sdk import PluginContext
+
+    entered, release = threading.Event(), threading.Event()
+    sent = []
+    def remote(service, method, args):
+        entered.set()
+        release.wait(2)
+        sent.append(args)
+        return {"accepted": True}
+    context = PluginContext("fixture.queue", tmp_path, tmp_path, remote, lambda *_: None)
+    logger = context.get("sakura.host.logging")
+    try:
+        assert logger.info("first")
+        assert entered.wait(1)
+        started = time.monotonic()
+        results = [logger.info("queued") for _ in range(160)]
+        assert time.monotonic() - started < 0.5
+        assert sum(results) == 128
+        assert logger.error("priority") is True
+        release.set()
+    finally:
+        release.set()
+        context.close()
+    assert sum(args[1] for args in sent) == 33
+    assert any(item["message"] == "priority" for args in sent for item in args[0])
+    assert logger.info("after close") is False
+
+
+def test_plugin_diagnostics_uses_generic_logger_and_bound_identity(monkeypatch) -> None:
+    from app.plugins.host_services import HOST_CALLER
+
+    captured = []
+    monkeypatch.setattr(plugin_host_services, "log_message", lambda *args, **kwargs: captured.append((args, kwargs)))
+    service = plugin_host_services._DiagnosticsHostService()
+    descriptor = {
+        "event": "third_party.engine.failed",
+        "severity": "warning",
+        "attributes": {
+            "source_file": "my_plugin/engine.py",
+            "elapsed_ms": "12034.5",
+            "engine_state": {"phase": "loading"},
+        },
+    }
+    token = HOST_CALLER.set("third.party")
+    try:
+        assert service.call("emit", ["spoofed.plugin", descriptor]) == {"accepted": True}
+    finally:
+        HOST_CALLER.reset(token)
+    assert captured == [(("warning", descriptor["event"]), {
+        "fields": {"event": descriptor["event"], **descriptor["attributes"]},
+        "component": "plugin", "plugin_id": "third.party", "plugin_name": None,
+    })]
+    with pytest.raises(plugin_host_services.HostServiceError, match="LOG_CALLER_REQUIRED"):
+        service.call("emit", ["third.party", descriptor])
 
 
 def _roots(tmp_path: Path) -> RuntimeRoots:
@@ -203,7 +431,6 @@ class Plugin:
             {
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
         ),
@@ -224,6 +451,85 @@ class Plugin:
         ) == "private-pywin32"
     finally:
         manager.close()
+
+
+def test_failed_enable_returns_saved_revision_for_subsequent_toggles(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    plugin_id = "fixture.missing-service"
+    _plugin_source(
+        roots.distribution_root / "plugins/builtin",
+        plugin_id,
+        "fixture.consumer",
+        requires=("fixture.absent",),
+        body=_simple_service_body("fixture.consumer", "ready"),
+    )
+    PluginDesiredStateStore(roots.user_root).set(plugin_id, False)
+    application = PluginApplicationHost(roots, "generation-failed-enable", ToolRegistry())
+    boundary = PluginSettingsBoundary(
+        "generation-failed-enable", "credential", roots,
+        application_provider=lambda: application,
+    )
+    try:
+        application.start()
+        initial = boundary.snapshot()
+        install_id = initial["plugins"][0]["installId"]
+        failed = boundary.set_enabled(initial["revision"], install_id, True)
+        assert failed["desiredSaved"] is True
+        assert failed["applicationState"] == "error"
+        assert failed["applicationReasonCode"] == "MISSING_SERVICE"
+        assert failed["plugins"][0]["state"] == "failed"
+        assert failed["revision"] != initial["revision"]
+        assert failed["revision"] == boundary.snapshot()["revision"]
+        assert PluginDesiredStateStore(roots.user_root).read()[plugin_id] is True
+
+        disabled = boundary.set_enabled(failed["revision"], install_id, False)
+        assert disabled["applicationState"] == "applied"
+        assert disabled["plugins"][0]["state"] == "disabled"
+        retried = boundary.set_enabled(disabled["revision"], install_id, True)
+        assert retried["applicationReasonCode"] == "MISSING_SERVICE"
+        assert retried["revision"] == boundary.snapshot()["revision"]
+    finally:
+        application.close()
+
+
+@pytest.mark.parametrize("fail_publish", [False, True])
+def test_voice_resource_update_restores_dependents_and_preserves_unrelated_processes(tmp_path, fail_publish):
+    roots = _roots(tmp_path)
+    for name, service, requires in (
+        ("voice", "sakura.tts.provider.fixture", ()),
+        ("consumer", "fixture.consumer", ("sakura.tts.provider.fixture",)),
+        ("unrelated", "fixture.unrelated", ()),
+    ):
+        _plugin_source(roots.distribution_root / "plugins/builtin", f"fixture.{name}", service,
+            requires=requires, body=_simple_service_body(service, name))
+    application = PluginApplicationHost(roots, "generation-voice-update", ToolRegistry())
+    application.start()
+    try:
+        def records():
+            return {item["pluginId"]: item for item in application.application.public_snapshot()["plugins"]}
+        before = records()
+        assert all(item["state"] == "active" for item in before.values())
+        desired = PluginDesiredStateStore(roots.user_root).read()
+        try:
+            with application.application.prepare_voice_resources() as errors:
+                paused = records()
+                assert paused["fixture.voice"]["pid"] is None
+                assert paused["fixture.consumer"]["pid"] is None
+                assert paused["fixture.unrelated"]["pid"] == before["fixture.unrelated"]["pid"]
+                assert all(item["enabled"] for item in paused.values())
+                if fail_publish:
+                    raise OSError("publication failed")
+        except OSError:
+            assert fail_publish
+        assert not errors
+        after = records()
+        assert all(item["state"] == "active" for item in after.values())
+        assert after["fixture.unrelated"]["pid"] == before["fixture.unrelated"]["pid"]
+        for name in ("voice", "consumer"):
+            assert after[f"fixture.{name}"]["pid"] != before[f"fixture.{name}"]["pid"]
+        assert PluginDesiredStateStore(roots.user_root).read() == desired
+    finally:
+        application.close()
 
 
 def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stable(
@@ -403,7 +709,6 @@ def test_bundled_v4_plugin_uses_distribution_dependency_root_offline(
             {
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
         ),
@@ -542,7 +847,7 @@ class Plugin:
         (),
         {
             "runtime": runtime,
-            "character": type("Character", (), {"id": "fixture"})(),
+            "character": CharacterProfile("fixture", "Fixture", tmp_path, tmp_path / "card.md", ""),
         },
     )()
     try:
@@ -630,6 +935,43 @@ class Plugin:
     assert runtime.context_providers == []
 
 
+def test_isolated_plugin_can_stop_owned_process_with_public_sdk(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    _plugin_source(
+        roots.distribution_root / "plugins/builtin",
+        "fixture.process-owner",
+        "fixture.process-owner",
+        body="""
+import subprocess
+import sys
+from sakura_process import terminate_process_tree
+
+class ProcessOwner:
+    def stop_owned(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            terminate_process_tree(process, timeout=0.2)
+            return process.poll() is not None
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=2)
+
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.process-owner", ProcessOwner(), exports=("stop_owned",))
+""".strip(),
+    )
+    manager = PluginRuntimeManager(
+        roots, "generation-process-sdk", PluginInventory(roots).scan().runtime_specs
+    )
+    try:
+        assert manager.start()["plugins"][0]["state"] == "active"
+        assert manager.call_service("fixture.process-owner", "stop_owned") is True
+    finally:
+        manager.close()
+
+
 def test_service_proxy_routes_success_error_timeout_and_never_replays(
     tmp_path: Path,
 ) -> None:
@@ -642,10 +984,15 @@ def test_service_proxy_routes_success_error_timeout_and_never_replays(
         body="""
 import time
 
+class BoundaryError(RuntimeError):
+    code = "MEMORY_ROUND_TRIP_MISMATCH"
+    field = "category"
+    details = {"content": "private memory fixture"}
+
 class Echo:
     def __init__(self): self.calls = 0
     def echo(self, value): return {"echo": value}
-    def fail(self): raise RuntimeError("boom")
+    def fail(self): raise BoundaryError("boom")
     def slow(self):
         self.calls += 1
         time.sleep(0.2)
@@ -696,6 +1043,14 @@ class Plugin:
         with pytest.raises(PluginRuntimeError) as failed:
             manager.call_service("fixture.facade", "fail")
         assert failed.value.code == "PLUGIN_CALL_FAILED"
+        from app.core.diagnostics import exception_diagnostics
+        fields = exception_diagnostics(failed.value, reason_code=failed.value.code, stage="plugin_call")
+        assert "boom" in fields["diagnostic"]
+        assert "fail:" in fields["exception_stack"]
+        assert fields["cause_type"] == "BoundaryError"
+        assert fields["cause_code"] == "MEMORY_ROUND_TRIP_MISMATCH"
+        assert fields["validation_field"] == "category"
+        assert "private memory fixture" not in repr(fields)
         with pytest.raises(PluginRuntimeError) as hidden:
             manager.call_service("fixture.echo", "missing")
         assert hidden.value.code == "SERVICE_METHOD_NOT_EXPORTED"
@@ -1368,6 +1723,119 @@ def test_generation_close_acknowledges_four_real_plugins_without_timeout_multipl
     assert close_acknowledgements == [None] * 4
     _wait_pids_gone(pids)
     manager.close()
+
+
+def test_generation_close_unregisters_provider_from_live_tts_hub(tmp_path: Path) -> None:
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins" / "builtin"
+    hub_source = Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_tts_hub/plugin.py"
+    _plugin_source(
+        bundled, "fixture.tts-hub", "sakura.tts", requires=("sakura.host.logging",),
+        body=hub_source.read_text(encoding="utf-8") + "\nPlugin = SakuraTTSHubPlugin\n",
+    )
+    cleanup_result = tmp_path / "provider-cleanup.json"
+    _plugin_source(
+        bundled, "fixture.tts-provider", "fixture.tts-provider.service", requires=("sakura.tts",),
+        body=f'''
+import json
+from pathlib import Path
+
+class Plugin:
+    def setup(self, context):
+        hub = context.get("sakura.tts")
+        hub.registerProvider({{
+            "providerId": "fixture.tts-provider", "serviceKey": "fixture.tts-provider.service", "label": "Fixture"
+        }})
+        def cleanup():
+            result = hub.unregisterProvider("fixture.tts-provider", "fixture.tts-provider.service")
+            Path({str(cleanup_result)!r}).write_text(json.dumps(result), encoding="utf-8")
+        context.effect(cleanup)
+        context.provide("fixture.tts-provider.service", object(), exports=())
+''',
+    )
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "generation-hub-cleanup", ToolRegistry())
+    try:
+        host.start()
+        assert host.application.wait_until_loaded(timeout=3)
+        snapshot = host.application.public_snapshot()
+        assert all(item["state"] == "active" for item in snapshot["plugins"]), snapshot
+        pids = [item["pid"] for item in snapshot["plugins"]]
+    finally:
+        host.close()
+        bridge.close()
+
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
+               for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    cleanup_failures = [record for record in records
+                        if record.get("attributes", {}).get("event") == "plugin.cleanup.failed"]
+    assert not cleanup_failures, cleanup_failures
+    assert json.loads(cleanup_result.read_text(encoding="utf-8")) == {
+        "removed": True, "providerId": "fixture.tts-provider", "serviceKey": "fixture.tts-provider.service",
+    }
+    _wait_pids_gone(pids)
+
+
+@pytest.mark.parametrize(
+    "condition", ["valid", "external", "undeclared", "inactive_target", "stale_target", "not_draining", "stale_caller", "expired"],
+)
+def test_draining_dependency_calls_keep_identity_scope_and_deadline(
+    tmp_path: Path, condition: str,
+) -> None:
+    from app.plugins.runtime_v4 import _DrainingProcess, _ServiceBinding
+
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins/builtin"
+    for name in ("caller", "dependency"):
+        service_key = f"fixture.{name}.service"
+        _plugin_source(
+            bundled, f"fixture.{name}", service_key,
+            requires=("fixture.dependency.service",) if name == "caller" and condition != "undeclared" else (),
+            body=_simple_service_body(service_key, name),
+        )
+    manager = PluginRuntimeManager(roots, "draining-scope", PluginInventory(roots).scan().runtime_specs)
+    calls = []
+
+    class Dependency:
+        def call_service(self, service_key, method, args, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append((service_key, method, args, kwargs))
+            return {"removed": True}
+
+    caller, dependency = object(), Dependency()
+    target_record = manager._records["fixture.dependency"]
+    target_record.process = object() if condition == "stale_target" else dependency
+    target_record.state = "disabled" if condition == "inactive_target" else "active"
+    manager._services["fixture.dependency.service"] = _ServiceBinding(
+        "fixture.dependency", frozenset({"unregisterProvider"}), process=dependency,
+    )
+    manager._closed = True
+    if condition != "not_draining":
+        manager._draining_processes["fixture.caller"] = _DrainingProcess(
+            caller, time.monotonic() + (-1 if condition == "expired" else 0.5),
+        )
+
+    def invoke():  # type: ignore[no-untyped-def]
+        if condition == "external":
+            return manager.call_service("fixture.dependency.service", "unregisterProvider", "fixture.caller")
+        return manager._handle_plugin_request(
+            "fixture.caller", "service.call",
+            {"serviceKey": "fixture.dependency.service", "method": "unregisterProvider", "args": ["fixture.caller"]},
+            calling_process=object() if condition == "stale_caller" else caller,
+        )
+
+    if condition == "valid":
+        assert invoke() == {"removed": True}
+        assert len(calls) == 1
+        assert 0 < calls[0][3]["timeout"] <= 0.5
+        assert calls[0][3]["caller_id"] == "fixture.caller"
+    else:
+        with pytest.raises((PluginApiError, PluginRuntimeError)) as rejected:
+            invoke()
+        assert rejected.value.code == ("PLUGIN_CALL_TIMEOUT" if condition == "expired" else "GENERATION_INVALIDATED")
+        assert calls == []
 
 
 def test_generation_close_uses_one_deadline_when_plugin_cleanup_blocks(

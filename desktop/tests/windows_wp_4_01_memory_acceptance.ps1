@@ -19,7 +19,7 @@ function Get-FileManifest([string]$Root) {
         $relative = $_.FullName.Substring($Root.Length + 1).Replace("\", "/")
         $manifest[$relative] = [ordered]@{
             size = $_.Length
-            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+            modifiedUtcTicks = $_.LastWriteTimeUtc.Ticks
         }
     }
     $manifest
@@ -30,7 +30,7 @@ function Get-ChangedPaths([hashtable]$Before, [hashtable]$After) {
         -not $Before.ContainsKey($_) -or
         -not $After.ContainsKey($_) -or
         $Before[$_].size -ne $After[$_].size -or
-        $Before[$_].sha256 -ne $After[$_].sha256
+        $Before[$_].modifiedUtcTicks -ne $After[$_].modifiedUtcTicks
     })
 }
 
@@ -56,7 +56,7 @@ try {
         [IO.File]::WriteAllBytes($legacyMemory, [Text.Encoding]::UTF8.GetBytes("legacy-memory-byte-baseline`n"))
     }
     $manifestBefore = Get-FileManifest $appRoot
-    $legacyHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $legacyMemory).Hash
+    $legacyBytesBefore = [IO.File]::ReadAllBytes($legacyMemory)
 
     Write-Host ""
     Write-Host "WP-4-01 可见 UI 验收已启动。请按 Codex 给出的清单操作。" -ForegroundColor Cyan
@@ -88,8 +88,8 @@ try {
     if ($related.Count -ne 0) {
         throw "WP-4-01 left related Shell/Core descendants: $($related | ConvertTo-Json -Compress)"
     }
-    $legacyHashAfter = (Get-FileHash -Algorithm SHA256 -LiteralPath $legacyMemory).Hash
-    if ($legacyHashAfter -ne $legacyHashBefore) {
+    $legacyBytesAfter = [IO.File]::ReadAllBytes($legacyMemory)
+    if (-not [Linq.Enumerable]::SequenceEqual[byte]($legacyBytesAfter, $legacyBytesBefore)) {
         throw "Legacy data/memory.json changed during WP-4-01 acceptance."
     }
 

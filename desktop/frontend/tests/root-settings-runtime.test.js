@@ -3,13 +3,36 @@ import test from "node:test";
 
 import {
   createRootSettingsClient,
+  formatSettingsError,
+  legacyDataImportPlanHasWork,
   normalizeAboutSettingsSnapshot,
+  normalizeCharacterExportReceipt,
   normalizeCharacterSettingsSnapshot,
   normalizeCharacterSwitchReceipt,
+  normalizeLegacyDataImportPlan,
   normalizeStorageSettingsSnapshot,
+  normalizeTelemetrySettingsSnapshot,
   normalizeUpdatePreferencesSnapshot,
   normalizeUpdateSettingsSnapshot,
 } from "../settings/root-settings-runtime.js";
+
+test("settings errors display their public message instead of protocol metadata", () => {
+  assert.equal(
+    formatSettingsError("MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。"),
+    "模型槽必须同时选择 Provider 和模型。",
+  );
+  assert.equal(
+    formatSettingsError("连接失败：PROVIDER_TIMEOUT|providers.test_connection||供应商请求超时。"),
+    "连接失败：供应商请求超时。",
+  );
+  assert.equal(
+    formatSettingsError(
+      "自动检测失败：PROVIDER_ACCESS_FORBIDDEN|providers.list_models||API HTTP 403: Model listing is not allowed (code: access_denied; type: permission_error)",
+    ),
+    "自动检测失败：API HTTP 403: Model listing is not allowed (code: access_denied; type: permission_error)",
+  );
+  assert.equal(formatSettingsError("请先选择模型。"), "请先选择模型。");
+});
 
 const emptyCharacters = Object.freeze({
   schemaVersion: 1,
@@ -26,6 +49,12 @@ const unchangedCharacters = Object.freeze({
   restartState: "not_required",
 });
 
+const characterExport = Object.freeze({
+  schemaVersion: 1,
+  outputPath: "/tmp/role.char",
+  message: "角色包已导出到：/tmp/role.char",
+});
+
 const defaultStorage = Object.freeze({
   schemaVersion: 1,
   userRoot: "/Users/test/Library/Application Support/Sakura",
@@ -33,6 +62,31 @@ const defaultStorage = Object.freeze({
   ttsRootSource: "default",
   ttsRootAvailable: true,
   reasonCode: null,
+});
+
+const legacyDataPlan = Object.freeze({
+  schemaVersion: 1,
+  selectionId: "selection-a",
+  planToken: "a".repeat(32),
+  sourceLabel: "Sakura-0.9.10",
+  characters: [{
+    characterId: "Sakura",
+    history: { new: 2, identical: 1, conflicts: 0 },
+    memory: { new: 1, identical: 0, conflicts: 0 },
+  }],
+  charactersTruncated: false,
+  totals: {
+    historyNew: 2,
+    historyIdentical: 1,
+    historyConflicts: 0,
+    memoryNew: 1,
+    memoryIdentical: 0,
+    memoryConflicts: 0,
+    recoverableErrors: 1,
+  },
+  conflicts: [],
+  requiresConflictConfirmation: false,
+  blocked: false,
 });
 
 const noUpdate = Object.freeze({
@@ -46,6 +100,27 @@ const noUpdate = Object.freeze({
   downloadUrl: null,
 });
 
+test("quarantine-only legacy plans still require apply", () => {
+  const quarantineOnly = normalizeLegacyDataImportPlan({
+    ...legacyDataPlan,
+    characters: [],
+    totals: {
+      historyNew: 0,
+      historyIdentical: 0,
+      historyConflicts: 0,
+      memoryNew: 0,
+      memoryIdentical: 0,
+      memoryConflicts: 0,
+      recoverableErrors: 1,
+    },
+  });
+  assert.equal(legacyDataImportPlanHasWork(quarantineOnly), true);
+  assert.equal(legacyDataImportPlanHasWork({
+    ...quarantineOnly,
+    totals: { ...quarantineOnly.totals, recoverableErrors: 0 },
+  }), false);
+});
+
 const updatePreferences = Object.freeze({
   schemaVersion: 1,
   autoCheckEnabled: true,
@@ -55,6 +130,12 @@ const about = Object.freeze({
   schemaVersion: 1,
   version: "1.0.0",
   repositoryUrl: "https://github.com/Rvosy/Sakura",
+});
+
+const telemetry = Object.freeze({
+  schemaVersion: 1,
+  enabled: true,
+  installationId: "550e8400-e29b-41d4-a716-446655440000",
 });
 
 test("empty character snapshot renders as a supported no-selection state", () => {
@@ -70,7 +151,22 @@ test("selected character must be a member and character fields are exact", () =>
   }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
   assert.throws(() => normalizeCharacterSettingsSnapshot({
     ...emptyCharacters,
-    characters: [{ id: "sakura", displayName: "Sakura", hasVoice: true, path: "/secret" }],
+    characters: [{
+      id: "sakura",
+      displayName: "Sakura",
+      hasVoice: true,
+      hasExportableVoice: true,
+      path: "/secret",
+    }],
+  }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
+  assert.throws(() => normalizeCharacterSettingsSnapshot({
+    ...emptyCharacters,
+    characters: [{
+      id: "sakura",
+      displayName: "Sakura",
+      hasVoice: false,
+      hasExportableVoice: true,
+    }],
   }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
 });
 
@@ -79,7 +175,12 @@ test("character switch receipt binds the committed target and previous generatio
     ...emptyCharacters,
     revision: 2,
     currentCharacterId: "sakura",
-    characters: [{ id: "sakura", displayName: "Sakura", hasVoice: true }],
+    characters: [{
+      id: "sakura",
+      displayName: "Sakura",
+      hasVoice: true,
+      hasExportableVoice: true,
+    }],
   };
   const normalized = normalizeCharacterSwitchReceipt({
     ...unchangedCharacters,
@@ -94,6 +195,14 @@ test("character switch receipt binds the committed target and previous generatio
     snapshot: selected,
     targetCharacterId: "other",
   }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
+});
+
+test("character export receipt exposes only the selected output and public message", () => {
+  assert.deepEqual(normalizeCharacterExportReceipt(characterExport), characterExport);
+  assert.throws(() => normalizeCharacterExportReceipt({
+    ...characterExport,
+    characterCard: "private",
+  }), /CHARACTER_EXPORT_RESPONSE_INVALID/);
 });
 
 test("storage snapshot projects paths, status and reset availability", () => {
@@ -124,6 +233,18 @@ test("storage availability and reason code cannot contradict each other", () => 
     ...defaultStorage,
     reasonCode: "TTS_ROOT_MISSING",
   }), /STORAGE_SETTINGS_RESPONSE_INVALID/);
+});
+
+test("legacy role data plan exposes only bounded counts and opaque identities", () => {
+  assert.deepEqual(normalizeLegacyDataImportPlan(legacyDataPlan), legacyDataPlan);
+  assert.throws(() => normalizeLegacyDataImportPlan({
+    ...legacyDataPlan,
+    planToken: "",
+  }), /LEGACY_DATA_IMPORT_RESPONSE_INVALID/);
+  assert.throws(() => normalizeLegacyDataImportPlan({
+    ...legacyDataPlan,
+    totals: { ...legacyDataPlan.totals, memoryNew: -1 },
+  }), /LEGACY_DATA_IMPORT_RESPONSE_INVALID/);
 });
 
 test("update snapshot separates installed updater from portable download", () => {
@@ -163,11 +284,29 @@ test("about snapshot exposes only the packaged version and fixed repository", ()
   }), /ABOUT_SETTINGS_RESPONSE_INVALID/);
 });
 
+test("telemetry snapshot accepts only the one switch and canonical v4 id", () => {
+  assert.deepEqual(normalizeTelemetrySettingsSnapshot(telemetry), telemetry);
+  assert.deepEqual(normalizeTelemetrySettingsSnapshot({
+    ...telemetry,
+    enabled: false,
+    installationId: null,
+  }).installationId, null);
+  assert.throws(() => normalizeTelemetrySettingsSnapshot({
+    ...telemetry,
+    installationId: "PRIVATE-MACHINE-ID",
+  }), /TELEMETRY_SETTINGS_RESPONSE_INVALID/);
+  assert.throws(() => normalizeTelemetrySettingsSnapshot({
+    ...telemetry,
+    prompt: "PRIVATE CHAT",
+  }), /TELEMETRY_SETTINGS_RESPONSE_INVALID/);
+});
+
 test("typed root settings client uses only frozen character storage, update, and about commands", async () => {
   const calls = [];
   const invoke = async (command, args) => {
     calls.push([command, args]);
     if (command === "settings_characters_get") return emptyCharacters;
+    if (command === "settings_character_export") return characterExport;
     if (command.startsWith("settings_character")) return unchangedCharacters;
     if (command === "settings_storage_open_user_root") return null;
     if (command === "settings_update_get") return noUpdate;
@@ -178,11 +317,19 @@ test("typed root settings client uses only frozen character storage, update, and
     if (command.startsWith("settings_update_")) return null;
     if (command === "settings_about_get") return about;
     if (command.startsWith("settings_about_open_")) return null;
+    if (command === "settings_telemetry_get") return telemetry;
+    if (command === "settings_telemetry_set_enabled") {
+      return { ...telemetry, enabled: args.enabled };
+    }
+    if (command === "settings_telemetry_regenerate_installation_id") return telemetry;
+    if (command === "settings_telemetry_open_documentation") return null;
     return defaultStorage;
   };
   const client = createRootSettingsClient({ invoke });
   await client.charactersGet();
   await client.characterImport("/tmp/role.char");
+  await client.characterVoiceImport("/tmp/role.voice", "role");
+  await client.characterExport("/tmp/role.char", "role", "full");
   await client.characterSelect("role");
   await client.storageGet();
   await client.storageOpenUserRoot();
@@ -199,9 +346,17 @@ test("typed root settings client uses only frozen character storage, update, and
   await client.aboutOpenRepository();
   await client.aboutOpenChangelog();
   await client.aboutOpenSponsor();
+  await client.telemetryGet();
+  await client.telemetrySetEnabled(false);
+  await client.telemetryRegenerateInstallationId();
+  await client.telemetryOpenDocumentation();
+  await client.macosOpenSystemSettings();
+  await client.macosOpenAppleSupport();
   assert.deepEqual(calls, [
     ["settings_characters_get", undefined],
     ["settings_character_import", { path: "/tmp/role.char" }],
+    ["settings_character_import_voice", { path: "/tmp/role.voice", characterId: "role" }],
+    ["settings_character_export", { path: "/tmp/role.char", characterId: "role", kind: "full" }],
     ["settings_character_select", { characterId: "role" }],
     ["settings_storage_get", undefined],
     ["settings_storage_open_user_root", undefined],
@@ -218,5 +373,32 @@ test("typed root settings client uses only frozen character storage, update, and
     ["settings_about_open_repository", undefined],
     ["settings_about_open_changelog", undefined],
     ["settings_about_open_sponsor", undefined],
+    ["settings_telemetry_get", undefined],
+    ["settings_telemetry_set_enabled", { enabled: false }],
+    ["settings_telemetry_regenerate_installation_id", undefined],
+    ["settings_telemetry_open_documentation", undefined],
+    ["settings_macos_open_system_settings", undefined],
+    ["settings_macos_open_apple_support", undefined],
   ]);
+});
+
+test("package-only and orphan reassociation plans have executable work", () => {
+  const totals = Object.fromEntries(Object.keys(legacyDataPlan.totals).map(key => [key, 0]));
+  assert.equal(legacyDataImportPlanHasWork({ ...legacyDataPlan, totals, packagesNew: 1 }), true);
+  assert.equal(legacyDataImportPlanHasWork({ ...legacyDataPlan, totals, reassociatedRecords: 2 }), true);
+  assert.equal(legacyDataImportPlanHasWork({ ...legacyDataPlan, totals }), false);
+});
+
+test("role mapping is sent for a fresh plan before apply uses its token", async () => {
+  const calls = [];
+  const client = createRootSettingsClient({ invoke: async (command, args) => {
+    calls.push({command,args});
+    if (command === "settings_legacy_data_import_choose") return legacyDataPlan;
+    return { schemaVersion:1, outcome:"completed", importId:"import-result", plan:legacyDataPlan };
+  }});
+  const mapping = { OldRole:"CurrentRole" };
+  const plan = await client.legacyRoleDataImportChoose("old-selection", mapping);
+  await client.legacyRoleDataImportApply(plan.selectionId, plan.planToken, false);
+  assert.deepEqual(calls[0], {command:"settings_legacy_data_import_choose", args:{selectionId:"old-selection",roleMapping:mapping}});
+  assert.deepEqual(calls[1].args, {selectionId:plan.selectionId,planToken:plan.planToken,overwriteConflicts:false});
 });

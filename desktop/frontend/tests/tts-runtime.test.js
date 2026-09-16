@@ -11,6 +11,31 @@ function deferred() {
   return { promise, reject, resolve };
 }
 
+test("voice capture stops queued TTS and skips new segments without replay after capture", async () => {
+  const calls = [];
+  const controller = createTtsController({
+    listen: async () => () => {},
+    invoke: async (name, args) => { calls.push([name, args]); return null; },
+  });
+  await controller.start();
+  controller.beginReply("before-capture", [{ text: "old" }]);
+  controller.setInputCaptureActive(true);
+  const segments = [{ text: "during capture" }];
+  controller.beginReply("during-capture", segments);
+  let skipped = false;
+  await controller.beforeSegment(segments[0], 0, { onStarted: ({ state }) => { skipped = state === "skipped"; } });
+  await controller.afterSegment(0);
+  assert.equal(skipped, true);
+  assert.equal(calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
+  assert.equal(calls.filter(([name]) => name === "tts_play_prepared").length, 0);
+  assert.ok(calls.some(([name]) => name === "tts_stop_playback"));
+  const count = calls.length;
+  controller.setInputCaptureActive(false);
+  await Promise.resolve();
+  assert.equal(calls.length, count);
+  controller.dispose();
+});
+
 
 test("WP-4-05 subtitle gate opens on playback start and waits for playback finish", async () => {
   let playbackListener;

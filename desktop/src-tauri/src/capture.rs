@@ -12,8 +12,9 @@ use std::{
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ExtendedColorType, ImageEncoder};
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    webview::{Color, WebviewBuilder},
+    window::WindowBuilder,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
@@ -50,6 +51,8 @@ pub struct CaptureMonitor {
 struct CaptureSession {
     id: String,
     generation_id: String,
+    character_session_id: String,
+    capture_revision: u64,
     windows: HashMap<String, u32>,
 }
 
@@ -62,6 +65,7 @@ struct CaptureResource {
 
 #[derive(Clone, Debug)]
 struct ScreenAwarenessFrame {
+    character_session_id: String,
     bytes: Vec<u8>,
     width: u32,
     height: u32,
@@ -72,6 +76,8 @@ struct ScreenAwarenessFrame {
 #[derive(Clone, Debug)]
 pub struct CaptureClaim {
     pub generation_id: String,
+    pub character_session_id: String,
+    pub capture_revision: u64,
     pub monitor_id: u32,
     pub window_labels: Vec<String>,
 }
@@ -92,6 +98,7 @@ pub struct ScreenResourceDescriptor {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenAttachmentPublication {
+    pub capture_revision: u64,
     pub attachment_id: String,
     pub item_id: String,
     pub width: u32,
@@ -121,6 +128,12 @@ pub struct ScreenAwarenessCapturePublication {
 pub struct ScreenAwarenessAttachmentPublication {
     pub attachment_id: String,
     pub count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureStartRequest {
+    pub capture_revision: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -218,6 +231,8 @@ impl CaptureManager {
     pub fn begin_session(
         &self,
         generation_id: &str,
+        character_session_id: &str,
+        capture_revision: u64,
         monitors: &[CaptureMonitor],
     ) -> Result<(String, Vec<String>, Vec<String>), String> {
         if !self.available {
@@ -253,6 +268,8 @@ impl CaptureManager {
         state.active = Some(CaptureSession {
             id: session_id.clone(),
             generation_id: generation_id.to_string(),
+            character_session_id: character_session_id.to_string(),
+            capture_revision,
             windows,
         });
         Ok((session_id, labels, previous))
@@ -280,24 +297,28 @@ impl CaptureManager {
         }
         Ok(CaptureClaim {
             generation_id: session.generation_id,
+            character_session_id: session.character_session_id,
+            capture_revision: session.capture_revision,
             monitor_id,
             window_labels: session.windows.into_keys().collect(),
         })
     }
 
-    pub fn cancel_session(&self, session_id: &str, window_label: &str) -> Option<Vec<String>> {
+    pub fn cancel_session(
+        &self,
+        session_id: &str,
+        window_label: &str,
+    ) -> Option<(u64, Vec<String>)> {
         let mut state = self.state.lock().ok()?;
         let matches = state.active.as_ref().is_some_and(|session| {
             session.id == session_id && session.windows.contains_key(window_label)
         });
         matches.then(|| {
-            state
-                .active
-                .take()
-                .expect("matched session exists")
-                .windows
-                .into_keys()
-                .collect()
+            let session = state.active.take().expect("matched session exists");
+            (
+                session.capture_revision,
+                session.windows.into_keys().collect(),
+            )
         })
     }
 
@@ -409,6 +430,7 @@ impl CaptureManager {
     pub fn capture_screen_awareness_frame(
         &self,
         generation_id: &str,
+        character_session_id: &str,
         cursor_x: i32,
         cursor_y: i32,
         resolution: &str,
@@ -444,6 +466,7 @@ impl CaptureManager {
             return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
         }
         let frame = ScreenAwarenessFrame {
+            character_session_id: character_session_id.to_string(),
             bytes,
             width: rgb.width(),
             height: rgb.height(),
@@ -477,6 +500,7 @@ impl CaptureManager {
             state.awareness_frames.clear();
             state.active_generation = Some(generation_id.to_string());
         }
+        let character_session_id = frame.character_session_id.clone();
         state.awareness_frames.push_back(frame);
         let mut dropped_count = 0;
         while state.awareness_frames.len() > batch_limit
@@ -486,7 +510,11 @@ impl CaptureManager {
             dropped_count += 1;
         }
         Ok(ScreenAwarenessCapturePublication {
-            count: state.awareness_frames.len(),
+            count: state
+                .awareness_frames
+                .iter()
+                .filter(|frame| frame.character_session_id == character_session_id)
+                .count(),
             dropped_count,
         })
     }
@@ -494,6 +522,7 @@ impl CaptureManager {
     pub fn materialize_screen_awareness_batch(
         &self,
         generation_id: &str,
+        character_session_id: &str,
     ) -> Result<Vec<ScreenResourceDescriptor>, String> {
         validate_generation(generation_id)?;
         self.cleanup_expired();
@@ -506,7 +535,11 @@ impl CaptureManager {
                 state.awareness_frames.clear();
                 return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
             }
-            state.awareness_frames.drain(..).collect::<Vec<_>>()
+            state
+                .awareness_frames
+                .drain(..)
+                .filter(|frame| frame.character_session_id == character_session_id)
+                .collect::<Vec<_>>()
         };
         if frames.is_empty() {
             return Err("SCREEN_AWARENESS_BATCH_EMPTY".to_string());
@@ -680,13 +713,32 @@ pub fn show_overlays(
     if labels.len() != monitors.len() {
         return Err("SCREEN_CAPTURE_OVERLAY_INVALID".to_string());
     }
+    let creation_scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| monitor.scale_factor())
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(1.0);
     let mut created = Vec::new();
     for (label, monitor) in labels.iter().zip(monitors) {
         let query = capture_overlay_url(session_id, monitor.id, theme_primary);
-        let window = match WebviewWindowBuilder::new(app, label, WebviewUrl::App(query.into()))
+        let initial_size = initial_overlay_size(monitor, creation_scale);
+        // WebView2 binds its composition controller to the monitor that owns the
+        // parent HWND when the controller is created. Building a WebviewWindow at
+        // its default position and moving it afterwards can therefore leave a
+        // secondary-monitor controller with an opaque white backing surface.
+        // Create the hidden native window at its final physical size, place it,
+        // then attach the transparent webview after the HWND reaches its monitor.
+        // This also avoids resizing Tauri's default 800x600 transparent surface,
+        // which can leave the newly exposed area opaque on some Windows displays.
+        // Tao also enables shadows for undecorated windows by default; that
+        // non-client surface can remain opaque white on some Windows displays.
+        let window = match WindowBuilder::new(app, label)
             .title(format!("Sakura 截图 · {}", monitor.name))
+            .inner_size(initial_size.width, initial_size.height)
             .decorations(false)
-            .devtools(false)
+            .shadow(false)
             .transparent(true)
             .always_on_top(true)
             .skip_taskbar(true)
@@ -705,12 +757,21 @@ pub fn show_overlays(
         };
         if window
             .set_position(PhysicalPosition::new(monitor.bounds.x, monitor.bounds.y))
-            .and_then(|_| {
-                window.set_size(PhysicalSize::new(
-                    monitor.bounds.width,
-                    monitor.bounds.height,
-                ))
-            })
+            .and_then(|_| window.set_size(overlay_size(monitor)))
+            .is_err()
+        {
+            close_windows(app, &created);
+            let _ = window.close();
+            return Err("SCREEN_CAPTURE_OVERLAY_UNAVAILABLE".to_string());
+        }
+        let webview = WebviewBuilder::new(label, WebviewUrl::App(query.into()))
+            .devtools(false)
+            .transparent(true)
+            .background_color(Color(0, 0, 0, 0))
+            .focused(false)
+            .auto_resize();
+        if window
+            .add_child(webview, PhysicalPosition::new(0, 0), overlay_size(monitor))
             .and_then(|_| window.show())
             .is_err()
         {
@@ -726,6 +787,18 @@ pub fn show_overlays(
         }
     }
     Ok(())
+}
+
+fn overlay_size(monitor: &CaptureMonitor) -> PhysicalSize<u32> {
+    PhysicalSize::new(monitor.bounds.width, monitor.bounds.height)
+}
+
+fn initial_overlay_size(monitor: &CaptureMonitor, creation_scale: f64) -> LogicalSize<f64> {
+    debug_assert!(creation_scale.is_finite() && creation_scale > 0.0);
+    LogicalSize::new(
+        f64::from(monitor.bounds.width) / creation_scale,
+        f64::from(monitor.bounds.height) / creation_scale,
+    )
 }
 
 fn capture_overlay_url(session_id: &str, monitor_id: u32, theme_primary: &str) -> String {
@@ -909,6 +982,7 @@ mod tests {
 
     fn awareness_frame(label: &str, byte_length: usize) -> ScreenAwarenessFrame {
         ScreenAwarenessFrame {
+            character_session_id: "session-a".to_string(),
             bytes: vec![7; byte_length],
             width: 100,
             height: 50,
@@ -965,6 +1039,28 @@ mod tests {
                 width: 120,
                 height: 60
             }
+        );
+    }
+
+    #[test]
+    fn overlay_native_surface_starts_at_the_target_monitor_size() {
+        let monitor = CaptureMonitor {
+            id: 7,
+            name: "fixture".to_string(),
+            bounds: PhysicalRect {
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            },
+            primary: false,
+        };
+        let creation_scale = 1.25;
+        let logical = initial_overlay_size(&monitor, creation_scale);
+
+        assert_eq!(
+            logical.to_physical::<u32>(creation_scale),
+            overlay_size(&monitor)
         );
     }
 
@@ -1030,7 +1126,12 @@ mod tests {
             primary: false,
         };
         let (session, labels, _) = manager
-            .begin_session("00000000-0000-4000-8000-000000004006", &[monitor])
+            .begin_session(
+                "00000000-0000-4000-8000-000000004006",
+                "session-a",
+                7,
+                &[monitor],
+            )
             .unwrap();
         let claim = manager.claim_selection(&session, &labels[0], 7).unwrap();
         assert_eq!(claim.monitor_id, 7);
@@ -1107,7 +1208,7 @@ mod tests {
         assert_eq!(publication.dropped_count, 1);
 
         let descriptors = manager
-            .materialize_screen_awareness_batch(generation_id)
+            .materialize_screen_awareness_batch(generation_id, "session-a")
             .unwrap();
         assert_eq!(
             descriptors
@@ -1156,5 +1257,38 @@ mod tests {
         drop(state);
         drop(manager);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn screen_awareness_batch_rejects_frames_from_previous_character_sessions() {
+        let root =
+            std::env::temp_dir().join(format!("sakura-session-test-{}", Uuid::new_v4().simple()));
+        let manager = CaptureManager::with_base(root.clone()).unwrap();
+        let generation = "00000000-0000-4000-8000-000000004007";
+        for (session, label) in [
+            ("alpha-first", "old"),
+            ("beta", "other"),
+            ("alpha-second", "current"),
+        ] {
+            let mut frame = awareness_frame(label, 8);
+            frame.character_session_id = session.to_string();
+            manager
+                .push_screen_awareness_frame(generation, frame, 20)
+                .unwrap();
+        }
+        // A late frame from the first A session arrives after returning to A.
+        let mut late = awareness_frame("late", 8);
+        late.character_session_id = "alpha-first".to_string();
+        manager
+            .push_screen_awareness_frame(generation, late, 20)
+            .unwrap();
+        let descriptors = manager
+            .materialize_screen_awareness_batch(generation, "alpha-second")
+            .unwrap();
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].captured_at, "current");
+        manager.release_descriptors(&descriptors, generation);
+        drop(manager);
+        fs::remove_dir_all(root).unwrap();
     }
 }

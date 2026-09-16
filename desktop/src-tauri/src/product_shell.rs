@@ -11,6 +11,7 @@ use tauri::{App, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, Webview
 
 use crate::{
     runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity},
+    shell_lifecycle,
     ui_config::UiConfigRepository,
 };
 
@@ -29,7 +30,7 @@ const MENU_OPEN_RUNTIME_LOG: &str = "sakura.runtime-log.open";
 const MENU_OPEN_SETTINGS: &str = "sakura.settings.open";
 const MENU_EXIT_APP: &str = "sakura.app.exit";
 const PRODUCT_TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
-const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "该功能尚未迁移到 Runtime v2";
+const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "此功能暂不可用";
 const FIRST_RUN_GUIDE_NAMESPACE: &str = "FIRST_RUN_GUIDE";
 const FIRST_RUN_GUIDE_FIELD: &str = "first_run_guide_completed";
 
@@ -288,6 +289,8 @@ struct SettingsWindowSession {
     closing: bool,
     reopen_after_close: bool,
     exit_pending: bool,
+    exit_revision: u64,
+    exit_acknowledged: bool,
     app_exit_authorized: bool,
 }
 
@@ -398,15 +401,41 @@ impl ProductShellState {
         Ok(authorized)
     }
 
-    pub fn begin_exit(&self) -> Result<bool, String> {
+    pub fn begin_exit(&self) -> Result<Option<u64>, String> {
         let mut session = self
             .settings
             .lock()
             .map_err(|_| "settings window state is unavailable".to_string())?;
         if session.exit_pending {
-            return Ok(false);
+            return Ok(None);
         }
         session.exit_pending = true;
+        session.exit_revision += 1;
+        session.exit_acknowledged = false;
+        Ok(Some(session.exit_revision))
+    }
+
+    pub fn acknowledge_exit(&self, revision: u64) -> Result<(), String> {
+        let mut session = self
+            .settings
+            .lock()
+            .map_err(|_| "settings window state is unavailable".to_string())?;
+        if !session.exit_pending || session.exit_revision != revision {
+            return Err("SETTINGS_EXIT_REQUEST_STALE".to_string());
+        }
+        session.exit_acknowledged = true;
+        Ok(())
+    }
+
+    pub fn cancel_unanswered_exit(&self, revision: u64) -> Result<bool, String> {
+        let mut session = self
+            .settings
+            .lock()
+            .map_err(|_| "settings window state is unavailable".to_string())?;
+        if !session.exit_pending || session.exit_revision != revision || session.exit_acknowledged {
+            return Ok(false);
+        }
+        session.exit_pending = false;
         Ok(true)
     }
 
@@ -437,13 +466,6 @@ impl ProductShellState {
         let authorized = session.app_exit_authorized;
         session.app_exit_authorized = false;
         Ok(authorized)
-    }
-
-    pub fn exit_pending(&self) -> Result<bool, String> {
-        self.settings
-            .lock()
-            .map(|session| session.exit_pending)
-            .map_err(|_| "settings window state is unavailable".to_string())
     }
 
     pub fn window_destroyed(&self) -> Result<bool, String> {
@@ -479,7 +501,7 @@ pub fn install_product_tray(app: &App, pet_visible: bool) -> Result<(), String> 
     .map_err(|error| error.to_string())?;
     let settings = MenuItem::with_id(app, MENU_OPEN_SETTINGS, "设置…", true, None::<&str>)
         .map_err(|error| error.to_string())?;
-    let history = MenuItem::with_id(app, MENU_OPEN_HISTORY, "历史记录…", true, None::<&str>)
+    let history = MenuItem::with_id(app, MENU_OPEN_HISTORY, "聊天记录…", true, None::<&str>)
         .map_err(|error| error.to_string())?;
     let runtime_log =
         MenuItem::with_id(app, MENU_OPEN_RUNTIME_LOG, "运行日志…", true, None::<&str>)
@@ -534,7 +556,7 @@ pub struct SettingsSectionCapability {
     pub features: BTreeMap<String, String>,
 }
 
-const SETTINGS_SECTIONS: [&str; 11] = [
+const SETTINGS_SECTIONS: [&str; 12] = [
     "character",
     "appearance",
     "providers",
@@ -545,12 +567,13 @@ const SETTINGS_SECTIONS: [&str; 11] = [
     "tools",
     "plugins",
     "system",
+    "open-help",
     "about",
 ];
 
 impl SettingsCapabilityManifest {
     fn shell_only(window_generation: u64) -> Self {
-        let reason = "该设置能力尚未迁移到 Runtime v2";
+        let reason = "此设置暂不可用";
         let unavailable_reasons = SETTINGS_SECTIONS
             .into_iter()
             .map(|section| (section.to_string(), reason.to_string()))
@@ -569,6 +592,29 @@ impl SettingsCapabilityManifest {
             },
         );
         manifest.unavailable_reasons.remove("about");
+        let open_help_status = if crate::macos_open_help::is_available() {
+            "available"
+        } else {
+            "unavailable"
+        };
+        manifest.sections.insert(
+            "open-help".to_string(),
+            SettingsSectionCapability {
+                status: open_help_status.to_string(),
+                features: BTreeMap::from([(
+                    "distribution.macos_open_help".to_string(),
+                    open_help_status.to_string(),
+                )]),
+            },
+        );
+        if crate::macos_open_help::is_available() {
+            manifest.unavailable_reasons.remove("open-help");
+        } else {
+            manifest.unavailable_reasons.insert(
+                "open-help".to_string(),
+                "此版本的应用打开指引仅适用于 macOS".to_string(),
+            );
+        }
         manifest
     }
 
@@ -604,11 +650,7 @@ impl SettingsCapabilityManifest {
             .expect("appearance capability was inserted");
         appearance.features.insert(
             "appearance.input_visual_effect".to_string(),
-            if input_effect_support.gaussian_blur || input_effect_support.liquid_glass {
-                "available".to_string()
-            } else {
-                "unavailable".to_string()
-            },
+            "available".to_string(),
         );
         appearance.features.insert(
             "appearance.input_visual_effect.gaussian_blur".to_string(),
@@ -626,16 +668,14 @@ impl SettingsCapabilityManifest {
                 "unavailable".to_string()
             },
         );
-        if !input_effect_support.gaussian_blur && !input_effect_support.liquid_glass {
-            manifest.unavailable_reasons.insert(
-                "appearance.input_visual_effect".to_string(),
-                "实时输入材质仅支持 Windows 或 macOS".to_string(),
-            );
-        }
         if !input_effect_support.gaussian_blur {
             manifest.unavailable_reasons.insert(
                 "appearance.input_visual_effect.gaussian_blur".to_string(),
-                "实时桌面高斯仅支持 Windows 或 macOS".to_string(),
+                if cfg!(windows) {
+                    "高斯模糊不可用，详情见运行日志".to_string()
+                } else {
+                    "仅支持 Windows 和 macOS".to_string()
+                },
             );
         }
         if !input_effect_support.liquid_glass {
@@ -643,6 +683,8 @@ impl SettingsCapabilityManifest {
                 "appearance.input_visual_effect.liquid_glass".to_string(),
                 if cfg!(target_os = "macos") {
                     "需要 macOS 26 或更高版本".to_string()
+                } else if cfg!(windows) {
+                    "Windows 暂不支持液态玻璃".to_string()
                 } else {
                     "当前平台不支持液态玻璃".to_string()
                 },
@@ -714,6 +756,7 @@ impl SettingsCapabilityManifest {
                 status: "available".to_string(),
                 features: BTreeMap::from([
                     ("voice.tts".to_string(), "available".to_string()),
+                    ("voice.asr".to_string(), "available".to_string()),
                     ("voice.bundle".to_string(), "unavailable".to_string()),
                 ]),
             },
@@ -721,22 +764,31 @@ impl SettingsCapabilityManifest {
         manifest.unavailable_reasons.remove("voice");
         manifest.unavailable_reasons.insert(
             "voice.bundle".to_string(),
-            "整合包安装将在 Provider 插件贡献迁移完成后重新开放".to_string(),
+            "请在语音插件设置中安装".to_string(),
+        );
+        let mut interaction_features = BTreeMap::from([
+            (
+                "chat.presentation_timing".to_string(),
+                "available".to_string(),
+            ),
+            (
+                "privacy.screen_awareness".to_string(),
+                "available".to_string(),
+            ),
+        ]);
+        interaction_features.insert(
+            "chat.bubble_auto_hide".to_string(),
+            if cfg!(windows) {
+                "available".to_string()
+            } else {
+                "unavailable".to_string()
+            },
         );
         manifest.sections.insert(
             "interaction".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
-                features: BTreeMap::from([
-                    (
-                        "chat.presentation_timing".to_string(),
-                        "available".to_string(),
-                    ),
-                    (
-                        "privacy.screen_awareness".to_string(),
-                        "available".to_string(),
-                    ),
-                ]),
+                features: interaction_features,
             },
         );
         manifest.unavailable_reasons.remove("interaction");
@@ -744,19 +796,53 @@ impl SettingsCapabilityManifest {
             "system".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
-                features: BTreeMap::from([(
-                    "storage.tts_root".to_string(),
-                    "available".to_string(),
-                )]),
+                features: BTreeMap::from([
+                    (
+                        "system.launch_at_login".to_string(),
+                        "available".to_string(),
+                    ),
+                    (
+                        "telemetry.anonymous_statistics".to_string(),
+                        "available".to_string(),
+                    ),
+                    ("storage.tts_root".to_string(), "available".to_string()),
+                    (
+                        "storage.legacy_role_data_import".to_string(),
+                        "available".to_string(),
+                    ),
+                ]),
             },
         );
         manifest.unavailable_reasons.remove("system");
-        manifest.unavailable_reasons.insert(
-            "chat.bubble_auto_hide".to_string(),
-            "固定桌宠气泡必须保持常驻".to_string(),
-        );
+        if cfg!(windows) {
+            manifest.unavailable_reasons.remove("chat.bubble_auto_hide");
+        } else {
+            manifest.unavailable_reasons.insert(
+                "chat.bubble_auto_hide".to_string(),
+                "仅支持 Windows".to_string(),
+            );
+        }
         manifest
     }
+}
+
+pub(crate) fn assert_settings_identity(
+    shell: &ProductShellState,
+    handle: &shell_lifecycle::ShellLifecycleHandle,
+    window_generation: u64,
+    core_generation_id: &str,
+) -> Result<(), String> {
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let current = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    if current != core_generation_id {
+        return Err("SETTINGS_CORE_GENERATION_MISMATCH".to_string());
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_settings_window(window: &WebviewWindow) -> Result<(), String> {
@@ -834,8 +920,7 @@ pub fn resolve_settings_close(
 ) -> Result<(), String> {
     validate_settings_window(&window)?;
     if !discard {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        restore_and_focus_window(&window)?;
         return Ok(());
     }
     state.authorize_close()?;
@@ -844,6 +929,24 @@ pub fn resolve_settings_close(
         return Err(error.to_string());
     }
     Ok(())
+}
+
+pub fn restore_and_focus_window(window: &WebviewWindow) -> Result<(), String> {
+    if window.is_minimized().map_err(|error| error.to_string())? {
+        window.unminimize().map_err(|error| error.to_string())?;
+    }
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn acknowledge_settings_exit(
+    window: WebviewWindow,
+    revision: u64,
+    state: tauri::State<'_, ProductShellState>,
+) -> Result<(), String> {
+    validate_settings_window(&window)?;
+    state.acknowledge_exit(revision)
 }
 
 pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
@@ -855,17 +958,12 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
         if !state.settings_ready()? {
             return Ok(());
         }
-        if window.is_minimized().map_err(|error| error.to_string())? {
-            window.unminimize().map_err(|error| error.to_string())?;
-        }
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
+        return restore_and_focus_window(&window);
     }
 
     state.next_generation()?;
     let completed = app.state::<FirstRunGuideState>().snapshot()?.completed;
-    let window = WebviewWindowBuilder::new(
+    WebviewWindowBuilder::new(
         app,
         SETTINGS_WINDOW_LABEL,
         WebviewUrl::App(settings_entrypoint(completed).into()),
@@ -880,6 +978,7 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     .resizable(true)
     .maximizable(true)
     .minimizable(true)
+    .auto_resize()
     .decorations(true)
     .devtools(false)
     .always_on_top(false)
@@ -887,10 +986,6 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     .center()
     .build()
     .map_err(|error| format!("SETTINGS_WINDOW_CREATE_FAILED: {error}"))?;
-    if let Err(error) = bind_settings_webview_resize(&window) {
-        let _ = window.destroy();
-        return Err(error);
-    }
     Ok(())
 }
 
@@ -911,25 +1006,6 @@ pub fn reveal_settings_window(
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     state.mark_settings_ready()
-}
-
-fn bind_settings_webview_resize(window: &WebviewWindow) -> Result<(), String> {
-    let initial_size = window
-        .inner_size()
-        .map_err(|error| format!("SETTINGS_WINDOW_SIZE_FAILED: {error}"))?;
-    window
-        .as_ref()
-        .set_size(initial_size)
-        .map_err(|error| format!("SETTINGS_WEBVIEW_RESIZE_FAILED: {error}"))?;
-
-    let webview = window.as_ref().clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::Resized(size) = event {
-            // 事件属于该窗口自己的 WebView；窗口销毁期间的末尾事件可以安全忽略。
-            let _ = webview.set_size(*size);
-        }
-    });
-    Ok(())
 }
 
 pub(crate) fn set_settings_window_theme_background(
@@ -1239,11 +1315,9 @@ mod tests {
     #[test]
     fn app_exit_coordination_deduplicates_and_can_be_cancelled() {
         let state = ProductShellState::default();
-        assert!(state.begin_exit().unwrap());
-        assert!(!state.begin_exit().unwrap());
-        assert!(state.exit_pending().unwrap());
+        assert!(state.begin_exit().unwrap().is_some());
+        assert!(state.begin_exit().unwrap().is_none());
         assert!(state.resolve_exit().unwrap());
-        assert!(!state.exit_pending().unwrap());
         assert!(!state.resolve_exit().unwrap());
         state.authorize_app_exit().unwrap();
         assert!(state.consume_app_exit_authorization().unwrap());
@@ -1254,10 +1328,26 @@ mod tests {
     fn app_exit_never_reopens_a_settings_window_queued_during_destruction() {
         let state = ProductShellState::default();
         assert_eq!(state.next_generation().unwrap(), 1);
-        assert!(state.begin_exit().unwrap());
+        assert!(state.begin_exit().unwrap().is_some());
         state.authorize_close().unwrap();
         assert!(state.queue_reopen_if_closing().unwrap());
         assert!(!state.window_destroyed().unwrap());
+    }
+
+    #[test]
+    fn app_exit_timeout_does_not_cancel_a_visible_confirmation_or_a_new_request() {
+        let state = ProductShellState::default();
+        let first = state.begin_exit().unwrap().unwrap();
+        state.acknowledge_exit(first).unwrap();
+        assert!(!state.cancel_unanswered_exit(first).unwrap());
+        assert!(state.resolve_exit().unwrap());
+
+        let second = state.begin_exit().unwrap().unwrap();
+        assert!(!state.cancel_unanswered_exit(first).unwrap());
+        assert!(state.acknowledge_exit(first).is_err());
+        assert!(state.cancel_unanswered_exit(second).unwrap());
+        assert!(!state.resolve_exit().unwrap());
+        assert!(state.acknowledge_exit(second).is_err());
     }
 
     #[test]
@@ -1302,7 +1392,23 @@ mod tests {
             manifest.sections["system"].features["storage.tts_root"],
             "available"
         );
+        assert_eq!(
+            manifest.sections["system"].features["system.launch_at_login"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["system"].features["telemetry.anonymous_statistics"],
+            "available"
+        );
         assert_eq!(manifest.sections["about"].status, "available");
+        assert_eq!(
+            manifest.sections["open-help"].status,
+            if cfg!(target_os = "macos") {
+                "available"
+            } else {
+                "unavailable"
+            }
+        );
         assert!(!manifest.sections.contains_key("storage"));
         assert_eq!(
             manifest.sections["interaction"].features["chat.presentation_timing"],
@@ -1337,8 +1443,11 @@ mod tests {
         );
         assert_eq!(
             manifest.sections["appearance"].features["appearance.input_visual_effect"],
-            "unavailable"
+            "available"
         );
+        assert!(!manifest
+            .unavailable_reasons
+            .contains_key("appearance.input_visual_effect"));
         assert_eq!(
             manifest.sections["appearance"].features
                 ["appearance.input_visual_effect.gaussian_blur"],
@@ -1351,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_gaussian_can_remain_available_when_liquid_is_locked() {
+    fn gaussian_can_remain_available_when_liquid_is_locked() {
         let manifest = SettingsCapabilityManifest::provider_model(
             11,
             crate::input_visual_effect::InputVisualEffectSupport::new(true, false),
@@ -1368,6 +1477,17 @@ mod tests {
         assert_eq!(
             manifest.sections["appearance"].features["appearance.input_visual_effect.liquid_glass"],
             "unavailable"
+        );
+        let expected_reason = if cfg!(target_os = "macos") {
+            "需要 macOS 26 或更高版本"
+        } else if cfg!(windows) {
+            "Windows 暂不支持液态玻璃"
+        } else {
+            "当前平台不支持液态玻璃"
+        };
+        assert_eq!(
+            manifest.unavailable_reasons["appearance.input_visual_effect.liquid_glass"],
+            expected_reason
         );
     }
 }

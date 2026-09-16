@@ -3,15 +3,20 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-3-01：无 Qt Assistant Adapter 与真实 Readiness
 
+## 当前表现合同
+
+2026-09-12 起，本文原有固定 portrait/portraitChoices 投影与宿主图片选择由[表现插件合同](visual-plugin-boundary.md)取代。
+CharacterPresentation 使用 schemaVersion 2 的可空 visual；公共 Profile 不提供图片候选。立绘兼容、切图、
+解码和过渡归入内置插件，宿主在实际分段播放时派发 control；历史浏览只读文字。以下旧 WP 实施与验收记录保留历史语境。
+
 ## 状态与范围
 
-**历史结论：2026-07-26 accepted。** 当前状态唯一来源、接受证据和下一启动点见
+历史结论：2026-07-26 accepted。工作包进度与接受证据见
 `docs/plans/runtime-v2/work-packages.md`；逐任务实施记录见
 `docs/archive/plans/runtime-v2/2026-07-25-wp-3-01-assistant-adapter-readiness.md`。
 
@@ -287,27 +292,10 @@ fd、handle、thread 和 temp 均归零。允许且必须测试对
 deadline；Windows x64、macOS arm64、Linux x64 均验证正常、超时、忽略 shutdown 与 close-block
 场景。
 
-## 实施候选白名单与禁止范围
+## 数据与 Runtime 验证边界
 
-以下是激活后才可使用的窄候选；每一项领域/UI import-only refactor 都须先以可执行 import
-guard 证明不可避免，并以 legacy 等价测试证明无业务语义变化。
-
-| 范围 | 候选路径 | 理由 |
-|---|---|---|
-| Adapter/readiness/CLI | `app/core_host/assistant_adapter.py`、`app/core_host/server.py`、`app/core_host/__main__.py` | 薄 Facade、注入 initializer、原子 publish/close 与注入 app root 的唯一 CLI 入口。 |
-| 配置投影 | `app/config/core_config_reader.py`、`app/config/models.py`、`app/config/model_slots.py` | 纯 raw config projection 和 slot 解析。 |
-| 角色/Provider/Pipeline | `app/config/character_loader.py`、`app/llm/api_client.py`、`app/core/chat_pipeline.py` | 仅复用读取、构造和无网络 Provider。 |
-| 已证明的 Qt/import blocker | `app/config/visual_effect.py`、`app/ui/theme.py`、`app/ui/window_backdrop.py`、`app/agent/__init__.py`、`app/agent/runtime.py`、`app/agent/memory_recall.py` | 仅移出 Qt 依赖或改为 typing/lazy import，并保留 legacy 行为。 |
-| 测试与 fixture | `tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、`tests/unit/test_core_host_cli.py`、`tests/unit/test_agent_runtime.py`、`tests/integration/test_chat_pipeline.py`、`tests/fixtures/runtime_v2/wp_3_01/**` | 隔离、脱敏 fixture、CLI 注入和既有 Core Host 命名。 |
-| 三平台验收与 CI | `desktop/src-tauri/src/core_host_runtime.rs`、`desktop/src-tauri/src/shell_lifecycle.rs`、`desktop/src-tauri/src/core_supervisor.rs`、`.github/workflows/runtime-v2-platform-foundation.yml`、`tests/unit/test_runtime_v2_platform_workflow.py` | 将 lifecycle/snapshot acceptance 与共享 deadline 接到真实 Adapter；workflow 必须显式执行新增 `core_host_*` pytest。 |
-
-明确禁止 `app/core/bootstrap.py`、`app/core/app_context.py`、`app/core/extensions.py`、resource
-manager、chat/mobile workers、Memory 及其 curator、builtin/desktop tools、`app/agent/mcp/**`、
-`app/plugins/**`、顶层 `plugins/**`、`app/voice/**`、产品 UI/Settings/Studio、storage/history/
-runtime events/visual observation、`main.py`、`legacy_qt_main.py`、Router/Gateway/Operation/chat
-Rust 或 WebView 文件、`desktop/frontend/**`、`third_party/**`、`tools/mcp/**`。零新增依赖：禁止修改 `requirements*.txt`、`pyproject.toml`、
-任何 Python/Node package manifest、`Cargo.toml`、`Cargo.lock`、`package-lock.json`、
-`pnpm-lock.yaml`、`yarn.lock` 或其他 package lock。
+Adapter 的跨模块重构应保持无 Qt 启动图、配置读取、凭据投影和资源关闭语义。修改范围由实际依赖决定，
+不再受早期 import-only 文件清单或零新增依赖要求限制。
 
 `data/**` 是应用的正常运行时可写目录，不设整目录只读门禁。开发、启动和验收可以产生任务范围内
 预期的日志、cache、配置、history 或其他由对应服务拥有的持久化结果，也不要求为这些预期写入
@@ -340,10 +328,8 @@ Python unit、Python subprocess、Rust real-host 和 packaged/Shell 三平台纵
 failed、crash、强制回收和连续 generation。仅 fake mode、sleeping host、根 PID 消失或 Python
 unit 通过不能宣称真实 Adapter 资源归零。CI 延续 `app/**`、`desktop/src-tauri/**`、
 `desktop/tests/**`、`tests/fixtures/runtime_v2/**` 和 `tests/*/test_core_host_*.py` 的现有
-platform filter；新增 `core_host_*` tests 必须由
-`.github/workflows/runtime-v2-platform-foundation.yml` 的三平台 jobs 以明确 pytest step 实际执行，
-并由 `tests/unit/test_runtime_v2_platform_workflow.py` 断言该命令和 push/PR filters。仅 path
-trigger 不构成 Python pytest 已在三平台执行的证据。
+platform filter。新增 `core_host_*` 测试由 `.github/workflows/test.yml` 的 Python job 执行一次；
+需要真实操作系统边界的用例放入 native matrix，并按平台运行对应的 Rust 测试。路径过滤本身不算测试证据。
 
 秘密回归另须用静态扫描拒绝 `dataclasses.asdict`、`vars`、`__dict__`、`pickle` 与 default-JSON
 serializer 对内部含密 DTO/Session/HostConfig 的调用，并在动态 probe 中让这些 generic 路径 fail
@@ -357,7 +343,7 @@ revert` 该 WP 的实现提交；不得删除或改写 data、角色、配置、
 工件。若真实 Adapter 导入阻断 legacy 或资源门禁失败，回退到 WP-1C-04 已接受的 fake readiness
 链，而不是引入 Qt stub、AppContext 或 sidecar。
 
-风险仅在实施验收中验证，不留实现选择：唯一 parser 是
+相关实现需要保持以下风险边界：唯一 parser 是
 `app/config/core_config_reader.py`；`CharacterRegistry` 以 legacy `log_event` 默认 sink 与 Core
 sanitized-stderr sink 双路径保持等价；所有 readiness code 均 `retryable=false` 且映射到既有
 Core Supervisor 的不自动重启分类；`run_host` 以已规定顺序聚合 cleanup errors；Rust 从 shutdown

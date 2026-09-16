@@ -1,5 +1,9 @@
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createTtsController } from "./audio/tts-controller.js";
+import { createAsrController } from "./audio/asr-controller.js";
+import { createAsrWaveform } from "./audio/asr-waveform.js";
+import { createAsrPresentation } from "./audio/asr-presentation.js";
+import { createAsrAvailability } from "./audio/asr-availability.js";
 import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
 import { createComposerToolRegistry } from "./chat/composer-tool-dock.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
@@ -15,52 +19,72 @@ import { applyTheme } from "./core/theme.js";
 import {
   appearanceChanges,
   applyAppearanceVariables,
-  constrainedPortraitScale,
+  createAppearanceMutationGuard,
   validateAppearancePublication,
 } from "./pet/appearance.js";
 import {
+  BUBBLE_MOTION_DURATION_MS,
   COMPOSER_MOTION_DURATION_MS,
   composerStagingHeight,
   createAdaptiveControlSurface,
 } from "./pet/adaptive-control-surface.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
+import { createControlSurfaceTransactions } from "./pet/control-surface-transactions.js";
 import {
   loadCurrentCharacterPresentation,
-  portraitSequence,
   validateCharacterPresentation,
 } from "./pet/character-presentation.js";
-import { rebindCharacterPresentation } from "./pet/character-generation.js";
+import { isNewCharacterGeneration, rebindCharacterPresentation } from "./pet/character-generation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
+import { attachDynamicHitTest } from "./pet/dynamic-hit-test.js";
 import {
   classifyPointerHit,
   clearTextSelection,
-  computeHitRegions,
   shouldOpenProductMenu,
   shouldStartNativeDrag,
 } from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
-import { createLayoutController } from "./pet/layout-controller.js";
+import {
+  createInputPresentationQueue,
+  inputVisualEffectFallbackNotice,
+} from "./pet/input-visual-effect.js";
+import {
+  createLayoutController,
+  runInitialLayoutWithBootstrapRecovery,
+} from "./pet/layout-controller.js";
 import {
   isNativePetDragPointRejected,
+  shouldRevealBubbleAfterNativeDrag,
   startNativePetDragWithRevisionRecovery,
 } from "./pet/native-drag.js";
 import {
+  applyBootstrapPetLayout,
   applyPetLayout,
   computePetLayout,
   normalizeLayoutAdjustments,
   PRODUCT_LAYOUT_STATE,
+  samePetSurfaceGeometry,
   validateLayoutContract,
 } from "./pet/layout.js";
 import {
   createCharacterVisualPreviewSessionController,
-  restoreCommittedCharacterVisual,
 } from "./pet/character-visual-preview.js";
 import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
-import { createPortraitController } from "./pet/portrait-controller.js";
+import { createRendererHost } from "./pet/renderer-host.js";
+import { applyVisualSurfaceAppearance } from "./pet/visual-surface.js";
+import {
+  createSurfaceHoverTracker,
+  createSurfaceVisibilityController,
+  SURFACE_VISIBILITY_FADE_MS,
+  waitForSurfaceFadeCompletion,
+  createSurfaceHoverProbe,
+} from "./pet/surface-visibility.js";
 import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
+const LAYOUT_DEGRADED_NOTICE = "窗口布局异常，已临时重置。";
+const PORTRAIT_HIT_TEST_NOTICE = "桌宠透明区域穿透暂时不可用。";
 
 installDevtoolsShortcutGuard();
 
@@ -74,6 +98,7 @@ const interactionLatencyTrace = createInteractionLatencyTracer({
   invoke,
   enabled: interactionLatencyEnabled,
 });
+const appearanceMutationGuard = createAppearanceMutationGuard();
 const inputVisualEffect = await invoke("input_visual_effect_status").catch(() => ({
   initialized: false,
   effectiveMode: "solid",
@@ -107,6 +132,7 @@ function scheduleInteractionPaintProbe(kind, context) {
 }
 
 const stage = document.querySelector("#pet-stage");
+const chatBubble = document.querySelector("#chat-bubble");
 const bubbleCopy = document.querySelector("#bubble-copy");
 const bubbleBody = document.querySelector(".reply-body");
 const replyHistoryPrevious = document.querySelector("#reply-history-previous");
@@ -115,6 +141,8 @@ const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
 const characterName = document.querySelector("#character-name");
 const presentationError = document.querySelector("#presentation-error");
+let recoverableErrorTimer = null;
+let recoverableErrorMessage = "";
 const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
@@ -123,11 +151,9 @@ const attachmentList = document.querySelector("#composer-attachments");
 const attachmentMenu = document.querySelector("#composer-tool-dock");
 const composerToolList = document.querySelector("#composer-tool-list");
 const captureScreen = document.querySelector("#capture-screen");
-const cancelIcon = send.querySelector(".composer-action-icon--cancel svg");
-const cancelShape = cancelIcon.querySelector("rect");
 const portrait = document.querySelector("#portrait");
-const portraitCurrent = document.querySelector("#portrait-current");
-const portraitNext = document.querySelector("#portrait-next");
+const visualContainer = document.querySelector("#visual-renderer");
+let currentSurface = { width: 320, height: 480, assetKey: null, assetId: null };
 const portraitFallback = document.querySelector("#portrait-fallback");
 const portraitFallbackName = document.querySelector("#portrait-fallback-name");
 const contextMenuElement = document.querySelector("#pet-context-menu");
@@ -136,13 +162,25 @@ const POINTER_INTERACTIVE_SELECTOR = "[data-interactive], [data-selectable-text]
 let contentScale = 1;
 let activeBounds = [0, 0, 900, 1112];
 let activeSurfaceRevision = 0;
+let activePortraitAnchor = null;
 let currentHitRegions = null;
 let currentPortraitSourceSize = null;
 let renderedPortrait = null;
 let disposed = false;
+let asrController = null;
+let draftVersion = 0;
 let presentationUnavailable = false;
+let layoutDegraded = false;
 let activeAppearance = null;
 const appEventUnlisteners = [];
+const surfaceVisibility = { bubbleVisible: true, inputVisible: true };
+const surfaceVisibilityRevision = { bubble: 0, input: 0 };
+let surfaceVisibilityController = null;
+let surfaceHoverTracker = null;
+let surfaceHoverProbe = null;
+let surfaceVisibilityCommitQueue = Promise.resolve();
+chatBubble.dataset.surfaceVisible = "true";
+composer.dataset.surfaceVisible = "true";
 
 async function initialSessionBlocker() {
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -160,22 +198,39 @@ async function initialSessionBlocker() {
 }
 
 const sessionBlockedAtStartup = await initialSessionBlocker();
-const composerActionIndicator = createComposerActionIndicator({
-  svg: cancelIcon,
-  shape: cancelShape,
-  prefersReducedMotion: () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-});
+const composerActionIndicator = createComposerActionIndicator({ button: send });
+
+let lastInputVisualEffectFallback = "";
+let inputVisualEffectFallbackActive = false;
+let activeInputVisualEffectFallbackNotice = "";
 
 async function applyInputVisualEffect(values) {
   const status = await invoke("apply_input_visual_effect", { values }).catch(() => ({
     initialized: false,
     effectiveMode: "solid",
     outcome: "degraded",
+    errorCode: "INPUT_VISUAL_EFFECT_APPLY_FAILED",
   }));
   document.documentElement.dataset.inputVisualEffect = ["gaussian_blur", "liquid_glass"]
     .includes(status.effectiveMode)
     ? status.effectiveMode
     : "solid";
+  const notice = inputVisualEffectFallbackNotice(values, status);
+  const previousNotice = activeInputVisualEffectFallbackNotice;
+  inputVisualEffectFallbackActive = Boolean(notice);
+  activeInputVisualEffectFallbackNotice = notice;
+  const fallbackKey = notice
+    ? `${values?.visualEffectMode || "unknown"}:${status.errorCode || status.outcome || "unknown"}`
+    : "";
+  if (notice && fallbackKey !== lastInputVisualEffectFallback) {
+    lastInputVisualEffectFallback = fallbackKey;
+    showRecoverableError(notice);
+  } else if (!notice) {
+    lastInputVisualEffectFallback = "";
+    if (previousNotice && presentationError.textContent === previousNotice) {
+      clearRecoverableError();
+    }
+  }
   return status;
 }
 
@@ -197,11 +252,20 @@ async function listenAppEvent(eventName, handler) {
 }
 
 function showRecoverableError(message) {
-  presentationError.textContent = String(message || "角色表现暂时不可用");
+  const text = String(message || "角色表现暂时不可用");
+  if (!presentationError.hidden && recoverableErrorMessage === text) return;
+  clearRecoverableError();
+  recoverableErrorMessage = text;
+  presentationError.textContent = text;
   presentationError.hidden = false;
+  recoverableErrorTimer = setTimeout(clearRecoverableError, 5000);
 }
 
 function clearRecoverableError() {
+  clearTimeout(recoverableErrorTimer);
+  recoverableErrorTimer = null;
+  recoverableErrorMessage = "";
+  delete presentationError.dataset.asrError;
   presentationError.hidden = true;
   presentationError.textContent = "";
 }
@@ -254,6 +318,7 @@ const layoutController = createLayoutController({
     "",
     request.adjustments,
     request.measurements,
+    request.visibility,
   ),
   applyNativeLayout: ({ revision, layout, interactionTrace: traceContext }) => tracedInteractionInvoke(
     "apply_pet_layout",
@@ -264,23 +329,34 @@ const layoutController = createLayoutController({
         bubbleRect: layout.bubbleRect,
         inputRect: layout.inputRect,
         controlsRect: layout.controlsRect,
+        bubbleVisible: layout.bubbleVisible,
+        inputVisible: layout.inputVisible,
       },
       inputTransition: productLayout?.inputRect?.[1] === layout.inputRect[1]
         && productLayout?.inputRect?.[2] === layout.inputRect[2]
         && productLayout?.inputRect?.[3] !== layout.inputRect[3]
         ? {
-          durationMs: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-            ? 0
-            : COMPOSER_MOTION_DURATION_MS,
-          stagingHeight: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-            ? null
-            : composerStagingHeight({
-              beforeHeight: productLayout.inputRect[3],
-              afterHeight: layout.inputRect[3],
-              baseHeight: contract.controlPanel.inputBaseHeight,
-              toolbarHeight: contract.controlPanel.inputToolbarHeight,
-              expandedGap: contract.controlPanel.inputExpandedGap,
-            }),
+          durationMs: COMPOSER_MOTION_DURATION_MS,
+          stagingHeight: composerStagingHeight({
+            beforeHeight: productLayout.inputRect[3],
+            afterHeight: layout.inputRect[3],
+            baseHeight: contract.controlPanel.inputBaseHeight,
+            toolbarHeight: contract.controlPanel.inputToolbarHeight,
+            expandedGap: contract.controlPanel.inputExpandedGap,
+          }),
+        }
+        : null,
+      bubbleAutoExpand: activeAppearance?.bubbleAutoExpand === true,
+      bubbleTransition: activeAppearance?.bubbleAutoExpand === true
+        && productLayout?.inputRect?.join(",") === layout.inputRect.join(",")
+        && productLayout?.bubbleRect?.[0] === layout.bubbleRect[0]
+        && productLayout?.bubbleRect?.[2] === layout.bubbleRect[2]
+        && productLayout?.bubbleRect?.[1] + productLayout?.bubbleRect?.[3]
+          === layout.bubbleRect[1] + layout.bubbleRect[3]
+        && productLayout?.bubbleRect?.[3] !== layout.bubbleRect[3]
+        ? {
+          durationMs: BUBBLE_MOTION_DURATION_MS,
+          stagingHeight: null,
         }
         : null,
     },
@@ -292,32 +368,66 @@ const layoutController = createLayoutController({
   previewLayout: (layout, metadata = {}) => {
     productLayout = layout;
     applyPetLayout(stage, layout, contentScale, activeBounds);
+    if (metadata.deferNative === true) {
+      scheduleControlSurfaceGlassPreview(layoutPreviewRevision, layout);
+    }
     interactionLatencyTrace.mark("layout.css-commit", metadata.interactionTrace);
     scheduleInteractionPaintProbe("layout", metadata.interactionTrace);
-    currentHitRegions = computeHitRegions(layout, {
-      portraitSourceSize: currentPortraitSourceSize,
-      portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
-    });
+    currentHitRegions = applyVisualSurfaceAppearance(stage, layout, currentSurface, activeAppearance?.portraitScalePercent ?? 100);
   },
   commitLayout: (layout, result, metadata = {}) => {
+    stage.dataset.nativeViewport = String(result.backendMode === "macos_cursor_router");
     contentScale = result.contentScale;
     activeBounds = result.activeBounds;
     activeSurfaceRevision = result.revision;
+    activePortraitAnchor = result.portraitAnchor;
     productLayout = layout;
     applyPetLayout(stage, layout, contentScale, activeBounds);
     interactionLatencyTrace.mark("layout.native-css-commit", metadata.interactionTrace);
     scheduleInteractionPaintProbe("layout", metadata.interactionTrace);
-    currentHitRegions = computeHitRegions(layout, {
-      portraitSourceSize: currentPortraitSourceSize,
-      portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
-    });
+    currentHitRegions = applyVisualSurfaceAppearance(stage, layout, currentSurface, activeAppearance?.portraitScalePercent ?? 100);
     if (!layoutInitialized) {
       layoutInitialized = true;
       inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
     }
+    if (layoutDegraded) {
+      layoutDegraded = false;
+      if (presentationError.textContent === LAYOUT_DEGRADED_NOTICE) clearRecoverableError();
+    }
   },
 });
-await layoutController.transition(PRODUCT_LAYOUT_STATE, "fixed-product-shell");
+const initialLayout = await runInitialLayoutWithBootstrapRecovery({
+  transition: () => layoutController.transition(PRODUCT_LAYOUT_STATE, "fixed-product-shell"),
+  readBootstrapDiagnostics: () => invoke("current_pet_surface_diagnostics"),
+  restoreBootstrap: (diagnostics) => applyBootstrapPetLayout(stage, productLayout, diagnostics),
+});
+if (initialLayout.degraded) {
+  const { bootstrap, diagnostics } = initialLayout;
+  contentScale = bootstrap.contentScale;
+  activeBounds = [...bootstrap.activeBounds];
+  activeSurfaceRevision = bootstrap.revision;
+  activePortraitAnchor = diagnostics.globalAnchor;
+  currentHitRegions = applyVisualSurfaceAppearance(stage, productLayout, currentSurface, activeAppearance?.portraitScalePercent ?? 100);
+  layoutInitialized = true;
+  inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
+  layoutDegraded = true;
+  showRecoverableError(LAYOUT_DEGRADED_NOTICE);
+  const work = diagnostics.physicalWorkArea || {};
+  runtimeDiagnostics.record({
+    level: "warn",
+    event: "webview.command.failed",
+    command: "apply_pet_layout",
+    outcome: "failed",
+    code: "PET_LAYOUT_BOOTSTRAP_RECOVERED",
+    revision: bootstrap.revision,
+    diagnostic: [
+      `work=${work.width || 0}x${work.height || 0}`,
+      `dpi=${Number(diagnostics.dpiScale || 0).toFixed(3)}`,
+      `fit=${(diagnostics.visibleFitBounds || []).join("x")}`,
+      `backing=${(diagnostics.residentBackingBounds || []).join("x")}`,
+    ].join(";"),
+  });
+}
 
 let characterPresentation;
 try {
@@ -325,31 +435,24 @@ try {
     invoke,
     attempts: sessionBlockedAtStartup ? 1 : 160,
   });
-} catch {
+} catch (error) {
+  if (!sessionBlockedAtStartup) runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
   presentationUnavailable = true;
-  showRecoverableError("当前角色表现加载失败；关闭并重新启动后可重试。");
-  characterPresentation = Object.freeze({
+  if (!sessionBlockedAtStartup) showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
+  characterPresentation = validateCharacterPresentation({
     generationId: "unavailable",
     characterId: "unavailable",
     displayName: "当前角色",
     initialMessage: "当前角色表现暂时不可用。",
-    themeTokens: Object.freeze({}),
-    defaultPortraitKey: "__default__",
-    portraitKeys: Object.freeze(["__default__"]),
-    portraitResourceUrls: Object.freeze({
-      __default__: "http://sakura-character.localhost/v1/00/character-v1-00-portrait-00",
-    }),
-    portraitMetadata: Object.freeze({
-      __default__: Object.freeze({ width: 1, height: 1, byteLength: 1 }),
-    }),
+    schemaVersion: 2, visual: null, visualReasonCode: "VISUAL_NOT_BOUND",
   });
 }
 
-let portraits = portraitSequence(characterPresentation);
 activeAppearance = Object.freeze({
   portraitScalePercent: 100,
   controlPanelWidth: 640,
   bubbleMaxHeight: 128,
+  bubbleAutoExpand: false,
   controlPanelVerticalOffset: 0,
   inputBarOffset: 0,
   speechFontSize: 19,
@@ -367,6 +470,7 @@ try {
   // Package theme/default sizes remain a complete safe baseline.
 }
 let characterVisualPreviewActive = false;
+let visualScalePercent = activeAppearance.portraitScalePercent;
 const characterVisualPreviewSessions = createCharacterVisualPreviewSessionController({
   currentCoreGenerationId: () => characterPresentation.generationId,
   blocked: () => disposed || Boolean(coreRebindTarget),
@@ -378,45 +482,9 @@ characterName.textContent = characterPresentation.displayName;
 input.placeholder = composerPlaceholder(characterPresentation.displayName, "ready");
 portraitFallbackName.textContent = characterPresentation.displayName;
 portrait.setAttribute("aria-label", `${characterPresentation.displayName} 的立绘，可拖动窗口`);
-portraitCurrent.alt = `${characterPresentation.displayName} 立绘`;
-if (!presentationUnavailable) clearRecoverableError();
-
-function expectedPortraitsByUrl(presentation) {
-  return new Map(
-    presentation.portraitKeys.map((key) => [
-      presentation.portraitResourceUrls[key],
-      presentation.portraitMetadata[key],
-    ]),
-  );
-}
-
-function loadImage(source, expectedByUrl) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.decoding = "async";
-    image.addEventListener(
-      "load",
-      async () => {
-        try {
-          if (typeof image.decode === "function") await image.decode();
-          const expected = expectedByUrl.get(source);
-          if (!expected || image.naturalWidth !== expected.width || image.naturalHeight !== expected.height) {
-            throw new Error("PORTRAIT_DIMENSION_MISMATCH");
-          }
-          resolve(Object.freeze({ width: image.naturalWidth, height: image.naturalHeight }));
-        } catch (error) {
-          reject(error);
-        }
-      },
-      { once: true },
-    );
-    image.addEventListener("error", () => reject(new Error("PORTRAIT_LOAD_FAILED")), { once: true });
-    image.src = source;
-  });
-}
+if (!presentationUnavailable && !inputVisualEffectFallbackActive) clearRecoverableError();
 
 let portraitHitRevision = 0;
-let portraitTransitionPending = false;
 let portraitSurfaceMutationDepth = 0;
 let portraitScaleGestureActive = false;
 let portraitScaleGestureReady = Promise.resolve(null);
@@ -424,11 +492,79 @@ let portraitScaleGestureTrace = null;
 let portraitScaleHitFrameRunning = false;
 let pendingPortraitScaleHitFrame = null;
 let layoutGestureActive = false;
+let layoutPreviewSessionActive = false;
+let settingsAppearanceActive = false;
 let layoutGestureReady = Promise.resolve(null);
+let layoutSurfaceReady = null;
+let layoutNativePrepared = false;
+let layoutFrameRevision = 0;
+let layoutPreviewEnding = false;
+let layoutPreviewEnd = null;
 let layoutGestureTrace = null;
 let layoutPreviewTimer = null;
 let layoutPreviewRevision = initialLayoutRevision;
+let controlSurfaceGlassPreviewPending = null;
+let controlSurfaceGlassPreviewRunning = false;
+let controlSurfaceGlassPreviewDrain = Promise.resolve();
+let controlSurfaceGlassPreviewKey = "";
 const LAYOUT_PREVIEW_SETTLE_MS = 120;
+const runControlSurfaceTransaction = createControlSurfaceTransactions({
+  isCurrent: (revision) => revision === layoutPreviewRevision,
+  isDisposed: () => disposed,
+  commit: commitSurfaceApplication,
+});
+
+function controlSurfaceFromLayout(layout) {
+  return Object.freeze({
+    bubbleRect: layout.bubbleRect,
+    inputRect: layout.inputRect,
+    controlsRect: layout.controlsRect,
+    bubbleVisible: layout.bubbleVisible,
+    inputVisible: layout.inputVisible,
+  });
+}
+
+async function drainControlSurfaceGlassPreviews() {
+  if (controlSurfaceGlassPreviewRunning) return;
+  controlSurfaceGlassPreviewRunning = true;
+  try {
+    while (controlSurfaceGlassPreviewPending) {
+      const candidate = controlSurfaceGlassPreviewPending;
+      controlSurfaceGlassPreviewPending = null;
+      if (candidate.previewRevision !== layoutPreviewRevision) continue;
+      const ready = await layoutGestureReady;
+      if (
+        !ready
+        || ready.revision !== candidate.previewRevision
+        || candidate.previewRevision !== layoutPreviewRevision
+      ) continue;
+      try {
+        await invoke("preview_pet_control_surface", candidate);
+      } catch {
+        // Lightweight glass frames are latest-wins; the final full layout remains authoritative.
+      }
+    }
+  } finally {
+    controlSurfaceGlassPreviewRunning = false;
+  }
+}
+
+function scheduleControlSurfaceGlassPreview(previewRevision, layout) {
+  const controlSurface = controlSurfaceFromLayout(layout);
+  const key = JSON.stringify(controlSurface);
+  if (key === controlSurfaceGlassPreviewKey) return;
+  controlSurfaceGlassPreviewKey = key;
+  controlSurfaceGlassPreviewPending = Object.freeze({
+    previewRevision,
+    controlSurface,
+  });
+  if (controlSurfaceGlassPreviewRunning) return;
+  controlSurfaceGlassPreviewDrain = drainControlSurfaceGlassPreviews();
+}
+
+async function flushControlSurfaceGlassPreviews() {
+  await controlSurfaceGlassPreviewDrain;
+}
 
 function gestureEventPayload(payload) {
   if (typeof payload === "boolean") return Object.freeze({ active: payload, trace: null });
@@ -456,34 +592,127 @@ function cancelLayoutPreviewTimer() {
   layoutPreviewTimer = null;
 }
 
+function beginLayoutPreviewSession(traceContext = null) {
+  const revision = ++layoutPreviewRevision;
+  cancelLayoutPreviewTimer();
+  layoutPreviewSessionActive = true;
+  layoutSurfaceReady = null;
+  layoutNativePrepared = false;
+  layoutPreviewEnding = false;
+  layoutPreviewEnd = null;
+  stage.dataset.layoutPreview = "active";
+  layoutGestureReady = Promise.resolve()
+    .then(() => screenAttachment.close())
+    .then(() => tracedInteractionInvoke(
+      "begin_control_surface_preview",
+      { revision },
+      traceContext,
+      "layout.begin-preview",
+    ))
+    .then((requiresPreparation) => {
+      if (disposed || revision !== layoutPreviewRevision) return null;
+      return Object.freeze({ revision, trace: traceContext, requiresPreparation: requiresPreparation === true });
+    })
+    .catch(() => {
+      if (!disposed && revision === layoutPreviewRevision) {
+        layoutPreviewSessionActive = false;
+        delete stage.dataset.layoutPreview;
+        showRecoverableError("桌宠布局实时预览暂时不可用。");
+      }
+      return null;
+    });
+  return Object.freeze({ revision, ready: layoutGestureReady });
+}
+
+async function prepareLayoutPreviewSurface(preview) {
+  if (!preview || disposed || preview.revision !== layoutPreviewRevision) return false;
+  if (!preview.requiresPreparation) return true;
+  if (!layoutSurfaceReady) {
+    layoutSurfaceReady = runControlSurfaceTransaction(
+      preview.revision,
+      () => invoke("prepare_control_surface_preview", { revision: preview.revision }),
+    ).then((surface) => {
+      if (!surface || disposed || preview.revision !== layoutPreviewRevision) return false;
+      layoutNativePrepared = true;
+      return true;
+    }).catch(() => {
+      if (!disposed && preview.revision === layoutPreviewRevision) {
+        layoutSurfaceReady = null;
+        showRecoverableError("桌宠布局预览准备失败；再次调整可重试。");
+      }
+      return false;
+    });
+  }
+  return layoutSurfaceReady;
+}
+
+function endLayoutPreviewSession(revision, ready, traceContext = null) {
+  if (disposed || revision !== layoutPreviewRevision || !layoutPreviewSessionActive) {
+    return Promise.resolve();
+  }
+  if (layoutPreviewEnd) return layoutPreviewEnd;
+  layoutPreviewEnding = true;
+  layoutPreviewEnd = finishLayoutPreviewSession(revision, ready, traceContext).finally(() => {
+    if (revision === layoutPreviewRevision) {
+      layoutPreviewEnd = null;
+      layoutPreviewEnding = false;
+    }
+  });
+  return layoutPreviewEnd;
+}
+
+async function finishLayoutPreviewSession(revision, ready, traceContext) {
+  const preview = await ready;
+  if (!preview || disposed || preview.revision !== revision || revision !== layoutPreviewRevision) return;
+  if (layoutSurfaceReady) await layoutSurfaceReady;
+  await flushControlSurfaceGlassPreviews();
+  if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
+  adaptiveSurface.invalidate({
+    visualPreview: true,
+    forceNative: true,
+    interactionTrace: traceContext,
+  });
+  await adaptiveSurface.flush({
+    visualPreview: true,
+    forceNative: true,
+    interactionTrace: traceContext,
+  });
+  if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
+  await runControlSurfaceTransaction(
+    revision,
+    () => tracedInteractionInvoke(
+      "end_control_surface_preview",
+      { revision },
+      traceContext,
+      "layout.end-preview",
+    ),
+  );
+  if (revision === layoutPreviewRevision) {
+    layoutPreviewSessionActive = false;
+    layoutNativePrepared = false;
+    delete stage.dataset.layoutPreview;
+  }
+}
+
 async function settleLayoutPreview(revision) {
   layoutPreviewTimer = null;
-  await adaptiveSurface.flush();
-  if (disposed || revision !== layoutPreviewRevision) return;
   try {
-    await invoke("end_control_surface_preview", { revision });
+    await endLayoutPreviewSession(revision, layoutGestureReady);
   } catch {
     showRecoverableError("桌宠裁剪区域恢复失败；再次调整布局可重试。");
     return;
   }
-  if (revision === layoutPreviewRevision) delete stage.dataset.layoutPreview;
 }
 
 async function previewLayoutAppearance() {
-  const revision = ++layoutPreviewRevision;
-  cancelLayoutPreviewTimer();
-  try {
-    await invoke("begin_control_surface_preview", { revision });
-  } catch {
-    if (revision === layoutPreviewRevision) {
-      adaptiveSurface.invalidate();
-      showRecoverableError("桌宠布局实时预览暂时不可用。");
-    }
+  const { revision, ready } = beginLayoutPreviewSession();
+  const preview = await ready;
+  if (!preview || !await prepareLayoutPreviewSurface(preview)) {
+    if (revision === layoutPreviewRevision) adaptiveSurface.invalidate();
     return;
   }
   if (disposed || revision !== layoutPreviewRevision) return;
-  stage.dataset.layoutPreview = "active";
-  adaptiveSurface.invalidate({ visualPreview: true });
+  adaptiveSurface.invalidate({ visualPreview: true, deferNative: layoutNativePrepared });
   layoutPreviewTimer = window.setTimeout(
     () => void settleLayoutPreview(revision),
     LAYOUT_PREVIEW_SETTLE_MS,
@@ -496,29 +725,22 @@ function syncPortraitAppearance(
   portraitScalePercent = activeAppearance.portraitScalePercent,
   traceContext = null,
 ) {
-  const metadata = presentation.portraitMetadata[key]
-    || presentation.portraitMetadata[presentation.defaultPortraitKey];
-  const portraitSourceSize = [metadata.width, metadata.height];
-  currentPortraitSourceSize = portraitSourceSize;
-  const scale = constrainedPortraitScale({
-    requestedPercent: portraitScalePercent,
-    sourceSize: portraitSourceSize,
-    portraitRect: productLayout.portraitRect,
-    windowSize: productLayout.windowSize,
-  });
-  stage.style.setProperty("--portrait-render-scale", String(scale));
+  currentPortraitSourceSize = [currentSurface.width, currentSurface.height];
+  currentHitRegions = applyVisualSurfaceAppearance(stage, productLayout, currentSurface, portraitScalePercent);
   interactionLatencyTrace.mark("portrait.css-commit", traceContext);
   scheduleInteractionPaintProbe("portrait", traceContext);
-  currentHitRegions = computeHitRegions(productLayout, {
-    portraitSourceSize,
-    portraitScalePercent,
-  });
 }
 
 function commitSurfaceApplication(surface) {
+  if (surface.backendMode) {
+    stage.dataset.nativeViewport = String(surface.backendMode === "macos_cursor_router");
+  }
+  const geometryUnchanged = samePetSurfaceGeometry(contentScale, activeBounds, surface);
   contentScale = surface.contentScale;
   activeBounds = surface.activeBounds;
   activeSurfaceRevision = surface.revision;
+  activePortraitAnchor = surface.portraitAnchor ?? activePortraitAnchor;
+  if (geometryUnchanged) return;
   applyPetLayout(stage, productLayout, contentScale, activeBounds);
 }
 
@@ -549,25 +771,32 @@ function activatePortraitHitTest(
     portraitScalePercent = activeAppearance.portraitScalePercent,
     portraitResourceId = null,
     reportError = true,
+    surface = currentSurface,
+    signal = null,
+    operationSignal = null,
   } = {},
 ) {
+  const isCurrent = () => !disposed && revision === portraitHitRevision
+    && !signal?.aborted && !operationSignal?.aborted;
   return tracedInteractionInvoke(
     "activate_portrait_hit_test",
     {
       portraitKey: key,
       revision,
       portraitScalePercent,
-      ...(portraitResourceId ? { portraitResourceId } : {}),
+      ...(portraitResourceId || surface.assetId ? { portraitResourceId: portraitResourceId || surface.assetId } : { surfaceSize: [surface.width, surface.height] }),
     },
     traceContext,
     "portrait.activate-hit-test",
   ).then((surface) => {
-    if (!surface || revision !== portraitHitRevision) return null;
+    if (!surface || !isCurrent()) return null;
     commitSurfaceApplication(surface);
+    if (presentationError.textContent === PORTRAIT_HIT_TEST_NOTICE) clearRecoverableError();
     return surface;
   }).catch((error) => {
+    if (!isCurrent()) return null;
     if (reportError) {
-      showRecoverableError("桌宠透明区域穿透暂时不可用。", { autoHide: true });
+      showRecoverableError(PORTRAIT_HIT_TEST_NOTICE);
     }
     throw error;
   });
@@ -616,76 +845,173 @@ async function previewPortraitScale(key) {
   });
 }
 
-function buildPortraitController(boundPresentation, { preserveFrameOnFailure = false } = {}) {
-  const expectedByUrl = expectedPortraitsByUrl(boundPresentation);
-  return createPortraitController({
-    assets: boundPresentation.portraitResourceUrls,
-    defaultKey: boundPresentation.defaultPortraitKey,
-    loadImage: (source) => loadImage(source, expectedByUrl),
-    reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    preview: async ({ key, source }) => {
-      const revision = ++portraitHitRevision;
-      const surface = await runPortraitSurfaceMutation(
-        () => invoke("prepare_portrait_transition", { portraitKey: key, revision }),
-      );
-      if (!surface) return;
-      portraitTransitionPending = true;
-      commitSurfaceApplication(surface);
-      portrait.classList.remove("is-transitioning");
-      portraitNext.src = source;
-      void portrait.offsetWidth;
-      portrait.classList.add("is-transitioning");
-    },
-    cancelPreview: () => {
-      portraitTransitionPending = false;
-      portrait.classList.remove("is-transitioning");
-      portraitNext.removeAttribute("src");
-    },
-    commit: async ({ key, source }) => {
-      const revision = ++portraitHitRevision;
-      const surface = await runPortraitSurfaceMutation(
-        () => activatePortraitHitTest(key, revision),
-      );
-      if (!surface || revision !== portraitHitRevision) return;
-      portraitCurrent.src = source;
-      portrait.classList.remove("is-transitioning");
-      portraitNext.removeAttribute("src");
-      portraitFallback.hidden = true;
-      syncPortraitAppearance(key, boundPresentation);
-      const transitionPending = portraitTransitionPending;
-      portraitTransitionPending = false;
-      if (transitionPending) {
-        await waitForPortraitPaint();
-        if (revision !== portraitHitRevision) return;
-        await runPortraitSurfaceMutation(
-          () => invoke("commit_portrait_transition", { revision }),
-        );
-      }
-      if (!presentationUnavailable) clearRecoverableError();
-    },
-    showFallback: () => {
-      if (preserveFrameOnFailure) return;
-      portrait.classList.remove("is-transitioning");
-      portraitFallback.hidden = false;
-    },
-    reportError: ({ code }) => {
-      if (!presentationUnavailable) {
-        showRecoverableError(code === "PORTRAIT_KEY_UNKNOWN" ? "表情映射无效，已恢复默认立绘。" : "立绘解码失败，仍可继续输入。");
-      }
-    },
-  });
+function reportVisualError(code, error, stage) {
+  runtimeDiagnostics.reportError(error || code, { command: "visual_control", code,
+    stage: typeof stage === "string" ? stage : "visual.control" });
 }
 
-let portraitController = buildPortraitController(characterPresentation);
+function visualUnavailable(code, error, stage) {
+  portraitFallback.hidden = false;
+  currentSurface = { width: 320, height: 480, assetKey: null, assetId: null };
+  renderedPortrait = "";
+  void activatePortraitHitTest("").then(() => syncPortraitAppearance("")).catch(() => {});
+  showRecoverableError("角色表现暂不可用，你仍可以继续聊天。");
+  // Core already recorded failed binds. Here only the renderer owns an exception.
+  if (error) runtimeDiagnostics.reportError(error, { command: "visual_renderer", code,
+    stage: typeof stage === "string" ? stage : "visual.renderer" });
+}
+
+const rendererHost = createRendererHost({
+  container: visualContainer,
+  onUnavailable: visualUnavailable,
+  onError: reportVisualError,
+  services: {
+    setHitTest(hitTest, { signal, container }) {
+      return attachDynamicHitTest({ invoke: nativeInvoke, listen: window.__TAURI__.event.listen,
+        container, hitTest, signal,
+        onError: error => reportVisualError("DYNAMIC_HIT_TEST_FAILED", error, "visual.hit-test") });
+    },
+    unavailable: visualUnavailable,
+    reportError: reportVisualError,
+    cancelSurface() {
+      void activatePortraitHitTest(currentSurface.assetKey || "", ++portraitHitRevision, null, { portraitScalePercent: visualScalePercent }).catch(() => {});
+    },
+    async prepareSurface({ assetKey }, { signal }) {
+      const revision = ++portraitHitRevision;
+      const surface = await runPortraitSurfaceMutation(() => invoke("prepare_portrait_transition", { portraitKey: assetKey, revision }));
+      if (signal.aborted || revision !== portraitHitRevision) return false;
+      if (surface) commitSurfaceApplication(surface);
+      return true;
+    },
+    async setSurface({ assetKey = null, width, height }, { signal, operationSignal, visual }) {
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192) throw new Error("SURFACE_SIZE_INVALID");
+      const url = assetKey ? visual.assets[assetKey] : null;
+      if (assetKey && !url) throw new Error("VISUAL_ASSET_UNKNOWN");
+      const surface = { width, height, assetKey, assetId: url ? url.split("/").at(-1) : null };
+      const revision = ++portraitHitRevision;
+      const applied = await runPortraitSurfaceMutation(() => {
+        if (signal.aborted || operationSignal?.aborted || revision !== portraitHitRevision) return false;
+        return activatePortraitHitTest(assetKey || "", revision, null, {
+          surface, portraitScalePercent: visualScalePercent, signal, operationSignal,
+        });
+      });
+      if (signal.aborted || operationSignal?.aborted || revision !== portraitHitRevision || !applied) return false;
+      currentSurface = surface;
+      renderedPortrait = assetKey || "";
+      syncPortraitAppearance(renderedPortrait, characterPresentation, visualScalePercent);
+      portraitFallback.hidden = true;
+      return true;
+    },
+    async finishSurface(_context) {
+      const revision = portraitHitRevision;
+      await waitForPortraitPaint();
+      if (revision !== portraitHitRevision || _context.signal.aborted) return false;
+      await runPortraitSurfaceMutation(() => invoke("commit_portrait_transition", { revision }));
+      return true;
+    },
+  },
+});
 
 let presentation = createChatPresentationReducer({
   initialMessage: characterPresentation.initialMessage,
-  defaultPortraitKey: portraits.default,
-  thinkingPortraitKey: portraits.thinking,
-  concernedPortraitKey: portraits.concerned,
 });
 let pendingCharacterGreeting = false;
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
+
+function surfaceVisibilityKey(kind) {
+  if (kind === "bubble") return "bubbleVisible";
+  if (kind === "input") return "inputVisible";
+  throw new Error("unknown pet surface visibility kind");
+}
+
+function surfaceVisibilityElement(kind) {
+  return kind === "bubble" ? chatBubble : composer;
+}
+
+function waitForSurfaceFade(element) {
+  return waitForSurfaceFadeCompletion(element, {
+    setTimer: (callback, delay) => window.setTimeout(callback, delay),
+    clearTimer: (handle) => window.clearTimeout(handle),
+    requestFrame: (callback) => window.requestAnimationFrame(callback),
+  });
+}
+
+function surfaceFadeDuration() {
+  return SURFACE_VISIBILITY_FADE_MS;
+}
+
+const nativeInputPresentationQueue = createInputPresentationQueue({
+  isCurrent: (revision) => surfaceVisibilityRevision.input === revision,
+  apply: (presented) => invoke("set_pet_input_surface_presented", {
+    presented,
+    durationMs: surfaceFadeDuration(),
+  }),
+});
+
+async function setNativeInputPresented(presented, revision) {
+  return nativeInputPresentationQueue.schedule(presented, revision);
+}
+
+async function commitSurfaceVisibility(kind, key, visible, revision) {
+  if (surfaceVisibilityRevision[kind] !== revision) return;
+  const previous = surfaceVisibility[key];
+  surfaceVisibility[key] = visible;
+  adaptiveSurface.invalidate();
+  let result = await adaptiveSurface.flush();
+  if (!result?.applied && !result?.unchanged && !result?.disposed && !result?.failed) {
+    adaptiveSurface.invalidate();
+    result = await adaptiveSurface.flush();
+  }
+  if (result?.disposed) return;
+  if (result?.failed || (!result?.applied && !result?.unchanged)) {
+    surfaceVisibility[key] = previous;
+    if (kind === "input") await setNativeInputPresented(previous, revision);
+    if (surfaceVisibilityRevision[kind] === revision) {
+      surfaceVisibilityElement(kind).dataset.surfaceVisible = previous ? "true" : "false";
+    }
+    throw new Error("PET_SURFACE_VISIBILITY_COMMIT_FAILED");
+  }
+  if (surfaceVisibilityRevision[kind] === revision) {
+    const element = surfaceVisibilityElement(kind);
+    const nativePresentation = kind === "input" && visible
+      ? setNativeInputPresented(true, revision)
+      : Promise.resolve();
+    element.dataset.surfaceVisible = visible ? "true" : "false";
+    await nativePresentation;
+    if (surfaceVisibilityRevision[kind] !== revision) return;
+  }
+}
+
+async function applySurfaceVisibility(kind, visible) {
+  // Surface suspension during a pet drag is presentation-only; the window and ASR context live on.
+  const key = surfaceVisibilityKey(kind);
+  const next = Boolean(visible);
+  const revision = ++surfaceVisibilityRevision[kind];
+  if (!next) {
+    const element = surfaceVisibilityElement(kind);
+    const nativePresentation = kind === "input"
+      ? setNativeInputPresented(false, revision)
+      : Promise.resolve();
+    element.dataset.surfaceVisible = "false";
+    try {
+      await nativePresentation;
+    } catch (error) {
+      if (surfaceVisibilityRevision[kind] === revision) {
+        element.dataset.surfaceVisible = "true";
+      }
+      throw error;
+    }
+    if (surfaceVisibilityRevision[kind] !== revision) return;
+    await waitForSurfaceFade(element);
+    if (surfaceVisibilityRevision[kind] !== revision) return;
+  }
+  const commit = surfaceVisibilityCommitQueue.then(
+    () => commitSurfaceVisibility(kind, key, next, revision),
+  );
+  surfaceVisibilityCommitQueue = commit.catch(() => {});
+  await commit;
+}
+
 const adaptiveSurface = createAdaptiveControlSurface({
   root: stage,
   bubble: document.querySelector("#chat-bubble"),
@@ -704,20 +1030,35 @@ const adaptiveSurface = createAdaptiveControlSurface({
     "start_pet_input_transition",
     { revision, startAtUnixMs },
   ),
+  startNativeBubbleTransition: (revision, startAtUnixMs) => invoke(
+    "start_pet_bubble_transition",
+    { revision, startAtUnixMs },
+  ),
   readAdjustments: () => ({
     controlPanelWidth: activeAppearance.controlPanelWidth,
     bubbleMaxHeight: activeAppearance.bubbleMaxHeight,
     controlPanelVerticalOffset: activeAppearance.controlPanelVerticalOffset,
     inputBarOffset: activeAppearance.inputBarOffset,
   }),
+  readBubbleAutoExpand: () => activeAppearance.bubbleAutoExpand,
+  readDeferNative: () => layoutPreviewSessionActive && layoutNativePrepared,
+  readVisibility: () => ({ ...surfaceVisibility }),
 });
 
 const composerToolRegistry = createComposerToolRegistry({
   list: composerToolList,
   invoke,
   beforeActivate: () => screenAttachment.close(),
-  onError: (message) => showRecoverableError(message, { autoHide: true }),
+  onError: (message) => showRecoverableError(message),
 });
+
+function inputIsPinned() {
+  return asrController?.active() === true
+    || inputFocus.snapshot().inputFocused
+    || input.value.length > 0
+    || screenAttachment?.busy() === true;
+}
+
 screenAttachment = createScreenAttachmentController({
   composer,
   toggle: attachmentToggle,
@@ -725,8 +1066,9 @@ screenAttachment = createScreenAttachmentController({
   captureItem: captureScreen,
   attachmentList,
   invoke,
-  onError: (message) => showRecoverableError(message, { autoHide: true }),
+  onError: (message) => showRecoverableError(message),
   onAttachmentsChanged: () => adaptiveSurface.invalidate(),
+  onStateChanged: () => surfaceVisibilityController?.setInputPinned(inputIsPinned()),
   beforeOpen: () => composerToolRegistry.refresh(),
   surfaceAnchor: () => "below",
   measureSurface: () => {
@@ -769,6 +1111,53 @@ try {
   // Chinese remains the fail-safe default when the isolated setting cannot be read.
 }
 
+let bubbleAutoHideSettings = Object.freeze({
+  autoHideEnabled: true,
+  autoHideDelaySeconds: 5,
+});
+const surfaceVisibilityCapabilities = await invoke("pet_surface_visibility_capabilities")
+  .catch(() => ({ bubbleAutoHide: false, inputHoverReveal: false }));
+if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilities.inputHoverReveal) {
+  try {
+    const persistedBubbleSettings = await invoke("current_bubble_auto_hide");
+    if (
+      typeof persistedBubbleSettings?.autoHideEnabled === "boolean"
+      && Number.isSafeInteger(persistedBubbleSettings?.autoHideDelaySeconds)
+    ) bubbleAutoHideSettings = Object.freeze(persistedBubbleSettings);
+  } catch {
+    // The 0.9.x defaults remain usable when neither Runtime v2 nor legacy settings can be read.
+  }
+
+  surfaceVisibilityController = createSurfaceVisibilityController({
+    settings: bubbleAutoHideSettings,
+    onVisibilityChange: applySurfaceVisibility,
+    onError: () => showRecoverableError("桌宠控件暂时无法更新。"),
+  });
+  surfaceHoverTracker = createSurfaceHoverTracker({
+    onHoverChange: (active) => surfaceVisibilityController.setHoverActive(active),
+  });
+  for (const [name, element] of [
+    ["portrait", portrait],
+    ["bubble", chatBubble],
+    ["input", composer],
+  ]) {
+    element.addEventListener("pointerenter", () => surfaceHoverTracker.enter(name));
+    element.addEventListener("pointerleave", () => surfaceHoverTracker.leave(name));
+  }
+  surfaceVisibilityController.setInputPinned(inputIsPinned());
+  surfaceHoverProbe = createSurfaceHoverProbe({
+    // Report only the first failed read until native hover becomes available again.
+    readHover: () => nativeInvoke("pet_surface_hovered"),
+    onFailure: (error) => runtimeDiagnostics.reportError(error, {
+      command: "pet_surface_hovered", stage: "surface_hover_probe",
+    }),
+    onHoverChange: (active) => {
+      if (active) surfaceHoverTracker.enter("native-surface");
+      else surfaceHoverTracker.leave("native-surface");
+    },
+  });
+}
+
 const ttsController = createTtsController({
   invoke,
   listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
@@ -781,35 +1170,125 @@ const ttsController = createTtsController({
 });
 await ttsController.start();
 
+const voiceMic = document.querySelector("#voice-mic");
+const voiceStatus = document.querySelector("#voice-status");
+const voiceRecording = document.querySelector("#voice-recording");
+const asrPresentation = createAsrPresentation({
+  composer, input, button: voiceMic, status: voiceStatus, recording: voiceRecording,
+});
+const waveform = createAsrWaveform({ canvas: document.querySelector("#voice-waveform"), window });
+asrController = createAsrController({
+  invoke,
+  listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
+  readContext: () => `${characterPresentation.generationId}:${characterPresentation.characterId}`,
+  readDraft: () => ({
+    value: input.value, version: draftVersion,
+    selectionStart: input.selectionStart, selectionEnd: input.selectionEnd,
+    selectionDirection: input.selectionDirection,
+  }),
+  writeDraft: ({ value, caret }) => {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(caret, caret);
+    asrPresentation.complete();
+  },
+  restoreSelection: (saved) => {
+    input.focus({ preventScroll: true });
+    if (saved) input.setSelectionRange(saved.selectionStart, saved.selectionEnd, saved.selectionDirection);
+  },
+  onState: ({ state }) => {
+    if (state === "preparing" && presentationError.dataset.asrError === "true") clearRecoverableError();
+    const busy = state !== "idle";
+    const waiting = state === "preparing" || state === "recognizing";
+    asrPresentation.setState(state);
+    attachmentToggle.dataset.action = busy ? "cancel" : "tools";
+    attachmentToggle.setAttribute("aria-haspopup", busy ? "false" : "menu");
+    if (busy) void screenAttachment.close();
+    screenAttachment.refreshControls();
+    voiceMic.disabled = waiting || presentationUnavailable;
+    ttsController.setInputCaptureActive(state === "preparing" || state === "recording");
+    if (state === "recording") waveform.start();
+    else waveform.stop();
+    render(presentation.current());
+    adaptiveSurface.invalidate();
+    surfaceVisibilityController?.setInputPinned(inputIsPinned());
+  },
+  onLevel: (level) => waveform.push(level),
+  onError: (message) => {
+    showRecoverableError(message);
+    presentationError.dataset.asrError = "true";
+    const copy = document.createElement("span");
+    copy.textContent = message;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "重试";
+    retry.dataset.interactive = "true";
+    retry.addEventListener("click", () => {
+      if (asrAvailability.enabled() && !presentationUnavailable) void asrController.start();
+    });
+    const settings = document.createElement("button");
+    settings.type = "button";
+    settings.textContent = "打开设置";
+    settings.dataset.interactive = "true";
+    settings.addEventListener("click", () => {
+      void invoke("activate_pet_context_menu_action", { actionId: "sakura.settings.open" })
+        .catch(() => showRecoverableError("设置暂时无法打开，请重试。"));
+    });
+    presentationError.replaceChildren(copy, retry, settings);
+  },
+});
+await asrController.connect();
+const asrAvailability = createAsrAvailability({
+  invoke,
+  onChange: (enabled) => {
+    if (!enabled) {
+      void asrController.cancel();
+      asrPresentation.reset();
+    }
+    voiceMic.hidden = !enabled;
+    composer.dataset.asrEnabled = String(enabled);
+    adaptiveSurface.invalidate();
+  },
+});
+await asrAvailability.start();
+voiceMic.addEventListener("click", () => {
+  if (!asrAvailability.enabled()) return;
+  if (asrController.state() === "recording") void asrController.stop();
+  else if (!asrController.active()) void asrController.start();
+});
+attachmentToggle.addEventListener("click", () => {
+  if (asrController.active()) void asrController.cancel();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !asrController.active()) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  void asrController.cancel();
+}, true);
+
 const typewriter = createTypewriter({
   intervalMs: chatTiming.subtitleTypingIntervalMs,
   segmentPauseMs: chatTiming.replySegmentPauseMs,
   language: subtitleLanguage,
-  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   onStart: () => bubbleScroll.beginReply(),
   onText: (text, bubbleUpdate) => {
     const result = presentation.setTypingText(text);
     if (result.applied) render(result.state, bubbleUpdate);
   },
   onSegment: (segment, index) => {
-    const result = presentation.setTypingSegment(segment, index);
-    if (result.applied) {
-      // Decode the current segment portrait before requesting TTS and keep preparation
-      // off-screen, so the visible transition can start at playback-start.
-      const portraitReady = portraitController.preload(
-        result.state.portrait,
-        { generation: result.state.generationId },
-      );
-      const nextPortrait = result.state.segments[index + 1]?.portrait;
-      if (nextPortrait) {
-        void portraitController.preload(nextPortrait, { generation: result.state.generationId });
-      }
-      // TTS playback-start is the shared segment boundary. The started hook launches the
-      // portrait transition, then typewriter begins the first glyph
-      // when the same gate resolves. Portrait commit itself remains asynchronous and native-safe.
-      const subtitleReady = portraitReady.then(() => ttsController.beforeSegment(segment, index, {
-        onStarted: () => { void render(result.state); },
-      }));
+    const state = presentation.current();
+    if (state.phase === "typing" && state.segments[index] === segment) {
+      const subtitleReady = ttsController.beforeSegment(segment, index, {
+        onStarted: () => {
+          if (presentation.current().operationId !== state.operationId) return;
+          const result = presentation.setTypingSegment(segment, index);
+          if (result.applied) {
+            void rendererHost.play(segment.control, state.operationId, index, segment);
+            void render(result.state);
+          }
+        },
+      });
       return index === 0
         ? waitingIndicator.stopWhenSettled(subtitleReady)
         : subtitleReady;
@@ -824,15 +1303,14 @@ const typewriter = createTypewriter({
 });
 
 const waitingIndicator = createWaitingIndicator({
-  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   onFrame: (frame) => {
     const result = presentation.setWaitingText(frame);
     if (result.applied) render(result.state);
   },
 });
 
-function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {}) {
-  const portraitChanged = renderedPortrait !== state.portrait;
+function render(state, bubbleUpdate = {}) {
+  surfaceVisibilityController?.setPhase(state.phase);
   let bubbleCommitted = false;
   const commitBubble = () => {
     if (bubbleCommitted) return;
@@ -841,17 +1319,16 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
     adaptiveSurface.schedule();
   };
   chatPhase.textContent = phaseLabels[state.phase] || "在线";
-  if (!characterVisualPreviewActive && (!syncBubbleWithPortrait || !portraitChanged)) {
+  if (!characterVisualPreviewActive) {
     commitBubble();
   }
   input.placeholder = composerPlaceholder(characterPresentation.displayName, state.phase);
   send.dataset.action = state.canCancel ? "cancel" : state.canRetry ? "retry" : "send";
   const actionLabel = state.canCancel ? "停止回复" : state.canRetry ? "重试连接" : "发送消息";
   send.setAttribute("aria-label", actionLabel);
-  send.title = actionLabel;
   composerActionIndicator.setBusy(state.canCancel);
   input.disabled = presentationUnavailable;
-  send.disabled = presentationUnavailable || state.silentInteraction || (
+  send.disabled = asrController?.active() === true || presentationUnavailable || state.silentInteraction || (
     !state.canRetry
     && !isChatReadyLifecycle(state.lifecycle)
   );
@@ -859,18 +1336,7 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   replyHistoryNext.disabled = !state.canReviewNext;
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
-  if (portraitChanged) {
-    renderedPortrait = state.portrait;
-    if (characterVisualPreviewActive) {
-      return Promise.resolve({ applied: false, key: state.portrait, visualPreview: true });
-    }
-    return portraitController.show(state.portrait, {
-      immediate: portraitCurrent.getAttribute("src") === null,
-      generation: state.generationId,
-      onVisualReady: commitBubble,
-    });
-  }
-  return Promise.resolve({ applied: false, key: state.portrait });
+  return Promise.resolve({ applied: true });
 }
 
 function handleCoreEvent(event) {
@@ -886,17 +1352,24 @@ function handleCoreEvent(event) {
     });
   }
   const before = presentation.current();
-  if (event.type === "lifecycle" && event.generationId !== before.generationId) {
+  if (event.type === "lifecycle" && isNewCharacterGeneration(before.generationId, event.generationId)) {
+    void asrController?.cancel({ restore: false });
+    asrPresentation.reset();
+    composerActionIndicator.reset();
+    void asrAvailability.refresh();
     ttsController.cancel();
     screenAttachment.invalidate();
     screenAwareness.generationChanged(event.generationId);
     updateAnnouncement.generationChanged();
     composerToolRegistry.invalidate();
-    portraitController.beginGeneration(event.generationId);
-    renderedPortrait = null;
+    ++portraitHitRevision;
+    rendererHost.freeze("generation_changed");
   }
+  if (event.type === "lifecycle" && isChatReadyLifecycle(event.status) && event.generationId === characterPresentation.generationId && event.revision !== before.revision) void rebindCoreGeneration(event.generationId, { refresh: true });
   const result = presentation.reduce(event);
   if (!result.applied) return;
+  if (event.type === "chat.started") rendererHost.begin(event.operationId);
+  if (["chat.failed", "chat.cancelled"].includes(event.type) || (event.type === "lifecycle" && !isChatReadyLifecycle(event.status))) rendererHost.cancel("interrupted");
   const waitingForFirstSegment = event.type === "chat.completed" && result.state.phase === "typing";
   if (before.phase === "thinking" && result.state.phase !== "thinking" && !waitingForFirstSegment) {
     waitingIndicator.stop();
@@ -905,6 +1378,7 @@ function handleCoreEvent(event) {
     typewriter.cancel(result.state.bubbleText);
   }
   render(result.state);
+  if (event.type === "chat.completed" && before.canCancel) composerActionIndicator.complete();
   if (
     event.type === "lifecycle"
     && pendingCharacterGreeting
@@ -920,6 +1394,7 @@ function handleCoreEvent(event) {
   if (event.type === "chat.started" && result.state.phase === "thinking") waitingIndicator.start();
   if (event.type === "chat.started" && result.state.phase === "thinking") ttsController.cancel();
   if (event.type === "chat.completed" && result.state.phase === "typing") {
+    rendererHost.begin(event.operationId);
     ttsController.beginReply(event.operationId, result.state.segments);
     typewriter.start(result.state.segments);
   }
@@ -930,7 +1405,7 @@ const chatClient = createRealChatClient({
   listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
   onEvent: handleCoreEvent,
   initialPreparedGenerationId: characterPresentation.generationId,
-  prepareGeneration: ({ generationId }) => rebindCoreGeneration(generationId),
+  prepareGeneration: ({ generationId, refresh }) => rebindCoreGeneration(generationId, { refresh }),
 });
 
 const updateAnnouncement = createUpdateAnnouncementController({
@@ -946,7 +1421,8 @@ const updateAnnouncement = createUpdateAnnouncementController({
       && !typewriter.isActive()
       && input.value === ""
       && stage.dataset.composing !== "true"
-      && !screenAttachment.busy();
+      && !screenAttachment.busy()
+      && !asrController?.active();
   },
   onDiagnostic: (event, details) => runtimeDiagnostics.record({
     level: event.endsWith("failed") ? "warn" : "info",
@@ -971,6 +1447,7 @@ const screenAwareness = createScreenAwarenessController({
       && input.value === ""
       && stage.dataset.composing !== "true"
       && !screenAttachment.busy()
+      && !asrController?.active()
       && !updateAnnouncement.isPending();
   },
   onDiagnostic: (event, details) => runtimeDiagnostics.record({
@@ -982,12 +1459,14 @@ const screenAwareness = createScreenAwarenessController({
 });
 
 async function submitMessage({ text }) {
+  if (asrController?.active()) return;
   const state = presentation.current();
   if (presentationUnavailable || chatClient.isBusy() || state.canCancel || !isChatReadyLifecycle(state.lifecycle)) return;
   updateAnnouncement.noteActivity();
   screenAwareness.noteManualSend();
   typewriter.cancel("");
   ttsController.cancel();
+  rendererHost.cancel("interrupted");
   const submittedDraft = input.value;
   const submittedAttachmentId = screenAttachment.attachmentId();
   if (submittedAttachmentId) screenAttachment.setSubmitting(true);
@@ -1006,6 +1485,7 @@ async function submitMessage({ text }) {
       input.value = "";
       input.lang = "zh-CN";
       adaptiveSurface.resetInput();
+      surfaceVisibilityController?.setInputPinned(inputIsPinned());
     }
     screenAttachment.markSent(submittedAttachmentId);
   } catch {
@@ -1033,12 +1513,15 @@ for (const dragRegion of dragRegions) {
     const dragGesture = interactionLatencyTrace.createGesture("pet-drag");
     const dragTrace = interactionLatencyTrace.atRevision(dragGesture, activeSurfaceRevision);
     const pointerClientPoint = [event.clientX, event.clientY];
+    const initialPortraitAnchor = activePortraitAnchor;
+    const bubbleWasHidden = surfaceVisibilityController?.snapshot().bubbleVisible === false;
     interactionLatencyTrace.mark("pet-drag.pointerdown", dragTrace, { event });
     clearTextSelection(window.getSelection?.());
     event.preventDefault();
     dragRegion.classList.add("is-native-dragging");
+    surfaceVisibilityController?.setSuspended(true);
     try {
-      await startNativePetDragWithRevisionRecovery({
+      const dragResult = await startNativePetDragWithRevisionRecovery({
         revision: activeSurfaceRevision,
         point,
         start: ({ revision, point: nextPoint }) => tracedInteractionInvoke(
@@ -1078,11 +1561,20 @@ for (const dragRegion of dragRegions) {
           ];
         },
       });
+      if (shouldRevealBubbleAfterNativeDrag({
+        bubbleWasHidden,
+        initialAnchor: initialPortraitAnchor,
+        result: dragResult,
+      })) {
+        surfaceVisibilityController?.activatePet();
+      }
+      if (dragResult?.portraitAnchor) activePortraitAnchor = dragResult.portraitAnchor;
     } catch (error) {
       if (isNativePetDragPointRejected(error)) return;
       showRecoverableError("窗口拖动暂时不可用。");
     } finally {
       dragRegion.classList.remove("is-native-dragging");
+      surfaceVisibilityController?.setSuspended(false);
       void interactionLatencyTrace.flush();
     }
   });
@@ -1132,6 +1624,12 @@ document.addEventListener("contextmenu", async (event) => {
       focusFirst: !event.pointerType && event.button === 0,
       surfaceOffset: currentSurfaceOffset(),
       contentScale,
+      viewport: stage.dataset.nativeViewport === "true" ? {
+        x: activeBounds[0] * contentScale,
+        y: activeBounds[1] * contentScale,
+        width: activeBounds[2] * contentScale,
+        height: activeBounds[3] * contentScale,
+      } : null,
     });
   } catch {
     contextMenu.hide();
@@ -1162,190 +1660,84 @@ await listenAppEvent("sakura://subtitle-language-changed", (event) => {
 let coreRebindRevision = 0;
 let coreRebindTarget = "";
 
-async function rebindCoreGeneration(generationId) {
-  if (generationId === characterPresentation.generationId) return true;
-  if (
-    disposed
-    || !generationId
-    || generationId === coreRebindTarget
-  ) return false;
-
+async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
+  if (!refresh && generationId === characterPresentation.generationId) return true;
+  if (disposed || !generationId || coreRebindTarget === generationId) return false;
   const revision = ++coreRebindRevision;
   coreRebindTarget = generationId;
-  characterVisualPreviewSessions.invalidate();
-  characterVisualPreviewActive = false;
-  let candidateController = null;
   try {
-    const nextPresentation = await loadCurrentCharacterPresentation({
-      invoke,
-      expectedGenerationId: generationId,
-    });
-    if (disposed || revision !== coreRebindRevision) return false;
-
-    const visiblePortrait = renderedPortrait && nextPresentation.portraitKeys.includes(renderedPortrait)
-      ? renderedPortrait
-      : nextPresentation.defaultPortraitKey;
-    const expectedByUrl = expectedPortraitsByUrl(nextPresentation);
-
-    // Keep the decoded old frame on screen until the replacement resource is ready.
-    await loadImage(nextPresentation.portraitResourceUrls[visiblePortrait], expectedByUrl);
-    if (disposed || revision !== coreRebindRevision) return false;
-
-    let nextAppearance = activeAppearance;
-    try {
-      nextAppearance = validateAppearancePublication(
-        await invoke("current_character_appearance"),
-        nextPresentation,
-      );
-    } catch {
-      // Retain the last valid visual settings; a later appearance publication can update them.
-    }
-
-    candidateController = buildPortraitController(nextPresentation, { preserveFrameOnFailure: true });
-    const visualGeneration = generationId;
-    candidateController.beginGeneration(visualGeneration);
-    const shown = await candidateController.show(visiblePortrait, {
-      immediate: true,
-      generation: visualGeneration,
-    });
-    if (!shown.applied) throw new Error("CORE_GENERATION_PORTRAIT_REBIND_FAILED");
-    if (disposed || revision !== coreRebindRevision) {
-      candidateController.dispose();
-      return false;
-    }
-
-    const previousController = portraitController;
+    const next = await loadCurrentCharacterPresentation({ invoke, expectedGenerationId: generationId });
+    if (!next || disposed || revision !== coreRebindRevision) return false;
+    if (next.generationId === characterPresentation.generationId && next.characterId === characterPresentation.characterId
+      && next.visual?.bindingId === characterPresentation.visual?.bindingId && next.visualReasonCode === characterPresentation.visualReasonCode
+      && (!next.visual || rendererHost.current()?.bindingId === next.visual.bindingId)) return true;
+    characterVisualPreviewSessions.invalidate();
     characterVisualPreviewActive = false;
-    const changes = appearanceChanges(activeAppearance, nextAppearance);
-    const presentationRebind = rebindCharacterPresentation({
-      currentCharacterId: characterPresentation.characterId,
-      nextPresentation,
-      currentReducer: presentation,
-    });
-    if (presentationRebind.characterChanged) {
-      waitingIndicator.stop();
-      typewriter.cancel("");
-      ttsController.cancel();
+    ++portraitHitRevision;
+    const rebound = rebindCharacterPresentation({ currentCharacterId: characterPresentation.characterId, nextPresentation: next, currentReducer: presentation });
+    if (rebound.characterChanged || next.generationId !== characterPresentation.generationId) {
+      waitingIndicator.stop(); typewriter.cancel(""); ttsController.cancel();
+      void asrController?.cancel({ restore: false });
+      asrPresentation.reset();
+      composerActionIndicator.reset();
+      screenAttachment.invalidate();
+      screenAwareness.generationChanged(next.generationId);
+      updateAnnouncement.generationChanged();
+      composerToolRegistry.invalidate();
     }
-    presentation = presentationRebind.reducer;
-    pendingCharacterGreeting = presentationRebind.greetingPending;
-    characterPresentation = nextPresentation;
-    portraits = portraitSequence(nextPresentation);
-    activeAppearance = nextAppearance;
-    portraitController = candidateController;
-    candidateController = null;
-    renderedPortrait = shown.key;
+    presentation = rebound.reducer;
+    pendingCharacterGreeting = rebound.greetingPending;
+    characterPresentation = next;
+    try { activeAppearance = validateAppearancePublication(await invoke("current_character_appearance"), next); } catch { /* retain valid appearance */ }
+    if (disposed || revision !== coreRebindRevision) return false;
+    visualScalePercent = activeAppearance.portraitScalePercent;
+    await rendererHost.bind(next);
+    if (disposed || revision !== coreRebindRevision) return false;
     presentationUnavailable = false;
-
-    characterName.textContent = nextPresentation.displayName;
-    input.placeholder = `和${nextPresentation.displayName}说点什么……`;
-    portraitFallbackName.textContent = nextPresentation.displayName;
-    portrait.setAttribute("aria-label", `${nextPresentation.displayName} 的立绘，可拖动窗口`);
-    portraitCurrent.alt = `${nextPresentation.displayName} 立绘`;
-    if (changes.theme) applyTheme(activeAppearance.themeTokens);
-    if (changes.fonts) applyAppearanceVariables(activeAppearance);
-    if (changes.theme || changes.visualEffect) await applyInputVisualEffect(activeAppearance);
-    if (changes.layout || changes.fonts) adaptiveSurface.invalidate();
-    syncPortraitAppearance(renderedPortrait, nextPresentation);
-    previousController.dispose();
-    clearRecoverableError();
+    characterName.textContent = next.displayName;
+    portraitFallbackName.textContent = next.displayName;
+    portrait.setAttribute("aria-label", `${next.displayName}，可拖动窗口`);
+    applyTheme(activeAppearance.themeTokens);
+    applyAppearanceVariables(activeAppearance);
+    adaptiveSurface.invalidate();
     render(presentation.current());
     return true;
-  } catch {
-    candidateController?.dispose();
+  } catch (error) {
     if (!disposed && revision === coreRebindRevision) {
-      showRecoverableError("桌宠资源加载失败；当前画面将继续保留。请稍后重试。");
+      runtimeDiagnostics.reportError(error, { command: "visual_rebind", code: "VISUAL_REBIND_FAILED" });
+      showRecoverableError("角色资源加载失败，请稍后重试。");
     }
     return false;
-  } finally {
-    if (revision === coreRebindRevision) coreRebindTarget = "";
   }
+  finally { if (revision === coreRebindRevision) coreRebindTarget = ""; }
 }
 
 await listenAppEvent("sakura://character-visual-preview", async (event) => {
   try {
     const publication = event?.payload;
-    const previewToken = characterVisualPreviewSessions.begin(publication);
-    if (!previewToken) return;
-    const previewRevision = previewToken.revision;
-    const previewWindowGeneration = previewToken.windowGeneration;
-    const previewCoreGeneration = previewToken.coreGenerationId;
-    const previewPresentation = validateCharacterPresentation(publication.presentation);
-    if (previewPresentation.generationId !== previewCoreGeneration) return;
-    const previewAppearance = validateAppearancePublication(
-      publication.appearance,
-      previewPresentation,
-    );
-    const restoringCurrent = previewPresentation.characterId === characterPresentation.characterId;
-    const key = restoringCurrent && previewPresentation.portraitKeys.includes(renderedPortrait)
-      ? renderedPortrait
-      : previewPresentation.defaultPortraitKey;
-    const source = previewPresentation.portraitResourceUrls[key];
-    await loadImage(source, expectedPortraitsByUrl(previewPresentation));
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-    ) return;
+    const token = characterVisualPreviewSessions.begin(publication);
+    if (!token) return;
+    const next = validateCharacterPresentation(publication.presentation);
+    const appearance = validateAppearancePublication(publication.appearance, next);
+    if (next.generationId !== token.coreGenerationId) return;
     await screenAttachment.close();
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-    ) return;
-    const nativeRevision = ++portraitHitRevision;
-    const preview = await runPortraitSurfaceMutation(
-      () => invoke("begin_portrait_scale_preview", { revision: nativeRevision }),
-    );
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-      || nativeRevision !== portraitHitRevision
-    ) return;
-    const hitRevision = ++portraitHitRevision;
-    const previewSurface = await runPortraitSurfaceMutation(
-      () => activatePortraitHitTest(key, hitRevision, null, {
-        portraitScalePercent: previewAppearance.portraitScalePercent,
-        portraitResourceId: previewPresentation.portraitResourceIds[key],
-      }),
-    );
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-      || hitRevision !== portraitHitRevision
-    ) return;
-    portraitController.beginGeneration(
-      `visual-preview:${previewWindowGeneration}:${previewRevision}`,
-    );
+    if (!characterVisualPreviewSessions.isCurrent(token)) return;
+    ++portraitHitRevision;
     characterVisualPreviewActive = true;
-    if (preview?.application) commitSurfaceApplication(preview.application);
-    if (previewSurface) commitSurfaceApplication(previewSurface);
-    portrait.classList.remove("is-transitioning");
-    portraitNext.removeAttribute("src");
-    portraitCurrent.src = source;
-    portraitFallback.hidden = true;
-    bubbleScroll.updateText(previewPresentation.initialMessage, { forceEnd: true });
-    adaptiveSurface.schedule();
-    syncPortraitAppearance(
-      key,
-      previewPresentation,
-      previewAppearance.portraitScalePercent,
-    );
-    applyTheme(previewAppearance.themeTokens);
-    await applyInputVisualEffect({
-      ...activeAppearance,
-      themeTokens: previewAppearance.themeTokens,
-    });
-    if (
-      !characterVisualPreviewSessions.isCurrent(previewToken)
-    ) return;
-    if (restoringCurrent) {
-      syncPortraitAppearance(key, characterPresentation, activeAppearance.portraitScalePercent);
-      portraitController.beginGeneration(characterPresentation.generationId);
+    visualScalePercent = appearance.portraitScalePercent;
+    await rendererHost.bind(next);
+    if (!characterVisualPreviewSessions.isCurrent(token)) return;
+    bubbleScroll.updateText(next.initialMessage, { forceEnd: true });
+    applyTheme(appearance.themeTokens);
+    if (next.characterId === characterPresentation.characterId) {
+      visualScalePercent = activeAppearance.portraitScalePercent;
+      await rendererHost.bind(characterPresentation);
       characterVisualPreviewActive = false;
-      await restoreCommittedCharacterVisual({
-        currentState: () => presentation.current(),
-        resetRenderedPortrait: () => { renderedPortrait = null; },
-        render: (state) => render(state, { forceEnd: true }),
-      });
-      if (!characterVisualPreviewSessions.isCurrent(previewToken)) return;
+      render(presentation.current());
     }
-  } catch {
-    showRecoverableError("角色视觉预览失败；已保留当前角色画面。");
+  } catch (error) {
+    runtimeDiagnostics.reportError(error, { command: "visual_preview", code: "VISUAL_PREVIEW_FAILED" });
+    showRecoverableError("角色预览失败。");
   }
 });
 
@@ -1356,15 +1748,22 @@ await listenAppEvent("sakura://control-surface-frame", async (event) => {
   interactionLatencyTrace.mark("layout.frame-event-received", frameTrace);
   const normalized = normalizeLayoutAdjustments(contract, event.payload);
   if (Object.entries(normalized).some(([field, value]) => event.payload[field] !== value)) return;
-  const deferNative = event.payload.deferNative === true;
-  // Native region relaxation may take longer than a slider frame on a cold WebView2 surface.
-  // Paint inside the already-stable backing envelope immediately; gesture end still waits for
-  // relaxation before it performs the one precise native commit.
+  const frameRevision = ++layoutFrameRevision;
+  appearanceMutationGuard.supersede();
+  surfaceVisibilityController?.previewBubble();
+  let deferNative = event.payload.deferNative === true;
+  // Windows owns a resident backing envelope, so its first visual frame must not wait for the
+  // native guard IPC. The guard only expands the current region and normally lands before paint;
+  // non-Windows platforms still require native readiness before moving DOM geometry.
   if (!deferNative) {
     const ready = await layoutGestureReady;
     if (!ready || ready.revision !== layoutPreviewRevision) return;
+    if (event.payload.prepareNative === true) {
+      if (!await prepareLayoutPreviewSurface(ready)) return;
+      deferNative = true;
+    }
   }
-  if (!layoutGestureActive || disposed) return;
+  if (!layoutGestureActive || disposed || frameRevision !== layoutFrameRevision) return;
   activeAppearance = Object.freeze({ ...activeAppearance, ...normalized });
   stage.dataset.layoutPreview = "active";
   adaptiveSurface.invalidate({
@@ -1380,30 +1779,15 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   const sourceTrace = publication.trace || layoutGestureTrace;
   interactionLatencyTrace.mark("layout.gesture-event-received", sourceTrace);
   if (publication.active === true) {
-    await screenAttachment.close();
+    appearanceMutationGuard.supersede();
+    surfaceVisibilityController?.previewBubble();
     layoutGestureTrace = sourceTrace;
     layoutGestureActive = true;
-    const revision = ++layoutPreviewRevision;
-    const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
-    cancelLayoutPreviewTimer();
-    stage.dataset.layoutPreview = "active";
-    layoutGestureReady = tracedInteractionInvoke(
-      "begin_control_surface_preview",
-      { revision },
-      beginTrace,
-      "layout.begin-preview",
-    )
-      .then(() => {
-        if (disposed || revision !== layoutPreviewRevision) return null;
-        return Object.freeze({ revision, trace: beginTrace });
-      })
-      .catch(() => {
-        if (!disposed && revision === layoutPreviewRevision) {
-          delete stage.dataset.layoutPreview;
-          showRecoverableError("桌宠布局实时预览暂时不可用。");
-        }
-        return null;
-      });
+    if (!layoutPreviewSessionActive || layoutPreviewEnding) {
+      const nextRevision = layoutPreviewRevision + 1;
+      const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, nextRevision);
+      beginLayoutPreviewSession(beginTrace);
+    }
     return;
   }
 
@@ -1412,20 +1796,7 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   const endTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
   layoutGestureTrace = sourceTrace;
   const ready = layoutGestureReady;
-  void ready.then(async (preview) => {
-    if (!preview || disposed || preview.revision !== revision || revision !== layoutPreviewRevision) return;
-    // The reliable full appearance publication is emitted before gesture=false. Force one final
-    // non-deferred layout transition, then restore the precise native region exactly once.
-    adaptiveSurface.invalidate({ visualPreview: true, interactionTrace: endTrace });
-    await adaptiveSurface.flush({ visualPreview: true, interactionTrace: endTrace });
-    if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
-    await tracedInteractionInvoke(
-      "end_control_surface_preview",
-      { revision },
-      endTrace,
-      "layout.end-preview",
-    );
-    if (revision === layoutPreviewRevision) delete stage.dataset.layoutPreview;
+  void endLayoutPreviewSession(revision, ready, endTrace).then(() => {
     void interactionLatencyTrace.flush();
   }).catch(() => {
     if (!disposed && revision === layoutPreviewRevision) {
@@ -1439,26 +1810,44 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     if (characterVisualPreviewActive) return;
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
     const changes = appearanceChanges(activeAppearance, nextAppearance);
-    if (changes.layout || changes.fonts || changes.portrait) await screenAttachment.close();
+    const layoutPreviewAtPublication = changes.layout
+      && (layoutGestureActive || layoutPreviewSessionActive);
+    const mutationRevision = appearanceMutationGuard.begin();
+    layoutFrameRevision += 1;
+    // Event callbacks are ordered, but their asynchronous preparation is not. Publish the values
+    // before waiting so a newer slider frame can supersede them without a late full-object write.
     activeAppearance = nextAppearance;
+    visualScalePercent = nextAppearance.portraitScalePercent;
+    if (changes.layout || changes.fonts || changes.theme) {
+      surfaceVisibilityController?.previewBubble();
+    }
+    if (layoutPreviewAtPublication) {
+      // Settings flushes its latest lightweight frame before this full publication. Fold the
+      // reliable values into the same gesture now; never let its async continuation start a
+      // second 120 ms preview after the matching gesture-end event has already arrived.
+      const ready = await layoutGestureReady;
+      if (!ready || !await prepareLayoutPreviewSurface(ready)
+        || !appearanceMutationGuard.isCurrent(mutationRevision)) return;
+      adaptiveSurface.invalidate({
+        visualPreview: true,
+        deferNative: layoutPreviewSessionActive && ready.revision === layoutPreviewRevision,
+        interactionTrace: layoutGestureTrace,
+      });
+    }
+    if (changes.fonts || changes.portrait || (changes.layout && !layoutPreviewAtPublication)) {
+      await screenAttachment.close();
+    }
+    if (!appearanceMutationGuard.isCurrent(mutationRevision)) return;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
     if (changes.theme || changes.visualEffect) await applyInputVisualEffect(activeAppearance);
+    if (!appearanceMutationGuard.isCurrent(mutationRevision)) return;
     if (changes.layout) {
-      if (layoutGestureActive) {
-        adaptiveSurface.invalidate({
-          visualPreview: true,
-          deferNative: true,
-          interactionTrace: layoutGestureTrace,
-        });
-      }
-      else await previewLayoutAppearance();
+      if (!layoutPreviewAtPublication) await previewLayoutAppearance();
     }
     else if (changes.fonts) adaptiveSurface.invalidate();
     if (changes.portrait) {
-      const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
-        ? renderedPortrait
-        : characterPresentation.defaultPortraitKey;
+      const key = currentSurface.assetKey || "";
       if (portraitScaleGestureActive) {
         const preview = await portraitScaleGestureReady;
         if (disposed || !preview) return;
@@ -1501,6 +1890,22 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   }
 });
 
+await listenAppEvent("sakura://settings-appearance-active", (event) => {
+  if (typeof event?.payload !== "boolean") return;
+  settingsAppearanceActive = event.payload;
+  surfaceVisibilityController?.setSettingsAppearanceActive(settingsAppearanceActive);
+  if (settingsAppearanceActive) return;
+  layoutGestureActive = false;
+  if (!layoutPreviewSessionActive) return;
+  const revision = layoutPreviewRevision;
+  const ready = layoutGestureReady;
+  void endLayoutPreviewSession(revision, ready).catch(() => {
+    if (!disposed && revision === layoutPreviewRevision) {
+      showRecoverableError("桌宠裁剪区域恢复失败；再次打开设置可重试。");
+    }
+  });
+});
+
 await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
   const publication = portraitFrameEventPayload(event.payload);
   const portraitScalePercent = publication.portraitScalePercent;
@@ -1521,10 +1926,40 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
     || !portraitScaleGestureActive
     || ready !== portraitScaleGestureReady
   ) return;
-  const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
-    ? renderedPortrait
-    : characterPresentation.defaultPortraitKey;
+  const key = currentSurface.assetKey || "";
   if (preview.deferredNative) {
+    const deferredSurface = preview.deferredSurface;
+    if (deferredSurface) {
+      if (!deferredSurface.ready) {
+        deferredSurface.ready = runPortraitSurfaceMutation(async () => {
+          if (
+            disposed
+            || !portraitScaleGestureActive
+            || ready !== portraitScaleGestureReady
+          ) return null;
+          // Publish the prepared geometry on the first real value change; pointer-down itself
+          // leaves the native crop and the current portrait unchanged.
+          commitSurfaceApplication(deferredSurface.application);
+          const revision = ++portraitHitRevision;
+          const nativeFrameTrace = interactionLatencyTrace.atRevision(frameTrace, revision);
+          return activatePortraitHitTest(key, revision, nativeFrameTrace, {
+            portraitScalePercent,
+            reportError: false,
+          });
+        });
+      }
+      try {
+        await deferredSurface.ready;
+      } catch {
+        deferredSurface.ready = null;
+        return;
+      }
+      if (
+        disposed
+        || !portraitScaleGestureActive
+        || ready !== portraitScaleGestureReady
+      ) return;
+    }
     syncPortraitAppearance(key, characterPresentation, portraitScalePercent, frameTrace);
     if (!preview.deferredHitRegions) {
       enqueuePortraitScaleHitFrame(key, portraitScalePercent, frameTrace, ready);
@@ -1554,19 +1989,26 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
       .then((preview) => {
         if (!preview) return null;
         const surface = preview.application;
-        if (surface && !disposed && revision === portraitHitRevision) {
+        const precommitOnFirstFrame = preview.precommitOnFirstFrame === true;
+        if (surface && !precommitOnFirstFrame && !disposed && revision === portraitHitRevision) {
           commitSurfaceApplication(surface);
         }
         return Object.freeze({
           revision,
           deferredNative: preview.deferredNative === true,
           deferredHitRegions: preview.deferredHitRegions === true,
+          deferredSurface: surface && precommitOnFirstFrame
+            ? {
+                application: surface,
+                ready: null,
+              }
+            : null,
           trace: beginTrace,
         });
       })
       .catch(() => {
         if (!disposed && revision === portraitHitRevision) {
-          showRecoverableError("桌宠缩放预览暂时不可用。", { autoHide: true });
+          showRecoverableError("桌宠缩放预览暂时不可用。");
         }
         return null;
       });
@@ -1583,10 +2025,13 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
     // Appearance events are emitted before the gesture-end event. Yield once so their synchronous
     // publication update wins even when both callbacks were released by the same native command.
     await Promise.resolve();
-    if (!preview || disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
-    const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
-      ? renderedPortrait
-      : characterPresentation.defaultPortraitKey;
+    if (!preview) return;
+    if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
+    if (preview.deferredSurface?.ready) {
+      await preview.deferredSurface.ready.catch(() => null);
+    }
+    if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
+    const key = currentSurface.assetKey || "";
     await runPortraitSurfaceMutation(
       () => activatePortraitHitTest(key, revision, endTrace),
     );
@@ -1601,7 +2046,7 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
     void interactionLatencyTrace.flush();
   }).catch(() => {
     if (!disposed && revision === portraitHitRevision) {
-      showRecoverableError("桌宠裁剪区域恢复失败；再次调整缩放可重试。", { autoHide: true });
+      showRecoverableError("桌宠裁剪区域恢复失败；再次调整缩放可重试。");
     }
   });
 });
@@ -1619,14 +2064,24 @@ await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
   });
 });
 
+await listenAppEvent("sakura://bubble-auto-hide-changed", (event) => {
+  const values = event?.payload;
+  if (
+    typeof values?.autoHideEnabled !== "boolean"
+    || !Number.isSafeInteger(values?.autoHideDelaySeconds)
+  ) return;
+  bubbleAutoHideSettings = Object.freeze(values);
+  surfaceVisibilityController?.setSettings(values);
+});
+
 await listenAppEvent("sakura://screen-attachment", (event) => {
   if (screenAttachment.handleAttached(event?.payload)) clearRecoverableError();
 });
-await listenAppEvent("sakura://screen-capture-cancelled", () => {
-  screenAttachment.handleCancelled();
+await listenAppEvent("sakura://screen-capture-cancelled", (event) => {
+  screenAttachment.handleCancelled(event?.payload);
 });
 await listenAppEvent("sakura://screen-capture-error", (event) => {
-  screenAttachment.handleError(event?.payload?.message);
+  screenAttachment.handleError(event?.payload?.message, event?.payload?.captureRevision);
 });
 await listenAppEvent("sakura://screen-awareness-settings", (event) => {
   try {
@@ -1651,16 +2106,22 @@ input.addEventListener("compositionend", (event) => {
   adaptiveSurface.setComposing(false);
 });
 input.addEventListener("input", () => {
+  draftVersion += 1;
   updateAnnouncement.noteActivity();
   screenAwareness.noteActivity();
   input.lang = inferTextLanguage(input.value);
   adaptiveSurface.schedule();
+  surfaceVisibilityController?.setInputPinned(inputIsPinned());
 });
 input.addEventListener("focus", () => {
   if (screenAttachment.isOpen()) void screenAttachment.close();
   inputFocus.handleInputFocus();
+  surfaceVisibilityController?.setInputPinned(true);
 });
-input.addEventListener("blur", () => inputFocus.handleInputBlur());
+input.addEventListener("blur", () => {
+  inputFocus.handleInputBlur();
+  surfaceVisibilityController?.setInputPinned(inputIsPinned());
+});
 document.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 || screenAttachment.contains(event.target)) return;
   screenAttachment.close();
@@ -1680,10 +2141,11 @@ input.addEventListener("keydown", (event) => {
 });
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (asrController?.active()) return;
   const state = presentation.current();
   if (state.canCancel) void chatClient.cancel(state.operationId);
   else if (state.canRetry) {
-    invoke("retry_core").catch(() => showRecoverableError("Core 重试请求失败，请稍后再试。"));
+    invoke("retry_core").catch(() => showRecoverableError("重连失败，请稍后重试。"));
   }
   else inputFocus.submit("button");
 });
@@ -1694,29 +2156,41 @@ function reviewReplyBy(offset) {
   if (!segment) return;
   const result = presentation.reviewReplyAt(targetIndex, selectSegmentText(segment, subtitleLanguage));
   if (result.applied) {
-    render(
-      result.state,
-      { reason: "history", forceEnd: true },
-      { syncBubbleWithPortrait: true },
-    );
+    void rendererHost.review(segment);
+    render(result.state, { reason: "history", forceEnd: true });
   }
 }
 replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));
 replyHistoryNext.addEventListener("click", () => reviewReplyBy(1));
 window.addEventListener("focus", () => inputFocus.handleWindowFocus());
-window.addEventListener("blur", () => inputFocus.handleWindowBlur());
-document.addEventListener("visibilitychange", () => inputFocus.handleVisibility(document.visibilityState === "visible"));
+window.addEventListener("blur", () => {
+  inputFocus.handleWindowBlur();
+  input.blur();
+  surfaceVisibilityController?.setInputPinned(inputIsPinned());
+});
+document.addEventListener("visibilitychange", () => {
+  const visible = document.visibilityState === "visible";
+  if (!visible) void asrController?.cancel({ restore: false });
+  inputFocus.handleVisibility(visible);
+});
 
 function dispose() {
   if (disposed) return;
   disposed = true;
+  clearRecoverableError();
+  asrController?.dispose();
+  asrAvailability.dispose();
+  waveform.stop();
   composerActionIndicator.dispose();
+  asrPresentation.dispose();
   coreRebindRevision += 1;
   coreRebindTarget = "";
   layoutPreviewRevision += 1;
   portraitHitRevision += 1;
   portraitScaleGestureActive = false;
   layoutGestureActive = false;
+  layoutPreviewSessionActive = false;
+  settingsAppearanceActive = false;
   if (interactionPaintProbeFrame !== null) window.cancelAnimationFrame(interactionPaintProbeFrame);
   interactionPaintProbeFrame = null;
   interactionPaintProbe = null;
@@ -1733,7 +2207,10 @@ function dispose() {
   waitingIndicator.dispose();
   bubbleScroll.dispose();
   adaptiveSurface.dispose();
-  portraitController.dispose();
+  surfaceHoverProbe?.dispose();
+  surfaceHoverTracker?.dispose();
+  surfaceVisibilityController?.dispose();
+  rendererHost.destroy();
   chatClient.dispose();
   contextMenu.dispose();
   composerToolRegistry.dispose();
@@ -1744,17 +2221,9 @@ function dispose() {
 
 window.addEventListener("beforeunload", dispose, { once: true });
 
-portraitController.beginGeneration(characterPresentation.generationId);
-renderedPortrait = characterPresentation.defaultPortraitKey;
-if (presentationUnavailable) {
-  portraitFallback.hidden = false;
-  syncPortraitAppearance(characterPresentation.defaultPortraitKey);
-} else {
-  await portraitController.show(characterPresentation.defaultPortraitKey, {
-    immediate: true,
-    generation: characterPresentation.generationId,
-  });
-}
+++portraitHitRevision;
+await rendererHost.bind(characterPresentation);
+surfaceVisibilityController?.start(presentation.current().phase);
 render(presentation.current());
 await chatClient.start();
 try {

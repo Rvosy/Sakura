@@ -1,12 +1,13 @@
 import { isChatReadyLifecycle } from "../lifecycle.js";
+import { normalizeVisualControl } from "../pet/visual-control.js";
 
 const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
-  initializing: ["正在准备", "正在准备会话"],
+  initializing: ["正在准备", "正在准备聊天"],
   ready: ["在线", "可以开始对话"],
-  setup_required: ["需要设置", "请先完成聊天供应商设置"],
-  degraded: ["受限", "聊天服务当前处于受限状态"],
-  failed: ["不可用", "会话启动失败"],
+  setup_required: ["需要设置", "请完成首次设置"],
+  degraded: ["受限", "部分聊天功能暂不可用"],
+  failed: ["不可用", "无法开始对话"],
   rehydrating: ["正在恢复", "正在恢复桌宠状态"],
 });
 
@@ -25,7 +26,7 @@ function freezeState(value) {
   });
 }
 
-function initialState(defaultPortraitKey) {
+function initialState() {
   return freezeState({
     generationId: null,
     generationNumber: 0,
@@ -45,7 +46,7 @@ function initialState(defaultPortraitKey) {
     canReviewPrevious: false,
     canReviewNext: false,
     error: null,
-    portrait: defaultPortraitKey,
+
     canCancel: false,
     canRetry: false,
     silentInteraction: false,
@@ -54,7 +55,7 @@ function initialState(defaultPortraitKey) {
 
 export function composerPlaceholder(displayName, phase) {
   const name = String(displayName || "当前角色");
-  return phase === "thinking" ? `${name}正在思考中…` : `和${name}说点什么……`;
+  return phase === "thinking" ? `${name}正在思考…` : `和${name}说点什么……`;
 }
 
 function normalizedSegments(reply) {
@@ -69,15 +70,15 @@ function normalizedSegments(reply) {
           tone: typeof segment.tone === "string" ? segment.tone : "calm",
           portrait: typeof segment.portrait === "string" ? segment.portrait : "idle",
           suppressTts: segment.suppressTts === true,
+          ...(normalizeVisualControl(segment.control) ? { control: normalizeVisualControl(segment.control) } : {}),
         }),
       ),
   );
 }
 
-export function createChatPresentationReducer({ initialMessage, defaultPortraitKey, thinkingPortraitKey, concernedPortraitKey } = {}) {
-  if (!initialMessage || !defaultPortraitKey) throw new Error("character presentation is required");
-  const concernedPortrait = concernedPortraitKey || defaultPortraitKey;
-  let state = initialState(defaultPortraitKey);
+export function createChatPresentationReducer({ initialMessage } = {}) {
+  if (!initialMessage) throw new Error("character presentation is required");
+  let state = initialState();
   let hasReachedReady = false;
   let greetingStarted = false;
 
@@ -169,7 +170,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
               ? state.bubbleText
               : event.status === "failed" && typeof event.failure?.message === "string"
                 ? event.failure.message
-                : "正在准备会话……",
+                : "正在准备聊天……",
           segments: preserveVisualState || preserveGreeting || chatReady ? state.segments : Object.freeze([]),
           replyHistorySegments: state.replyHistorySegments,
           replyHistoryIndex: state.replyHistoryIndex,
@@ -178,7 +179,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: activeReplyInterrupted
             ? Object.freeze({ code: "CHAT_INTERRUPTED", retryable: true })
             : state.error,
-          portrait: preserveVisualState || chatReady || initialStartup ? state.portrait : concernedPortrait,
+
           canCancel: preserveInteraction && state.canCancel,
           silentInteraction: preserveInteraction && state.silentInteraction,
           canRetry: Boolean(event.canRetry),
@@ -193,7 +194,11 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       if (event.generationNumber !== state.generationNumber || event.generationId !== state.generationId)
         return result(false);
       if (event.type === "chat.started") {
-        if (!isChatReadyLifecycle(state.lifecycle) || !event.operationId || state.operationId) return result(false);
+        if (!isChatReadyLifecycle(state.lifecycle) || !event.operationId) return result(false);
+        if (
+          state.operationId
+          && (state.phase !== "typing" || event.operationId === state.operationId)
+        ) return result(false);
         if (event.presentation === "silent") {
           state = freezeState({
             ...state,
@@ -212,7 +217,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           currentReplyHistoryStart: -1,
           showingReplyHistorySegment: false,
           error: null,
-          portrait: state.portrait,
+
           canCancel: true,
           silentInteraction: false,
         });
@@ -234,7 +239,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           currentReplyHistoryStart,
           showingReplyHistorySegment: false,
           bubbleText: state.bubbleText,
-          portrait: state.portrait,
+
           canCancel: false,
           silentInteraction: false,
         });
@@ -259,7 +264,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
-          portrait: state.portrait,
+
           canCancel: false,
           silentInteraction: false,
         });
@@ -270,11 +275,11 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           ...state,
           phase: "settled",
           operationId: null,
-          bubbleText: event.reason === "core_restart" ? "旧回复已随连接关闭。" : "已取消当前回复。",
+          bubbleText: event.reason === "core_restart" ? "连接已断开，这次回复停止了。" : "已取消当前回复。",
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: null,
-          portrait: state.portrait,
+
           canCancel: false,
           silentInteraction: false,
         });
@@ -299,7 +304,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         : state.replyHistoryIndex;
       state = freezeState({
         ...state,
-        portrait: segment?.portrait || state.portrait,
         replyHistoryIndex: historyIndex,
         showingReplyHistorySegment: state.currentReplyHistoryStart >= 0,
       });
@@ -319,7 +323,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       state = freezeState({
         ...state,
         bubbleText: String(text ?? ""),
-        portrait: segment.portrait || state.portrait,
         replyHistoryIndex: index,
         showingReplyHistorySegment: true,
       });
@@ -337,7 +340,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           text: initialMessage,
           translation: "",
           tone: "calm",
-          portrait: state.portrait,
+
           suppressTts: true,
         })]),
       });

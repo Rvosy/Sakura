@@ -42,6 +42,12 @@
         "python-integration-tests"
       ]
     },
+    "release-distribution": {
+      "description": "验证安装包、Portable、Updater 清单和发行镜像的数据边界",
+      "cases": [
+        "runtime-v2-release-distribution-tests"
+      ]
+    },
     "runtime-v2-shell": {
       "description": "验证 Runtime v2 桌面壳前端与原生窗口交互边界",
       "cases": [
@@ -90,6 +96,14 @@
         "runtime-v2-tts-frontend-journey"
       ]
     },
+    "journey-asr": {
+      "description": "验证语音输入草稿回填、ASR 插件路由、临时音频授权和宿主采集处理",
+      "cases": [
+        "runtime-v2-asr-python-journey",
+        "runtime-v2-asr-rust-journey",
+        "runtime-v2-asr-frontend-journey"
+      ]
+    },
     "journey-screen-capture": {
       "description": "验证手动截图与定时截图、generation 私有图像资源、内存批次和聊天单次消费",
       "cases": [
@@ -123,16 +137,101 @@
         "runtime-v2-character-switch-frontend-journey"
       ]
     },
+    "journey-character-studio": {
+      "description": "验证角色工坊草稿、资源、发布、重载计划、试听授权和窗口边界",
+      "cases": [
+        "runtime-v2-character-studio-python-journey",
+        "runtime-v2-character-studio-rust-journey",
+        "runtime-v2-character-studio-frontend-journey"
+      ]
+    },
     "legacy-import": {
       "description": "验证 0.9.x 显式迁移、paused Core、Timeline 转换、回滚和首次页交互",
       "cases": [
         "legacy-import-python-tests",
         "legacy-import-rust-tests",
-        "legacy-import-frontend-tests"
+        "legacy-import-rust-transaction-tests",
+        "legacy-import-frontend-behavior"
+      ]
+    },
+    "remote-telemetry": {
+      "description": "验证匿名统计配置、固定 DTO、隐私边界和设置页接口",
+      "cases": [
+        "remote-telemetry-python-tests",
+        "remote-telemetry-rust-tests",
+        "remote-telemetry-frontend-tests"
+      ]
+    },
+    "journey-visuals": {
+      "description": "验证表现插件的资源、编辑、回复控制、播放、撤销与归档",
+      "cases": [
+        "visual-plugin-python-journey",
+        "visual-plugin-frontend-journey",
+        "visual-plugin-rust-journey"
+      ]
+    },
+    "journey-visuals-browser": {
+      "description": "验证设置形态选择、工坊编辑与真实插件播放",
+      "cases": [
+        "visual-plugin-browser-journey",
+        "settings-visuals-browser-journey",
+        "studio-visuals-browser-journey",
+        "studio-save-browser-journey",
+        "spine-plugin-browser-journey"
       ]
     }
   },
   "cases": [
+    {
+      "id": "remote-telemetry-python-tests",
+      "description": "验证 Provider usage、Context 指标、Core 错误栈和 Privacy Sentinel",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_remote_telemetry.py",
+        "tests/unit/test_api_client.py",
+        "tests/unit/test_core_host_runtime_logging.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "remote-telemetry-rust-tests",
+      "description": "验证配置默认值、诊断 ID、固定 payload、body 上限和 fail-closed 校验",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "telemetry::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "remote-telemetry-frontend-tests",
+      "description": "验证单一开关、规范 UUID、固定命令和隐私说明界面",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/root-settings-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
     {
       "id": "legacy-import-python-tests",
       "description": "验证 0.9.x 检查、配置/角色/Timeline/Memory 转换、脱敏和事务回滚",
@@ -141,6 +240,7 @@
         "-m",
         "pytest",
         "tests/unit/test_legacy_import.py",
+        "tests/unit/test_legacy_incremental_import.py",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -169,13 +269,31 @@
       }
     },
     {
-      "id": "legacy-import-frontend-tests",
-      "description": "验证首次页显式选择、检查、开始、取消和 Core 启动命令",
+      "id": "legacy-import-rust-transaction-tests",
+      "description": "验证迁移 deadline、进程树回收、journal 三态和不确定 finalize 的失败关闭",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "legacy_import::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "legacy-import-frontend-behavior",
+      "description": "验证目录检查会立即进入可见状态，并使用不确定进度",
       "argv": [
         "node",
         "--test",
-        "desktop/frontend/tests/first-run-onboarding.test.js",
-        "desktop/frontend/tests/first-run-guide.test.js"
+        "desktop/frontend/tests/legacy-import-inspection-feedback.test.js"
       ],
       "timeout_seconds": 120,
       "env": {
@@ -191,6 +309,7 @@
         "pytest",
         "tests/integration/test_wp_5_03_character_switch_journey.py",
         "tests/unit/test_core_host_character_settings.py",
+        "tests/unit/test_core_host_character_publication.py",
         "tests/unit/test_plugin_character_generation.py",
         "tests/unit/test_core_host_memory.py",
         "tests/integration/test_core_host_real_chat_integration.py",
@@ -206,7 +325,7 @@
     },
     {
       "id": "runtime-v2-character-switch-rust-journey",
-      "description": "验证角色切换只跨完整 Core generation，旧 transport/聊天/资源先失效且 cleanup 后才启动",
+      "description": "验证角色切换保持 Core generation，旧聊天与角色授权失效后重建会话",
       "argv": [
         "cargo",
         "test",
@@ -231,10 +350,61 @@
         "--test",
         "desktop/frontend/tests/character-switch-runtime.test.js",
         "desktop/frontend/tests/character-generation.test.js",
+        "desktop/frontend/tests/real-chat-client.test.js",
         "desktop/frontend/tests/history-load-guard.test.js",
         "desktop/frontend/tests/root-settings-runtime.test.js",
         "desktop/frontend/tests/provider-model-runtime.test.js",
         "desktop/frontend/tests/screen-awareness-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-character-studio-python-journey",
+      "description": "验证角色工坊 schema v1、旧草稿恢复、资源导入、事务发布、导出和取消清理",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/integration/test_character_studio_journey.py",
+        "tests/unit/test_character_studio.py",
+        "tests/unit/test_core_host_character_studio.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-character-studio-rust-journey",
+      "description": "验证工坊窗口调用边界、试听资源 generation 隔离和多显示器取色会话",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "studio",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 240,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-character-studio-frontend-journey",
+      "description": "验证角色分组、角色 ID、主题颜色和 schema v1 公共 DTO",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/studio-model.test.js"
       ],
       "timeout_seconds": 120,
       "env": {
@@ -357,6 +527,24 @@
       }
     },
     {
+      "id": "runtime-v2-release-distribution-tests",
+      "description": "验证发行布局、升级数据保留、签名清单和 GitCode 下载镜像",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_release_packaging.py",
+        "tests/unit/test_gitcode_release_mirror.py",
+        "tests/unit/test_release_metadata.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
       "id": "runtime-v2-frontend-tests",
       "description": "验证 Runtime v2 桌宠、设置页与自绘菜单前端契约",
       "argv": [
@@ -371,13 +559,14 @@
     },
     {
       "id": "runtime-v2-provider-model-tests",
-      "description": "验证 Provider/模型公开 DTO、密钥语义、原子保存与有界探测",
+      "description": "验证 Provider/模型公开 DTO、密钥语义、原子保存与 HTTP 请求契约",
       "argv": [
         "{python}",
         "-m",
         "pytest",
         "tests/unit/test_provider_model_settings.py",
         "tests/unit/test_core_host_provider_settings.py",
+        "tests/unit/test_api_client.py",
         "-q"
       ],
       "timeout_seconds": 120,
@@ -394,7 +583,6 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_memory.py",
-        "tests/unit/test_runtime_resources.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
         "-q"
       ],
@@ -412,10 +600,15 @@
         "-m",
         "pytest",
         "tests/unit/test_plugin_runtime_v4.py",
+        "tests/unit/test_visual_capabilities.py",
+        "tests/integration/test_visual_plugin_boundary.py",
+        "tests/integration/test_portrait_resources.py",
+        "tests/unit/test_web_plugin.py",
         "tests/unit/test_playwright_browser_plugin_v4.py",
         "tests/unit/test_sakura_mobile_plugin_v4.py",
         "tests/unit/test_mobile_runtime_v4.py",
         "tests/unit/test_core_host_plugins.py",
+        "tests/unit/test_plugin_settings_contract.py",
         "tests/integration/test_wp_4_04_plugin_journey.py",
         "-q"
       ],
@@ -446,11 +639,13 @@
     },
     {
       "id": "runtime-v2-plugin-frontend-journey",
-      "description": "验证插件设置 DTO、失败草稿和 v4 显式局部生命周期",
+      "description": "验证插件设置 DTO、目录导航、失败草稿和 v4 显式局部生命周期",
       "argv": [
         "node",
         "--test",
-        "desktop/frontend/tests/plugin-runtime.test.js"
+        "desktop/frontend/tests/plugin-runtime.test.js",
+        "desktop/frontend/tests/plugin-presentation.test.js",
+        "desktop/frontend/tests/settings-plugin-list.test.js"
       ],
       "timeout_seconds": 120,
       "env": {
@@ -483,6 +678,7 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_runtime_logging.py",
+        "tests/unit/test_plugin_runtime_v4.py",
         "tests/integration/test_runtime_v2_observability.py",
         "-q"
       ],
@@ -499,10 +695,12 @@
         "{python}",
         "-m",
         "pytest",
-        "tests/unit/test_tts_process_ownership.py",
+        "tests/unit/test_tts_architecture.py",
+        "tests/unit/test_tts_job_lifecycle.py",
         "tests/unit/test_voice_recording_store.py",
         "tests/unit/test_chat_history_entry_id.py",
         "tests/unit/test_core_host_tts.py",
+        "tests/unit/test_tts_runtime_v4.py",
         "tests/unit/test_gpt_sovits_plugin.py",
         "tests/unit/test_gpt_sovits_runtime_profile.py",
         "tests/unit/test_genie_plugin.py",
@@ -540,6 +738,7 @@
       "argv": [
         "node",
         "--test",
+        "desktop/frontend/tests/chat-presentation.test.js",
         "desktop/frontend/tests/tts-runtime.test.js",
         "desktop/frontend/tests/voice-runtime.test.js"
       ],
@@ -549,6 +748,39 @@
       }
     },
     {
+      "id": "runtime-v2-asr-python-journey",
+      "description": "验证独立 ASR Hub/Provider 进程、取消、至多一次结果、授权与资源清理",
+      "argv": [
+        "{python}", "-m", "pytest", "-q",
+        "tests/unit/test_asr_input.py",
+        "tests/unit/test_asr_plugins.py"
+      ],
+      "timeout_seconds": 180,
+      "env": {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"}
+    },
+    {
+      "id": "runtime-v2-asr-rust-journey",
+      "description": "验证采集状态、有界 PCM、真实音量摘要、重采样与 WAV 格式；不自动打开麦克风",
+      "argv": [
+        "cargo", "test", "--manifest-path", "desktop/src-tauri/Cargo.toml", "--locked",
+        "asr::tests", "--", "--test-threads=1"
+      ],
+      "timeout_seconds": 240,
+      "env": {"NO_COLOR": "1", "CARGO_TERM_COLOR": "never"}
+    },
+    {
+      "id": "runtime-v2-asr-frontend-journey",
+      "description": "验证点击录音、取消、草稿和附件保留、手动发送及真实音量事件隔离",
+        "argv": [
+          "node", "--test", "desktop/frontend/tests/asr-runtime.test.js",
+          "desktop/frontend/tests/asr-settings.test.js",
+          "desktop/frontend/tests/asr-availability.test.js",
+          "desktop/frontend/tests/asr-input-test.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {"NO_COLOR": "1"}
+    },
+    {
       "id": "runtime-v2-screen-capture-python-journey",
       "description": "验证截图资源 containment、JPEG 校验、设置兼容、批量单次消费和多模态历史边界",
       "argv": [
@@ -556,10 +788,11 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_screen_capture.py",
+        "tests/unit/test_core_host_screen_session.py",
         "tests/unit/test_screen_awareness_settings_boundary.py",
         "tests/integration/test_core_host_real_chat_integration.py",
         "-k",
-        "screen_resource or jpeg_dimensions or screen_awareness or manual_screen_attachment",
+        "screen_resource or jpeg_dimensions or screen_awareness or manual_screen_attachment or character_switch_rejects_old_capture",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -657,7 +890,7 @@
     },
     {
       "id": "runtime-v2-log-viewer-frontend-journey",
-      "description": "验证日志查看器 DTO、增量合并、分组、复制和 reduced motion",
+      "description": "验证日志查看器 DTO、增量合并、分组和复制",
       "argv": [
         "node",
         "--test",
@@ -782,7 +1015,7 @@
     },
     {
       "id": "runtime-v2-window-surface-regression-tests",
-      "description": "锁定 macOS 临时稳定包络、全透明立绘、右键菜单临时包络和过渡包络回归",
+      "description": "锁定 macOS 顶边裁剪与临时稳定包络、全透明立绘、右键菜单临时包络和过渡包络回归",
       "argv": [
         "cargo",
         "test",
@@ -836,6 +1069,113 @@
       "env": {
         "NO_COLOR": "1",
         "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "visual-plugin-python-journey",
+      "description": "验证静态能力、真实插件、普通/主动回复、历史、草稿和完整/组件归档",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/unit/test_visual_capabilities.py",
+        "tests/unit/test_visual_archive.py",
+        "tests/unit/test_spine_plugin.py",
+        "tests/unit/test_core_host_character_settings.py",
+        "tests/integration/test_visual_plugin_boundary.py",
+        "tests/integration/test_portrait_resources.py",
+        "tests/unit/test_character_archive.py",
+        "tests/unit/test_character_studio.py",
+        "tests/unit/test_core_host_character_studio.py",
+        "tests/integration/test_character_studio_journey.py",
+        "tests/unit/test_agent_runtime.py",
+        "tests/unit/test_timeline_store.py"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    },
+    {
+      "id": "visual-plugin-frontend-journey",
+      "description": "验证控制派发、去重、过期结果、取消及编辑器生命期",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/renderer-host.test.js",
+        "desktop/frontend/tests/visual-editor-host.test.js",
+        "desktop/frontend/tests/spine-plugin.test.js",
+        "desktop/frontend/tests/spine-hit-test.test.js",
+        "desktop/frontend/tests/portrait-controller.test.js",
+        "desktop/frontend/tests/character-generation.test.js",
+        "desktop/frontend/tests/chat-presentation.test.js",
+        "desktop/frontend/tests/character-visual-preview.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "visual-plugin-rust-journey",
+      "description": "验证通用资产、已安装模块、编辑器授权与透明命中服务",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "visual_resources",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "settings-visuals-browser-journey",
+      "description": "验证个人显示方式选择、应用、放弃与插件状态刷新",
+      "argv": ["{python}", "desktop/frontend/tests/settings-visuals.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "studio-save-browser-journey",
+      "description": "使用桌面 CSP、真实有界 Core 路由和多图角色验证保存重载",
+      "argv": ["{python}", "desktop/frontend/tests/studio-save.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "studio-visuals-browser-journey",
+      "description": "验证形态卡片、命名、立绘草稿、添加保存与窄窗口布局",
+      "argv": ["{python}", "desktop/frontend/tests/studio-visuals.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "spine-plugin-browser-journey",
+      "description": "使用隔离角色和桌面 CSP 验证 Spine 组件导入、工坊保存及 WebGL 播放",
+      "argv": ["{python}", "desktop/frontend/tests/spine-plugin.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "visual-plugin-browser-journey",
+      "description": "使用隔离角色运行真实工坊、Core插件与浏览器渲染器；原生窗口传输采用测试桥",
+      "argv": [
+        "{python}",
+        "desktop/frontend/tests/visual-plugin.journey.py"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1"
       }
     }
   ]

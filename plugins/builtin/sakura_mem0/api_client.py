@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
+from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+
 try:
     from .support import CancelChecker, check_cancelled
 except ImportError:
@@ -18,6 +20,14 @@ class ApiSettings:
     api_key: str = field(repr=False)
     model: str
     timeout_seconds: int = 60
+
+
+class CurationApiError(RuntimeError):
+    """Stable, content-free failure raised by the curator's narrow client."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class OpenAICompatibleClient:
@@ -62,18 +72,21 @@ class OpenAICompatibleClient:
             },
             method="POST",
         )
-        with urllib.request.urlopen(
+        with urlopen_current_proxy(
             request,
             timeout=max(1, int(self._settings.timeout_seconds)),
         ) as response:
-            raw = json.loads(response.read())
+            try:
+                raw = json.loads(response.read())
+            except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as error:
+                raise CurationApiError("CURATION_RESPONSE_INVALID") from error
         check_cancelled(cancel_checker)
         try:
             content = raw["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
-            raise RuntimeError("CURATION_RESPONSE_INVALID") from error
+            raise CurationApiError("CURATION_RESPONSE_INVALID") from error
         if not isinstance(content, str):
-            raise RuntimeError("CURATION_RESPONSE_INVALID")
+            raise CurationApiError("CURATION_RESPONSE_INVALID")
         return content
 
     def close(self) -> None:
@@ -92,4 +105,8 @@ def _normalize_openai_base_url(base_url: str) -> str:
     return normalized
 
 
-__all__ = ["ApiSettings", "OpenAICompatibleClient"]
+__all__ = [
+    "ApiSettings",
+    "CurationApiError",
+    "OpenAICompatibleClient",
+]

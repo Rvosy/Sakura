@@ -1,7 +1,6 @@
 //! Cross-platform service boundaries for Sakura Runtime v2.
 //!
-//! WP-1P-01 freezes contracts only. Concrete backends and production wiring
-//! are intentionally introduced by WP-1P-02 through WP-1P-05.
+//! Native backends share these contracts and are selected at compile time.
 
 mod contracts;
 mod error;
@@ -11,8 +10,7 @@ mod runtime_locator;
 mod target;
 mod window_backend;
 
-// These re-exports are the stable facade consumed once concrete backends are
-// wired. The binary does not call them during the WP-1P-01 contract-only step.
+// Each consumer imports the concrete services or contracts it needs.
 #[allow(unused_imports)]
 pub use contracts::*;
 #[allow(unused_imports)]

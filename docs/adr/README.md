@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-28
+updated: 2026-09-11
 ---
 
 # Architecture Decision Records
@@ -47,6 +47,22 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0036：使用声明式 About Surface 汇总插件组件](0036-declarative-about-component-surface.md)
 - [ADR-0037：官方功能作为可替换默认插件，并隔离每个插件的 Python 运行环境](0037-replaceable-default-plugins-and-isolated-python-runtimes.md)
 - [ADR-0038：首次启动提供显式、事务化的 0.9.x 数据导入](0038-explicit-transactional-legacy-import.md)
+- [ADR-0039：旧版迁移优先保全不可替代的聊天与记忆](0039-prioritize-irreplaceable-legacy-data.md)
+- [ADR-0040：确认后覆盖，并提供按角色增量导入历史与记忆](0040-confirmed-overwrite-and-incremental-role-data-import.md)
+- [ADR-0041：使用静态 Sakura Service 控制面，并让 GitHub 持有发行数据面](0041-static-sakura-service-control-plane.md)
+- [ADR-0042：使用独立 Telemetry Edge，并默认开启匿名统计（已取代）](0042-remote-diagnostics-telemetry.md)
+- [ADR-0043：Telemetry Edge 使用 CDN 后的单机 FastAPI 与 SQLite](0043-vps-fastapi-sqlite-telemetry-edge.md)
+- [ADR-0044：角色工坊使用主 Tauri 应用内的独立窗口](0044-character-studio-same-app-window.md)
+- [ADR-0045：ASR Hub、可替换识别引擎与宿主录音](0045-asr-hub-and-host-audio-input.md)
+- [ADR-0046：表现插件负责编辑、控制说明、解析与渲染](0046-composable-character-resources-and-renderer-host.md)（已接受；完整立绘插件与通用宿主已实现）
+
+- [ADR-0047：联网搜索与网页抓取由内置插件提供](0047-bundled-web-search-plugin.md)
+- [ADR-0048：以原始错误证据为遥测主体](0048-original-error-reports.md)
+
+- [ADR-0048：语音资源与应用运行选择分离](0048-voice-resources-and-local-selection.md)
+- [ADR-0049：动画表现使用单点命中，宿主管理原生穿透](0049-animated-point-hit-testing.md)
+- [ADR-0050：当前角色编辑局部更新，角色切换保留 generation 隔离](0050-current-character-local-refresh.md)
+- [ADR-0051：切换角色保留可复用插件与推理进程](0051-character-switch-retains-engines.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-02
+updated: 2026-09-05
 ---
 
 # WP-3U-01：同一 Tauri App 的右键菜单与设置窗口宿主
@@ -48,6 +47,18 @@ WP-3U-02；其他设置功能按 `docs/specs/runtime-v2/settings-incremental-mig
 
 ## 现有实现的复用裁定
 
+### 设置说明与悬停提示
+
+- 参数补充说明使用标签旁无圆圈的小 `?`，保持设置行的紧凑布局。隐私范围、数据移动、保存后果和错误
+  保留可见说明，分类遵循[界面文案规范](../../devdocs/UI_COPY_GUIDELINES.md)。
+- 主界面不显示悬浮提示，包括附件、截图、语音输入和发送按钮；保留无障碍名称和必要状态。
+- 设置和角色工坊共用主题提示浮层。静态和动态提示使用 `data-tooltip`，不使用原生 `title`；
+  自绘下拉框透传原控件和选项的提示。提示随主题更新，靠近窗口边缘时调整位置，避免被滚动容器裁切。
+- 提示支持悬停和键盘聚焦，问号另支持点击展开与收起；Esc、点击外部、页面滚动和窗口失焦时收起。
+  浮层使用纯文本和 `role="tooltip"`，显示期间通过 `aria-describedby` 关联来源，保留已有描述引用。
+
+### 可复用范围
+
 允许复用：
 
 - `tools/settings-tauri/frontend/index.html` 的页面结构与可访问语义。
@@ -80,6 +91,7 @@ Rust 是窗口和菜单生命周期的唯一所有者：
 - Rust 构建产品菜单并处理 menu item ID；WebView 不实现伪原生浮层菜单。
 - `settings` 不存在时创建；已存在时 unminimize、show、focus，不创建第二个实例。
 - 设置窗口使用有装饰的普通窗口，可最小化、有任务栏入口、默认不置顶。
+- 设置 WebView 必须始终填满原生窗口内容区；最大化、恢复和拖动缩放不得保留旧 viewport 或露出原生背景。
 - 关闭设置只销毁或隐藏 `settings`，不得退出 App、关闭桌宠或触发 Core shutdown。
 - App 退出时先请求设置关闭/丢弃确认，再按现有受控路径关闭 Core 和全部窗口。
 - Core 崩溃时设置窗口继续存在，并只按能力清单显示可用/不可用状态。
@@ -124,28 +136,22 @@ unavailableReasons
 
 - 没有未保存草稿时，关闭设置窗口立即完成。
 - 有未保存草稿时，由设置前端显示确认；Rust `CloseRequested` 必须 prevent close，直到收到明确结果。
+- 普通插件集合和 Memory 集合的活动编辑器均属于未保存草稿。整体保存必须在任何页面写入前检查所有
+  集合草稿，要求用户先保存或还原集合记录；插件页面自身保存也保留此检查。
 - 用户取消关闭时窗口保持可见并恢复焦点。
 - 用户确认放弃时只关闭 settings 窗口。
-- 主应用退出不能无限等待设置确认；应使用明确、可测试的有界退出策略，不得绕过 Core 清理。
+- 主应用退出时，先恢复并聚焦处理确认的窗口（包括最小化的设置或角色工坊），重复退出请求也要前置
+  已有确认。设置收到请求后通过 `acknowledge_settings_exit` 回应；5 秒超时只取消未获页面回应的请求，
+  不取消正在等待用户选择或保存的确认，也不绕过 Core 清理。
+- `sakura://settings-exit-requested` 携带进程内递增的请求序号；回应和 `resolve_settings_exit` 均携带
+  `revision`，过期回应和旧定时器不得影响新请求。保存失败时保留草稿并取消本次退出，允许再次尝试。
+- 退出确认使用“继续编辑”“直接退出”“保存并退出”；“直接退出”放弃未保存设置并退出整个应用。
 - WebView 崩溃或设置窗口创建失败时，桌宠和 Core 继续运行，右键菜单显示可恢复错误并允许重试。
 
-## 实施白名单
+## 宿主与数据边界
 
-允许修改：
-
-- `desktop/src-tauri/src/**` 中菜单、secondary window、settings capability 和关闭协调的窄模块。
-- `desktop/src-tauri/tauri.conf.json`、`desktop/src-tauri/capabilities/**` 中 settings 窗口的最小权限。
-- `desktop/frontend/**` 中产品右键入口、settings canonical frontend 和共享 UI 模块。
-- `tools/settings-tauri/frontend/**` 与其构建配置中指向 canonical source 的兼容改造。
-- 与上述范围直接相关的 Rust/frontend/Python 静态边界测试和规范文档。
-
-明确禁止：
-
-- 修改 Python Assistant、Provider、Memory、Tools、MCP、插件、TTS、截图或角色业务语义。
-- 从 Runtime v2 启动 `sakura-settings` 子进程或复用其 stdio RPC。
-- 在本 WP 写入 `data/**`、角色配置、API 配置或用户凭据。
-- 打开尚未迁移设置页面，或为页面方便建设跨 Python/Rust 分布式设置事务。
-- 迁移 Studio、历史窗口、完整托盘、开机启动和全局快捷键。
+设置窗口属于主 Tauri App，不启动 `sakura-settings` 子进程或复用旧 stdio RPC。宿主负责窗口和调用协调，
+业务配置由对应 Core 领域处理；WebView 不直接写用户数据。尚未完成真实数据链的页面不能以占位控件冒充可用。
 
 ## 验收门禁
 
@@ -161,17 +167,20 @@ unavailableReasons
 
 Windows 真实应用至少验证右键菜单位置、100%/150% DPI、设置窗口创建/最小化/聚焦、中文 IME、
 未保存关闭确认、重复打开和主程序退出。公共 Rust/frontend 构建必须在 Windows/macOS/Linux 通过；
-macOS/Linux 真实菜单和 compositor 门保留 WP-7-02。
+macOS 还必须验证设置窗口默认、最大化、恢复和拖动缩放时 WebView bounds 始终等于原生内容区；Linux
+真实菜单和 compositor 门保留 WP-7-02。
 
 ## 状态与回退
 
-只有 WP-3-03 accepted 后才能激活。本 WP 完成实现后进入 `stabilizing`；无 P0/P1、窗口生命周期、
-焦点/IME、关闭和三平台构建门通过后才能 accepted。
+变更按实际影响验证窗口生命周期、焦点/IME 和关闭行为，公共代码由 CI 验证三平台构建。
+人工与自动结果分别记录，旧工作包依赖状态不构成开发前置审批。
 
 回退时移除 Runtime v2 菜单 action、settings window 注册、capability shell 和资源暂存接线，保留
 WP-3-03 固定产品 UI。旧独立设置工具和 legacy Qt 入口保持可用；不得删除或恢复用户配置。
 
 ## 接受记录（2026-07-27）
+
+> 本节保留当时的验证事实、风险接受与回退方案，不是当前开发步骤。
 
 - 自动测试：实现与稳定化提交依次通过 frontend 全量测试（最终 70 passed）、Runtime Rust 全量测试
   （最终 195 passed、23 ignored）、Harness smoke（2/2）、locked debug build、`cargo fmt --check`、
@@ -204,6 +213,8 @@ WP-3-03 固定产品 UI。旧独立设置工具和 legacy Qt 入口保持可用�
   权限”自 2026-08-29 起退出本版本右键菜单，不保留占位。
 - 自绘菜单打开期间 Rust 临时恢复整窗命中区域，关闭后按最新布局、DPI、立绘缩放和 alpha mask 恢复
   精确区域；恢复失败继续采用整窗可交互的安全回退，不能留下不可点击窗口。
+- 菜单打开后，气泡逐字、气泡或输入栏显隐、输入栏高度变化仍可提交布局。Rust 必须保留菜单覆盖层，
+  同时更新用于关闭菜单的基础布局快照；普通布局动画不得把原生 region 收紧到菜单下方的桌宠区域。
 - CAP-022 保持 `planned`，后续仍由 WP-5-04 补齐快捷键、开机启动和三平台其余桌面能力。
 
 ## 2026-08-29 桌宠保持置顶后续决定
@@ -217,3 +228,13 @@ WP-3-03 固定产品 UI。旧独立设置工具和 legacy Qt 入口保持可用�
   原生应用失败时不写配置、不改变勾选状态。
 - CAP-022 仍保持 `planned`，因为快捷键、开机启动和三平台完整桌面能力尚未完成；置顶子能力由本决定先行
   交付。
+
+## 2026-09-02 开机启动后续决定
+
+- 系统设置页开放 `system.launch_at_login`。开关保存时由 Rust 调用跨平台原生服务，不把旧 Python
+  `startup.launch_at_login` 字段当作运行状态。
+- 设置窗口每次打开都读取操作系统里的真实启动项；启用或关闭后必须回读确认。失败时保留前端草稿，
+  用户可以重试或放弃。
+- Windows、macOS 和 Linux 使用同一公开 Snapshot 与保存命令，平台差异留在原生服务内。便携版移动后
+  不自动修复旧路径，用户可关闭再重新开启此项。
+- CAP-022 继续保持 `planned`，因为全局快捷键等剩余桌面能力尚未交付。

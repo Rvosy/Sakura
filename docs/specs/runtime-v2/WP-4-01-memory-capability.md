@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-26
+updated: 2026-09-09
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -149,9 +149,17 @@ Host 仅在同轮 user 与 assistant 历史都成功落盘且 terminal 为 `chat
 方法。插件核对角色后读取既有 `ChatHistoryStore`，按 `triggerTurns` 串行整理；未选整理模型时跳过。事件
 Handler 失败、超时或插件进程退出不能改变已经确定的聊天 terminal。
 
-整理失败保留既有 Memory 和可重试状态，不提前提交游标。正常退出先关闭整理与模型任务；卡死由插件
-cleanup deadline 终止其受控后代进程。新 generation 只从已原子提交的状态恢复，迟到结果不得写入新
-generation 或其他角色。
+整理按已读取的 Timeline 页提交进度；同一 Turn 跨页时合并这些页，避免只整理半轮证据。每页中的历史按
+消息数和字符预算分块，每块最多发送一次整理请求，只有输出 JSON 解析失败时追加一次格式修复。客户端不做
+网络重试，正常分块不共用整个任务的两次请求额度。
+
+一页全部处理成功后提交该页游标。失败时停止当前任务，保留已完成页的游标及已成功写入的记忆；失败页不推进，
+后续 Timeline 更新可以重试，来源记录继续用于避免重复写入。首次回填使用 `read_recent` 返回的有界区间及其
+末尾游标，同样只在该区间成功后提交。失败不会永久关闭当前插件实例的自动整理，也不会立刻重放运行期间积压的
+通知。
+
+正常退出先取消整理与模型任务；卡死由插件 cleanup deadline 终止其受控后代进程。新 generation 只从已原子
+提交的状态恢复，迟到结果不得写入新 generation 或其他角色。
 
 整理 Prompt 必须以当前角色人格卡作为身份、关系边界和称呼方式的唯一依据；没有明确称呼时使用中性“用户”，
 不得由通用任务说明引入主从、亲属、恋爱、朋友或搭档等关系。自动整理同时区分普通用户事实与有明确双向证据的
@@ -175,8 +183,9 @@ Collection 状态或重绘页面；离开“记忆”页或得到稳定的 `disa
 - section 标题旁的轻量 `status` 运行状态；正常时只显示“运行正常”，异常时展开影响和恢复说明；
 - `triggerTurns` 整理间隔。
 
-本地向量模型拆为只读 `memory_embedding_component` section，并投影到 `surface=about`，不在插件详情或
-模型页重复显示。该资源卡合并固定 embedding 模型、安装状态、真实下载进度和当前可用 Action；
+本地向量模型使用只读 `memory_embedding_component` section，保留历史 `surface=about` 声明。
+该资源的管理操作显示在 Mem0 插件设置窗口；“关于 → 组件”只聚合展示安装状态、真实下载进度和跳转入口，
+模型页不重复显示。插件设置中的资源卡合并固定 embedding 模型、安装状态、真实下载进度和当前可用 Action：
 - 未安装显示 `downloadEmbedding`，下载中只显示 `cancelEmbedding`，失败或取消只显示
   `retryEmbedding`，已安装且空闲不显示操作。独立 `refreshStatus` 不再公开。
 
@@ -191,6 +200,8 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 最多 100 条，并同时受 256 KiB 通用 Collection payload 上限。未知字段、非法 cursor、跨角色记录和超界
 响应稳定拒绝或不投影。
 
+模型资源按固定 snapshot revision、必要文件布局和尺寸检查；FastEmbed/ONNX Runtime 在实际加载时验证模型
+可加载性。下载和导入不生成或扫描自设内容摘要，已有匹配版本缓存可直接复用，不因移除 SHA 字段重装资源。
 模型下载是插件 Settings Action，由插件内部线程执行固定 snapshot 下载。它属于带独立 Runtime 的本地资源，
 不是远程 Chat Completion 模型槽位。Action 立即返回，插件页在任务运行期间自动读取 Snapshot，并把
 `connecting/downloading/installing/completed` 映射为用户可读阶段；取消只影响当前 plugin generation
@@ -230,9 +241,9 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - 设置早于插件初始化完成时，Memory surface 原地恢复；重复的相同插件 Snapshot 不触发页面重绘。
 - 模型缺失、依赖导入、Qdrant/SQLite/锁冲突、损坏配置、回调超时和下载取消时聊天继续、v2 数据保持、
   无隐式网络访问。
-- 在隔离 v2 根记录切换前后的 SHA-256/size：Qdrant、SQLite、core profiles 和已安装的固定
+- 在隔离 v2 根直接比较受测文件内容与数据库记录：Qdrant、SQLite、core profiles 和已安装的固定
   FastEmbed/ONNX snapshot 在只读设置/搜索路径保持不变；completed chat 只允许当前 curation-state
-  语义变化。
+  语义变化，不为验收额外扫描真实模型或用户目录。
 - 正常退出、插件停用、reload、插件调用/cleanup timeout、Core crash 后线程、callback、Effect、pipe、文件锁与后代
   进程有界归零。
 - Frontend、Rust、Python focused tests，以及 `runtime-v2-memory-tests` 与当前产品 smoke journey 通过；

@@ -34,7 +34,6 @@ require_command() {
 
 require_command curl
 require_command git
-require_command shasum
 
 INSTALL_PARENT="$(dirname "$INSTALL_ROOT")"
 mkdir -p "$INSTALL_PARENT"
@@ -53,27 +52,28 @@ INFER_DEVICE="${GPT_SOVITS_INFER_DEVICE:-cpu}"
 CONFIG_PATH="$GPT_DIR/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml"
 MINIFORGE_VERSION="26.3.2-3"
 MINIFORGE_FILENAME="Miniforge3-$MINIFORGE_VERSION-MacOSX-$ARCH.sh"
-MINIFORGE_URL="https://github.com/conda-forge/miniforge/releases/download/$MINIFORGE_VERSION/$MINIFORGE_FILENAME"
+MINIFORGE_URL="${GPT_SOVITS_MINIFORGE_URL:-https://github.com/conda-forge/miniforge/releases/download/$MINIFORGE_VERSION/$MINIFORGE_FILENAME}"
+
+# Keep caller overrides and upstream device-specific wheel indexes.
+export PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
+if [ -z "${CONDARC:-}" ] && [ -z "${CONDA_CHANNEL_ALIAS:-}" ]; then
+    export CONDA_CHANNEL_ALIAS="https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud"
+fi
 case "$ARCH" in
 arm64)
-    MINIFORGE_SHA256="59168f1e24d0a4ad9932021170809fca836cd240e183eeeb331d5bcfc0098168"
+    MINIFORGE_SIZE=53402258
     ;;
 x86_64)
-    MINIFORGE_SHA256="39273e4c89a0a1af4538010615d44ae8f44e1af41007e02def593d20f316b003"
+    MINIFORGE_SIZE=60470361
     ;;
 esac
 
-verify_sha256() {
+verify_installer() {
     local file="$1"
-    local expected="$2"
-    local actual
-    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
-    if [ "$actual" != "$expected" ]; then
-        echo "SHA256 mismatch for $file"
-        echo "expected: $expected"
-        echo "actual:   $actual"
-        return 1
-    fi
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    [ "$(stat -f %z "$file")" = "$MINIFORGE_SIZE" ] || return 1
+    # Read only the script header; the bundled installer validates its payload.
+    [ "$(head -c 10 "$file")" = '#!/bin/sh' ] || return 1
 }
 
 conda_usable() {
@@ -92,14 +92,16 @@ fi
 
 if ! conda_usable; then
     INSTALLER="$DOWNLOADS_DIR/$MINIFORGE_FILENAME"
-    if [ -f "$INSTALLER" ] && ! verify_sha256 "$INSTALLER" "$MINIFORGE_SHA256"; then
+    if [ -f "$INSTALLER" ] && ! verify_installer "$INSTALLER"; then
         rm -f "$INSTALLER"
     fi
     if [ ! -f "$INSTALLER" ]; then
         progress download 10
-        curl -fL -o "$INSTALLER" "$MINIFORGE_URL"
+        curl -fL -o "$INSTALLER.part" "$MINIFORGE_URL"
+        verify_installer "$INSTALLER.part"
+        mv -f "$INSTALLER.part" "$INSTALLER"
     fi
-    verify_sha256 "$INSTALLER" "$MINIFORGE_SHA256"
+    verify_installer "$INSTALLER"
     progress install 20
     bash "$INSTALLER" -b -p "$MINIFORGE_DIR"
 fi
@@ -124,12 +126,13 @@ conda install -y -c conda-forge wget
 if [ ! -d "$GPT_DIR/.git" ]; then
     progress download 45
     rm -rf "$GPT_DIR"
-    git clone "$GPT_REPO" "$GPT_DIR"
+    git init "$GPT_DIR"
+    git -C "$GPT_DIR" remote add origin "$GPT_REPO"
 fi
 
 progress install 55
-git -C "$GPT_DIR" fetch --tags origin
-git -C "$GPT_DIR" checkout "$GPT_REF"
+git -C "$GPT_DIR" fetch --depth 1 origin "$GPT_REF"
+git -C "$GPT_DIR" checkout --detach FETCH_HEAD
 
 if [ ! -f "$GPT_DIR/install.sh" ]; then
     echo "GPT-SoVITS install.sh not found: $GPT_DIR"

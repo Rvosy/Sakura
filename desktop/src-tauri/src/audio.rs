@@ -3,13 +3,27 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tauri::{Emitter, State, WebviewWindow};
+
+use crate::{
+    product_shell::{self, assert_settings_identity},
+    runtime_log::{Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
+    shell_lifecycle::{
+        self, dispatch_settings_request, settings_core_handle, settings_response_payload,
+        ShellLifecycleState,
+    },
+};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 const MAX_TTS_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
@@ -292,6 +306,29 @@ impl Drop for AudioManager {
 pub struct AudioState {
     user_root: PathBuf,
     active: Mutex<Option<(String, Arc<AudioManager>)>>,
+    input_active: Arc<AtomicBool>,
+}
+
+/// The microphone worker owns this guard through device teardown. Failed opens,
+/// cancelled starts and unwinding cannot leave playback permanently disabled.
+pub(crate) struct InputPlaybackPause {
+    input_active: Arc<AtomicBool>,
+    held: bool,
+}
+
+impl InputPlaybackPause {
+    pub(crate) fn release(&mut self) {
+        if self.held {
+            self.held = false;
+            self.input_active.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for InputPlaybackPause {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 impl AudioState {
@@ -299,6 +336,7 @@ impl AudioState {
         Self {
             user_root,
             active: Mutex::new(None),
+            input_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -312,6 +350,9 @@ impl AudioState {
             .active
             .lock()
             .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
+        if self.input_active.load(Ordering::SeqCst) {
+            return Err("TTS_PAUSED_FOR_VOICE_INPUT".into());
+        }
         if let Some((active_generation, manager)) = active.as_ref() {
             if active_generation == generation_id {
                 return Ok(manager.clone());
@@ -329,6 +370,7 @@ impl AudioState {
         Ok(manager)
     }
 
+    #[cfg(test)]
     pub fn current(&self, generation_id: &str) -> Result<Arc<AudioManager>, String> {
         self.active
             .lock()
@@ -346,6 +388,32 @@ impl AudioState {
                 manager.shutdown();
             }
         }
+    }
+
+    pub(crate) fn pause_for_input(&self) -> InputPlaybackPause {
+        self.input_active.store(true, Ordering::SeqCst);
+        self.shutdown();
+        InputPlaybackPause {
+            input_active: self.input_active.clone(),
+            held: true,
+        }
+    }
+
+    fn play_if_allowed(
+        &self,
+        generation: &str,
+        payload: PlayPreparedRequest,
+    ) -> Result<(), String> {
+        let active = self.active.lock().map_err(|_| "AUDIO_PLAYBACK_FAILED")?;
+        if self.input_active.load(Ordering::SeqCst) {
+            return Err("TTS_PAUSED_FOR_VOICE_INPUT".into());
+        }
+        active
+            .as_ref()
+            .filter(|(id, _)| id == generation)
+            .ok_or("STALE_GENERATION")?
+            .1
+            .play(payload)
     }
 }
 
@@ -498,6 +566,310 @@ fn validate_generation_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TtsPrepareSegmentRequest {
+    operation_id: String,
+    segment_index: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TtsCancelSynthesisRequest {
+    operation_id: String,
+}
+
+#[tauri::command]
+pub(crate) async fn tts_prepare_segment(
+    window: WebviewWindow,
+    payload: TtsPrepareSegmentRequest,
+    app_handle: tauri::AppHandle,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, AudioState>,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<AudioDescriptor, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
+        return Err("TTS_SEGMENT_NOT_AUTHORIZED".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "STALE_GENERATION".to_string())?;
+    let callback_app = app_handle.clone();
+    let observer_handle = handle.clone();
+    let observer_generation = generation_id.clone();
+    let playback_log = runtime_log.inner().clone();
+    let playback_generation = generation_id.clone();
+    let manager = audio_state.manager(
+        &generation_id,
+        Arc::new(move |event| {
+            record_tts_playback(&playback_log, &playback_generation, &event);
+            let _ = callback_app.emit_to("main", "sakura://tts-playback-event", event.clone());
+            observe_tts_playback(observer_handle.clone(), observer_generation.clone(), event);
+        }),
+    )?;
+    let registration_revision = manager.registration_revision()?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "tts.synthesis.start",
+        json!({
+            "operationId": payload.operation_id,
+            "segmentIndex": payload.segment_index,
+        }),
+        std::time::Duration::from_secs(305),
+    )
+    .await?;
+    if handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .as_deref()
+        != Some(generation_id.as_str())
+    {
+        return Err("STALE_GENERATION".to_string());
+    }
+    let descriptor: AudioDescriptor = serde_json::from_value(settings_response_payload(response)?)
+        .map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
+    manager.register_at_revision(&descriptor, registration_revision)?;
+    app_handle
+        .emit_to(
+            "main",
+            "sakura://tts-synthesis-event",
+            json!({
+                "type": "tts.synthesis.ready",
+                "operationId": payload.operation_id,
+                "segmentIndex": payload.segment_index,
+                "descriptor": descriptor.clone(),
+            }),
+        )
+        .map_err(|_| "TTS_PUBLICATION_FAILED".to_string())?;
+    Ok(descriptor)
+}
+
+#[tauri::command]
+pub(crate) async fn tts_cancel_synthesis(
+    window: WebviewWindow,
+    payload: TtsCancelSynthesisRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
+        return Err("TTS_SYNTHESIS_CANCELLED".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "tts.synthesis.cancel",
+        json!({"operationId": payload.operation_id}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    Ok(settings_response_payload(response)?
+        .get("accepted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub(crate) fn tts_play_prepared(
+    window: WebviewWindow,
+    payload: PlayPreparedRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, AudioState>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let generation_id = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "STALE_GENERATION".to_string())?
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "STALE_GENERATION".to_string())?;
+    audio_state.play_if_allowed(&generation_id, payload)
+}
+
+#[tauri::command]
+pub(crate) fn tts_stop_playback(
+    window: WebviewWindow,
+    audio_state: State<'_, AudioState>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    // Playback belongs to the active AudioState, not to whichever Core
+    // generation happens to be queryable at command time. During restart the
+    // lifecycle intentionally exposes no available generation.
+    audio_state.shutdown();
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn settings_voice_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "tts.settings.get",
+        json!({}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let mut payload = settings_response_payload(response)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "TTS_SETTINGS_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+pub(crate) async fn settings_voice_status_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "tts.status.get",
+        json!({}),
+        std::time::Duration::from_secs(4),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let mut payload = settings_response_payload(response)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "TTS_STATUS_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+pub(crate) async fn settings_voice_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    draft: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "tts.settings.save",
+        json!({"settings": draft}),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    let payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    Ok(payload)
+}
+
+fn observe_tts_playback(
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    generation_id: String,
+    event: AudioPlaybackEvent,
+) {
+    tauri::async_runtime::spawn(async move {
+        let current = handle.available_generation_id().ok().flatten();
+        if current.as_deref() != Some(generation_id.as_str()) {
+            return;
+        }
+        let error_code = event.error.as_ref().map(|error| error.code);
+        let _ = dispatch_settings_request(
+            handle,
+            None,
+            "tts.playback.observe",
+            json!({
+                "playbackId": event.playback_id,
+                "recordingId": event.recording_id,
+                "state": event.state,
+                "errorCode": error_code,
+            }),
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+    });
+}
+
+fn record_tts_playback(
+    runtime_log: &RuntimeLogService,
+    generation_id: &str,
+    event: &AudioPlaybackEvent,
+) {
+    let (event_name, message, severity) = match event.state {
+        "started" => (
+            "tts.playback.started",
+            "TTS playback started",
+            Severity::Info,
+        ),
+        "finished" => (
+            "tts.playback.finished",
+            "TTS playback finished",
+            Severity::Info,
+        ),
+        "stopped" => (
+            "tts.playback.stopped",
+            "TTS playback stopped",
+            Severity::Info,
+        ),
+        _ => (
+            "tts.playback.failed",
+            "TTS playback failed",
+            Severity::Error,
+        ),
+    };
+    let code = event.error.as_ref().map(|error| error.code);
+    let _ = runtime_log.submit(
+        RuntimeLogEvent::rust(severity, "tts", event_name, message)
+            .correlation(Correlation {
+                generation_id: Some(generation_id.to_string()),
+                request_id: Some(event.playback_id.clone()),
+                ..Correlation::default()
+            })
+            .attributes(json!({
+                "playbackId": event.playback_id,
+                "recordingId": event.recording_id,
+                "status": event.state,
+                "code": code,
+            })),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,6 +912,55 @@ mod tests {
                 .format(&Rfc3339)
                 .unwrap(),
         }
+    }
+
+    #[test]
+    fn plugin_kernel_v3_tts_cancel_accepts_only_operation_identity() {
+        let request: TtsCancelSynthesisRequest =
+            serde_json::from_value(json!({"operationId": "operation-1"})).unwrap();
+        assert_eq!(request.operation_id, "operation-1");
+        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
+            "requestId": "tts-private-job"
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
+            "operationId": "operation-1",
+            "requestId": "tts-private-job"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn wp_4_05_playback_failure_is_logged_at_the_audio_callback_source() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sakura-tts-playback-log-{}-{nonce}",
+            std::process::id()
+        ));
+        let path = root.join("data/logs/sakura-runtime.log");
+        let runtime_log = RuntimeLogService::start(path.clone());
+        record_tts_playback(
+            &runtime_log,
+            "generation-tts-1",
+            &AudioPlaybackEvent {
+                playback_id: "playback-1".to_string(),
+                recording_id: Some("recording-1".to_string()),
+                state: "failed",
+                error: Some(AudioPlaybackError {
+                    code: "AUDIO_DEVICE_UNAVAILABLE",
+                    message: "not persisted",
+                }),
+            },
+        );
+        runtime_log.drain_and_shutdown_for_test();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[TTS]"));
+        assert!(contents.contains("code=AUDIO_DEVICE_UNAVAILABLE"));
+        assert!(!contents.contains("not persisted"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -635,6 +1056,65 @@ mod tests {
             manager.stop_and_clear().unwrap_err(),
             "AUDIO_PLAYBACK_FAILED"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn voice_input_drops_pending_playback_and_rejects_late_synthesis() {
+        let root = temp_root();
+        let state = AudioState::new(root.clone());
+        let manager = state.manager("generation-asr", Arc::new(|_| {})).unwrap();
+        let revision = manager.registration_revision().unwrap();
+        let mut pause = state.pause_for_input();
+        assert!(
+            matches!(state.manager("generation-asr", Arc::new(|_| {})), Err(error) if error == "TTS_PAUSED_FOR_VOICE_INPUT")
+        );
+        assert_eq!(
+            state
+                .play_if_allowed(
+                    "generation-asr",
+                    PlayPreparedRequest {
+                        opaque_id: "discarded".into(),
+                        playback_id: "skip".into()
+                    }
+                )
+                .unwrap_err(),
+            "TTS_PAUSED_FOR_VOICE_INPUT"
+        );
+        pause.release();
+        assert!(
+            matches!(state.current("generation-asr"), Err(error) if error == "STALE_GENERATION")
+        );
+        assert_ne!(manager.registration_revision().unwrap(), revision);
+        let fresh = state.manager("generation-asr", Arc::new(|_| {})).unwrap();
+        assert!(!Arc::ptr_eq(&fresh, &manager));
+        state.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_microphone_open_releases_playback_pause_without_allowing_an_early_stop() {
+        let root = temp_root();
+        let state = AudioState::new(root.clone());
+        {
+            let _device_open_guard = state.pause_for_input();
+            // A requested UI stop does not own this guard. Until the actual
+            // stream scope ends, the host still rejects TTS playback.
+            assert_eq!(
+                state
+                    .play_if_allowed(
+                        "generation",
+                        PlayPreparedRequest {
+                            opaque_id: "pending".into(),
+                            playback_id: "new".into()
+                        }
+                    )
+                    .unwrap_err(),
+                "TTS_PAUSED_FOR_VOICE_INPUT"
+            );
+        }
+        assert!(state.manager("generation", Arc::new(|_| {})).is_ok());
+        state.shutdown();
         let _ = fs::remove_dir_all(root);
     }
 }

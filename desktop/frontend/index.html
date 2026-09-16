@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light" />
     <title>Sakura Runtime v2</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./audio/asr.css" />
     <script type="module" src="./app.js"></script>
   </head>
   <body data-shell-state="loading" data-chat-state="ready">
@@ -33,9 +34,7 @@
               aria-label="上一条回复"
               disabled
             >
-              <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
-                <path d="m5.5 12.25 4.5-4.5 4.5 4.5" />
-              </svg>
+              <span class="sakura-icon icon-chevron-up" aria-hidden="true"></span>
             </button>
             <button
               type="button"
@@ -45,9 +44,7 @@
               aria-label="下一条回复"
               disabled
             >
-              <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
-                <path d="m5.5 7.75 4.5 4.5 4.5-4.5" />
-              </svg>
+              <span class="sakura-icon icon-chevron-down" aria-hidden="true"></span>
             </button>
           </nav>
         </div>
@@ -62,9 +59,7 @@
           aria-haspopup="menu"
           aria-expanded="false"
         >
-          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
+          <span class="sakura-icon icon-plus" aria-hidden="true"></span>
         </button>
         <textarea
           id="composer-input"
@@ -82,17 +77,16 @@
           aria-label="待发送的截图"
           hidden
         ></div>
+        <span id="voice-status" role="status" aria-hidden="true"></span>
+        <div id="voice-recording" class="voice-recording" aria-hidden="true">
+          <span class="visually-hidden" role="status">正在录音，再次点击麦克风结束，按 Esc 取消</span>
+          <canvas id="voice-waveform" aria-hidden="true"></canvas>
+        </div>
+        <button type="button" id="voice-mic" aria-label="开始语音输入" hidden>
+          <span class="sakura-morph-icon" aria-hidden="true"><span class="sakura-icon icon-mic"></span></span>
+        </button>
         <button type="submit" id="composer-send" tabindex="-1" data-action="send" aria-label="发送消息">
-          <span class="composer-action-icon composer-action-icon--send" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M4.2 5.1 20 12 4.2 18.9l1.45-5.45L14.2 12l-8.55-1.45L4.2 5.1Z" />
-            </svg>
-          </span>
-          <span class="composer-action-icon composer-action-icon--cancel" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <rect x="7" y="7" width="10" height="10" rx="2.4" />
-            </svg>
-          </span>
+          <span class="sakura-morph-icon" aria-hidden="true"><span class="sakura-icon icon-send-horizontal"></span></span>
         </button>
       </form>
 
@@ -112,13 +106,9 @@
             data-tool-id="builtin.screen-capture"
             role="menuitem"
             tabindex="-1"
-            title="框选屏幕区域并随消息发送"
           >
             <span class="composer-tool-dock__icon" data-tool-icon="camera" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M4 8.5h3l1.6-2h6.8l1.6 2h3v9.5H4V8.5Z" />
-                <circle cx="12" cy="13" r="3" />
-              </svg>
+              <span class="sakura-icon icon-scan-line" aria-hidden="true"></span>
             </span>
             <span class="composer-tool-dock__copy">
               <strong>截图</strong>
@@ -127,15 +117,9 @@
         </div>
       </div>
 
-      <figure id="portrait" class="portrait" data-drag-region="true" aria-label="当前角色立绘，可拖动窗口">
-        <div class="portrait-frame">
-          <img id="portrait-current" class="portrait-image portrait-image--current" alt="" draggable="false" />
-          <img id="portrait-next" class="portrait-image portrait-image--next" alt="" draggable="false" aria-hidden="true" />
-          <div id="portrait-fallback" class="portrait-fallback" hidden>
-            <strong id="portrait-fallback-name">Sakura</strong>
-            <span>立绘暂时无法显示</span>
-          </div>
-        </div>
+      <figure id="portrait" class="portrait" data-drag-region="true" aria-label="当前角色，可拖动窗口">
+        <div id="visual-renderer" class="visual-renderer"></div>
+        <div id="portrait-fallback" class="portrait-fallback" hidden><strong id="portrait-fallback-name"></strong><span>角色表现暂不可用</span></div>
       </figure>
 
       <section id="acceptance-entry" class="acceptance-entry" data-interactive="true" hidden aria-hidden="true">
@@ -196,7 +180,7 @@
         aria-disabled="false"
         data-menu-action="sakura.history.open"
       >
-        历史记录
+        聊天记录
       </button>
       <button
         type="button"

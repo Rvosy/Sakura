@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import struct
+import sys
 from collections.abc import Mapping
 from typing import Any, BinaryIO
 
@@ -253,6 +254,38 @@ def response(
     }
     if error is not None:
         message["error"] = dict(error)
+        # Failure responses are assembled inside boundary exception handlers.
+        # Capture there, including helpers called by the handler, before the
+        # exception chain disappears behind the public error code.
+        current_error = sys.exception()
+        if current_error is not None:
+            from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text, DIAGNOSTIC_TEXT_KEYS, TRACE_LIMIT
+
+            diagnostics = exception_diagnostics(
+                current_error, reason_code=str(error.get("code", "REQUEST_FAILED")),
+                stage=str(request.get("name", "request")),
+            )
+            known_secrets = [generation_credential]
+            def collect_credentials(value: object, depth: int = 0) -> None:
+                if depth > 8:
+                    return
+                if isinstance(value, Mapping):
+                    for key, child in value.items():
+                        if key in {"credential", "api_key", "apiKey", "password", "token", "secret"}:
+                            secret = child.get("value") if isinstance(child, Mapping) else child
+                            if isinstance(secret, str) and secret:
+                                known_secrets.append(secret)
+                        elif isinstance(child, (Mapping, list)):
+                            collect_credentials(child, depth + 1)
+                elif isinstance(value, list):
+                    for child in value:
+                        collect_credentials(child, depth + 1)
+            collect_credentials(request.get("payload"))
+            for key in DIAGNOSTIC_TEXT_KEYS & diagnostics.keys():
+                diagnostics[key] = safe_diagnostic_text(diagnostics[key], TRACE_LIMIT, secrets=known_secrets)
+            details = dict(error.get("details") or {})
+            details["diagnostics"] = diagnostics
+            message["error"]["details"] = details
     validate_envelope(message)
     return message
 

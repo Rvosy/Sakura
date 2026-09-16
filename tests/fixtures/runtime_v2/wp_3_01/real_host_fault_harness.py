@@ -45,10 +45,10 @@ def _run_descendant(script: Path, directory: Path, depth: int) -> int:
 
 
 class FaultingAssistantAdapter:
-    def __init__(self, app_root: Path, mode: str, directory: Path, script: Path) -> None:
+    def __init__(self, roots, tools, mcp, mode: str, directory: Path, script: Path) -> None:
         from app.core_host.assistant_adapter import AssistantAdapter
 
-        self._owned = AssistantAdapter(app_root)
+        self._owned = AssistantAdapter(roots, tool_registry=tools, mcp_provider=mcp)
         self._mode = mode
         self._directory = directory
         self._script = script
@@ -172,8 +172,8 @@ def main(argv: list[str] | None = None) -> int:
         args.generation_id,
         credential.hex(),
     )
-    factory = lambda roots: FaultingAssistantAdapter(  # noqa: E731 - injected seam
-        roots.user_root, args.fault_mode, args.fault_directory, script
+    factory = lambda roots, tools, mcp: FaultingAssistantAdapter(  # noqa: E731 - injected seam
+        roots, tools, mcp, args.fault_mode, args.fault_directory, script
     )
     try:
         _run_host(input_stream, output_stream, config, factory)

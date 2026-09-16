@@ -26,7 +26,6 @@ pub struct RuntimeArchiveManifest {
     pub file_name: String,
     pub url: String,
     pub size: u64,
-    pub sha256: String,
     pub archive_root: String,
     pub strip_components: u8,
 }
@@ -62,12 +61,6 @@ impl RuntimeManifest {
             || self.archive.url.trim().is_empty()
             || self.archive.size == 0
             || self.archive.strip_components > 1
-            || self.archive.sha256.len() != 64
-            || !self
-                .archive
-                .sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             || self.core_module != "app.core_host"
         {
             return Err(locator_error(
@@ -688,14 +681,12 @@ mod tests {
     #[test]
     fn all_source_manifests_are_exact_complete_and_unique() {
         let mut source_ids = Vec::new();
-        let mut hashes = Vec::new();
         for target in PlatformTarget::ALL {
             let manifest = expected_manifest(target).expect("compiled manifest should parse");
             manifest.validate(target).expect("manifest should validate");
             assert_eq!(manifest.target, target);
             assert_eq!(manifest.python_version, "3.12.8");
             source_ids.push(manifest.source_id);
-            hashes.push(manifest.archive.sha256);
             match target {
                 PlatformTarget::WindowsX64 => {
                     assert_eq!(manifest.archive.archive_root, ".");
@@ -709,10 +700,7 @@ mod tests {
         }
         source_ids.sort();
         source_ids.dedup();
-        hashes.sort();
-        hashes.dedup();
         assert_eq!(source_ids.len(), PlatformTarget::ALL.len());
-        assert_eq!(hashes.len(), PlatformTarget::ALL.len());
     }
 
     #[test]

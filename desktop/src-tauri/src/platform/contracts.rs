@@ -34,6 +34,7 @@ pub trait InstanceLockBackend: Send + Sync {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessStdio {
+    #[cfg(test)]
     Null,
     Piped,
 }
@@ -74,7 +75,9 @@ pub struct ManagedProcessPipes {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ProcessExitStatus {
     Code(i64),
+    #[cfg(unix)]
     Signal(i32),
+    #[cfg(any(unix, test))]
     Unknown,
 }
 
@@ -100,6 +103,7 @@ impl ProcessTreeFinalizationFailure {
         Self { error, recovery }
     }
 
+    #[cfg(test)]
     pub fn error(&self) -> &PlatformError {
         &self.error
     }
@@ -124,13 +128,15 @@ pub type ProcessTreeFinalizationResult =
 
 pub trait ManagedProcessTree: Send {
     fn root_pid(&self) -> u32;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn native_owner_pid_for_test(&self) -> Option<u32> {
         None
     }
     fn wait_root(&mut self, timeout: Duration) -> PlatformResult<ProcessWaitOutcome>;
     fn terminate_tree(&mut self, reason_code: u32) -> PlatformResult<()>;
+    #[cfg(test)]
     fn wait_tree_exited(&self, timeout: Duration) -> PlatformResult<bool>;
+    #[cfg(test)]
     fn release_exited(self: Box<Self>) -> PlatformResult<()>;
     fn finalize_until(
         self: Box<Self>,
@@ -167,7 +173,6 @@ pub trait WindowInteractionBackend: Send + Sync {
 
     fn start_drag(&self, window: &tauri::WebviewWindow) -> PlatformResult<NativeDragCompletion>;
     fn set_visible(&self, window: &tauri::WebviewWindow, visible: bool) -> PlatformResult<()>;
-    fn focus_text_input(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -266,15 +271,6 @@ pub trait NativeDiagnosticsBackend: Send + Sync {
     ) -> PlatformResult<NativeDiagnosticsSnapshot>;
 }
 
-pub trait PlatformRuntime: Send + Sync {
-    fn target(&self) -> PlatformTarget;
-    fn instance_lock(&self) -> &dyn InstanceLockBackend;
-    fn managed_process_tree(&self) -> &dyn ManagedProcessTreeBackend;
-    fn window_interaction(&self) -> &dyn WindowInteractionBackend;
-    fn runtime_locator(&self) -> &dyn RuntimeLocator;
-    fn native_diagnostics(&self) -> &dyn NativeDiagnosticsBackend;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,13 +355,6 @@ mod tests {
             Err(contract_only(
                 PlatformService::WindowInteraction,
                 "set_visible",
-            ))
-        }
-
-        fn focus_text_input(&self, _window: &tauri::WebviewWindow) -> PlatformResult<()> {
-            Err(contract_only(
-                PlatformService::WindowInteraction,
-                "focus_text_input",
             ))
         }
     }

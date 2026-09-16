@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core_host.protocol import response
-from app.plugins.inventory import PluginInventory
+from app.plugins.inventory import INSTALL_ID_PATTERN, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
@@ -45,11 +45,12 @@ _PLUGIN_STATES = frozenset(
 
 
 class PluginSettingsError(ValueError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(self, code: str, message: str, *, retryable: bool = False, recovery_error: BaseException | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.recovery_error = recovery_error
 
     def public_error(self) -> dict[str, object]:
         return {
@@ -68,7 +69,6 @@ class PluginSettingsBoundary:
         roots: RuntimeRoots | Path,
         *,
         application_provider: Callable[[], object | None] | None = None,
-        session_provider: Callable[[], object | None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
@@ -76,7 +76,6 @@ class PluginSettingsBoundary:
         self._user_root = self._roots.user_root
         self._config_path = StoragePaths(self._user_root).plugins_config()
         self._application_provider = application_provider
-        self._session_provider = session_provider or (lambda: None)
         self._save_lock = threading.Lock()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -188,7 +187,7 @@ class PluginSettingsBoundary:
                 reason = "PLUGIN_SETTINGS_UNAVAILABLE"
         return {
             "schemaVersion": 1,
-            "revision": self._revision(),
+            "revision": inventory.revision,
             "state": state,
             "reasonCode": _reason_code(reason, "STATUS_INVALID"),
             "plugins": plugins,
@@ -314,6 +313,7 @@ class PluginSettingsBoundary:
                 raise PluginSettingsError(
                     code,
                     "插件安装未能应用到当前运行时。",
+                    recovery_error=rollback_error,
                 ) from apply_error
         result = self.snapshot()
         result.update(
@@ -362,6 +362,7 @@ class PluginSettingsBoundary:
                 raise PluginSettingsError(
                     code,
                     "插件卸载未能应用到当前运行时。",
+                    recovery_error=rollback_error,
                 ) from apply_error
             try:
                 installer.commit_uninstall(pending)
@@ -428,8 +429,7 @@ class PluginSettingsBoundary:
     def _application(self) -> object | None:
         if self._application_provider is not None:
             return self._application_provider()
-        session = self._session_provider()
-        return getattr(session, "plugin_application", None) if session is not None else None
+        return None
 
     def _revision(self) -> str:
         return PluginInventory(self._roots).scan().revision
@@ -446,6 +446,7 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "version": spec.version[:64],
         "author": spec.author[:120],
         "description": spec.description[:500],
+        "presentation": {"kind": spec.presentation_kind, "category": spec.presentation_category, "icon": spec.presentation_icon},
         "enabled": enabled,
         "required": required,
         "source": source,
@@ -499,6 +500,7 @@ def _project_plugin(
         "version": _text(raw.get("version"), 64, "0.0.0"),
         "author": _text(raw.get("author"), 120, ""),
         "description": _text(raw.get("description"), 500, ""),
+        "presentation": raw.get("presentation", {"kind": "extension", "category": "other", "icon": ""}),
         "enabled": bool(raw.get("enabled")),
         "required": bool(raw.get("required")) and source != "user",
         "source": source,
@@ -560,9 +562,7 @@ def _identifier(value: object) -> str:
 def _install_identifier(value: object) -> str:
     if (
         not isinstance(value, str)
-        or len(value) != 27
-        or not value.startswith("pi_")
-        or any(character not in "0123456789abcdef" for character in value[3:])
+        or not INSTALL_ID_PATTERN.fullmatch(value)
     ):
         raise PluginSettingsError("INVALID_REQUEST", "插件安装标识无效。")
     return value

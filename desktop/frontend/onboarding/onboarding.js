@@ -1,5 +1,9 @@
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { createRuntimeDiagnostics } from "../core/runtime-diagnostics.js";
+import {
+  beginLegacyInspection,
+  legacyInspectionProgress,
+} from "./legacy-import-state.js";
 
 installDevtoolsShortcutGuard();
 document.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -9,8 +13,14 @@ const invoke = runtimeDiagnostics.invoke;
 window.addEventListener("beforeunload", () => runtimeDiagnostics.dispose({ settings: true }), { once: true });
 const routeView = document.getElementById("routeView");
 const migrationView = document.getElementById("migrationView");
+const macosOpenHelpView = document.getElementById("macosOpenHelpView");
 const firstUseButton = document.getElementById("firstUseButton");
 const migrationButton = document.getElementById("migrationButton");
+const macosOpenHelpButton = document.getElementById("macosOpenHelpButton");
+const macosOpenHelpBackButton = document.getElementById("macosOpenHelpBackButton");
+const macosOpenSystemSettingsButton = document.getElementById("macosOpenSystemSettingsButton");
+const macosOpenAppleSupportButton = document.getElementById("macosOpenAppleSupportButton");
+const macosOpenHelpStatus = document.getElementById("macosOpenHelpStatus");
 const migrationBackButton = document.getElementById("migrationBackButton");
 const migrationChooseButton = document.getElementById("migrationChooseButton");
 const migrationStartButton = document.getElementById("migrationStartButton");
@@ -29,7 +39,6 @@ const migrationPercent = document.getElementById("migrationPercent");
 const migrationProgressBar = document.getElementById("migrationProgressBar");
 const migrationMessage = document.getElementById("migrationMessage");
 const migrationError = document.getElementById("migrationError");
-const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
 
 const activeMigrationStates = new Set([
   "inspecting",
@@ -49,13 +58,14 @@ let previousProgressSnapshot = null;
 let migrationPollHandle = 0;
 let migrationPollInFlight = false;
 let migrationRequiresSetup = false;
+let overwriteDomains = [];
 
 const domainLabels = {
   config: "配置",
   characters: "角色",
   history: "对话",
   memory: "记忆",
-  tts: "TTS 运行资源",
+  tts: "语音合成资源",
   ttsBundles: "角色语音模型",
   notes: "笔记",
   reminders: "提醒",
@@ -71,13 +81,18 @@ const domainLabels = {
 const errorMessages = {
   LEGACY_SOURCE_NOT_DIRECTORY: "选择的目录不可用。",
   LEGACY_LAYOUT_UNRECOGNIZED: "这里不是受支持的 Sakura 0.9.x 目录。",
-  LEGACY_VERSION_UNSUPPORTED: "只能迁移 Sakura 0.9.x。",
+  LEGACY_VERSION_UNSUPPORTED: "只能导入 Sakura 0.9.x。",
+  LEGACY_PLATFORM_UNSUPPORTED: "请选取完整的 Windows 或 macOS 旧版安装目录。",
+  LEGACY_TARGET_PLATFORM_UNSUPPORTED: "当前系统暂不支持旧版本导入。",
+  LEGACY_CROSS_PLATFORM_UNSUPPORTED: "旧版与当前系统不同，无法迁移语音等运行资源。",
+  LEGACY_SOURCE_ACTIVE: "请先退出正在运行的 Sakura 0.9.x。",
   LEGACY_TARGET_SPACE_INSUFFICIENT: "可用磁盘空间不足。",
   LEGACY_TTS_LINK_BROKEN: "旧版 TTS 外置目录已经断开。",
   LEGACY_TTS_LAYOUT_UNRECOGNIZED: "无法识别旧版 TTS 目录结构。",
-  LEGACY_TTS_TARGET_OVERLAP: "旧版 TTS 目录与 v2 数据目录重叠，无法安全迁移。",
-  LEGACY_NESTED_LINK_UNSUPPORTED: "旧数据中存在嵌套链接，无法确认复制边界。",
-  LEGACY_COPY_CONFLICT: "两个旧数据文件映射到了同一位置，但内容不同。",
+  LEGACY_TTS_TARGET_OVERLAP: "旧版语音目录与当前数据目录重叠，无法迁移。",
+  LEGACY_NESTED_LINK_UNSUPPORTED: "旧数据含嵌套链接，暂不支持导入。",
+  LEGACY_TTS_ABSOLUTE_LINKS_SKIPPED: "已跳过旧版语音资源的绝对链接，模型原文件仍会迁移。",
+  LEGACY_COPY_CONFLICT: "旧文件的目标位置冲突，内容不同。",
   LEGACY_TTS_CONFIG_VALIDATION_FAILED: "旧版 TTS 配置无法转换为当前格式。",
   LEGACY_SETTINGS_VALIDATION_FAILED: "旧版配置无法转换为当前设置格式。",
   LEGACY_HISTORY_JSON_INVALID: "聊天历史中存在损坏的记录。",
@@ -85,18 +100,21 @@ const errorMessages = {
   LEGACY_HISTORY_TIMESTAMP_INVALID: "聊天历史中存在无效时间。",
   LEGACY_MEMORY_DATABASE_INVALID: "旧版长期记忆数据库损坏。",
   LEGACY_MEMORY_SCHEMA_INVALID: "旧版长期记忆数据库结构不兼容。",
-  LEGACY_MEMORY_DIMENSION_UNSUPPORTED: "旧版记忆向量维度不是当前支持的 384 维。",
-  LEGACY_MEMORY_OPEN_FAILED: "当前记忆插件无法打开迁移后的旧记忆库。",
+  LEGACY_MEMORY_DIMENSION_UNSUPPORTED: "旧版记忆的向量格式不兼容。",
+  LEGACY_MEMORY_OPEN_FAILED: "当前记忆插件无法打开导入后的旧记忆库。",
   LEGACY_MCP_VALIDATION_FAILED: "旧版 MCP 配置无法转换为当前格式。",
   LEGACY_REMINDERS_VALIDATION_FAILED: "旧版提醒数据无法转换为当前格式。",
   LEGACY_TASKS_VALIDATION_FAILED: "旧版任务数据无法转换为当前格式。",
   LEGACY_NOTE_VALIDATION_FAILED: "旧版笔记包含当前版本无法读取的文件。",
   LEGACY_CHARACTER_STUDIO_VALIDATION_FAILED: "旧版角色工坊草稿无法转换为当前格式。",
   LEGACY_SCREEN_STATE_VALIDATION_FAILED: "旧版视觉摘要状态无法转换为当前格式。",
-  LEGACY_IMPORT_FIRST_RUN_ONLY: "只有尚未完成首次设置时才能迁移旧版本。",
-  LEGACY_IMPORT_CORE_RUNNING: "Sakura Core 已启动，请重启应用后先执行旧版本迁移。",
-  LEGACY_IMPORT_CANCELLED: "迁移已取消，现有数据没有改变。",
-  LEGACY_CORE_VALIDATION_FAILED: "迁移数据未通过 Core 校验，已恢复到迁移前状态。",
+  LEGACY_IMPORT_FIRST_RUN_ONLY: "完成首次设置后无法导入旧版。",
+  LEGACY_IMPORT_CORE_RUNNING: "程序已启动，请重启后先导入旧版本。",
+  LEGACY_IMPORT_CONFIRMATION_STALE: "当前数据已变化，请重新确认覆盖范围。",
+  LEGACY_IMPORT_CANCELLED: "导入已取消，现有数据没有改变。",
+  LEGACY_IMPORT_OPERATION_TIMEOUT: "导入超时，已停止并恢复原数据。",
+  LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: "无法确认导入进程已停止。请保留导入记录，重启系统后再启动 Sakura。",
+  LEGACY_CORE_VALIDATION_FAILED: "导入数据校验失败，已恢复原数据。",
   LEGACY_ROLLBACK_FAILED: "自动恢复失败，请保留旧目录并查看诊断信息。",
 };
 
@@ -108,10 +126,6 @@ function replayAnimation(element, className) {
     element.classList.remove(previousHandle.className);
   }
   element.classList.remove(className);
-  if (reduceMotionQuery?.matches) {
-    animationReplayHandles.delete(element);
-    return;
-  }
   const handle = { className, frameId: 0, timeoutId: 0 };
   handle.frameId = window.requestAnimationFrame(() => {
     element.classList.add(className);
@@ -132,7 +146,6 @@ function setAnimatedText(element, value, className = "is-updating") {
 }
 
 function waitForViewAnimation(element, fallbackMs) {
-  if (reduceMotionQuery?.matches) return Promise.resolve();
   return new Promise((resolve) => {
     let settled = false;
     const finish = () => {
@@ -158,10 +171,8 @@ async function transitionViews(fromView, toView, direction, focusTarget) {
   fromView.inert = true;
   toView.inert = true;
   try {
-    if (!reduceMotionQuery?.matches) {
-      fromView.classList.add(leavingClass);
-      await waitForViewAnimation(fromView, 240);
-    }
+    fromView.classList.add(leavingClass);
+    await waitForViewAnimation(fromView, 240);
     fromView.hidden = true;
     fromView.classList.remove(leavingClass);
     toView.classList.add(enteringClass);
@@ -199,6 +210,36 @@ async function showRouteView() {
   await transitionViews(migrationView, routeView, "backward", migrationButton);
 }
 
+async function showMacosOpenHelpView() {
+  await transitionViews(routeView, macosOpenHelpView, "forward", macosOpenHelpBackButton);
+}
+
+async function hideMacosOpenHelpView() {
+  await transitionViews(macosOpenHelpView, routeView, "backward", macosOpenHelpButton);
+}
+
+async function runMacosOpenHelpAction(button, command, successMessage) {
+  button.disabled = true;
+  setAnimatedText(macosOpenHelpStatus, "");
+  try {
+    await invoke(command);
+    setAnimatedText(macosOpenHelpStatus, successMessage);
+  } catch (error) {
+    setAnimatedText(macosOpenHelpStatus, `无法完成操作：${String(error)}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function configureMacosOpenHelp() {
+  try {
+    const manifest = await invoke("settings_capability_manifest");
+    macosOpenHelpButton.hidden = manifest?.sections?.["open-help"]?.status !== "available";
+  } catch {
+    macosOpenHelpButton.hidden = true;
+  }
+}
+
 firstUseButton.addEventListener("click", openFirstUseGuide);
 migrationContinueButton.addEventListener("click", async () => {
   if (migrationRequiresSetup) {
@@ -210,11 +251,27 @@ migrationContinueButton.addEventListener("click", async () => {
     await invoke("resolve_settings_close", { discard: true });
   } catch (error) {
     migrationContinueButton.disabled = false;
-    setAnimatedText(migrationError, `无法关闭迁移窗口：${String(error)}`);
+    setAnimatedText(migrationError, `无法关闭导入窗口：${String(error)}`);
   }
 });
 migrationButton.addEventListener("click", showMigrationView);
 migrationBackButton.addEventListener("click", showRouteView);
+macosOpenHelpButton.addEventListener("click", showMacosOpenHelpView);
+macosOpenHelpBackButton.addEventListener("click", hideMacosOpenHelpView);
+macosOpenSystemSettingsButton.addEventListener("click", () => {
+  void runMacosOpenHelpAction(
+    macosOpenSystemSettingsButton,
+    "settings_macos_open_system_settings",
+    "系统设置已打开，请选择“隐私与安全性”。",
+  );
+});
+macosOpenAppleSupportButton.addEventListener("click", () => {
+  void runMacosOpenHelpAction(
+    macosOpenAppleSupportButton,
+    "settings_macos_open_apple_support",
+    "已在浏览器中打开 Apple 官方说明。",
+  );
+});
 migrationChooseButton.addEventListener("click", chooseLegacySource);
 migrationStartButton.addEventListener("click", startMigration);
 migrationCancelButton.addEventListener("click", cancelMigration);
@@ -235,7 +292,7 @@ function formatBytes(value) {
 
 function publicError(error) {
   const code = error?.code || String(error || "LEGACY_IMPORT_FAILED").split(":", 1)[0];
-  const base = errorMessages[code] || `迁移失败（${code}）`;
+  const base = errorMessages[code] || `导入失败（${code}）`;
   const location = error?.relativePath
     ? ` 文件：${error.relativePath}${error.line ? `:${error.line}` : ""}`
     : "";
@@ -249,10 +306,13 @@ function renderInspection(snapshot) {
   const inspectionWasHidden = migrationInspection.hidden;
   selectionId = snapshot.selectionId || null;
   selectionCompatible = inspection.compatible === true;
+  overwriteDomains = Array.isArray(inspection.overwriteDomains)
+    ? inspection.overwriteDomains.filter((value) => typeof value === "string")
+    : [];
   migrationInspection.hidden = false;
   migrationSourceLabel.textContent = inspection.sourceLabel || "已选择旧版本";
   migrationVersion.textContent = `Sakura ${inspection.detectedVersion || "0.9.x"}`;
-  migrationSpace.textContent = `预计 ${formatBytes(inspection.requiredBytes)} · 可用 ${formatBytes(inspection.availableBytes)}`;
+  migrationSpace.textContent = `核心数据至少需 ${formatBytes(inspection.requiredBytes)} · 可用 ${formatBytes(inspection.availableBytes)}`;
   migrationDomains.replaceChildren();
   let domainOrder = 0;
   for (const [name, value] of Object.entries(inspection.domains || {})) {
@@ -275,18 +335,19 @@ function renderInspection(snapshot) {
     item.className = (inspection.blockers || []).includes(issue) ? "blocking" : "warning";
     item.style.setProperty("--issue-order", Math.min(index, 4));
     item.textContent = issue.code === "LEGACY_TTS_EXTERNAL_COPY"
-      ? "检测到外置 TTS 目录；迁移时会复制到 v2，旧版删除后仍可使用。"
+      ? "外置语音资源将复制到当前版本，删除旧版后仍可使用。"
       : publicError(issue);
     migrationIssues.append(item);
   }
   migrationStartButton.disabled = !inspection.compatible || !selectionId;
-  setAnimatedText(migrationError, inspection.compatible ? "" : "请先解决上面的阻断问题。");
+  setAnimatedText(migrationError, inspection.compatible ? "" : "请先处理上述问题。");
   if (inspectionWasHidden) replayAnimation(migrationInspection, "is-revealing");
 }
 
 function renderSelection(snapshot) {
   selectionId = snapshot?.selectionId || null;
   selectionCompatible = null;
+  overwriteDomains = [];
   migrationView.dataset.migrationState = "selected";
   previousProgressSnapshot = null;
   setAnimatedText(migrationSourceLabel, snapshot?.sourceLabel || "已选择旧版本");
@@ -295,7 +356,10 @@ function renderSelection(snapshot) {
   migrationProgress.classList.remove("is-revealing", "is-completing");
   setAnimatedText(migrationError, "");
   migrationStartButton.hidden = false;
-  migrationStartButton.disabled = !selectionId;
+  // Choosing a directory only creates an opaque selection. The backend must
+  // finish inspecting it before start is allowed, otherwise a quick click can
+  // race the inspect command and receive LEGACY_IMPORT_NOT_READY.
+  migrationStartButton.disabled = true;
   migrationCancelButton.hidden = true;
   migrationContinueButton.hidden = true;
   migrationContinueButton.disabled = false;
@@ -308,10 +372,14 @@ function renderProgress(snapshot) {
   if (snapshot.inspection) renderInspection(snapshot);
   const state = snapshot.state || "idle";
   const active = activeMigrationStates.has(state);
+  const inspectionProgress = legacyInspectionProgress(snapshot);
+  const inspecting = inspectionProgress !== null;
   const progressVisible = active || terminalMigrationStates.has(state);
   const progressWasHidden = migrationProgress.hidden;
   const previous = previousProgressSnapshot;
-  const stageText = state === "completed" ? "迁移完成" : (snapshot.message || "正在迁移");
+  const stageText = state === "completed"
+    ? "导入完成"
+    : (inspectionProgress?.stageText || snapshot.message || "正在导入");
   const percent = Number(snapshot.percent || 0);
   if (isProgressRegression(previous, state, percent)) return;
   const continueWasHidden = migrationContinueButton.hidden;
@@ -321,14 +389,18 @@ function renderProgress(snapshot) {
   migrationView.dataset.migrationState = state;
   migrationProgress.hidden = !progressVisible;
   migrationStage.textContent = stageText;
-  migrationPercent.textContent = `${percent}%`;
-  migrationProgressBar.value = percent;
+  migrationPercent.textContent = inspectionProgress?.percentText || `${percent}%`;
+  if (inspecting) {
+    migrationProgressBar.removeAttribute("value");
+  } else {
+    migrationProgressBar.value = percent;
+  }
   migrationMessage.textContent = snapshot.message || "";
   migrationChooseButton.disabled = active;
   migrationBackButton.disabled = active;
   migrationBackButton.hidden = state === "completed";
   migrationStartButton.hidden = active || state === "completed";
-  migrationStartButton.disabled = active || state !== "selected" || !selectionId || selectionCompatible === false;
+  migrationStartButton.disabled = active || state !== "ready" || !selectionId || selectionCompatible !== true;
   migrationCancelButton.hidden = !snapshot.cancellable;
   migrationRequiresSetup = state === "completed" && snapshot.requiresSetup === true;
   migrationContinueButton.textContent = migrationRequiresSetup ? "继续首次设置" : "完成";
@@ -359,7 +431,7 @@ function renderProgress(snapshot) {
 
   if (state === "failed") setAnimatedText(migrationError, publicError(snapshot.error));
   if (state === "cancelled") {
-    setAnimatedText(migrationError, "迁移已取消，旧目录和当前 v2 数据均未改变。");
+    setAnimatedText(migrationError, "导入已取消，旧版和当前数据均未改变。");
   }
   if (state === "completed") setAnimatedText(migrationError, "");
 
@@ -410,10 +482,19 @@ function syncMigrationPolling(active) {
 async function chooseLegacySource() {
   setAnimatedText(migrationError, "");
   migrationChooseButton.disabled = true;
+  let selectedSnapshot = null;
   try {
     const snapshot = await invoke("legacy_import_choose_source");
-    if (snapshot?.state === "selected") renderSelection(snapshot);
+    if (snapshot?.state === "selected") {
+      selectedSnapshot = snapshot;
+      renderSelection(snapshot);
+      renderProgress(beginLegacyInspection(snapshot));
+      renderProgress(await invoke("legacy_import_inspect", { selectionId: snapshot.selectionId }));
+    }
   } catch (error) {
+    if (selectedSnapshot && selectionId === selectedSnapshot.selectionId) {
+      renderSelection(selectedSnapshot);
+    }
     setAnimatedText(migrationError, publicError(error));
   } finally {
     migrationChooseButton.disabled = false;
@@ -421,10 +502,21 @@ async function chooseLegacySource() {
 }
 
 async function startMigration() {
-  if (!selectionId || selectionCompatible === false) return;
+  if (!selectionId || selectionCompatible !== true) return;
+  let confirmedOverwriteDomains = [];
+  if (overwriteDomains.length) {
+    const confirmed = window.confirm(
+      `以下数据存在冲突：\n\n${overwriteDomains.map((item) => `• ${item}`).join("\n")}\n\n继续将覆盖同路径文件或同一条记录。仅当前版本有的数据会保留，不覆盖跨角色冲突。是否继续？`,
+    );
+    if (!confirmed) return;
+    confirmedOverwriteDomains = [...overwriteDomains];
+  }
   setAnimatedText(migrationError, "");
   try {
-    renderProgress(await invoke("legacy_import_start", { selectionId }));
+    renderProgress(await invoke("legacy_import_start", {
+      selectionId,
+      confirmedOverwriteDomains,
+    }));
   } catch (error) {
     setAnimatedText(migrationError, publicError(error));
   }
@@ -447,8 +539,8 @@ async function bindWindowLifecycle() {
   await listen("sakura://settings-close-requested", () => {
     invoke("resolve_settings_close", { discard: true }).catch(() => {});
   });
-  await listen("sakura://settings-exit-requested", () => {
-    invoke("resolve_settings_exit", { discard: true }).catch(() => {});
+  await listen("sakura://settings-exit-requested", (event) => {
+    invoke("resolve_settings_exit", { discard: true, revision: event.payload }).catch(() => {});
   });
   await listen("sakura://settings-exit-timeout", () => {
     setAnimatedText(startupStatus, "退出请求已取消，请重试。");
@@ -468,6 +560,7 @@ async function start() {
   } catch (error) {
     setAnimatedText(startupStatus, `无法读取首次启动状态：${String(error)}`);
   }
+  await configureMacosOpenHelp();
   await invoke("reveal_settings_window");
   firstUseButton.focus();
 }

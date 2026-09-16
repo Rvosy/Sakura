@@ -1,0 +1,8 @@
+__pycache__/
+.pytest_cache/
+*.db*
+dashboard/node_modules
+dashboard/dist/
+dashboard/*.tsbuildinfo
+dashboard/test-results/
+dashboard/playwright-report/

@@ -12,7 +12,7 @@ updated: 2026-08-29
 ## 1. 范围与非目标
 
 本规范冻结 Runtime v2 后续迁移共用的本地可观测性基础：Shell、bundled Python Core 和受控 WebView
-诊断统一追加到 `data/logs/sakura-runtime.log`，默认保存 info 及以上事件，始终脱敏且不发送遥测。
+诊断统一追加到 `data/logs/sakura-runtime.log`，默认保存 info 及以上事件，凭据值经过替换；已开启的遥测从内存事件采集原始错误，规则见 [远程诊断](remote-diagnostics-telemetry.md)。
 执行状态只以
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
 

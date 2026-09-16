@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import io
 import json
+import queue
 import struct
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 import app.core_host.server as server_module
-from app.core_host.router import ConcurrentHostRouter
+from app.core_host.router import ConcurrentHostRouter, RouterFailure
 from app.core_host.protocol import (
     MAX_FRAME_SIZE,
     FrameDecoder,
@@ -18,6 +20,7 @@ from app.core_host.protocol import (
     encode_frame,
     event,
     read_frame,
+    response,
 )
 from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, WriterError, run_host
 from app.storage.runtime_roots import RuntimeRoots
@@ -45,6 +48,89 @@ def request(request_id: str, name: str = "system.hello") -> dict[str, object]:
         "deadlineMs": 3000,
         "priority": "control",
     }
+
+
+@pytest.mark.parametrize("stop_while_queued", [False, True])
+def test_router_queues_settings_bursts_without_blocking_control_or_executing_expired_writes(stop_while_queued):
+    incoming = queue.Queue()
+    release = threading.Event()
+    changed = threading.Condition()
+    messages, executed, abandoned = {}, [], []
+    active = 0
+    peak = 0
+
+    class Boundary:
+        def reserve_send(self, request): pass
+        def abandon_send(self, request): abandoned.append(request["id"])
+        def handle(self, request):
+            nonlocal active, peak
+            with changed:
+                active += 1
+                peak = max(peak, active)
+                executed.append(request["id"])
+                changed.notify_all()
+            try:
+                if request["id"].startswith("blocked-"):
+                    assert release.wait(3)
+                return response(request, generation_id=GENERATION_ID, generation_credential=GENERATION_CREDENTIAL,
+                    protocol_minor=2, payload={"ok": True})
+            finally:
+                with changed: active -= 1
+
+    class Dispatcher:
+        def dispatch(self, request):
+            return response(request, generation_id=GENERATION_ID, generation_credential=GENERATION_CREDENTIAL,
+                protocol_minor=2, payload={"ok": True}), False
+        def invalidate_generation_work(self): release.set()
+
+    class Writer:
+        def send(self, message):
+            with changed:
+                messages[message["id"]] = message
+                changed.notify_all()
+
+    def wait_for(predicate):
+        with changed: assert changed.wait_for(predicate, timeout=3)
+
+    router = ConcurrentHostRouter(None, Writer(), Dispatcher(), fixture_handler=Boundary().handle,
+        fixture_names=frozenset({"characters.visuals.get", "characters.settings.select"}),
+        read_frame_fn=lambda _: incoming.get())
+    thread = threading.Thread(target=router.run)
+    thread.start()
+    try:
+        for index in range(4): incoming.put(request(f"blocked-{index}", "fixture.blocking"))
+        wait_for(lambda: active == 4)
+        for index in range(7): incoming.put(request(f"settings-{index}", "characters.visuals.get"))
+        expired = request("expired-write", "characters.settings.select")
+        expired["deadlineMs"] = 10
+        incoming.put(expired)
+        incoming.put(request("overflow", "characters.visuals.get"))
+        incoming.put(request("health", "system.health"))
+        wait_for(lambda: "health" in messages)
+        assert messages["health"]["payload"] == {"ok": True}
+        assert messages["overflow"]["error"]["code"] == "ROUTER_QUEUE_FULL"
+        assert not any(f"settings-{index}" in messages for index in range(7))
+        if stop_while_queued:
+            incoming.put(None)
+            thread.join(4)
+            assert not thread.is_alive()
+            assert set(executed) == {f"blocked-{index}" for index in range(4)}
+            assert set(abandoned) == {"overflow", "expired-write", *(f"settings-{index}" for index in range(7))}
+            return
+        time.sleep(0.02)
+        release.set()
+        wait_for(lambda: len(messages) == 14)
+        assert all("error" not in messages[f"settings-{index}"] for index in range(7))
+        assert messages["expired-write"]["error"]["code"] == "REQUEST_DEADLINE_EXCEEDED"
+        assert "expired-write" not in executed
+        assert set(abandoned) == {"overflow", "expired-write"}
+        assert peak == 4
+    finally:
+        release.set()
+        incoming.put(None)
+        thread.join(4)
+        assert not thread.is_alive()
+        assert router.fatal_error is None
 
 
 def test_codec_accepts_every_split_and_multiple_merged_frames() -> None:
@@ -222,6 +308,32 @@ def test_attaching_tts_boundary_registers_startup_warmup_callback() -> None:
     assert callbacks == [boundary.warmup_current_selection]
 
 
+def test_voice_update_pauses_only_active_voice_providers(monkeypatch):
+    from contextlib import contextmanager
+    calls = []
+    class TTS:
+        def cancel_all(self): calls.append("tts.cancel")
+    class PluginApplication:
+        application = property(lambda self: self)
+        @contextmanager
+        def prepare_voice_resources(self):
+            prefix = "sakura.tts.provider."
+            calls.append((prefix, "pause"))
+            try:
+                yield []
+            finally:
+                calls.append((prefix, "restore"))
+    dispatcher = ControlDispatcher(HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL))
+    dispatcher.attach_tts_boundary(TTS())
+    monkeypatch.setattr(dispatcher, "published_plugin_application", lambda: PluginApplication())
+    with pytest.raises(OSError):
+        with dispatcher.prepare_voice_resource_update():
+            calls.append("publish")
+            raise OSError("rollback")
+    assert calls == ["tts.cancel", ("sakura.tts.provider.", "pause"), "publish", ("sakura.tts.provider.", "restore")]
+
+
+
 def test_router_invalidates_generation_work_before_waiting_for_workers() -> None:
     calls: list[str] = []
     invalidated = threading.Event()
@@ -250,27 +362,101 @@ def test_router_invalidates_generation_work_before_waiting_for_workers() -> None
     assert calls == ["invalidate", "worker-stopped"]
 
 
-def test_router_drains_detached_event_producers_before_closing_event_writer() -> None:
-    messages: list[dict[str, object]] = []
+def test_router_drains_detached_event_producers_before_closing_protocol_writer() -> None:
+    output = io.BytesIO()
+    terminal = event(
+        request("cancelled"),
+        name="chat.cancelled",
+        generation_id=GENERATION_ID,
+        generation_credential=GENERATION_CREDENTIAL,
+        payload={"operationId": "cancelled"},
+        protocol_minor=2,
+    )
+    writer = ResponseWriter(output)
     router: ConcurrentHostRouter
 
-    class Writer:
-        def send(self, message: dict[str, object], *, wait: bool = True) -> None:
-            assert wait is True
-            messages.append(message)
-
     class Dispatcher:
-        def invalidate_generation_work(self) -> None:
-            return None
-
         def drain_generation_work(self) -> None:
-            router.publish_event({"kind": "event", "name": "chat.cancelled"})
+            router.publish_event(terminal)
 
-    router = ConcurrentHostRouter(io.BytesIO(), Writer(), Dispatcher())
+    router = ConcurrentHostRouter(io.BytesIO(), writer, Dispatcher())
+    try:
+        router.run()
+        with pytest.raises(RouterFailure, match="GENERATION_INVALIDATED"):
+            router.publish_event(terminal)
+    finally:
+        writer.close()
 
-    router.run()
+    output.seek(0)
+    assert read_frame(output) == terminal
+    assert read_frame(output) is None
 
-    assert messages == [{"kind": "event", "name": "chat.cancelled"}]
+
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_router_event_acknowledges_protocol_write_or_fails_generation(write_fails: bool) -> None:
+    class Output(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def write(self, data: bytes) -> int:
+            self.entered.set()
+            assert self.release.wait(2)
+            if write_fails:
+                raise OSError("PRIVATE_WRITE_FAILURE")
+            return super().write(data)
+
+    output = Output()
+    terminal = event(
+        request("terminal"),
+        name="chat.completed",
+        generation_id=GENERATION_ID,
+        generation_credential=GENERATION_CREDENTIAL,
+        payload={},
+        protocol_minor=2,
+    )
+    writer = ResponseWriter(output)
+    router = ConcurrentHostRouter(io.BytesIO(), writer, object())
+    router._start_threads()
+    acknowledged = threading.Event()
+    failures: list[BaseException] = []
+
+    def publish() -> None:
+        try:
+            router.publish_event(terminal)
+            acknowledged.set()
+        except BaseException as error:
+            failures.append(error)
+
+    publisher = threading.Thread(target=publish)
+    publisher.start()
+    try:
+        assert output.entered.wait(1)
+        assert not acknowledged.is_set()
+    finally:
+        output.release.set()
+        publisher.join(2)
+        if write_fails:
+            with pytest.raises(WriterError, match="TRANSPORT_WRITE_FAILED"):
+                router.close()
+            with pytest.raises(WriterError, match="TRANSPORT_WRITE_FAILED"):
+                writer.close()
+        else:
+            router.close()
+            writer.close()
+
+    assert not publisher.is_alive()
+    if write_fails:
+        assert not acknowledged.is_set()
+        assert len(failures) == 1
+        assert router.fatal_error is failures[0]
+    else:
+        assert acknowledged.is_set()
+        assert failures == []
+        output.seek(0)
+        assert read_frame(output) == terminal
+        assert read_frame(output) is None
 
 
 def test_writer_queue_saturation_and_slow_write_fail_with_bounded_errors(
@@ -490,7 +676,7 @@ def test_run_host_reaches_writer_cleanup_when_initializer_close_never_returns(
 
     class Dispatcher(ControlDispatcher):
         def __init__(self, config: HostConfig) -> None:
-            super().__init__(config, initializer_factory=lambda _root: initializer)
+            super().__init__(config, initializer_factory=lambda _root, _tools, _mcp: initializer)
             self._readiness.begin({})
             assert initialized.wait(1)
 

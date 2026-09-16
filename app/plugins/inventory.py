@@ -7,10 +7,10 @@ projected into ``RuntimePluginSpec`` objects for per-plugin processes.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
+import secrets
 import stat
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -18,6 +18,8 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
+from app.config.plugin_requirements import tts_resource_types
+from app.plugins.visuals import VisualCapability, visual_capabilities_from_manifest
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import DistributionPaths, RuntimeRoots, coerce_runtime_roots
@@ -28,6 +30,12 @@ PLUGIN_ID_PATTERN = re.compile(
 )
 SERVICE_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _PYTHON_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+INSTALL_ID_PATTERN = re.compile(r"^pi_(?:user|bundled)_(?:[0-9a-f]{2}){1,1024}$")
+
+# Settings, application and installer create separate Inventory objects. Share
+# the last structured state per runtime root so their revisions agree.
+_REVISION_LOCK = threading.RLock()
+_REVISIONS: dict[tuple[Path, Path, Path], tuple[object, str]] = {}
 
 
 @dataclass(frozen=True)
@@ -46,6 +54,7 @@ class RuntimePluginSpec:
     requires: tuple[str, ...]
     source: str
     directory_name: str
+    visuals: tuple[VisualCapability, ...] = ()
 
     def to_plugin_spec(self, roots: RuntimeRoots | Path) -> PluginSpec:
         resolved = coerce_runtime_roots(roots)
@@ -69,6 +78,7 @@ class RuntimePluginSpec:
             requires=self.requires,
             plugin_root=root,
             source=self.source,
+            visuals=self.visuals,
         )
 
     def private_dict(self) -> dict[str, Any]:
@@ -87,6 +97,7 @@ class RuntimePluginSpec:
             "requires": list(self.requires),
             "source": self.source,
             "directoryName": self.directory_name,
+            "visuals": [item.to_mapping() for item in self.visuals],
         }
 
     @classmethod
@@ -96,7 +107,7 @@ class RuntimePluginSpec:
             "entry", "enabled", "required", "provides", "requires",
             "source", "directoryName",
         }
-        if set(value) != expected:
+        if set(value) not in (expected, expected | {"visuals"}):
             raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
         plugin_id = value.get("pluginId")
         source = value.get("source")
@@ -119,15 +130,21 @@ class RuntimePluginSpec:
             ):
                 raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
             services[key] = tuple(dict.fromkeys(raw))
+        try:
+            visuals = visual_capabilities_from_manifest(value.get("visuals", []), services["provides"])
+        except ValueError as error:
+            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID") from error
         strings = {}
         for key, maximum in (
-            ("installId", 40), ("name", 120), ("author", 120),
+            ("installId", 2059), ("name", 120), ("author", 120),
             ("description", 500), ("version", 64), ("entry", 200),
         ):
             raw = value.get(key)
             if not isinstance(raw, str) or len(raw) > maximum:
                 raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
             strings[key] = raw
+        if strings["installId"] != _install_id(source, directory_name):
+            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
         if (
             value.get("apiVersion") != PLUGIN_API_V4_VERSION
             or not isinstance(value.get("enabled"), bool)
@@ -151,6 +168,7 @@ class RuntimePluginSpec:
             requires=services["requires"],
             source=source,
             directory_name=directory_name,
+            visuals=visuals,
         )
 
 
@@ -173,6 +191,12 @@ class InstalledPluginRecord:
     reason_code: str
     supported: bool
     runtime_eligible: bool
+    presentation_kind: str = "extension"
+    presentation_category: str = "other"
+    presentation_icon: str = ""
+    tts_resources: tuple[str, ...] = ()
+    capability_issues: tuple[dict[str, str], ...] = ()
+    visuals: tuple[VisualCapability, ...] = ()
 
     @property
     def can_uninstall(self) -> bool:
@@ -196,6 +220,7 @@ class InstalledPluginRecord:
             requires=self.requires,
             source=self.source,
             directory_name=self.directory_name,
+            visuals=self.visuals,
         )
 
 
@@ -281,6 +306,10 @@ class PluginInventory:
         self._desired = desired or PluginDesiredStateStore(self._roots.user_root)
 
     def scan(self) -> PluginInventorySnapshot:
+        with _REVISION_LOCK:
+            return self._scan()
+
+    def _scan(self) -> PluginInventorySnapshot:
         desired = self._desired.read()
         records: list[InstalledPluginRecord] = []
         roots = (
@@ -290,7 +319,7 @@ class PluginInventory:
         for source, root in roots:
             if not root.is_dir():
                 continue
-            for directory in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
+            for directory in sorted(root.iterdir(), key=lambda path: (path.name.casefold(), path.name)):
                 if directory.name.startswith("."):
                     continue
                 # The bundled root is also a Python package and may retain
@@ -320,24 +349,16 @@ class PluginInventory:
             for record in records
             if (spec := record.runtime_spec()) is not None
         )
-        digest = hashlib.sha256()
-        try:
-            digest.update(self._desired.path.read_bytes())
-        except OSError:
-            pass
-        for record in records:
-            digest.update(json.dumps({
-                "installId": record.install_id,
-                "pluginId": record.plugin_id,
-                "reason": record.reason_code,
-                "enabled": record.desired_enabled,
-            }, sort_keys=True).encode("utf-8"))
-            manifest = self._manifest_path(record)
-            try:
-                digest.update(manifest.read_bytes())
-            except OSError:
-                digest.update(b"<missing>")
-        return PluginInventorySnapshot(tuple(records), runtime_specs, digest.hexdigest()[:16])
+        state = (tuple(records), desired)
+        key = (
+            self._roots.distribution_root.resolve(),
+            self._roots.user_root.resolve(),
+            self._desired.path.resolve(),
+        )
+        previous = _REVISIONS.get(key)
+        revision = previous[1] if previous is not None and previous[0] == state else secrets.token_hex(8)
+        _REVISIONS[key] = (state, revision)
+        return PluginInventorySnapshot(tuple(records), runtime_specs, revision)
 
     def _record(
         self,
@@ -414,6 +435,17 @@ class PluginInventory:
                 )
             services[key] = tuple(dict.fromkeys(value))
         supported = api_version == PLUGIN_API_V4_VERSION
+        capability_issues: list[dict[str, str]] = []
+        visuals = visual_capabilities_from_manifest(
+            raw.get("visuals", []), services["provides"], plugin_root=directory,
+            issues=capability_issues,
+        )
+        tts_resources = tts_resource_types(raw.get("ttsResources", []), issues=capability_issues)
+        presentation = raw.get("presentation")
+        presentation = presentation if isinstance(presentation, Mapping) else {}
+        kind = presentation.get("kind")
+        category = presentation.get("category")
+        icon = presentation.get("icon")
         return InstalledPluginRecord(
             install_id=install_id,
             source=source,
@@ -432,6 +464,12 @@ class PluginInventory:
             reason_code="READY" if supported else "API_VERSION_UNSUPPORTED",
             supported=supported,
             runtime_eligible=supported,
+            tts_resources=tts_resources,
+            capability_issues=tuple(capability_issues),
+            presentation_kind=kind if kind in ("extension", "provider", "infrastructure") else "extension",
+            presentation_category=category if category in ("model", "voice", "memory", "tools", "connectivity", "other") else "other",
+            presentation_icon=icon if isinstance(icon, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", icon) else "",
+            visuals=visuals,
         )
 
     @staticmethod
@@ -465,18 +503,10 @@ class PluginInventory:
                     )
         return result
 
-    def _manifest_path(self, record: InstalledPluginRecord) -> Path:
-        root = (
-            self._distribution.builtin_plugins_dir
-            if record.source == "bundled"
-            else self._paths.user_plugins_dir
-        )
-        return root / record.directory_name / "plugin.yaml"
-
 
 def _install_id(source: str, directory_name: str) -> str:
-    digest = hashlib.sha256(f"{source}\0{directory_name}".encode("utf-8")).hexdigest()[:24]
-    return f"pi_{digest}"
+    # Encode only the local directory component, never an absolute user path.
+    return f"pi_{source}_{directory_name.encode('utf-8', errors='surrogatepass').hex()}"
 
 
 def _unsafe_directory(path: Path) -> bool:

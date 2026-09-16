@@ -1,4 +1,5 @@
 @import url("../assets/fonts/fonts.css");
+@import url("../core/selection.css");
 
 :root {
   --primary: #4b9ac4;
@@ -164,13 +165,6 @@ h1 {
   user-select: text;
 }
 
-.entry-bubble::selection,
-.entry-bubble *::selection {
-  color: var(--text);
-  background: color-mix(in srgb, var(--primary), transparent 72%);
-  text-shadow: none;
-}
-
 .entry-bubble-assistant {
   border-radius: 14px 14px 14px 4px;
   background: var(--input-background);
@@ -205,9 +199,11 @@ h1 {
 .entry-summary::after {
   width: 12px;
   color: var(--muted-text);
-  content: "⌄";
-  font-size: 13px;
-  line-height: 1;
+  content: "";
+  height: 12px;
+  background: currentColor;
+  -webkit-mask: url("../assets/lucide/chevron-down.svg") center / contain no-repeat;
+  mask: url("../assets/lucide/chevron-down.svg") center / contain no-repeat;
 }
 
 .entry-bubble-system[open] .entry-summary::after { transform: rotate(180deg); }
@@ -287,47 +283,45 @@ button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px
   .history-kicker { display: none; }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .history-entry.is-entering {
-    animation: entry-arrive 210ms ease-out var(--entry-delay) both;
-  }
-  .history-shell[data-loading="true"] .history-status {
-    animation: status-breathe 900ms ease-in-out infinite alternate;
-  }
-  .button-secondary.is-loading::after {
-    animation: refresh-spin 720ms linear infinite;
-  }
-  .load-more,
-  .entry-bubble,
-  .entry-summary::after,
-  .button {
-    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease,
-      opacity 140ms ease, transform 140ms ease;
-  }
-  .load-more:hover,
-  .entry-bubble:hover,
-  .button:hover:not(:disabled) {
-    transform: translateY(-1px);
-  }
-  .entry-bubble:hover {
-    border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
-  }
-  .entry-bubble-system[open] .entry-details-content {
-    animation: details-arrive 180ms ease-out both;
-  }
-  @keyframes entry-arrive {
-    from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  @keyframes details-arrive {
-    from { opacity: 0; transform: translateY(-3px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  @keyframes status-breathe {
-    from { opacity: .58; }
-    to { opacity: 1; }
-  }
-  @keyframes refresh-spin {
-    to { transform: translateY(-50%) rotate(360deg); }
-  }
+.history-entry.is-entering {
+  animation: entry-arrive 210ms ease-out var(--entry-delay) both;
+}
+.history-shell[data-loading="true"] .history-status {
+  animation: status-breathe 900ms ease-in-out infinite alternate;
+}
+.button-secondary.is-loading::after {
+  animation: refresh-spin 720ms linear infinite;
+}
+.load-more,
+.entry-bubble,
+.entry-summary::after,
+.button {
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease,
+    opacity 140ms ease, transform 140ms ease;
+}
+.load-more:hover,
+.entry-bubble:hover,
+.button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.entry-bubble:hover {
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+}
+.entry-bubble-system[open] .entry-details-content {
+  animation: details-arrive 180ms ease-out both;
+}
+@keyframes entry-arrive {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes details-arrive {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes status-breathe {
+  from { opacity: .58; }
+  to { opacity: 1; }
+}
+@keyframes refresh-spin {
+  to { transform: translateY(-50%) rotate(360deg); }
 }

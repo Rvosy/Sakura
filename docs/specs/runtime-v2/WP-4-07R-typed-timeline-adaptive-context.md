@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-30
+updated: 2026-09-09
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -85,7 +85,7 @@ payload 只允许以下形状：
 | kind | payload | 规则 |
 |---|---|---|
 | `human` | `{ "text": string }` | 仅用户实际提交的文字；Host 引导语不得混入 |
-| `assistant` | `{ "segments": Segment[1..N] }` | 一个 generation 一条；Segment 保留 text/translation/tone/portrait/suppressTts |
+| `assistant` | `{ "segments": Segment[1..N] }` | 一个 generation 一条；Segment 保留 text/translation/tone/portrait/suppressTts，可选 control 见表现插件合同 |
 | `observation` | `{ "text": string, "visual": object? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata |
 | `system` | `{ "text": string, "eventType": string? }` | 仅需要进入未来关系连续性的 Host 已确认事实，不是普通日志 |
 
@@ -104,7 +104,9 @@ API key 或 Provider 原始异常。
 - 定时截图的捕获占位 observation 不属于可整理证据。Provider 成功返回视觉分析后，Host 追加一条同
   `turn_id` 的有界脱敏语义 observation；它只保存摘要/OCR 文本投影、置信度和脱敏标记，不保存原图。
 - Provider 最终回复完成解析、segment 校验和授权后，在一个事务中写一条 assistant entry。多个气泡、语气、
-  立绘和 TTS 标记全部在 `segments[]`，不得逐 segment 追加历史。
+  TTS 标记及可选表现 `control` 全部在 `segments[]`，不得逐 segment 追加历史。
+  control 的版本、大小、目标和失败隔离遵循[表现插件合同](visual-plugin-boundary.md)；旧五字段 segment 继续可读，
+  超过整条 256 KiB 预算的可选控制会被剥离，文字保留。历史 UI 不执行 state/actions。
 - 工具循环只在当前模型 operation 中保留 Provider native call/result；第一版 Timeline 只保存最终用户可见
   assistant generation，不保存每个内部 Agent step。
 - 历史 UI 从同一 Timeline 投影；assistant segments 可以显示为多个气泡，但它们共享一个 entry/turn，删除、
@@ -132,7 +134,9 @@ read_since({ cursor, limit }) -> { entries, nextCursor, hasMore }
 ```
 
 - `limit` 必须为 `1..500`；返回正文继续受通用 Bridge 大小上限约束。
-- cursor 是版本化 opaque string，绑定角色和数据库 lineage；插件不得解析、拼接或持久化为整数。
+- cursor 是不超过 512 字符的版本化 opaque string，绑定角色和数据库 lineage；插件不得解析、拼接或持久化为整数。
+  v2 使用 URL-safe Base64 编码版本、角色、lineage、seq 和 entry ID，不附自设校验和。Host 校验字段类型、范围
+  及数据库中的实际锚点。旧 v1 游标返回 `TIMELINE_CURSOR_INVALID`，升级后重新获取游标即可；历史数据不迁移。
 - 数据被用户清除、数据库更换或 cursor 不属于当前角色时返回稳定 `TIMELINE_CURSOR_INVALID`。消费者可以按
   自己的 backfill 配置重新调用 `read_recent`，Host 不自动猜测恢复位置。
 - Service 只读；不提供 append/update/delete/search、订阅管理、Episode 或 Observation 专用方法。
@@ -207,6 +211,9 @@ tokenizer；不可用时使用现有保守估算器，并在 Trace 标明 estima
 
 若静态 Prompt、工具 schema、当前输入、当前图片/tool atom 和输出预留本身超过窗口，调用明确失败为
 `CONTEXT_WINDOW_EXCEEDED`，不得静默截断当前输入、图片或工具结果，也不得自动改成另一个模型。
+失败信息必须给出本次采用的模型窗口及来源，并列出静态 Prompt、工具 schema、当前消息与工具结果、必需
+上下文、输出预留和安全余量的估算值。相同的脱敏预算明细进入聊天错误、GUI 运行日志和文件日志，不能只
+记录异常类型。
 
 ### 7.3 选择规则
 
@@ -215,8 +222,8 @@ tokenizer；不可用时使用现有保守估算器，并在 Trace 标明 estima
 1. 保留必需 Host facts 和当前 Turn；
 2. 在能完整容纳时优先保护最近 8 个真实 human/assistant 完整 Turn；8 是保护尾部，不是历史上限；
 3. 尝试完整选择最新的近期 observation Turn；空间不足时整 Turn 丢弃，不截断摘要或 assistant 回复；
-4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；同一 Contributor 的额度按
-   `plugin_id/source` 聚合，不能拆 Fragment 绕过限制；
+4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；每个可选 Fragment 的
+   `token_budget` 只约束自身正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 再分配共享额度；
 5. 用剩余预算从近到远选择其余两小时内 observation Turn，再选择更早的真实对话 Turn；
 6. 输出前恢复为旧到新，并由 Provider adapter 进行最终 role/placement 兼容。
 

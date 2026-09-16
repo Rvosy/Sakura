@@ -666,13 +666,14 @@ def test_timeline_initialization_failure_never_falls_back_to_legacy_history(
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         event_publisher=events.append,
     )
     request = _request("migration-fallback")

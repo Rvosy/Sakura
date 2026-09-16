@@ -103,19 +103,21 @@ SupervisorState = stopping
 
 shutdown、health 和 cancel 不得排在普通长任务之后。
 
-### 初始 lifecycle deadline 建议
+### Lifecycle deadline
 
-以下数值是 Phase 1B/1C 的首轮故障测试输入，不代表已经 `Technically Validated`；技术门可以基于分布数据调整，但必须同时更新 ADR、测试 fixture 和诊断文案：
+以下数值是当前生命周期合同。技术门可以根据真实运行数据调整，但必须同时更新 ADR、测试和诊断文案：
 
-| 生命周期动作 | 初始 deadline | 超时后的动作 |
+| 生命周期动作 | deadline | 超时后的动作 |
 |---|---:|---|
-| `system.hello` | 3,000 ms | 当前 generation 启动失败；在 restart budget 内可按暂时性启动失败重试 |
+| `system.hello` | 10,000 ms | 当前 generation 启动失败；在 restart budget 内可按暂时性启动失败重试 |
 | `core.initialize` 响应/接受 | 5,000 ms | 当前 generation 初始化协议失败；清理旧树后可在 budget 内重试 |
 | readiness watchdog | 30,000 ms | 与 initialize 请求 deadline 分离；进入 diagnostics/restarting，不阻塞 health/shutdown |
 | `system.shutdown` 协议优雅期 | 3,000 ms | 到期立即 `terminate_tree`，不继续等待领域任务 |
 | 完整停止并验证进程树退出 | 从 shutdown 意图起 5,000 ms | 超过即为 P1；Shell 记录强杀/残留证据并禁止新 generation |
 
 deadline 从 Rust 侧发出对应意图并成功写入当前 generation transport 时计时；WebView 不能覆盖这些 lifecycle 值。调试器附加、首轮依赖下载或人工断点不能改变正式验收 deadline。
+
+2026-09-03 的 Windows 10 稳定版报告显示，Core 冷启动在 5.2 秒后才发出首条固定日志，原 3 秒期限会先结束握手并回收仍在启动的进程。`system.hello` 因此调整为 10 秒；initialize、readiness 和 shutdown 的期限不变。
 
 ## 竞态与幂等规则
 

@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
-from app.agent.builtin_tools import get_current_time
+from datetime import datetime
+
 from app.agent.tools import Tool, ToolRegistry
+
+
+def get_current_time() -> dict[str, str]:
+    now = datetime.now().astimezone()
+    return {
+        "datetime": now.isoformat(timespec="seconds"),
+        "timezone": now.tzname() or "",
+    }
+
+
 def create_runtime_v2_tool_registry() -> ToolRegistry:
     """Build the Core-owned registry; plugins add their own domain tools."""
 

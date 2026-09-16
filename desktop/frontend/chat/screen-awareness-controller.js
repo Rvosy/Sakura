@@ -45,6 +45,7 @@ export function createScreenAwarenessController({
   let lastCaptureAt = now();
   let batchStartedAt = null;
   let batchCount = 0;
+  let batchRevision = 0;
 
   function invokeBestEffort(command, args) {
     try { void Promise.resolve(invoke(command, args)).catch(() => {}); }
@@ -59,6 +60,7 @@ export function createScreenAwarenessController({
   }
 
   function clearBatch(reason, timestamp = now()) {
+    batchRevision += 1;
     invokeBestEffort("clear_screen_awareness_batch");
     resetClock(timestamp);
     onDiagnostic("screen_awareness.batch.cleared", { reason });
@@ -82,6 +84,7 @@ export function createScreenAwarenessController({
     }
     if (!settings.enabled || !currentGeneration || !isIdle()) return;
     ticking = true;
+    const revision = batchRevision;
     try {
       const timestamp = now();
       const intervalMs = settings.checkIntervalMinutes * 60_000;
@@ -91,6 +94,7 @@ export function createScreenAwarenessController({
             resolution: settings.resolution,
             batchLimit: settings.batchLimit,
           } });
+          if (revision !== batchRevision || disposed) return;
           if (!Number.isSafeInteger(result?.count) || result.count < 1 || result.count > settings.batchLimit) {
             throw new Error("SCREEN_AWARENESS_CAPTURE_RESPONSE_INVALID");
           }
@@ -98,6 +102,7 @@ export function createScreenAwarenessController({
           if (batchCount === 0) batchStartedAt = timestamp;
           batchCount = result.count;
         } catch (error) {
+          if (revision !== batchRevision || disposed) return;
           await fail("capture", error);
           return;
         }
@@ -110,12 +115,17 @@ export function createScreenAwarenessController({
       try {
         const attached = await invoke("attach_screen_awareness_batch");
         attachmentId = String(attached?.attachmentId || "");
+        if (revision !== batchRevision || disposed) {
+          if (attachmentId) invokeBestEffort("release_screen_attachment", { payload: { attachmentId } });
+          return;
+        }
         if (!/^screen-[0-9a-f]{32}$/.test(attachmentId) || attached?.count !== batchCount) {
           throw new Error("SCREEN_AWARENESS_ATTACHMENT_RESPONSE_INVALID");
         }
         await send({ message: SCREEN_AWARENESS_PROMPT, attachmentId });
         resetClock(timestamp);
       } catch (error) {
+        if (revision !== batchRevision || disposed) return;
         await fail("send", error, attachmentId);
       }
     } finally {

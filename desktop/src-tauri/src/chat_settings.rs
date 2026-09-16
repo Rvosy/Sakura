@@ -1,18 +1,25 @@
 //! Runtime v2 presentation timing slice stored in the shared `ui.json` document.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ui_config::UiConfigRepository;
+use tauri::{Emitter, State, WebviewWindow};
+
+use crate::{product_shell, ui_config::UiConfigRepository};
 
 pub const CHAT_TIMING_CHANGED_EVENT: &str = "sakura://chat-presentation-timing-changed";
 pub const SUBTITLE_LANGUAGE_CHANGED_EVENT: &str = "sakura://subtitle-language-changed";
+pub const BUBBLE_AUTO_HIDE_CHANGED_EVENT: &str = "sakura://bubble-auto-hide-changed";
 const SCHEMA_VERSION: u64 = 1;
 const DOMAIN: &str = "ui";
 const TYPING_INTERVAL_MIN: u16 = 5;
 const TYPING_INTERVAL_MAX: u16 = 200;
 const SEGMENT_PAUSE_MIN: u16 = 0;
 const SEGMENT_PAUSE_MAX: u16 = 3000;
+const BUBBLE_AUTO_HIDE_DELAY_MIN: u16 = 1;
+const BUBBLE_AUTO_HIDE_DELAY_MAX: u16 = 120;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -114,6 +121,208 @@ impl ChatPresentationTimingState {
         })?;
         Ok(values)
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BubbleAutoHideSettings {
+    pub auto_hide_enabled: bool,
+    pub auto_hide_delay_seconds: u16,
+}
+
+impl Default for BubbleAutoHideSettings {
+    fn default() -> Self {
+        Self {
+            auto_hide_enabled: true,
+            auto_hide_delay_seconds: 5,
+        }
+    }
+}
+
+impl BubbleAutoHideSettings {
+    pub fn validate(self) -> Result<Self, String> {
+        if !(BUBBLE_AUTO_HIDE_DELAY_MIN..=BUBBLE_AUTO_HIDE_DELAY_MAX)
+            .contains(&self.auto_hide_delay_seconds)
+        {
+            return Err("BUBBLE_AUTO_HIDE_FIELD_INVALID:autoHideDelaySeconds".to_string());
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BubbleAutoHideLimits {
+    pub auto_hide_delay_seconds: [u16; 3],
+}
+
+impl Default for BubbleAutoHideLimits {
+    fn default() -> Self {
+        Self {
+            auto_hide_delay_seconds: [
+                BUBBLE_AUTO_HIDE_DELAY_MIN,
+                BUBBLE_AUTO_HIDE_DELAY_MAX,
+                BubbleAutoHideSettings::default().auto_hide_delay_seconds,
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BubbleAutoHideSnapshot {
+    pub schema_version: u32,
+    pub window_generation: u64,
+    pub values: BubbleAutoHideSettings,
+    pub limits: BubbleAutoHideLimits,
+}
+
+pub struct BubbleAutoHideState {
+    repository: UiConfigRepository,
+    legacy_system_config: PathBuf,
+}
+
+impl BubbleAutoHideState {
+    pub fn new(repository: UiConfigRepository, legacy_system_config: PathBuf) -> Self {
+        Self {
+            repository,
+            legacy_system_config,
+        }
+    }
+
+    pub fn get(&self) -> Result<BubbleAutoHideSettings, String> {
+        let document = self.repository.load("BUBBLE_AUTO_HIDE")?;
+        match bubble_settings_from_document(&document)? {
+            Some(values) => Ok(values),
+            None => bubble_settings_from_legacy(&self.legacy_system_config),
+        }
+    }
+
+    pub fn snapshot(&self, window_generation: u64) -> Result<BubbleAutoHideSnapshot, String> {
+        Ok(BubbleAutoHideSnapshot {
+            schema_version: 1,
+            window_generation,
+            values: self.get()?,
+            limits: BubbleAutoHideLimits::default(),
+        })
+    }
+
+    pub fn save(&self, values: BubbleAutoHideSettings) -> Result<BubbleAutoHideSettings, String> {
+        let values = values.validate()?;
+        self.repository.update("BUBBLE_AUTO_HIDE", |document| {
+            validate_bubble_document(document)?;
+            let settings = document
+                .get_mut("settings")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| "BUBBLE_AUTO_HIDE_DOCUMENT_INVALID".to_string())?;
+            settings.insert(
+                "bubble_auto_hide_enabled".to_string(),
+                Value::from(values.auto_hide_enabled),
+            );
+            settings.insert(
+                "bubble_auto_hide_delay_seconds".to_string(),
+                Value::from(values.auto_hide_delay_seconds),
+            );
+            bubble_settings_from_document(document).and_then(|saved| {
+                saved
+                    .map(|_| ())
+                    .ok_or_else(|| "BUBBLE_AUTO_HIDE_DOCUMENT_INVALID".to_string())
+            })
+        })?;
+        Ok(values)
+    }
+}
+
+fn validate_bubble_document(document: &Value) -> Result<(), String> {
+    let root = document
+        .as_object()
+        .ok_or_else(|| "BUBBLE_AUTO_HIDE_DOCUMENT_INVALID".to_string())?;
+    if root.get("schema_version").and_then(Value::as_u64) != Some(SCHEMA_VERSION) {
+        return Err("BUBBLE_AUTO_HIDE_SCHEMA_UNSUPPORTED".to_string());
+    }
+    if root.get("domain").and_then(Value::as_str) != Some(DOMAIN) {
+        return Err("BUBBLE_AUTO_HIDE_DOMAIN_INVALID".to_string());
+    }
+    root.get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "BUBBLE_AUTO_HIDE_DOCUMENT_INVALID".to_string())?;
+    Ok(())
+}
+
+fn bubble_settings_from_document(
+    document: &Value,
+) -> Result<Option<BubbleAutoHideSettings>, String> {
+    validate_bubble_document(document)?;
+    let settings = document["settings"]
+        .as_object()
+        .ok_or_else(|| "BUBBLE_AUTO_HIDE_DOCUMENT_INVALID".to_string())?;
+    let has_enabled = settings.contains_key("bubble_auto_hide_enabled");
+    let has_delay = settings.contains_key("bubble_auto_hide_delay_seconds");
+    if !has_enabled && !has_delay {
+        return Ok(None);
+    }
+    let defaults = BubbleAutoHideSettings::default();
+    BubbleAutoHideSettings {
+        auto_hide_enabled: settings
+            .get("bubble_auto_hide_enabled")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| "BUBBLE_AUTO_HIDE_FIELD_INVALID:autoHideEnabled".to_string())
+            })
+            .transpose()?
+            .unwrap_or(defaults.auto_hide_enabled),
+        auto_hide_delay_seconds: settings
+            .get("bubble_auto_hide_delay_seconds")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|number| u16::try_from(number).ok())
+                    .ok_or_else(|| {
+                        "BUBBLE_AUTO_HIDE_FIELD_INVALID:autoHideDelaySeconds".to_string()
+                    })
+            })
+            .transpose()?
+            .unwrap_or(defaults.auto_hide_delay_seconds),
+    }
+    .validate()
+    .map(Some)
+}
+
+fn bubble_settings_from_legacy(path: &Path) -> Result<BubbleAutoHideSettings, String> {
+    if !path.is_file() {
+        return Ok(BubbleAutoHideSettings::default());
+    }
+    let source = std::fs::read_to_string(path)
+        .map_err(|_| "BUBBLE_AUTO_HIDE_LEGACY_READ_FAILED".to_string())?;
+    let document: serde_yaml::Value = serde_yaml::from_str(&source)
+        .map_err(|_| "BUBBLE_AUTO_HIDE_LEGACY_DOCUMENT_INVALID".to_string())?;
+    let ui = document.get("ui").and_then(serde_yaml::Value::as_mapping);
+    let defaults = BubbleAutoHideSettings::default();
+    let enabled = ui
+        .and_then(|mapping| mapping.get("bubble_auto_hide_enabled"))
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| "BUBBLE_AUTO_HIDE_FIELD_INVALID:autoHideEnabled".to_string())
+        })
+        .transpose()?
+        .unwrap_or(defaults.auto_hide_enabled);
+    let delay = ui
+        .and_then(|mapping| mapping.get("bubble_auto_hide_delay_seconds"))
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|number| u16::try_from(number).ok())
+                .ok_or_else(|| "BUBBLE_AUTO_HIDE_FIELD_INVALID:autoHideDelaySeconds".to_string())
+        })
+        .transpose()?
+        .unwrap_or(defaults.auto_hide_delay_seconds);
+    BubbleAutoHideSettings {
+        auto_hide_enabled: enabled,
+        auto_hide_delay_seconds: delay,
+    }
+    .validate()
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -245,6 +454,105 @@ fn timing_from_document(document: &Value) -> Result<ChatPresentationTiming, Stri
     .validate()
 }
 
+#[tauri::command]
+pub(crate) fn current_chat_presentation_timing(
+    window: WebviewWindow,
+    timing: State<'_, ChatPresentationTimingState>,
+) -> Result<ChatPresentationTiming, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    timing.get()
+}
+
+#[tauri::command]
+pub(crate) fn current_bubble_auto_hide(
+    window: WebviewWindow,
+    settings: State<'_, BubbleAutoHideState>,
+) -> Result<BubbleAutoHideSettings, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    settings.get()
+}
+
+#[tauri::command]
+pub(crate) fn current_subtitle_language(
+    window: WebviewWindow,
+    subtitle: State<'_, SubtitleLanguageState>,
+) -> Result<SubtitleLanguage, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    subtitle.get()
+}
+
+#[tauri::command]
+pub(crate) fn settings_chat_presentation_timing_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    timing: State<'_, ChatPresentationTimingState>,
+) -> Result<ChatPresentationTimingSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    timing.snapshot(shell.generation()?)
+}
+
+#[tauri::command]
+pub(crate) fn settings_chat_presentation_timing_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    values: ChatPresentationTiming,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    timing: State<'_, ChatPresentationTimingState>,
+) -> Result<ChatPresentationTiming, String> {
+    product_shell::validate_settings_window(&window)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let saved = timing.save(values)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    app_handle
+        .emit_to("main", CHAT_TIMING_CHANGED_EVENT, saved)
+        .map_err(|error| format!("CHAT_TIMING_PUBLICATION_FAILED: {error}"))?;
+    Ok(saved)
+}
+
+#[tauri::command]
+pub(crate) fn settings_bubble_auto_hide_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    settings: State<'_, BubbleAutoHideState>,
+) -> Result<BubbleAutoHideSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    settings.snapshot(shell.generation()?)
+}
+
+#[tauri::command]
+pub(crate) fn settings_bubble_auto_hide_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    values: BubbleAutoHideSettings,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    settings: State<'_, BubbleAutoHideState>,
+) -> Result<BubbleAutoHideSettings, String> {
+    product_shell::validate_settings_window(&window)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let saved = settings.save(values)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    app_handle
+        .emit_to("main", BUBBLE_AUTO_HIDE_CHANGED_EVENT, saved)
+        .map_err(|error| format!("BUBBLE_AUTO_HIDE_PUBLICATION_FAILED: {error}"))?;
+    Ok(saved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +658,53 @@ mod tests {
         let state = SubtitleLanguageState::new(UiConfigRepository::new(path.clone()));
         assert!(state.save(SubtitleLanguage::Ja).is_err());
         assert_eq!(fs::read(path).unwrap(), b"not json");
+    }
+
+    #[test]
+    fn bubble_auto_hide_uses_legacy_values_until_runtime_v2_saves_its_own_slice() {
+        let fixture = Fixture::new();
+        let ui_path = fixture.0.join("ui.json");
+        let legacy_path = fixture.0.join("system_config.yaml");
+        fs::write(
+            &legacy_path,
+            "config_version: 1\nui:\n  bubble_auto_hide_enabled: false\n  bubble_auto_hide_delay_seconds: 11\n",
+        )
+        .unwrap();
+        let state = BubbleAutoHideState::new(UiConfigRepository::new(ui_path.clone()), legacy_path);
+        assert_eq!(
+            state.get().unwrap(),
+            BubbleAutoHideSettings {
+                auto_hide_enabled: false,
+                auto_hide_delay_seconds: 11,
+            }
+        );
+
+        let saved = BubbleAutoHideSettings {
+            auto_hide_enabled: true,
+            auto_hide_delay_seconds: 8,
+        };
+        assert_eq!(state.save(saved).unwrap(), saved);
+        assert_eq!(state.get().unwrap(), saved);
+        let document: Value = serde_json::from_slice(&fs::read(ui_path).unwrap()).unwrap();
+        assert_eq!(document["settings"]["bubble_auto_hide_enabled"], true);
+        assert_eq!(document["settings"]["bubble_auto_hide_delay_seconds"], 8);
+    }
+
+    #[test]
+    fn bubble_auto_hide_rejects_invalid_runtime_values_without_rewriting_ui_json() {
+        let fixture = Fixture::new();
+        let ui_path = fixture.0.join("ui.json");
+        fs::write(
+            &ui_path,
+            br#"{"schema_version":1,"domain":"ui","settings":{"bubble_auto_hide_delay_seconds":0}}"#,
+        )
+        .unwrap();
+        let before = fs::read(&ui_path).unwrap();
+        let state = BubbleAutoHideState::new(
+            UiConfigRepository::new(ui_path.clone()),
+            fixture.0.join("system_config.yaml"),
+        );
+        assert!(state.get().is_err());
+        assert_eq!(fs::read(ui_path).unwrap(), before);
     }
 }

@@ -129,9 +129,11 @@ class ToolRegistry:
 
     # ---- 注册 ----
 
-    def register(self, tool: Tool) -> None:
-        """注册一个工具。同名工具会覆盖旧的。"""
+    def register(self, tool: Tool, *, replace: bool = True) -> None:
+        """注册工具；外部贡献使用 replace=False 原子拒绝同名工具。"""
         with self._tools_lock:
+            if not replace and tool.name in self._tools:
+                raise ValueError("TOOL_NAME_CONFLICT")
             self._tools[tool.name] = tool
 
     def unregister(self, name: str, *, expected: Tool | None = None) -> bool:
@@ -332,17 +334,20 @@ class ToolRegistry:
             )
             self._emit_tool_event("tool.failed", {"name": name, "reasonCode": reason_code})
             return result
+        failed = tool.source == "plugin" and isinstance(content, dict) and content.get("isError") is True
         result = ToolExecutionResult(
             tool_name=name,
-            success=True,
+            success=not failed,
             content=content,
+            error=str(content.get("error", "插件工具执行失败。")) if failed else "",
+            reason_code=(_normalized_plugin_error_code(content.get("reasonCode")) if failed else ""),
         )
         log_event(
             "ToolRegistry",
-            "工具执行成功",
+            "工具执行失败" if failed else "工具执行成功",
             _safe_result_log(result, started_at, redact=tool.source == "plugin"),
         )
-        self._emit_tool_event("tool.finished", {"name": name})
+        self._emit_tool_event("tool.failed" if failed else "tool.finished", {"name": name})
         return result
 
 
@@ -526,7 +531,10 @@ def _safe_result_log(
 
 def _safe_plugin_error_code(error: Exception) -> str:
     """Return only a bounded worker reason code, never plugin exception text."""
-    code = getattr(error, "code", "")
+    return _normalized_plugin_error_code(getattr(error, "code", ""))
+
+
+def _normalized_plugin_error_code(code: object) -> str:
     if not isinstance(code, str):
         return "PLUGIN_TOOL_EXECUTION_FAILED"
     normalized = code.strip().upper()

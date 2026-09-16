@@ -3,8 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-11
 ---
 
 # Runtime v2 Specs
@@ -12,17 +11,27 @@ updated: 2026-08-29
 这里是 Runtime v2 的规范层。它定义产品等价目标、设置迁移契约、IPC、平台后端、Core 生命周期
 和聊天边界；不在这里维护 Work Package 的执行状态。
 
+验证矩阵列出产品应覆盖的风险，不要求每次改动重跑全部项目。当前任务按受影响行为选择测试，跨平台矩阵由 CI
+执行；原生设备证据按实际验证记录。开发规则与历史条款的处理见下文及根目录 AGENTS.md。
+
 ## 总规范
 
 - [产品功能等价规范与发布台账](product-capability-parity.md)
 - [设置功能增量迁移规范](settings-incremental-migration.md)
 - [Sakura Plugin Runtime v4](sakura-plugin-runtime-v4.md)
+- [表现插件：资源、编辑、控制与渲染](visual-plugin-boundary.md)
+- [联网插件](web-plugin.md)
+- [Spine 表现插件](spine-visual-plugin.md)
+- [ASR Hub 与点击式语音输入](asr-voice-input.md)
 - [Sakura Plugin API v3（已取代）](sakura-plugin-kernel-v3.md)
 - [Runtime v2 热应用规范](runtime-hot-application.md)
 - [Core 明确失败与手动恢复](WP-3-05-core-crash-ui-rehydration.md)
 - [Runtime v2 单一运行时边界](runtime-v2-only-boundary.md)
 - [发行与存储合同](release-distribution-and-storage.md)
+- [Sakura Service 静态控制面合同](sakura-service.md)
+- [远程诊断与匿名统计合同](remote-diagnostics-telemetry.md)
 - [0.9.x 到 Runtime v2 数据迁移](legacy-0.9-import.md)
+- [角色工坊](character-studio.md)
 
 ## Work Package Specs
 
@@ -54,7 +63,11 @@ updated: 2026-08-29
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
 
-执行状态唯一来源：[Runtime v2 Work Package 总计划](../../plans/runtime-v2/work-packages.md)。
+工作包进度见 [Runtime v2 路线图](../../plans/runtime-v2/work-packages.md)。进度与人工验收记录不授予或限制代码修改权限。
+
+沿用 WP 编号的文档可能包含带日期的迁移证据；其中的旧文件范围、激活审批、固定提交步骤和回退到早期版本的
+操作只适用于当时的工作包，不是当前开发指令。当前协作规则见 [AGENTS.md](../../../AGENTS.md)，产品行为以
+对应现行契约为准；旧证据不能证明当前实现或替代本次验证。
 
 精简前的 Plugin 拆分草案、Fake Core、工具确认和逐 WP 规范保留在
 [`docs/archive/specs/runtime-v2/pre-simplification-2026-08-23/`](../../archive/specs/runtime-v2/pre-simplification-2026-08-23/)，

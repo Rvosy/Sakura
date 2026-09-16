@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -7,9 +6,6 @@ import {
   projectHistoryEntries,
   validateHistoryPage,
 } from "../history/history-presentation.js";
-
-const historyEntrypoint = readFileSync(new URL("../history/history.js", import.meta.url), "utf8");
-
 
 const NOW = "2026-08-29T12:00:00+08:00";
 
@@ -68,6 +64,21 @@ test("observations and system facts become centered plain-text records", () => {
   assert.equal("visualId" in projected[0], false);
 });
 
+test("legacy manual screenshot notices are projected without changing stored text or other entries", () => {
+  const legacyText = "用户手动选择的 2 张屏幕截图已提交给对话模型。";
+  const manual = entry("observation", { text: legacyText }, { origin: "manual_screen" });
+  const projected = projectHistoryEntries([
+    manual,
+    entry("human", { text: legacyText }),
+    entry("observation", { text: `${legacyText}\n画面摘要` }, { origin: "manual_screen" }),
+  ]);
+  assert.match(projected[0].content, /2 张屏幕截图/);
+  assert.notEqual(projected[0].content, legacyText);
+  assert.equal(manual.payload.text, legacyText);
+  assert.equal(projected[1].content, legacyText);
+  assert.equal(projected[2].content, `${legacyText}\n画面摘要`);
+});
+
 test("scheduled screen summaries fold into one humanized observation record", () => {
   const projected = projectHistoryEntries([
     entry("observation", {
@@ -114,14 +125,4 @@ test("prepending earlier messages preserves the visible reading anchor", () => {
     440,
   );
   assert.equal(preservePrependScroll(null, 100), 100);
-});
-
-test("history reveals only after theme bootstrap and runtime fonts settle", () => {
-  assert.match(historyEntrypoint, /const runtimeFontsReady = waitForRuntimeFonts\(\)/);
-  assert.match(
-    historyEntrypoint,
-    /applyTheme\(bootstrap\?\.themeTokens\);\s*if \(!await revealCurrentInitialLoad\(revision\)\) return;/,
-  );
-  assert.match(historyEntrypoint, /await runtimeFontsReady;\s*if \(!loadGuard\.isCurrent\(revision\)\) return false;/);
-  assert.match(historyEntrypoint, /invoke\("reveal_history_window"\)/);
 });

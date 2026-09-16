@@ -6,17 +6,13 @@ import re
 import shutil
 import sqlite3
 import uuid
-from collections import deque
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
 from contextlib import closing
 from pathlib import Path, PureWindowsPath
 
 import yaml
 
-from app.agent.builtin_tools import TodoStore
-from app.agent.desktop_tools import NotesStore
 from app.agent.mcp.config import load_mcp_config
 from app.agent.reminders import ReminderStore
 from app.config.character_loader import CharacterRegistry
@@ -24,7 +20,7 @@ from app.config.character_studio import CharacterStudioDoc, CharacterStudioServi
 from app.config.core_config_reader import CoreConfigReader
 from app.config.settings_service import AppSettingsService
 from app.plugins.inventory import PluginDesiredStateStore
-from app.storage.timeline import TimelineStore, _encode_cursor
+from app.storage.timeline import TimelineStore
 
 from .configuration import add_character_extensions, migrate_configuration
 from .errors import LegacyImportError
@@ -32,12 +28,17 @@ from .files import (
     copy_file_checked,
     copy_tree_checked,
     copy_tree_fast_checked,
+    sqlite_readonly_uri,
     is_link_or_junction,
-    sha256_file,
     tree_stats,
 )
-from .history import HistoryImportStats, import_history
-from .inspector import inspect_installation
+from .history import import_history
+from .incremental import _merge_memory, _merge_timeline
+from .inspector import (
+    detect_legacy_source_platform,
+    inspect_installation,
+    legacy_tts_root,
+)
 from .models import ImportReport, LegacyInspection
 from .transaction import PendingCommit, commit_payload, finalize_commit, rollback_commit
 
@@ -52,13 +53,22 @@ _DIAGNOSTIC_SINK: ContextVar[Diagnostic] = ContextVar(
     "sakura_legacy_import_diagnostic_sink",
     default=_NO_DIAGNOSTIC,
 )
-_TTS_PROFILE_NAMES = ("tts_infer.yaml", "tts_infer_sakura_managed.yaml")
+_TTS_PROFILE_NAMES = (
+    "tts_infer.yaml",
+    "tts_infer_sakura_managed.yaml",
+    "tts_infer_sakura_macos.yaml",
+)
 _TTS_PROFILE_PATH_FIELDS = (
     "bert_base_path",
     "cnhuhbert_base_path",
     "t2s_weights_path",
     "vits_weights_path",
 )
+_OPTIONAL_TTS_INSPECTION_CODES = {
+    "LEGACY_TTS_LINK_BROKEN",
+    "LEGACY_TTS_LAYOUT_UNRECOGNIZED",
+    "LEGACY_TTS_TARGET_OVERLAP",
+}
 
 
 def inspect_legacy_installation(source: Path, target: Path) -> LegacyInspection:
@@ -86,6 +96,7 @@ def run_legacy_import(
     if not re.fullmatch(r"[A-Za-z0-9-]{8,64}", import_id):
         raise LegacyImportError("LEGACY_IMPORT_ID_INVALID", "inspect")
     staging = target / f".legacy-import-staging-{import_id}"
+    converted = staging / "converted"
     payload = staging / "payload"
     cancel_path = target / f".legacy-import-cancel-{import_id}"
 
@@ -105,32 +116,52 @@ def run_legacy_import(
         "旧版本迁移开始",
         {"detected_version": inspection.detected_version},
     )
+    _log_legacy_import(
+        import_id,
+        "legacy_import.inspection_summary",
+        "旧版本迁移检查摘要",
+        {
+            "detected_version": inspection.detected_version,
+            "source_platform": inspection.source_platform,
+            "required_bytes": inspection.required_bytes,
+            "available_bytes": inspection.available_bytes,
+            "domains_present": sum(
+                1 for domain in inspection.domains.values() if domain.present
+            ),
+            "overwrite_domains": len(inspection.overwrite_domains),
+            "warnings": len(inspection.warnings),
+        },
+    )
     try:
-        progress("staging", 5, "正在迁移配置")
-        report.counts.update(migrate_configuration(source, payload, new_tts_root=target / "tts"))
-        _check_cancelled(is_cancelled)
-
-        progress("staging", 15, "正在迁移角色包")
-        character_files, character_bytes = copy_tree_checked(
-            source / "characters", payload / "characters", cancelled=is_cancelled
+        # Timeline and Memory are the only irreplaceable legacy domains.  Their
+        # character identity comes from the legacy scope itself; a character
+        # package is useful for case normalization but is not their owner.
+        discovered_character_ids = _discover_character_ids(source)
+        _processed_counts, _current_character = _legacy_curation(source)
+        _log_stage(
+            import_id,
+            "history",
+            "started",
+            discovered_characters=len(discovered_character_ids),
         )
-        legacy_onnx_root = source / "data" / "tts_bundles" / "onnx"
-        character_ids = add_character_extensions(
-            payload, legacy_onnx_root=legacy_onnx_root
-        )
-        _validate_characters(payload, import_id=import_id)
-        report.counts["characters"] = len(character_ids)
-        report.counts["characterFiles"] = character_files
-        report.bytes["characters"] = character_bytes
-
-        processed_counts, _current_character = _legacy_curation(source)
-        mapped_counts = _mapped_processed_counts(processed_counts, character_ids)
-        progress("staging", 28, "正在转换对话历史")
+        progress("staging", 5, "正在转换角色对话历史")
         history = import_history(
             source,
-            payload,
-            character_ids=character_ids,
-            processed_counts=mapped_counts,
+            converted,
+            character_ids=discovered_character_ids,
+            identity_root=target,
+            import_id=import_id,
+        )
+        target_history = target / "data" / "chat_history"
+        if target_history.is_dir():
+            copy_tree_checked(
+                target_history,
+                payload / "data" / "chat_history",
+                cancelled=is_cancelled,
+            )
+        _merge_timeline(
+            converted, payload, overwrite_conflicts=True,
+            quarantine=payload / "data/legacy-imports" / import_id / "quarantine",
         )
         report.counts.update(
             {
@@ -139,26 +170,114 @@ def run_legacy_import(
                 "historyErrorsQuarantined": history.errors_quarantined,
             }
         )
+        _log_stage(
+            import_id,
+            "history",
+            "completed",
+            source_records=history.source_records,
+            timeline_entries=history.timeline_entries,
+            quarantined=history.errors_quarantined,
+        )
 
-        progress("staging", 42, "正在迁移长期记忆")
+        _log_stage(import_id, "memory", "started")
+        progress("staging", 20, "正在导入长期记忆")
         memory_files, memory_bytes = _copy_memory(
             source,
-            payload,
+            converted,
             is_cancelled,
             import_id=import_id,
         )
         report.counts["memoryFiles"] = memory_files
         report.bytes["memory"] = memory_bytes
-        _validate_memory(payload / "data" / "memory")
-        if memory_files:
-            model_files, model_bytes = _prepare_memory_model(
-                source,
-                target,
-                payload,
-                is_cancelled,
-                progress=progress,
-                import_id=import_id,
+        target_memory = target / "data" / "memory"
+        if target_memory.is_dir():
+            copy_tree_checked(
+                target_memory,
+                payload / "data" / "memory",
+                cancelled=is_cancelled,
             )
+        if memory_files or target_memory.is_dir() or history.timeline_entries:
+            _merge_memory(
+                converted,
+                payload,
+                overwrite_conflicts=True,
+                current_scope=_current_character,
+                quarantine=payload
+                / "data"
+                / "legacy-imports"
+                / import_id
+                / "quarantine"
+                / "memory",
+            )
+            _overlay_unknown_memory_files(
+                converted / "data" / "memory",
+                payload / "data" / "memory",
+                is_cancelled,
+            )
+        converted_import = converted / "data" / "legacy-imports" / import_id
+        if converted_import.is_dir():
+            copy_tree_checked(
+                converted_import,
+                payload / "data" / "legacy-imports" / import_id,
+                cancelled=is_cancelled,
+                allow_identical_existing=True,
+            )
+        memory_quarantine = (
+            payload
+            / "data"
+            / "legacy-imports"
+            / import_id
+            / "quarantine"
+            / "memory"
+        )
+        if memory_quarantine.is_dir():
+            quarantined_files, quarantined_bytes = tree_stats(memory_quarantine)
+            report.warnings.append(
+                {"code": "LEGACY_MEMORY_RECORDS_QUARANTINED", "stage": "validating"}
+            )
+            report.quarantined.append(
+                {
+                    "kind": "memory",
+                    "files": quarantined_files,
+                    "bytes": quarantined_bytes,
+                }
+            )
+            _log_legacy_import(
+                import_id,
+                "legacy_import.domain_quarantined",
+                "迁移数据已隔离并继续",
+                {
+                    "domain": "memory",
+                    "files": quarantined_files,
+                    "bytes": quarantined_bytes,
+                    "reason_code": "LEGACY_MEMORY_RECORDS_QUARANTINED",
+                },
+                severity="warning",
+            )
+        if memory_files:
+            try:
+                model_files, model_bytes = _prepare_memory_model(
+                    source,
+                    target,
+                    payload,
+                    is_cancelled,
+                    progress=progress,
+                    import_id=import_id,
+                )
+            except Exception as exc:
+                if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
+                    raise
+                report.warnings.append(
+                    {"code": "LEGACY_MEMORY_MODEL_PREPARATION_SKIPPED", "stage": "staging"}
+                )
+                _log_legacy_import(
+                    import_id,
+                    "legacy_import.memory_model_skipped",
+                    "记忆模型准备失败，已保留长期记忆数据",
+                    _exception_log_attributes(exc, stage="memory_model"),
+                    severity="warning",
+                )
+                model_files = model_bytes = 0
             report.counts["memoryModelFiles"] = model_files
             report.bytes["memoryModel"] = model_bytes
         _log_legacy_import(
@@ -172,30 +291,183 @@ def run_legacy_import(
                 "model_bytes": report.bytes.get("memoryModel", 0),
             },
         )
-        _write_curation_states(payload, mapped_counts, history)
+        _log_stage(
+            import_id,
+            "memory",
+            "completed",
+            files=memory_files,
+            bytes=memory_bytes,
+            quarantined=int(memory_quarantine.is_dir()),
+        )
+        _log_stage(import_id, "configuration", "started")
+        progress("staging", 55, "正在导入配置")
+        try:
+            configuration_counts = migrate_configuration(
+                source, payload, new_tts_root=target / "tts", existing_user_root=target,
+            )
+            report.counts.update(configuration_counts)
+            _validate_optional_tts_configuration(
+                payload,
+                report,
+                import_id=import_id,
+            )
+            _validate_current_settings(payload, import_id=import_id)
+            load_mcp_config(payload / "config" / "mcp.yaml")
+            compatibility_fallbacks = configuration_counts.get(
+                "configCompatibilityFallbacks", 0
+            )
+            if compatibility_fallbacks:
+                report.warnings.append(
+                    {
+                        "code": "LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED",
+                        "stage": "staging",
+                        "items": compatibility_fallbacks,
+                    }
+                )
+                _log_legacy_import(
+                    import_id,
+                    "legacy_import.compatibility_applied",
+                    "旧版脏数据已按兼容规则修复",
+                    {
+                        "domain": "configuration",
+                        "items": compatibility_fallbacks,
+                        "reason_code": "LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED",
+                    },
+                    severity="warning",
+                )
+            _log_stage(
+                import_id,
+                "configuration",
+                "completed",
+                files=configuration_counts.get("config", 0),
+                fallbacks=compatibility_fallbacks,
+                quarantined_servers=configuration_counts.get(
+                    "mcpServersQuarantined", 0
+                ),
+            )
+        except Exception as exc:
+            if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
+                raise
+            shutil.rmtree(payload / "config", ignore_errors=True)
+            from app.plugins.inventory import PluginDesiredStateStore
+            from app.config.web_plugin_migration import PLUGIN_ID
 
-        progress("staging", 55, "正在迁移其他用户数据")
+            # Configuration quarantine must not turn an unreadable old MCP
+            # switch into a fresh-install default on the next Core startup.
+            existing_switches = PluginDesiredStateStore(target).read()
+            web_enabled = existing_switches.get(PLUGIN_ID, not (source / "data/config/mcp.yaml").exists())
+            PluginDesiredStateStore(payload).set(PLUGIN_ID, web_enabled)
+            quarantine = (
+                payload
+                / "data"
+                / "legacy-imports"
+                / import_id
+                / "quarantine"
+                / "config"
+            )
+            files, size = copy_tree_checked(
+                source / "data" / "config",
+                quarantine,
+                cancelled=is_cancelled,
+                skip_noise=True,
+            )
+            report.warnings.append(
+                {"code": "LEGACY_CONFIGURATION_IMPORT_SKIPPED", "stage": "staging"}
+            )
+            if files:
+                report.quarantined.append(
+                    {"kind": "config", "files": files, "bytes": size}
+                )
+            _log_legacy_import(
+                import_id,
+                "legacy_import.configuration_skipped",
+                "旧版本配置无法安全加载，已隔离并继续",
+                {
+                    **_exception_log_attributes(exc, stage="configuration"),
+                    "files": files,
+                    "bytes": size,
+                },
+                severity="warning",
+            )
+        _check_cancelled(is_cancelled)
+
+        _log_stage(import_id, "auxiliary", "started")
+        progress("staging", 60, "正在导入其他用户数据")
         _copy_other_user_data(source, payload, is_cancelled, report)
+        _quarantine_invalid_auxiliary_data(payload, report, import_id=import_id)
+        _log_stage(
+            import_id,
+            "auxiliary",
+            "completed",
+            quarantined=sum(
+                1
+                for warning in report.warnings
+                if warning.get("code") == "LEGACY_AUXILIARY_DATA_QUARANTINED"
+            ),
+        )
 
-        # Validate every small/configuration-backed domain before copying the
-        # very large TTS tree.  A deprecated setting or malformed note should
-        # fail in seconds, not after another 18 GB copy and hash pass.
-        progress("validating", 58, "正在校验非 TTS 迁移数据")
+        # Validate irreplaceable data and current configuration before trying
+        # replaceable resource domains.  A character/TTS failure below becomes
+        # a report warning and must not roll this payload back.
+        _log_stage(import_id, "core_payload_validation", "started")
+        progress("validating", 65, "正在校验导入数据")
         _validate_staged(payload, import_id=import_id)
         _check_cancelled(is_cancelled, stage="validating")
+        _log_stage(import_id, "core_payload_validation", "completed")
 
-        progress("staging", 60, "正在扫描 TTS 资源")
-        tts_files, tts_bytes = _copy_tts(
+        _log_stage(import_id, "characters", "started")
+        progress("staging", 68, "正在导入角色包")
+        character_ids = _copy_characters_optional(
             source,
+            target,
             payload,
             is_cancelled,
             import_id=import_id,
-            progress=progress,
+            report=report,
         )
-        report.counts["ttsFiles"] = tts_files
-        report.bytes["tts"] = tts_bytes
+        _log_stage(
+            import_id,
+            "characters",
+            "completed",
+            items=len(character_ids),
+            skipped=int(
+                any(
+                    warning.get("code") == "LEGACY_CHARACTER_IMPORT_SKIPPED"
+                    for warning in report.warnings
+                )
+            ),
+        )
 
-        progress("validating", 90, "正在生成迁移校验清单")
+        _log_stage(import_id, "tts", "started")
+        progress("staging", 72, "正在尝试迁移 TTS 资源")
+        _copy_tts_optional(
+            source,
+            target,
+            payload,
+            is_cancelled,
+            inspection=inspection,
+            character_ids=character_ids,
+            import_id=import_id,
+            progress=progress,
+            report=report,
+        )
+        _log_stage(
+            import_id,
+            "tts",
+            "completed",
+            files=report.counts.get("ttsFiles", 0),
+            bytes=report.bytes.get("tts", 0),
+            skipped=int(
+                any(
+                    str(warning.get("code", "")).startswith("LEGACY_TTS_")
+                    and str(warning.get("code", "")).endswith("_SKIPPED")
+                    for warning in report.warnings
+                )
+            ),
+        )
+
+        _log_stage(import_id, "manifest", "started")
+        progress("validating", 90, "正在生成校验清单")
         last_manifest_percent = -1
 
         def manifest_progress(completed_bytes: int, expected_bytes: int) -> None:
@@ -213,7 +485,7 @@ def run_legacy_import(
             progress(
                 "validating",
                 overall_percent,
-                f"正在校验迁移文件（{manifest_percent}%）",
+                f"正在校验导入文件（{manifest_percent}%）",
             )
 
         report.artifacts = _build_artifact_manifest(
@@ -222,14 +494,29 @@ def run_legacy_import(
             byte_progress=manifest_progress,
         )
         _write_report(payload, report)
+        _log_stage(
+            import_id,
+            "manifest",
+            "completed",
+            artifacts=len(report.artifacts),
+            warnings=len(report.warnings),
+            quarantined=len(report.quarantined),
+        )
 
         _check_cancelled(is_cancelled, stage="validating")
 
-        progress("committing", 95, "正在提交迁移数据")
+        _log_stage(import_id, "commit", "started", artifacts=len(report.artifacts))
+        progress("committing", 95, "正在保存导入数据")
         pending = commit_payload(target, import_id, payload)
         if finalize:
             finalize_commit(pending)
             pending = None
+        _log_stage(
+            import_id,
+            "commit",
+            "completed",
+            pending_core_validation=int(pending is not None),
+        )
         progress("core_validating", 98, "等待 Sakura Core 校验")
         _log_legacy_import(
             import_id,
@@ -253,6 +540,480 @@ def run_legacy_import(
     finally:
         cancel_path.unlink(missing_ok=True)
         _DIAGNOSTIC_SINK.reset(diagnostic_token)
+
+
+def _discover_character_ids(source: Path) -> tuple[str, ...]:
+    """Read stable IDs for Timeline/Memory without making packages mandatory."""
+
+    root = source / "characters"
+    if not root.is_dir():
+        return ()
+    ids: list[str] = []
+    for manifest in sorted(root.glob("*/character.json")):
+        try:
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        character_id = value.get("id") if isinstance(value, dict) else None
+        if isinstance(character_id, str) and character_id.strip():
+            ids.append(character_id.strip())
+    return tuple(ids)
+
+
+def _copy_characters_optional(
+    source: Path,
+    target: Path,
+    payload: Path,
+    cancelled: CancelChecker,
+    *,
+    import_id: str,
+    report: ImportReport,
+) -> tuple[str, ...]:
+    selection = payload / "config" / "characters.yaml"
+    selection_before = selection.read_bytes() if selection.is_file() else None
+    try:
+        character_files, character_bytes = copy_tree_checked(
+            source / "characters",
+            payload / "characters",
+            cancelled=cancelled,
+        )
+        _merge_preserved_optional_tree(
+            target / "characters",
+            payload / "characters",
+            cancelled,
+        )
+        character_ids = add_character_extensions(payload)
+        _validate_characters(
+            payload,
+            import_id=import_id,
+            failure_severity="warning",
+        )
+    except Exception as exc:
+        if _must_abort_optional_domain(exc, cancelled):
+            raise
+        _discard_optional_domain_staging(payload / "characters")
+        if selection_before is not None:
+            selection.write_bytes(selection_before)
+        _record_optional_domain_skipped(
+            report,
+            import_id=import_id,
+            domain="characters",
+            code="LEGACY_CHARACTER_IMPORT_SKIPPED",
+            exc=exc,
+        )
+        report.counts.update(
+            {"characters": 0, "characterFiles": 0, "charactersSkipped": 1}
+        )
+        report.bytes["characters"] = 0
+        return ()
+
+    report.counts["characters"] = len(character_ids)
+    report.counts["characterFiles"] = character_files
+    report.bytes["characters"] = character_bytes
+    return character_ids
+
+
+def _copy_tts_optional(
+    source: Path,
+    target: Path,
+    payload: Path,
+    cancelled: CancelChecker,
+    *,
+    inspection: LegacyInspection,
+    character_ids: tuple[str, ...],
+    import_id: str,
+    progress: Progress,
+    report: ImportReport,
+) -> None:
+    inspection_issue = next(
+        (
+            str(item.get("code"))
+            for item in inspection.warnings
+            if item.get("code") in _OPTIONAL_TTS_INSPECTION_CODES
+        ),
+        None,
+    )
+    if inspection_issue is not None:
+        _record_optional_domain_skipped(
+            report,
+            import_id=import_id,
+            domain="tts",
+            code="LEGACY_TTS_IMPORT_SKIPPED",
+            reason_code=inspection_issue,
+        )
+        report.counts.update({"ttsFiles": 0, "ttsSkipped": 1})
+        report.bytes["tts"] = 0
+        return
+
+    current_tts = target / "tts"
+    merge_existing = current_tts.is_dir()
+    try:
+        tts_files, tts_bytes = _copy_tts(
+            source,
+            payload,
+            cancelled,
+            import_id=import_id,
+            progress=progress,
+            warnings=report.warnings,
+            match_characters=False,
+            failure_severity="warning",
+            copy_progress_end=84 if merge_existing else 89,
+        )
+
+        last_merge_percent = -1
+
+        def merge_progress(completed_bytes: int, expected_bytes: int) -> None:
+            nonlocal last_merge_percent
+            ratio = (
+                min(1.0, max(0.0, completed_bytes / expected_bytes))
+                if expected_bytes > 0
+                else 1.0
+            )
+            merge_percent = int(ratio * 100)
+            overall_percent = min(89, 85 + int(ratio * 4))
+            if overall_percent == last_merge_percent:
+                return
+            last_merge_percent = overall_percent
+            progress(
+                "staging",
+                overall_percent,
+                f"正在合并现有 TTS 资源（{merge_percent}%）",
+            )
+
+        _merge_preserved_optional_tree(
+            current_tts,
+            payload / "tts",
+            cancelled,
+            byte_progress=merge_progress if merge_existing else None,
+        )
+    except Exception as exc:
+        if _must_abort_optional_domain(exc, cancelled):
+            raise
+        _discard_optional_domain_staging(payload / "tts")
+        _record_optional_domain_skipped(
+            report,
+            import_id=import_id,
+            domain="tts",
+            code="LEGACY_TTS_IMPORT_SKIPPED",
+            exc=exc,
+        )
+        report.counts.update({"ttsFiles": 0, "ttsSkipped": 1})
+        report.bytes["tts"] = 0
+        return
+
+    report.counts["ttsFiles"] = tts_files
+    report.bytes["tts"] = tts_bytes
+    if character_ids:
+        try:
+            _attach_legacy_onnx_to_characters(payload, character_ids)
+            add_character_extensions(payload)
+        except Exception as exc:
+            if _must_abort_optional_domain(exc, cancelled):
+                raise
+            _record_optional_domain_skipped(
+                report,
+                import_id=import_id,
+                domain="tts_onnx_binding",
+                code="LEGACY_TTS_ONNX_BINDING_SKIPPED",
+                exc=exc,
+            )
+
+
+def _merge_preserved_optional_tree(
+    current: Path,
+    staged: Path,
+    cancelled: CancelChecker,
+    *,
+    byte_progress: Callable[[int, int], None] | None = None,
+) -> None:
+    if not current.is_dir() or not staged.is_dir():
+        return
+
+    # ``staged`` already contains the legacy overlay, so source conflicts have
+    # their final value.  Preserve the current target by copying only paths
+    # that are absent from that overlay.  Building a second current tree and
+    # then copying the whole legacy tree over it made large, mostly-identical
+    # TTS installations perform two unnecessary full-tree copies after the UI
+    # had already reached 89 percent.
+    missing_directories: list[Path] = []
+    missing_files: list[tuple[Path, Path, int]] = []
+    expected_bytes = 0
+
+    def collect_missing(current_root: Path, staged_root: Path) -> None:
+        nonlocal expected_bytes
+        try:
+            entries = sorted(os.scandir(current_root), key=lambda item: item.name.casefold())
+        except OSError as exc:
+            raise LegacyImportError("LEGACY_COPY_FAILED", "staging", current_root.name) from exc
+        for entry in entries:
+            _check_cancelled(cancelled)
+            source_path = Path(entry.path)
+            destination_path = staged_root / entry.name
+            if entry.is_symlink() or is_link_or_junction(source_path):
+                raise LegacyImportError(
+                    "LEGACY_NESTED_LINK_UNSUPPORTED", "staging", source_path.name
+                )
+            source_is_directory = entry.is_dir(follow_symlinks=False)
+            if os.path.lexists(destination_path):
+                destination_is_directory = (
+                    destination_path.is_dir()
+                    and not is_link_or_junction(destination_path)
+                )
+                if source_is_directory and destination_is_directory:
+                    collect_missing(source_path, destination_path)
+                # Every other same-path or path-type conflict belongs to the
+                # legacy overlay and intentionally wins.
+                continue
+            if source_is_directory:
+                missing_directories.append(destination_path)
+                collect_missing(source_path, destination_path)
+                continue
+            if not entry.is_file(follow_symlinks=False):
+                raise LegacyImportError(
+                    "LEGACY_COPY_FAILED", "staging", source_path.name
+                )
+            try:
+                size = entry.stat(follow_symlinks=False).st_size
+            except OSError as exc:
+                raise LegacyImportError(
+                    "LEGACY_COPY_FAILED", "staging", source_path.name
+                ) from exc
+            missing_files.append((source_path, destination_path, size))
+            expected_bytes += size
+
+    collect_missing(current, staged)
+    if byte_progress is not None:
+        byte_progress(0, expected_bytes)
+    for directory in missing_directories:
+        _check_cancelled(cancelled)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise LegacyImportError(
+                "LEGACY_COPY_FAILED", "staging", directory.name
+            ) from exc
+    completed_bytes = 0
+    for source_path, destination_path, expected_size in missing_files:
+        copied = copy_file_checked(
+            source_path,
+            destination_path,
+            cancelled=cancelled,
+        )
+        if copied != expected_size:
+            raise LegacyImportError(
+                "LEGACY_COPY_FAILED", "staging", source_path.name
+            )
+        completed_bytes += copied
+        if byte_progress is not None:
+            byte_progress(completed_bytes, expected_bytes)
+
+
+def _remove_overlay_conflicts(
+    source: Path,
+    destination: Path,
+    cancelled: CancelChecker,
+) -> None:
+    for entry in sorted(os.scandir(source), key=lambda item: item.name.casefold()):
+        if cancelled():
+            raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "staging")
+        source_path = Path(entry.path)
+        destination_path = destination / entry.name
+        source_is_directory = entry.is_dir(follow_symlinks=False) and not is_link_or_junction(
+            source_path
+        )
+        destination_is_directory = (
+            destination_path.is_dir()
+            and not is_link_or_junction(destination_path)
+        )
+        if source_is_directory and destination_is_directory:
+            _remove_overlay_conflicts(source_path, destination_path, cancelled)
+            continue
+        if not os.path.lexists(destination_path):
+            continue
+        try:
+            if destination_is_directory:
+                shutil.rmtree(destination_path)
+            else:
+                destination_path.unlink()
+        except OSError as exc:
+            raise LegacyImportError(
+                "LEGACY_COPY_FAILED", "staging", destination_path.name
+            ) from exc
+
+
+_MERGED_MEMORY_NAMES = {
+    "qdrant",
+    "mem0_history.db",
+    "mem0_history.db-wal",
+    "mem0_history.db-shm",
+    "mem0_history.db-journal",
+    "core_profiles.json",
+    "curation_state",
+    ".lock",
+}
+
+
+def _overlay_unknown_memory_files(
+    source: Path,
+    destination: Path,
+    cancelled: CancelChecker,
+) -> None:
+    """Preserve unknown target files while retaining the legacy source overlay."""
+
+    if not source.is_dir():
+        return
+    destination.mkdir(parents=True, exist_ok=True)
+    for entry in sorted(os.scandir(source), key=lambda item: item.name.casefold()):
+        if entry.name in _MERGED_MEMORY_NAMES:
+            continue
+        if cancelled():
+            raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "staging")
+        source_path = Path(entry.path)
+        destination_path = destination / entry.name
+        if is_link_or_junction(source_path):
+            raise LegacyImportError("LEGACY_NESTED_LINK_UNSUPPORTED", "staging")
+        if entry.is_dir(follow_symlinks=False):
+            if destination_path.exists() and not destination_path.is_dir():
+                destination_path.unlink()
+            if destination_path.is_dir():
+                _remove_overlay_conflicts(source_path, destination_path, cancelled)
+            copy_tree_checked(
+                source_path,
+                destination_path,
+                cancelled=cancelled,
+            )
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            raise LegacyImportError("LEGACY_COPY_FAILED", "staging", entry.name)
+        if destination_path.is_dir():
+            shutil.rmtree(destination_path)
+        else:
+            destination_path.unlink(missing_ok=True)
+        copy_file_checked(
+            source_path,
+            destination_path,
+            cancelled=cancelled,
+        )
+
+
+def _attach_legacy_onnx_to_characters(
+    payload: Path, character_ids: tuple[str, ...]
+) -> None:
+    orphan_root = payload / "tts" / "onnx"
+    characters_root = payload / "characters"
+    if not orphan_root.is_dir() or not characters_root.is_dir():
+        return
+    character_dirs = {
+        child.name.casefold(): child for child in characters_root.iterdir() if child.is_dir()
+    }
+    for character_id in character_ids:
+        character_dir = character_dirs.get(character_id.casefold())
+        if character_dir is None:
+            continue
+        exact = orphan_root / character_id
+        candidates = (
+            [exact]
+            if exact.is_dir()
+            else [
+                child
+                for child in orphan_root.iterdir()
+                if child.is_dir() and child.name.casefold() == character_id.casefold()
+            ]
+        )
+        if len(candidates) != 1:
+            continue
+        destination = character_dir / "voice" / "onnx"
+        if destination.exists():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(candidates[0], destination)
+
+
+def _validate_optional_tts_configuration(
+    payload: Path,
+    report: ImportReport,
+    *,
+    import_id: str,
+) -> None:
+    try:
+        _validate_tts_configs(payload)
+    except Exception as exc:
+        for plugin_id in ("sakura.tts.gpt-sovits", "sakura.tts.genie"):
+            config = payload / "data" / "plugins" / plugin_id / "config.json"
+            config.unlink(missing_ok=True)
+        _record_optional_domain_skipped(
+            report,
+            import_id=import_id,
+            domain="tts_config",
+            code="LEGACY_TTS_CONFIG_SKIPPED",
+            exc=exc,
+        )
+        report.counts["ttsConfig"] = 0
+        report.counts["ttsConfigSkipped"] = 1
+
+
+def _must_abort_optional_domain(exc: Exception, cancelled: CancelChecker) -> bool:
+    return cancelled() or (
+        isinstance(exc, LegacyImportError)
+        and exc.code
+        in {
+            "LEGACY_IMPORT_CANCELLED",
+            "LEGACY_OPTIONAL_DOMAIN_CLEANUP_FAILED",
+        }
+    )
+
+
+def _discard_optional_domain_staging(path: Path) -> None:
+    if not os.path.lexists(path):
+        return
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise LegacyImportError(
+            "LEGACY_OPTIONAL_DOMAIN_CLEANUP_FAILED", "staging", path.name
+        ) from exc
+    if os.path.lexists(path):
+        raise LegacyImportError(
+            "LEGACY_OPTIONAL_DOMAIN_CLEANUP_FAILED", "staging", path.name
+        )
+
+
+def _record_optional_domain_skipped(
+    report: ImportReport,
+    *,
+    import_id: str,
+    domain: str,
+    code: str,
+    exc: Exception | None = None,
+    reason_code: str | None = None,
+) -> None:
+    exception_attributes = (
+        _exception_log_attributes(exc, stage=domain) if exc is not None else {}
+    )
+    stable_reason = reason_code or str(
+        exception_attributes.get("reason_code", "LEGACY_IMPORT_FAILED")
+    )
+    report.warnings.append(
+        {"code": code, "stage": domain, "reasonCode": stable_reason}
+    )
+    attributes: dict[str, object] = {
+        "code": code,
+        "reason_code": stable_reason,
+        "stage": domain,
+    }
+    if exc is not None:
+        attributes.update(exception_attributes)
+        attributes["code"] = code
+        attributes["reason_code"] = stable_reason
+    _log_legacy_import(
+        import_id,
+        f"legacy_import.{domain}_skipped",
+        "可恢复迁移域已跳过",
+        attributes,
+        severity="warning",
+    )
 
 
 class _CancellationEventAdapter:
@@ -334,7 +1095,7 @@ def _prepare_memory_model(
                 continue
             source_model = source_snapshot.parents[1]
             staged_model = staged_cache / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-            progress("staging", 46, "正在迁移记忆模型")
+            progress("staging", 46, "正在导入记忆模型")
             copy_tree_checked(source_model, staged_model, cancelled=cancelled)
             staged_snapshot = verified_snapshot(staged_cache)
             if staged_snapshot is None:
@@ -404,10 +1165,20 @@ def _copy_tts(
     *,
     import_id: str = "direct-check",
     progress: Progress = _NO_PROGRESS,
+    warnings: list[dict[str, object]] | None = None,
+    match_characters: bool = True,
+    failure_severity: str = "error",
+    copy_progress_end: int = 89,
 ) -> tuple[int, int]:
     files = total = 0
-    tts = source / "tts"
-    if tts.exists():
+    tts = legacy_tts_root(source)
+    skipped_absolute_links = 0
+
+    def skipped_absolute_link() -> None:
+        nonlocal skipped_absolute_links
+        skipped_absolute_links += 1
+
+    if os.path.lexists(tts):
         actual = tts.resolve(strict=True) if is_link_or_junction(tts) else tts
         latest_detail: dict[str, object] = {
             "detail_stage": "preflight",
@@ -417,7 +1188,7 @@ def _copy_tts(
         def copy_diagnostic(event: str, attributes: Mapping[str, object]) -> None:
             latest_detail.clear()
             latest_detail.update(attributes)
-            severity = "error" if event == "failed" else "info"
+            severity = failure_severity if event == "failed" else "info"
             _log_legacy_import(
                 import_id,
                 f"legacy_import.tts_copy_{event}",
@@ -436,7 +1207,11 @@ def _copy_tts(
                 else 1.0
             )
             copy_percent = int(ratio * 100)
-            overall_percent = min(89, 61 + int(ratio * 28))
+            progress_end = min(89, max(73, copy_progress_end))
+            overall_percent = min(
+                progress_end,
+                73 + int(ratio * (progress_end - 73)),
+            )
             if overall_percent == last_percent:
                 return
             last_percent = overall_percent
@@ -455,6 +1230,10 @@ def _copy_tts(
                 noise_names_at_root_only=True,
                 diagnostic=copy_diagnostic,
                 byte_progress=copy_byte_progress,
+                preserve_internal_symlinks=(
+                    detect_legacy_source_platform(source) == "macos"
+                ),
+                on_skipped_absolute_symlink=skipped_absolute_link,
             )
         except Exception as exc:
             _log_legacy_import(
@@ -462,11 +1241,29 @@ def _copy_tts(
                 "legacy_import.tts_copy_failed",
                 "TTS 资源复制失败",
                 {**latest_detail, **_exception_log_attributes(exc, stage="tts_copy")},
-                severity="error",
+                severity=failure_severity,
             )
             raise
         files += child_files
         total += child_bytes
+    if skipped_absolute_links:
+        warning = {
+            "code": "LEGACY_TTS_ABSOLUTE_LINKS_SKIPPED",
+            "stage": "staging",
+            "items": skipped_absolute_links,
+        }
+        if warnings is not None:
+            warnings.append(warning)
+        _log_legacy_import(
+            import_id,
+            "legacy_import.tts_absolute_links_skipped",
+            "旧版 TTS 绝对链接未复制",
+            {
+                "detail_stage": "link_adaptation",
+                "links": skipped_absolute_links,
+            },
+            severity="warning",
+        )
     _log_legacy_import(
         import_id,
         "legacy_import.tts_onnx_started",
@@ -474,7 +1271,12 @@ def _copy_tts(
         {"detail_stage": "legacy_onnx"},
     )
     try:
-        child_files, child_bytes = _copy_legacy_onnx(source, payload, cancelled)
+        child_files, child_bytes = _copy_legacy_onnx(
+            source,
+            payload,
+            cancelled,
+            match_characters=match_characters,
+        )
     except Exception as exc:
         _log_legacy_import(
             import_id,
@@ -484,7 +1286,7 @@ def _copy_tts(
                 "detail_stage": "legacy_onnx",
                 **_exception_log_attributes(exc, stage="legacy_onnx"),
             },
-            severity="error",
+            severity=failure_severity,
         )
         raise
     files += child_files
@@ -534,32 +1336,36 @@ def _sanitize_tts_runtime_profiles(tts_root: Path) -> tuple[int, int]:
     changed = 0
     byte_delta = 0
     for runtime_root in runtime_roots:
-        config_root = runtime_root / "GPT_SoVITS" / "configs"
-        for name in _TTS_PROFILE_NAMES:
-            path = config_root / name
-            if not path.is_file():
-                continue
-            relative = path.relative_to(tts_root.parent).as_posix()
-            try:
-                raw = path.read_text(encoding="utf-8")
-                payload = yaml.safe_load(raw)
-                if not isinstance(payload, Mapping):
-                    raise ValueError("profile root must be a mapping")
-                updated = _sanitize_tts_profile_payload(payload)
-                if updated == payload:
+        config_roots = (
+            runtime_root / "GPT_SoVITS" / "configs",
+            runtime_root / "GPT-SoVITS" / "GPT_SoVITS" / "configs",
+        )
+        for config_root in config_roots:
+            for name in _TTS_PROFILE_NAMES:
+                path = config_root / name
+                if not path.is_file():
                     continue
-                encoded = yaml.safe_dump(updated, allow_unicode=True, sort_keys=False)
-                path.write_text(encoded, encoding="utf-8", newline="\n")
-            except LegacyImportError:
-                raise
-            except Exception as error:
-                raise LegacyImportError(
-                    "LEGACY_TTS_CONFIG_VALIDATION_FAILED",
-                    "validating",
-                    relative,
-                ) from error
-            changed += 1
-            byte_delta += len(encoded.encode("utf-8")) - len(raw.encode("utf-8"))
+                relative = path.relative_to(tts_root.parent).as_posix()
+                try:
+                    raw = path.read_text(encoding="utf-8")
+                    payload = yaml.safe_load(raw)
+                    if not isinstance(payload, Mapping):
+                        raise ValueError("profile root must be a mapping")
+                    updated = _sanitize_tts_profile_payload(payload)
+                    if updated == payload:
+                        continue
+                    encoded = yaml.safe_dump(updated, allow_unicode=True, sort_keys=False)
+                    path.write_text(encoded, encoding="utf-8", newline="\n")
+                except LegacyImportError:
+                    raise
+                except Exception as error:
+                    raise LegacyImportError(
+                        "LEGACY_TTS_CONFIG_VALIDATION_FAILED",
+                        "validating",
+                        relative,
+                    ) from error
+                changed += 1
+                byte_delta += len(encoded.encode("utf-8")) - len(raw.encode("utf-8"))
     return changed, byte_delta
 
 
@@ -585,20 +1391,54 @@ def _sanitize_tts_runtime_pth_files(tts_root: Path) -> tuple[int, int]:
                 "validating",
                 path.relative_to(tts_root.parent).as_posix(),
             ) from error
+        original_lines = raw.splitlines()
         kept = [
             line
-            for line in raw.splitlines()
+            for line in original_lines
             if not _is_absolute_runtime_path(line.strip())
         ]
-        if len(kept) == len(raw.splitlines()):
+        portable = _portable_gpt_sovits_pth_entries(path)
+        normalized_kept = {line.strip().replace("\\", "/") for line in kept}
+        additions = [entry for entry in portable if entry not in normalized_kept]
+        if len(kept) == len(original_lines) and not additions:
             continue
+        kept.extend(additions)
         if not any(line.strip() and not line.lstrip().startswith("#") for line in kept):
             kept = ["# Legacy absolute paths removed during Sakura import."]
         encoded = "\n".join(kept) + "\n"
+        if encoded == raw:
+            continue
         path.write_text(encoded, encoding="utf-8", newline="\n")
         changed += 1
         byte_delta += len(encoded.encode("utf-8")) - len(raw.encode("utf-8"))
     return changed, byte_delta
+
+
+def _portable_gpt_sovits_pth_entries(path: Path) -> list[str]:
+    """Return relocatable imports for a recognized Windows GPT-SoVITS runtime."""
+
+    if path.name.casefold() != "users.pth" or len(path.parents) < 4:
+        return []
+    site_packages = path.parent
+    work_dir = path.parents[3]
+    if not (work_dir / "api_v2.py").is_file():
+        return []
+    required = (work_dir / "tools", work_dir / "GPT_SoVITS")
+    if any(not target.is_dir() for target in required):
+        return []
+    relatives = (
+        Path("."),
+        Path("GPT_SoVITS/BigVGAN"),
+        Path("tools"),
+        Path("tools/asr"),
+        Path("GPT_SoVITS"),
+        Path("tools/uvr5"),
+    )
+    return [
+        os.path.relpath(work_dir / relative, site_packages).replace("\\", "/")
+        for relative in relatives
+        if (work_dir / relative).is_dir()
+    ]
 
 
 def _sanitize_tts_profile_payload(payload: Mapping[str, object]) -> dict[str, object]:
@@ -663,12 +1503,33 @@ def _copy_memory(
     )
     source_history = source_root / "mem0_history.db"
     if source_history.is_file():
-        _snapshot_sqlite_database(
-            source_history,
-            target_root / "mem0_history.db",
-            cancelled,
-            import_id=import_id,
-        )
+        try:
+            _snapshot_sqlite_database(
+                source_history,
+                target_root / "mem0_history.db",
+                cancelled,
+                import_id=import_id,
+            )
+        except LegacyImportError as exc:
+            if exc.code == "LEGACY_IMPORT_CANCELLED":
+                raise
+            _quarantine_invalid_memory_store(
+                target_root,
+                payload
+                / "data"
+                / "legacy-imports"
+                / import_id
+                / "quarantine"
+                / "memory",
+                "sqlite",
+            )
+            _log_legacy_import(
+                import_id,
+                "legacy_import.memory_history_quarantined",
+                "旧版本长期记忆数据库无法读取，已隔离并继续迁移",
+                _exception_log_attributes(exc, stage="memory_snapshot"),
+                severity="warning",
+            )
     return tree_stats(target_root)
 
 
@@ -701,7 +1562,7 @@ def _snapshot_sqlite_database(
             },
         )
         step = "open_source"
-        source_uri = _sqlite_readonly_uri(source)
+        source_uri = sqlite_readonly_uri(source)
         with closing(sqlite3.connect(source_uri, uri=True, timeout=10)) as origin:
             row = origin.execute("PRAGMA journal_mode").fetchone()
             journal_mode = str(row[0]) if row else "unknown"
@@ -720,10 +1581,6 @@ def _snapshot_sqlite_database(
             with closing(sqlite3.connect(temporary)) as snapshot:
                 step = "backup"
                 origin.backup(snapshot, pages=256, progress=check_progress, sleep=0.05)
-                step = "quick_check"
-                result = snapshot.execute("PRAGMA quick_check").fetchone()
-                if result is None or result[0] != "ok":
-                    raise sqlite3.DatabaseError("SQLite backup failed quick_check")
 
         step = "install_snapshot"
         for suffix in ("-wal", "-shm", "-journal"):
@@ -736,7 +1593,6 @@ def _snapshot_sqlite_database(
             {
                 **progress_state,
                 "snapshot_bytes": _safe_file_size(target),
-                "quick_check": "ok",
             },
         )
     except LegacyImportError as exc:
@@ -780,31 +1636,16 @@ def _safe_file_size(path: Path) -> int:
         return -1
 
 
-def _sqlite_readonly_uri(path: Path) -> str:
-    r"""Build a SQLite URI from normal or Windows extended-length paths.
-
-    Tauri's directory picker canonicalizes Windows selections to ``\\?\D:\``.
-    ``Path.as_uri`` encodes that prefix as a URI authority named ``%3F``, which
-    SQLite rejects before reading the database.  Strip only the Win32 namespace
-    prefix while retaining the resolved path and read-only URI semantics.
-    """
-
-    resolved = str(path.resolve(strict=True))
-    if os.name == "nt":
-        if resolved.startswith("\\\\?\\UNC\\"):
-            resolved = "\\\\" + resolved[8:]
-        elif resolved.startswith("\\\\?\\"):
-            resolved = resolved[4:]
-    return f"{Path(resolved).as_uri()}?mode=ro"
-
-
 def _exception_log_attributes(
     error: BaseException, *, stage: str = "internal"
 ) -> dict[str, object]:
+    # Exception messages may contain absolute paths, config values, or user
+    # text. Keep a useful but content-free diagnostic and expose structured OS,
+    # SQLite, YAML-location and chained-cause facts separately.
     diagnostic = (
         str(error.strerror or type(error).__name__)
         if isinstance(error, OSError)
-        else str(error)
+        else str(getattr(error, "code", "") or type(error).__name__)
     )
     reason_code = getattr(error, "code", None) or getattr(
         error, "sqlite_errorname", None
@@ -829,6 +1670,32 @@ def _exception_log_attributes(
         value = getattr(error, name, None)
         if value is not None:
             attributes[name] = value
+    relative_path = getattr(error, "relative_path", "")
+    if isinstance(relative_path, str) and relative_path:
+        attributes["relative_path"] = relative_path.replace("\\", "/")
+    line = getattr(error, "line", None)
+    if isinstance(line, int):
+        attributes["line"] = line
+    cause = error.__cause__
+    if cause is not None:
+        attributes["cause_type"] = type(cause).__name__
+        cause_code = getattr(cause, "code", None) or getattr(
+            cause, "sqlite_errorname", None
+        )
+        if cause_code:
+            attributes["cause_reason_code"] = str(cause_code)
+        for name in ("sqlite_errorcode", "sqlite_errorname", "errno", "winerror"):
+            value = getattr(cause, name, None)
+            if value is not None:
+                attributes[f"cause_{name}"] = value
+        problem_mark = getattr(cause, "problem_mark", None)
+        if problem_mark is not None:
+            mark_line = getattr(problem_mark, "line", None)
+            mark_column = getattr(problem_mark, "column", None)
+            if isinstance(mark_line, int):
+                attributes["source_line"] = mark_line + 1
+            if isinstance(mark_column, int):
+                attributes["source_column"] = mark_column + 1
     return attributes
 
 
@@ -852,17 +1719,41 @@ def _log_legacy_import(
         return
 
 
+def _log_stage(
+    import_id: str,
+    stage: str,
+    state: str,
+    **attributes: object,
+) -> None:
+    event = f"legacy_import.stage_{state}"
+    message = "迁移阶段开始" if state == "started" else "迁移阶段完成"
+    _log_legacy_import(
+        import_id,
+        event,
+        message,
+        {"stage": stage, **attributes},
+    )
+
+
 def _copy_legacy_onnx(
-    source: Path, payload: Path, cancelled: CancelChecker
+    source: Path,
+    payload: Path,
+    cancelled: CancelChecker,
+    *,
+    match_characters: bool = True,
 ) -> tuple[int, int]:
     legacy_onnx = source / "data" / "tts_bundles" / "onnx"
     if not legacy_onnx.is_dir():
         return 0, 0
-    character_dirs = {
-        child.name.casefold(): child.name
-        for child in (payload / "characters").iterdir()
-        if child.is_dir()
-    } if (payload / "characters").is_dir() else {}
+    character_dirs = (
+        {
+            child.name.casefold(): child.name
+            for child in (payload / "characters").iterdir()
+            if child.is_dir()
+        }
+        if match_characters and (payload / "characters").is_dir()
+        else {}
+    )
     files = total = 0
     for child in sorted(legacy_onnx.iterdir(), key=lambda path: path.name.casefold()):
         if is_link_or_junction(child):
@@ -976,11 +1867,10 @@ def _copy_other_user_data(
 def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
     timeline = TimelineStore(staged / "data" / "chat_history" / "timeline.sqlite3")
     timeline.assert_activated()
-    _validate_characters(staged, import_id=import_id)
     config = CoreConfigReader().read(staged)
     if config.config_problem is not None and config.config_problem.state == "failed":
         raise LegacyImportError(config.config_problem.code, "validating")
-    _validate_current_settings(staged)
+    _validate_current_settings(staged, import_id=import_id)
     try:
         load_mcp_config(staged / "config" / "mcp.yaml")
     except Exception as exc:  # noqa: BLE001 - expose only a stable, content-free code
@@ -994,17 +1884,99 @@ def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
             "LEGACY_REMINDERS_VALIDATION_FAILED", "validating", "data/reminders.json"
         ) from exc
     try:
-        TodoStore(staged / "data" / "tasks.json").list_todos({})
+        _validate_tasks(staged / "data" / "tasks.json")
     except Exception as exc:  # noqa: BLE001 - legacy content must not cross the boundary
         raise LegacyImportError(
             "LEGACY_TASKS_VALIDATION_FAILED", "validating", "data/tasks.json"
         ) from exc
-    _validate_tts_configs(staged)
     _validate_character_studio(staged)
     _validate_notes_and_screen_state(staged)
 
 
-def _validate_current_settings(staged: Path) -> None:
+def _quarantine_invalid_auxiliary_data(
+    staged: Path,
+    report: ImportReport,
+    *,
+    import_id: str = "direct-check",
+) -> None:
+    checks: tuple[tuple[Path, Callable[[], object], str], ...] = (
+        (
+            Path("data/reminders.json"),
+            lambda: ReminderStore(staged / "data/reminders.json").list_reminders({}),
+            "reminders",
+        ),
+        (
+            Path("data/tasks.json"),
+            lambda: _validate_tasks(staged / "data/tasks.json"),
+            "tasks",
+        ),
+        (
+            Path("data/character_studio"),
+            lambda: _validate_character_studio(staged),
+            "character-studio",
+        ),
+        (
+            Path("data/notes"),
+            lambda: _validate_notes(staged),
+            "notes",
+        ),
+        (
+            Path("data/screen_awareness_state.json"),
+            lambda: _validate_screen_state(staged),
+            "screen-state",
+        ),
+    )
+    quarantine_root = (
+        staged
+        / "data"
+        / "legacy-imports"
+        / report.import_id
+        / "quarantine"
+        / "invalid-data"
+    )
+    for relative, check, label in checks:
+        source = staged / relative
+        if not source.exists():
+            continue
+        try:
+            check()
+        except Exception as exc:  # noqa: BLE001 - preserve bytes and continue core import
+            destination = quarantine_root / relative.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, destination)
+            if destination.is_file():
+                files, size = 1, destination.stat().st_size
+            else:
+                files, size = tree_stats(destination)
+            report.warnings.append(
+                {
+                    "code": "LEGACY_AUXILIARY_DATA_QUARANTINED",
+                    "stage": "validating",
+                    "domain": label,
+                }
+            )
+            report.quarantined.append(
+                {"kind": label, "files": files, "bytes": size}
+            )
+            _log_legacy_import(
+                import_id,
+                "legacy_import.domain_quarantined",
+                "迁移数据已隔离并继续",
+                {
+                    **_exception_log_attributes(exc, stage="auxiliary_validation"),
+                    "domain": label,
+                    "relative_path": relative.as_posix(),
+                    "files": files,
+                    "bytes": size,
+                    "reason_code": "LEGACY_AUXILIARY_DATA_QUARANTINED",
+                },
+                severity="warning",
+            )
+
+
+def _validate_current_settings(
+    staged: Path, *, import_id: str = "direct-check"
+) -> None:
     """Exercise the same loaders used by settings/Core before committing.
 
     CoreConfigReader intentionally covers only Core startup. Settings domains
@@ -1036,16 +2008,32 @@ def _validate_current_settings(staged: Path) -> None:
         ("backchannel", "config/system_config.yaml", service.load_backchannel_settings),
         ("plugins", "config/plugins.yaml", PluginDesiredStateStore(staged).read),
     )
-    for _name, relative, loader in loaders:
+    for name, relative, loader in loaders:
         try:
             loader()
         except Exception as exc:  # noqa: BLE001 - keep user data out of the public error
+            _log_legacy_import(
+                import_id,
+                "legacy_import.validation_failed",
+                "迁移数据加载器校验失败",
+                {
+                    "validation_component": name,
+                    "relative_path": relative,
+                    **_exception_log_attributes(exc, stage="settings_validation"),
+                },
+                severity="warning",
+            )
             raise LegacyImportError(
                 "LEGACY_SETTINGS_VALIDATION_FAILED", "validating", relative
             ) from exc
 
 
-def _validate_characters(staged: Path, *, import_id: str) -> None:
+def _validate_characters(
+    staged: Path,
+    *,
+    import_id: str,
+    failure_severity: str = "error",
+) -> None:
     registry = CharacterRegistry(staged, issue_sink=lambda *_args: None)
     if registry.load_errors:
         first = registry.load_errors[0]
@@ -1065,7 +2053,7 @@ def _validate_characters(staged: Path, *, import_id: str) -> None:
                 "relative_path": relative,
                 "validation_error": safe_error,
             },
-            severity="error",
+            severity=failure_severity,
         )
         raise LegacyImportError("LEGACY_CHARACTER_VALIDATION_FAILED", "validating", relative)
 
@@ -1115,20 +2103,57 @@ def _validate_character_studio(staged: Path) -> None:
             ) from exc
 
 
+def _validate_tasks(path: Path) -> None:
+    """Keep the legacy reader's acceptance rules without rewriting task data."""
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"待办文件不是有效 JSON：{path}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+        raise ValueError("待办文件格式无效，顶层必须是包含 tasks 列表的对象。")
+    # The old reader ignored non-object entries and unknown fields in memory.
+    # Migration preserves them in the copied file, including its original bytes.
+
+
 def _validate_notes_and_screen_state(staged: Path) -> None:
+    _validate_notes(staged)
+    _validate_screen_state(staged)
+
+
+def _validate_notes(staged: Path) -> None:
     notes_root = staged / "data" / "notes"
     if notes_root.is_dir():
-        store = NotesStore(notes_root)
         for path in sorted(item for item in notes_root.rglob("*") if item.is_file()):
             relative = path.relative_to(staged).as_posix()
             try:
                 if path.parent != notes_root or path.suffix.casefold() != ".txt":
                     raise ValueError("unsupported note path")
-                store.read_note({"name": path.name})
+                # Preserve the old reader's name normalization, including its
+                # case-sensitive suffix rule; migration must not broaden it.
+                name = path.name.strip()
+                if any(separator in name for separator in ("/", "\\")):
+                    raise ValueError("笔记名不能包含路径分隔符。")
+                if name in {".", ".."}:
+                    raise ValueError("笔记名无效。")
+                if not name.endswith(".txt"):
+                    name = f"{name}.txt"
+                note = (notes_root / name).resolve()
+                if note.parent != notes_root.resolve():
+                    raise ValueError("笔记路径必须位于 data/notes 内。")
+                if not note.exists():
+                    raise ValueError(f"笔记不存在：{note.name}")
+                if not note.is_file():
+                    raise ValueError(f"不是笔记文件：{note.name}")
+                note.read_text(encoding="utf-8")
             except Exception as exc:  # noqa: BLE001 - note contents remain private
                 raise LegacyImportError(
                     "LEGACY_NOTE_VALIDATION_FAILED", "validating", relative
                 ) from exc
+
+
+def _validate_screen_state(staged: Path) -> None:
     screen = staged / "data" / "screen_awareness_state.json"
     if screen.is_file():
         try:
@@ -1147,73 +2172,22 @@ def _validate_notes_and_screen_state(staged: Path) -> None:
             )
 
 
-def _validate_memory(root: Path) -> None:
-    if not root.exists():
+def _quarantine_invalid_memory_store(root: Path, quarantine: Path, domain: str) -> None:
+    quarantine.mkdir(parents=True, exist_ok=True)
+    if domain == "sqlite":
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = Path(f"{root / 'mem0_history.db'}{suffix}")
+            if path.is_file():
+                destination = quarantine / path.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(path, destination)
         return
-    history = root / "mem0_history.db"
-    if history.is_file():
-        database = history
-        if not database.is_file():
-            return
-        relative = database.relative_to(root).as_posix()
-        # Shared-memory files are process-local coordination state.  The copy
-        # step already replaced the raw WAL triplet with a consistent SQLite
-        # backup, but clean up stale sidecars as a defensive measure for direct
-        # validator callers and older staging directories.
-        Path(f"{database}-shm").unlink(missing_ok=True)
-        try:
-            with closing(sqlite3.connect(database)) as connection:
-                result = connection.execute("PRAGMA quick_check").fetchone()
-                checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        except sqlite3.DatabaseError as exc:
-            raise LegacyImportError(
-                "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
-            ) from exc
-        if result is None or result[0] != "ok" or (checkpoint and checkpoint[0] != 0):
-            raise LegacyImportError(
-                "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
-            )
-        Path(f"{database}-shm").unlink(missing_ok=True)
-        wal = Path(f"{database}-wal")
-        if wal.is_file() and wal.stat().st_size == 0:
-            wal.unlink()
-        try:
-            # Normalize through the same SQLite manager Core will use after
-            # commit.  Keeping a second handwritten schema gate here caused
-            # valid legacy variants to pass standalone database checks but be
-            # rejected by the importer (or vice versa).  This operates only on
-            # the staging copy; the legacy database remains byte-for-byte
-            # untouched.
-            from plugins.builtin.sakura_mem0.memory import (
-                normalize_existing_history_database,
-            )
-
-            normalize_existing_history_database(history)
-            with closing(sqlite3.connect(history)) as connection:
-                result = connection.execute("PRAGMA quick_check").fetchone()
-                checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if result is None or result[0] != "ok":
-                    raise LegacyImportError(
-                        "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
-                    )
-                if checkpoint and checkpoint[0] != 0:
-                    raise LegacyImportError(
-                        "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
-                    )
-        except sqlite3.DatabaseError as exc:
-            raise LegacyImportError(
-                "LEGACY_MEMORY_SCHEMA_INVALID", "validating", relative
-            ) from exc
-        except LegacyImportError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - schema details remain private
-            raise LegacyImportError(
-                "LEGACY_MEMORY_SCHEMA_INVALID", "validating", relative
-            ) from exc
-        Path(f"{history}-shm").unlink(missing_ok=True)
-        wal = Path(f"{history}-wal")
-        if wal.is_file() and wal.stat().st_size == 0:
-            wal.unlink()
+    source = root / "qdrant"
+    if source.is_dir():
+        destination = quarantine / "qdrant"
+        if destination.exists():
+            shutil.rmtree(destination)
+        os.replace(source, destination)
 def _legacy_curation(source: Path) -> tuple[dict[str, int], str]:
     current = ""
     config = source / "data" / "config" / "characters.yaml"
@@ -1243,70 +2217,10 @@ def _read_processed_count(path: Path) -> int:
         if not isinstance(value, dict):
             raise TypeError("curation state must be an object")
         return max(0, int(value.get("processed_history_count", 0)))
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise LegacyImportError(
-            "LEGACY_CURATION_STATE_INVALID", "staging", f"data/{path.name}"
-        ) from exc
-
-
-def _mapped_processed_counts(
-    counts: Mapping[str, int], ids: tuple[str, ...]
-) -> dict[str, int]:
-    mapped: dict[str, int] = {}
-    for scope, processed in counts.items():
-        if processed <= 0:
-            continue
-        exact = next((value for value in ids if value == scope), None)
-        matches = [value for value in ids if value.casefold() == scope.casefold()]
-        mapped[exact or (matches[0] if len(matches) == 1 else scope)] = processed
-    return mapped
-
-
-def _write_curation_states(
-    staged: Path,
-    counts: Mapping[str, int],
-    history: HistoryImportStats,
-) -> None:
-    used_targets: set[str] = set()
-    for scope, processed in counts.items():
-        if processed <= 0:
-            continue
-        entry_id = history.cutoff_entry_ids.get(scope, "")
-        cursor = _cursor_for_entry(
-            staged / "data" / "chat_history" / "timeline.sqlite3", scope, entry_id
-        )
-        total = history.per_character_records.get(scope, processed)
-        state = {
-            "processed_history_count": min(processed, total),
-            "pending_turns": 0,
-            "backfill_completed": processed >= total,
-            "timeline_sync_cursor": cursor,
-            "curation_cursor": cursor,
-        }
-        safe = "".join(
-            character if character.isalnum() or character in "._-" else "_"
-            for character in scope
-        )
-        if not safe or safe.casefold() in used_targets:
-            raise LegacyImportError("LEGACY_CURATION_SCOPE_CONFLICT", "validating")
-        used_targets.add(safe.casefold())
-        target = staged / "data" / "memory" / "curation_state" / f"{safe}.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-
-
-def _cursor_for_entry(database: Path, character_id: str, entry_id: str) -> str:
-    if not entry_id:
-        return ""
-    with closing(sqlite3.connect(database)) as connection:
-        lineage = int(connection.execute("PRAGMA application_id").fetchone()[0])
-        row = connection.execute(
-            "SELECT seq FROM timeline_entries WHERE character_id = ? AND entry_id = ?",
-            (character_id, entry_id),
-        ).fetchone()
-    return _encode_cursor(character_id, lineage, int(row[0]), entry_id) if row else ""
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        # This cursor is rebuildable from authoritative Timeline and Memory.
+        # Dirty 0.9 state must not block importing either domain.
+        return 0
 
 
 def _write_report(payload: Path, report: ImportReport) -> None:
@@ -1339,33 +2253,11 @@ def _build_artifact_manifest(
         if byte_progress is not None:
             byte_progress(completed_bytes, expected_bytes)
 
-    if len(paths) < 32:
-        artifacts = []
-        for path in paths:
-            artifact = _build_artifact(payload, path, cancelled)
-            artifacts.append(artifact)
-            completed(artifact)
-        return artifacts
-
-    artifacts: list[dict[str, object]] = []
-    pending: deque[tuple[Path, Future[dict[str, object]]]] = deque()
-    iterator = iter(paths)
-    workers = 8
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="legacy-import-hash") as pool:
-        for path in iterator:
-            _check_cancelled(cancelled, stage="validating")
-            pending.append((path, pool.submit(_build_artifact, payload, path, cancelled)))
-            if len(pending) < workers * 4:
-                continue
-            _path, future = pending.popleft()
-            artifact = future.result()
-            artifacts.append(artifact)
-            completed(artifact)
-        while pending:
-            _path, future = pending.popleft()
-            artifact = future.result()
-            artifacts.append(artifact)
-            completed(artifact)
+    artifacts = []
+    for path in paths:
+        artifact = _build_artifact(payload, path, cancelled)
+        artifacts.append(artifact)
+        completed(artifact)
     return artifacts
 
 
@@ -1378,7 +2270,6 @@ def _build_artifact(
     relative = path.relative_to(payload).as_posix()
     try:
         size = path.stat().st_size
-        digest = sha256_file(path, cancelled=cancelled)
     except LegacyImportError:
         raise
     except OSError as exc:
@@ -1389,7 +2280,6 @@ def _build_artifact(
         "domain": _artifact_domain(relative),
         "id": relative,
         "bytes": size,
-        "sha256": digest,
     }
 
 

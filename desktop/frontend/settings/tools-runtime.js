@@ -114,7 +114,9 @@ export function createToolsController({
   function initialize(input, { preserveDraft = false } = {}) {
     let draft = null;
     if (preserveDraft && snapshot) {
-      try { draft = read(); } catch { draft = null; }
+      draft = {
+        runtimeLimits: Object.fromEntries(LIMIT_KEYS.map((key) => [key, controls[key].value])),
+      };
     }
     snapshot = validateToolsSnapshot(input);
     baseline = {

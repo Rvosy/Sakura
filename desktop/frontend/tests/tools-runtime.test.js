@@ -122,3 +122,36 @@ test("WP-4-02 failed Tools save keeps the draft and committed discard baseline",
   assert.equal(controls.toolCallsPerTurn.value, "8");
   assert.equal(controller.isDirty(), false);
 });
+
+for (const unfinishedValue of ["", "99"]) {
+  test(`Tools refresh preserves unfinished input ${JSON.stringify(unfinishedValue)} until discard`, async () => {
+    const { controls, document } = fixture();
+    const calls = [];
+    const controller = createToolsController({
+      document,
+      invoke: async (command) => {
+        calls.push(command);
+        assert.equal(command, "settings_tools_get");
+        return snapshot("generation-b", {
+          runtimeLimits: { maxAgentStepsPerTurn: 5, maxToolCallsPerStep: 2, maxToolCallsPerTurn: 7 },
+        });
+      },
+      onDirty: () => {},
+    });
+    controller.initialize(snapshot());
+    controls.agentSteps.value = unfinishedValue;
+    controls.agentSteps.fire("input");
+
+    await controller.refreshCurrent();
+
+    assert.equal(controls.agentSteps.value, unfinishedValue);
+    assert.equal(controls.toolCallsPerTurn.value, "8");
+    assert.equal(controller.isDirty(), true);
+    await assert.rejects(() => controller.save(), /invalid Tools runtime limit/);
+    assert.deepEqual(calls, ["settings_tools_get"]);
+    controller.discard();
+    assert.equal(controls.agentSteps.value, "5");
+    assert.equal(controls.toolCallsPerTurn.value, "7");
+    assert.equal(controller.isDirty(), false);
+  });
+}

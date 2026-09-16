@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-1P-04：Windows/macOS/Linux 受控进程树 backends
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-24
 > 前置：WP-1P-03 accepted，提交 `9d079a4d`
 > 规范来源：ADR-0001、ADR-0004、`WP-1P-01-platform-contract.md`
@@ -22,28 +21,13 @@ backend。公共层继续只观察 root pid、root wait、整树 terminate、整
 和 release；Win32 handle、POSIX fd、session id、process group id、signal 和 guardian
 控制协议都留在平台实现。
 
-以下不属于 WP-1P-04：
+进程树 backend 负责操作系统资源管理；Supervisor、IPC 和领域能力继续由各自所有者维护。
+跨模块调整需保持下述生命周期和故障契约。macOS/Linux 编译结果不能替代窗口、IME、多屏或 compositor 实机证据。
 
-- 修改 `CoreSupervisor` 状态机、generation barrier 或回调接纳规则。
-- 修改 IPC Envelope、framing、deadline、CoreReadiness、Snapshot 或 Python Core 业务语义。
-- 接入真实插件、MCP、TTS、浏览器链或窗口 backend。
-- 修改 `data/`、`runtime/`、角色、插件、第三方目录或 legacy package/release workflow。
-- 把 macOS/Linux 编译结果描述成窗口、IME、多屏或 compositor 实机证据。
+## 2. 验证环境
 
-## 2. 允许目录
-
-- `desktop/src-tauri/src/platform/`：进程树 backend、稳定错误转换和契约适配。
-- `desktop/src-tauri/src/managed_process_tree.rs`：保留 Windows Job Object 实现并迁移公共调用。
-- `desktop/src-tauri/src/main.rs`：POSIX guardian 进程入口和 composition root，不接入产品 Core。
-- `desktop/src-tauri/src/core_host_runtime.rs`、`shell_lifecycle.rs`、`core_supervisor.rs`：只允许把直接构造改成 backend 注入或
-  扩展同语义跨平台测试，禁止状态机和协议变更。
-- `desktop/src-tauri/Cargo.toml`、`Cargo.lock`：只允许进程监管所需、已锁定的平台依赖。
-- `tests/fixtures/runtime_v2/wp_1p_04/`：真实 Python 后代与故障 fixture。
-- `.github/workflows/runtime-v2-platform-foundation.yml`：只允许原生进程树测试和有界门禁。
-- `docs/adr/0001-runtime-v2-process-supervision.md`、本文和 Work Package 总计划：状态与证据。
-
-用户未跟踪的 `.superpowers/`、真实 `data/` 和 `runtime/` 不在允许目录内，不得修改、
-删除、暂存或提交。
+真实后代进程和故障夹具使用隔离临时根，测试结束回收全部后代和临时资源。保留用户未跟踪文件、真实配置、角色
+及 Runtime，不能为清理测试而删除或改写无关数据。
 
 ## 3. 公共生命周期冻结
 
@@ -83,6 +67,17 @@ Tauri 侧通过 PGID 执行整组终止和 verified-exited 轮询；guardian/con
 stdio pipe 均采用明确的 close-on-exec 和单一 owner。Linux 可以把 parent-death signal 作为
 额外保险，但不能代替 guardian EOF 和 group 回收。PGID 必须由仍受控的 guardian identity
 锚定到 root 启动成功，不能根据不受信任 PID 文本重建。
+
+### Python 插件的主动清理
+
+Core 的插件管理器和内置 TTS Provider 使用 `app/plugin_sdk/sakura_process.py` 的同一实现。
+主动清理先取得后代快照，再发出终止信号并等待全部已知目标；父进程退出不能跳过仍存活后代的强杀。
+POSIX 先通过 `Popen` 回收父进程，再等待快照中的后代，避免已退出的父进程因未回收而耗尽宽限期。
+Windows 用 `OpenProcess(SYNCHRONIZE)` 和 `WaitForSingleObject` 查询状态，不发送探测信号。
+这层清理不创建新进程组，也不替代 Shell 的 generation 容器和最终回收。
+
+`tests/unit/test_plugin_process_cleanup.py` 用真实进程覆盖父进程先退出、后代忽略 SIGTERM；
+`test_plugin_runtime_v4.py` 在隔离插件进程内执行公开 SDK 的停止函数。Windows 原生行为仍由平台 CI 验证。
 
 ## 5. 故障矩阵
 

@@ -1,30 +1,32 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod asr;
 mod audio;
+mod autostart_settings;
 mod capture;
 mod character_appearance;
 mod character_presentation;
+mod character_studio_window;
 mod chat_bridge;
 mod chat_settings;
-#[allow(dead_code)] // WP-2-02 allowlisted chat Gateway and terminal registry.
+mod color_picker;
 mod core_host_gateway;
-#[allow(dead_code)] // Production wiring is activated incrementally across Phase 1C.
 mod core_host_protocol;
-#[allow(dead_code)] // WP-2-01 generation-scoped concurrent transport owner.
 mod core_host_router;
-#[allow(dead_code)] // Exercised by WP-1C tests and debug acceptance before release wiring.
 mod core_host_runtime;
-#[allow(dead_code)] // Exercised by WP-1B tests before Fake Core wiring in WP-1B-03.
 mod core_supervisor;
+mod dynamic_hit_test;
 mod history_window;
 mod input_visual_effect;
 mod interaction_latency;
 mod legacy_import;
 #[cfg(target_os = "macos")]
 mod macos_input_glass;
-#[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
+mod macos_open_help;
+#[cfg(any(target_os = "macos", test))]
+mod macos_surface_viewport;
+#[cfg(windows)]
 mod managed_process_tree;
-#[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
 mod platform;
 mod plugin_settings;
 mod product_shell;
@@ -32,9 +34,11 @@ mod runtime_log;
 mod runtime_log_window;
 mod shared_instance;
 mod shell_lifecycle;
+mod telemetry;
 mod tool_settings;
 mod ui_config;
 mod update_settings;
+mod visual_resources;
 mod window_geometry;
 mod window_interaction;
 #[cfg(windows)]
@@ -50,46 +54,29 @@ use platform::{
     NativeDiagnosticsBackendImpl, NativeDiagnosticsRequest, NativeWindowInteractionBackend,
     WindowInteractionBackend, SHARED_INSTANCE_ID,
 };
+use product_shell::assert_settings_identity;
 use runtime_log::{
     Correlation, RuntimeLogEvent, RuntimeLogService, Severity, WebviewDiagnosticEntry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shared_instance::NativeInstanceLockBackend;
+use shell_lifecycle::{
+    dispatch_settings_request, load_current_character_presentation, settings_core_handle,
+    settings_response_payload, ShellLifecycleState,
+};
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use window_geometry::{
-    apply_window_layout, ControlSurfaceLayout, InputSurfaceTransition, LayoutApplication,
-    LayoutContract, LayoutRevisionGuard, MonitorDescriptor, PhysicalRect, PresentationState,
+    apply_window_layout, apply_window_layout_with_fit_bounds,
+    clip_expanded_surface_bounds_to_work_area, AnchorPolicy, ControlSurfaceLayout,
+    InputSurfaceTransition, LayoutApplication, LayoutContract, LayoutRevisionGuard,
+    MonitorDescriptor, PhysicalRect, PresentationState,
 };
 
-const STARTUP_HTML: &str = include_str!("../../frontend/index.html");
-const STARTUP_STYLES: &str = include_str!("../../frontend/styles.css");
-const APP_SCRIPT: &str = include_str!("../../frontend/app.js");
-const LIFECYCLE_SCRIPT: &str = include_str!("../../frontend/lifecycle.js");
-const LAYOUT_SCRIPT: &str = include_str!("../../frontend/pet/layout.js");
-const LAYOUT_CONTROLLER_SCRIPT: &str = include_str!("../../frontend/pet/layout-controller.js");
-const HIT_REGIONS_SCRIPT: &str = include_str!("../../frontend/pet/hit-regions.js");
-const INPUT_FOCUS_SCRIPT: &str = include_str!("../../frontend/pet/input-focus.js");
-const APPEARANCE_SCRIPT: &str = include_str!("../../frontend/pet/appearance.js");
-const SETTINGS_HTML: &str = include_str!("../../frontend/settings/index.html");
-const SETTINGS_STYLES: &str = include_str!("../../frontend/settings/styles.css");
-const SETTINGS_SCRIPT: &str = include_str!("../../frontend/settings/settings.js");
-const SETTINGS_CAPABILITY_SCRIPT: &str =
-    include_str!("../../frontend/settings/capability-shell.js");
-const SETTINGS_APPEARANCE_SCRIPT: &str =
-    include_str!("../../frontend/settings/appearance-runtime.js");
-const SETTINGS_PROVIDER_MODEL_SCRIPT: &str =
-    include_str!("../../frontend/settings/provider-model-runtime.js");
-const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/close-flow.js");
-const SETTINGS_CHAT_TIMING_SCRIPT: &str =
-    include_str!("../../frontend/settings/chat-timing-runtime.js");
-const SETTINGS_TOOLS_SCRIPT: &str = include_str!("../../frontend/settings/tools-runtime.js");
-const SETTINGS_SCREEN_AWARENESS_SCRIPT: &str =
-    include_str!("../../frontend/settings/screen-awareness-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 #[cfg(windows)]
-const INPUT_CONTRACTION_REGION_GRACE_MS: u64 = 40;
+const CONTROL_CONTRACTION_REGION_GRACE_MS: u64 = 40;
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
     "另一个 Sakura Runtime v2 实例正在运行。请先退出现有实例，再重试。";
@@ -118,6 +105,14 @@ struct PendingInputSurfaceTransition {
     contraction_hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
 
+#[derive(Clone)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct PendingBubbleSurfaceTransition {
+    revision: u64,
+    transition: InputSurfaceTransition,
+    contraction_hit_regions: window_interaction::PhysicalHitRegions,
+}
+
 #[derive(Clone, Copy)]
 struct StartedInputExpansion {
     previous_height: u32,
@@ -134,6 +129,7 @@ struct WindowGeometrySession {
     application: Option<LayoutApplication>,
     state: Option<PresentationState>,
     applied_revision: u64,
+    anchor_user_positioned: bool,
     deferred_drag_pending: bool,
     portrait_alpha_mask: Option<character_presentation::PortraitAlphaMask>,
     portrait_transition_active: bool,
@@ -143,6 +139,7 @@ struct WindowGeometrySession {
     )>,
     portrait_transition_pending: Option<PendingPortraitTransition>,
     input_surface_transition_pending: Option<PendingInputSurfaceTransition>,
+    bubble_surface_transition_pending: Option<PendingBubbleSurfaceTransition>,
     input_expansion_started: Option<StartedInputExpansion>,
     portrait_hit_generation: Option<String>,
     portrait_hit_key: Option<String>,
@@ -152,14 +149,32 @@ struct WindowGeometrySession {
     portrait_scale_preview_active: bool,
     portrait_scale_gesture_active: bool,
     control_surface_preview_active: bool,
+    control_surface_preview_prepared: bool,
     control_surface_preview_revision: u64,
     portrait_scale_percent: u16,
+    bubble_auto_expand: bool,
     context_menu_open: bool,
+    context_menu_rect: Option<[u32; 4]>,
     context_menu_hit_regions: Option<window_interaction::PhysicalHitRegions>,
     context_menu_base_application: Option<LayoutApplication>,
     context_menu_base_hit_regions: Option<window_interaction::PhysicalHitRegions>,
+    tool_dock_hit_rect: Option<window_interaction::PhysicalHitRect>,
     control_surface: Option<ControlSurfaceLayout>,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContextMenuRegionPolicy {
+    RelaxedWholeWindow,
+    PreciseOverlay,
+}
+
+const fn current_context_menu_region_policy() -> ContextMenuRegionPolicy {
+    if cfg!(windows) {
+        ContextMenuRegionPolicy::RelaxedWholeWindow
+    } else {
+        ContextMenuRegionPolicy::PreciseOverlay
+    }
 }
 
 impl Default for WindowGeometrySession {
@@ -173,12 +188,14 @@ impl Default for WindowGeometrySession {
             application: None,
             state: None,
             applied_revision: 0,
+            anchor_user_positioned: false,
             deferred_drag_pending: false,
             portrait_alpha_mask: None,
             portrait_transition_active: false,
             portrait_transition_drag: None,
             portrait_transition_pending: None,
             input_surface_transition_pending: None,
+            bubble_surface_transition_pending: None,
             input_expansion_started: None,
             portrait_hit_generation: None,
             portrait_hit_key: None,
@@ -188,21 +205,20 @@ impl Default for WindowGeometrySession {
             portrait_scale_preview_active: false,
             portrait_scale_gesture_active: false,
             control_surface_preview_active: false,
+            control_surface_preview_prepared: false,
             control_surface_preview_revision: 0,
             portrait_scale_percent: 100,
+            bubble_auto_expand: false,
             context_menu_open: false,
+            context_menu_rect: None,
             context_menu_hit_regions: None,
             context_menu_base_application: None,
             context_menu_base_hit_regions: None,
+            tool_dock_hit_rect: None,
             control_surface: None,
             hit_regions: None,
         }
     }
-}
-
-struct ShellLifecycleState {
-    handle: Option<shell_lifecycle::ShellLifecycleHandle>,
-    runtime_log: RuntimeLogService,
 }
 
 #[tauri::command]
@@ -325,7 +341,26 @@ fn install_runtime_panic_hook(runtime_log: RuntimeLogService) {
                 "shell.error.unhandled",
                 "Unhandled Rust error",
             )
-            .attributes(json!({"code": "RUST_PANIC", "category": "panic"})),
+            .attributes({
+                let mut value = json!({"code": "RUST_PANIC", "category": "panic", "stage": "panic",
+                        "diagnostic": panic_info.to_string(),
+                        "exception_stack": std::backtrace::Backtrace::force_capture().to_string()});
+                if let Some(location) = panic_info.location() {
+                    let file = location.file().replace('\\', "/");
+                    let relative = file
+                        .strip_prefix("src/")
+                        .map(|s| format!("desktop/src-tauri/src/{s}"))
+                        .or_else(|| {
+                            file.split_once("/desktop/src-tauri/")
+                                .map(|(_, s)| format!("desktop/src-tauri/{s}"))
+                        });
+                    if let Some(file) = relative {
+                        value["source_file"] = json!(file);
+                        value["source_line"] = json!(location.line());
+                    }
+                }
+                value
+            }),
         );
         previous(panic_info);
     }));
@@ -359,6 +394,7 @@ struct PortraitScalePreview {
     application: Option<LayoutApplication>,
     deferred_native: bool,
     deferred_hit_regions: bool,
+    precommit_on_first_frame: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -408,6 +444,22 @@ fn portrait_hit_revision_is_stale(
 }
 
 impl WindowGeometrySession {
+    fn begin_context_menu(
+        &mut self,
+        base_application: LayoutApplication,
+        base_hit_regions: window_interaction::PhysicalHitRegions,
+    ) -> bool {
+        if self.context_menu_open {
+            return false;
+        }
+        self.context_menu_base_application = Some(base_application);
+        self.context_menu_base_hit_regions = Some(base_hit_regions);
+        self.context_menu_rect = None;
+        self.context_menu_hit_regions = None;
+        self.context_menu_open = true;
+        true
+    }
+
     fn require_context_menu_closed(&self) -> Result<(), String> {
         if self.context_menu_open {
             return Err("PET_CONTEXT_MENU_OPEN".to_string());
@@ -443,6 +495,7 @@ impl WindowGeometrySession {
             .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?;
         let anchor = window_geometry::anchor_from_window_position(position, local_anchor)?;
         self.portrait_anchor = Some(anchor);
+        self.anchor_user_positioned = true;
         // macOS/Linux complete the native move loop asynchronously. Keep the cached application
         // placement in sync with the window event as well as the logical anchor; otherwise the
         // next menu/layout transaction can resurrect the pre-drag default bottom-right frame.
@@ -471,6 +524,7 @@ impl WindowGeometrySession {
 
     fn activate_control_surface_preview(&mut self, revision: u64) {
         self.control_surface_preview_active = true;
+        self.control_surface_preview_prepared = false;
         self.control_surface_preview_revision = revision;
     }
 
@@ -489,6 +543,11 @@ impl WindowGeometrySession {
             && self.portrait_scale_preview_active
             && self.portrait_scale_gesture_active
             && self.portrait_hit_relaxed
+    }
+
+    fn defers_precise_surface_hit_regions(&self) -> bool {
+        self.defers_precise_portrait_scale_hit_regions()
+            || (cfg!(windows) && self.control_surface_preview_active)
     }
 
     fn stabilizes_portrait_scale_bounds(&self) -> bool {
@@ -540,6 +599,7 @@ struct PetLayoutApplication {
     layout: LayoutApplication,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
     input_transition_prepared: bool,
+    bubble_transition_prepared: bool,
 }
 
 #[derive(Serialize)]
@@ -547,11 +607,16 @@ struct PetLayoutApplication {
 struct PetSurfaceDiagnostics {
     revision: u64,
     logical_bounds: [u32; 4],
+    scale_reference_size: [u32; 2],
+    visible_fit_bounds: [u32; 4],
+    resident_backing_bounds: [u32; 4],
     physical_window: window_geometry::PhysicalPlacement,
+    physical_work_area: PhysicalRect,
     global_anchor: window_geometry::PhysicalPoint,
     physical_local_anchor: [u32; 2],
     dpi_scale: f64,
     content_scale: f64,
+    anchor_policy: &'static str,
     region_count: usize,
     backend_mode: &'static str,
     degraded_reason: Option<&'static str>,
@@ -579,6 +644,32 @@ fn is_animated_input_resize(
         && previous.input_rect[3] != target.input_rect[3]
 }
 
+fn is_animated_bubble_contraction(
+    previous: &ControlSurfaceLayout,
+    target: &ControlSurfaceLayout,
+    transition: Option<InputSurfaceTransition>,
+) -> bool {
+    transition.is_some_and(|transition| transition.duration_ms > 0)
+        && is_bubble_resize_geometry(previous, target)
+        && previous.bubble_rect[3] > target.bubble_rect[3]
+}
+
+fn is_bubble_resize_geometry(
+    previous: &ControlSurfaceLayout,
+    target: &ControlSurfaceLayout,
+) -> bool {
+    previous.input_rect == target.input_rect
+        && previous.bubble_rect[0] == target.bubble_rect[0]
+        && previous.bubble_rect[2] == target.bubble_rect[2]
+        && previous.bubble_rect[1].saturating_add(previous.bubble_rect[3])
+            == target.bubble_rect[1].saturating_add(target.bubble_rect[3])
+        && previous.bubble_rect[3] != target.bubble_rect[3]
+        && previous.controls_rect[0] == target.controls_rect[0]
+        && previous.controls_rect[2..] == target.controls_rect[2..]
+        && i64::from(target.controls_rect[1]) - i64::from(previous.controls_rect[1])
+            == i64::from(target.bubble_rect[1]) - i64::from(previous.bubble_rect[1])
+}
+
 fn remaining_input_motion_delay_ms(start_at_unix_ms: u64) -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -604,7 +695,7 @@ fn matches_started_input_expansion(
 }
 
 #[cfg(windows)]
-fn schedule_input_contraction_region_commit(
+fn schedule_control_contraction_region_commit(
     window: &WebviewWindow,
     revision: u64,
     duration_ms: u32,
@@ -612,10 +703,10 @@ fn schedule_input_contraction_region_commit(
 ) -> Result<(), String> {
     let delayed_window = window.clone();
     std::thread::Builder::new()
-        .name("input-contraction-region".to_string())
+        .name("control-surface-contraction-region".to_string())
         .spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(
-                u64::from(duration_ms) + INPUT_CONTRACTION_REGION_GRACE_MS,
+                u64::from(duration_ms) + CONTROL_CONTRACTION_REGION_GRACE_MS,
             ));
             let commit_window = delayed_window.clone();
             if let Err(error) = delayed_window.run_on_main_thread(move || {
@@ -637,10 +728,12 @@ fn schedule_input_contraction_region_commit(
                     Ok(())
                 })();
                 if let Err(error) = commit {
-                    eprintln!("failed to settle input contraction region: {error}");
+                    eprintln!("failed to settle control surface contraction region: {error}");
                 }
             }) {
-                eprintln!("failed to schedule input contraction region settlement: {error}");
+                eprintln!(
+                    "failed to schedule control surface contraction region settlement: {error}"
+                );
             }
         })
         .map(|_| ())
@@ -709,25 +802,121 @@ fn uses_resident_stable_surface_bounds(
         && (portrait_alpha_mask_available || control_surface_available)
 }
 
+fn uses_bubble_expansion_stable_surface_bounds(bubble_auto_expand: bool) -> bool {
+    cfg!(windows) && bubble_auto_expand
+}
+
+fn preserves_portrait_anchor_for_scale_settlement(
+    preview_active: bool,
+    gesture_active: bool,
+) -> bool {
+    preview_active && !gesture_active
+}
+
 fn compute_pet_window_layout(
     contract: &LayoutContract,
     state: PresentationState,
     revision: u64,
     monitor: &MonitorDescriptor,
     existing_anchor: Option<window_geometry::PhysicalPoint>,
+    anchor_policy: AnchorPolicy,
     portrait_scale_percent: u16,
     control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     stabilize_portrait_scale: bool,
+    stabilize_bubble_expansion: bool,
 ) -> Result<LayoutApplication, String> {
     // Win32 SetWindowRgn already provides the exact visible/input shape. Keep the underlying
     // rectangular HWND/WebView envelope stable across every portrait-scale and control-panel
     // setting so neither slider gesture has to resize or reposition the compositor surface.
-    let bounds_started = std::time::Instant::now();
-    let visible_surface_bounds = if uses_resident_stable_surface_bounds(
+    let resident_stable_surface = uses_resident_stable_surface_bounds(
         portrait_alpha_mask.is_some(),
         control_surface.is_some(),
-    ) {
+    );
+    compute_pet_window_layout_with_surface_policy(
+        contract,
+        state,
+        revision,
+        monitor,
+        existing_anchor,
+        anchor_policy,
+        portrait_scale_percent,
+        control_surface,
+        portrait_alpha_mask,
+        stabilize_portrait_scale,
+        resident_stable_surface,
+        stabilize_bubble_expansion,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_pet_window_layout_with_surface_policy(
+    contract: &LayoutContract,
+    state: PresentationState,
+    revision: u64,
+    monitor: &MonitorDescriptor,
+    existing_anchor: Option<window_geometry::PhysicalPoint>,
+    anchor_policy: AnchorPolicy,
+    portrait_scale_percent: u16,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    stabilize_portrait_scale: bool,
+    resident_stable_surface: bool,
+    stabilize_bubble_expansion: bool,
+) -> Result<LayoutApplication, String> {
+    let bounds_started = std::time::Instant::now();
+    // Windows 常驻 HWND 在控件显隐时也必须共用同一套工作区拟合比例。ControlSurfaceLayout 会
+    // 保留隐藏组件的规范矩形，因此只在拟合时使用补全显隐状态的副本；精确 Win32 region 仍在后续
+    // 消费原始显隐标志。
+    let visibility_stable_control_surface = if resident_stable_surface {
+        control_surface.map(|surface| {
+            let mut stable = surface.clone();
+            stable.bubble_visible = true;
+            stable.input_visible = true;
+            stable
+        })
+    } else {
+        None
+    };
+    let visible_fit_control_surface = visibility_stable_control_surface
+        .as_ref()
+        .or(control_surface);
+    // On Windows the alpha mask owns only the exact Win32 region and hit testing. Work-area fit
+    // must use the complete canonical portrait slot at the largest legal appearance scale;
+    // otherwise releasing the scale slider can change contentScale and window placement.
+    let visible_fit_portrait_mask = if resident_stable_surface {
+        None
+    } else {
+        portrait_alpha_mask
+    };
+    let visible_fit_portrait_scale_percent = if resident_stable_surface {
+        window_interaction::PORTRAIT_SCALE_MAX_PERCENT
+    } else {
+        portrait_scale_percent
+    };
+    let current_visible_bounds =
+        window_interaction::logical_visible_surface_bounds_with_control_surface(
+            contract,
+            state,
+            visible_fit_portrait_scale_percent,
+            visible_fit_control_surface,
+            visible_fit_portrait_mask,
+        )?;
+    let bubble_expansion_bounds = if stabilize_bubble_expansion {
+        Some(
+            window_interaction::logical_bubble_expansion_stable_surface_bounds(
+                contract,
+                state,
+                visible_fit_portrait_scale_percent,
+                visible_fit_control_surface
+                    .ok_or_else(|| "CONTROL_SURFACE_REQUIRED".to_string())?,
+                visible_fit_portrait_mask,
+            )?,
+        )
+    } else {
+        None
+    };
+    let backing_base_bounds = if resident_stable_surface {
         // Windows keeps the rectangular HWND/WebView envelope independent of the
         // current expression and layout slider while precise regions control the
         // actual visible and interactive pixels.
@@ -737,6 +926,8 @@ fn compute_pet_window_layout(
             portrait_scale_percent,
             portrait_alpha_mask,
         )?
+    } else if let Some(bounds) = bubble_expansion_bounds {
+        bounds
     } else if stabilize_portrait_scale {
         window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
             contract,
@@ -746,36 +937,110 @@ fn compute_pet_window_layout(
             portrait_alpha_mask,
         )?
     } else {
-        window_interaction::logical_visible_surface_bounds_with_control_surface(
-            contract,
-            state,
-            portrait_scale_percent,
-            control_surface,
-            portrait_alpha_mask,
-        )?
+        current_visible_bounds
+    };
+    let visible_fit_base = bubble_expansion_bounds.unwrap_or(current_visible_bounds);
+    let visible_fit_bounds =
+        match composer_tool_dock_reserve_rect(contract, visible_fit_control_surface)? {
+            Some(dock_reserve) => window_interaction::expand_surface_bounds_for_overlay(
+                visible_fit_base,
+                dock_reserve,
+                composer_resident_viewport(contract),
+            )?,
+            None => visible_fit_base,
+        };
+    let [x, y, width, height] = backing_base_bounds;
+    let bottom = y.saturating_add(height);
+    let reserved_bottom = if resident_stable_surface {
+        composer_resident_viewport(contract)[1]
+    } else {
+        composer_tool_dock_reserved_bottom(contract, control_surface)
+    };
+    let resident_backing_bounds = if bottom >= reserved_bottom {
+        backing_base_bounds
+    } else {
+        [x, y, width, reserved_bottom - y]
     };
     interaction_latency::stage_elapsed("surface-bounds-compute-return", bounds_started);
-    let application = apply_window_layout(
+    apply_window_layout_with_fit_bounds(
         contract,
         state,
         revision,
         monitor,
         existing_anchor,
-        visible_surface_bounds,
-    )?;
-    // The composer tool dock is painted inside the resident WebView. Reserve its maximum
-    // downward extent when the layout is committed so opening the dock never resizes or moves
-    // the HWND and never asks WebView2 to produce an intermediate backing surface.
-    let [x, y, width, height] = application.active_bounds;
-    let bottom = y.saturating_add(height);
-    let reserved_bottom = composer_resident_viewport(contract)[1];
-    if bottom >= reserved_bottom {
-        return Ok(application);
-    }
-    window_geometry::expand_application_preserving_anchor(
-        &application,
-        [x, y, width, reserved_bottom - y],
+        anchor_policy,
+        visible_fit_bounds,
+        resident_backing_bounds,
+    )
+}
+
+fn clip_portrait_scale_preview_application_to_work_area(
+    contract: &LayoutContract,
+    monitor: &MonitorDescriptor,
+    current: &LayoutApplication,
+    stable: LayoutApplication,
+) -> Result<LayoutApplication, String> {
+    let expanded_bounds =
+        window_interaction::union_surface_bounds(current.active_bounds, stable.active_bounds);
+    let preview_bounds = clip_expanded_surface_bounds_to_work_area(
+        current,
+        expanded_bounds,
         contract.viewport.portrait_anchor,
+    )?;
+    if preview_bounds == stable.active_bounds {
+        return Ok(stable);
+    }
+    apply_window_layout_with_fit_bounds(
+        contract,
+        stable.state,
+        stable.revision,
+        monitor,
+        Some(current.portrait_anchor),
+        AnchorPolicy::UserPositioned,
+        stable.visible_fit_bounds,
+        preview_bounds,
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn control_surface_preview_application(
+    contract: &LayoutContract,
+    current: &LayoutApplication,
+    control_surface: &ControlSurfaceLayout,
+    bubble_auto_expand: bool,
+) -> Result<LayoutApplication, String> {
+    let mut bounds = current.active_bounds;
+    for surface in window_interaction::control_surface_gesture_guard_surfaces(
+        contract,
+        control_surface,
+        bubble_auto_expand,
+    )? {
+        for rect in [
+            surface.bubble_rect,
+            surface.input_rect,
+            surface.controls_rect,
+        ] {
+            bounds = window_interaction::union_surface_bounds(bounds, rect);
+        }
+    }
+    let bounds = clip_expanded_surface_bounds_to_work_area(
+        current,
+        bounds,
+        contract.viewport.portrait_anchor,
+    )?;
+    apply_window_layout_with_fit_bounds(
+        contract,
+        current.state,
+        current.revision,
+        &MonitorDescriptor {
+            name: current.monitor_name.clone(),
+            work_area: current.work_area,
+            scale_factor: current.scale_factor,
+        },
+        Some(current.portrait_anchor),
+        AnchorPolicy::UserPositioned,
+        current.visible_fit_bounds,
+        bounds,
     )
 }
 
@@ -789,7 +1054,7 @@ fn current_pet_layout_revision(
     }
     session
         .lock()
-        .map(|session| session.applied_revision)
+        .map(|session| session.applied_revision.max(session.revision.latest()))
         .map_err(|_| "window geometry state is unavailable".to_string())
 }
 
@@ -824,11 +1089,20 @@ fn current_pet_surface_diagnostics(
     Ok(PetSurfaceDiagnostics {
         revision: application.revision,
         logical_bounds: application.active_bounds,
+        scale_reference_size: layout_contract()?.viewport.content_scale_size,
+        visible_fit_bounds: application.visible_fit_bounds,
+        resident_backing_bounds: application.active_bounds,
         physical_window: application.physical_placement,
+        physical_work_area: application.work_area,
         global_anchor: application.portrait_anchor,
         physical_local_anchor: application.physical_local_anchor,
         dpi_scale: application.scale_factor,
         content_scale: application.content_scale,
+        anchor_policy: if geometry.anchor_user_positioned {
+            "user-positioned"
+        } else {
+            "automatic"
+        },
         region_count,
         backend_mode: application.backend_mode,
         degraded_reason: application.degraded_reason,
@@ -843,6 +1117,8 @@ fn apply_pet_layout(
     revision: u64,
     control_surface: Option<ControlSurfaceLayout>,
     input_transition: Option<window_geometry::InputSurfaceTransition>,
+    bubble_transition: Option<window_geometry::InputSurfaceTransition>,
+    bubble_auto_expand: bool,
     trace: Option<interaction_latency::InteractionTraceContext>,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
     glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
@@ -853,6 +1129,9 @@ fn apply_pet_layout(
             contract.validate_control_surface(state, surface)?;
         }
         let input_transition = input_transition.map(|value| value.validate()).transpose()?;
+        let bubble_transition = bubble_transition
+            .map(|value| value.validate())
+            .transpose()?;
         let mut session = interaction_latency::lock(
             session.inner(),
             "geometry-mutex-wait-start",
@@ -864,9 +1143,12 @@ fn apply_pet_layout(
                 layout: LayoutApplication::rejected(revision, state, contract.schema_version),
                 hit_regions: None,
                 input_transition_prepared: false,
+                bubble_transition_prepared: false,
             });
         }
 
+        let anchor_user_positioned =
+            session.anchor_user_positioned || session.is_deferred_drag_pending();
         let requested_anchor = if session.is_deferred_drag_pending() {
             let position = window
                 .outer_position()
@@ -884,19 +1166,40 @@ fn apply_pet_layout(
             session.portrait_anchor
         };
         let monitor = target_monitor(&window, requested_anchor)?;
-        let application = compute_pet_window_layout(
+        let mut application = compute_pet_window_layout(
             &contract,
             state,
             revision,
             &monitor,
             requested_anchor,
+            if anchor_user_positioned {
+                AnchorPolicy::UserPositioned
+            } else {
+                AnchorPolicy::Automatic
+            },
             session.portrait_scale_percent,
             control_surface.as_ref(),
             session.portrait_alpha_mask.as_ref(),
             false,
+            uses_bubble_expansion_stable_surface_bounds(bubble_auto_expand),
         )?;
         let previous_application = session.application.clone();
         let previous_control_surface = session.control_surface.clone();
+        if cfg!(target_os = "macos")
+            && session.control_surface_preview_active
+            && session.control_surface_preview_prepared
+            && !session.context_menu_open
+        {
+            // ResizeObserver and the final reliable settings publication can arrive between
+            // lightweight frames. They must use the same backing until gesture-end settles it.
+            if let Some(current) = previous_application.as_ref() {
+                application = LayoutApplication {
+                    revision,
+                    state,
+                    ..current.clone()
+                };
+            }
+        }
         if input_transition.is_some() {
             let previous = previous_control_surface
                 .as_ref()
@@ -924,6 +1227,19 @@ fn apply_pet_layout(
                 }
             }
         }
+        if bubble_transition.is_some() {
+            let previous = previous_control_surface
+                .as_ref()
+                .ok_or_else(|| "CONTROL_SURFACE_INVALID:bubbleTransition".to_string())?;
+            let target = control_surface
+                .as_ref()
+                .ok_or_else(|| "CONTROL_SURFACE_INVALID:bubbleTransition".to_string())?;
+            if !is_bubble_resize_geometry(previous, target)
+                || bubble_transition.is_some_and(|transition| transition.staging_height.is_some())
+            {
+                return Err("CONTROL_SURFACE_INVALID:bubbleTransition".to_string());
+            }
+        }
         let input_expansion_started =
             session
                 .input_expansion_started
@@ -940,6 +1256,125 @@ fn apply_pet_layout(
                         })
                     })
                 });
+        if session.context_menu_open {
+            let menu_surface = match session.context_menu_rect {
+                Some(rect) => build_context_menu_surface_geometry(
+                    &contract,
+                    &application,
+                    rect,
+                    control_surface.as_ref(),
+                    session.portrait_alpha_mask.as_ref(),
+                    session.portrait_scale_percent,
+                )?,
+                None => {
+                    // open_pet_context_menu relaxes the Windows region before the WebView has
+                    // measured the menu. A concurrent layout frame must update that base instead
+                    // of failing the menu-opening transaction or restoring a stale snapshot.
+                    let base_hit_regions = build_native_interaction_regions(
+                        &contract,
+                        &application,
+                        control_surface.as_ref(),
+                        session.portrait_alpha_mask.as_ref(),
+                        session.portrait_scale_percent,
+                    )?;
+                    ContextMenuSurfaceGeometry {
+                        application: application.clone(),
+                        expanded_hit_regions: base_hit_regions.clone(),
+                        base_hit_regions,
+                    }
+                }
+            };
+            let native_application = menu_surface.application;
+            let previous_regions = session
+                .context_menu_hit_regions
+                .clone()
+                .or_else(|| session.hit_regions.clone());
+            let geometry_changed = previous_application
+                .as_ref()
+                .is_none_or(|previous| !same_surface_geometry(previous, &native_application));
+            if geometry_changed {
+                if let Err(error) = apply_native_pet_surface_bounds_transaction(
+                    &window,
+                    &native_application,
+                    previous_application.as_ref(),
+                    previous_regions.as_ref(),
+                ) {
+                    if current_context_menu_region_policy()
+                        == ContextMenuRegionPolicy::RelaxedWholeWindow
+                    {
+                        NativeWindowInteractionBackend
+                            .relax_hit_regions(&window)
+                            .map_err(|fallback_error| {
+                                format!(
+                                    "PET_CONTEXT_MENU_LAYOUT_FAILED: {error}; PET_CONTEXT_MENU_RELAX_FALLBACK_FAILED: {fallback_error}"
+                                )
+                            })?;
+                    }
+                    return Err(error);
+                }
+            }
+            match current_context_menu_region_policy() {
+                ContextMenuRegionPolicy::RelaxedWholeWindow => {
+                    NativeWindowInteractionBackend
+                        .relax_hit_regions(&window)
+                        .map_err(|error| {
+                            format!("PET_CONTEXT_MENU_LAYOUT_RELAX_FAILED: {error}")
+                        })?;
+                }
+                ContextMenuRegionPolicy::PreciseOverlay => {
+                    if let Err(error) =
+                        apply_precise_hit_regions(&window, &menu_surface.expanded_hit_regions)
+                    {
+                        if geometry_changed {
+                            if let Err(rollback_error) = rollback_pet_surface(
+                                &window,
+                                previous_application.as_ref(),
+                                previous_regions.as_ref(),
+                            ) {
+                                return Err(format!(
+                                    "PET_CONTEXT_MENU_LAYOUT_FAILED: {error}; PET_CONTEXT_MENU_ROLLBACK_FAILED: {rollback_error}"
+                                ));
+                            }
+                        }
+                        return Err(format!("PET_CONTEXT_MENU_LAYOUT_FAILED: {error}"));
+                    }
+                }
+            }
+            if let Some(surface) = control_surface.as_ref() {
+                if !input_expansion_started {
+                    glass.update_control_surface(
+                        &window,
+                        surface,
+                        &native_application,
+                        previous_control_surface.as_ref(),
+                        input_transition,
+                    )?;
+                }
+            }
+            session.portrait_anchor = Some(native_application.portrait_anchor);
+            session.physical_local_anchor = Some(native_application.physical_local_anchor);
+            session.active_bounds = Some(native_application.active_bounds);
+            session.surface_scale =
+                native_application.scale_factor * native_application.content_scale;
+            session.application = Some(native_application);
+            session.state = Some(state);
+            session.applied_revision = revision;
+            session.anchor_user_positioned = anchor_user_positioned;
+            session.bubble_auto_expand = bubble_auto_expand;
+            session.control_surface = control_surface;
+            session.context_menu_base_application = Some(application.clone());
+            session.context_menu_base_hit_regions = Some(menu_surface.base_hit_regions);
+            session.hit_regions = Some(menu_surface.expanded_hit_regions.clone());
+            session.context_menu_hit_regions = Some(menu_surface.expanded_hit_regions.clone());
+            session.input_surface_transition_pending = None;
+            session.bubble_surface_transition_pending = None;
+            return Ok(PetLayoutApplication {
+                layout: application,
+                hit_regions: Some(menu_surface.expanded_hit_regions),
+                input_transition_prepared: false,
+                bubble_transition_prepared: false,
+            });
+        }
         let previous_regions = session.hit_regions.clone();
         let defer_precise_control_regions = cfg!(windows) && session.control_surface_preview_active;
         let prepare_input_transition = !defer_precise_control_regions
@@ -959,7 +1394,18 @@ fn apply_pet_layout(
                     is_animated_input_contraction(previous, target, input_transition)
                 })
             });
-        let hit_regions = if defer_input_contraction {
+        let prepare_bubble_transition = cfg!(windows)
+            && !defer_precise_control_regions
+            && previous_application
+                .as_ref()
+                .is_some_and(|previous| same_surface_geometry(previous, &application))
+            && previous_control_surface.as_ref().is_some_and(|previous| {
+                control_surface.as_ref().is_some_and(|target| {
+                    is_animated_bubble_contraction(previous, target, bubble_transition)
+                })
+            });
+        let defer_control_contraction = defer_input_contraction || prepare_bubble_transition;
+        let hit_regions = if defer_control_contraction {
             build_native_interaction_regions(
                 &contract,
                 &application,
@@ -1027,8 +1473,10 @@ fn apply_pet_layout(
         session.application = Some(application.clone());
         session.state = Some(state);
         session.applied_revision = revision;
+        session.anchor_user_positioned = anchor_user_positioned;
+        session.bubble_auto_expand = bubble_auto_expand;
         session.control_surface = control_surface;
-        session.hit_regions = if defer_input_contraction {
+        session.hit_regions = if defer_control_contraction {
             previous_regions
         } else {
             Some(hit_regions.clone())
@@ -1050,10 +1498,21 @@ fn apply_pet_layout(
         } else {
             None
         };
+        session.bubble_surface_transition_pending = if prepare_bubble_transition {
+            Some(PendingBubbleSurfaceTransition {
+                revision,
+                transition: bubble_transition
+                    .ok_or_else(|| "CONTROL_SURFACE_INVALID:bubbleTransition".to_string())?,
+                contraction_hit_regions: hit_regions.clone(),
+            })
+        } else {
+            None
+        };
         let result = PetLayoutApplication {
             layout: application,
             hit_regions: Some(hit_regions.clone()),
             input_transition_prepared: prepare_input_transition,
+            bubble_transition_prepared: prepare_bubble_transition,
         };
         drop(session);
         Ok(result)
@@ -1115,7 +1574,7 @@ fn start_pet_input_expansion(
     ) {
         #[cfg(windows)]
         if let Some(regions) = session.hit_regions.as_ref() {
-            let _ = apply_precise_hit_regions(&window, regions);
+            let _ = apply_precise_hit_regions_with_synchronous_redraw(&window, regions);
         }
         return Err(error);
     }
@@ -1162,7 +1621,7 @@ fn start_pet_input_transition(
     )?;
     #[cfg(windows)]
     if let Some(hit_regions) = pending.contraction_hit_regions {
-        if let Err(error) = schedule_input_contraction_region_commit(
+        if let Err(error) = schedule_control_contraction_region_commit(
             &window,
             revision,
             pending
@@ -1186,6 +1645,54 @@ fn start_pet_input_transition(
     Ok(true)
 }
 
+#[tauri::command]
+fn start_pet_bubble_transition(
+    window: WebviewWindow,
+    revision: u64,
+    start_at_unix_ms: u64,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<bool, String> {
+    let pending = {
+        let mut session = session
+            .lock()
+            .map_err(|_| "window geometry state is unavailable".to_string())?;
+        if session.applied_revision != revision
+            || session
+                .bubble_surface_transition_pending
+                .as_ref()
+                .is_none_or(|pending| pending.revision != revision)
+        {
+            return Ok(false);
+        }
+        session.bubble_surface_transition_pending.take()
+    };
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+    #[cfg(windows)]
+    {
+        let delay_ms = remaining_input_motion_delay_ms(start_at_unix_ms);
+        if let Err(error) = schedule_control_contraction_region_commit(
+            &window,
+            revision,
+            pending.transition.duration_ms.saturating_add(delay_ms),
+            pending.contraction_hit_regions.clone(),
+        ) {
+            eprintln!("{error}; applying final bubble region immediately");
+            apply_precise_hit_regions(&window, &pending.contraction_hit_regions)?;
+            let state = window.state::<Mutex<WindowGeometrySession>>();
+            if let Ok(mut geometry) = state.lock() {
+                if geometry.applied_revision == revision {
+                    geometry.hit_regions = Some(pending.contraction_hit_regions);
+                }
+            };
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (window, start_at_unix_ms, pending);
+    Ok(true)
+}
+
 fn apply_native_interaction_region(
     window: &WebviewWindow,
     contract: &LayoutContract,
@@ -1201,7 +1708,7 @@ fn apply_native_interaction_region(
         portrait_alpha_mask,
         portrait_scale_percent,
     )?;
-    apply_precise_hit_regions(window, &physical)?;
+    apply_precise_hit_regions_with_synchronous_redraw(window, &physical)?;
     Ok(physical)
 }
 
@@ -1222,15 +1729,187 @@ fn build_native_interaction_regions(
     )?;
     let native_portrait_alpha_mask =
         window_interaction::apply_portrait_alpha_bounds(&mut logical, portrait_alpha_mask)?;
-    let mut physical = window_interaction::scale_hit_regions_for_surface(
+    let mut physical = window_interaction::scale_hit_regions_for_surface_with_clipping(
         &logical,
         application.scale_factor * application.content_scale,
         application.active_bounds,
         contract.viewport.portrait_anchor,
+        cfg!(target_os = "macos"),
     )?;
     physical.portrait_alpha_mask = native_portrait_alpha_mask;
     interaction_latency::stage_elapsed("interaction-regions-build-return", started);
     Ok(physical)
+}
+
+#[cfg(windows)]
+fn build_coarse_native_interaction_regions(
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    portrait_scale_percent: u16,
+) -> Result<window_interaction::PhysicalHitRegions, String> {
+    let precise = build_native_interaction_regions(
+        contract,
+        application,
+        control_surface,
+        portrait_alpha_mask,
+        portrait_scale_percent,
+    )?;
+    Ok(window_interaction::coarse_preview_hit_regions(&precise))
+}
+
+#[cfg(any(windows, test))]
+fn build_control_surface_gesture_guard_rectangles(
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+    control_surface: &ControlSurfaceLayout,
+    portrait_scale_percent: u16,
+    bubble_auto_expand: bool,
+) -> Result<Vec<window_interaction::PhysicalHitRect>, String> {
+    fn bounding_rect(
+        rectangles: impl IntoIterator<Item = window_interaction::PhysicalHitRect>,
+        scale: f64,
+        envelope: [u32; 2],
+    ) -> Option<window_interaction::PhysicalHitRect> {
+        let mut rectangles = rectangles.into_iter();
+        let first = rectangles.next()?;
+        let (mut left, mut top) = (first.x, first.y);
+        let (mut right, mut bottom) = (
+            i64::from(first.x) + i64::from(first.width),
+            i64::from(first.y) + i64::from(first.height),
+        );
+        for rect in rectangles {
+            left = left.min(rect.x);
+            top = top.min(rect.y);
+            right = right.max(i64::from(rect.x) + i64::from(rect.width));
+            bottom = bottom.max(i64::from(rect.y) + i64::from(rect.height));
+        }
+        let bleed = (2.0 * scale).ceil() as i64;
+        let left = (i64::from(left) - bleed).max(0);
+        let top = (i64::from(top) - bleed).max(0);
+        let right = (right + bleed).min(i64::from(envelope[0]));
+        let bottom = (bottom + bleed).min(i64::from(envelope[1]));
+        Some(window_interaction::PhysicalHitRect {
+            x: i32::try_from(left).ok()?,
+            y: i32::try_from(top).ok()?,
+            width: u32::try_from(right - left).ok()?,
+            height: u32::try_from(bottom - top).ok()?,
+            corner_radius: 0,
+        })
+    }
+
+    let mut input_rectangles = Vec::new();
+    let mut controls_rectangles = Vec::new();
+    let mut bubble_rectangles = Vec::new();
+    let scale = application.scale_factor * application.content_scale;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("native pet scale must be positive and finite".to_string());
+    }
+    let envelope = [
+        application.physical_placement.width,
+        application.physical_placement.height,
+    ];
+    for surface in window_interaction::control_surface_gesture_guard_surfaces(
+        contract,
+        control_surface,
+        bubble_auto_expand,
+    )? {
+        let candidate = build_native_interaction_regions(
+            contract,
+            application,
+            Some(&surface),
+            None,
+            portrait_scale_percent,
+        )?;
+        if surface.input_visible {
+            if let Some(input) = candidate.interactive.first().copied() {
+                input_rectangles.push(input);
+            }
+        }
+        if let Some(controls) = candidate.interactive.last().copied() {
+            controls_rectangles.push(controls);
+        }
+        if let Some(bubble) = candidate.drag.get(1).copied() {
+            bubble_rectangles.push(bubble);
+        }
+    }
+    Ok([
+        bounding_rect(input_rectangles, scale, envelope),
+        bounding_rect(controls_rectangles, scale, envelope),
+        bounding_rect(bubble_rectangles, scale, envelope),
+    ]
+    .into_iter()
+    .flatten()
+    .collect())
+}
+
+struct ContextMenuSurfaceGeometry {
+    application: LayoutApplication,
+    base_hit_regions: window_interaction::PhysicalHitRegions,
+    expanded_hit_regions: window_interaction::PhysicalHitRegions,
+}
+
+fn build_context_menu_surface_geometry(
+    contract: &LayoutContract,
+    base_application: &LayoutApplication,
+    rect: [u32; 4],
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    portrait_scale_percent: u16,
+) -> Result<ContextMenuSurfaceGeometry, String> {
+    let [x, y, width, height] = rect;
+    let expanded_bounds = window_interaction::expand_surface_bounds_for_overlay(
+        base_application.active_bounds,
+        rect,
+        composer_resident_viewport(contract),
+    )
+    .map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID".to_string())?;
+    let application = window_geometry::expand_application_preserving_anchor(
+        base_application,
+        expanded_bounds,
+        contract.viewport.portrait_anchor,
+    )?;
+    let base_hit_regions = build_native_interaction_regions(
+        contract,
+        base_application,
+        control_surface,
+        portrait_alpha_mask,
+        portrait_scale_percent,
+    )?;
+    let mut expanded_hit_regions = build_native_interaction_regions(
+        contract,
+        &application,
+        control_surface,
+        portrait_alpha_mask,
+        portrait_scale_percent,
+    )?;
+    let logical_menu = window_interaction::LogicalHitRegions {
+        state: expanded_hit_regions.state,
+        interactive: vec![window_interaction::LogicalHitRect::checked(
+            i32::try_from(x).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
+            i32::try_from(y).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
+            width,
+            height,
+            composer_resident_viewport(contract),
+        )?],
+        drag: Vec::new(),
+        neutral: Vec::new(),
+    };
+    let mut menu_hit_regions = window_interaction::scale_hit_regions_for_surface(
+        &logical_menu,
+        application.scale_factor * application.content_scale,
+        application.active_bounds,
+        contract.viewport.portrait_anchor,
+    )?;
+    expanded_hit_regions
+        .interactive
+        .append(&mut menu_hit_regions.interactive);
+    Ok(ContextMenuSurfaceGeometry {
+        application,
+        base_hit_regions,
+        expanded_hit_regions,
+    })
 }
 
 fn apply_precise_hit_regions(
@@ -1245,45 +1924,88 @@ fn apply_precise_hit_regions(
         })
 }
 
+fn apply_precise_hit_regions_with_synchronous_redraw(
+    window: &WebviewWindow,
+    physical: &window_interaction::PhysicalHitRegions,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    return window_interaction::apply_native_hit_regions_with_synchronous_redraw(window, physical)
+        .map_err(|error| {
+            format!("failed to apply native hit regions; previous region retained: {error}")
+        });
+
+    #[cfg(not(windows))]
+    apply_precise_hit_regions(window, physical)
+}
+
 fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> {
     let session = window.state::<Mutex<WindowGeometrySession>>();
     let geometry = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
-    let hit_regions = geometry
+    if geometry.context_menu_open
+        && current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow
+    {
+        drop(geometry);
+        return NativeWindowInteractionBackend
+            .relax_hit_regions(window)
+            .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
+    }
+    let mut hit_regions = geometry
         .context_menu_hit_regions
         .as_ref()
         .or(geometry.hit_regions.as_ref())
         .cloned()
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    if let Some(rect) = geometry.tool_dock_hit_rect {
+        hit_regions.interactive.push(rect);
+    }
     drop(geometry);
 
-    apply_precise_hit_regions(window, &hit_regions)
+    apply_precise_hit_regions_with_synchronous_redraw(window, &hit_regions)
 }
 
 fn precommit_webview_surface(
-    window: &WebviewWindow,
+    _window: &WebviewWindow,
     application: &LayoutApplication,
 ) -> Result<(), String> {
-    let overall_started = std::time::Instant::now();
-    interaction_latency::stage("webview-precommit-start");
-    let [active_x, active_y, _, _] = application.active_bounds;
-    let left = -f64::from(active_x) * application.content_scale;
-    let top = -f64::from(active_y) * application.content_scale;
-    if !left.is_finite() || !top.is_finite() {
-        return Err("PET_SURFACE_OFFSET_INVALID".to_string());
+    #[cfg(target_os = "macos")]
+    {
+        // Tauri also applies proportional child bounds from its Resized event, after AppKit's
+        // autoresizing pass. Both owners must release the WebView before native cropping begins.
+        _window
+            .app_handle()
+            .get_webview(_window.label())
+            .ok_or("MACOS_SURFACE_WEBVIEW_UNAVAILABLE")?
+            .set_auto_resize(false)
+            .map_err(|error| format!("MACOS_SURFACE_AUTORESIZE_FAILED:{error}"))?;
+        return macos_surface_viewport::prepare(
+            application,
+            composer_resident_viewport(&layout_contract()?),
+        );
     }
-    let script = format!(
+    #[cfg(not(target_os = "macos"))]
+    {
+        let overall_started = std::time::Instant::now();
+        interaction_latency::stage("webview-precommit-start");
+        let [active_x, active_y, _, _] = application.active_bounds;
+        let left = -f64::from(active_x) * application.content_scale;
+        let top = -f64::from(active_y) * application.content_scale;
+        if !left.is_finite() || !top.is_finite() {
+            return Err("PET_SURFACE_OFFSET_INVALID".to_string());
+        }
+        let script = format!(
         "(()=>{{const s=document.querySelector('#pet-stage');if(!s)return;s.style.left='{left}px';s.style.top='{top}px';s.dataset.surfaceX='{active_x}';s.dataset.surfaceY='{active_y}';s.dataset.surfaceRevision='{}';}})()",
         application.revision
     );
-    let eval_started = std::time::Instant::now();
-    window
-        .eval(&script)
-        .map_err(|error| format!("failed to precommit WebView surface offset: {error}"))?;
-    interaction_latency::stage_elapsed("webview-eval-return", eval_started);
-    interaction_latency::stage_elapsed("webview-precommit-return", overall_started);
-    Ok(())
+        let eval_started = std::time::Instant::now();
+        _window
+            .eval(&script)
+            .map_err(|error| format!("failed to precommit WebView surface offset: {error}"))?;
+        interaction_latency::stage_elapsed("webview-eval-return", eval_started);
+        interaction_latency::stage_elapsed("webview-precommit-return", overall_started);
+        Ok(())
+    }
 }
 
 fn apply_native_pet_surface(
@@ -1363,6 +2085,31 @@ fn same_local_surface_geometry(previous: &LayoutApplication, next: &LayoutApplic
         && previous.scale_factor == next.scale_factor
 }
 
+fn same_drag_visual_effect_geometry(
+    previous: &LayoutApplication,
+    next: &LayoutApplication,
+) -> bool {
+    same_local_surface_geometry(previous, next)
+        && previous.work_area == next.work_area
+        && previous.monitor_name.as_deref() == next.monitor_name.as_deref()
+}
+
+fn can_reuse_resident_portrait_application(
+    resident_stable_surface: bool,
+    application: &LayoutApplication,
+    state: PresentationState,
+    applied_revision: u64,
+    monitor: &MonitorDescriptor,
+) -> bool {
+    resident_stable_surface
+        && application.applied
+        && application.revision == applied_revision
+        && application.state == state
+        && application.scale_factor == monitor.scale_factor
+        && application.work_area == monitor.work_area
+        && application.monitor_name.as_deref() == monitor.name.as_deref()
+}
+
 fn sync_context_menu_input_glass(
     window: &WebviewWindow,
     control_surface: Option<&ControlSurfaceLayout>,
@@ -1419,7 +2166,7 @@ fn apply_native_pet_surface_transaction(
                 .map_err(|error| error.to_string())?;
         }
 
-        if !previous_region_relaxed {
+        if !cfg!(target_os = "macos") && !previous_region_relaxed {
             if let (Some(previous_application), Some(previous_regions)) =
                 (previous_application, previous_regions)
             {
@@ -1440,7 +2187,11 @@ fn apply_native_pet_surface_transaction(
                 }
             }
         }
-        apply_precise_hit_regions(window, &next_regions)?;
+        if previous_region_relaxed {
+            apply_precise_hit_regions_with_synchronous_redraw(window, &next_regions)?;
+        } else {
+            apply_precise_hit_regions(window, &next_regions)?;
+        }
         Ok(next_regions)
     };
     match commit() {
@@ -1536,24 +2287,51 @@ fn apply_native_pet_surface_bounds_transaction_with_mode(
     }
 }
 
+fn commit_bootstrap_geometry(
+    session: &mut WindowGeometrySession,
+    application: LayoutApplication,
+    hit_regions: window_interaction::PhysicalHitRegions,
+) -> Result<(), String> {
+    if !application.applied || application.revision != 0 {
+        return Err("PET_BOOTSTRAP_LAYOUT_INVALID".to_string());
+    }
+    session.portrait_anchor = Some(application.portrait_anchor);
+    session.physical_local_anchor = Some(application.physical_local_anchor);
+    session.active_bounds = Some(application.active_bounds);
+    session.surface_scale = application.scale_factor * application.content_scale;
+    session.application = Some(application);
+    session.state = Some(PresentationState::Product);
+    session.applied_revision = 0;
+    session.anchor_user_positioned = false;
+    session.control_surface = None;
+    session.hit_regions = Some(hit_regions);
+    Ok(())
+}
+
 fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
     let contract = layout_contract()?;
     let monitor = target_monitor(window, None)?;
-    // Revision zero is a native bootstrap only. The frontend owns revision one
-    // and the first committed WindowGeometrySession state after WebView startup.
+    // Revision zero is a recoverable bootstrap. It is published to the session without
+    // advancing the revision guard, so the WebView still owns the first normal revision.
     let application = compute_pet_window_layout(
         &contract,
         PresentationState::Product,
         0,
         &monitor,
         None,
+        AnchorPolicy::Automatic,
         100,
         None,
         None,
         false,
+        false,
     )?;
-    apply_native_pet_surface(window, &contract, &application, None, None, 100)?;
-    Ok(())
+    let hit_regions = apply_native_pet_surface(window, &contract, &application, None, None, 100)?;
+    let state = window.state::<Mutex<WindowGeometrySession>>();
+    let mut session = state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    commit_bootstrap_geometry(&mut session, application, hit_regions)
 }
 
 #[tauri::command]
@@ -1610,6 +2388,62 @@ fn reveal_pet_window(
     product_shell::sync_product_tray_visibility(window.app_handle(), true)
 }
 
+fn compute_dragged_pet_window_layout(
+    contract: &LayoutContract,
+    state: PresentationState,
+    revision: u64,
+    monitor: &MonitorDescriptor,
+    position: window_geometry::PhysicalPoint,
+    previous_local_anchor: [u32; 2],
+    portrait_scale_percent: u16,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    stabilize_bubble_expansion: bool,
+) -> Result<LayoutApplication, String> {
+    let provisional_anchor =
+        window_geometry::anchor_from_window_position(position, previous_local_anchor)?;
+    let provisional_application = compute_pet_window_layout(
+        contract,
+        state,
+        revision,
+        monitor,
+        Some(provisional_anchor),
+        AnchorPolicy::UserPositioned,
+        portrait_scale_percent,
+        control_surface,
+        portrait_alpha_mask,
+        false,
+        stabilize_bubble_expansion,
+    )?;
+    // The custom Windows drag loop follows the physical top-left. After WM_DPICHANGED the local
+    // portrait anchor has a different physical offset, so deriving the final anchor from the old
+    // offset makes pointer-up shift the whole surface by exactly that DPI delta. Resolve the
+    // target-DPI offset first, then make the final application preserve the HWND position the
+    // user actually released.
+    let requested_anchor = window_geometry::anchor_from_window_position(
+        position,
+        provisional_application.physical_local_anchor,
+    )?;
+    let application = if requested_anchor == provisional_application.portrait_anchor {
+        provisional_application
+    } else {
+        compute_pet_window_layout(
+            contract,
+            state,
+            revision,
+            monitor,
+            Some(requested_anchor),
+            AnchorPolicy::UserPositioned,
+            portrait_scale_percent,
+            control_surface,
+            portrait_alpha_mask,
+            false,
+            stabilize_bubble_expansion,
+        )?
+    };
+    Ok(application)
+}
+
 fn commit_dragged_window_position(
     window: WebviewWindow,
     session: &mut WindowGeometrySession,
@@ -1620,25 +2454,25 @@ fn commit_dragged_window_position(
         .state
         .ok_or_else(|| "pet layout is not ready for dragging".to_string())?;
     let monitor = target_monitor(&window, None)?;
-    let requested_anchor = window_geometry::anchor_from_window_position(
-        position,
-        session
-            .physical_local_anchor
-            .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?,
-    )?;
-    let application = compute_pet_window_layout(
+    let application = compute_dragged_pet_window_layout(
         &contract,
         state,
         session.applied_revision,
         &monitor,
-        Some(requested_anchor),
+        position,
+        session
+            .physical_local_anchor
+            .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?,
         session.portrait_scale_percent,
         session.control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
-        false,
+        uses_bubble_expansion_stable_surface_bounds(session.bubble_auto_expand),
     )?;
     let previous_application = session.application.clone();
     let previous_regions = session.hit_regions.clone();
+    let refresh_input_visual_effect = previous_application
+        .as_ref()
+        .is_none_or(|previous| !same_drag_visual_effect_geometry(previous, &application));
     // The Windows drag loop has already moved the HWND. On the same local surface, issuing the
     // same SetWindowPos and SetWindowRgn again forces DWM/Composition to rebuild unchanged content
     // and can flash the Gaussian output at pointer-up. Cross-monitor DPI/size changes still take
@@ -1663,16 +2497,25 @@ fn commit_dragged_window_position(
             false,
         )?
     };
+    if refresh_input_visual_effect {
+        if let Some(surface) = session.control_surface.as_ref() {
+            window
+                .state::<input_visual_effect::InputVisualEffectState>()
+                .update_control_surface(&window, surface, &application, None, None)?;
+        }
+    }
     session.portrait_anchor = Some(application.portrait_anchor);
     session.physical_local_anchor = Some(application.physical_local_anchor);
     session.active_bounds = Some(application.active_bounds);
     session.surface_scale = application.scale_factor * application.content_scale;
     session.application = Some(application.clone());
     session.hit_regions = Some(hit_regions.clone());
+    session.anchor_user_positioned = true;
     Ok(PetLayoutApplication {
         layout: application,
         hit_regions: Some(hit_regions),
         input_transition_prepared: false,
+        bubble_transition_prepared: false,
     })
 }
 
@@ -1762,6 +2605,8 @@ fn start_pet_drag_blocking(
             window_interaction::native_drag_completion(),
             window_interaction::NativeDragCompletion::DeferredWindowMoved
         );
+        #[cfg(windows)]
+        let precise_hit_regions;
         {
             let mut session = interaction_latency::lock(
                 session,
@@ -1810,15 +2655,44 @@ fn start_pet_drag_blocking(
             if !drag_authorized {
                 return Err("PET_DRAG_POINT_REJECTED".to_string());
             }
+            #[cfg(windows)]
+            {
+                precise_hit_regions = session
+                    .hit_regions
+                    .clone()
+                    .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+            }
             interaction_latency::stage("drag-authorization-return");
             if expects_deferred_completion {
                 session.begin_deferred_drag();
             }
         }
 
+        #[cfg(windows)]
+        let drag_hit_region_guard = {
+            let started = std::time::Instant::now();
+            interaction_latency::stage("drag-hit-region-coarsen-start");
+            let guard = window_interaction::use_coarse_native_hit_region_while_dragging(
+                window,
+                &precise_hit_regions,
+            )?;
+            interaction_latency::stage_elapsed("drag-hit-region-coarsen-return", started);
+            guard
+        };
         let native_drag_started = std::time::Instant::now();
         interaction_latency::stage("native-drag-call-start");
-        let completion = match NativeWindowInteractionBackend.start_drag(&window) {
+        let completion_result = NativeWindowInteractionBackend.start_drag(&window);
+        #[cfg(windows)]
+        let restore_result = if let Some(guard) = drag_hit_region_guard {
+            let started = std::time::Instant::now();
+            interaction_latency::stage("drag-hit-region-restore-start");
+            let result = guard.restore(window);
+            interaction_latency::stage_elapsed("drag-hit-region-restore-return", started);
+            result
+        } else {
+            Ok(())
+        };
+        let completion = match completion_result {
             Ok(completion) => completion,
             Err(error) => {
                 if expects_deferred_completion {
@@ -1829,9 +2703,15 @@ fn start_pet_drag_blocking(
                     )?;
                     session.cancel_deferred_drag();
                 }
+                #[cfg(windows)]
+                if let Err(restore_error) = restore_result {
+                    return Err(format!("{error}; {restore_error}"));
+                }
                 return Err(error.to_string());
             }
         };
+        #[cfg(windows)]
+        restore_result?;
         interaction_latency::stage_elapsed("native-drag-call-return", native_drag_started);
 
         match completion {
@@ -1908,17 +2788,37 @@ fn open_pet_context_menu(
     {
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
+    let manifest = product_shell::product_menu_capability_manifest(
+        subtitle.get()?.is_chinese(),
+        topmost.enabled()?,
+    );
+    // Repositioning an already-open menu must keep the first frame as the close target. Replacing
+    // these snapshots with the expanded frame would make Escape permanently retain the menu size.
+    if geometry.context_menu_open {
+        return Ok(manifest);
+    }
+    let base_application = geometry
+        .application
+        .clone()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let base_hit_regions = geometry
+        .hit_regions
+        .clone()
+        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    // Windows must not rebuild the complex PNG alpha region while the HWND is being enlarged
+    // for the WebView menu. Keeping the region relaxed across the whole menu transaction avoids
+    // exposing an alpha mask whose surface-local coordinates belong to the previous HWND size.
+    if current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow {
+        NativeWindowInteractionBackend
+            .relax_hit_regions(&window)
+            .map_err(|error| format!("PET_CONTEXT_MENU_RELAX_FAILED: {error}"))?;
+    }
     // Capture the committed surface before the WebView grows the menu. This snapshot is the
     // exact frame to restore on close; it must never be reconstructed through the default
     // work-area placement policy.
-    geometry.context_menu_base_application = geometry.application.clone();
-    geometry.context_menu_base_hit_regions = geometry.hit_regions.clone();
-    geometry.context_menu_hit_regions = None;
-    geometry.context_menu_open = true;
-    Ok(product_shell::product_menu_capability_manifest(
-        subtitle.get()?.is_chinese(),
-        topmost.enabled()?,
-    ))
+    let started = geometry.begin_context_menu(base_application, base_hit_regions);
+    debug_assert!(started);
+    Ok(manifest)
 }
 
 #[tauri::command]
@@ -1947,46 +2847,16 @@ fn set_pet_context_menu_surface(
         .clone()
         .or_else(|| geometry.hit_regions.clone())
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-    let [x, y, requested_width, requested_height] = rect;
-    let expanded_bounds = window_interaction::expand_surface_bounds_for_overlay(
-        base_application.active_bounds,
-        rect,
-        composer_resident_viewport(&contract),
-    )
-    .map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID".to_string())?;
-    let application = window_geometry::expand_application_preserving_anchor(
-        &base_application,
-        expanded_bounds,
-        contract.viewport.portrait_anchor,
-    )?;
-
-    let mut expanded_base = build_native_interaction_regions(
+    let surface = build_context_menu_surface_geometry(
         &contract,
-        &application,
+        &base_application,
+        rect,
         geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
         geometry.portrait_scale_percent,
     )?;
-    let logical = window_interaction::LogicalHitRegions {
-        state: expanded_base.state,
-        interactive: vec![window_interaction::LogicalHitRect::checked(
-            i32::try_from(x).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
-            i32::try_from(y).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
-            requested_width,
-            requested_height,
-            composer_resident_viewport(&contract),
-        )?],
-        drag: Vec::new(),
-        neutral: Vec::new(),
-    };
-    let canonical_anchor = contract.viewport.portrait_anchor;
-    let mut menu = window_interaction::scale_hit_regions_for_surface(
-        &logical,
-        application.scale_factor * application.content_scale,
-        application.active_bounds,
-        canonical_anchor,
-    )?;
-    expanded_base.interactive.append(&mut menu.interactive);
+    let application = surface.application;
+    let expanded_base = surface.expanded_hit_regions;
     let previous_application = geometry.application.clone();
     let previous_regions = geometry
         .context_menu_hit_regions
@@ -1996,33 +2866,49 @@ fn set_pet_context_menu_surface(
         .as_ref()
         .is_none_or(|previous| !same_surface_geometry(previous, &application));
     if geometry_changed {
-        apply_native_pet_surface_bounds_transaction_preserving_top_left(
+        if let Err(error) = apply_native_pet_surface_bounds_transaction_preserving_top_left(
             &window,
             &application,
             previous_application.as_ref(),
             previous_regions.as_ref(),
-        )?;
-    }
-    if let Err(error) = apply_precise_hit_regions(&window, &expanded_base) {
-        if geometry_changed {
-            if let Err(rollback_error) = rollback_pet_surface_with_bounds_mode(
-                &window,
-                previous_application.as_ref(),
-                previous_regions.as_ref(),
-                true,
-            ) {
-                return Err(format!(
-                    "PET_CONTEXT_MENU_SURFACE_FAILED: {error}; PET_CONTEXT_MENU_ROLLBACK_FAILED: {rollback_error}"
-                ));
+        ) {
+            // The bounds helper restores the previous precise region on rollback. Windows menu
+            // sessions deliberately stay relaxed, including the failed-resize path.
+            if current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow {
+                NativeWindowInteractionBackend
+                    .relax_hit_regions(&window)
+                    .map_err(|fallback_error| {
+                        format!(
+                            "PET_CONTEXT_MENU_SURFACE_FAILED: {error}; PET_CONTEXT_MENU_RELAX_FALLBACK_FAILED: {fallback_error}"
+                        )
+                    })?;
             }
+            return Err(error);
         }
-        return Err(format!("PET_CONTEXT_MENU_SURFACE_FAILED: {error}"));
+    }
+    if current_context_menu_region_policy() == ContextMenuRegionPolicy::PreciseOverlay {
+        if let Err(error) = apply_precise_hit_regions(&window, &expanded_base) {
+            if geometry_changed {
+                if let Err(rollback_error) = rollback_pet_surface_with_bounds_mode(
+                    &window,
+                    previous_application.as_ref(),
+                    previous_regions.as_ref(),
+                    true,
+                ) {
+                    return Err(format!(
+                        "PET_CONTEXT_MENU_SURFACE_FAILED: {error}; PET_CONTEXT_MENU_ROLLBACK_FAILED: {rollback_error}"
+                    ));
+                }
+            }
+            return Err(format!("PET_CONTEXT_MENU_SURFACE_FAILED: {error}"));
+        }
     }
     sync_context_menu_input_glass(&window, geometry.control_surface.as_ref(), &application)?;
     if geometry.context_menu_base_application.is_none() {
         geometry.context_menu_base_application = Some(base_application);
         geometry.context_menu_base_hit_regions = Some(base_hit_regions);
     }
+    geometry.context_menu_rect = Some(rect);
     geometry.portrait_anchor = Some(application.portrait_anchor);
     geometry.physical_local_anchor = Some(application.physical_local_anchor);
     geometry.active_bounds = Some(application.active_bounds);
@@ -2045,6 +2931,7 @@ fn close_pet_context_menu_surface(
     }
     let Some(base_application) = geometry.context_menu_base_application.clone() else {
         geometry.context_menu_open = false;
+        geometry.context_menu_rect = None;
         geometry.context_menu_hit_regions = None;
         geometry.context_menu_base_hit_regions = None;
         return Ok(());
@@ -2062,14 +2949,65 @@ fn close_pet_context_menu_surface(
         .as_ref()
         .is_none_or(|previous| !same_surface_geometry(previous, &base_application));
     if geometry_changed {
-        apply_native_pet_surface_bounds_transaction_preserving_top_left(
+        if let Err(error) = apply_native_pet_surface_bounds_transaction_preserving_top_left(
             window,
             &base_application,
             previous_application.as_ref(),
             previous_regions.as_ref(),
-        )?;
+        ) {
+            #[cfg(windows)]
+            {
+                let fallback = NativeWindowInteractionBackend
+                    .relax_hit_regions(window)
+                    .map_err(|fallback_error| {
+                        format!(
+                            "PET_CONTEXT_MENU_CLOSE_FAILED: {error}; PET_CONTEXT_MENU_RELAX_FALLBACK_FAILED: {fallback_error}"
+                        )
+                    });
+                geometry.context_menu_open = false;
+                geometry.context_menu_rect = None;
+                geometry.context_menu_hit_regions = None;
+                geometry.context_menu_base_application = None;
+                geometry.context_menu_base_hit_regions = None;
+                fallback?;
+                return Err(format!(
+                    "PET_CONTEXT_MENU_CLOSE_FAILED_SAFE_FALLBACK_RELAXED: {error}"
+                ));
+            }
+            #[cfg(not(windows))]
+            return Err(error);
+        }
     }
-    if let Err(error) = apply_precise_hit_regions(window, &base_hit_regions) {
+    if let Err(error) = apply_precise_hit_regions_with_synchronous_redraw(window, &base_hit_regions)
+    {
+        #[cfg(windows)]
+        {
+            // SetWindowRgn may fail before or after taking ownership of the new region. Explicitly
+            // remove either result so the safe fallback is always a fully interactive window.
+            let fallback = NativeWindowInteractionBackend
+                .relax_hit_regions(window)
+                .map_err(|fallback_error| {
+                    format!(
+                        "PET_CONTEXT_MENU_CLOSE_FAILED: {error}; PET_CONTEXT_MENU_RELAX_FALLBACK_FAILED: {fallback_error}"
+                    )
+                });
+            geometry.context_menu_open = false;
+            geometry.context_menu_rect = None;
+            geometry.context_menu_hit_regions = None;
+            geometry.context_menu_base_application = None;
+            geometry.context_menu_base_hit_regions = None;
+            geometry.portrait_anchor = Some(base_application.portrait_anchor);
+            geometry.physical_local_anchor = Some(base_application.physical_local_anchor);
+            geometry.active_bounds = Some(base_application.active_bounds);
+            geometry.surface_scale = base_application.scale_factor * base_application.content_scale;
+            geometry.application = Some(base_application);
+            geometry.hit_regions = Some(base_hit_regions);
+            fallback?;
+            return Err(format!(
+                "PET_CONTEXT_MENU_CLOSE_FAILED_SAFE_FALLBACK_RELAXED: {error}"
+            ));
+        }
+        #[cfg(not(windows))]
         if geometry_changed {
             if let Err(rollback_error) = rollback_pet_surface_with_bounds_mode(
                 window,
@@ -2082,10 +3020,12 @@ fn close_pet_context_menu_surface(
                 ));
             }
         }
+        #[cfg(not(windows))]
         return Err(format!("PET_CONTEXT_MENU_CLOSE_FAILED: {error}"));
     }
     sync_context_menu_input_glass(window, geometry.control_surface.as_ref(), &base_application)?;
     geometry.context_menu_open = false;
+    geometry.context_menu_rect = None;
     geometry.context_menu_hit_regions = None;
     geometry.context_menu_base_application = None;
     geometry.context_menu_base_hit_regions = None;
@@ -2119,6 +3059,163 @@ fn composer_resident_viewport(contract: &LayoutContract) -> [u32; 2] {
         contract.viewport.window_size[0],
         contract.viewport.window_size[1].saturating_add(COMPOSER_TOOL_DOCK_RESERVE_HEIGHT),
     ]
+}
+
+fn composer_tool_dock_reserved_bottom(
+    contract: &LayoutContract,
+    control_surface: Option<&ControlSurfaceLayout>,
+) -> u32 {
+    if control_surface.is_some_and(|surface| !surface.input_visible) {
+        return 0;
+    }
+    let input_rect = control_surface
+        .map(|surface| surface.input_rect)
+        .or_else(|| {
+            contract
+                .states
+                .get(PresentationState::Product.key())
+                .and_then(|layout| layout.input_rect)
+        });
+    input_rect
+        .map(|rect| {
+            rect[1]
+                .saturating_add(rect[3])
+                .saturating_add(COMPOSER_TOOL_DOCK_RESERVE_HEIGHT)
+        })
+        .unwrap_or(contract.viewport.window_size[1])
+}
+
+fn composer_tool_dock_reserve_rect(
+    contract: &LayoutContract,
+    control_surface: Option<&ControlSurfaceLayout>,
+) -> Result<Option<[u32; 4]>, String> {
+    if control_surface.is_some_and(|surface| !surface.input_visible) {
+        return Ok(None);
+    }
+    let input_rect = control_surface
+        .map(|surface| surface.input_rect)
+        .or_else(|| {
+            contract
+                .states
+                .get(PresentationState::Product.key())
+                .and_then(|layout| layout.input_rect)
+        })
+        .ok_or_else(|| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?;
+    Ok(Some([
+        input_rect[0],
+        input_rect[1]
+            .checked_add(input_rect[3])
+            .ok_or_else(|| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?,
+        COMPOSER_TOOL_DOCK_WIDTH,
+        COMPOSER_TOOL_DOCK_RESERVE_HEIGHT,
+    ]))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetSurfaceVisibilityCapabilities {
+    bubble_auto_hide: bool,
+    input_hover_reveal: bool,
+}
+
+#[tauri::command]
+fn pet_surface_visibility_capabilities(
+    window: WebviewWindow,
+) -> Result<PetSurfaceVisibilityCapabilities, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    Ok(PetSurfaceVisibilityCapabilities {
+        bubble_auto_hide: cfg!(windows),
+        input_hover_reveal: cfg!(windows),
+    })
+}
+
+#[tauri::command]
+fn pet_surface_hovered(
+    window: WebviewWindow,
+    session: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if !window.is_visible().map_err(|error| error.to_string())?
+        || window.is_minimized().map_err(|error| error.to_string())?
+    {
+        return Ok(false);
+    }
+    let cursor = window
+        .app_handle()
+        .cursor_position()
+        .map_err(|error| error.to_string())?;
+    let origin = window.inner_position().map_err(|error| error.to_string())?;
+    let geometry = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    surface_hover_contains(
+        &layout_contract()?,
+        &geometry,
+        [cursor.x, cursor.y],
+        [origin.x, origin.y],
+    )
+}
+
+fn surface_hover_contains(
+    contract: &LayoutContract,
+    geometry: &WindowGeometrySession,
+    cursor: [f64; 2],
+    origin: [i32; 2],
+) -> Result<bool, String> {
+    let (Some(state), Some(bounds)) = (geometry.state, geometry.active_bounds) else {
+        return Ok(false);
+    };
+    let scale = geometry.surface_scale;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Ok(false);
+    }
+    let point = [0, 1].map(|axis| {
+        ((cursor[axis] - f64::from(origin[axis])) / scale + f64::from(bounds[axis])).floor() as i32
+    });
+    // Visibility affects rendering/click routing, but not the hover-to-reveal union.
+    let surface = geometry
+        .control_surface
+        .as_ref()
+        .map(|current| ControlSurfaceLayout {
+            bubble_visible: true,
+            input_visible: true,
+            ..current.clone()
+        });
+    let regions = window_interaction::logical_hit_regions_with_control_surface(
+        contract,
+        state,
+        geometry
+            .portrait_alpha_mask
+            .as_ref()
+            .map(character_presentation::PortraitAlphaMask::source_size),
+        geometry.portrait_scale_percent,
+        surface.as_ref(),
+    )?;
+    Ok(window_interaction::classify_logical_point_with_alpha(
+        &regions,
+        geometry.portrait_alpha_mask.as_ref(),
+        point,
+    )? != window_interaction::HitKind::Transparent)
+}
+
+#[tauri::command]
+fn set_pet_input_surface_presented(
+    window: WebviewWindow,
+    presented: bool,
+    duration_ms: u32,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if duration_ms > 1_000 {
+        return Err("PET_SURFACE_PRESENTATION_DURATION_INVALID".to_string());
+    }
+    glass.set_control_surface_presented(&window, presented, duration_ms)
 }
 
 fn composer_tool_dock_hit_regions(
@@ -2168,30 +3265,53 @@ fn set_pet_tool_dock_surface(
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    let geometry = session
+    let mut geometry = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
     if rect.is_some() && geometry.context_menu_open {
         return Err("PET_CONTEXT_MENU_OPEN".to_string());
     }
-    let application = geometry
-        .application
-        .clone()
-        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-    let base = geometry
-        .context_menu_hit_regions
-        .as_ref()
-        .or(geometry.hit_regions.as_ref())
-        .cloned()
-        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-    drop(geometry);
-    let next = match rect {
-        Some(rect) => {
-            composer_tool_dock_hit_regions(&layout_contract()?, &application, &base, rect)?
-        }
-        None => base,
-    };
-    apply_precise_hit_regions(&window, &next)
+    if geometry.context_menu_open
+        && current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow
+    {
+        geometry.tool_dock_hit_rect = None;
+        drop(geometry);
+        return NativeWindowInteractionBackend
+            .relax_hit_regions(&window)
+            .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
+    }
+    geometry.apply_tool_dock_surface(&layout_contract()?, rect, |next| {
+        apply_precise_hit_regions(&window, next)
+    })
+}
+
+impl WindowGeometrySession {
+    fn apply_tool_dock_surface(
+        &mut self,
+        contract: &LayoutContract,
+        rect: Option<[u32; 4]>,
+        apply: impl FnOnce(&window_interaction::PhysicalHitRegions) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let application = self
+            .application
+            .clone()
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+        let base = self
+            .context_menu_hit_regions
+            .as_ref()
+            .or(self.hit_regions.as_ref())
+            .cloned()
+            .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+        let next = match rect {
+            Some(rect) => composer_tool_dock_hit_regions(contract, &application, &base, rect)?,
+            None => base,
+        };
+        apply(&next)?;
+        // The dynamic cursor router reads session state, independently of the native window region.
+        // Publish only after the native update succeeds, and retire it when the dock closes.
+        self.tool_dock_hit_rect = rect.and_then(|_| next.interactive.last().copied());
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -2315,6 +3435,7 @@ async fn chat_cancel(
 #[tauri::command]
 async fn start_screen_capture(
     window: WebviewWindow,
+    payload: capture::CaptureStartRequest,
     lifecycle: State<'_, ShellLifecycleState>,
     captures: State<'_, Arc<capture::CaptureManager>>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
@@ -2339,15 +3460,22 @@ async fn start_screen_capture(
         .unwrap_or_else(|| "#4b9ac4".to_string());
     let task_generation_id = generation_id.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
+        let character_session_id = screen_session_id(&handle)?;
         let monitors = capture::monitor_descriptors()?;
         let monitor_count = monitors.len();
-        let (session_id, labels, previous) =
-            capture_manager.begin_session(&task_generation_id, &monitors)?;
+        let (session_id, labels, previous) = capture_manager.begin_session(
+            &task_generation_id,
+            &character_session_id,
+            payload.capture_revision,
+            &monitors,
+        )?;
         capture::close_windows(&app, &previous);
         if let Err(error) =
             capture::show_overlays(&app, &session_id, &labels, &monitors, &theme_primary)
         {
-            if let Some(active_labels) = capture_manager.cancel_session(&session_id, &labels[0]) {
+            if let Some((_, active_labels)) =
+                capture_manager.cancel_session(&session_id, &labels[0])
+            {
                 capture::close_windows(&app, &active_labels);
             }
             return Err(error);
@@ -2379,6 +3507,21 @@ async fn start_screen_capture(
     Ok(())
 }
 
+fn screen_session_id(handle: &shell_lifecycle::ShellLifecycleHandle) -> Result<String, String> {
+    let payload = settings_response_payload(handle.settings_request(
+        None,
+        "screen.session",
+        json!({}),
+        std::time::Duration::from_secs(5),
+    )?)?;
+    payload
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .ok_or_else(|| "SCREEN_SESSION_INVALID".to_string())
+}
+
 #[tauri::command]
 async fn capture_selected_region(
     window: WebviewWindow,
@@ -2404,16 +3547,22 @@ async fn capture_selected_region(
         {
             return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
         }
+        if screen_session_id(&handle)? != task_claim.character_session_id {
+            return Err("SCREEN_SESSION_STALE".to_string());
+        }
         let descriptor = manager.capture(&task_claim, local_rect)?;
         let token = descriptor.resource_token.clone();
         let response = handle.settings_request(
             None,
             "screen.attach",
-            json!({"resource": descriptor}),
+            json!({"resource": descriptor, "sessionId": task_claim.character_session_id}),
             std::time::Duration::from_secs(10),
         );
         manager.release(&token, &task_generation_id);
         let payload = settings_response_payload(response?)?;
+        if screen_session_id(&handle)? != task_claim.character_session_id {
+            return Err("SCREEN_SESSION_STALE".to_string());
+        }
         let attachment_id = payload
             .get("attachmentId")
             .and_then(Value::as_str)
@@ -2443,6 +3592,7 @@ async fn capture_selected_region(
             .filter(|value| (1..=6).contains(value))
             .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
         Ok(capture::ScreenAttachmentPublication {
+            capture_revision: task_claim.capture_revision,
             attachment_id: attachment_id.to_string(),
             item_id: item_id.to_string(),
             width,
@@ -2472,15 +3622,16 @@ async fn capture_selected_region(
             Ok(())
         }
         Err(code) => {
-            let (stable_code, public_message) =
-                if code.contains("manual screen attachment limit exceeded") {
-                    (
-                        "SCREEN_ATTACHMENT_LIMIT_EXCEEDED",
-                        "每条消息最多附加 6 张截图。",
-                    )
-                } else {
-                    (code.as_str(), "截图失败，请检查系统屏幕录制权限后重试。")
-                };
+            let (stable_code, public_message) = if code.contains("SCREEN_SESSION_STALE") {
+                ("SCREEN_SESSION_STALE", "角色已切换，截图已取消。")
+            } else if code.contains("manual screen attachment limit exceeded") {
+                (
+                    "SCREEN_ATTACHMENT_LIMIT_EXCEEDED",
+                    "每条消息最多附加 6 张截图。",
+                )
+            } else {
+                (code.as_str(), "截图失败，请检查系统屏幕录制权限后重试。")
+            };
             record_screen_capture(
                 &runtime_log,
                 &generation_id,
@@ -2491,7 +3642,7 @@ async fn capture_selected_region(
             let _ = app.emit_to(
                 "main",
                 capture::ERROR_EVENT,
-                json!({"message": public_message}),
+                json!({"message": public_message, "captureRevision": claim.capture_revision}),
             );
             Err(public_message.to_string())
         }
@@ -2505,7 +3656,7 @@ async fn cancel_screen_capture(
     lifecycle: State<'_, ShellLifecycleState>,
     captures: State<'_, Arc<capture::CaptureManager>>,
 ) -> Result<(), String> {
-    let labels = captures
+    let (capture_revision, labels) = captures
         .cancel_session(&payload.session_id, window.label())
         .ok_or_else(|| "SCREEN_CAPTURE_SESSION_STALE".to_string())?;
     capture::close_windows(window.app_handle(), &labels);
@@ -2521,9 +3672,11 @@ async fn cancel_screen_capture(
         Severity::Info,
         json!({"outcome": "cancelled"}),
     );
-    let _ = window
-        .app_handle()
-        .emit_to("main", capture::CANCELLED_EVENT, ());
+    let _ = window.app_handle().emit_to(
+        "main",
+        capture::CANCELLED_EVENT,
+        json!({"captureRevision": capture_revision}),
+    );
     Ok(())
 }
 
@@ -2639,8 +3792,10 @@ async fn capture_screen_awareness_frame(
     let manager = captures.inner().clone();
     let task_generation_id = generation_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let character_session_id = screen_session_id(&handle)?;
         manager.capture_screen_awareness_frame(
             &task_generation_id,
+            &character_session_id,
             cursor.x.round() as i32,
             cursor.y.round() as i32,
             &payload.resolution,
@@ -2679,12 +3834,14 @@ async fn attach_screen_awareness_batch(
         .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
     let manager = captures.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let descriptors = manager.materialize_screen_awareness_batch(&generation_id)?;
+        let character_session_id = screen_session_id(&handle)?;
+        let descriptors =
+            manager.materialize_screen_awareness_batch(&generation_id, &character_session_id)?;
         let count = descriptors.len();
         let response = handle.settings_request(
             None,
             "screen.attachBatch",
-            json!({"resources": descriptors}),
+            json!({"resources": descriptors, "sessionId": character_session_id}),
             std::time::Duration::from_secs(15),
         );
         manager.release_descriptors(&descriptors, &generation_id);
@@ -2890,555 +4047,12 @@ fn record_screen_capture(
     );
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TtsPrepareSegmentRequest {
-    operation_id: String,
-    segment_index: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TtsCancelSynthesisRequest {
-    operation_id: String,
-}
-
-#[tauri::command]
-async fn tts_prepare_segment(
-    window: WebviewWindow,
-    payload: TtsPrepareSegmentRequest,
-    app_handle: tauri::AppHandle,
-    lifecycle: State<'_, ShellLifecycleState>,
-    audio_state: State<'_, audio::AudioState>,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<audio::AudioDescriptor, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
-        return Err("TTS_SEGMENT_NOT_AUTHORIZED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "STALE_GENERATION".to_string())?;
-    let callback_app = app_handle.clone();
-    let observer_handle = handle.clone();
-    let observer_generation = generation_id.clone();
-    let playback_log = runtime_log.inner().clone();
-    let playback_generation = generation_id.clone();
-    let manager = audio_state.manager(
-        &generation_id,
-        Arc::new(move |event| {
-            record_tts_playback(&playback_log, &playback_generation, &event);
-            let _ = callback_app.emit_to("main", "sakura://tts-playback-event", event.clone());
-            observe_tts_playback(observer_handle.clone(), observer_generation.clone(), event);
-        }),
-    )?;
-    let registration_revision = manager.registration_revision()?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.synthesis.start",
-        json!({
-            "operationId": payload.operation_id,
-            "segmentIndex": payload.segment_index,
-        }),
-        std::time::Duration::from_secs(305),
-    )
-    .await?;
-    if handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .as_deref()
-        != Some(generation_id.as_str())
-    {
-        return Err("STALE_GENERATION".to_string());
-    }
-    let descriptor: audio::AudioDescriptor =
-        serde_json::from_value(settings_response_payload(response)?)
-            .map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
-    manager.register_at_revision(&descriptor, registration_revision)?;
-    app_handle
-        .emit_to(
-            "main",
-            "sakura://tts-synthesis-event",
-            json!({
-                "type": "tts.synthesis.ready",
-                "operationId": payload.operation_id,
-                "segmentIndex": payload.segment_index,
-                "descriptor": descriptor.clone(),
-            }),
-        )
-        .map_err(|_| "TTS_PUBLICATION_FAILED".to_string())?;
-    Ok(descriptor)
-}
-
-#[tauri::command]
-async fn tts_cancel_synthesis(
-    window: WebviewWindow,
-    payload: TtsCancelSynthesisRequest,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<bool, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
-        return Err("TTS_SYNTHESIS_CANCELLED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let response = dispatch_settings_request(
-        handle,
-        None,
-        "tts.synthesis.cancel",
-        json!({"operationId": payload.operation_id}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    Ok(settings_response_payload(response)?
-        .get("accepted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false))
-}
-
-#[tauri::command]
-fn tts_play_prepared(
-    window: WebviewWindow,
-    payload: audio::PlayPreparedRequest,
-    lifecycle: State<'_, ShellLifecycleState>,
-    audio_state: State<'_, audio::AudioState>,
-) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let generation_id = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "STALE_GENERATION".to_string())?
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "STALE_GENERATION".to_string())?;
-    audio_state.current(&generation_id)?.play(payload)
-}
-
-#[tauri::command]
-fn tts_stop_playback(
-    window: WebviewWindow,
-    audio_state: State<'_, audio::AudioState>,
-) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    // Playback belongs to the active AudioState, not to whichever Core
-    // generation happens to be queryable at command time. During restart the
-    // lifecycle intentionally exposes no available generation.
-    audio_state.shutdown();
-    Ok(())
-}
-
-#[tauri::command]
-async fn settings_voice_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let mut payload = settings_response_payload(response)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "TTS_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_voice_status_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.status.get",
-        json!({}),
-        std::time::Duration::from_secs(4),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let mut payload = settings_response_payload(response)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "TTS_STATUS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_voice_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    draft: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.settings.save",
-        json!({"settings": draft}),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    let payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    Ok(payload)
-}
-
-fn observe_tts_playback(
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    generation_id: String,
-    event: audio::AudioPlaybackEvent,
-) {
-    tauri::async_runtime::spawn(async move {
-        let current = handle.available_generation_id().ok().flatten();
-        if current.as_deref() != Some(generation_id.as_str()) {
-            return;
-        }
-        let error_code = event.error.as_ref().map(|error| error.code);
-        let _ = dispatch_settings_request(
-            handle,
-            None,
-            "tts.playback.observe",
-            json!({
-                "playbackId": event.playback_id,
-                "recordingId": event.recording_id,
-                "state": event.state,
-                "errorCode": error_code,
-            }),
-            std::time::Duration::from_secs(2),
-        )
-        .await;
-    });
-}
-
-fn record_tts_playback(
-    runtime_log: &RuntimeLogService,
-    generation_id: &str,
-    event: &audio::AudioPlaybackEvent,
-) {
-    let (event_name, message, severity) = match event.state {
-        "started" => (
-            "tts.playback.started",
-            "TTS playback started",
-            Severity::Info,
-        ),
-        "finished" => (
-            "tts.playback.finished",
-            "TTS playback finished",
-            Severity::Info,
-        ),
-        "stopped" => (
-            "tts.playback.stopped",
-            "TTS playback stopped",
-            Severity::Info,
-        ),
-        _ => (
-            "tts.playback.failed",
-            "TTS playback failed",
-            Severity::Error,
-        ),
-    };
-    let code = event.error.as_ref().map(|error| error.code);
-    let _ = runtime_log.submit(
-        RuntimeLogEvent::rust(severity, "tts", event_name, message)
-            .correlation(Correlation {
-                generation_id: Some(generation_id.to_string()),
-                request_id: Some(event.playback_id.clone()),
-                ..Correlation::default()
-            })
-            .attributes(json!({
-                "playbackId": event.playback_id,
-                "recordingId": event.recording_id,
-                "status": event.state,
-                "code": code,
-            })),
-    );
-}
-
-#[tauri::command]
-fn current_chat_presentation_timing(
-    window: WebviewWindow,
-    timing: State<'_, chat_settings::ChatPresentationTimingState>,
-) -> Result<chat_settings::ChatPresentationTiming, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    timing.get()
-}
-
-#[tauri::command]
-fn current_subtitle_language(
-    window: WebviewWindow,
-    subtitle: State<'_, chat_settings::SubtitleLanguageState>,
-) -> Result<chat_settings::SubtitleLanguage, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    subtitle.get()
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HistoryBootstrap {
-    core_generation_id: String,
-    character_id: String,
-    assistant_name: String,
-    subtitle_language: chat_settings::SubtitleLanguage,
-    theme_tokens: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct HistoryPageRequest {
-    core_generation_id: String,
-    character_id: String,
-    before_cursor: Option<String>,
-}
-
-async fn request_history_page(
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    character_id: String,
-    before_cursor: Option<String>,
-) -> Result<history_window::HistoryPage, String> {
-    let response = dispatch_settings_request(
-        handle,
-        None,
-        "ui.history.page",
-        json!({
-            "expectedCharacterId": character_id,
-            "beforeCursor": before_cursor,
-            "limit": history_window::HISTORY_PAGE_LIMIT,
-        }),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    history_window::validate_page(settings_response_payload(response)?)
-}
-
-#[tauri::command]
-fn history_bootstrap(
-    window: WebviewWindow,
-    lifecycle: State<'_, ShellLifecycleState>,
-    resources: State<'_, character_presentation::CharacterPresentationState>,
-    appearance: State<'_, character_appearance::CharacterAppearanceState>,
-    subtitle: State<'_, chat_settings::SubtitleLanguageState>,
-) -> Result<HistoryBootstrap, String> {
-    history_window::validate_history_window(&window)?;
-    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
-    let active_appearance = appearance.persisted(&presentation.presentation)?;
-    if active_appearance.core_generation_id != presentation.presentation.generation_id
-        || active_appearance.character_id != presentation.presentation.character_id
-    {
-        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
-    }
-    Ok(HistoryBootstrap {
-        core_generation_id: presentation.presentation.generation_id,
-        character_id: presentation.presentation.character_id,
-        assistant_name: presentation.presentation.display_name,
-        subtitle_language: subtitle.get()?,
-        theme_tokens: active_appearance.values.theme_tokens,
-    })
-}
-
-#[tauri::command]
-async fn history_page(
-    window: WebviewWindow,
-    request: HistoryPageRequest,
-    lifecycle: State<'_, ShellLifecycleState>,
-    resources: State<'_, character_presentation::CharacterPresentationState>,
-) -> Result<history_window::HistoryPage, String> {
-    history_window::validate_history_window(&window)?;
-    if request.core_generation_id.trim().is_empty()
-        || request.character_id.trim().is_empty()
-        || request
-            .before_cursor
-            .as_deref()
-            .is_some_and(|cursor| cursor.trim().is_empty())
-    {
-        return Err("HISTORY_REQUEST_INVALID".to_string());
-    }
-    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
-    if presentation.presentation.generation_id != request.core_generation_id
-        || presentation.presentation.character_id != request.character_id
-    {
-        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
-    }
-    let page = request_history_page(
-        settings_core_handle(&lifecycle)?,
-        request.character_id.clone(),
-        request.before_cursor,
-    )
-    .await?;
-    if page.core_generation_id != request.core_generation_id
-        || page.character_id != request.character_id
-    {
-        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
-    }
-    Ok(page)
-}
-
-#[tauri::command]
-fn close_history_window(window: WebviewWindow) -> Result<(), String> {
-    history_window::validate_history_window(&window)?;
-    window.destroy().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn reveal_history_window(window: WebviewWindow) -> Result<(), String> {
-    history_window::validate_history_window(&window)?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn runtime_log_viewer_bootstrap(
-    window: WebviewWindow,
-    runtime_log: State<'_, RuntimeLogService>,
-    resources: State<'_, character_presentation::CharacterPresentationState>,
-    appearance: State<'_, character_appearance::CharacterAppearanceState>,
-) -> Result<runtime_log_window::RuntimeLogViewerBootstrap, String> {
-    runtime_log_window::validate_runtime_log_window(&window)?;
-    let theme_tokens = resources
-        .active_presentation()
-        .ok()
-        .flatten()
-        .and_then(|presentation| appearance.current(&presentation).ok())
-        .map(|publication| publication.values.theme_tokens)
-        .unwrap_or_else(runtime_log_window::fallback_theme_tokens);
-    let snapshot = runtime_log.viewer_snapshot(None).map_err(str::to_string)?;
-    Ok(runtime_log_window::RuntimeLogViewerBootstrap {
-        schema_version: 1,
-        theme_tokens,
-        snapshot,
-    })
-}
-
-#[tauri::command]
-fn runtime_log_viewer_snapshot(
-    window: WebviewWindow,
-    after_sequence: Option<u64>,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<runtime_log::RuntimeLogViewerSnapshot, String> {
-    runtime_log_window::validate_runtime_log_window(&window)?;
-    runtime_log
-        .viewer_snapshot(after_sequence)
-        .map_err(str::to_string)
-}
-
-#[tauri::command]
-fn close_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
-    runtime_log_window::validate_runtime_log_window(&window)?;
-    window.destroy().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn reveal_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
-    runtime_log_window::validate_runtime_log_window(&window)?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn settings_chat_presentation_timing_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    timing: State<'_, chat_settings::ChatPresentationTimingState>,
-) -> Result<chat_settings::ChatPresentationTimingSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    timing.snapshot(shell.generation()?)
-}
-
-#[tauri::command]
-fn settings_chat_presentation_timing_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    values: chat_settings::ChatPresentationTiming,
-    app_handle: tauri::AppHandle,
-    shell: State<'_, product_shell::ProductShellState>,
-    timing: State<'_, chat_settings::ChatPresentationTimingState>,
-) -> Result<chat_settings::ChatPresentationTiming, String> {
-    product_shell::validate_settings_window(&window)?;
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    let saved = timing.save(values)?;
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    app_handle
-        .emit_to("main", chat_settings::CHAT_TIMING_CHANGED_EVENT, saved)
-        .map_err(|error| format!("CHAT_TIMING_PUBLICATION_FAILED: {error}"))?;
-    Ok(saved)
-}
-
 #[tauri::command]
 fn current_character_presentation(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
 ) -> Result<character_presentation::FrontendCharacterPresentation, String> {
     load_current_character_presentation(&lifecycle, &resources)
-}
-
-fn load_current_character_presentation(
-    lifecycle: &ShellLifecycleState,
-    resources: &character_presentation::CharacterPresentationState,
-) -> Result<character_presentation::FrontendCharacterPresentation, String> {
-    let handle = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-
-    let value = handle
-        .character_presentation()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-    let presentation =
-        character_presentation::CharacterPresentation::from_value(&value, &generation_id)?;
-    resources.activate(presentation, &generation_id)
 }
 
 #[derive(Serialize)]
@@ -3452,6 +4066,7 @@ struct SettingsCharacterAppearanceSnapshot {
 }
 
 const CHARACTER_VISUAL_PREVIEW_EVENT: &str = "sakura://character-visual-preview";
+const SETTINGS_APPEARANCE_ACTIVE_EVENT: &str = "sakura://settings-appearance-active";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3485,6 +4100,15 @@ fn emit_appearance(
         );
     }
     Ok(())
+}
+
+fn emit_settings_appearance_active(
+    app_handle: &tauri::AppHandle,
+    active: bool,
+) -> Result<(), String> {
+    app_handle
+        .emit_to("main", SETTINGS_APPEARANCE_ACTIVE_EVENT, active)
+        .map_err(|error| format!("failed to publish settings appearance state: {error}"))
 }
 
 #[tauri::command]
@@ -3540,6 +4164,7 @@ fn settings_character_appearance_get(
     let window_generation = shell.generation()?;
     let (publication, cancelled) =
         appearance.open(window_generation, &presentation.presentation)?;
+    emit_settings_appearance_active(&app_handle, true)?;
     if let Some(cancelled) = cancelled {
         emit_appearance(&app_handle, cancelled)?;
     }
@@ -3555,7 +4180,7 @@ fn settings_character_appearance_get(
 }
 
 #[tauri::command]
-fn settings_character_visual_preview(
+async fn settings_character_visual_preview(
     window: WebviewWindow,
     character_id: String,
     revision: u64,
@@ -3574,12 +4199,20 @@ fn settings_character_visual_preview(
         .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-    let (presentation, accepted) = resources.preview_character(
-        character_id.trim(),
+    let reply = dispatch_settings_request(
+        settings_core_handle(&lifecycle)?,
+        None,
+        "studio.character.presentation",
+        json!({"characterId": character_id.trim()}),
+        std::time::Duration::from_secs(15),
+    )
+    .await?;
+    let source = character_presentation::CharacterPresentation::from_value(
+        &settings_response_payload(reply)?,
         &generation_id,
-        window_generation,
-        revision,
     )?;
+    let (presentation, accepted) =
+        resources.preview_character(source, &generation_id, window_generation, revision)?;
     let appearance = appearance.persisted(&presentation.presentation)?;
     let publication = CharacterVisualPreviewPublication {
         schema_version: 1,
@@ -3631,6 +4264,9 @@ fn settings_character_appearance_scale_gesture(
 ) -> Result<(), String> {
     let publication_trace = trace.clone();
     interaction_latency::command("settings.portrait-scale-gesture", trace, || {
+        if std::env::var_os("SAKURA_TRACE_MACOS_SURFACE").is_some() {
+            eprintln!("[macos-surface-snapshot] phase=settings-gesture active={active}");
+        }
         product_shell::validate_settings_window(&window)?;
         interaction_latency::lock(
             geometry_state.inner(),
@@ -3663,6 +4299,11 @@ fn settings_character_appearance_scale_frame(
 ) -> Result<(), String> {
     let publication_trace = trace.clone();
     interaction_latency::command("settings.portrait-scale-frame", trace, || {
+        if std::env::var_os("SAKURA_TRACE_MACOS_SURFACE").is_some() {
+            eprintln!(
+                "[macos-surface-snapshot] phase=settings-frame scale={portrait_scale_percent}"
+            );
+        }
         product_shell::validate_settings_window(&window)?;
         if !(window_interaction::PORTRAIT_SCALE_MIN_PERCENT
             ..=window_interaction::PORTRAIT_SCALE_MAX_PERCENT)
@@ -3776,9 +4417,10 @@ fn settings_character_appearance_layout_frame(
             "bubbleMaxHeight": values.bubble_max_height,
             "controlPanelVerticalOffset": values.control_panel_vertical_offset,
             "inputBarOffset": values.input_bar_offset,
-            // Only Windows owns one backing envelope covering every legal layout adjustment.
-            // Other platforms must continue committing their native surface on each frame.
+            // Windows can paint immediately inside its resident envelope. macOS prepares a
+            // temporary control envelope on the first value change, then paints locally too.
             "deferNative": cfg!(windows),
+            "prepareNative": cfg!(target_os = "macos"),
         });
         if let Some(trace) = publication_trace {
             payload["trace"] = serde_json::to_value(trace)
@@ -3848,75 +4490,6 @@ fn sync_settings_window_appearance_background(
     product_shell::set_settings_window_theme_background(window, background)
 }
 
-fn settings_core_handle(
-    lifecycle: &State<'_, ShellLifecycleState>,
-) -> Result<shell_lifecycle::ShellLifecycleHandle, String> {
-    lifecycle
-        .handle
-        .clone()
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())
-}
-
-fn settings_response_payload(response: Value) -> Result<Value, String> {
-    if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        return response
-            .get("payload")
-            .cloned()
-            .filter(Value::is_object)
-            .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    let code = response
-        .pointer("/error/code")
-        .and_then(Value::as_str)
-        .unwrap_or("SETTINGS_REQUEST_FAILED");
-    let message = response
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or("设置请求失败。");
-    let feature = response
-        .pointer("/error/details/feature")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let field = response
-        .pointer("/error/details/field")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    Err(format!("{code}|{feature}|{field}|{message}"))
-}
-
-async fn dispatch_settings_request(
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    request_id: Option<String>,
-    name: &'static str,
-    payload: Value,
-    deadline: std::time::Duration,
-) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        handle.settings_request(request_id.as_deref(), name, payload, deadline)
-    })
-    .await
-    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
-}
-
-fn assert_settings_identity(
-    shell: &product_shell::ProductShellState,
-    handle: &shell_lifecycle::ShellLifecycleHandle,
-    window_generation: u64,
-    core_generation_id: &str,
-) -> Result<(), String> {
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    let current = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    if current != core_generation_id {
-        return Err("SETTINGS_CORE_GENERATION_MISMATCH".to_string());
-    }
-    Ok(())
-}
-
 fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
     let object = value
         .as_object()
@@ -3948,8 +4521,8 @@ fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
         let item = character
             .as_object()
             .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
-        if item.len() != 3
-            || !["id", "displayName", "hasVoice"]
+        if item.len() != 4
+            || !["id", "displayName", "hasVoice", "hasExportableVoice"]
                 .iter()
                 .all(|key| item.contains_key(*key))
         {
@@ -3960,11 +4533,15 @@ fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
             .get("displayName")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let has_voice = item.get("hasVoice").and_then(Value::as_bool);
+        let has_exportable_voice = item.get("hasExportableVoice").and_then(Value::as_bool);
         if id.is_empty()
             || id.len() > 128
             || display_name.is_empty()
             || display_name.len() > 128
-            || item.get("hasVoice").and_then(Value::as_bool).is_none()
+            || has_voice.is_none()
+            || has_exportable_voice.is_none()
+            || (has_exportable_voice == Some(true) && has_voice != Some(true))
             || !ids.insert(id)
         {
             return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
@@ -3978,12 +4555,69 @@ fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_character_settings_change(value: Value) -> Result<(Value, String), String> {
+fn validate_character_export_receipt(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "CHARACTER_EXPORT_RESPONSE_INVALID".to_string())?;
+    let expected = ["schemaVersion", "outputPath", "message"];
+    let output_path = object
+        .get("outputPath")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let message = object
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if object.len() != expected.len()
+        || expected.iter().any(|key| !object.contains_key(*key))
+        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || output_path.is_empty()
+        || output_path.len() > 4096
+        || message.is_empty()
+        || message.len() > 4608
+    {
+        return Err("CHARACTER_EXPORT_RESPONSE_INVALID".to_string());
+    }
+    Ok(())
+}
+
+fn validate_character_settings_change(value: Value) -> Result<(Value, String, Value), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
     let expected = ["schemaVersion", "snapshot", "changePlan"];
-    if object.len() != expected.len()
+    let requirements = object
+        .get("pluginRequirements")
+        .cloned()
+        .unwrap_or(json!([]));
+    if !requirements.as_array().is_some_and(|items| {
+        items.len() <= 64
+            && items.iter().all(|item| {
+                matches!(
+                    item.get("kind").and_then(Value::as_str),
+                    Some("visual" | "tts")
+                ) && item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                    && matches!(
+                        item.get("reasonCode").and_then(Value::as_str),
+                        Some(
+                            "COMPATIBLE"
+                                | "PLUGIN_DISABLED"
+                                | "PLUGIN_INCOMPATIBLE"
+                                | "PLUGIN_MISSING"
+                        )
+                    )
+                    && item.get("plugins").is_some_and(Value::is_array)
+                    && item.get("candidates").is_some_and(Value::is_array)
+            })
+    }) {
+        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
+    }
+    if object
+        .keys()
+        .any(|key| !expected.contains(&key.as_str()) && key != "pluginRequirements")
         || expected.iter().any(|key| !object.contains_key(*key))
         || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
     {
@@ -3997,10 +4631,19 @@ fn validate_character_settings_change(value: Value) -> Result<(Value, String), S
     let change_plan = object
         .get("changePlan")
         .and_then(Value::as_str)
-        .filter(|value| matches!(*value, "unchanged" | "core_restart_required"))
+        .filter(|value| {
+            matches!(
+                *value,
+                "unchanged"
+                    | "core_restart_required"
+                    | "visual_rebind"
+                    | "character_refresh"
+                    | "character_switch"
+            )
+        })
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?
         .to_string();
-    Ok((snapshot, change_plan))
+    Ok((snapshot, change_plan, requirements))
 }
 
 fn character_restart_target(snapshot: &Value, change_plan: &str) -> Result<Option<String>, String> {
@@ -4100,7 +4743,7 @@ fn observe_character_restart(
         });
 }
 
-async fn character_settings_request(
+async fn character_settings_payload_request(
     window: &WebviewWindow,
     shell: &product_shell::ProductShellState,
     lifecycle: &ShellLifecycleState,
@@ -4120,7 +4763,21 @@ async fn character_settings_request(
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
-    let snapshot = settings_response_payload(response)?;
+    let payload = settings_response_payload(response)?;
+    Ok((payload, handle))
+}
+
+async fn character_settings_request(
+    window: &WebviewWindow,
+    shell: &product_shell::ProductShellState,
+    lifecycle: &ShellLifecycleState,
+    name: &'static str,
+    payload: Value,
+    deadline: std::time::Duration,
+) -> Result<(Value, shell_lifecycle::ShellLifecycleHandle), String> {
+    let (snapshot, handle) =
+        character_settings_payload_request(window, shell, lifecycle, name, payload, deadline)
+            .await?;
     validate_character_settings_snapshot(&snapshot)?;
     Ok((snapshot, handle))
 }
@@ -4140,6 +4797,7 @@ async fn character_settings_change_request(
         String,
         u64,
         Option<String>,
+        Value,
     ),
     String,
 > {
@@ -4156,7 +4814,7 @@ async fn character_settings_change_request(
     let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
     let change = settings_response_payload(response)?;
-    let (snapshot, change_plan) = validate_character_settings_change(change)?;
+    let (snapshot, change_plan, requirements) = validate_character_settings_change(change)?;
     // Resolve every restart identity before the caller can enqueue any
     // lifecycle side effect.
     let target_character_id = character_restart_target(&snapshot, &change_plan)?;
@@ -4167,6 +4825,7 @@ async fn character_settings_change_request(
         core_generation_id,
         core_generation_number,
         target_character_id,
+        requirements,
     ))
 }
 
@@ -4189,6 +4848,112 @@ fn character_switch_receipt(
         "previousCoreGenerationId": previous_core_generation_id,
         "restartState": restart_state,
     }))
+}
+
+fn finish_character_settings_change(
+    app_handle: tauri::AppHandle,
+    audio_state: &audio::AudioState,
+    snapshot: Value,
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    previous_generation_id: String,
+    previous_generation_number: u64,
+    target_character_id: Option<String>,
+) -> Result<Value, String> {
+    if let Some(target_character_id) = target_character_id {
+        handle
+            .restart()
+            .map_err(|_| "CHARACTER_RESTART_REQUEST_FAILED".to_string())?;
+        audio_state.shutdown();
+        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
+            let _ = history.emit(
+                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+                json!({
+                    "previousGenerationId": previous_generation_id.clone(),
+                    "characterId": target_character_id.clone(),
+                    "reset": true,
+                    "ready": false,
+                }),
+            );
+        }
+        observe_character_restart(
+            app_handle,
+            handle,
+            previous_generation_id.clone(),
+            previous_generation_number,
+            target_character_id,
+        );
+        return character_switch_receipt(snapshot, previous_generation_id, "requested");
+    }
+    character_switch_receipt(snapshot, previous_generation_id, "not_required")
+}
+
+#[tauri::command]
+async fn settings_character_visuals_get(
+    window: WebviewWindow,
+    character_id: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    let (snapshot, _) = character_settings_payload_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.visuals.get",
+        json!({"characterId": character_id}),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    validate_character_visuals_snapshot(&snapshot, &character_id)?;
+    Ok(snapshot)
+}
+
+fn validate_character_visuals_snapshot(value: &Value, character_id: &str) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Choice {
+        id: String,
+        name: String,
+        provider_id: Option<String>,
+        install_id: Option<String>,
+        reason_code: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Snapshot {
+        schema_version: u32,
+        character_id: String,
+        default_resource_id: Option<String>,
+        preference_resource_id: Option<String>,
+        resources: Vec<Choice>,
+    }
+    let invalid = || "CHARACTER_VISUAL_SETTINGS_INVALID".to_string();
+    let parsed: Snapshot = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+    let bounded = |text: &str, limit| !text.is_empty() && text.len() <= limit;
+    let mut ids = std::collections::HashSet::new();
+    if parsed.schema_version != 1
+        || parsed.character_id != character_id
+        || parsed.resources.len() > 32
+        || parsed.resources.iter().any(|item| {
+            !bounded(&item.id, 128)
+                || !ids.insert(item.id.clone())
+                || !bounded(&item.name, 768)
+                || !bounded(&item.reason_code, 128)
+                || item
+                    .provider_id
+                    .as_ref()
+                    .is_some_and(|id| !bounded(id, 128))
+                || item
+                    .install_id
+                    .as_ref()
+                    .is_some_and(|id| !bounded(id, 1024))
+        })
+        || [&parsed.default_resource_id, &parsed.preference_resource_id]
+            .iter()
+            .any(|id| id.as_ref().is_some_and(|id| !ids.contains(id)))
+    {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -4289,6 +5054,7 @@ async fn settings_character_import(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
+        requirements,
     ) = character_settings_change_request(
         &window,
         &shell,
@@ -4298,37 +5064,23 @@ async fn settings_character_import(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    if let Some(target_character_id) = target_character_id {
-        handle
-            .restart()
-            .map_err(|_| "CHARACTER_RESTART_REQUEST_FAILED".to_string())?;
-        audio_state.shutdown();
-        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
-            let _ = history.emit(
-                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
-                json!({
-                    "previousGenerationId": previous_generation_id.clone(),
-                    "characterId": target_character_id.clone(),
-                    "reset": true,
-                    "ready": false,
-                }),
-            );
-        }
-        observe_character_restart(
-            app_handle,
-            handle,
-            previous_generation_id.clone(),
-            previous_generation_number,
-            target_character_id,
-        );
-        return character_switch_receipt(snapshot, previous_generation_id, "requested");
-    }
-    character_switch_receipt(snapshot, previous_generation_id, "not_required")
+    let mut receipt = finish_character_settings_change(
+        app_handle,
+        &audio_state,
+        snapshot,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+    )?;
+    receipt["pluginRequirements"] = requirements;
+    Ok(receipt)
 }
 
 #[tauri::command]
-async fn settings_character_select(
+async fn settings_character_import_voice(
     window: WebviewWindow,
+    path: String,
     character_id: String,
     app_handle: tauri::AppHandle,
     shell: State<'_, product_shell::ProductShellState>,
@@ -4342,13 +5094,80 @@ async fn settings_character_select(
         previous_generation_id,
         previous_generation_number,
         target_character_id,
+        requirements,
+    ) = character_settings_change_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.settings.import_voice",
+        json!({"path": path, "characterId": character_id}),
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    let mut receipt = finish_character_settings_change(
+        app_handle,
+        &audio_state,
+        snapshot,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+    )?;
+    receipt["pluginRequirements"] = requirements;
+    Ok(receipt)
+}
+
+#[tauri::command]
+async fn settings_character_export(
+    window: WebviewWindow,
+    path: String,
+    character_id: String,
+    kind: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    let (receipt, _) = character_settings_payload_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.settings.export",
+        json!({"path": path, "characterId": character_id, "kind": kind}),
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    validate_character_export_receipt(&receipt)?;
+    Ok(receipt)
+}
+
+#[tauri::command]
+async fn settings_character_select(
+    window: WebviewWindow,
+    character_id: String,
+    visual_selections: Option<Value>,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, audio::AudioState>,
+) -> Result<Value, String> {
+    let mut payload = json!({"characterId": character_id});
+    if let Some(selections) = visual_selections {
+        payload["visualSelections"] = selections;
+    }
+    let (
+        snapshot,
+        change_plan,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+        _requirements,
     ) = character_settings_change_request(
         &window,
         &shell,
         &lifecycle,
         "characters.settings.select",
-        json!({"characterId": character_id}),
-        std::time::Duration::from_secs(15),
+        payload,
+        std::time::Duration::from_secs(60),
     )
     .await?;
     if let Some(target_character_id) = target_character_id {
@@ -4376,7 +5195,22 @@ async fn settings_character_select(
         );
         return character_switch_receipt(snapshot, previous_generation_id, "requested");
     }
-    character_switch_receipt(snapshot, previous_generation_id, "not_required")
+    let mut receipt =
+        character_switch_receipt(snapshot, previous_generation_id.clone(), "not_required")?;
+    if change_plan == "character_switch" {
+        audio_state.shutdown();
+        receipt["characterChanged"] = json!(true);
+        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
+            let _ = history.emit(
+                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+                json!({
+                    "previousGenerationId": previous_generation_id,
+                    "characterId": receipt["targetCharacterId"], "reset": true, "ready": true,
+                }),
+            );
+        }
+    }
+    Ok(receipt)
 }
 
 fn validate_storage_settings_snapshot(value: &Value) -> Result<(), String> {
@@ -4477,167 +5311,16 @@ async fn settings_storage_get(
     .await
 }
 
-fn current_executable_directory() -> Result<std::path::PathBuf, String> {
-    std::env::current_exe()
-        .map_err(|_| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())?
-        .parent()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())
-}
-
 #[tauri::command]
-async fn settings_update_get(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<update_settings::UpdateSnapshot, String> {
+fn settings_macos_open_system_settings(window: WebviewWindow) -> Result<(), String> {
     product_shell::validate_settings_window(&window)?;
-    update_settings::check(
-        &app_handle,
-        &current_executable_directory()?,
-        runtime_log.inner(),
-        "manual",
-    )
-    .await
+    macos_open_help::open_system_settings()
 }
 
 #[tauri::command]
-fn settings_update_cached_get(
-    window: WebviewWindow,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-) -> Result<Option<update_settings::UpdateSnapshot>, String> {
+fn settings_macos_open_apple_support(window: WebviewWindow) -> Result<(), String> {
     product_shell::validate_settings_window(&window)?;
-    coordinator.checked_snapshot()
-}
-
-#[tauri::command]
-fn settings_update_preferences_get(
-    window: WebviewWindow,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-) -> Result<update_settings::UpdatePreferencesSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    coordinator.preferences()
-}
-
-#[tauri::command]
-fn settings_update_preferences_set(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-    auto_check_enabled: bool,
-) -> Result<update_settings::UpdatePreferencesSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    let snapshot = coordinator.set_auto_check_enabled(auto_check_enabled)?;
-    let _ = app_handle.emit_to(
-        "main",
-        update_settings::UPDATE_PREFERENCES_CHANGED_EVENT,
-        &snapshot,
-    );
-    Ok(snapshot)
-}
-
-#[tauri::command]
-async fn startup_update_check(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<update_settings::StartupUpdateSnapshot, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    Ok(coordinator
-        .startup_check(
-            &app_handle,
-            &current_executable_directory()?,
-            runtime_log.inner(),
-        )
-        .await)
-}
-
-#[tauri::command]
-async fn chat_update_announce(
-    window: WebviewWindow,
-    lifecycle: State<'_, ShellLifecycleState>,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-) -> Result<chat_bridge::ChatSendPublication, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let (event, version) = coordinator.pending_event()?;
-    let handle = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
-    let pending = handle
-        .chat_bridge()?
-        .send_update_available(window.label(), event, version)?;
-    tauri::async_runtime::spawn_blocking(move || pending.wait())
-        .await
-        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
-}
-
-#[tauri::command]
-fn settings_about_get(window: WebviewWindow) -> Result<update_settings::AboutSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    Ok(update_settings::about_snapshot())
-}
-
-#[tauri::command]
-fn settings_about_open_website(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_website()
-}
-
-#[tauri::command]
-fn settings_about_open_repository(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_repository()
-}
-
-#[tauri::command]
-fn settings_about_open_changelog(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_changelog()
-}
-
-#[tauri::command]
-fn settings_about_open_sponsor(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_sponsor()
-}
-
-#[tauri::command]
-async fn settings_update_install(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    lifecycle: State<'_, ShellLifecycleState>,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    let lifecycle_handle = lifecycle.handle.clone();
-    update_settings::install(
-        &app_handle,
-        &current_executable_directory()?,
-        runtime_log.inner(),
-        move || {
-            lifecycle_handle
-                .as_ref()
-                .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
-                .shutdown_and_wait(std::time::Duration::from_secs(5))
-                .map_err(str::to_string)
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-fn settings_update_open_portable_download(
-    window: WebviewWindow,
-    url: String,
-) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_portable_download(&url)
+    macos_open_help::open_apple_support()
 }
 
 fn open_directory(path: &std::path::Path) -> Result<(), String> {
@@ -4789,38 +5472,6 @@ async fn settings_provider_model_save(
 }
 
 #[tauri::command]
-async fn settings_tools_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tools.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let mut payload = settings_response_payload(response)?;
-    tool_settings::validate_snapshot(&payload, false)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "TOOLS_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
 async fn settings_screen_awareness_get(
     window: WebviewWindow,
     shell: State<'_, product_shell::ProductShellState>,
@@ -4892,317 +5543,6 @@ async fn settings_screen_awareness_save(
 }
 
 #[tauri::command]
-async fn settings_tools_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    settings: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    tool_settings::validate_draft(&settings)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tools.settings.save",
-        json!({"settings": settings}),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    let payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    tool_settings::validate_snapshot(&payload, true)?;
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_plugins_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "plugins.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(4),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let mut payload = settings_response_payload(response)?;
-    plugin_settings::validate_snapshot(&payload, false)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "PLUGIN_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_plugins_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    plugin_id: String,
-    section_id: String,
-    values: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    plugin_settings::validate_settings_save_request(&plugin_id, &section_id, &values)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "plugins.settings.save",
-        json!({"pluginId": plugin_id, "sectionId": section_id, "values": values}),
-        std::time::Duration::from_secs(8),
-    )
-    .await?;
-    let payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    plugin_settings::validate_settings_save_result(&payload)?;
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_plugins_enabled_set(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    revision: String,
-    install_id: String,
-    enabled: bool,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    plugin_settings::validate_enabled_request(&revision, &install_id)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "plugins.enabled.set",
-        json!({"revision": revision, "installId": install_id, "enabled": enabled}),
-        std::time::Duration::from_secs(12),
-    )
-    .await?;
-    let mut payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    plugin_settings::validate_management_result(&payload)?;
-    if payload.get("managementAction").and_then(Value::as_str) != Some("enabled_changed")
-        || payload.get("installId").and_then(Value::as_str) != Some(install_id.as_str())
-    {
-        return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
-    }
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_plugins_action(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    plugin_id: String,
-    section_id: String,
-    action_id: String,
-    values: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "plugins.settings.action",
-        json!({"pluginId": plugin_id, "sectionId": section_id, "actionId": action_id, "values": values}),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    let payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    plugin_settings::validate_action_result(&payload)?;
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_plugins_install(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    revision: String,
-    source_kind: String,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let selected = match source_kind.as_str() {
-        "zip" => {
-            rfd::AsyncFileDialog::new()
-                .add_filter("Sakura 插件 ZIP", &["zip"])
-                .pick_file()
-                .await
-        }
-        "folder" => rfd::AsyncFileDialog::new().pick_folder().await,
-        _ => return Err("PLUGIN_INSTALL_SOURCE_INVALID".to_string()),
-    };
-    let Some(selected) = selected else {
-        return Ok(json!({"cancelled": true}));
-    };
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let source_path = selected
-        .path()
-        .to_str()
-        .filter(|value| !value.is_empty() && value.len() <= 4096)
-        .ok_or_else(|| "PLUGIN_INSTALL_SOURCE_INVALID".to_string())?;
-    if source_kind == "zip"
-        && selected
-            .path()
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_none_or(|value| !value.eq_ignore_ascii_case("zip"))
-    {
-        return Err("PLUGIN_INSTALL_SOURCE_INVALID".to_string());
-    }
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "plugins.install",
-        json!({
-            "revision": revision,
-            "sourceKind": source_kind,
-            "sourcePath": source_path,
-        }),
-        std::time::Duration::from_secs(30),
-    )
-    .await?;
-    let mut payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    plugin_settings::validate_management_result(&payload)?;
-    if payload.get("managementAction").and_then(Value::as_str) != Some("installed") {
-        return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
-    }
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_plugins_uninstall(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    revision: String,
-    install_id: String,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "plugins.uninstall",
-        json!({"revision": revision, "installId": install_id}),
-        std::time::Duration::from_secs(30),
-    )
-    .await?;
-    let mut payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    plugin_settings::validate_management_result(&payload)?;
-    if payload.get("managementAction").and_then(Value::as_str) != Some("uninstalled")
-        || payload.get("installId").and_then(Value::as_str) != Some(install_id.as_str())
-    {
-        return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
-    }
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_plugins_collection(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    operation: String,
-    plugin_id: String,
-    section_id: String,
-    collection_id: String,
-    payload: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    plugin_settings::validate_collection_request(
-        &operation,
-        &plugin_id,
-        &section_id,
-        &collection_id,
-        &payload,
-    )?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let mut request_payload = payload
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "PLUGIN_COLLECTION_REQUEST_INVALID".to_string())?;
-    request_payload.insert("pluginId".to_string(), json!(plugin_id));
-    request_payload.insert("sectionId".to_string(), json!(section_id));
-    request_payload.insert("collectionId".to_string(), json!(collection_id));
-    let request_name = match operation.as_str() {
-        "query" => "plugins.collection.query",
-        "create" => "plugins.collection.create",
-        "update" => "plugins.collection.update",
-        "delete" => "plugins.collection.delete",
-        _ => return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string()),
-    };
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        request_name,
-        Value::Object(request_payload),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    let result = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    plugin_settings::validate_collection_result(&operation, &result)?;
-    Ok(result)
-}
-
-#[tauri::command]
 async fn settings_provider_model_probe(
     window: WebviewWindow,
     window_generation: u64,
@@ -5266,7 +5606,7 @@ fn begin_control_surface_preview(
     revision: u64,
     trace: Option<interaction_latency::InteractionTraceContext>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     interaction_latency::command("main.begin-control-surface-preview", trace, || {
         if window.label() != "main" {
             return Err("PET_WINDOW_REQUIRED".to_string());
@@ -5277,26 +5617,211 @@ fn begin_control_surface_preview(
             "geometry-mutex-acquired",
         )?;
         if !geometry.request_control_surface_preview(revision) {
-            return Ok(());
+            return Ok(cfg!(target_os = "macos"));
         }
-        if cfg!(windows) {
-            NativeWindowInteractionBackend
-                .relax_hit_regions(&window)
-                .map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        {
+            let application = geometry
+                .application
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let control_surface = geometry
+                .control_surface
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let guard_started = std::time::Instant::now();
+            let guard_rectangles = build_control_surface_gesture_guard_rectangles(
+                &layout_contract()?,
+                application,
+                control_surface,
+                geometry.portrait_scale_percent,
+                geometry.bubble_auto_expand,
+            )?;
+            interaction_latency::stage_elapsed("control-surface-guard-build-return", guard_started);
+            window_interaction::expand_native_hit_region(&window, &guard_rectangles)?;
         }
         geometry.activate_control_surface_preview(revision);
-        Ok(())
+        Ok(cfg!(target_os = "macos"))
     })
 }
 
 #[tauri::command]
+async fn prepare_control_surface_preview(
+    window: WebviewWindow,
+    revision: u64,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<Option<LayoutApplication>, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let result = (|| {
+            let mut geometry = geometry_state
+                .lock()
+                .map_err(|_| "window geometry state is unavailable".to_string())?;
+            if !geometry.can_end_control_surface_preview(revision) {
+                return Ok(None);
+            }
+            geometry.require_context_menu_closed()?;
+            let previous = geometry
+                .application
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            if geometry.control_surface_preview_prepared {
+                return Ok(Some(previous.clone()));
+            }
+            let surface = geometry
+                .control_surface
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let contract = layout_contract()?;
+            let application = control_surface_preview_application(
+                &contract,
+                previous,
+                surface,
+                geometry.bubble_auto_expand,
+            )?;
+            let regions =
+                apply_control_preview_surface(&window, &contract, &application, &geometry, &glass)?;
+            geometry.physical_local_anchor = Some(application.physical_local_anchor);
+            geometry.active_bounds = Some(application.active_bounds);
+            geometry.application = Some(application.clone());
+            geometry.hit_regions = Some(regions);
+            geometry.control_surface_preview_prepared = true;
+            Ok(Some(application))
+        })();
+        result
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (revision, geometry_state, glass);
+        Ok(None)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_control_preview_surface(
+    window: &WebviewWindow,
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+    geometry: &WindowGeometrySession,
+    glass: &input_visual_effect::InputVisualEffectState,
+) -> Result<window_interaction::PhysicalHitRegions, String> {
+    let surface = geometry
+        .control_surface
+        .as_ref()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let regions = apply_native_pet_surface_transaction(
+        window,
+        contract,
+        application,
+        Some(surface),
+        geometry.portrait_alpha_mask.as_ref(),
+        geometry.portrait_scale_percent,
+        geometry.application.as_ref(),
+        geometry.hit_regions.as_ref(),
+        false,
+    )?;
+    if let Err(error) = glass.update_control_surface(window, surface, application, None, None) {
+        let rollback = rollback_pet_surface(
+            window,
+            geometry.application.as_ref(),
+            geometry.hit_regions.as_ref(),
+        )
+        .and_then(|_| {
+            if let Some(previous) = geometry.application.as_ref() {
+                glass.update_control_surface(window, surface, previous, None, None)?;
+            }
+            Ok(())
+        });
+        return match rollback {
+            Ok(()) => Err(format!(
+                "PET_SURFACE_COMMIT_FAILED_PREVIOUS_RESTORED: {error}"
+            )),
+            Err(rollback_error) => Err(format!(
+                "PET_SURFACE_COMMIT_FAILED: {error}; PET_SURFACE_ROLLBACK_FAILED: {rollback_error}"
+            )),
+        };
+    }
+    Ok(regions)
+}
+
+#[tauri::command]
+fn preview_pet_control_surface(
+    window: WebviewWindow,
+    preview_revision: u64,
+    control_surface: ControlSurfaceLayout,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    layout_contract()?.validate_control_surface(PresentationState::Product, &control_surface)?;
+    let mut geometry = geometry_state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if !geometry.can_end_control_surface_preview(preview_revision) {
+        return Ok(());
+    }
+    let application = geometry
+        .application
+        .clone()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let previous = geometry.control_surface.clone();
+    let input_surface_changed = previous.as_ref().is_none_or(|previous| {
+        previous.input_rect != control_surface.input_rect
+            || previous.input_visible != control_surface.input_visible
+    });
+    #[cfg(target_os = "macos")]
+    {
+        let regions = build_native_interaction_regions(
+            &layout_contract()?,
+            &application,
+            Some(&control_surface),
+            geometry.portrait_alpha_mask.as_ref(),
+            geometry.portrait_scale_percent,
+        )?;
+        // macOS uses a cursor router, not a visible window region. Keep it precise inside
+        // the temporary backing; transparent gaps must never become interactive.
+        apply_precise_hit_regions(&window, &regions)?;
+        geometry.hit_regions = Some(regions);
+    }
+    // Deferred settings frames still own the latest logical geometry. Portrait-scale settlement
+    // and drag authorization must not fall back to the control surface from before the slider
+    // session merely because the expensive precise native region is intentionally postponed.
+    geometry.control_surface = Some(control_surface.clone());
+    if input_surface_changed {
+        glass.update_control_surface(
+            &window,
+            &control_surface,
+            &application,
+            previous.as_ref(),
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+// Windows must settle the region on the IPC/UI thread, like begin/preview. A worker holding
+// geometry while hwnd()/scale_factor()/SetWindowRgn wait for the UI thread deadlocks when the
+// next slider command reaches that thread and tries to acquire geometry. Other platforms keep
+// their existing asynchronous dispatch for native surface preparation/settlement.
+#[cfg_attr(windows, tauri::command)]
+#[cfg_attr(not(windows), tauri::command(async))]
 fn end_control_surface_preview(
     window: WebviewWindow,
     revision: u64,
     trace: Option<interaction_latency::InteractionTraceContext>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-) -> Result<(), String> {
-    interaction_latency::command("main.end-control-surface-preview", trace, || {
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<Option<LayoutApplication>, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let result = interaction_latency::command("main.end-control-surface-preview", trace, || {
         if window.label() != "main" {
             return Err("PET_WINDOW_REQUIRED".to_string());
         }
@@ -5306,23 +5831,67 @@ fn end_control_surface_preview(
             "geometry-mutex-acquired",
         )?;
         if !geometry.can_end_control_surface_preview(revision) {
-            return Ok(());
+            return Ok(None);
         }
-        geometry.control_surface_preview_active = false;
         if geometry.context_menu_open || geometry.portrait_hit_relaxed {
-            return Ok(());
+            geometry.control_surface_preview_active = false;
+            geometry.control_surface_preview_prepared = false;
+            return Ok(None);
         }
-        let hit_regions = geometry
-            .hit_regions
+        #[cfg(target_os = "macos")]
+        if geometry.control_surface_preview_prepared {
+            let contract = layout_contract()?;
+            let previous = geometry
+                .application
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let monitor = target_monitor(&window, Some(previous.portrait_anchor))?;
+            let application = compute_pet_window_layout(
+                &contract,
+                previous.state,
+                previous.revision,
+                &monitor,
+                Some(previous.portrait_anchor),
+                AnchorPolicy::UserPositioned,
+                geometry.portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                geometry.portrait_alpha_mask.as_ref(),
+                false,
+                false,
+            )?;
+            let regions =
+                apply_control_preview_surface(&window, &contract, &application, &geometry, &glass)?;
+            geometry.physical_local_anchor = Some(application.physical_local_anchor);
+            geometry.active_bounds = Some(application.active_bounds);
+            geometry.application = Some(application.clone());
+            geometry.hit_regions = Some(regions);
+            geometry.control_surface_preview_active = false;
+            geometry.control_surface_preview_prepared = false;
+            return Ok(Some(application));
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = glass;
+        let application = geometry
+            .application
             .clone()
-            .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-        if let Err(error) = apply_precise_hit_regions(&window, &hit_regions) {
-            // Keep the preview flag retryable so a later settle can restore the precise mask.
-            geometry.control_surface_preview_active = true;
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+        let hit_regions = build_native_interaction_regions(
+            &layout_contract()?,
+            &application,
+            geometry.control_surface.as_ref(),
+            geometry.portrait_alpha_mask.as_ref(),
+            geometry.portrait_scale_percent,
+        )?;
+        if let Err(error) = apply_precise_hit_regions_with_synchronous_redraw(&window, &hit_regions)
+        {
             return Err(error);
         }
-        Ok(())
-    })
+        geometry.hit_regions = Some(hit_regions);
+        geometry.control_surface_preview_active = false;
+        geometry.control_surface_preview_prepared = false;
+        Ok(None)
+    });
+    result
 }
 
 #[tauri::command]
@@ -5358,31 +5927,71 @@ fn prepare_portrait_transition(
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
     let contract = layout_contract()?;
     let monitor = target_monitor(&window, geometry.portrait_anchor)?;
-    // Keep the native frame stable for the duration of the cross-fade, but only
-    // across the two portraits involved in this transition. macOS must not use
-    // its Windows-style resident all-layout envelope in the idle path.
-    let old_bounds = window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
-        &contract,
-        state,
-        geometry.portrait_scale_percent,
-        geometry.control_surface.as_ref(),
-        geometry.portrait_alpha_mask.as_ref(),
-    )?;
-    let new_bounds = window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
-        &contract,
-        state,
-        geometry.portrait_scale_percent,
-        geometry.control_surface.as_ref(),
-        Some(&next_mask),
-    )?;
-    let application = apply_window_layout(
-        &contract,
-        state,
-        geometry.applied_revision,
-        &monitor,
-        geometry.portrait_anchor,
-        window_interaction::union_surface_bounds(old_bounds, new_bounds),
-    )?;
+    let application = if current_portrait_scale_platform_capabilities().resident_stable_bounds {
+        // Windows already owns a canonical backing envelope that covers every portrait and
+        // control layout. Keep it byte-for-byte stable and only widen the precise Win32 region
+        // below so the two cross-fade layers remain visible and interactive.
+        geometry
+            .application
+            .clone()
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?
+    } else {
+        let current_application = geometry
+            .application
+            .clone()
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+        let old_visible_bounds =
+            window_interaction::logical_visible_surface_bounds_with_control_surface(
+                &contract,
+                state,
+                geometry.portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                geometry.portrait_alpha_mask.as_ref(),
+            )?;
+        let new_visible_bounds =
+            window_interaction::logical_visible_surface_bounds_with_control_surface(
+                &contract,
+                state,
+                geometry.portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                Some(&next_mask),
+            )?;
+        let visible_transition_bounds =
+            window_interaction::union_surface_bounds(old_visible_bounds, new_visible_bounds);
+        if window_interaction::logical_surface_contains(
+            current_application.active_bounds,
+            visible_transition_bounds,
+        ) {
+            current_application
+        } else {
+            // macOS/Linux do not retain the Windows all-layout envelope. Keep their native frame
+            // stable for the duration of the cross-fade across just the two involved portraits.
+            let old_bounds =
+                window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+                    &contract,
+                    state,
+                    geometry.portrait_scale_percent,
+                    geometry.control_surface.as_ref(),
+                    geometry.portrait_alpha_mask.as_ref(),
+                )?;
+            let new_bounds =
+                window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+                    &contract,
+                    state,
+                    geometry.portrait_scale_percent,
+                    geometry.control_surface.as_ref(),
+                    Some(&next_mask),
+                )?;
+            apply_window_layout(
+                &contract,
+                state,
+                geometry.applied_revision,
+                &monitor,
+                geometry.portrait_anchor,
+                window_interaction::union_surface_bounds(old_bounds, new_bounds),
+            )?
+        }
+    };
     let mut combined = build_native_interaction_regions(
         &contract,
         &application,
@@ -5429,11 +6038,10 @@ fn prepare_portrait_transition(
     let geometry_unchanged = previous_application
         .as_ref()
         .is_some_and(|previous| same_surface_geometry(previous, &application));
-    // During a macOS portrait transition, avoid re-submitting an unchanged AppKit frame.
-    // Even setFrame_display(false) can make WebKit rebuild the root surface before the CSS
-    // cross-fade has painted, exposing the stale stage as a clipped bubble/input frame. The hit
-    // router can be widened in place; defer all native frame/glass work until the final frame.
-    let commit = if cfg!(target_os = "macos") && geometry_unchanged {
+    // Never re-submit an unchanged native frame. AppKit/WebView2 can rebuild the root surface
+    // before the CSS cross-fade has painted, exposing the stale stage as a clipped or shifted
+    // bubble/input frame. The platform hit router can be widened in place.
+    let commit = if geometry_unchanged {
         apply_precise_hit_regions(&window, &combined)
     } else {
         NativeWindowInteractionBackend
@@ -5489,7 +6097,7 @@ fn begin_portrait_scale_preview(
     trace: Option<interaction_latency::InteractionTraceContext>,
     lifecycle: State<'_, ShellLifecycleState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+    _glass: State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<Option<PortraitScalePreview>, String> {
     interaction_latency::command("main.begin-portrait-scale-preview", trace, || {
         if window.label() != "main" {
@@ -5523,12 +6131,12 @@ fn begin_portrait_scale_preview(
         geometry.portrait_transition_active = false;
         geometry.portrait_transition_drag = None;
 
-        let mut preview_application = if defers_native_portrait_scale_frames() {
-            geometry.application.clone()
-        } else {
-            None
-        };
-        if cfg!(windows) && !geometry.portrait_scale_preview_active {
+        // Beginning a gesture does not itself change the native surface. Publishing the current
+        // application again would make the WebView rewrite every stage offset and layout variable
+        // on a no-op pointer press, which can invalidate the whole transparent layer on macOS.
+        let mut preview_application = None;
+        #[cfg(windows)]
+        if !geometry.portrait_scale_preview_active {
             let state = geometry
                 .state
                 .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
@@ -5540,10 +6148,16 @@ fn begin_portrait_scale_preview(
                 geometry.applied_revision,
                 &monitor,
                 geometry.portrait_anchor,
+                if geometry.anchor_user_positioned {
+                    AnchorPolicy::UserPositioned
+                } else {
+                    AnchorPolicy::Automatic
+                },
                 geometry.portrait_scale_percent,
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
                 true,
+                uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
             )?;
             let hit_regions = build_native_interaction_regions(
                 &contract,
@@ -5552,19 +6166,51 @@ fn begin_portrait_scale_preview(
                 geometry.portrait_alpha_mask.as_ref(),
                 geometry.portrait_scale_percent,
             )?;
+            let coarse_preview_regions = build_coarse_native_interaction_regions(
+                &contract,
+                &application,
+                geometry.control_surface.as_ref(),
+                geometry.portrait_alpha_mask.as_ref(),
+                window_interaction::PORTRAIT_SCALE_MAX_PERCENT,
+            )?;
             let previous_application = geometry.application.clone();
             let previous_regions = geometry.hit_regions.clone();
-            NativeWindowInteractionBackend
-                .relax_hit_regions(&window)
-                .map_err(|error| error.to_string())?;
+            let geometry_changed = previous_application
+                .as_ref()
+                .is_none_or(|previous| !same_surface_geometry(previous, &application));
+            // A one-time relaxation is needed only if this older session has not entered the
+            // resident Windows envelope yet. The steady-state settings session keeps a coarse
+            // maximum-scale portrait/control region instead of making the whole HWND clickable.
+            if geometry_changed {
+                NativeWindowInteractionBackend
+                    .relax_hit_regions(&window)
+                    .map_err(|error| error.to_string())?;
+            }
             apply_native_pet_surface_bounds_transaction(
                 &window,
                 &application,
                 previous_application.as_ref(),
                 previous_regions.as_ref(),
             )?;
+            if let Err(error) = apply_precise_hit_regions(&window, &coarse_preview_regions) {
+                if geometry_changed {
+                    return match rollback_pet_surface(
+                        &window,
+                        previous_application.as_ref(),
+                        previous_regions.as_ref(),
+                    ) {
+                        Ok(()) => Err(format!(
+                            "PET_SCALE_PREVIEW_REGION_FAILED_PREVIOUS_RESTORED: {error}"
+                        )),
+                        Err(rollback_error) => Err(format!(
+                            "PET_SCALE_PREVIEW_REGION_FAILED: {error}; PET_SURFACE_ROLLBACK_FAILED: {rollback_error}"
+                        )),
+                    };
+                }
+                return Err(error);
+            }
             if let Some(surface) = geometry.control_surface.as_ref() {
-                glass.update_control_surface(&window, surface, &application, None, None)?;
+                _glass.update_control_surface(&window, surface, &application, None, None)?;
             }
             geometry.portrait_anchor = Some(application.portrait_anchor);
             geometry.physical_local_anchor = Some(application.physical_local_anchor);
@@ -5575,45 +6221,41 @@ fn begin_portrait_scale_preview(
             preview_application = Some(application);
         }
 
-        // Keep this as an explicit platform branch instead of folding it into the Windows path:
-        // Win32 retains its stable HWND/all-layout envelope and SetWindowRgn transaction unchanged.
-        if cfg!(target_os = "macos") && !geometry.portrait_scale_preview_active {
+        #[cfg(target_os = "macos")]
+        if !geometry.portrait_scale_preview_active {
             let state = geometry
                 .state
                 .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
             let contract = layout_contract()?;
             let monitor = target_monitor(&window, geometry.portrait_anchor)?;
-            let application = compute_pet_window_layout(
+            let current_application = geometry
+                .application
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let stable_application = compute_pet_window_layout(
                 &contract,
                 state,
                 geometry.applied_revision,
                 &monitor,
                 geometry.portrait_anchor,
+                if geometry.anchor_user_positioned {
+                    AnchorPolicy::UserPositioned
+                } else {
+                    AnchorPolicy::Automatic
+                },
                 geometry.portrait_scale_percent,
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
                 true,
+                uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
             )?;
-            let previous_application = geometry.application.clone();
-            let previous_regions = geometry.hit_regions.clone();
-            let hit_regions = apply_native_pet_surface_transaction(
-                &window,
+            let preview = clip_portrait_scale_preview_application_to_work_area(
                 &contract,
-                &application,
-                geometry.control_surface.as_ref(),
-                geometry.portrait_alpha_mask.as_ref(),
-                geometry.portrait_scale_percent,
-                previous_application.as_ref(),
-                previous_regions.as_ref(),
-                geometry.portrait_hit_relaxed,
+                &monitor,
+                current_application,
+                stable_application,
             )?;
-            geometry.portrait_anchor = Some(application.portrait_anchor);
-            geometry.physical_local_anchor = Some(application.physical_local_anchor);
-            geometry.active_bounds = Some(application.active_bounds);
-            geometry.surface_scale = application.scale_factor * application.content_scale;
-            geometry.application = Some(application.clone());
-            geometry.hit_regions = Some(hit_regions);
-            preview_application = Some(application);
+            preview_application = Some(preview);
         }
 
         // GTK/GDK owns a separate Linux transaction. X11/XWayland can atomically move+resize;
@@ -5634,10 +6276,16 @@ fn begin_portrait_scale_preview(
                 geometry.applied_revision,
                 &monitor,
                 geometry.portrait_anchor,
+                if geometry.anchor_user_positioned {
+                    AnchorPolicy::UserPositioned
+                } else {
+                    AnchorPolicy::Automatic
+                },
                 geometry.portrait_scale_percent,
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
                 true,
+                uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
             )?;
             let previous_application = geometry.application.clone();
             let previous_regions = geometry.hit_regions.clone();
@@ -5674,6 +6322,7 @@ fn begin_portrait_scale_preview(
             application: preview_application,
             deferred_native: defers_native_portrait_scale_frames(),
             deferred_hit_regions: defers_portrait_scale_hit_region_frames(),
+            precommit_on_first_frame: cfg!(target_os = "macos"),
         }))
     })
 }
@@ -5683,6 +6332,7 @@ fn activate_portrait_hit_test(
     window: WebviewWindow,
     portrait_key: String,
     portrait_resource_id: Option<String>,
+    surface_size: Option<[u32; 2]>,
     revision: u64,
     portrait_scale_percent: u16,
     trace: Option<interaction_latency::InteractionTraceContext>,
@@ -5722,7 +6372,8 @@ fn activate_portrait_hit_test(
         }
         geometry.require_context_menu_closed()?;
         let transition_pending = cfg!(target_os = "macos") && geometry.portrait_transition_active;
-        let cache_matches = same_generation
+        let cache_matches = surface_size.is_none()
+            && same_generation
             && geometry.portrait_hit_key.as_deref() == Some(portrait_key.as_str())
             && geometry.portrait_hit_resource_id.as_deref() == portrait_resource_id.as_deref()
             && geometry.portrait_alpha_mask.is_some();
@@ -5734,11 +6385,27 @@ fn activate_portrait_hit_test(
         if !cache_matches {
             drop(geometry);
             let mask_started = std::time::Instant::now();
-            let alpha_mask = resources.portrait_alpha_mask(
-                &portrait_key,
-                portrait_resource_id.as_deref(),
-                &generation_id,
-            )?;
+            let alpha_mask = if let Some([width, height]) = surface_size {
+                if width == 0
+                    || height == 0
+                    || width > 8192
+                    || height > 8192
+                    || u64::from(width) * u64::from(height) > 40_000_000
+                {
+                    return Err("SURFACE_SIZE_INVALID".into());
+                }
+                character_presentation::PortraitAlphaMask::new(
+                    width,
+                    height,
+                    vec![255; (width * height) as usize],
+                )
+            } else {
+                resources.portrait_alpha_mask(
+                    &portrait_key,
+                    portrait_resource_id.as_deref(),
+                    &generation_id,
+                )?
+            };
             interaction_latency::stage_elapsed("portrait-mask-loaded", mask_started);
             geometry = interaction_latency::lock(
                 geometry_state.inner(),
@@ -5776,23 +6443,60 @@ fn activate_portrait_hit_test(
         let contract = layout_contract()?;
         let monitor = target_monitor(&window, geometry.portrait_anchor)?;
         let stabilize_portrait_scale = geometry.stabilizes_portrait_scale_bounds();
-        let defer_precise_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
+        let preserve_portrait_scale_anchor = preserves_portrait_anchor_for_scale_settlement(
+            geometry.portrait_scale_preview_active,
+            geometry.portrait_scale_gesture_active,
+        );
+        let defer_portrait_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
+        let defer_precise_hit_regions = geometry.defers_precise_surface_hit_regions();
         let defer_portrait_transition_native =
             cfg!(target_os = "macos") && geometry.portrait_transition_active;
         let portrait_alpha_mask = resolved_alpha_mask
             .as_ref()
             .or(geometry.portrait_alpha_mask.as_ref());
-        let application = compute_pet_window_layout(
-            &contract,
-            state,
-            geometry.applied_revision,
-            &monitor,
-            geometry.portrait_anchor,
-            portrait_scale_percent,
-            geometry.control_surface.as_ref(),
-            portrait_alpha_mask,
-            stabilize_portrait_scale,
-        )?;
+        let reusable_application = geometry.application.as_ref().filter(|application| {
+            can_reuse_resident_portrait_application(
+                current_portrait_scale_platform_capabilities().resident_stable_bounds,
+                application,
+                state,
+                geometry.applied_revision,
+                &monitor,
+            )
+        });
+        let application = match reusable_application {
+            Some(application) => application.clone(),
+            None => compute_pet_window_layout(
+                &contract,
+                state,
+                geometry.applied_revision,
+                &monitor,
+                geometry.portrait_anchor,
+                if geometry.anchor_user_positioned || preserve_portrait_scale_anchor {
+                    AnchorPolicy::UserPositioned
+                } else {
+                    AnchorPolicy::Automatic
+                },
+                portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                portrait_alpha_mask,
+                stabilize_portrait_scale,
+                uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
+            )?,
+        };
+        let application = if cfg!(target_os = "macos") && stabilize_portrait_scale {
+            let current_application = geometry
+                .application
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            clip_portrait_scale_preview_application_to_work_area(
+                &contract,
+                &monitor,
+                current_application,
+                application,
+            )?
+        } else {
+            application
+        };
         let previous_application = geometry.application.clone();
         let previous_regions = geometry.hit_regions.clone();
         let hit_regions = if defer_precise_hit_regions {
@@ -5862,7 +6566,10 @@ fn activate_portrait_hit_test(
         geometry.portrait_hit_key = Some(portrait_key);
         geometry.portrait_hit_resource_id = portrait_resource_id;
         geometry.portrait_hit_revision = revision;
-        geometry.portrait_hit_relaxed = defer_precise_hit_regions;
+        // A concurrent control-surface preview keeps a coarse HWND region, but it must not masquerade
+        // as an unfinished portrait gesture. end_control_surface_preview owns the final precise
+        // region once both previews have actually ended.
+        geometry.portrait_hit_relaxed = defer_portrait_hit_regions;
         geometry.portrait_scale_preview_active = stabilize_portrait_scale;
         geometry.portrait_scale_percent = portrait_scale_percent;
         geometry.portrait_transition_active = false;
@@ -5976,10 +6683,16 @@ fn settle_portrait_scale_surface(
         geometry.applied_revision,
         &monitor,
         geometry.portrait_anchor,
+        if geometry.anchor_user_positioned {
+            AnchorPolicy::UserPositioned
+        } else {
+            AnchorPolicy::Automatic
+        },
         geometry.portrait_scale_percent,
         geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
         false,
+        uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
     )?;
     let previous_application = geometry.application.clone();
     let previous_regions = geometry.hit_regions.clone();
@@ -6048,12 +6761,518 @@ fn record_runtime_diagnostics(
     Ok(())
 }
 
-fn character_protocol_response(
+fn studio_method_name(method: &str) -> Result<&'static str, String> {
+    match method {
+        "studio.bootstrap" => Ok("studio.bootstrap"),
+        "studio.plugin.requirements" => Ok("studio.plugin.requirements"),
+        "studio.visual.catalog" => Ok("studio.visual.catalog"),
+        "studio.visual.previews" => Ok("studio.visual.previews"),
+        "studio.visual.open" => Ok("studio.visual.open"),
+        "studio.visual.thumbnail" => Ok("studio.visual.thumbnail"),
+        "studio.visual.create" => Ok("studio.visual.create"),
+        "studio.visual.export" => Ok("studio.visual.export"),
+        "studio.visual.import" => Ok("studio.visual.import"),
+        "studio.character.open" => Ok("studio.character.open"),
+        "studio.character.create" => Ok("studio.character.create"),
+        "studio.character.publish" => Ok("studio.character.publish"),
+        "studio.draft.save" => Ok("studio.draft.save"),
+        "studio.draft.discard" => Ok("studio.draft.discard"),
+        "studio.workspace.release" => Ok("studio.workspace.release"),
+        "studio.asset.import" => Ok("studio.asset.import"),
+        "studio.reference.preview" => Ok("studio.reference.preview"),
+        "studio.archive.export" => Ok("studio.archive.export"),
+        "studio.operation.cancel" => Ok("studio.operation.cancel"),
+        _ => Err("STUDIO_COMMAND_UNKNOWN".to_string()),
+    }
+}
+
+fn validate_studio_payload(payload: &Value) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?;
+    fn contains_private_path(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => object.iter().any(|(key, item)| {
+                matches!(key.as_str(), "packageDir" | "sourcePath")
+                    || (!matches!(key.as_str(), "data" | "visualData")
+                        && contains_private_path(item))
+            }),
+            Value::Array(items) => items.iter().any(contains_private_path),
+            _ => false,
+        }
+    }
+    if object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || contains_private_path(payload)
+    {
+        return Err("STUDIO_RESPONSE_INVALID".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_character_studio(
+    window: WebviewWindow,
+    character_id: String,
+    resource_id: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+    topmost: State<'_, product_shell::PetTopmostState>,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    let character_id = character_id.trim();
+    if character_id.is_empty() || character_id.len() > 128 {
+        return Err("STUDIO_CHARACTER_ID_INVALID".to_string());
+    }
+    if resource_id
+        .as_ref()
+        .is_some_and(|id| id.trim().is_empty() || id.len() > 128)
+    {
+        return Err("STUDIO_RESOURCE_ID_INVALID".to_string());
+    }
+    // Tauri 同步命令运行在 WebView 事件循环线程。WebView2 处理当前 IPC 时不能在同一线程
+    // 创建另一个 WebView，否则设置请求会一直等待，角色控件也会保持禁用。异步命令会先离开
+    // 当前 WebView 回调栈，再创建工坊窗口。
+    character_studio_window::show_or_focus(
+        &app_handle,
+        character_id,
+        resource_id.as_deref(),
+        state.inner(),
+        topmost.inner(),
+    )
+}
+
+#[tauri::command]
+async fn studio_bootstrap(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+) -> Result<Value, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
+    state.bind_generation(&generation_id)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    let shell_appearance = appearance.current(&presentation.presentation)?;
+    let page_background = shell_appearance
+        .values
+        .theme_tokens
+        .get("pageBackground")
+        .ok_or_else(|| "APPEARANCE_THEME_INVALID".to_string())?;
+    product_shell::set_settings_window_theme_background(&window, page_background)?;
+    let initial_character_id = state.initial_character_id()?;
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "studio.bootstrap",
+        json!({"initialCharacterId": initial_character_id}),
+        std::time::Duration::from_secs(15),
+    )
+    .await?;
+    let mut payload = settings_response_payload(response)?;
+    validate_studio_payload(&payload)?;
+    payload["initialResourceId"] =
+        serde_json::to_value(state.initial_resource_id()?).map_err(|error| error.to_string())?;
+    payload["shellThemeTokens"] = serde_json::to_value(shell_appearance.values.theme_tokens)
+        .map_err(|error| format!("STUDIO_THEME_SERIALIZE_FAILED: {error}"))?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn studio_request(
+    window: WebviewWindow,
+    method: String,
+    params: Value,
+    app_handle: tauri::AppHandle,
+    lifecycle: State<'_, ShellLifecycleState>,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+) -> Result<Value, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    if !params.is_object() {
+        return Err("STUDIO_REQUEST_INVALID".to_string());
+    }
+    let name = studio_method_name(method.trim())?;
+    if name == "studio.bootstrap" {
+        return Err("STUDIO_COMMAND_UNKNOWN".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let (previous_generation_id, _) = handle
+        .available_generation_identity()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
+    state.bind_generation(&previous_generation_id)?;
+    let deadline = if matches!(
+        name,
+        "studio.character.publish"
+            | "studio.asset.import"
+            | "studio.archive.export"
+            | "studio.visual.import"
+            | "studio.visual.export"
+    ) {
+        std::time::Duration::from_secs(30 * 60)
+    } else {
+        std::time::Duration::from_secs(30)
+    };
+    let response = dispatch_settings_request(handle.clone(), None, name, params, deadline).await?;
+    let mut payload = settings_response_payload(response)?;
+
+    if name == "studio.visual.open" || name == "studio.visual.thumbnail" {
+        let presentation = character_presentation::CharacterPresentation::from_value(
+            &payload["presentation"],
+            &previous_generation_id,
+        )?;
+        let scope_id = payload["providerScopeId"]
+            .as_str()
+            .ok_or("VISUAL_EDITOR_INVALID")?
+            .to_owned();
+        let root = payload
+            .as_object_mut()
+            .and_then(|value| value.remove("assetRootPath"))
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or("VISUAL_EDITOR_ROOT_INVALID")?;
+        let binding = presentation
+            .visual
+            .as_ref()
+            .ok_or("VISUAL_EDITOR_INVALID")?
+            .binding_id
+            .clone();
+        let authorize = if name == "studio.visual.thumbnail" {
+            character_presentation::CharacterPresentationState::authorize_thumbnail
+        } else {
+            character_presentation::CharacterPresentationState::authorize_editor
+        };
+        payload["presentation"] = serde_json::to_value(authorize(
+            &resources,
+            presentation,
+            &previous_generation_id,
+            &scope_id,
+            std::path::Path::new(&root),
+        )?)
+        .map_err(|_| "VISUAL_EDITOR_INVALID")?;
+        payload["assetBaseUrl"] =
+            json!(resources.editor_asset_base(&previous_generation_id, &binding));
+    }
+    if name == "studio.visual.catalog" {
+        if let Some(items) = payload["items"].as_array() {
+            resources.retain_editor_catalog(items);
+        }
+    }
+    if name == "studio.visual.previews" {
+        let items = payload["items"]
+            .as_array_mut()
+            .ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
+        for item in items {
+            let source = item
+                .as_object_mut()
+                .and_then(|item| item.remove("sourcePath"));
+            item["previewUrl"] = Value::Null;
+            if let Some(source) = source.and_then(|value| value.as_str().map(ToOwned::to_owned)) {
+                let media_type = item["mediaType"]
+                    .as_str()
+                    .ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
+                let size = item["byteLength"]
+                    .as_u64()
+                    .ok_or("STUDIO_PREVIEW_RESPONSE_INVALID")?;
+                if let Ok(preview) = state.register_preview(
+                    std::path::Path::new(&source),
+                    media_type,
+                    size,
+                    &previous_generation_id,
+                ) {
+                    item["previewUrl"] = json!(preview.preview_url);
+                }
+            }
+        }
+    }
+    if matches!(
+        name,
+        "studio.character.open"
+            | "studio.character.create"
+            | "studio.draft.discard"
+            | "studio.workspace.release"
+    ) {
+        resources.clear_editors();
+    }
+
+    if name == "studio.reference.preview" {
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        let source_path = object
+            .remove("sourcePath")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or_else(|| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        let media_type = object
+            .get("mediaType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        let byte_length = object
+            .get("byteLength")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        let registration = state.register_preview(
+            std::path::Path::new(&source_path),
+            media_type,
+            byte_length,
+            &previous_generation_id,
+        )?;
+        payload = serde_json::to_value(registration)
+            .map_err(|_| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("schemaVersion".to_string(), json!(1));
+        }
+    }
+    validate_studio_payload(&payload)?;
+
+    if name == "studio.character.publish" {
+        payload["runtimeReload"] = if payload.get("applyError").is_some() {
+            json!("failed")
+        } else {
+            json!("not_required")
+        };
+        if let Some(error) = payload.get("applyError").cloned() {
+            payload["reloadError"] = error;
+        }
+        let _ = app_handle.emit_to(
+            product_shell::SETTINGS_WINDOW_LABEL,
+            character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+            (),
+        );
+    }
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn studio_choose_source(
+    window: WebviewWindow,
+    kind: String,
+    multiple: bool,
+) -> Result<Value, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    let dialog = rfd::AsyncFileDialog::new().set_title("选择角色工坊资源");
+    let dialog = if kind == "resourceArchive" {
+        dialog
+            .add_filter("Sakura 形态包", &["visual"])
+            .add_filter("旧版形态组件", &["char"])
+    } else {
+        dialog
+    };
+    let selected = match kind.as_str() {
+        "visual" | "resourceArchive" => {
+            if multiple {
+                return Ok(json!(dialog
+                    .pick_files()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|file| file.path().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()));
+            }
+            dialog.pick_file().await
+        }
+        "gptModel" => dialog.add_filter("GPT 模型", &["ckpt"]).pick_file().await,
+        "sovitsModel" => dialog.add_filter("SoVITS 模型", &["pth"]).pick_file().await,
+        "referenceAudio" => {
+            let dialog = dialog.add_filter("参考语音", &["wav", "mp3", "ogg", "flac"]);
+            if multiple {
+                return Ok(json!(dialog
+                    .pick_files()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|file| file.path().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()));
+            }
+            dialog.pick_file().await
+        }
+        "referenceAudioFolder" | "visualFolder" => dialog.pick_folder().await,
+        _ => return Err("STUDIO_ASSET_KIND_INVALID".to_string()),
+    };
+    Ok(selected
+        .map(|file| json!(file.path().to_string_lossy().to_string()))
+        .unwrap_or(Value::Null))
+}
+
+#[tauri::command]
+async fn studio_choose_export(
+    window: WebviewWindow,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    let safe_name = std::path::Path::new(&default_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("character.char");
+    let (title, filter_name, extension) = if std::path::Path::new(safe_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("visual"))
+    {
+        ("导出 Sakura 形态包", "Sakura 形态包", "visual")
+    } else {
+        ("导出 Sakura 角色包", "Sakura 角色包", "char")
+    };
+    Ok(rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .set_file_name(safe_name)
+        .add_filter(filter_name, &[extension])
+        .save_file()
+        .await
+        .map(|file| file.path().to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+async fn studio_pick_screen_color(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    state: State<'_, color_picker::ColorPickerState>,
+) -> Result<Value, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    let monitors = capture::monitor_descriptors()?;
+    let (session, previous) = state.begin(&monitors)?;
+    capture::close_windows(&app_handle, &previous);
+    if let Err(error) = color_picker::show_overlays(&app_handle, &session, &monitors) {
+        state.fail(&session.id, &error);
+        capture::close_windows(&app_handle, &session.labels);
+        return Err(error);
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        color_picker::wait_for_result(session.receiver)
+    })
+    .await
+    .map_err(|_| "STUDIO_COLOR_ABORTED".to_string())?;
+    if let Some(studio) =
+        app_handle.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
+    {
+        let _ = studio.show();
+        let _ = studio.set_focus();
+    }
+    match result {
+        Ok(color) => Ok(json!({"color": color})),
+        Err(code) if code == "STUDIO_COLOR_CANCELLED" => Ok(json!({"cancelled": true})),
+        Err(code) => Err(code),
+    }
+}
+
+#[tauri::command]
+async fn studio_color_pick(
+    window: WebviewWindow,
+    payload: color_picker::ColorPickRequest,
+    app_handle: tauri::AppHandle,
+    state: State<'_, color_picker::ColorPickerState>,
+) -> Result<(), String> {
+    if !window.label().starts_with("studio-color-") {
+        return Err("STUDIO_COLOR_WINDOW_REQUIRED".to_string());
+    }
+    let point = color_picker::logical_point(&window, payload.x, payload.y)?;
+    let claim = state.claim(window.label(), &payload)?;
+    capture::hide_windows(&app_handle, &claim.labels);
+    let labels = claim.labels.clone();
+    let monitor_id = claim.monitor_id;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        color_picker::capture_color(monitor_id, point.0, point.1)
+    })
+    .await
+    .map_err(|_| "STUDIO_COLOR_CAPTURE_ABORTED".to_string())?;
+    capture::close_windows(&app_handle, &labels);
+    claim.complete(result);
+    Ok(())
+}
+
+#[tauri::command]
+fn studio_color_cancel(
+    window: WebviewWindow,
+    payload: color_picker::ColorCancelRequest,
+    app_handle: tauri::AppHandle,
+    state: State<'_, color_picker::ColorPickerState>,
+) -> Result<(), String> {
+    if !window.label().starts_with("studio-color-") {
+        return Err("STUDIO_COLOR_WINDOW_REQUIRED".to_string());
+    }
+    if let Some(labels) = state.cancel(window.label(), &payload.session_id) {
+        capture::close_windows(&app_handle, &labels);
+        return Ok(());
+    }
+    Err("STUDIO_COLOR_SESSION_STALE".to_string())
+}
+
+#[tauri::command]
+fn show_studio(window: WebviewWindow) -> Result<(), String> {
+    character_studio_window::validate_studio_window(&window)?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn close_character_studio(
+    window: WebviewWindow,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+) -> Result<(), String> {
+    character_studio_window::validate_studio_window(&window)?;
+    state.authorize_close()?;
+    window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn close_character_studio_for_exit(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+) -> Result<(), String> {
+    character_studio_window::validate_studio_window(&window)?;
+    state.mark_exiting();
+    window.destroy().map_err(|error| error.to_string())?;
+    if let Some(settings) = app_handle.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL) {
+        let _ = settings.show();
+        let _ = settings.set_focus();
+    }
+    let exit_app = app_handle.clone();
+    app_handle
+        .run_on_main_thread(move || {
+            let lifecycle = exit_app.state::<ShellLifecycleState>();
+            if let Err(error) = request_app_exit(&exit_app, &lifecycle) {
+                product_shell::emit_product_menu_error(&exit_app, error);
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn log_visual_resource_error(log: &RuntimeLogService, stage: &str, error: &str) {
+    let code = error.split_once(':').map_or(error, |(code, _)| code);
+    if matches!(
+        code,
+        "CHARACTER_RESOURCE_GENERATION_STALE"
+            | "CHARACTER_PRESENTATION_GENERATION_STALE"
+            | "VISUAL_BINDING_EXPIRED"
+            | "CHARACTER_RESOURCE_ID_UNKNOWN"
+            | "STUDIO_PREVIEW_GENERATION_STALE"
+    ) || error == "STUDIO_PREVIEW_NOT_FOUND"
+    {
+        return;
+    }
+    let _ = log.submit(
+        RuntimeLogEvent::rust(
+            Severity::Warning,
+            "visual",
+            "visual.resource.failed",
+            "角色表现资源加载失败",
+        )
+        .attributes(json!({"code": code, "stage": stage, "diagnostic": error})),
+    );
+}
+
+fn studio_preview_protocol_response(
     context: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
     use tauri::http::{header, Method, StatusCode};
-
     let fail = |status: StatusCode, code: &str| {
         tauri::http::Response::builder()
             .status(status)
@@ -6061,26 +7280,66 @@ fn character_protocol_response(
             .header(header::CACHE_CONTROL, "no-store")
             .header("X-Content-Type-Options", "nosniff")
             .body(code.as_bytes().to_vec())
-            .expect("static character protocol response")
+            .expect("static studio preview response")
     };
     if request.method() != Method::GET || request.uri().query().is_some() {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "CHARACTER_RESOURCE_REQUEST_REJECTED",
-        );
+        return fail(StatusCode::BAD_REQUEST, "STUDIO_PREVIEW_REQUEST_REJECTED");
     }
     let segments: Vec<_> = request.uri().path().trim_matches('/').split('/').collect();
-    if segments.len() != 3
+    if segments.len() != 2
         || segments[0] != "v1"
         || segments[1].is_empty()
-        || segments[2].is_empty()
-        || segments.iter().any(|segment| segment.contains('%'))
+        || segments[1].contains('%')
     {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "CHARACTER_RESOURCE_REQUEST_REJECTED",
-        );
+        return fail(StatusCode::BAD_REQUEST, "STUDIO_PREVIEW_REQUEST_REJECTED");
     }
+    let lifecycle = context.app_handle().state::<ShellLifecycleState>();
+    let current_generation = match lifecycle
+        .handle
+        .as_ref()
+        .and_then(|handle| handle.available_generation_id().ok().flatten())
+    {
+        Some(value) => value,
+        None => return fail(StatusCode::GONE, "STUDIO_PREVIEW_GENERATION_STALE"),
+    };
+    let state = context
+        .app_handle()
+        .state::<character_studio_window::CharacterStudioWindowState>();
+    match state.load_preview(segments[1], &current_generation) {
+        Ok(resource) => tauri::http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, resource.media_type)
+            .header(header::CONTENT_LENGTH, resource.bytes.len().to_string())
+            .header(header::CACHE_CONTROL, "no-store, max-age=0")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(resource.bytes)
+            .expect("validated studio preview response"),
+        Err(error) => {
+            log_visual_resource_error(&lifecycle.runtime_log, "studio.preview.read", &error);
+            let code = error
+                .split_once(':')
+                .map_or(error.as_str(), |(code, _)| code);
+            fail(
+                if code.contains("STALE") {
+                    StatusCode::GONE
+                } else if code.contains("NOT_FOUND") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                },
+                code,
+            )
+        }
+    }
+}
+
+fn character_protocol_response(
+    context: tauri::UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::StatusCode;
+    use visual_resources::protocol_error as fail;
+
     let lifecycle = context.app_handle().state::<ShellLifecycleState>();
     let Some(handle) = lifecycle.handle.as_ref() else {
         return fail(
@@ -6095,29 +7354,25 @@ fn character_protocol_response(
     let resources = context
         .app_handle()
         .state::<character_presentation::CharacterPresentationState>();
-    match resources.load_resource(segments[1], segments[2], &current_generation) {
-        Ok(resource) => tauri::http::Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "image/png")
-            .header(
-                header::CONTENT_LENGTH,
-                resource.metadata.byte_length.to_string(),
-            )
-            .header(header::CACHE_CONTROL, "no-store, max-age=0")
-            .header("X-Content-Type-Options", "nosniff")
-            .body(resource.bytes)
-            .expect("validated character resource response"),
-        Err(code) => {
-            let status = if code.contains("GENERATION") {
-                StatusCode::GONE
-            } else if code.contains("UNKNOWN") || code.contains("NOT_FOUND") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::UNPROCESSABLE_ENTITY
-            };
-            fail(status, &code)
+    // Read the current Core binding before granting code or asset access. A
+    // same-generation plugin restart/disable must revoke the old token too.
+    if let Ok(Some(value)) = handle.character_presentation() {
+        if let Ok(presentation) =
+            character_presentation::CharacterPresentation::from_value(&value, &current_generation)
+        {
+            if let Err(error) = resources.activate(presentation, &current_generation) {
+                log_visual_resource_error(
+                    &lifecycle.runtime_log,
+                    "visual.resources.activate",
+                    &error,
+                );
+                return fail(StatusCode::GONE, "VISUAL_BINDING_EXPIRED");
+            }
         }
     }
+    resources.protocol_response(&request, &current_generation, |stage, error| {
+        log_visual_resource_error(&lifecycle.runtime_log, stage, error);
+    })
 }
 
 #[tauri::command]
@@ -6170,6 +7425,7 @@ fn toggle_pet_visibility(app: &tauri::AppHandle) -> Result<(), String> {
         .ok_or_else(|| "PET_WINDOW_UNAVAILABLE".to_string())?;
     let visible = window.is_visible().map_err(|error| error.to_string())?;
     if visible {
+        app.state::<asr::AsrState>().cancel_window("main");
         window.hide().map_err(|error| error.to_string())?;
         product_shell::sync_product_tray_visibility(app, false)
     } else {
@@ -6287,6 +7543,7 @@ fn finish_app_exit(
         emit_appearance(app_handle, publication)?;
     }
     if let Some(handle) = &lifecycle.handle {
+        app_handle.state::<asr::AsrState>().shutdown();
         handle.request_shutdown().map_err(str::to_string)?;
     }
     app_handle.exit(0);
@@ -6297,18 +7554,65 @@ fn request_app_exit(
     app_handle: &tauri::AppHandle,
     lifecycle: &ShellLifecycleState,
 ) -> Result<(), String> {
+    if let Some(studio) =
+        app_handle.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
+    {
+        product_shell::restore_and_focus_window(&studio)?;
+        let state = app_handle.state::<character_studio_window::CharacterStudioWindowState>();
+        if !state.begin_exit()? {
+            return Ok(());
+        }
+        if let Err(error) = studio.emit(character_studio_window::STUDIO_EXIT_REQUESTED_EVENT, ()) {
+            state.cancel_exit_request();
+            return Err(error.to_string());
+        }
+        let timeout_app = app_handle.clone();
+        let exit_timeout = std::thread::Builder::new()
+            .name("studio-exit-timeout".to_string())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let check_app = timeout_app.clone();
+                let _ = timeout_app.run_on_main_thread(move || {
+                    let Some(studio) =
+                        check_app.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
+                    else {
+                        return;
+                    };
+                    let state =
+                        check_app.state::<character_studio_window::CharacterStudioWindowState>();
+                    state.mark_exiting();
+                    let _ = studio.destroy();
+                    if let Some(settings) =
+                        check_app.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL)
+                    {
+                        let _ = settings.show();
+                        let _ = settings.set_focus();
+                    }
+                    let lifecycle = check_app.state::<ShellLifecycleState>();
+                    if let Err(error) = request_app_exit(&check_app, &lifecycle) {
+                        product_shell::emit_product_menu_error(&check_app, error);
+                    }
+                });
+            });
+        if let Err(error) = exit_timeout {
+            state.cancel_exit_request();
+            return Err(format!("failed to start bounded Studio exit wait: {error}"));
+        }
+        return Ok(());
+    }
     let Some(settings) = app_handle.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL) else {
         return finish_app_exit(app_handle, lifecycle);
     };
+    // Restore before both first and repeated requests; the confirmation may be minimized.
+    product_shell::restore_and_focus_window(&settings)?;
     let state = app_handle.state::<product_shell::ProductShellState>();
-    if !state.begin_exit()? {
-        settings.show().map_err(|error| error.to_string())?;
-        settings.set_focus().map_err(|error| error.to_string())?;
+    let Some(revision) = state.begin_exit()? else {
         return Ok(());
+    };
+    if let Err(error) = settings.emit(product_shell::SETTINGS_EXIT_REQUESTED_EVENT, revision) {
+        let _ = state.resolve_exit();
+        return Err(error.to_string());
     }
-    settings
-        .emit(product_shell::SETTINGS_EXIT_REQUESTED_EVENT, ())
-        .map_err(|error| error.to_string())?;
 
     let timeout_app = app_handle.clone();
     std::thread::Builder::new()
@@ -6318,19 +7622,20 @@ fn request_app_exit(
             let check_app = timeout_app.clone();
             let _ = timeout_app.run_on_main_thread(move || {
                 let state = check_app.state::<product_shell::ProductShellState>();
-                if state.exit_pending().unwrap_or(false) {
-                    let _ = state.resolve_exit();
+                if state.cancel_unanswered_exit(revision).unwrap_or(false) {
                     if let Some(window) =
                         check_app.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL)
                     {
                         let _ = window.emit(product_shell::SETTINGS_EXIT_TIMEOUT_EVENT, ());
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        let _ = product_shell::restore_and_focus_window(&window);
                     }
                 }
             });
         })
-        .map_err(|error| format!("failed to start bounded settings exit wait: {error}"))?;
+        .map_err(|error| {
+            let _ = state.resolve_exit();
+            format!("failed to start bounded settings exit wait: {error}")
+        })?;
     Ok(())
 }
 
@@ -6338,6 +7643,7 @@ fn request_app_exit(
 fn resolve_settings_exit(
     window: WebviewWindow,
     discard: bool,
+    revision: u64,
     app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
     shell: State<'_, product_shell::ProductShellState>,
@@ -6345,12 +7651,12 @@ fn resolve_settings_exit(
     if window.label() != product_shell::SETTINGS_WINDOW_LABEL {
         return Err("SETTINGS_WINDOW_REQUIRED".to_string());
     }
+    shell.acknowledge_exit(revision)?;
     if !shell.resolve_exit()? {
         return Ok(());
     }
     if !discard {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        product_shell::restore_and_focus_window(&window)?;
         return Ok(());
     }
     shell.authorize_close()?;
@@ -6359,6 +7665,7 @@ fn resolve_settings_exit(
         return Err(error.to_string());
     }
     if let Some(handle) = &lifecycle.handle {
+        app_handle.state::<asr::AsrState>().shutdown();
         handle.request_shutdown().map_err(str::to_string)?;
     }
     shell.authorize_app_exit()?;
@@ -6408,6 +7715,23 @@ fn standard_user_root(development: bool) -> Result<std::path::PathBuf, String> {
 }
 
 fn ensure_user_layout(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    // Earlier releases inherited manifest defaults without persisting every switch.
+    // Seed only a new config directory, so upgrades retain those implicit choices too.
+    let config = root.join("config");
+    if !config
+        .try_exists()
+        .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))?
+    {
+        if let Err(error) = ui_config::atomic_write(
+            &config.join("plugins.yaml"),
+            include_bytes!("new_user_plugins.yaml"),
+            "USER_ROOT",
+        ) {
+            // Leave a failed first initialization retryable when no file was published.
+            let _ = std::fs::remove_dir(&config);
+            return Err(error);
+        }
+    }
     for relative in ["config", "data", "characters", "plugins/user", "tts"] {
         std::fs::create_dir_all(root.join(relative))
             .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))?;
@@ -6587,29 +7911,6 @@ fn main() {
         }
     };
 
-    let _embedded_assets = (
-        STARTUP_HTML.len(),
-        STARTUP_STYLES.len(),
-        APP_SCRIPT.len(),
-        LIFECYCLE_SCRIPT.len(),
-        LAYOUT_SCRIPT.len(),
-        LAYOUT_CONTROLLER_SCRIPT.len(),
-        HIT_REGIONS_SCRIPT.len(),
-        INPUT_FOCUS_SCRIPT.len(),
-        APPEARANCE_SCRIPT.len(),
-        LAYOUT_CONTRACT_JSON.len(),
-        SETTINGS_HTML.len(),
-        SETTINGS_STYLES.len(),
-        SETTINGS_SCRIPT.len(),
-        SETTINGS_CAPABILITY_SCRIPT.len(),
-        SETTINGS_APPEARANCE_SCRIPT.len(),
-        SETTINGS_PROVIDER_MODEL_SCRIPT.len(),
-        SETTINGS_CLOSE_FLOW_SCRIPT.len(),
-        SETTINGS_CHAT_TIMING_SCRIPT.len(),
-        SETTINGS_TOOLS_SCRIPT.len(),
-        SETTINGS_SCREEN_AWARENESS_SCRIPT.len(),
-    );
-
     let runtime_request = runtime_request().unwrap_or_else(|error| {
         show_startup_message("Sakura 启动失败", &error, true);
         std::process::exit(1);
@@ -6622,17 +7923,34 @@ fn main() {
             .expect("WP-4-01 manual acceptance root must be isolated and complete");
     }
     let character_resource_root = runtime_request.user_root.clone();
+    let visual_distribution_root = runtime_request
+        .explicit_development_root
+        .clone()
+        .unwrap_or_else(|| runtime_request.resource_directory.clone());
     let runtime_log =
         RuntimeLogService::start(character_resource_root.join("data/logs/sakura-runtime.log"));
     let mut runtime_log_shutdown = RuntimeLogShutdown::new(runtime_log.clone());
+    let ui_config_repository =
+        ui_config::UiConfigRepository::new(character_resource_root.join("config/ui.json"));
+    let telemetry = telemetry::TelemetryService::initialize(
+        ui_config_repository.clone(),
+        runtime_log.run_id().to_string(),
+    );
+    runtime_log.attach_telemetry(telemetry.clone());
+    telemetry.submit_app_started();
     install_runtime_panic_hook(runtime_log.clone());
     interaction_latency::initialize(runtime_log.clone());
-    let _ = runtime_log.submit(RuntimeLogEvent::rust(
-        Severity::Info,
-        "shell",
-        "shell.started",
-        "Runtime shell started",
-    ));
+    let _ = runtime_log.submit(
+        RuntimeLogEvent::rust(
+            Severity::Info,
+            "shell",
+            "shell.started",
+            "Runtime shell started",
+        )
+        .attributes(json!({
+            "current_version": env!("CARGO_PKG_VERSION"),
+        })),
+    );
     match legacy_import::recover_interrupted(&runtime_request) {
         Ok(true) => {
             let _ = runtime_log.submit(RuntimeLogEvent::rust(
@@ -6659,6 +7977,7 @@ fn main() {
                     "stage": "recovery"
                 })),
             );
+            telemetry.shutdown();
             runtime_log_shutdown.finish();
             show_startup_message(
                 "Sakura 迁移恢复失败",
@@ -6668,8 +7987,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let ui_config_repository =
-        ui_config::UiConfigRepository::new(character_resource_root.join("config/ui.json"));
     let first_run_guide_state =
         product_shell::FirstRunGuideState::new(ui_config_repository.clone());
     let first_run_completed = match first_run_guide_state.snapshot() {
@@ -6703,6 +8020,7 @@ fn main() {
                     "stage": "state_load"
                 })),
             );
+            telemetry.shutdown();
             runtime_log_shutdown.finish();
             show_startup_message(
                 "Sakura 启动失败",
@@ -6729,36 +8047,56 @@ fn main() {
     let update_coordinator = update_settings::UpdateCoordinator::new(ui_config_repository.clone());
     let setup_runtime_log = runtime_log.clone();
     let app = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Sakura")
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
+        .manage(character_studio_window::CharacterStudioWindowState::default())
+        .manage(color_picker::ColorPickerState::default())
         .manage(first_run_guide_state)
         .manage(legacy_import_state)
         .manage(product_shell::PetTopmostState::new(
             ui_config_repository.clone(),
         ))
         .manage(runtime_log.clone())
+        .manage(telemetry.clone())
         .manage(ShellLifecycleState {
             handle: shell_lifecycle_handle.clone(),
             runtime_log: runtime_log.clone(),
         })
-        .manage(character_presentation::CharacterPresentationState::new(
-            character_resource_root.clone(),
-        ))
+        .manage(
+            character_presentation::CharacterPresentationState::with_distribution(
+                character_resource_root.clone(),
+                visual_distribution_root,
+            ),
+        )
         .manage(character_appearance_state(ui_config_repository.clone()))
         .manage(chat_settings::ChatPresentationTimingState::new(
             ui_config_repository.clone(),
+        ))
+        .manage(chat_settings::BubbleAutoHideState::new(
+            ui_config_repository.clone(),
+            character_resource_root.join("config/system_config.yaml"),
         ))
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
         ))
         .manage(update_coordinator)
         .manage(audio::AudioState::new(character_resource_root.clone()))
+        .manage(asr::AsrState::default())
         .manage(Arc::new(capture::CaptureManager::new()))
-        .manage(input_visual_effect::InputVisualEffectState::from_environment())
+        .manage(input_visual_effect::InputVisualEffectState::from_environment(runtime_log.clone()))
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
+        )
+        .register_uri_scheme_protocol(
+            character_studio_window::STUDIO_PREVIEW_PROTOCOL,
+            studio_preview_protocol_response,
         )
         .setup(move |app| {
             let window = app
@@ -6855,6 +8193,33 @@ fn main() {
                 }
                 return;
             }
+            if window.label() == character_studio_window::STUDIO_WINDOW_LABEL {
+                let state = window.state::<character_studio_window::CharacterStudioWindowState>();
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        if !state.consume_close_authorization().unwrap_or(false) {
+                            api.prevent_close();
+                            let _ = window
+                                .emit(character_studio_window::STUDIO_CLOSE_REQUESTED_EVENT, ());
+                        }
+                    }
+                    tauri::WindowEvent::Destroyed => {
+                        window
+                            .state::<character_presentation::CharacterPresentationState>()
+                            .clear_editors();
+                        let topmost = window.state::<product_shell::PetTopmostState>();
+                        if let Err(error) = character_studio_window::restore_after_destroyed(
+                            window.app_handle(),
+                            state.inner(),
+                            topmost.inner(),
+                        ) {
+                            eprintln!("failed to restore windows after Studio closed: {error}");
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
             if window.label() != product_shell::SETTINGS_WINDOW_LABEL {
                 return;
             }
@@ -6862,6 +8227,9 @@ fn main() {
             let lifecycle = window.state::<ShellLifecycleState>();
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
+                    window
+                        .state::<asr::AsrState>()
+                        .cancel_window(product_shell::SETTINGS_WINDOW_LABEL);
                     let authorized = state.consume_close_authorization().unwrap_or(false);
                     append_runtime_diagnostic_event(
                         &lifecycle.runtime_log,
@@ -6878,6 +8246,9 @@ fn main() {
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
+                    window
+                        .state::<asr::AsrState>()
+                        .cancel_window(product_shell::SETTINGS_WINDOW_LABEL);
                     let geometry = window.state::<Mutex<WindowGeometrySession>>();
                     if let Ok(mut geometry) = geometry.lock() {
                         if geometry.portrait_scale_gesture_active {
@@ -6894,6 +8265,7 @@ fn main() {
                     if let Ok(Some(publication)) = appearance.close_session() {
                         let _ = emit_appearance(window.app_handle(), publication);
                     }
+                    let _ = emit_settings_appearance_active(window.app_handle(), false);
                     let reopen = state.window_destroyed().unwrap_or(false);
                     append_runtime_diagnostic_event(
                         &lifecycle.runtime_log,
@@ -6923,10 +8295,14 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             current_pet_layout_revision,
+            pet_surface_visibility_capabilities,
+            pet_surface_hovered,
+            set_pet_input_surface_presented,
             current_pet_surface_diagnostics,
             apply_pet_layout,
             start_pet_input_expansion,
             start_pet_input_transition,
+            start_pet_bubble_transition,
             reveal_pet_window,
             start_pet_drag,
             open_pet_context_menu,
@@ -6950,31 +8326,47 @@ fn main() {
             clear_screen_awareness_batch,
             composer_tools_get,
             composer_tool_invoke,
-            tts_prepare_segment,
-            tts_cancel_synthesis,
-            tts_play_prepared,
-            tts_stop_playback,
-            settings_voice_get,
-            settings_voice_status_get,
-            settings_voice_save,
-            current_chat_presentation_timing,
-            current_subtitle_language,
-            history_bootstrap,
-            history_page,
-            close_history_window,
-            reveal_history_window,
-            runtime_log_viewer_bootstrap,
-            runtime_log_viewer_snapshot,
-            close_runtime_log_viewer,
-            reveal_runtime_log_viewer,
+            audio::tts_prepare_segment,
+            asr::asr_prepare,
+            asr::asr_availability,
+            asr::asr_poll,
+            asr::asr_capture_start,
+            asr::asr_capture_stop,
+            asr::asr_cancel,
+            asr::settings_asr_get,
+            asr::settings_asr_devices,
+            asr::settings_asr_save,
+            asr::settings_asr_action,
+            audio::tts_cancel_synthesis,
+            audio::tts_play_prepared,
+            audio::tts_stop_playback,
+            audio::settings_voice_get,
+            audio::settings_voice_status_get,
+            audio::settings_voice_save,
+            chat_settings::current_chat_presentation_timing,
+            chat_settings::current_bubble_auto_hide,
+            chat_settings::current_subtitle_language,
+            history_window::history_bootstrap,
+            history_window::history_page,
+            history_window::close_history_window,
+            history_window::reveal_history_window,
+            runtime_log_window::runtime_log_viewer_bootstrap,
+            runtime_log_window::runtime_log_viewer_snapshot,
+            runtime_log_window::close_runtime_log_viewer,
+            runtime_log_window::reveal_runtime_log_viewer,
             current_character_presentation,
             current_character_appearance,
             apply_input_visual_effect,
             begin_control_surface_preview,
+            prepare_control_surface_preview,
+            preview_pet_control_surface,
             end_control_surface_preview,
             begin_portrait_scale_preview,
             prepare_portrait_transition,
             activate_portrait_hit_test,
+            dynamic_hit_test::configure_dynamic_hit_test,
+            dynamic_hit_test::submit_dynamic_hit_test,
+            dynamic_hit_test::dynamic_hit_test_status,
             commit_portrait_transition,
             settle_portrait_scale_surface,
             interaction_latency_diagnostics_enabled,
@@ -6988,32 +8380,57 @@ fn main() {
             product_shell::first_run_guide_get,
             product_shell::first_run_guide_complete,
             legacy_import::legacy_import_choose_source,
+            legacy_import::legacy_import_inspect,
             legacy_import::legacy_import_state,
             legacy_import::legacy_import_start,
             legacy_import::legacy_import_cancel,
+            legacy_import::settings_legacy_data_import_choose,
+            legacy_import::settings_legacy_data_import_apply,
             product_shell::reveal_settings_window,
             settings_characters_get,
+            settings_character_visuals_get,
             settings_character_choose_import,
             settings_character_choose_export,
             settings_character_import,
+            settings_character_import_voice,
+            settings_character_export,
             settings_character_select,
+            open_character_studio,
+            studio_bootstrap,
+            studio_request,
+            studio_choose_source,
+            studio_choose_export,
+            studio_pick_screen_color,
+            studio_color_pick,
+            studio_color_cancel,
+            show_studio,
+            close_character_studio,
+            close_character_studio_for_exit,
             settings_storage_get,
             settings_storage_open_user_root,
             settings_storage_choose_tts_root,
             settings_storage_reset_tts_root,
-            settings_update_get,
-            settings_update_cached_get,
-            settings_update_preferences_get,
-            settings_update_preferences_set,
-            startup_update_check,
-            chat_update_announce,
-            settings_update_install,
-            settings_update_open_portable_download,
-            settings_about_get,
-            settings_about_open_website,
-            settings_about_open_repository,
-            settings_about_open_changelog,
-            settings_about_open_sponsor,
+            update_settings::settings_update_get,
+            update_settings::settings_update_cached_get,
+            update_settings::settings_update_preferences_get,
+            update_settings::settings_update_preferences_set,
+            autostart_settings::settings_autostart_get,
+            autostart_settings::settings_autostart_save,
+            update_settings::startup_update_check,
+            update_settings::chat_update_announce,
+            update_settings::settings_update_install,
+            update_settings::settings_update_open_portable_download,
+            update_settings::settings_about_get,
+            update_settings::settings_about_open_website,
+            update_settings::settings_about_open_repository,
+            update_settings::settings_about_open_changelog,
+            update_settings::settings_about_open_sponsor,
+            telemetry::settings_telemetry_get,
+            telemetry::settings_telemetry_set_enabled,
+            telemetry::settings_telemetry_regenerate_installation_id,
+            telemetry::settings_telemetry_open_documentation,
+            settings_macos_open_system_settings,
+            settings_macos_open_apple_support,
             settings_character_appearance_get,
             settings_character_visual_preview,
             settings_character_appearance_preview,
@@ -7023,24 +8440,27 @@ fn main() {
             settings_character_appearance_layout_frame,
             settings_character_appearance_save,
             settings_character_appearance_cancel_preview,
-            settings_chat_presentation_timing_get,
-            settings_chat_presentation_timing_save,
+            chat_settings::settings_chat_presentation_timing_get,
+            chat_settings::settings_chat_presentation_timing_save,
+            chat_settings::settings_bubble_auto_hide_get,
+            chat_settings::settings_bubble_auto_hide_save,
             settings_provider_model_get,
             settings_provider_model_save,
             settings_provider_model_probe,
             settings_provider_model_cancel,
-            settings_tools_get,
-            settings_tools_save,
+            tool_settings::settings_tools_get,
+            tool_settings::settings_tools_save,
             settings_screen_awareness_get,
             settings_screen_awareness_save,
-            settings_plugins_get,
-            settings_plugins_save,
-            settings_plugins_enabled_set,
-            settings_plugins_action,
-            settings_plugins_install,
-            settings_plugins_uninstall,
-            settings_plugins_collection,
+            plugin_settings::settings_plugins_get,
+            plugin_settings::settings_plugins_save,
+            plugin_settings::settings_plugins_enabled_set,
+            plugin_settings::settings_plugins_action,
+            plugin_settings::settings_plugins_install,
+            plugin_settings::settings_plugins_uninstall,
+            plugin_settings::settings_plugins_collection,
             product_shell::resolve_settings_close,
+            product_shell::acknowledge_settings_exit,
             resolve_settings_exit
         ])
         .build(tauri::generate_context!())
@@ -7057,9 +8477,14 @@ fn main() {
         "shell.ready",
         "Runtime shell is ready",
     ));
+    telemetry.submit_app_ready();
 
     let exit_code = app.run_return(move |app_handle, event| match event {
         tauri::RunEvent::Exit => {
+            app_handle.state::<asr::AsrState>().shutdown();
+            app_handle
+                .state::<character_studio_window::CharacterStudioWindowState>()
+                .mark_exiting();
             let appearance = app_handle.state::<character_appearance::CharacterAppearanceState>();
             let _ = appearance.close_session();
             if let Some(window) = app_handle.get_webview_window("main") {
@@ -7084,6 +8509,7 @@ fn main() {
                         product_shell::emit_product_menu_error(app_handle, error);
                     }
                 } else if let Some(handle) = &shell_lifecycle_handle {
+                    app_handle.state::<asr::AsrState>().shutdown();
                     let _ = handle.request_shutdown();
                 }
             }
@@ -7095,6 +8521,7 @@ fn main() {
             .shutdown_and_join()
             .expect("Runtime lifecycle worker should stop without residuals");
     }
+    telemetry.shutdown();
     runtime_log_shutdown.finish();
     if exit_code != 0 {
         std::process::exit(exit_code);
@@ -7104,7 +8531,68 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn character_visuals_snapshot_enforces_resource_membership_and_public_fields() {
+        let snapshot = json!({
+            "schemaVersion": 1, "characterId": "navi", "defaultResourceId": "portrait",
+            "preferenceResourceId": null,
+            "resources": [{"id": "portrait", "name": "日常立绘", "providerId": "sakura.portrait",
+                "installId": "builtin:sakura.portrait", "reasonCode": "READY"}],
+        });
+        assert!(validate_character_visuals_snapshot(&snapshot, "navi").is_ok());
+        assert!(validate_character_visuals_snapshot(&snapshot, "another").is_err());
+        let mut private = snapshot.clone();
+        private["resources"][0]["path"] = json!("private/path");
+        let mut missing = snapshot.clone();
+        missing["preferenceResourceId"] = json!("missing");
+        let mut duplicate = snapshot.clone();
+        duplicate["resources"]
+            .as_array_mut()
+            .unwrap()
+            .push(snapshot["resources"][0].clone());
+        for invalid in [private, missing, duplicate] {
+            assert_eq!(
+                validate_character_visuals_snapshot(&invalid, "navi"),
+                Err("CHARACTER_VISUAL_SETTINGS_INVALID".into())
+            );
+        }
+        assert!(validate_character_visuals_snapshot(
+            &json!({
+                "schemaVersion": 1, "characterId": "navi", "defaultResourceId": null,
+                "preferenceResourceId": null, "resources": [],
+            }),
+            "navi"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn new_user_plugin_defaults_are_written_once_and_preserve_later_choices() {
+        let root = std::env::temp_dir().join(format!("sakura-new-user-{}", uuid::Uuid::new_v4()));
+        ensure_user_layout(&root).unwrap();
+        let path = root.join("config/plugins.yaml");
+        let defaults: serde_yaml::Value =
+            serde_yaml::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(defaults, serde_yaml::from_str::<serde_yaml::Value>(
+            "- {id: sakura.tts.genie, enabled: false}\n- {id: sakura.tts.gpt-sovits, enabled: false}\n- {id: sakura_mobile, enabled: false}\n"
+        ).unwrap());
+        let saved = "# 用户选择\n- id: sakura.tts.genie\n  enabled: true\n- id: sakura_mobile\n  enabled: false\n";
+        std::fs::write(&path, saved).unwrap();
+        ensure_user_layout(&root).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), saved);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_user_plugin_defaults_do_not_reclassify_existing_implicit_defaults() {
+        let root =
+            std::env::temp_dir().join(format!("sakura-existing-user-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        ensure_user_layout(&root).unwrap();
+        assert!(!root.join("config/plugins.yaml").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn character_settings_snapshot_accepts_empty_state_and_requires_selected_membership() {
@@ -7119,7 +8607,12 @@ mod tests {
             "schemaVersion": 1,
             "revision": 2,
             "currentCharacterId": "navi",
-            "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+            "characters": [{
+                "id": "navi",
+                "displayName": "N.A.V.I.",
+                "hasVoice": false,
+                "hasExportableVoice": false,
+            }],
         }))
         .is_ok());
         assert_eq!(
@@ -7127,10 +8620,29 @@ mod tests {
                 "schemaVersion": 1,
                 "revision": 2,
                 "currentCharacterId": "missing",
-                "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+                "characters": [{
+                    "id": "navi",
+                    "displayName": "N.A.V.I.",
+                    "hasVoice": false,
+                    "hasExportableVoice": false,
+                }],
             }))
             .unwrap_err(),
             "CHARACTER_SETTINGS_RESPONSE_INVALID"
+        );
+        assert_eq!(
+            validate_character_settings_snapshot(&json!({
+                "schemaVersion": 1,
+                "revision": 2,
+                "currentCharacterId": "navi",
+                "characters": [{
+                    "id": "navi",
+                    "displayName": "N.A.V.I.",
+                    "hasVoice": false,
+                    "hasExportableVoice": true,
+                }],
+            })),
+            Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())
         );
     }
 
@@ -7140,16 +8652,46 @@ mod tests {
             "schemaVersion": 1,
             "revision": 2,
             "currentCharacterId": "navi",
-            "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+            "characters": [{
+                "id": "navi",
+                "displayName": "N.A.V.I.",
+                "hasVoice": false,
+                "hasExportableVoice": false,
+            }],
         });
-        let (validated, plan) = validate_character_settings_change(json!({
+        let (validated, plan, requirements) = validate_character_settings_change(json!({
             "schemaVersion": 1,
             "snapshot": snapshot.clone(),
             "changePlan": "core_restart_required",
         }))
         .unwrap();
         assert_eq!(validated, snapshot);
+        assert_eq!(requirements, json!([]));
         assert_eq!(plan, "core_restart_required");
+        let declared = json!([{
+            "kind": "tts", "type": "gpt-sovits.models@1", "plugins": [],
+            "reasonCode": "COMPATIBLE", "candidates": [{"id": "sakura.tts.genie", "name": "Genie", "enabled": true, "compatible": true, "installId": "bundled:genie"}]
+        }]);
+        let (_, _, imported_requirements) = validate_character_settings_change(json!({
+            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
+            "pluginRequirements": declared.clone(),
+        }))
+        .unwrap();
+        assert_eq!(imported_requirements, declared);
+        assert!(validate_character_settings_change(json!({
+            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
+            "pluginRequirements": [{"kind": "tts", "type": "gpt-sovits.models@1", "reasonCode": "READY"}],
+        })).is_err());
+        for plan in ["visual_rebind", "character_refresh", "character_switch"] {
+            let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
+                "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": plan,
+            }))
+            .unwrap();
+            assert_eq!(
+                character_restart_target(&hot_snapshot, &hot_plan).unwrap(),
+                None
+            );
+        }
 
         assert_eq!(
             validate_character_settings_change(json!({
@@ -7173,6 +8715,25 @@ mod tests {
         assert_eq!(
             character_restart_target(&empty_snapshot, "unchanged"),
             Ok(None)
+        );
+    }
+
+    #[test]
+    fn character_export_receipt_requires_only_public_output_fields() {
+        assert!(validate_character_export_receipt(&json!({
+            "schemaVersion": 1,
+            "outputPath": "C:\\Users\\test\\navi.char",
+            "message": "角色包已导出。",
+        }))
+        .is_ok());
+        assert_eq!(
+            validate_character_export_receipt(&json!({
+                "schemaVersion": 1,
+                "outputPath": "C:\\Users\\test\\navi.char",
+                "message": "角色包已导出。",
+                "characterCard": "private",
+            })),
+            Err("CHARACTER_EXPORT_RESPONSE_INVALID".to_string())
         );
     }
 
@@ -7233,22 +8794,6 @@ mod tests {
     }
 
     #[test]
-    fn plugin_kernel_v3_tts_cancel_accepts_only_operation_identity() {
-        let request: TtsCancelSynthesisRequest =
-            serde_json::from_value(json!({"operationId": "operation-1"})).unwrap();
-        assert_eq!(request.operation_id, "operation-1");
-        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
-            "requestId": "tts-private-job"
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
-            "operationId": "operation-1",
-            "requestId": "tts-private-job"
-        }))
-        .is_err());
-    }
-
-    #[test]
     fn composer_tool_bridge_accepts_only_bounded_host_rendered_descriptors() {
         assert!(valid_composer_tool_id("com.example.tools:browser"));
         assert!(!valid_composer_tool_id("../private"));
@@ -7275,8 +8820,94 @@ mod tests {
     }
 
     #[test]
-    fn composer_tool_dock_uses_the_resident_surface_without_mutating_window_placement() {
+    fn surface_hover_union_includes_hidden_detached_controls_at_fractional_dpi() {
         let contract = layout_contract().unwrap();
+        let surface = ControlSurfaceLayout {
+            bubble_rect: [20, 808, 860, 400],
+            input_rect: [20, 1618, 860, 152],
+            controls_rect: [840, 818, 30, 30],
+            bubble_visible: false,
+            input_visible: false,
+        };
+        let mut geometry = WindowGeometrySession {
+            state: Some(PresentationState::Product),
+            active_bounds: Some([148, 326, 604, 660]),
+            control_surface: Some(surface.clone()),
+            portrait_alpha_mask: Some(character_presentation::PortraitAlphaMask::new(
+                2,
+                2,
+                vec![255; 4],
+            )),
+            ..WindowGeometrySession::default()
+        };
+        let origin = [-1700, -300];
+        for scale in [0.75, 1.25, 1.875] {
+            geometry.surface_scale = scale;
+            for (point, expected) in [
+                ([450.0, 700.0], true),   // portrait
+                ([450.0, 1000.0], true),  // hidden bubble
+                ([450.0, 1640.0], true),  // hidden input, outside the native region
+                ([450.0, 1500.0], false), // gap is not part of the union
+                ([890.0, 1640.0], false),
+            ] {
+                let cursor = [
+                    f64::from(origin[0]) + (point[0] - 148.0) * scale,
+                    f64::from(origin[1]) + (point[1] - 326.0) * scale,
+                ];
+                assert_eq!(
+                    surface_hover_contains(&contract, &geometry, cursor, origin).unwrap(),
+                    expected
+                );
+            }
+        }
+        // Hover detection must not turn hidden controls into click/drag targets.
+        let click_regions = window_interaction::logical_hit_regions_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            Some([2, 2]),
+            100,
+            Some(&surface),
+        )
+        .unwrap();
+        assert_eq!(
+            window_interaction::classify_logical_point(&click_regions, [450, 1640]),
+            window_interaction::HitKind::Transparent
+        );
+        geometry.surface_scale = 1.0;
+        geometry.portrait_alpha_mask = Some(character_presentation::PortraitAlphaMask::new(
+            2,
+            2,
+            vec![0; 4],
+        ));
+        assert!(!surface_hover_contains(&contract, &geometry, [-1398.0, 74.0], origin).unwrap());
+    }
+
+    #[test]
+    fn composer_tool_dock_routes_clicks_until_closed_without_mutating_window_placement() {
+        let contract = layout_contract().unwrap();
+        assert_eq!(composer_resident_viewport(&contract), [900, 1_890]);
+        assert_eq!(composer_tool_dock_reserved_bottom(&contract, None), 986);
+        let lowered_surface = ControlSurfaceLayout {
+            bubble_rect: [20, 880, 860, 128],
+            input_rect: [20, 1_218, 860, 152],
+            controls_rect: [840, 890, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        assert_eq!(
+            composer_tool_dock_reserved_bottom(&contract, Some(&lowered_surface)),
+            1_486
+        );
+        let mut hidden_input = lowered_surface.clone();
+        hidden_input.input_visible = false;
+        assert_eq!(
+            composer_tool_dock_reserved_bottom(&contract, Some(&hidden_input)),
+            0
+        );
+        assert_eq!(
+            composer_tool_dock_reserve_rect(&contract, Some(&hidden_input)).unwrap(),
+            None
+        );
         let mut application = LayoutApplication::rejected(1, PresentationState::Product, 5);
         application.scale_factor = 1.0;
         application.content_scale = 1.0;
@@ -7306,6 +8937,50 @@ mod tests {
         assert_eq!(opened.interactive[0].y, 882);
         assert_eq!(opened.interactive[0].corner_radius, 16);
         assert_eq!(application.physical_placement, placement);
+        let mut geometry = WindowGeometrySession {
+            application: Some(application.clone()),
+            hit_regions: Some(base.clone()),
+            ..Default::default()
+        };
+        let point = [200, 900];
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        let open_rect = Some([130, 882, 216, 104]);
+        assert!(geometry
+            .apply_tool_dock_surface(&contract, open_rect, |_| {
+                Err("native update failed".into())
+            })
+            .is_err());
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        geometry
+            .apply_tool_dock_surface(&contract, open_rect, |regions| {
+                assert!(regions.interactive.iter().any(|rect| rect.contains(point)));
+                Ok(())
+            })
+            .unwrap();
+        // All router entry points, including late portrait replies, use this same guard.
+        assert!(dynamic_hit_test::control_contains(&geometry, &base, point));
+        assert!(!dynamic_hit_test::control_contains(
+            &geometry,
+            &base,
+            [400, 900]
+        ));
+        assert!(!dynamic_hit_test::control_contains(
+            &geometry,
+            &base,
+            [130, 882]
+        ));
+        assert!(geometry
+            .apply_tool_dock_surface(&contract, None, |_| { Err("native update failed".into()) })
+            .is_err());
+        assert!(dynamic_hit_test::control_contains(&geometry, &base, point));
+        geometry
+            .apply_tool_dock_surface(&contract, None, |regions| {
+                assert!(!regions.interactive.iter().any(|rect| rect.contains(point)));
+                Ok(())
+            })
+            .unwrap();
+        assert!(!dynamic_hit_test::control_contains(&geometry, &base, point));
+        assert_eq!(geometry.application.unwrap().physical_placement, placement);
         assert_eq!(
             window_interaction::expand_surface_bounds_for_overlay(
                 application.active_bounds,
@@ -7325,60 +9000,810 @@ mod tests {
     }
 
     #[test]
-    fn wp_4_05_playback_failure_is_logged_at_the_audio_callback_source() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "sakura-tts-playback-log-{}-{nonce}",
-            std::process::id()
-        ));
-        let path = root.join("data/logs/sakura-runtime.log");
-        let runtime_log = RuntimeLogService::start(path.clone());
-        record_tts_playback(
-            &runtime_log,
-            "generation-tts-1",
-            &audio::AudioPlaybackEvent {
-                playback_id: "playback-1".to_string(),
-                recording_id: Some("recording-1".to_string()),
-                state: "failed",
-                error: Some(audio::AudioPlaybackError {
-                    code: "AUDIO_DEVICE_UNAVAILABLE",
-                    message: "not persisted",
-                }),
+    fn current_control_surface_and_tool_dock_do_not_refit_canonical_content() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 2_560,
+                height: 1_392,
             },
+            scale_factor: 1.25,
+        };
+        let default = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            default.visible_fit_bounds[1] + default.visible_fit_bounds[3],
+            986
         );
-        assert!(runtime_log.shutdown(std::time::Duration::from_millis(500)));
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("[TTS] 语音播放失败"));
-        assert!(contents.contains("code=AUDIO_DEVICE_UNAVAILABLE"));
-        assert!(!contents.contains("not persisted"));
-        let _ = std::fs::remove_dir_all(root);
+
+        let lowered_surface = ControlSurfaceLayout {
+            bubble_rect: [20, 880, 860, 128],
+            input_rect: [20, 1_218, 860, 152],
+            controls_rect: [840, 890, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let lowered = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(default.portrait_anchor),
+            AnchorPolicy::Automatic,
+            100,
+            Some(&lowered_surface),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            lowered.visible_fit_bounds[1] + lowered.visible_fit_bounds[3],
+            1_486
+        );
+        assert!(
+            lowered.active_bounds[1] + lowered.active_bounds[3]
+                >= lowered.visible_fit_bounds[1] + lowered.visible_fit_bounds[3]
+        );
+        assert_eq!(lowered.content_scale, default.content_scale);
+        assert_eq!(lowered.portrait_anchor, default.portrait_anchor);
     }
 
     #[test]
-    fn all_runtime_assets_are_embedded_and_the_contract_is_executable() {
-        assert!(!STARTUP_HTML.is_empty());
-        assert!(!STARTUP_STYLES.is_empty());
-        assert!(!APP_SCRIPT.is_empty());
-        assert!(!LIFECYCLE_SCRIPT.is_empty());
-        assert!(!LAYOUT_SCRIPT.is_empty());
-        assert!(!LAYOUT_CONTROLLER_SCRIPT.is_empty());
-        assert!(!HIT_REGIONS_SCRIPT.is_empty());
-        assert!(!INPUT_FOCUS_SCRIPT.is_empty());
-        assert!(!SETTINGS_HTML.is_empty());
-        assert!(!SETTINGS_STYLES.is_empty());
-        assert!(!SETTINGS_SCRIPT.is_empty());
-        assert!(!SETTINGS_CAPABILITY_SCRIPT.is_empty());
-        assert!(!SETTINGS_PROVIDER_MODEL_SCRIPT.is_empty());
-        assert!(!SETTINGS_TOOLS_SCRIPT.is_empty());
-        assert!(!SETTINGS_SCREEN_AWARENESS_SCRIPT.is_empty());
-        assert!(!SETTINGS_CLOSE_FLOW_SCRIPT.is_empty());
-        let contract = layout_contract().expect("shared layout contract must parse");
-        contract
-            .validate()
-            .expect("shared layout contract must validate");
+    fn window_surface_regression_windows_input_visibility_keeps_fractional_dpi_geometry_stable() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let visible_surface = ControlSurfaceLayout {
+            bubble_rect: [130, 880, 640, 128],
+            input_rect: [130, 1_018, 640, 52],
+            controls_rect: [730, 890, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let mut hidden_surface = visible_surface.clone();
+        hidden_surface.input_visible = false;
+
+        let visible = compute_pet_window_layout_with_surface_policy(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            Some(&visible_surface),
+            None,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+        let hidden = compute_pet_window_layout_with_surface_policy(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(visible.portrait_anchor),
+            AnchorPolicy::Automatic,
+            100,
+            Some(&hidden_surface),
+            None,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(visible.visible_fit_bounds, [0, 0, 900, 1_186]);
+        assert_eq!(hidden.visible_fit_bounds, visible.visible_fit_bounds);
+        assert!(same_surface_geometry(&visible, &hidden));
+        assert_eq!(visible.physical_local_anchor, hidden.physical_local_anchor);
+        assert_eq!(visible.portrait_anchor, hidden.portrait_anchor);
+
+        let visible_regions = build_native_interaction_regions(
+            &contract,
+            &visible,
+            Some(&visible_surface),
+            None,
+            100,
+        )
+        .unwrap();
+        let hidden_regions =
+            build_native_interaction_regions(&contract, &hidden, Some(&hidden_surface), None, 100)
+                .unwrap();
+        assert_ne!(visible_regions.interactive, hidden_regions.interactive);
+    }
+
+    #[test]
+    fn window_surface_regression_layout_offsets_do_not_refit_fractional_dpi_geometry() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let surfaces = [
+            ControlSurfaceLayout {
+                bubble_rect: [130, 690, 640, 128],
+                input_rect: [130, 828, 640, 52],
+                controls_rect: [730, 700, 30, 30],
+                bubble_visible: true,
+                input_visible: true,
+            },
+            ControlSurfaceLayout {
+                bubble_rect: [130, 691, 640, 128],
+                input_rect: [130, 829, 640, 52],
+                controls_rect: [730, 701, 30, 30],
+                bubble_visible: true,
+                input_visible: true,
+            },
+            ControlSurfaceLayout {
+                bubble_rect: [130, 680, 640, 128],
+                input_rect: [130, 828, 640, 52],
+                controls_rect: [730, 690, 30, 30],
+                bubble_visible: true,
+                input_visible: true,
+            },
+            ControlSurfaceLayout {
+                bubble_rect: [130, 680, 640, 128],
+                input_rect: [130, 829, 640, 52],
+                controls_rect: [730, 690, 30, 30],
+                bubble_visible: true,
+                input_visible: true,
+            },
+        ];
+        let expected_fit_bottoms = [996, 997, 996, 997];
+        let mut expected: Option<LayoutApplication> = None;
+
+        for (index, surface) in surfaces.iter().enumerate() {
+            let application = compute_pet_window_layout_with_surface_policy(
+                &contract,
+                PresentationState::Product,
+                u64::try_from(index + 1).unwrap(),
+                &monitor,
+                expected
+                    .as_ref()
+                    .map(|application| application.portrait_anchor),
+                AnchorPolicy::Automatic,
+                101,
+                Some(surface),
+                None,
+                false,
+                true,
+                true,
+            )
+            .unwrap();
+
+            assert_eq!(
+                application.visible_fit_bounds[1] + application.visible_fit_bounds[3],
+                expected_fit_bottoms[index]
+            );
+            if let Some(expected) = expected.as_ref() {
+                assert!(same_surface_geometry(expected, &application));
+                assert_eq!(
+                    application.physical_local_anchor,
+                    expected.physical_local_anchor
+                );
+                assert_eq!(application.portrait_anchor, expected.portrait_anchor);
+            } else {
+                expected = Some(application);
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_bubble_expansion_reserves_a_maximum_surface_only_on_windows() {
+        assert!(!uses_bubble_expansion_stable_surface_bounds(false));
+        assert_eq!(
+            uses_bubble_expansion_stable_surface_bounds(true),
+            cfg!(windows)
+        );
+    }
+
+    #[test]
+    fn portrait_scale_settlement_keeps_the_existing_physical_anchor_at_screen_edges() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.0,
+        };
+        let initial = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            None,
+            None,
+            true,
+            false,
+        )
+        .unwrap();
+        let automatically_settled = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(initial.portrait_anchor),
+            AnchorPolicy::Automatic,
+            150,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let settled = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(initial.portrait_anchor),
+            AnchorPolicy::UserPositioned,
+            150,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(preserves_portrait_anchor_for_scale_settlement(true, false));
+        assert!(!preserves_portrait_anchor_for_scale_settlement(true, true));
+        assert_eq!(
+            automatically_settled.portrait_anchor,
+            initial.portrait_anchor
+        );
+        assert_eq!(settled.portrait_anchor, initial.portrait_anchor);
+    }
+
+    #[test]
+    fn message_expansion_keeps_the_native_window_and_input_anchor_stable() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.0,
+        };
+        let compact_surface = ControlSurfaceLayout {
+            bubble_rect: [130, 686, 640, 122],
+            input_rect: [130, 818, 640, 52],
+            controls_rect: [730, 696, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let expanded_surface = ControlSurfaceLayout {
+            bubble_rect: [130, 88, 640, 720],
+            input_rect: [130, 818, 640, 52],
+            controls_rect: [730, 98, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let compact = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            Some(&compact_surface),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+        let expanded = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(compact.portrait_anchor),
+            AnchorPolicy::Automatic,
+            100,
+            Some(&expanded_surface),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+
+        assert!(same_surface_geometry(&compact, &expanded));
+        assert_eq!(
+            compact.physical_local_anchor,
+            expanded.physical_local_anchor
+        );
+    }
+
+    #[test]
+    fn window_surface_regression_layout_preview_keeps_top_edge_and_restores_dynamic_bounds() {
+        let contract = layout_contract().unwrap();
+        let surface = ControlSurfaceLayout {
+            bubble_rect: [130, 600, 640, 128],
+            input_rect: [130, 738, 640, 52],
+            controls_rect: [730, 610, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let mask = character_presentation::PortraitAlphaMask::new(
+            3,
+            3,
+            vec![255, 255, 255, 255, 0, 255, 255, 255, 255],
+        );
+        for dpi in [1.0, 1.5, 2.0] {
+            let monitor = MonitorDescriptor {
+                name: Some("left-retina-display".into()),
+                work_area: PhysicalRect {
+                    x: -2560,
+                    y: 60,
+                    width: 2560,
+                    height: 1440,
+                },
+                scale_factor: dpi,
+            };
+            let mut current = compute_pet_window_layout_with_surface_policy(
+                &contract,
+                PresentationState::Product,
+                1,
+                &monitor,
+                None,
+                AnchorPolicy::Automatic,
+                100,
+                Some(&surface),
+                Some(&mask),
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+            let delta = monitor.work_area.y - current.physical_placement.y;
+            current.physical_placement.y += delta;
+            current.portrait_anchor.y += delta;
+            let preview =
+                control_surface_preview_application(&contract, &current, &surface, false).unwrap();
+            assert_eq!(preview.physical_placement.y, monitor.work_area.y);
+            assert_eq!(preview.portrait_anchor, current.portrait_anchor);
+            assert_eq!(preview.content_scale, current.content_scale);
+            assert_eq!(preview.active_bounds[1], current.active_bounds[1]);
+            assert_eq!(preview.visible_fit_bounds, current.visible_fit_bounds);
+            for target in window_interaction::control_surface_gesture_guard_surfaces(
+                &contract, &surface, false,
+            )
+            .unwrap()
+            {
+                let next = control_surface_preview_application(&contract, &current, &target, false)
+                    .unwrap();
+                assert!(
+                    same_surface_geometry(&preview, &next),
+                    "all four sliders must share one backing"
+                );
+                #[cfg(target_os = "macos")]
+                let regions = build_native_interaction_regions(
+                    &contract,
+                    &preview,
+                    Some(&target),
+                    Some(&mask),
+                    100,
+                )
+                .unwrap();
+                #[cfg(target_os = "macos")]
+                assert_eq!(regions.portrait_alpha_mask.as_ref(), Some(&mask));
+            }
+            let settled = compute_pet_window_layout_with_surface_policy(
+                &contract,
+                current.state,
+                2,
+                &monitor,
+                Some(preview.portrait_anchor),
+                AnchorPolicy::UserPositioned,
+                100,
+                Some(&surface),
+                Some(&mask),
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+            assert!(same_surface_geometry(&current, &settled));
+            assert_eq!(settled.portrait_anchor, current.portrait_anchor);
+        }
+    }
+
+    #[test]
+    fn control_surface_gesture_guard_is_stable_and_covers_layout_extremes() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 2_560,
+                height: 1_440,
+            },
+            scale_factor: 1.0,
+        };
+        let first = ControlSurfaceLayout {
+            bubble_rect: [130, 600, 640, 128],
+            input_rect: [130, 738, 640, 52],
+            controls_rect: [730, 610, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let application = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            Some(&first),
+            None,
+            true,
+            false,
+        )
+        .unwrap();
+        let mask = character_presentation::PortraitAlphaMask::new(
+            3,
+            3,
+            vec![
+                255, 255, 255, //
+                255, 0, 255, //
+                255, 255, 255,
+            ],
+        );
+        let precise = build_native_interaction_regions(
+            &contract,
+            &application,
+            Some(&first),
+            Some(&mask),
+            100,
+        )
+        .unwrap();
+        let first_guard = build_control_surface_gesture_guard_rectangles(
+            &contract,
+            &application,
+            &first,
+            100,
+            false,
+        )
+        .unwrap();
+        let second = ControlSurfaceLayout {
+            bubble_rect: [70, 520, 760, 208],
+            input_rect: [70, 738, 760, 52],
+            controls_rect: [790, 530, 30, 30],
+            ..first
+        };
+        let second_guard = build_control_surface_gesture_guard_rectangles(
+            &contract,
+            &application,
+            &second,
+            100,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(precise.portrait_alpha_mask.as_ref(), Some(&mask));
+        assert_eq!(
+            first_guard, second_guard,
+            "the guard must stay fixed while slider frames change the current surface"
+        );
+        assert!(!first_guard.is_empty());
+        assert!(first_guard
+            .iter()
+            .all(|rect| { rect.width < precise.envelope[0] || rect.height < precise.envelope[1] }));
+        let contains = |outer: &window_interaction::PhysicalHitRect,
+                        inner: &window_interaction::PhysicalHitRect| {
+            outer.x <= inner.x
+                && outer.y <= inner.y
+                && i64::from(outer.x) + i64::from(outer.width)
+                    >= i64::from(inner.x) + i64::from(inner.width)
+                && i64::from(outer.y) + i64::from(outer.height)
+                    >= i64::from(inner.y) + i64::from(inner.height)
+        };
+        for surface in
+            window_interaction::control_surface_gesture_guard_surfaces(&contract, &first, false)
+                .unwrap()
+        {
+            let candidate = build_native_interaction_regions(
+                &contract,
+                &application,
+                Some(&surface),
+                None,
+                100,
+            )
+            .unwrap();
+            for rect in candidate
+                .interactive
+                .iter()
+                .chain(candidate.drag.iter().skip(1))
+            {
+                assert!(first_guard.iter().any(|guard| contains(guard, rect)));
+            }
+        }
+    }
+
+    #[test]
+    fn window_surface_regression_windows_portrait_masks_change_only_the_exact_region_at_screen_edges(
+    ) {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let masks = [
+            character_presentation::PortraitAlphaMask::new(
+                5,
+                5,
+                vec![
+                    255, 0, 0, 0, 0, //
+                    255, 0, 0, 0, 0, //
+                    255, 0, 0, 0, 0, //
+                    255, 0, 0, 0, 0, //
+                    255, 0, 0, 0, 0,
+                ],
+            ),
+            character_presentation::PortraitAlphaMask::new(
+                5,
+                5,
+                vec![
+                    0, 0, 0, 0, 255, //
+                    0, 0, 0, 0, 255, //
+                    0, 0, 0, 0, 255, //
+                    0, 0, 0, 0, 255, //
+                    0, 0, 0, 0, 255,
+                ],
+            ),
+            character_presentation::PortraitAlphaMask::new(
+                5,
+                5,
+                vec![
+                    255, 255, 255, 255, 0, //
+                    255, 255, 255, 255, 0, //
+                    255, 255, 255, 255, 0, //
+                    255, 255, 255, 255, 0, //
+                    255, 255, 255, 255, 0,
+                ],
+            ),
+            character_presentation::PortraitAlphaMask::new(5, 5, vec![0; 25]),
+        ];
+
+        for portrait_scale_percent in [100, 150] {
+            for anchor in [
+                window_geometry::PhysicalPoint { x: 0, y: 1_079 },
+                window_geometry::PhysicalPoint { x: 1_919, y: 1_079 },
+            ] {
+                let mut expected_application: Option<LayoutApplication> = None;
+                let mut exact_regions = Vec::new();
+                for mask in &masks {
+                    let application = compute_pet_window_layout_with_surface_policy(
+                        &contract,
+                        PresentationState::Product,
+                        42,
+                        &monitor,
+                        Some(anchor),
+                        AnchorPolicy::UserPositioned,
+                        portrait_scale_percent,
+                        None,
+                        Some(mask),
+                        false,
+                        true,
+                        false,
+                    )
+                    .unwrap();
+                    if let Some(expected) = expected_application.as_ref() {
+                        assert!(same_surface_geometry(expected, &application));
+                        assert_eq!(expected.visible_fit_bounds, application.visible_fit_bounds);
+                        assert_eq!(
+                            expected.physical_local_anchor,
+                            application.physical_local_anchor
+                        );
+                        assert_eq!(expected.portrait_anchor, application.portrait_anchor);
+                    } else {
+                        expected_application = Some(application.clone());
+                    }
+                    let regions = build_native_interaction_regions(
+                        &contract,
+                        &application,
+                        None,
+                        Some(mask),
+                        portrait_scale_percent,
+                    )
+                    .unwrap();
+                    exact_regions.push(
+                        window_interaction::native_hit_rectangles(
+                            &regions,
+                            [
+                                application.physical_placement.width,
+                                application.physical_placement.height,
+                            ],
+                        )
+                        .unwrap(),
+                    );
+                }
+                for pair in exact_regions.windows(2) {
+                    assert_ne!(pair[0], pair[1]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn window_surface_regression_windows_portrait_scale_changes_only_the_exact_region_at_automatic_anchor(
+    ) {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let mask = character_presentation::PortraitAlphaMask::new(
+            5,
+            5,
+            vec![
+                255, 255, 255, 255, 255, //
+                255, 255, 255, 255, 255, //
+                255, 255, 255, 255, 255, //
+                255, 255, 255, 255, 255, //
+                255, 255, 255, 255, 255,
+            ],
+        );
+        let mut expected_application: Option<LayoutApplication> = None;
+        let mut exact_regions = Vec::new();
+
+        for portrait_scale_percent in [100, 150, 50] {
+            let application = compute_pet_window_layout_with_surface_policy(
+                &contract,
+                PresentationState::Product,
+                42,
+                &monitor,
+                None,
+                AnchorPolicy::Automatic,
+                portrait_scale_percent,
+                None,
+                Some(&mask),
+                false,
+                true,
+                false,
+            )
+            .unwrap();
+            if let Some(expected) = expected_application.as_ref() {
+                assert_eq!(expected.physical_placement, application.physical_placement);
+                assert_eq!(expected.portrait_anchor, application.portrait_anchor);
+                assert_eq!(
+                    expected.physical_local_anchor,
+                    application.physical_local_anchor
+                );
+                assert_eq!(expected.active_bounds, application.active_bounds);
+                assert_eq!(expected.content_scale, application.content_scale);
+                assert_eq!(expected.visible_fit_bounds, application.visible_fit_bounds);
+            } else {
+                expected_application = Some(application.clone());
+            }
+            let regions = build_native_interaction_regions(
+                &contract,
+                &application,
+                None,
+                Some(&mask),
+                portrait_scale_percent,
+            )
+            .unwrap();
+            exact_regions.push(
+                window_interaction::native_hit_rectangles(
+                    &regions,
+                    [
+                        application.physical_placement.width,
+                        application.physical_placement.height,
+                    ],
+                )
+                .unwrap(),
+            );
+        }
+
+        for pair in exact_regions.windows(2) {
+            assert_ne!(pair[0], pair[1]);
+        }
+    }
+
+    #[test]
+    fn resident_portrait_application_reuse_requires_unchanged_layout_and_dpi() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let application = compute_pet_window_layout_with_surface_policy(
+            &contract,
+            PresentationState::Product,
+            42,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            None,
+            None,
+            false,
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(can_reuse_resident_portrait_application(
+            true,
+            &application,
+            PresentationState::Product,
+            42,
+            &monitor,
+        ));
+        let different_dpi = MonitorDescriptor {
+            scale_factor: 1.25,
+            ..monitor
+        };
+        assert!(!can_reuse_resident_portrait_application(
+            true,
+            &application,
+            PresentationState::Product,
+            42,
+            &different_dpi,
+        ));
     }
 
     #[test]
@@ -7387,6 +9812,8 @@ mod tests {
             bubble_rect: [130, 680, 640, 128],
             input_rect: [130, 818, 640, height],
             controls_rect: [730, 690, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
         };
         let motion = Some(InputSurfaceTransition {
             duration_ms: 260,
@@ -7450,6 +9877,39 @@ mod tests {
                 staging_height: None,
                 delay_ms: 0,
             }),
+        ));
+    }
+
+    #[test]
+    fn animated_bubble_contraction_requires_a_fixed_bottom_edge_and_stable_input() {
+        let surface = |top, height| ControlSurfaceLayout {
+            bubble_rect: [130, top, 640, height],
+            input_rect: [130, 818, 640, 52],
+            controls_rect: [730, top + 10, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let motion = Some(InputSurfaceTransition {
+            duration_ms: 240,
+            staging_height: None,
+            delay_ms: 0,
+        });
+        assert!(is_animated_bubble_contraction(
+            &surface(632, 176),
+            &surface(680, 128),
+            motion,
+        ));
+        assert!(!is_animated_bubble_contraction(
+            &surface(680, 128),
+            &surface(632, 176),
+            motion,
+        ));
+        let mut moved_input = surface(680, 128);
+        moved_input.input_rect[1] += 1;
+        assert!(!is_animated_bubble_contraction(
+            &surface(632, 176),
+            &moved_input,
+            motion,
         ));
     }
 
@@ -7539,6 +9999,7 @@ mod tests {
     fn product_menu_session_starts_closed_without_stale_hit_regions() {
         let session = WindowGeometrySession::default();
         assert!(!session.context_menu_open);
+        assert!(session.context_menu_rect.is_none());
         assert!(session.require_context_menu_closed().is_ok());
         assert!(session.hit_regions.is_none());
         assert!(session.context_menu_base_application.is_none());
@@ -7548,6 +10009,164 @@ mod tests {
         assert!(!session.portrait_scale_gesture_active);
         assert!(!session.control_surface_preview_active);
         assert_eq!(session.control_surface_preview_revision, 0);
+    }
+
+    #[test]
+    fn revision_zero_bootstrap_is_diagnostic_ready_without_consuming_revision_one() {
+        let mut session = WindowGeometrySession::default();
+        let mut application = LayoutApplication::rejected(0, PresentationState::Product, 1);
+        application.applied = true;
+        application.content_scale = 0.875;
+        application.scale_factor = 1.25;
+        application.visible_fit_bounds = [126, 326, 648, 660];
+        application.active_bounds = [0, 0, 900, 1_490];
+        application.physical_local_anchor = [394, 861];
+        application.portrait_anchor = window_geometry::PhysicalPoint { x: 2_000, y: 1_100 };
+        let hit_regions = window_interaction::PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: application.scale_factor * application.content_scale,
+            envelope: [900, 1_490],
+            interactive: Vec::new(),
+            drag: Vec::new(),
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+
+        commit_bootstrap_geometry(&mut session, application, hit_regions).unwrap();
+
+        assert_eq!(session.applied_revision, 0);
+        assert_eq!(session.state, Some(PresentationState::Product));
+        assert!(session.application.is_some());
+        assert!(session.hit_regions.is_some());
+        assert!(!session.anchor_user_positioned);
+        assert!(session.revision.accept(1));
+    }
+
+    #[test]
+    fn product_menu_region_policy_relaxes_only_windows_menu_sessions() {
+        let expected = if cfg!(windows) {
+            ContextMenuRegionPolicy::RelaxedWholeWindow
+        } else {
+            ContextMenuRegionPolicy::PreciseOverlay
+        };
+        assert_eq!(current_context_menu_region_policy(), expected);
+    }
+
+    #[test]
+    fn reopening_product_menu_preserves_the_original_restore_snapshot() {
+        let mut session = WindowGeometrySession::default();
+        let base_application = LayoutApplication::rejected(41, PresentationState::Product, 5);
+        let base_regions = window_interaction::PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [900, 1_374],
+            interactive: Vec::new(),
+            drag: Vec::new(),
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+        assert!(session.begin_context_menu(base_application.clone(), base_regions.clone()));
+        assert!(session.context_menu_rect.is_none());
+
+        assert!(!session.begin_context_menu(
+            LayoutApplication::rejected(42, PresentationState::Product, 5),
+            window_interaction::PhysicalHitRegions {
+                envelope: [1_200, 1_200],
+                ..base_regions.clone()
+            },
+        ));
+        assert_eq!(
+            session
+                .context_menu_base_application
+                .as_ref()
+                .unwrap()
+                .revision,
+            base_application.revision
+        );
+        assert_eq!(
+            session
+                .context_menu_base_hit_regions
+                .as_ref()
+                .unwrap()
+                .envelope,
+            base_regions.envelope
+        );
+    }
+
+    #[test]
+    fn context_menu_surface_keeps_its_overlay_when_control_visibility_changes() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 2_560,
+                height: 1_392,
+            },
+            scale_factor: 1.25,
+        };
+        let visible = ControlSurfaceLayout {
+            bubble_rect: [130, 680, 640, 128],
+            input_rect: [130, 818, 640, 52],
+            controls_rect: [730, 690, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let application = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            Some(&visible),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let rect = [300, 900, 226, 273];
+        let opened = build_context_menu_surface_geometry(
+            &contract,
+            &application,
+            rect,
+            Some(&visible),
+            None,
+            100,
+        )
+        .unwrap();
+        assert_eq!(opened.base_hit_regions.interactive.len(), 2);
+        let menu_region = *opened.expanded_hit_regions.interactive.last().unwrap();
+
+        let hidden = ControlSurfaceLayout {
+            bubble_visible: false,
+            input_visible: false,
+            ..visible
+        };
+        let changed = build_context_menu_surface_geometry(
+            &contract,
+            &application,
+            rect,
+            Some(&hidden),
+            None,
+            100,
+        )
+        .unwrap();
+        assert!(changed.base_hit_regions.interactive.is_empty());
+        assert_eq!(changed.base_hit_regions.drag.len(), 1);
+        assert_eq!(changed.expanded_hit_regions.interactive, vec![menu_region]);
+        assert_eq!(
+            changed.application.active_bounds,
+            opened.application.active_bounds
+        );
+        assert_eq!(
+            changed.application.physical_placement,
+            opened.application.physical_placement
+        );
     }
 
     #[test]
@@ -7600,6 +10219,11 @@ mod tests {
         assert!(!session.defers_precise_portrait_scale_hit_regions());
         assert!(!session.can_settle_portrait_scale(51));
         assert!(session.can_settle_portrait_scale(55));
+
+        session.control_surface_preview_active = true;
+        assert_eq!(session.defers_precise_surface_hit_regions(), cfg!(windows));
+        session.control_surface_preview_active = false;
+        assert!(!session.defers_precise_surface_hit_regions());
 
         session.portrait_hit_relaxed = false;
         assert!(!session.defers_precise_portrait_scale_hit_regions());
@@ -7676,6 +10300,96 @@ mod tests {
 
         moved.scale_factor = 1.25;
         assert!(!same_local_surface_geometry(&previous, &moved));
+    }
+
+    #[test]
+    fn mixed_dpi_drag_commit_preserves_the_released_window_position() {
+        let contract = layout_contract().unwrap();
+        let source_monitor = MonitorDescriptor {
+            name: Some("source-150".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 3_840,
+                height: 2_160,
+            },
+            scale_factor: 1.5,
+        };
+        let target_monitor = MonitorDescriptor {
+            name: Some("target-100".to_string()),
+            work_area: PhysicalRect {
+                x: -3_840,
+                y: 0,
+                width: 3_840,
+                height: 2_160,
+            },
+            scale_factor: 1.0,
+        };
+        let source = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            7,
+            &source_monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let released = window_geometry::PhysicalPoint { x: -3_200, y: 180 };
+        let settled = compute_dragged_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            7,
+            &target_monitor,
+            released,
+            source.physical_local_anchor,
+            100,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_ne!(source.physical_local_anchor, settled.physical_local_anchor);
+        assert_eq!(settled.physical_placement.x, released.x);
+        assert_eq!(settled.physical_placement.y, released.y);
+        assert_eq!(
+            settled.portrait_anchor,
+            window_geometry::anchor_from_window_position(released, settled.physical_local_anchor,)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn drag_visual_effect_sync_detects_monitor_and_dpi_transitions() {
+        let mut previous = LayoutApplication::rejected(1, PresentationState::Product, 3);
+        previous.active_bounds = [48, 320, 804, 664];
+        previous.physical_placement = window_geometry::PhysicalPlacement {
+            x: 100,
+            y: 200,
+            width: 804,
+            height: 664,
+        };
+        previous.work_area = PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 1_920,
+            height: 1_080,
+        };
+        previous.monitor_name = Some("left".to_string());
+        let mut moved = previous.clone();
+        moved.physical_placement.x += 100;
+        assert!(same_drag_visual_effect_geometry(&previous, &moved));
+
+        moved.monitor_name = Some("right".to_string());
+        assert!(!same_drag_visual_effect_geometry(&previous, &moved));
+        moved.monitor_name = previous.monitor_name.clone();
+        moved.scale_factor = 1.5;
+        assert!(!same_drag_visual_effect_geometry(&previous, &moved));
     }
 
     #[test]

@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  UV_DEFAULT_INDEX: https://pypi.org/simple
+
 jobs:
   metadata:
     runs-on: ubuntu-24.04
@@ -123,6 +126,8 @@ jobs:
       - name: Build the Runtime v2 platform bundle
         working-directory: desktop/src-tauri
         shell: bash
+        env:
+          SAKURA_REQUIRE_DIAGNOSTIC_MAPPING: "1"
         run: npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
 
       - name: Collect Windows Setup and Portable ZIP
@@ -148,13 +153,6 @@ jobs:
           Remove-Item -LiteralPath desktop/src-tauri/portable-staging/release-inventory.json
           $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
           Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
-          python tools/release/artifact_report.py `
-            --inventory desktop/src-tauri/release-staging/release-inventory.json `
-            --output artifacts/windows-x64-size-report.json `
-            --installed-path desktop/src-tauri/portable-staging `
-            --artifact $setup `
-            --artifact $portable
-          Copy-Item desktop/src-tauri/release-staging/release-inventory.json artifacts/windows-x64-inventory.json
 
       - name: Collect macOS app and DMG
         if: runner.os == 'macOS'
@@ -169,20 +167,26 @@ jobs:
           test -n "$app" && test -n "$dmg"
           app_zip="artifacts/Sakura-${VERSION}-macos-arm64.app.zip"
           dmg_out="artifacts/Sakura-${VERSION}-macos-arm64.dmg"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"
+          help_source="packaging/macos-open-help.html"
+          help_out="artifacts/Sakura-${VERSION}-macos-open-help.html"
+          app_zip_root="$RUNNER_TEMP/sakura-macos-app-zip"
+          mkdir -p "$app_zip_root"
+          ditto "$app" "$app_zip_root/$(basename "$app")"
+          cp "$help_source" "$app_zip_root/Sakura-macOS-open-help.html"
+          ditto -c -k --sequesterRsrc "$app_zip_root" "$app_zip"
+          cp "$help_source" "$help_out"
           cp "$dmg" "$dmg_out"
-          python tools/release/artifact_report.py \
-            --inventory desktop/src-tauri/release-staging/release-inventory.json \
-            --output artifacts/macos-arm64-size-report.json \
-            --installed-path "$app" \
-            --artifact "$app_zip" \
-            --artifact "$dmg_out"
-          cp desktop/src-tauri/release-staging/release-inventory.json artifacts/macos-arm64-inventory.json
           python tools/release/package_optional_plugin.py \
             --source plugins/optional/playwright_browser \
             --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
-      - name: Upload platform artifacts and size evidence
+      - name: Retain diagnostic build mapping
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp desktop/src-tauri/release-staging/diagnostic-build.json "artifacts/diagnostic-build-${{ matrix.target }}.json"
+
+      - name: Upload platform artifacts
         uses: actions/upload-artifact@v7
         with:
           name: runtime-v2-${{ needs.metadata.outputs.label }}-${{ matrix.target }}

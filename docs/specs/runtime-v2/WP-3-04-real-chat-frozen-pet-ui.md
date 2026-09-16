@@ -3,11 +3,18 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-23
+updated: 2026-09-15
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
+
+## 当前表现合同
+
+2026-09-12 起，本文原有固定 portrait/portraitChoices 投影与宿主图片选择由[表现插件合同](visual-plugin-boundary.md)取代。
+CharacterPresentation 使用 schemaVersion 2 的可空 visual；公共 Profile 不提供图片候选。立绘兼容、切图、
+解码和过渡归入内置插件，宿主在实际分段播放时派发 control；历史浏览只读文字。以下旧 WP 实施与验收记录保留历史语境。
+
+气泡底部的警告提示（`presentation-error`）统一显示 5 秒后清除，语音识别错误附带的重试和设置按钮同时移除。不同的新提示从出现时重新计时；同一条可见提示重复上报不延长显示时间。恢复成功或窗口退出时提前清除提示及计时器。
 
 ## 目标与依赖
 
@@ -59,8 +66,11 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 - `chat.started` 映射为 thinking；主按钮在原有尺寸和命中区域内切换为可点击取消的环形旋转条，输入框
   保持可编辑并把 placeholder 切换为“`{角色显示名}正在思考中…`”。气泡只按旧 Qt 节奏每 360ms 循环
   `. → .. → ... → .... → ..... → ...... → .....`，不得显示“正在组织完整回复”或其他解释性文案。
-  等待终态期间必须保持已经提交的当前立绘，不得切换固定 thinking 立绘。系统要求减少动态效果时，
-  圆环保持静态，气泡固定显示 `...`，取消语义不变。
+  等待终态期间必须保持已经提交的当前立绘，不得切换固定 thinking 立绘。系统减少动态效果设置
+  不改变圆环旋转、点号循环和取消语义。
+- 发送按钮使用持久的 inline SVG：纸飞机短促位移并形变为加载环；发送后指针留在原处时保持加载环，
+  移开再进入或键盘重新聚焦时形变为 ×，按钮随时可取消。成功接收当前可交互请求的 `chat.completed` 后
+  显示短暂完成勾，再恢复纸飞机；失败、取消、过期结果及静默请求不显示完成勾。新的操作可立即打断反馈。
 - `chat.completed` 的完整 `segments` 交给现有 presentation reducer。WebView 只在完整回复到达后运行
   typewriter；每段清空上一段后独立显示，逐段同步对应 portrait，最后一段留在 settled 状态；不得把
   多段拼接为单一气泡文本，也不引入 token streaming、delta 或进度协议。产品界面不提供“立即显示”
@@ -72,9 +82,10 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
   输入中的当前段清空后按新语言从头重播；settled 或正在回看的段立即完整替换，不等待下一次回复、不回放
   已完成段，也不改变当前立绘。
 - 启动问候在字体、初始立绘和窗口 reveal 完成后通过同一可取消 typewriter 播放一次；reveal 前气泡为空，
-  reload/focus 不重播，用户发送消息会取消未完成问候。reduced motion 下 reveal 后立即显示完整问候。
+  reload/focus 不重播，用户发送消息会取消未完成问候。系统减少动态效果设置下仍按相同节奏逐字播放。
 - 立绘切换使用解码优先的双层交叉淡入：旧层约 250ms 淡出，新层延迟约 50ms 后以约 250ms 淡入，
-  总过渡约 300ms。相同 key 不动画，失败保持旧层，A→B→C 竞态只能提交 C；命中区域只在最终提交后更新。
+  总过渡约 300ms。该动画不读取系统 `prefers-reduced-motion`；相同 key 不动画，首次加载等显式 immediate
+  提交仍直接显示，失败保持旧层，A→B→C 竞态只能提交 C；命中区域只在最终提交后更新。
 - `chat.failed` 显示可诊断且脱敏的稳定错误并允许下一次发送。Provider HTTP 失败至少显示状态码，并在
   响应为受支持 JSON 结构时附带经过长度限制与敏感信息过滤的 `error.message`、`error.code`、
   `error.type` 或 `error.status`；不得再只显示 `Provider response was invalid`/`Provider request failed`。
@@ -107,7 +118,7 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
   动画结束后一次收敛到目标区域；不得先裁掉 WebView 外框，也不得让原生玻璃越过外框或在外框到位后继续
   形成光晕。快速变化只允许最新 revision 胜出，发送/取消与附件按钮在全过程中必须完整可见、命中与视觉
   位置一致。
-- Enter 发送、Shift+Enter 换行、IME composition、焦点恢复、reduced motion 和拖动行为沿用已验收
+- Enter 发送、Shift+Enter 换行、IME composition、焦点恢复和拖动行为沿用已验收
   语义；本 WP 不借真实聊天重新设计视觉或交互。
 - 鼠标右键打开产品菜单不得自动聚焦第一项或留下持续深色底；只有键盘触发打开时聚焦首个可用项并启用
   `focus-visible` 背景。checked 状态只由复选指示器表达，不把普通“隐藏至托盘”渲染成选中项。
@@ -131,31 +142,12 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 - WebView 事件不得包含 credential、Authorization、Provider URL、原始 Provider 响应体、history、绝对
   路径、prompt、日志正文或环境变量。错误只显示 Core 已投影的稳定 code/message/retryable；Provider
   message/code/type/status 必须先经过 allowlist、长度上限与敏感模式过滤。
-- 不新增网络、文件、shell 或窗口权限，不放宽 CSP，不新增依赖或 dependency manifest/lock 变化。
+- 聊天桥不自行扩大网络、文件、shell 或窗口权限，不通过放宽 CSP 绕过资源边界。
 
-## 实施白名单与禁止范围
+## 维护范围
 
-精确机器可读范围见 `harness/tasks/WP-3-04.json`。允许修改仅限：
-
-- `desktop/frontend/app.js`、`desktop/frontend/chat/**`、`desktop/frontend/pet/**`：真实 chat client、
-  reducer/typewriter/portrait 接线及其窄回归。
-- `desktop/frontend/index.html`、`desktop/frontend/styles.css`：只启用既有中文字幕菜单项，并把既有双层
-  立绘过渡改为确定性交叉淡入，以及移除关闭按钮、加入右侧回复导航和修正菜单焦点样式；固定窗口几何
-  与角色主题视觉语言不变。
-- `desktop/frontend/settings/**`：只开放 `chat.presentation_timing` 及保存/回读/失败恢复。
-- `desktop/src-tauri/src/` 中列名允许的 chat bridge、lifecycle、Gateway、product shell、`ui.json` 共享
-  repository 与聊天设置模块；不扩大通用 IPC 或窗口系统。
-- 相关 frontend/Rust/真实桌面 acceptance、隔离 fixture、Runtime v2 platform workflow、规范、记录、
-  userdoc 和 changelog。
-
-明确禁止：
-
-- 除 `app/core_host/real_chat.py` 中窄 Provider 错误公开投影外，禁止 Python Assistant/Core/Provider/
-  history 业务改动、legacy Qt UI 与两个入口；该例外不得改变请求、重试、Provider 选择或 history 语义。
-- TTS、Tools、Action 确认、Memory、MCP、插件、截图/视觉输入、主动互动、提醒/任务、历史窗口、角色
-  切换、Studio、导入导出、通用 Operation/priority/resource token、streaming/progress/delta。
-- 修改固定 DOM 层级、布局 contract、窗口几何、角色包、真实数据、runtime、第三方或 `tools/mcp`。
-- 新增依赖，修改 Cargo/npm/Python manifest 或 lockfile，删除/重命名既有测试，降低既有三平台门禁。
+真实聊天的修复可沿前端、Rust bridge 和 Python Core/Provider 调用链完成。界面行为、数据写入和凭据投影
+仍遵循本文及相关 Spec；新增依赖或清理失效测试应有当前任务依据。旧 Harness task 文件和路径白名单已废止。
 
 ## 自动验收矩阵
 
@@ -174,9 +166,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 | 冻结 UI | ready/thinking/typing/error/cancel、IME、长文本、reduced motion | 无关闭/“立即显示”；右侧导航不改变固定几何；鼠标菜单首项无持续深色 |
 | 安全 | 非 main 窗口、额外 payload、secret-shaped terminal/error | Core 写前拒绝；无 secret/path/history 泄漏；不放宽权限 |
 
-任务级 required profiles 固定为 `docs`、`smoke`、`core-host`、`runtime-v2-shell`、`python-full`。实现还须
-执行 locked Rust 全量测试、fmt/diff check，以及同一候选 SHA 的 Windows/macOS/Linux 公共 workflow；
-自动测试使用确定性 local Provider 和隔离根，不访问公网或真实用户 Provider。
+根据上表中受影响的行为选择前端、Core 或 Shell 测试；相关 profile 见 `harness list`，不叠加重复 case。
+自动测试使用确定性 local Provider 和隔离根，不访问公网或真实用户 Provider。完整平台矩阵由 CI 执行。
 
 ## 人工验收与退出条件
 
@@ -189,8 +180,8 @@ Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错�
 150% DPI 下固定窗口包络、气泡、输入和立绘锚点不得漂移，正常产品界面不得出现 Fake Core 命令或测试
 控件。公共候选须取得同一 SHA 三平台门，无 P0/P1、凭据泄漏、重复终态或资源残留。
 
-自动门通过只允许进入 `stabilizing` 并等待负责人验收；Agent 不代填人工结果，也不自行标记
-`accepted`。
+自动检查通过与人工体验确认分别记录。未执行的设备或交互验证应明确标注，不能代填人工结果；
+这些记录不限制已授权的后续开发。
 
 ## 回退
 

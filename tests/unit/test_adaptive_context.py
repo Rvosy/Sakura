@@ -18,16 +18,32 @@ from app.llm.prompts.runtime import (
     ContextBudget,
     ContextPolicy,
     ContextWindowExceededError,
+    PromptRuntime,
     calculate_context_budget,
     estimate_context_runtime_tokens,
     estimate_prompt_tokens,
     truncate_to_token_budget,
 )
-from app.llm.prompts.types import ContextFragment, ContextRequest, ContextTurn
+from app.llm.prompts.types import ContextFragment, ContextRequest, ContextTurn, PromptRecipe, PromptSection
 from app.llm.token_estimation import (
     estimate_message_image_tokens,
     estimate_message_tokens,
 )
+
+
+def test_prompt_inspection_exposes_section_metadata_without_content_digest() -> None:
+    result = PromptRuntime().build(PromptRecipe(
+        "fixture", [PromptSection("persona.character", "private character text", source="character")],
+    ))
+    inspection = result.inspection.to_dict()
+    section = inspection["sections"][0]
+    assert result.system_prompt == "private character text"
+    assert section["section_id"] == "persona.character"
+    assert section["source"] == "character"
+    assert section["chars"] == len(result.system_prompt)
+    assert section["estimated_tokens"] == estimate_prompt_tokens(result.system_prompt)
+    assert "static_hash" not in section
+    assert "private character text" not in str(inspection)
 
 
 def _history(turns: int, *, chars: int = 120) -> list[dict[str, object]]:
@@ -129,6 +145,27 @@ def test_one_million_token_context_window_keeps_a_proportional_budget() -> None:
     assert budget.context_budget == 746_000
 
 
+def test_context_window_error_reports_the_non_trimmable_budget_breakdown() -> None:
+    with pytest.raises(ContextWindowExceededError) as caught:
+        calculate_context_budget(
+            context_window_tokens=131_072,
+            window_source="user",
+            max_tokens=131_072,
+            static_prompt_tokens=2_000,
+            tool_schema_tokens=500,
+            current_required_tokens=1_500,
+        )
+
+    error = caught.value
+    assert error.context_window_tokens == 131_072
+    assert error.window_source == "user"
+    assert error.required_tokens == 4_000
+    assert error.output_reserve == 131_072
+    assert error.reason == "window_capacity"
+    assert "模型窗口 131072 tokens（用户设置）" in error.public_message()
+    assert error.log_attributes()["tool_schema_tokens"] == 500
+
+
 def test_required_host_facts_are_full_or_fail_with_their_rendered_envelope() -> None:
     request = ContextRequest(current_time="2026-08-26T12:00:00+08:00")
     orchestrator = ContextOrchestrator()
@@ -149,7 +186,7 @@ def test_required_host_facts_are_full_or_fail_with_their_rendered_envelope() -> 
     assert all(not item.truncated for item in required)
     assert not [item for item in snapshot.dropped if item.fragment.required]
 
-    with pytest.raises(ContextWindowExceededError, match="CONTEXT_WINDOW_EXCEEDED"):
+    with pytest.raises(ContextWindowExceededError, match="CONTEXT_WINDOW_EXCEEDED") as caught:
         orchestrator.build_snapshot(
             request,
             messages=[],
@@ -157,6 +194,9 @@ def test_required_host_facts_are_full_or_fail_with_their_rendered_envelope() -> 
             context_window_tokens=4_096,
             window_source="user",
         )
+    assert caught.value.reason == "input_target"
+    assert caught.value.required_context_tokens > 0
+    assert "必需上下文" in caught.value.public_message()
 
 
 def test_chat_model_slot_propagates_explicit_window_without_model_name_guessing() -> None:
@@ -388,36 +428,20 @@ def test_high_detail_image_estimate_uses_known_dimensions_and_model_profile() ->
     )
 
 
-def test_fragment_budget_is_aggregated_by_contributor_source() -> None:
+@pytest.mark.parametrize("second_source", ["plugin:memory", "plugin:other"])
+def test_fragment_budgets_do_not_depend_on_provider_packaging(second_source) -> None:
     fragments = [
         ContextFragment("a", "plugin:memory", "甲" * 80, token_budget=100),
-        ContextFragment("b", "plugin:memory", "乙" * 80, token_budget=100),
+        ContextFragment("b", second_source, "乙" * 80, token_budget=50),
         ContextFragment("c", "plugin:other", "丙" * 80, token_budget=100),
     ]
-    budget = ContextBudget(
-        context_window_tokens=4_096,
-        window_source="user",
-        input_target=3_000,
-        output_reserve=1_000,
-        safety_margin=1_024,
-        required_tokens=0,
-        context_budget=500,
-    )
-
-    snapshot = ContextPolicy().select(ContextRequest(), fragments, budget=budget)
-
-    memory_tokens = sum(
-        estimate_prompt_tokens(item.fragment.content)
-        for item in snapshot.selected
-        if item.fragment.source == "plugin:memory"
-    )
-    other_tokens = sum(
-        estimate_prompt_tokens(item.fragment.content)
-        for item in snapshot.selected
-        if item.fragment.source == "plugin:other"
-    )
-    assert memory_tokens <= 100
-    assert other_tokens == 80
+    snapshot = ContextPolicy(total_budget=2_000).select(ContextRequest(), fragments)
+    assert [item.fragment.fragment_id for item in snapshot.selected] == ["a", "b", "c"]
+    first, second, third = snapshot.selected
+    assert first.fragment.content == "甲" * 80
+    assert second.truncated and 0 < estimate_prompt_tokens(second.fragment.content) <= 50
+    assert third.fragment.content == "丙" * 80
+    assert snapshot.dropped == ()
 
 
 def test_optional_fragment_envelopes_share_the_global_budget() -> None:

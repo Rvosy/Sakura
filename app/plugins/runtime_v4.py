@@ -9,14 +9,17 @@ import subprocess
 import sys
 import threading
 import time
+import codecs
 from dataclasses import dataclass, replace
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from app.core.process_tree import terminate_process_tree
+from app.plugin_sdk.sakura_process import terminate_process_tree
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer, json_value
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
@@ -161,6 +164,12 @@ class _HostRegistration:
     registration_id: str
 
 
+@dataclass(frozen=True)
+class _DrainingProcess:
+    process: "_PluginProcess"
+    deadline: float
+
+
 class _PluginProcess:
     def __init__(
         self,
@@ -177,6 +186,7 @@ class _PluginProcess:
         self._roots = roots
         self._generation_id = generation_id
         self._spec = spec
+        self.scope_id = secrets.token_hex(16)
         self._dependency_root = dependency_root
         self._request_handler = request_handler
         self._on_exit = on_exit
@@ -185,6 +195,7 @@ class _PluginProcess:
         self._peer: RpcPeer | None = None
         self._windows_job: int | None = None
         self._watcher: threading.Thread | None = None
+        self._stderr_reader: threading.Thread | None = None
         self._closing = False
         self._exit_reported = False
         self._spawn_lock = threading.Lock()
@@ -235,7 +246,7 @@ class _PluginProcess:
                     command,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     # Keep the process working directory outside plugin code.
                     # Windows cannot atomically quarantine an installed plugin
                     # while a live or recently stopped process has that code
@@ -293,6 +304,11 @@ class _PluginProcess:
                 self._windows_job = windows_job
                 self._watcher = watcher
             peer.start(thread_name=f"sakura-plugin-{self._spec.plugin_id}-core-reader")
+            self._stderr_reader = threading.Thread(
+                target=self._drain_stderr, args=(process,),
+                name=f"sakura-plugin-{self._spec.plugin_id}-stderr", daemon=True,
+            )
+            self._stderr_reader.start()
             watcher.start()
         try:
             result = peer.request(
@@ -307,6 +323,41 @@ class _PluginProcess:
             self.close()
             raise PluginRuntimeError("PLUGIN_RESPONSE_INVALID", plugin_id=self._spec.plugin_id)
         return dict(result)
+
+    def _drain_stderr(self, process: subprocess.Popen[bytes]) -> None:
+        """Always drain the pipe; the bounded log queue owns downstream drops."""
+        from app.core.runtime_log import log_message
+        from app.core.diagnostics import safe_diagnostic_text
+
+        stream = process.stderr
+        if stream is None:
+            return
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
+
+        def emit(text: str) -> None:
+            if text.strip():
+                # stderr also carries redirected print output and download progress;
+                # the stream alone does not establish a warning or failure.
+                log_message("info", "插件诊断输出", component="plugin",
+                    plugin_id=self._spec.plugin_id, plugin_name=self._spec.name,
+                    fields={"event": "plugin.process.stderr", "stage": "stderr",
+                            "diagnostic": safe_diagnostic_text(text)})
+
+        try:
+            while chunk := stream.read(4096):
+                pending += decoder.decode(chunk)
+                if "\n" in pending:
+                    complete, _, pending = pending.rpartition("\n")
+                    emit(complete)
+                if len(pending) >= 4096:
+                    emit(pending)
+                    pending = ""
+            emit(pending + decoder.decode(b"", final=True))
+        except (OSError, ValueError):
+            pass
+        finally:
+            stream.close()
 
     def _wait_for_process_exit(self, process: subprocess.Popen[bytes]) -> None:
         try:
@@ -331,6 +382,7 @@ class _PluginProcess:
         args: Sequence[Any],
         *,
         timeout: float | None = None,
+        caller_id: str = "sakura.core",
     ) -> object:
         peer = self._peer
         if peer is None:
@@ -342,6 +394,7 @@ class _PluginProcess:
                     "serviceKey": service_key,
                     "method": method,
                     "args": list(args),
+                    "callerId": caller_id,
                 },
                 timeout=self._call_timeout if timeout is None else timeout,
             )
@@ -434,6 +487,8 @@ class _PluginProcess:
             if process.poll() is None:
                 self._terminate_owned_descendants(process, deadline=close_deadline)
         self._close_windows_job()
+        if self._stderr_reader is not None:
+            self._stderr_reader.join(timeout=0.3)
         for stream in (process.stdout if process is not None else None,):
             try:
                 if stream is not None:
@@ -552,6 +607,7 @@ class PluginRuntimeManager:
         self._start_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._closed = False
+        self._draining_processes: dict[str, _DrainingProcess] = {}
         for value in specs:
             spec = value.to_plugin_spec(self._roots) if isinstance(value, RuntimePluginSpec) else value
             if spec.plugin_id in self._records:
@@ -631,9 +687,67 @@ class PluginRuntimeManager:
             timeout=timeout,
         )
 
+    def service_identity(self, service_key: str, *, include_starting: bool = False) -> dict[str, str]:
+        """Host-only identity for an active Service's exact process lifetime."""
+        with self._lock:
+            binding = self._services.get(service_key)
+            if binding is not None and binding.process is not None:
+                return {"providerId": binding.provider_id, "scopeId": binding.process.scope_id}
+            if include_starting:
+                candidates = [record for record in self._records.values()
+                              if service_key in record.spec.provides and record.process is not None
+                              and record.reason_code == "PLUGIN_STARTING"]
+                if len(candidates) == 1:
+                    record = candidates[0]
+                    return {"providerId": record.spec.plugin_id, "scopeId": record.process.scope_id}
+        raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
+
+    def service_exports(self, service_key: str) -> frozenset[str]:
+        with self._lock:
+            binding = self._services.get(service_key)
+            return binding.exports if binding is not None else frozenset()
+
     def owns_callback(self, handle: str) -> bool:
         with self._lock:
             return handle in self._callbacks
+
+    @contextmanager
+    def pause_service_providers(self, prefix: str):
+        ids = [item["pluginId"] for item in self.snapshot()["plugins"]
+               if item["state"] == "active" and any(key.startswith(prefix) for key in item["provides"])]
+        with self.pause_plugins(ids) as errors:
+            yield errors
+
+    @contextmanager
+    def pause_plugins(self, plugin_ids: Sequence[str]):
+        """Pause active readers and their dependents without changing enablement.
+
+        The caller inspects restoration errors separately from its file transaction.
+        """
+        errors = []
+        with self._operation_lock:
+            with self._lock:
+                affected = set()
+                for plugin_id in plugin_ids:
+                    record = self._records[plugin_id]
+                    if record.state == "active":
+                        affected.add(plugin_id)
+                        affected.update(self._hard_dependents_locked(plugin_id))
+                order = [plugin_id for plugin_id in self._activation_order if plugin_id in affected]
+            try:
+                stopped = []
+                for plugin_id in reversed(order):
+                    self._stop_process(plugin_id, reason="PLUGIN_RELOADING", failed=False)
+                    stopped.append(plugin_id)
+                yield errors
+            finally:
+                for plugin_id in reversed(stopped):
+                    try:
+                        record = self._records[plugin_id]
+                        if not self._start_one(record):
+                            raise PluginRuntimeError(record.reason_code, plugin_id=plugin_id)
+                    except Exception as error:
+                        errors.append(error)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         with self._operation_lock:
@@ -666,6 +780,7 @@ class PluginRuntimeManager:
                 if missing:
                     record.state = "failed"
                     record.reason_code = "MISSING_SERVICE"
+                    self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
                     return self.snapshot()
             self._start_one(record)
             return self.snapshot()
@@ -695,6 +810,7 @@ class PluginRuntimeManager:
                 if missing:
                     record.state = "failed"
                     record.reason_code = "MISSING_SERVICE"
+                    self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
                     return self.snapshot()
             self._start_one(record)
             return self.snapshot()
@@ -968,8 +1084,27 @@ class PluginRuntimeManager:
                     record.reason_code = "MISSING_SERVICE"
                     continue
                 self._start_one(record)
+        for record in enabled.values():
+            if record.reason_code in {"API_VERSION_UNSUPPORTED", "SERVICE_CONFLICT", "DEPENDENCY_CYCLE", "MISSING_SERVICE"}:
+                self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
+
+    def _log_lifecycle(self, record: _RuntimeRecord, event: str, message: str, *, failed: bool = False, diagnostics: Mapping[str, object] | None = None) -> None:
+        from app.core.runtime_log import log_message
+
+        log_message("error" if failed else "info", message, component="plugin",
+            plugin_id=record.spec.plugin_id, plugin_name=record.spec.name,
+            fields={**(diagnostics or {}), "event": event, "state": record.state, "reason_code": record.reason_code})
 
     def _start_one(self, record: _RuntimeRecord) -> bool:
+        diagnostics: dict[str, object] = {}
+        started = self._start_one_impl(record, diagnostics)
+        if not started and record.reason_code != "GENERATION_INVALIDATED":
+            self._log_lifecycle(record, "plugin.start.failed", "插件启动失败", failed=True, diagnostics=diagnostics)
+        return started
+
+    def _start_one_impl(self, record: _RuntimeRecord, diagnostics: dict[str, object]) -> bool:
+        from app.core.diagnostics import exception_diagnostics
+
         spec = record.spec
         assert spec.plugin_root is not None
         with self._lock:
@@ -988,6 +1123,7 @@ class PluginRuntimeManager:
                 source=spec.source,
             )
         except PluginDependencyError as error:
+            diagnostics.update(exception_diagnostics(error, reason_code=error.code, stage="dependencies"))
             record.state = "failed"
             record.reason_code = error.code
             return False
@@ -1000,6 +1136,7 @@ class PluginRuntimeManager:
                 spec.plugin_id,
                 name,
                 payload,
+                calling_process=process,
             ),
             on_exit=self._plugin_exited,
             call_timeout=self._call_timeout,
@@ -1035,6 +1172,7 @@ class PluginRuntimeManager:
                     process=process,
                 )
         except PluginRuntimeError as error:
+            diagnostics.update(exception_diagnostics(error, reason_code=error.code, stage="initialize"))
             process.close()
             with self._lock:
                 if record.process is process:
@@ -1081,6 +1219,18 @@ class PluginRuntimeManager:
         if should_close:
             process.close()
             return False
+        from app.core.runtime_log import log_event
+
+        log_event(
+            "PluginManager",
+            "插件已加载",
+            {},
+            event="plugin.loaded",
+            plugin_id=spec.plugin_id,
+            plugin_name=spec.name,
+            severity="info",
+            verbosity=1,
+        )
         return True
 
     def _handle_plugin_request(
@@ -1088,7 +1238,17 @@ class PluginRuntimeManager:
         caller_id: str,
         name: str,
         payload: Mapping[str, Any],
+        *,
+        calling_process: _PluginProcess | None = None,
     ) -> object:
+        if calling_process is not None:
+            with self._lock:
+                record = self._records.get(caller_id)
+                draining = self._draining_processes.get(caller_id)
+                if (record is None or record.process is not calling_process) and (
+                    draining is None or draining.process is not calling_process
+                ):
+                    raise PluginApiError("GENERATION_INVALIDATED", plugin_id=caller_id)
         if name == "callback.register":
             shape = payload.get("shape")
             if not isinstance(shape, str) or not shape or len(shape) > 128:
@@ -1146,9 +1306,37 @@ class PluginRuntimeManager:
         detached_args = json_value(list(args))
         assert isinstance(detached_args, list)
         with self._lock:
-            if self._closed:
-                raise PluginRuntimeError("GENERATION_INVALIDATED")
             binding = self._services.get(service_key)
+            draining = self._draining_processes.get(caller_id)
+            caller_record = self._records.get(caller_id)
+            provider_record = self._records.get(binding.provider_id) if binding is not None else None
+            draining_log = (binding is not None
+                and getattr(binding.host_service, "allow_during_shutdown", False) is True
+                and draining is not None)
+            # A closing worker must be able to release its own registrations
+            # before Core performs the final scope sweep.
+            draining_unregister = (binding is not None and binding.host_service is not None
+                and draining is not None and method == "unregister"
+                and len(detached_args) == 1
+                and any(item.service_key == service_key and item.registration_id == detached_args[0]
+                        for item in self._host_registrations.get(caller_id, ())))
+            # Reverse dependency shutdown keeps a worker's declared services
+            # alive until its cleanup finishes. Unrelated or stale callers
+            # must still lose access as soon as the generation closes.
+            draining_dependency = (
+                draining is not None and caller_record is not None
+                and service_key in caller_record.spec.requires
+                and binding is not None and binding.process is not None
+                and provider_record is not None and provider_record.state == "active"
+                and provider_record.process is binding.process
+            )
+            if self._closed and not (draining_log or draining_unregister or draining_dependency):
+                raise PluginRuntimeError("GENERATION_INVALIDATED")
+            if draining_dependency:
+                remaining = draining.deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT", service_key=service_key)
+                timeout = min(self._call_timeout if timeout is None else timeout, remaining)
         if binding is None:
             raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
         if method not in binding.exports:
@@ -1163,10 +1351,17 @@ class PluginRuntimeManager:
                 method,
                 detached_args,
                 timeout=timeout,
+                caller_id=caller_id,
             )
         callback = getattr(binding.host_service, method, None)
         if not callable(callback):
             raise PluginRuntimeError("SERVICE_METHOD_NOT_EXPORTED", service_key=service_key)
+        with self._lock:
+            caller_record = self._records.get(caller_id)
+            spec = caller_record.spec if caller_record else None
+            log_metadata = (spec.name, spec.provides) if spec else ("", ())
+        metadata_token = HOST_CALLER_LOG_METADATA.set(log_metadata)
+        caller_token = HOST_CALLER.set(caller_id)
         try:
             result = json_value(callback(*detached_args))
             self._track_host_effect(caller_id, service_key, method, detached_args, result)
@@ -1181,6 +1376,9 @@ class PluginRuntimeManager:
                 code,
                 service_key=service_key,
             ) from error
+        finally:
+            HOST_CALLER.reset(caller_token)
+            HOST_CALLER_LOG_METADATA.reset(metadata_token)
 
     def _track_host_effect(
         self,
@@ -1208,6 +1406,14 @@ class PluginRuntimeManager:
                 ]
 
     def _clear_plugin_scope(self, plugin_id: str) -> None:
+        from app.core.runtime_log import log_message
+
+        def log_cleanup_failure(stage: str, service_key: str) -> None:
+            record = self._records.get(plugin_id)
+            log_message("warning", "插件资源清理失败", component="plugin",
+                plugin_id=plugin_id, plugin_name=record.spec.name if record else plugin_id,
+                fields={"event": "plugin.cleanup.failed", "stage": stage, "service_key": service_key})
+
         with self._lock:
             registrations = list(reversed(self._host_registrations.pop(plugin_id, [])))
             self._callbacks = {
@@ -1231,14 +1437,14 @@ class PluginRuntimeManager:
                 try:
                     callback(registration.registration_id)
                 except Exception:
-                    pass
-        for binding in host_bindings.values():
+                    log_cleanup_failure("unregister", registration.service_key)
+        for service_key, binding in host_bindings.items():
             callback = getattr(binding.host_service, "revoke_scope", None)
             if callable(callback):
                 try:
                     callback(plugin_id)
                 except Exception:
-                    pass
+                    log_cleanup_failure("revoke_scope", service_key)
 
     def _plugin_exited(self, plugin_id: str, process: _PluginProcess) -> None:
         with self._lock:
@@ -1252,20 +1458,20 @@ class PluginRuntimeManager:
                 if binding.provider_id != plugin_id
             }
             consumers = self._hard_dependents_locked(plugin_id)
-        # Revoke Host-owned resources before publishing the failed state. A
-        # snapshot that says ``failed`` must not still expose artifacts, tools,
-        # settings contributions, or other effects from the crashed process.
-        self._clear_plugin_scope(plugin_id)
+        # Service bindings are already unavailable. Finish the process tree
+        # before releasing Host files that a surviving native reader may hold.
         with self._lock:
             if record.process is process:
                 record.state = "failed"
                 record.reason_code = "PLUGIN_PROCESS_EXITING"
         process.terminate_after_transport_failure()
+        self._clear_plugin_scope(plugin_id)
         with self._lock:
             if record.process is process:
                 record.process = None
                 record.pid = None
                 record.reason_code = "PLUGIN_PROCESS_EXITED"
+        self._log_lifecycle(record, "plugin.process.exited", "插件进程意外退出", failed=True)
         for consumer_id in consumers:
             self._stop_process(
                 consumer_id,
@@ -1310,6 +1516,9 @@ class PluginRuntimeManager:
             if record is None:
                 return
             process = record.process
+            if process is not None:
+                deadline = time.monotonic() + CLOSE_TIMEOUT_SECONDS if deadline is None else deadline
+                self._draining_processes[plugin_id] = _DrainingProcess(process, deadline)
             record.process = None
             record.pid = None
             record.state = "failed" if failed else "disabled"
@@ -1321,8 +1530,14 @@ class PluginRuntimeManager:
             }
             self._activation_order[:] = [item for item in self._activation_order if item != plugin_id]
         if process is not None:
-            process.close(deadline=deadline)
+            try:
+                process.close(deadline=deadline)
+            finally:
+                with self._lock:
+                    self._draining_processes.pop(plugin_id, None)
         self._clear_plugin_scope(plugin_id)
+        if process is not None or failed:
+            self._log_lifecycle(record, "plugin.stopped", "插件已停止", failed=failed)
 
 
 __all__ = ["PluginRuntimeError", "PluginRuntimeManager"]

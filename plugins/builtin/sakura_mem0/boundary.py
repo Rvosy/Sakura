@@ -27,7 +27,10 @@ try:
         MemoryStore,
         append_memory_initialization_diagnostic,
     )
-    from .api_client import ApiSettings, OpenAICompatibleClient
+    from .api_client import (
+        ApiSettings,
+        OpenAICompatibleClient,
+    )
     from .memory_curator import MemoryCurationState, MemoryCurator
     from .support import (
         OperationCancelled,
@@ -50,7 +53,10 @@ except ImportError:
         MemoryStore,
         append_memory_initialization_diagnostic,
     )
-    from api_client import ApiSettings, OpenAICompatibleClient
+    from api_client import (
+        ApiSettings,
+        OpenAICompatibleClient,
+    )
     from memory_curator import MemoryCurationState, MemoryCurator
     from support import (
         OperationCancelled,
@@ -606,7 +612,11 @@ class MemoryBoundary:
         """Catch up committed Timeline entries and schedule at most one curation job."""
 
         with self._lock:
-            if self._closed or self._store_failed or self._status != "ready":
+            if (
+                self._closed
+                or self._store_failed
+                or self._status != "ready"
+            ):
                 return
             if self._curation_active or self._model_task_active:
                 self._pending_timeline = timeline
@@ -617,14 +627,17 @@ class MemoryBoundary:
                     self._curation_config_getter(),
                     catalog,
                 )
-                entries, next_cursor = _read_timeline_interval(
+                intervals = _read_timeline_interval(
                     timeline,
                     self._character_id,
                     self._curation_state.curation_cursor(),
                     backfill,
                 )
+                next_cursor = intervals[-1][1]
                 self._curation_state.mark_timeline_synced(next_cursor)
-                entries, pending = _curation_evidence_turns(entries)
+                entries, pending = _curation_evidence_turns(
+                    [entry for page, _cursor in intervals for entry in page]
+                )
                 self._curation_state.set_timeline_pending(pending)
                 if not pending:
                     self._curation_state.mark_timeline_processed(next_cursor)
@@ -654,26 +667,27 @@ class MemoryBoundary:
                     model=resolved["model"],
                     timeout_seconds=resolved["timeoutSeconds"],
                 )
+                selected_ids = {entry.entry_id for entry in entries}
+                intervals = [
+                    ([entry for entry in page if entry.entry_id in selected_ids], cursor)
+                    for page, cursor in intervals
+                ]
                 self._curation_active = True
             except Exception:
                 return
 
-        self._start_curation(
-            entries,
-            settings,
-            lambda: self._curation_state.mark_timeline_processed(next_cursor),
-        )
+        self._start_curation(intervals, settings)
 
     def _start_curation(
         self,
-        entries: list[ChatHistoryEntry],
+        intervals: list[tuple[list[ChatHistoryEntry], str]],
         settings: ApiSettings,
-        mark_success: Callable[[], None],
     ) -> None:
         def curate() -> None:
             client: OpenAICompatibleClient | None = None
             pending_timeline: object | None = None
             operation_id = f"memory-curation-{uuid.uuid4().hex}"
+            succeeded = False
             try:
                 with interaction_context(operation_id):
                     if self._curation_cancel.is_set():
@@ -681,7 +695,8 @@ class MemoryBoundary:
                     log_event(
                         "Memory",
                         "开始后台记忆整理",
-                        {"history_messages": len(entries)},
+                        {"history_messages": sum(len(page) for page, _cursor in intervals)},
+                        severity="debug",
                     )
                     client = OpenAICompatibleClient(settings)
                     curator = MemoryCurator(
@@ -694,25 +709,36 @@ class MemoryBoundary:
                         if self._curation_cancel.is_set():
                             raise OperationCancelled()
 
-                    with self._write_lock:
-                        result = curator.curate_entries(entries, cancel_checker=check_cancelled)
-                    if self._curation_cancel.is_set():
-                        return
-                    mark_success()
-                    log_event(
-                        "Memory",
-                        "后台记忆整理完成",
-                        {
-                            "history_messages": len(entries),
-                            "created": result.created,
-                            "updated": result.updated,
-                            "archived": result.archived,
-                            "ignored": result.ignored,
-                        },
-                    )
+                    remaining_turns = {
+                        entry.turn_id for page, _cursor in intervals for entry in page
+                    }
+                    for entries, cursor in intervals:
+                        check_cancelled()
+                        with self._write_lock:
+                            result = curator.curate_entries(entries, cancel_checker=check_cancelled)
+                        check_cancelled()
+                        remaining_turns.difference_update(entry.turn_id for entry in entries)
+                        self._curation_state.mark_timeline_processed(
+                            cursor, pending_turns=len(remaining_turns)
+                        )
+                        log_event(
+                            "Memory",
+                            "后台记忆整理完成",
+                            {
+                                "history_messages": len(entries),
+                                "created": result.created,
+                                "updated": result.updated,
+                                "archived": result.archived,
+                                "ignored": result.ignored,
+                            },
+                            severity="info" if result.created or result.updated or result.archived else "debug",
+                        )
+                    succeeded = True
+            except OperationCancelled:
+                return
             except Exception as exc:
-                # Cursor and existing memories remain untouched; the next
-                # generation can retry the same committed interval.
+                # Keep completed page cursors and any successful writes. A later
+                # event retries the failed page; source IDs protect partial writes.
                 with interaction_context(operation_id):
                     diagnostic_getter = getattr(self._store, "load_diagnostic", None)
                     diagnostic = (
@@ -722,11 +748,12 @@ class MemoryBoundary:
                     if reason_code not in {
                         "MEMORY_CURATION_SNAPSHOT_FAILED",
                         "MEMORY_CURATION_WRITE_FAILED",
+                        "CURATION_RESPONSE_INVALID",
                     }:
                         reason_code = "CURATION_FAILED"
                     log_event(
                         "Memory",
-                        "后台记忆整理失败，稍后将重试",
+                        "后台记忆整理失败，后续历史更新时重试",
                         {
                             "error_type": type(exc).__name__,
                             "reason_code": reason_code,
@@ -735,6 +762,8 @@ class MemoryBoundary:
                                 diagnostic.get("errorType") or "UnknownError"
                             ),
                         },
+                        event="memory.curation.failed",
+                        severity="error",
                     )
                 return
             finally:
@@ -745,7 +774,7 @@ class MemoryBoundary:
                         pass
                 with self._lock:
                     self._curation_active = False
-                    pending_timeline = self._pending_timeline
+                    pending_timeline = self._pending_timeline if succeeded else None
                     self._pending_timeline = None
                 if pending_timeline is not None:
                     self.note_timeline_changed(pending_timeline)
@@ -853,7 +882,7 @@ def _read_timeline_interval(
     character_id: str,
     cursor: str,
     backfill: int,
-) -> tuple[list[ChatHistoryEntry], str]:
+) -> list[tuple[list[ChatHistoryEntry], str]]:
     if cursor:
         try:
             return _read_timeline_since(timeline, character_id, cursor)
@@ -867,30 +896,36 @@ def _read_timeline_interval(
     next_cursor = result.get("cursor")
     if not isinstance(next_cursor, str) or not next_cursor:
         raise ValueError("TIMELINE_RESPONSE_INVALID")
-    return entries, next_cursor
+    return [(entries, next_cursor)]
 
 
 def _read_timeline_since(
     timeline: object,
     character_id: str,
     cursor: str,
-) -> tuple[list[ChatHistoryEntry], str]:
-    entries: list[ChatHistoryEntry] = []
+) -> list[tuple[list[ChatHistoryEntry], str]]:
+    pages: list[tuple[list[ChatHistoryEntry], str]] = []
     next_cursor = cursor
     while True:
         result = getattr(timeline, "read_since")({"cursor": next_cursor, "limit": 500})
         if not isinstance(result, Mapping):
             raise ValueError("TIMELINE_RESPONSE_INVALID")
-        entries.extend(_project_timeline_entries(result.get("entries"), character_id))
+        entries = _project_timeline_entries(result.get("entries"), character_id)
         candidate = result.get("nextCursor")
         has_more = result.get("hasMore")
         if not isinstance(candidate, str) or not candidate or not isinstance(has_more, bool):
             raise ValueError("TIMELINE_RESPONSE_INVALID")
         if has_more and candidate == next_cursor:
             raise ValueError("TIMELINE_RESPONSE_INVALID")
+        # Keep a Turn together when the host page limit falls inside it.
+        if pages and {entry.turn_id for entry in pages[-1][0]} & {
+            entry.turn_id for entry in entries
+        }:
+            entries = pages.pop()[0] + entries
+        pages.append((entries, candidate))
         next_cursor = candidate
         if not has_more:
-            return entries, next_cursor
+            return pages
 
 
 def _project_timeline_entries(value: object, character_id: str) -> list[ChatHistoryEntry]:

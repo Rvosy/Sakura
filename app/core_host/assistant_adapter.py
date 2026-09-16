@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from app.agent.runtime import AgentRuntime
+from app.agent.tools import ToolRegistry
 from app.agent.trace import AgentTraceRecorder
+from app.config.app_version import read_app_version
 from app.config.character_loader import (
     CharacterConfigError,
     CharacterProfile,
@@ -21,6 +23,9 @@ from app.core.chat_pipeline import ChatPipeline
 from app.core_host.character_presentation import project_character_presentation
 from app.llm.api_client import OpenAICompatibleClient
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
+
+if TYPE_CHECKING:
+    from app.agent.mcp.provider import MCPToolProvider
 
 
 @dataclass
@@ -81,7 +86,7 @@ def project_current_character_summary(profile: CharacterProfile) -> dict[str, ob
         "displayName": profile.display_name,
         "initialMessage": profile.initial_message,
         "replyTones": [*profile.reply_tones],
-        "portraitChoices": [*profile.portrait_choices],
+        "portraitChoices": [],
     }
 
 
@@ -119,6 +124,8 @@ class AssistantAdapter:
         self,
         roots: RuntimeRoots | Path,
         *,
+        tool_registry: ToolRegistry,
+        mcp_provider: MCPToolProvider | None,
         config_reader: CoreConfigReader | None = None,
     ) -> None:
         self._roots = coerce_runtime_roots(roots)
@@ -126,56 +133,10 @@ class AssistantAdapter:
         self._config_reader = config_reader if config_reader is not None else CoreConfigReader()
         self._lock = Lock()
         self._closed = False
-        self._tools_enabled = False
-        self._mcp_enabled = False
-        self._plugins_enabled = False
-        self._generation_id = ""
         self._owned: list[object] = []
-        self._application_tools: object | None = None
-        self._application_mcp: object | None = None
-
-    def enable_tools(self) -> None:
-        """Enable Core-owned tools before initialization starts."""
-
-        with self._lock:
-            if self._closed:
-                raise OperationCancelled()
-            self._tools_enabled = True
-
-    def enable_mcp(self) -> None:
-        """Enable the generation-private MCP owner before initialization starts."""
-
-        with self._lock:
-            if self._closed:
-                raise OperationCancelled()
-            self._mcp_enabled = True
-
-    def enable_plugins(self) -> None:
-        """Enable the generation-scoped plugin application before initialization."""
-
-        with self._lock:
-            if self._closed:
-                raise OperationCancelled()
-            self._plugins_enabled = True
-
-    def bind_generation(self, generation_id: str) -> None:
-        with self._lock:
-            if self._closed or not generation_id.strip():
-                raise OperationCancelled()
-            self._generation_id = generation_id
-
-    def bind_application_resources(
-        self,
-        tool_registry: object,
-        mcp_provider: object | None = None,
-    ) -> None:
-        """Use generation-owned resources without taking lifecycle ownership."""
-
-        with self._lock:
-            if self._closed:
-                raise OperationCancelled()
-            self._application_tools = tool_registry
-            self._application_mcp = mcp_provider
+        # Borrow Application resources; only Provider/Runtime/Pipeline belong to this Session.
+        self._application_tools = tool_registry
+        self._application_mcp = mcp_provider
 
     def initialize(self, cancel: Event) -> ReadinessResult:
         owned: list[object] = []
@@ -185,12 +146,25 @@ class AssistantAdapter:
             self._check_active(cancel)
             if config.config_problem is not None:
                 problem = config.config_problem
+                presentation = None
+                if (
+                    problem.code == "PROVIDER_SETUP_REQUIRED"
+                    and config.current_character_id is not None
+                ):
+                    registry = CharacterRegistry(
+                        self._user_root,
+                        issue_sink=_safe_character_issue_sink,
+                    )
+                    profile = registry.profiles.get(config.current_character_id)
+                    if profile is not None:
+                        presentation = project_character_presentation(profile)
                 return ReadinessResult(
                     state=problem.state,
                     code=problem.code,
                     message=problem.message,
                     retryable=False,
                     current_character_summary=None,
+                    current_character_presentation=presentation,
                 )
 
             registry = CharacterRegistry(
@@ -218,51 +192,22 @@ class AssistantAdapter:
             provider = OpenAICompatibleClient(
                 config.provider_selection.api_settings,
                 agent_trace_recorder=trace_recorder,
+                app_version=read_app_version(self._roots.distribution_root),
             )
             owned.append(provider)
             self._check_active(cancel)
 
             system_prompt = load_character_system_prompt(profile)
             self._check_active(cancel)
-            with self._lock:
-                tools_enabled = self._tools_enabled
-                mcp_enabled = self._mcp_enabled
             from app.core_host.tool_settings import load_tool_runtime_configuration
 
             runtime_loop_settings = load_tool_runtime_configuration(self._user_root)
-            if self._application_tools is not None:
-                tools = self._application_tools
-            elif tools_enabled:
-                from app.core_host.tools import create_runtime_v2_tool_registry
-
-                tools = create_runtime_v2_tool_registry()
-                owned.append(tools)
-            else:
-                from app.agent.tools import ToolRegistry
-
-                tools = ToolRegistry([])
-                owned.append(tools)
-            mcp_provider: object | None = None
-            if mcp_enabled:
-                mcp_provider = self._application_mcp
-                if mcp_provider is None:
-                    from app.agent.mcp.provider import start_mcp_tools_from_config
-                    from app.core.runtime_resources import ResourceRegistry
-
-                    mcp_provider = start_mcp_tools_from_config(
-                        self._user_root,
-                        tools,
-                        resource_registry=ResourceRegistry(),
-                        distribution_root=self._roots.distribution_root,
-                    )
-                    owned.append(mcp_provider)
             self._check_active(cancel)
             runtime = AgentRuntime(
                 provider,
                 system_prompt,
                 reply_tones=profile.reply_tones,
-                reply_portraits=profile.portrait_choices,
-                tools=tools,
+                tools=self._application_tools,
                 character_id=profile.id,
                 character_name=profile.display_name,
                 strict_provider_errors=True,
@@ -281,7 +226,7 @@ class AssistantAdapter:
                 provider=provider,
                 runtime=runtime,
                 pipeline=pipeline,
-                mcp_provider=mcp_provider,
+                mcp_provider=self._application_mcp,
             )
             self._check_active(cancel)
             if registry.load_errors:

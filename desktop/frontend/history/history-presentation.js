@@ -1,6 +1,14 @@
 const ENTRY_KINDS = new Set(["human", "assistant", "observation", "system"]);
 const SCHEDULED_SCREEN_DISPLAY_TEXT = "刚才留意了一下屏幕状态。";
 const SCHEDULED_SCREEN_TRIGGER_PREFIX = "定时屏幕观察已提交给对话模型";
+const LEGACY_MANUAL_SCREEN_TEXT = /^用户手动选择的 (\d+) 张屏幕截图已提交给对话模型。$/u;
+
+function observationDisplayText(entry) {
+  const content = text(entry.payload.text);
+  if (entry.kind !== "observation" || entry.origin !== "manual_screen") return content;
+  const legacy = LEGACY_MANUAL_SCREEN_TEXT.exec(content);
+  return legacy ? `你分享了 ${legacy[1]} 张屏幕截图。` : content;
+}
 
 function text(value) {
   return typeof value === "string" ? value : "";
@@ -88,7 +96,7 @@ function entryBubbles(entry, { assistantName, subtitleLanguage, formatTime }) {
     align: "center",
     roleName,
     createdAt,
-    content: text(entry.payload.text),
+    content: observationDisplayText(entry),
   }];
 }
 

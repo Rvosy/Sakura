@@ -37,7 +37,8 @@ echo.
 echo [1/3] 安装 Core Python 依赖...
 echo.
 
-"%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" -i https://mirrors.aliyun.com/pypi/simple --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --no-warn-script-location
+if not defined PIP_INDEX_URL set "PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple"
+"%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" --no-warn-script-location
 
 if errorlevel 1 (
     echo.

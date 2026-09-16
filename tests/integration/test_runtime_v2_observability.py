@@ -121,11 +121,10 @@ def test_core_bootstrap_failure_is_structured_without_stdout_pollution(tmp_path:
         "core.error.unhandled",
         "core.process.stopping",
     ]
-    assert records[1]["attributes"] == {
-        "code": "CORE_HOST_TRANSPORT_ERROR",
-        "category": "TransportFailure",
-        "diagnostic": "Core generation 凭据握手失败",
-    }
+    assert records[1]["attributes"]["code"] == "CORE_HOST_TRANSPORT_ERROR"
+    assert records[1]["attributes"]["category"] == "TransportFailure"
+    assert "generation credential bootstrap was missing or incomplete" in records[1]["attributes"]["diagnostic"]
+    assert "exception_stack" in records[1]["attributes"]
     assert b"CORE_HOST_TRANSPORT_ERROR TransportFailure" in result.stderr
 
 

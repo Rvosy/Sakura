@@ -5,12 +5,38 @@ import zipfile
 from pathlib import Path
 
 import yaml
+import pytest
 
 from app.core_host.character_settings import CharacterSettingsBoundary
 
-
 GENERATION = "generation-character-settings"
 CREDENTIAL = "0123456789abcdef0123456789abcdef"
+
+
+@pytest.mark.parametrize("failure", ["missing", "zip", "permission"])
+def test_import_failure_keeps_original_cause_in_response(tmp_path, monkeypatch, failure):
+    archive = tmp_path / "broken.char"
+    if failure == "zip":
+        archive.write_bytes(b"this is not a zip archive")
+    elif failure == "permission":
+        def denied(*args):
+            raise PermissionError(13, "Permission denied", str(archive))
+        monkeypatch.setattr("app.core_host.character_settings.import_character_archive", denied)
+    response = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path).handle(
+        _request("characters.settings.import", {"path": str(archive)})
+    )
+    assert response["error"]["code"] == "CHARACTER_IMPORT_FAILED"
+    diagnostic = response["error"]["details"]["diagnostics"]
+    expected = {"missing": "FileNotFoundError", "zip": "BadZipFile", "permission": "PermissionError"}[failure]
+    assert diagnostic["cause_type"] == expected
+    assert expected in diagnostic["exception_chain"]
+    assert " at " in diagnostic["exception_stack"]
+    if failure == "permission":
+        # OSError formats filenames with repr(), including escaped Windows separators.
+        assert diagnostic["diagnostic"] == str(PermissionError(13, "Permission denied", str(archive)))
+    elif failure == "missing":
+        assert str(archive) in diagnostic["diagnostic"]
+    assert CREDENTIAL not in json.dumps(diagnostic)
 
 
 def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
@@ -28,6 +54,38 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("failure_stage", ["apply", "restore"])
+def test_failed_switch_can_reapply_saved_target(tmp_path, failure_stage):
+    from contextlib import contextmanager
+    from app.config.character_loader import CharacterRegistry
+
+    calls = []
+    @contextmanager
+    def prepare():
+        yield
+        if failure_stage == "restore" and len(calls) == 1:
+            raise RuntimeError("restore failed")
+
+    def apply():
+        calls.append("apply")
+        if failure_stage == "apply" and len(calls) == 1:
+            raise RuntimeError("session initialization failed")
+
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path,
+                                         prepare_switch=prepare, apply_switch=apply)
+    for role in ("alpha", "beta"):
+        boundary.import_archive(str(_archive(tmp_path / f"{role}.char", role)))
+    request = _request("characters.settings.select", {"characterId": "beta"})
+    first = boundary.handle(request)
+    assert first["error"]["code"] == "CHARACTER_SWITCH_APPLY_FAILED"
+    assert boundary._settings.load_current_character_id(CharacterRegistry(tmp_path)) == "beta"
+    second = boundary.handle(request)
+    assert second["payload"]["changePlan"] == "character_switch"
+    assert calls == ["apply", "apply"]
+    assert boundary.handle(request)["payload"]["changePlan"] == "unchanged"
+    assert len(calls) == 2
+
+
 def _archive(path: Path, character_id: str = "fixture") -> Path:
     manifest = {
         "format": "sakura.character.archive",
@@ -43,6 +101,41 @@ def _archive(path: Path, character_id: str = "fixture") -> Path:
         archive.writestr("manifest.json", json.dumps(manifest))
         archive.writestr("character/card.txt", "You are Fixture.")
         archive.writestr("character/portrait.png", b"not-decoded-by-importer")
+    return path
+
+
+def _voice_archive(path: Path, *, complete: bool = True) -> Path:
+    voice = {
+        "tone_refs": "voice/refs/ref.txt",
+        "ref_lang": "ja",
+        "text_lang": "ja",
+    }
+    if complete:
+        voice.update(
+            {
+                "gpt_model": "voice/models/gpt.ckpt",
+                "sovits_model": "voice/models/sovits.pth",
+            }
+        )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "format": "sakura.character.voice",
+                    "version": 1,
+                    "voice": voice,
+                }
+            ),
+        )
+        archive.writestr(
+            "voice/refs/ref.txt",
+            "voice/refs/tone_refs/happy.wav|JA|hello|开心\n",
+        )
+        archive.writestr("voice/refs/tone_refs/happy.wav", b"wav")
+        if complete:
+            archive.writestr("voice/models/gpt.ckpt", b"gpt")
+            archive.writestr("voice/models/sovits.pth", b"sovits")
     return path
 
 
@@ -68,13 +161,20 @@ def test_empty_snapshot_and_first_import_auto_select(tmp_path: Path) -> None:
     snapshot = imported["payload"]["snapshot"]
     assert snapshot["currentCharacterId"] == "fixture"
     assert snapshot["characters"] == [
-        {"id": "fixture", "displayName": "Fixture", "hasVoice": False}
+        {
+            "id": "fixture",
+            "displayName": "Fixture",
+            "hasVoice": False,
+            "hasExportableVoice": False,
+        }
     ]
-    saved = yaml.safe_load((tmp_path / "config" / "characters.yaml").read_text())
+    saved = yaml.safe_load((tmp_path / "config" / "characters.yaml").read_text(encoding="utf-8"))
     assert saved == {"current_character_id": "fixture"}
 
 
-def test_select_same_character_is_unchanged_without_rewriting_config(tmp_path: Path) -> None:
+def test_select_same_character_is_unchanged_without_rewriting_config(
+    tmp_path: Path,
+) -> None:
     boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
     boundary.handle(
         _request(
@@ -95,7 +195,152 @@ def test_select_same_character_is_unchanged_without_rewriting_config(tmp_path: P
     assert config.read_bytes() == before
 
 
-def test_select_rejects_unknown_character_without_changing_config(tmp_path: Path) -> None:
+def test_voice_import_reports_committed_files_when_runtime_restore_fails(tmp_path):
+    from contextlib import contextmanager
+    @contextmanager
+    def prepare():
+        errors = []
+        yield errors
+        errors.append(RuntimeError("voice start failed"))
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path, prepare_voice_update=prepare)
+    boundary.import_archive(str(_archive(tmp_path / "fixture.char")))
+    result = boundary.handle(_request("characters.settings.import_voice", {
+        "path": str(_voice_archive(tmp_path / "fixture.voice")), "characterId": "fixture",
+    }))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "CHARACTER_VOICE_APPLY_FAILED"
+    assert boundary.snapshot()["characters"][0]["hasExportableVoice"] is True
+
+
+def test_voice_import_refreshes_current_character_and_exports_all_package_kinds(
+    tmp_path: Path,
+) -> None:
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
+    boundary.handle(
+        _request(
+            "characters.settings.import",
+            {"path": str(_archive(tmp_path / "fixture.char"))},
+        )
+    )
+
+    imported = boundary.handle(
+        _request(
+            "characters.settings.import_voice",
+            {
+                "path": str(_voice_archive(tmp_path / "fixture.voice")),
+                "characterId": "fixture",
+            },
+        )
+    )
+
+    assert imported["ok"] is True
+    assert imported["payload"]["changePlan"] == "character_refresh"
+    assert imported["payload"]["snapshot"]["characters"] == [
+        {
+            "id": "fixture",
+            "displayName": "Fixture",
+            "hasVoice": True,
+            "hasExportableVoice": True,
+        }
+    ]
+
+    outputs = {
+        "full": tmp_path / "fixture-full.char",
+        "card": tmp_path / "fixture-card",
+        "voice": tmp_path / "fixture.voice.export.voice",
+    }
+    for kind, output in outputs.items():
+        exported = boundary.handle(
+            _request(
+                "characters.settings.export",
+                {"path": str(output), "characterId": "fixture", "kind": kind},
+            )
+        )
+        assert exported["ok"] is True
+        expected_output = output.with_suffix(".char") if kind == "card" else output
+        assert exported["payload"]["outputPath"] == str(expected_output)
+        assert expected_output.is_file()
+
+    with zipfile.ZipFile(outputs["full"]) as archive:
+        full_manifest = json.loads(archive.read("manifest.json"))
+    with zipfile.ZipFile(outputs["card"].with_suffix(".char")) as archive:
+        card_manifest = json.loads(archive.read("manifest.json"))
+    with zipfile.ZipFile(outputs["voice"]) as archive:
+        voice_manifest = json.loads(archive.read("manifest.json"))
+    assert full_manifest["character"]["voice"]["gpt_model"]
+    assert "voice" not in card_manifest["character"]
+    assert voice_manifest["format"] == "sakura.character.voice"
+
+
+def test_voice_import_for_inactive_character_does_not_restart(tmp_path: Path) -> None:
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
+    boundary.handle(
+        _request(
+            "characters.settings.import",
+            {"path": str(_archive(tmp_path / "alpha.char", "alpha"))},
+        )
+    )
+    boundary.handle(
+        _request(
+            "characters.settings.import",
+            {"path": str(_archive(tmp_path / "beta.char", "beta"))},
+        )
+    )
+
+    result = boundary.handle(
+        _request(
+            "characters.settings.import_voice",
+            {
+                "path": str(_voice_archive(tmp_path / "beta.voice")),
+                "characterId": "beta",
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["payload"]["changePlan"] == "unchanged"
+    assert result["payload"]["snapshot"]["currentCharacterId"] == "alpha"
+
+
+def test_incomplete_voice_cannot_be_exported_as_full_or_voice_package(
+    tmp_path: Path,
+) -> None:
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
+    boundary.handle(
+        _request(
+            "characters.settings.import",
+            {"path": str(_archive(tmp_path / "fixture.char"))},
+        )
+    )
+    imported = boundary.handle(
+        _request(
+            "characters.settings.import_voice",
+            {
+                "path": str(_voice_archive(tmp_path / "partial.voice", complete=False)),
+                "characterId": "fixture",
+            },
+        )
+    )
+    character = imported["payload"]["snapshot"]["characters"][0]
+    assert character["hasVoice"] is True
+    assert character["hasExportableVoice"] is False
+
+    for kind, suffix in (("full", ".char"), ("voice", ".voice")):
+        output = tmp_path / f"blocked{suffix}"
+        result = boundary.handle(
+            _request(
+                "characters.settings.export",
+                {"path": str(output), "characterId": "fixture", "kind": kind},
+            )
+        )
+        assert result["ok"] is False
+        assert result["error"]["code"] == "CHARACTER_VOICE_NOT_EXPORTABLE"
+        assert not output.exists()
+
+
+def test_select_rejects_unknown_character_without_changing_config(
+    tmp_path: Path,
+) -> None:
     boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
     result = boundary.handle(
         _request("characters.settings.select", {"characterId": "missing"})
@@ -105,7 +350,9 @@ def test_select_rejects_unknown_character_without_changing_config(tmp_path: Path
     assert not (tmp_path / "config" / "characters.yaml").exists()
 
 
-def test_select_save_failure_keeps_existing_character_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_select_save_failure_keeps_existing_character_config(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
     boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
     boundary.handle(
         _request(
@@ -127,7 +374,7 @@ def test_select_save_failure_keeps_existing_character_config(tmp_path: Path, mon
 
     monkeypatch.setattr(
         type(boundary._settings),  # noqa: SLF001
-        "save_current_character_id",
+        "save_character_selection",
         fail_save,
     )
     result = boundary.handle(
@@ -137,3 +384,25 @@ def test_select_save_failure_keeps_existing_character_config(tmp_path: Path, mon
     assert result["ok"] is False
     assert result["error"]["code"] == "CHARACTER_CONFIG_SAVE_FAILED"
     assert config.read_bytes() == before
+
+
+def test_import_responses_report_missing_plugins_and_genie_compatibility(tmp_path):
+    import shutil
+    from types import SimpleNamespace
+    from app.plugins.inventory import PluginInventory
+    inventory = PluginInventory(tmp_path)
+    application = SimpleNamespace(inventory=inventory.scan)
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path, plugin_application_provider=lambda: application)
+    imported = boundary.import_archive(str(_archive(tmp_path / "fixture.char")))
+    assert imported["pluginRequirements"][0]["reasonCode"] == "PLUGIN_MISSING"
+    voice = _voice_archive(tmp_path / "fixture.voice")
+    result = boundary.import_voice_archive(str(voice), "fixture")
+    assert result["pluginRequirements"][0]["reasonCode"] == "PLUGIN_MISSING"
+    plugin = tmp_path / "plugins/builtin/genie"
+    plugin.mkdir(parents=True)
+    shutil.copyfile(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_genie/plugin.yaml", plugin / "plugin.yaml")
+    (plugin / "plugin.py").write_text('raise AssertionError("no synthesis during import")', encoding="utf-8")
+    result = boundary.import_voice_archive(str(voice), "fixture")
+    assert result["pluginRequirements"][0]["reasonCode"] == "COMPATIBLE"
+    manifest = json.loads((tmp_path / "characters/fixture/character.json").read_text(encoding="utf-8"))
+    assert "sakura.tts" not in manifest["extensions"]

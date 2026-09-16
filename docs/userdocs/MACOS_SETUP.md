@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-28
+updated: 2026-09-09
 ---
 
 # 在 macOS 上使用 Sakura
@@ -12,7 +12,20 @@ updated: 2026-08-28
 
 ## 使用发布包
 
-Releases 提供对应架构的完整包时，下载后解压并启动应用。首次运行若被 Gatekeeper 阻止，在“系统设置 → 隐私与安全性”中确认来源后选择打开。
+Releases 提供对应架构的完整包时，下载后解压并启动应用。只从
+[Sakura 官方 Releases](https://github.com/Rvosy/Sakura/releases)获取发布包。
+
+首次运行若被 Gatekeeper 阻止，先尝试打开一次 Sakura，然后按照 Apple 官方流程操作：
+
+1. 打开“系统设置 → 隐私与安全性”；
+2. 向下找到“安全性”，确认被拦截的应用是 Sakura；
+3. 点击“仍要打开”并完成身份验证。
+
+“仍要打开”会在尝试启动后保留约一小时。该操作只为这份应用保存本机例外，不会关闭全局安全检查。
+受组织管理的 Mac 可能需要管理员协助。不要通过关闭 Gatekeeper 或执行来源不明的终端命令解决。
+完整步骤见 [Apple 官方说明](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)。
+Release 同时提供独立的 `Sakura-<版本>-macos-open-help.html`；`.app.zip` 内也有一份与 Sakura 应用并列的说明，
+因此应用尚未打开时仍可阅读。
 
 完整包包含 Python Runtime 和已经构建的 Tauri Shell。源码压缩包不包含这些内容。
 
@@ -61,20 +74,20 @@ macOS 可以连接外置 GPT-SoVITS 或 Genie 服务：
 
 Apple Silicon 上的本地语音服务应尽量使用 arm64 Python 和原生依赖。Sakura 自身与语音服务可以使用不同 Python 环境，只要通过 HTTP 接口通信。
 
+GPT-SoVITS 源码安装脚本默认从 ModelScope 下载模型、从阿里云安装普通 Python 包，并用清华 Conda 镜像解析
+`conda-forge`。已有 `PIP_INDEX_URL`、`CONDARC` 或 `CONDA_CHANNEL_ALIAS` 配置优先；上游指定的设备专用
+PyTorch 源保持不变。Miniforge 安装器与 GPT-SoVITS 源码仍从 GitHub 获取，源码只拉取指定版本的一层历史。
+
 ## MCP、插件和角色工作室
 
 普通 MCP Server 和 Python 插件的使用方式与其他平台相同。Sakura 不内置桌面控制 Server。
 
-角色工作室由 `tools/studio-tauri/` 构建。发布包提供工作室时，可从“设置 → 角色与布局 → 修改角色”打开；源码环境需要单独构建：
-
-```bash
-cargo build --manifest-path tools/studio-tauri/src-tauri/Cargo.toml
-```
+角色工作室已内置在 Sakura 桌面应用中。从“设置 → 角色与布局 → 修改角色”打开，不需要单独构建或启动工作室程序。
 
 ## 常见问题
 
 - `Bad CPU type` 或原生库架构错误：检查应用、Runtime 和依赖是否同为 arm64 或 x86_64。
-- 桌宠启动但不显示：完成角色与供应商设置，并在日志中检查 `CORE_CONFIG_SETUP_REQUIRED`。
+- 桌宠启动但不显示：完成角色与模型服务设置，并在日志中检查 `CORE_CONFIG_SETUP_REQUIRED`。
 - 截图返回权限错误：重新授予屏幕录制权限并重启。
 - 透明区域挡住点击：确认系统合成效果正常，重启后再测试。
 - TTS 连接失败：用浏览器或命令行先验证服务地址，再检查防火墙和代理。

@@ -1,0 +1,21 @@
+/* 可复制内容沿用气泡的主题色高亮；操作界面的普通文字不参与选择。 */
+::selection {
+  color: var(--sakura-text, var(--text));
+  background: color-mix(in srgb, var(--sakura-primary, var(--primary)), transparent 72%);
+  text-shadow: none;
+}
+
+/* 顶层 dialog 不依赖 body 的选择行为，避免模态窗口恢复浏览器默认选择。 */
+body,
+dialog,
+[popover] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}

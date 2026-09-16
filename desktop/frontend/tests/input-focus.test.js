@@ -67,7 +67,7 @@ test("composition end permits a later explicit submit", () => {
   assert.deepEqual(submissions, [{ text: "中文", source: "button" }]);
 });
 
-test("Alt+Tab, hide/show, and state round-trips restore focus deterministically", () => {
+test("window deactivation relinquishes focus until the product presentation requests it again", () => {
   assert.ok(inputFocus, "input-focus module must exist");
   const { controller, focusReasons } = harness();
   controller.setPresentation("product");
@@ -79,7 +79,18 @@ test("Alt+Tab, hide/show, and state round-trips restore focus deterministically"
   controller.handleVisibility(true);
   controller.setPresentation("hidden");
   controller.setPresentation("product");
-  assert.deepEqual(focusReasons, ["presentation", "window-focus", "visibility", "presentation"]);
+  assert.deepEqual(focusReasons, ["presentation", "presentation"]);
+  assert.equal(controller.snapshot().wantsFocus, true);
+});
+
+test("window deactivation clears a focused input even when no DOM blur arrives", () => {
+  assert.ok(inputFocus, "input-focus module must exist");
+  const { controller } = harness();
+  controller.setPresentation("product");
+  controller.handleInputFocus();
+  controller.handleWindowBlur();
+  assert.equal(controller.snapshot().wantsFocus, false);
+  assert.equal(controller.snapshot().inputFocused, false);
 });
 
 test("an explicit outside-pointer dismissal survives window and visibility round-trips", () => {

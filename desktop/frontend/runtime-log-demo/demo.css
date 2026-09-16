@@ -1,0 +1,39 @@
+@import url('../assets/fonts/fonts.css');
+* { box-sizing: border-box; }
+body { margin:0; color:#27445a; background:#eaf0f4; font:14px 'Sakura Noto Sans SC','Microsoft YaHei UI',sans-serif; }
+button,select,textarea { font:inherit; }
+button,select { color:#27445a; background:#fff; border:1px solid #c4d6e0; border-radius:8px; padding:8px 13px; }
+button { cursor:pointer; }
+button:hover { border-color:#4b9ac4; }
+button:focus-visible,select:focus-visible { outline:3px solid #4b9ac455; outline-offset:2px; }
+.demo { max-width:970px; margin:auto; padding:26px 24px 18px; }
+.demo-header { display:flex; align-items:center; justify-content:space-between; gap:18px; }
+.demo-header h1 { font-size:21px; margin:0; font-weight:650; }
+.demo-header p { color:#668294; font-size:12px; margin:6px 0 0; }
+.versions { display:flex; padding:3px; border:1px solid #c4d6e0; border-radius:10px; background:#f8fcfe; gap:3px; }
+.versions button { background:transparent; border:0; font-size:13px; white-space:nowrap; }
+.versions button[aria-pressed=true] { background:#4b9ac4; color:white; }
+.demo-controls { display:flex; gap:12px; align-items:center; margin:22px 0 14px; }
+.demo-controls label { font-size:12px; color:#54768b; flex-shrink:0; }
+.demo-controls select { max-width:100%; font-size:12px; padding:7px 28px 7px 10px; }
+#mode-note { margin-left:auto; color:#668294; font-size:12px; }
+.window { overflow:hidden; border:1px solid #b4cbd8; border-radius:11px; background:#f8fcfe; box-shadow:0 8px 32px #27445a10; }
+.window-bar { height:34px; display:flex; align-items:center; gap:12px; padding:0 14px; background:#f3f8fb; border-bottom:1px solid #d9e6ed; font-size:11px; color:#54768b; }
+.window-bar b { font-weight:500; margin-left:auto; border-radius:4px; padding:1px 6px; background:#e3f1f7; }
+.window-size { font-family:Consolas,monospace; color:#7d99a9; }
+iframe { display:block; width:100%; height:620px; border:0; background:#f8fcfe; }
+.windows { display:grid; gap:18px; }
+body[data-mode=compare] .demo { max-width:1940px; }
+body[data-mode=compare] .windows { grid-template-columns:repeat(2,minmax(0,1fr)); }
+body[data-mode=compare] .window-size { display:none; }
+.demo-footnote { font-size:12px; line-height:1.7; margin:14px 0 0; color:#668294; }
+[hidden] { display:none !important; }
+.closed { height:654px; display:grid; align-content:center; justify-items:center; border:1px dashed #b4cbd8; border-radius:11px; }
+dialog { width:min(760px,92vw); color:#27445a; background:#f8fcfe; border:1px solid #accfde; border-radius:14px; padding:18px; box-shadow:0 20px 80px #27445a35; }
+dialog::backdrop { background:#27445a44; }
+.dialog-head,.dialog-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.dialog-head button { font-size:12px; }
+textarea { width:100%; height:370px; margin:14px 0; border:1px solid #accfde; border-radius:8px; padding:14px; color:#27445a; background:white; font:12px/1.8 Consolas,'Microsoft YaHei UI',monospace; resize:vertical; }
+#copy-status { color:#54768b; font-size:12px; }
+@media(max-width:1000px) { body[data-mode=compare] .windows { grid-template-columns:1fr; } }
+@media(max-width:680px) { .demo { padding:16px 10px; } .demo-header { align-items:flex-start; flex-direction:column; gap:14px; } .demo-controls { flex-wrap:wrap; gap:8px; } #mode-note { margin-left:0; width:100%; } .demo-controls select { flex:1; min-width:0; } iframe { height:620px; } }

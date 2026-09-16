@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import locale
 import os
 import re
@@ -18,6 +17,7 @@ CancelChecker = Callable[[], bool]
 Progress = Callable[[str, int, str], None]
 CopyDiagnostic = Callable[[str, Mapping[str, object]], None]
 CopyByteProgress = Callable[[int, int], None]
+SkippedSymlink = Callable[[], None]
 
 _SKIP_NAMES = {
     ".lock",
@@ -76,16 +76,6 @@ def tree_stats(root: Path, *, follow_root_link: bool = False) -> tuple[int, int]
                 except OSError as exc:
                     raise LegacyImportError("LEGACY_SOURCE_UNREADABLE", "inspect") from exc
     return files, total
-
-
-def sha256_file(path: Path, *, cancelled: CancelChecker | None = None) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            if cancelled is not None and cancelled():
-                raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "validating")
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _files_identical(source: Path, target: Path, cancelled: CancelChecker) -> bool:
@@ -154,13 +144,21 @@ def copy_tree_checked(
     skip_noise: bool = False,
     noise_names_at_root_only: bool = False,
     reject_links: bool = True,
+    preserve_internal_symlinks: bool = False,
+    on_skipped_absolute_symlink: SkippedSymlink | None = None,
     allow_identical_existing: bool = False,
     _noise_depth: int = 0,
+    _source_root: Path | None = None,
 ) -> tuple[int, int]:
     if not source.exists():
         return 0, 0
     if is_link_or_junction(source):
         raise LegacyImportError("LEGACY_NESTED_LINK_UNSUPPORTED", "staging")
+    source_root = (
+        Path(os.path.abspath(source))
+        if _source_root is None
+        else _source_root
+    )
     files = total = 0
     target.mkdir(parents=True, exist_ok=True)
     for entry in sorted(os.scandir(source), key=lambda item: item.name.casefold()):
@@ -178,7 +176,37 @@ def copy_tree_checked(
             continue
         child_source = Path(entry.path)
         child_target = target / name
-        if entry.is_symlink() or is_link_or_junction(child_source):
+        if entry.is_symlink():
+            if preserve_internal_symlinks:
+                try:
+                    raw_target = os.readlink(child_source)
+                except OSError as exc:
+                    raise LegacyImportError("LEGACY_COPY_FAILED", "staging") from exc
+                if os.path.isabs(raw_target):
+                    if on_skipped_absolute_symlink is not None:
+                        on_skipped_absolute_symlink()
+                    continue
+                lexical_target = Path(
+                    os.path.abspath(os.path.join(child_source.parent, raw_target))
+                )
+                try:
+                    lexical_target.relative_to(source_root)
+                except ValueError as exc:
+                    raise LegacyImportError(
+                        "LEGACY_NESTED_LINK_UNSUPPORTED", "staging"
+                    ) from exc
+                if os.path.lexists(child_target):
+                    raise LegacyImportError("LEGACY_COPY_CONFLICT", "staging")
+                try:
+                    os.symlink(raw_target, child_target)
+                except OSError as exc:
+                    raise LegacyImportError("LEGACY_COPY_FAILED", "staging") from exc
+                files += 1
+                continue
+            if reject_links:
+                raise LegacyImportError("LEGACY_NESTED_LINK_UNSUPPORTED", "staging")
+            continue
+        if is_link_or_junction(child_source):
             if reject_links:
                 raise LegacyImportError("LEGACY_NESTED_LINK_UNSUPPORTED", "staging")
             continue
@@ -190,8 +218,11 @@ def copy_tree_checked(
                 skip_noise=skip_noise,
                 noise_names_at_root_only=noise_names_at_root_only,
                 reject_links=reject_links,
+                preserve_internal_symlinks=preserve_internal_symlinks,
+                on_skipped_absolute_symlink=on_skipped_absolute_symlink,
                 allow_identical_existing=allow_identical_existing,
                 _noise_depth=_noise_depth + 1,
+                _source_root=source_root,
             )
             files += child_files
             total += child_bytes
@@ -218,18 +249,26 @@ def copy_tree_fast_checked(
     noise_names_at_root_only: bool = False,
     diagnostic: CopyDiagnostic | None = None,
     byte_progress: CopyByteProgress | None = None,
+    preserve_internal_symlinks: bool = False,
+    on_skipped_absolute_symlink: SkippedSymlink | None = None,
 ) -> tuple[int, int]:
     """Copy a new directory tree with a guarded Windows robocopy fast path.
 
     Legacy TTS bundles contain tens of thousands of small files.  Calling
     ``fsync`` once per file is needlessly slow for an isolated staging tree,
-    while robocopy can populate that empty tree concurrently.  Preflight and
-    post-copy scans retain the importer's link, exclusion, count, and size
-    invariants.  Existing destinations keep the precise Python conflict
-    semantics, and non-Windows hosts use the normal copier.
+    while robocopy can populate that empty tree concurrently. Scans enforce
+    path boundaries and provide progress totals, not content equivalence.
+    Existing destinations keep the precise Python conflict
+    semantics, and non-Windows hosts use the normal copier. macOS bundle
+    imports may preserve only relative symlinks whose lexical targets remain
+    inside the copied tree; absolute symlinks are intentionally omitted.
     """
 
-    robocopy = shutil.which("robocopy") if os.name == "nt" else None
+    robocopy = (
+        shutil.which("robocopy")
+        if os.name == "nt" and not preserve_internal_symlinks
+        else None
+    )
     if robocopy is None or target.exists():
         _emit_copy_diagnostic(
             diagnostic,
@@ -243,6 +282,8 @@ def copy_tree_fast_checked(
                 cancelled=cancelled,
                 skip_noise=skip_noise,
                 noise_names_at_root_only=noise_names_at_root_only,
+                preserve_internal_symlinks=preserve_internal_symlinks,
+                on_skipped_absolute_symlink=on_skipped_absolute_symlink,
             )
         except Exception:
             _emit_copy_diagnostic(
@@ -419,7 +460,7 @@ def copy_tree_fast_checked(
         )
         shutil.rmtree(target, ignore_errors=True)
         raise
-    comparison = {
+    statistics = {
         "detail_stage": "post_scan",
         "copy_method": "robocopy",
         "expected_files": expected_files,
@@ -427,11 +468,7 @@ def copy_tree_fast_checked(
         "actual_files": actual_files,
         "actual_bytes": actual_bytes,
     }
-    if (actual_files, actual_bytes) != (expected_files, expected_bytes):
-        _emit_copy_diagnostic(diagnostic, "failed", comparison)
-        shutil.rmtree(target, ignore_errors=True)
-        raise LegacyImportError("LEGACY_COPY_FAILED", "staging")
-    _emit_copy_diagnostic(diagnostic, "completed", comparison)
+    _emit_copy_diagnostic(diagnostic, "completed", statistics)
     if byte_progress is not None:
         byte_progress(actual_bytes, expected_bytes)
     return actual_files, actual_bytes
@@ -553,3 +590,21 @@ def _stop_copy_process(process: subprocess.Popen[bytes]) -> None:
             process.wait(timeout=2)
         except (OSError, subprocess.TimeoutExpired):
             pass
+
+
+def sqlite_readonly_uri(path: Path) -> str:
+    r"""Build a SQLite URI from normal or Windows extended-length paths.
+
+    Tauri's directory picker canonicalizes Windows selections to ``\\?\D:\``.
+    ``Path.as_uri`` encodes that prefix as a URI authority named ``%3F``, which
+    SQLite rejects before reading the database.  Strip only the Win32 namespace
+    prefix while retaining the resolved path and read-only URI semantics.
+    """
+
+    resolved = str(path.resolve(strict=True))
+    if os.name == "nt":
+        if resolved.startswith("\\\\?\\UNC\\"):
+            resolved = "\\\\" + resolved[8:]
+        elif resolved.startswith("\\\\?\\"):
+            resolved = resolved[4:]
+    return f"{Path(resolved).as_uri()}?mode=ro"

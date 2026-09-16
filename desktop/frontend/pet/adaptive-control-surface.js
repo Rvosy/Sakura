@@ -1,6 +1,7 @@
 import { applyControlPanelWidth, PRODUCT_LAYOUT_STATE } from "./layout.js";
 
 export const COMPOSER_MOTION_DURATION_MS = 260;
+export const BUBBLE_MOTION_DURATION_MS = 240;
 const COMPOSER_MOTION_EASING = "cubic-bezier(.22, 1, .36, 1)";
 const COMPOSER_MOTION_START_LEAD_MS = 40;
 
@@ -96,6 +97,16 @@ export function composerMotionDirection(beforeHeight, afterHeight) {
   return delta > 0 ? "expand" : "contract";
 }
 
+export function bubbleMotionKeyframes({ beforeTop, beforeHeight, afterTop, afterHeight }) {
+  const values = [beforeTop, beforeHeight, afterTop, afterHeight].map(Number);
+  if (!values.every(Number.isFinite)) throw new Error("bubble motion requires finite geometry");
+  const [fromTop, fromHeight, toTop, toHeight] = values;
+  return [
+    { height: `${fromHeight}px`, transform: translate(0, fromTop - toTop) },
+    { height: `${toHeight}px`, transform: "translate(0, 0)" },
+  ];
+}
+
 export function composerStagingHeight({
   beforeHeight,
   afterHeight,
@@ -172,36 +183,67 @@ function frameHeight(style) {
     + px(style.borderBottomWidth);
 }
 
-function naturalTextareaScrollHeight({ composer, input, expanded }) {
+function naturalTextareaMeasurement({ composer, input, expanded, getStyle }) {
   const visibleInputHeight = input.style.height;
   const previousMeasurement = composer.dataset.inputMeasure;
   composer.dataset.inputMeasure = expanded ? "expanded" : "collapsed";
   input.style.height = "0px";
-  const scrollHeight = input.scrollHeight;
+  const style = getStyle(input);
+  const measurement = {
+    scrollHeight: input.scrollHeight,
+    lineHeight: px(style.lineHeight) || px(style.fontSize) * 1.5,
+    paddingBlock: px(style.paddingTop) + px(style.paddingBottom),
+  };
   input.style.height = visibleInputHeight;
   if (previousMeasurement === undefined) delete composer.dataset.inputMeasure;
   else composer.dataset.inputMeasure = previousMeasurement;
+  return measurement;
+}
+
+function naturalBubbleScrollHeight(bubbleCopy) {
+  if (!bubbleCopy?.style) return Number(bubbleCopy?.scrollHeight) || 0;
+  const previous = {
+    flex: bubbleCopy.style.flex,
+    width: bubbleCopy.style.width,
+    height: bubbleCopy.style.height,
+    minHeight: bubbleCopy.style.minHeight,
+  };
+  const measuredWidth = Number(bubbleCopy.offsetWidth) || Number(bubbleCopy.clientWidth) || 0;
+  bubbleCopy.style.flex = "0 0 auto";
+  if (measuredWidth > 0) bubbleCopy.style.width = `${measuredWidth}px`;
+  bubbleCopy.style.height = "0px";
+  bubbleCopy.style.minHeight = "0px";
+  const scrollHeight = Number(bubbleCopy.scrollHeight) || 0;
+  Object.assign(bubbleCopy.style, previous);
   return scrollHeight;
 }
 
-function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, composer, input, contract, getStyle }) {
-  const inputStyle = getStyle(input);
+function measuredControlHeights({
+  bubble,
+  bubbleHeader,
+  bubbleBody,
+  bubbleCopy,
+  composer,
+  input,
+  contract,
+  bubbleMaximum = contract.controlPanel.bubbleMaxHeight.maximum,
+  getStyle,
+}) {
   const visibleInputOverflow = input.dataset.overflow;
   const currentExpanded = composer.dataset.inputExpanded === "true";
-  let naturalScrollHeight = naturalTextareaScrollHeight({
+  let naturalTextMeasurement = naturalTextareaMeasurement({
     composer,
     input,
     expanded: currentExpanded,
+    getStyle,
   });
   if (visibleInputOverflow === undefined) delete input.dataset.overflow;
   else input.dataset.overflow = visibleInputOverflow;
 
   const composerStyle = getStyle(composer);
-  const metrics = (scrollHeight, expanded) => composerInputMetrics({
+  const metrics = (measurement, expanded) => composerInputMetrics({
     value: input.value,
-    scrollHeight,
-    lineHeight: px(inputStyle.lineHeight) || px(inputStyle.fontSize) * 1.5,
-    paddingBlock: px(inputStyle.paddingTop) + px(inputStyle.paddingBottom),
+    ...measurement,
     frameHeight: frameHeight(composerStyle),
     expanded,
     expandedRows: Number.parseInt(composer.dataset.inputState?.split("-").at(-1), 10),
@@ -212,18 +254,16 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
     toolbarHeight: contract.controlPanel.inputToolbarHeight,
     expandedGap: contract.controlPanel.inputExpandedGap,
   });
-  let text = metrics(naturalScrollHeight, currentExpanded);
+  let text = metrics(naturalTextMeasurement, currentExpanded);
   // A wrap in the narrow one-row layout selects the expanded layout. Measure that final, wider
   // layout in the same JavaScript task before starting either animation, so one input event has
   // one target height even when the text unwraps again at the wider width.
   if (!currentExpanded && text.expanded) {
-    naturalScrollHeight = naturalTextareaScrollHeight({ composer, input, expanded: true });
-    text = metrics(naturalScrollHeight, true);
+    naturalTextMeasurement = naturalTextareaMeasurement({ composer, input, expanded: true, getStyle });
+    text = metrics(naturalTextMeasurement, true);
   }
   const naturalText = textareaMetrics({
-    scrollHeight: naturalScrollHeight,
-    lineHeight: px(inputStyle.lineHeight) || px(inputStyle.fontSize) * 1.5,
-    paddingBlock: px(inputStyle.paddingTop) + px(inputStyle.paddingBottom),
+    ...naturalTextMeasurement,
     maxRows: contract.controlPanel.inputMaxRows,
   });
   const inputHeight = clamp(
@@ -235,12 +275,12 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
   const bubbleStyle = getStyle(bubble);
   const bodyStyle = getStyle(bubbleBody);
   const bubbleHeight = bubbleSurfaceHeight({
-    contentHeight: bubbleCopy.scrollHeight,
+    contentHeight: naturalBubbleScrollHeight(bubbleCopy),
     headerHeight: bubbleHeader.offsetHeight,
     chromeHeight: frameHeight(bubbleStyle),
     contentGap: px(bodyStyle.marginTop),
     minimum: contract.controlPanel.bubbleMinHeight,
-    maximum: contract.controlPanel.bubbleMaxHeight.maximum,
+    maximum: bubbleMaximum,
   });
   return Object.freeze({
     measurements: Object.freeze({ bubbleHeight, inputHeight }),
@@ -265,7 +305,11 @@ export function createAdaptiveControlSurface({
   layoutController,
   startNativeExpansion = null,
   readAdjustments,
+  readBubbleAutoExpand = () => false,
+  readDeferNative = () => false,
+  readVisibility = () => ({ bubbleVisible: true, inputVisible: true }),
   startNativeTransition = null,
+  startNativeBubbleTransition = null,
   now = () => Date.now(),
   getStyle = (element) => window.getComputedStyle(element),
   requestFrame = (callback) => window.requestAnimationFrame(callback),
@@ -281,6 +325,7 @@ export function createAdaptiveControlSurface({
   let lastRequest = "";
   let visualPreviewRequested = false;
   let deferNativeRequested = false;
+  let forceNativeRequested = false;
   let interactionTraceRequested = null;
   let composerAnimation = null;
   let childAnimations = [];
@@ -288,11 +333,91 @@ export function createAdaptiveControlSurface({
   let optimisticExpansion = null;
   let inputMotionActive = false;
   let observerRefreshDeferred = false;
+  let bubbleAnimation = null;
+  let bubbleMotionGeneration = 0;
+
+  function syncBubbleOverflowMode() {
+    if (readBubbleAutoExpand() === true) bubble.dataset.autoExpand = "true";
+    else delete bubble.dataset.autoExpand;
+  }
+
+  function captureBubbleGeometry() {
+    const top = Number(bubble.offsetTop);
+    const height = Number(bubble.offsetHeight);
+    if (![top, height].every(Number.isFinite) || height <= 0) return null;
+    return Object.freeze({ top, height });
+  }
+
+  function animateCommittedBubble(before, targetRect, startAtUnixMs = null) {
+    if (disposed || !before) return;
+    const afterTop = Number(targetRect?.[1]);
+    const afterHeight = Number(targetRect?.[3]);
+    if (![afterTop, afterHeight].every(Number.isFinite)) return;
+    bubbleAnimation?.cancel();
+    bubbleAnimation = null;
+    bubble.style.height = "";
+    bubble.style.transform = "";
+    if (typeof bubble.animate !== "function") {
+      delete bubble.dataset.sizeMotion;
+      return;
+    }
+    if (Math.abs(before.top - afterTop) <= 0.5 && Math.abs(before.height - afterHeight) <= 0.5) {
+      delete bubble.dataset.sizeMotion;
+      return;
+    }
+    const generation = ++bubbleMotionGeneration;
+    try {
+      bubble.dataset.sizeMotion = "active";
+      bubbleAnimation = bubble.animate(
+        bubbleMotionKeyframes({
+          beforeTop: before.top,
+          beforeHeight: before.height,
+          afterTop,
+          afterHeight,
+        }),
+        {
+          duration: BUBBLE_MOTION_DURATION_MS,
+          easing: COMPOSER_MOTION_EASING,
+          delay: Number.isFinite(startAtUnixMs) ? startAtUnixMs - now() : 0,
+          fill: "backwards",
+        },
+      );
+      const finished = bubbleAnimation?.finished;
+      if (finished && typeof finished.then === "function") {
+        Promise.resolve(finished).catch(() => {}).then(() => {
+          if (disposed || generation !== bubbleMotionGeneration) return;
+          bubbleAnimation = null;
+          delete bubble.dataset.sizeMotion;
+        });
+      }
+    } catch {
+      bubbleAnimation = null;
+      delete bubble.dataset.sizeMotion;
+    }
+  }
+
+  function queueBubbleMotion(before, targetRect, nativeResult) {
+    if (!before) return;
+    const prepared = nativeResult?.bubbleTransitionPrepared === true
+      && typeof startNativeBubbleTransition === "function";
+    if (prepared) {
+      bubble.style.height = `${before.height}px`;
+      bubble.style.transform = translate(0, before.top - Number(targetRect?.[1]));
+      bubble.dataset.sizeMotion = "staged";
+    }
+    const startAtUnixMs = prepared ? scheduledMotionStart(now) : null;
+    const ready = prepared
+      ? nativeMotionReady(() => startNativeBubbleTransition(nativeResult.revision, startAtUnixMs))
+      : Promise.resolve(true);
+    ready.then(() => Promise.resolve().then(() => {
+      animateCommittedBubble(before, targetRect, startAtUnixMs);
+    }));
+  }
 
   function captureVisualRects() {
     if (typeof composer.getBoundingClientRect !== "function") return null;
     const controls = typeof composer.querySelectorAll === "function"
-      ? [...composer.querySelectorAll("#composer-attachment, #composer-send")]
+      ? [...composer.querySelectorAll("#composer-attachment, #voice-mic, #composer-send")]
       : [];
     const elements = [input, ...controls];
     return Object.freeze({
@@ -316,12 +441,10 @@ export function createAdaptiveControlSurface({
       ? `${nativeTransition.targetHeight}px`
       : "";
     if (!before || typeof composer.animate !== "function") return;
-    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
     composerAnimation?.cancel();
     for (const animation of childAnimations) animation.cancel();
     childAnimations = [];
     composerAnimation = null;
-    if (reducedMotion) return;
     try {
       const timing = composerMotionTiming(nativeTransition?.startAtUnixMs, now);
       const after = composer.getBoundingClientRect();
@@ -421,8 +544,7 @@ export function createAdaptiveControlSurface({
 
   function stageImmediateExpansion() {
     if (disposed || composer.dataset.composing === "true") return;
-    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-    if (reducedMotion || optimisticExpansion) return;
+    if (optimisticExpansion) return;
     const measuredControl = measuredControlHeights({
       bubble,
       bubbleHeader,
@@ -511,13 +633,20 @@ export function createAdaptiveControlSurface({
     const pendingNativeExpansion = optimisticExpansion?.nativeReady;
     if (pendingNativeExpansion) await pendingNativeExpansion;
     if (disposed) return Object.freeze({ applied: false, disposed: true });
-    const visualPreview = visualPreviewRequested;
-    const deferNative = deferNativeRequested;
+    const forceNative = forceNativeRequested;
+    const deferNative = !forceNative && (deferNativeRequested || readDeferNative());
+    const visualPreview = visualPreviewRequested || deferNative;
     const interactionTrace = interactionTraceRequested;
     visualPreviewRequested = false;
     deferNativeRequested = false;
+    forceNativeRequested = false;
     interactionTraceRequested = null;
     const baseAdjustments = applyControlPanelWidth(root, contract, readAdjustments());
+    const bubbleAutoExpand = readBubbleAutoExpand() === true;
+    syncBubbleOverflowMode();
+    const bubbleHeightMaximum = bubbleAutoExpand
+      ? contract.viewport.windowSize[1]
+      : baseAdjustments.bubbleMaxHeight;
     const measuredControl = measuredControlHeights({
       bubble,
       bubbleHeader,
@@ -526,17 +655,28 @@ export function createAdaptiveControlSurface({
       composer,
       input,
       contract,
+      bubbleMaximum: bubbleHeightMaximum,
       getStyle,
     });
     const measured = Object.freeze({
       ...measuredControl.measurements,
-      // The settings value is the exact conversation bubble height. Reply length only controls
-      // the inner scrollbar; it must never resize the outer bubble while a conversation is active.
-      bubbleHeight: baseAdjustments.bubbleMaxHeight,
+      bubbleHeight: bubbleAutoExpand
+        ? Math.max(baseAdjustments.bubbleMaxHeight, measuredControl.measurements.bubbleHeight)
+        : baseAdjustments.bubbleMaxHeight,
+      bubbleHeightMaximum,
     });
     const adjustments = baseAdjustments;
-    const requestKey = JSON.stringify([adjustments, measured, measuredControl.inputVisual]);
-    if (requestKey === lastRequest) return Object.freeze({ applied: false, unchanged: true });
+    const visibility = readVisibility();
+    const requestKey = JSON.stringify([
+      adjustments,
+      measured,
+      measuredControl.inputVisual,
+      bubbleAutoExpand,
+      visibility,
+    ]);
+    if (requestKey === lastRequest && !forceNative) {
+      return Object.freeze({ applied: false, unchanged: true });
+    }
     lastRequest = requestKey;
     const optimistic = optimisticExpansion
       && optimisticExpansion.inputHeight === measuredControl.measurements.inputHeight
@@ -548,8 +688,11 @@ export function createAdaptiveControlSurface({
       transition = layoutController.transition(PRODUCT_LAYOUT_STATE, "adaptive-control-surface", {
         adjustments,
         measurements: measured,
+        visibility,
         commitVisual: (_layout, nativeResult) => {
           if (disposed) return;
+          const bubbleBefore = bubbleAutoExpand ? captureBubbleGeometry() : null;
+          queueBubbleMotion(bubbleBefore, _layout?.bubbleRect, nativeResult);
           if (optimistic && optimisticExpansion === optimistic) {
             applyInputVisual(measuredControl.inputVisual);
             optimisticExpansion = null;
@@ -564,16 +707,13 @@ export function createAdaptiveControlSurface({
           const previousComposerHeight = Number(composer.offsetHeight)
             || visualBefore?.composer.height
             || 0;
-          const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-          const stagingHeight = reducedMotion
-            ? null
-            : composerStagingHeight({
-              beforeHeight: Number(composer.offsetHeight) || visualBefore?.composer.height,
-              afterHeight: measuredControl.measurements.inputHeight,
-              baseHeight: contract.controlPanel.inputBaseHeight,
-              toolbarHeight: contract.controlPanel.inputToolbarHeight,
-              expandedGap: contract.controlPanel.inputExpandedGap,
-            });
+          const stagingHeight = composerStagingHeight({
+            beforeHeight: Number(composer.offsetHeight) || visualBefore?.composer.height,
+            afterHeight: measuredControl.measurements.inputHeight,
+            baseHeight: contract.controlPanel.inputBaseHeight,
+            toolbarHeight: contract.controlPanel.inputToolbarHeight,
+            expandedGap: contract.controlPanel.inputExpandedGap,
+          });
           if (stagingHeight !== null) {
             stageInputMotion({
               beforeHeight: previousComposerHeight,
@@ -618,7 +758,9 @@ export function createAdaptiveControlSurface({
     }
     try {
       const result = await transition;
-      if (!result?.applied) rollbackOptimisticExpansion(optimistic);
+      if (!result?.applied) {
+        rollbackOptimisticExpansion(optimistic);
+      }
       return result;
     } catch (error) {
       rollbackOptimisticExpansion(optimistic);
@@ -628,6 +770,7 @@ export function createAdaptiveControlSurface({
 
   function schedule() {
     if (disposed) return;
+    syncBubbleOverflowMode();
     if (inputMotionActive) {
       composerAnimation?.cancel();
       for (const animation of childAnimations) animation.cancel();
@@ -663,9 +806,16 @@ export function createAdaptiveControlSurface({
     schedule,
     refresh,
     settle: () => refreshPromise,
-    flush({ visualPreview = false, deferNative = false, interactionTrace = null } = {}) {
+    flush({
+      visualPreview = false,
+      deferNative = false,
+      forceNative = false,
+      interactionTrace = null,
+    } = {}) {
       visualPreviewRequested ||= Boolean(visualPreview);
-      deferNativeRequested ||= Boolean(deferNative);
+      forceNativeRequested ||= Boolean(forceNative);
+      if (forceNativeRequested) deferNativeRequested = false;
+      else deferNativeRequested ||= Boolean(deferNative);
       interactionTraceRequested = interactionTrace || interactionTraceRequested;
       if (pendingFrame !== null) {
         cancelFrame(pendingFrame);
@@ -683,9 +833,16 @@ export function createAdaptiveControlSurface({
       lastRequest = "";
       schedule();
     },
-    invalidate({ visualPreview = false, deferNative = false, interactionTrace = null } = {}) {
+    invalidate({
+      visualPreview = false,
+      deferNative = false,
+      forceNative = false,
+      interactionTrace = null,
+    } = {}) {
       visualPreviewRequested ||= Boolean(visualPreview);
-      deferNativeRequested ||= Boolean(deferNative);
+      forceNativeRequested ||= Boolean(forceNative);
+      if (forceNativeRequested) deferNativeRequested = false;
+      else deferNativeRequested ||= Boolean(deferNative);
       interactionTraceRequested = interactionTrace || interactionTraceRequested;
       lastRequest = "";
       schedule();
@@ -700,6 +857,12 @@ export function createAdaptiveControlSurface({
       if (pendingFrame !== null) cancelFrame(pendingFrame);
       pendingFrame = null;
       observer?.disconnect();
+      bubbleMotionGeneration += 1;
+      bubbleAnimation?.cancel();
+      delete bubble.dataset.sizeMotion;
+      delete bubble.dataset.autoExpand;
+      bubble.style.height = "";
+      bubble.style.transform = "";
       composerAnimation?.cancel();
       for (const animation of childAnimations) animation.cancel();
     },

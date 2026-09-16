@@ -13,12 +13,12 @@ user's system or from the network.
 - Output format: WOFF2.
 - Tools: fonttools 4.63.0 and brotli 1.2.0, installed in an isolated temporary directory.
 
-| Asset | SHA-256 | Bytes |
-| --- | --- | ---: |
-| Source Noto Sans SC TTF | `E80613A35583F59B46DBF6CC2EB640F3DB0BB0F53FA7F6FBAA7B09FAF20E5172` | 17,773,248 |
-| Source Noto Sans JP TTF | `04B2AC921347B12C63BC35ADDA5722DD2B1860D900F668DC5050A44202464FA5` | 9,135,128 |
-| `NotoSansSC-VariableFont_wght-400-700.woff2` | `BFD25C99C6327B5525844F3301F4C487F0FC23347A02EE2B4DB17B2038A74686` | 7,638,924 |
-| `NotoSansJP-VariableFont_wght-400-700.woff2` | `821DA781235AD4B06380463D0679106E515D4E3487D6A8DD90611058B1A61268` | 3,992,740 |
+| Asset | Bytes |
+| --- | ---: |
+| Source Noto Sans SC TTF | 17,773,248 |
+| Source Noto Sans JP TTF | 9,135,128 |
+| `NotoSansSC-VariableFont_wght-400-700.woff2` | 7,638,924 |
+| `NotoSansJP-VariableFont_wght-400-700.woff2` | 3,992,740 |
 
 The generated files retain every source glyph and cmap entry. See `OFL.txt` for redistribution
 terms.

@@ -5,6 +5,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -166,6 +167,7 @@ class _SetupContext:
             "sakura.host.tools": self.tools,
             "sakura.host.settings": self.settings,
             "sakura.host.artifacts": self.artifacts,
+            "sakura.host.logging": Mock(),
         }[service_key]
 
     def effect(self, cleanup: Any) -> None:
@@ -238,3 +240,22 @@ def test_tool_artifact_descriptor_mismatch_releases_committed_payload(tmp_path: 
         )
     assert raised.value.code == "TOOL_ARTIFACT_INVALID"
     assert store.count == 0
+
+
+def test_browser_failures_log_metadata_and_preserve_business_result() -> None:
+    logger = Mock()
+    def fail(args):
+        raise TimeoutError("private page content")
+    callback = playwright_plugin._logged_tool(logger, "playwright_fill", fail)
+    with pytest.raises(TimeoutError, match="private page content"):
+        callback({"value": "private password", "selector": "private selector"})
+    logger.error.assert_called_once()
+    assert logger.error.call_args.kwargs["fields"] == {
+        "tool": "playwright_fill", "error_type": "TimeoutError", "reason_code": "BROWSER_TIMEOUT",
+    }
+    assert "private" not in str(logger.mock_calls)
+    logger.reset_mock()
+    callback = playwright_plugin._logged_tool(logger, "playwright_get_text", lambda args: "private page")
+    for _ in range(20):
+        assert callback({}) == "private page"
+    assert logger.mock_calls == []

@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-31
 ---
 
 # 外观设置
@@ -14,10 +14,12 @@ updated: 2026-08-26
 
 输入栏效果按平台提供：
 
-- Windows 支持纯色、高斯模糊、亚克力和系统可用的合成效果；
+- Windows 支持纯色及系统条件允许时的实时高斯模糊；液态玻璃暂未实现，选项会置灰；
 - macOS 支持纯色、高斯模糊、原生材质，系统支持时还可选择原生 Liquid Glass；
 - Linux 使用纯色或 GTK/桌面环境能够提供的效果。
 
 平台不支持的选项会置灰。已经保存的其他平台偏好会留在配置里，但当前平台只应用自己支持的效果。
+Windows 高斯因系统版本、透明效果、节能策略或图形能力不可用而回退纯色时，桌宠会提示右键打开
+“运行日志”查看具体原因。
 
 预览失败时，Sakura 会恢复上一份可用设置。若界面与保存值不一致，先关闭设置窗口再打开；仍未恢复时重启 Sakura，并查看[运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)。

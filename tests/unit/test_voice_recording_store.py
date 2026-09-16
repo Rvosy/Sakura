@@ -39,6 +39,7 @@ def test_commit_is_atomic_and_lookup_and_playback_copy_are_controlled(tmp_path: 
     assert record.audio_path.read_bytes()[:4] == b"RIFF"
     metadata = json.loads((record.directory / "record.json").read_text(encoding="utf-8"))
     assert metadata["schemaVersion"] == 1
+    assert "sha256" not in metadata
     assert metadata["historyEntryId"] == "entry-0001"
     assert metadata["favorite"] is False
     assert not list(record.directory.parent.glob(".staging-*"))
@@ -161,3 +162,36 @@ def test_trailing_dot_character_commits_through_windows_verbatim_root(tmp_path: 
         expires_at=_stamp(100),
     )
     assert playback.path.read_bytes() == record.audio_path.read_bytes()
+
+
+def test_legacy_digest_is_ignored_and_invalid_audio_is_isolated(tmp_path: Path) -> None:
+    store = VoiceRecordingStore(tmp_path)
+    record = store.commit(
+        _wav(tmp_path / "legacy.wav"), character_id="sakura",
+        history_entry_id="entry-legacy", provider="genie-tts",
+    )
+    metadata_path = record.directory / "record.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["sha256"] = "obsolete-and-not-recomputed"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    assert store.get(record.recording_id) == record
+    assert store.scan_and_prune() == (record,)
+    assert store.set_favorite(record.recording_id, True).favorite
+    assert "sha256" not in json.loads(metadata_path.read_text(encoding="utf-8"))
+    # Equal byte length cannot make an invalid WAV healthy.
+    record.audio_path.write_bytes(b"x" * record.byte_length)
+    assert store.get(record.recording_id) is None
+    assert store.scan_and_prune() == ()
+    assert record.directory.exists()
+
+
+def test_truncated_wav_is_rejected_at_commit(tmp_path: Path) -> None:
+    source = _wav(tmp_path / "truncated.wav")
+    source.write_bytes(source.read_bytes()[:-2])
+    store = VoiceRecordingStore(tmp_path)
+    try:
+        store.commit(source, character_id="sakura", history_entry_id="truncated", provider="genie-tts")
+    except Exception as error:
+        assert getattr(error, "code", None) == "AUDIO_RECORDING_INVALID"
+    else:
+        raise AssertionError("truncated WAV was accepted")

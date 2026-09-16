@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-1C-03：协议协商、stderr 排水和故障 transport
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-24
 > 前置证据：WP-1P-06 验收提交 `ca8fea3`
 > 规范来源：ADR-0001、ADR-0002、ADR-0003、ADR-0004、WP-1C-01/02、WP-1P-01 至 06
@@ -21,15 +20,9 @@ updated: 2026-07-31
 capability、generation credential、stderr 和故障语义；平台 backend 只负责 pipe、进程树和原生
 错误转换。transport fatal 交回既有 Supervisor generation stop/finalize 路径，不建立第二状态机。
 
-允许目录：`app/core_host/`、`desktop/src-tauri/src/core_host_protocol.rs`、
-`core_host_runtime.rs`、Phase 1C acceptance 接线、`tests/unit/test_core_host_*`、
-`tests/integration/test_core_host_lifecycle.py`、`tests/fixtures/runtime_v2/wp_1c_03/`、
-`desktop/tests/` 的隔离验收、platform foundation workflow、ADR-0002、本文和 Work Package 总计划。
-
-明确非目标：不改变 CoreSupervisor 状态机、generation/restart budget、Snapshot schema、共享用户
-数据 schema 或用户可见产品语义；不实现 Phase 2 pending/event Router、Operation/cancel；不接入
-Assistant、聊天、Memory、插件、MCP、Tools、TTS、浏览器、截图或主动互动；不恢复系统 Python、
-PATH 扫描或硬编码 `runtime/python.exe`；不把 Win32 handle、POSIX fd/signal/PID/PGID 放进公共 DTO。
+Supervisor、Snapshot、Router 和领域能力的行为由对应 Spec 定义，相关问题可跨模块调查和修改。
+运行时仍使用显式 RuntimeLocator，不回退系统 Python、扫描 PATH 或硬编码跨平台可执行路径；
+公共 DTO 不暴露 Win32 handle、POSIX fd/signal/PID/PGID。
 
 ## 2. 协议协商
 
@@ -79,9 +72,9 @@ lossy UTF-8 仅生成受控诊断记录；原始字节不进入用户可见面�
 每 generation 只保留最近 64 KiB 脱敏文本，单条记录最多 4096 bytes；超过上限删除最旧记录并
 累计 `droppedBytes`/`droppedRecords`，单条超限累计 `truncatedRecords`。统计使用饱和整数，重复
 finish/close 幂等。日志值先按 ASCII 大小写不敏感规则脱敏 credential、`token`、
-`Authorization`、`cookie`、常见 key/secret/password 字段和当前进程环境变量的非空值；聊天/
-prompt/message/content 字段整体替换为 `[REDACTED]`。输出只含 generation ID、PID、稳定计数和
-脱敏片段，不含裸环境变量或平台资源标识。
+`Authorization`、`cookie`、常见 key/secret/password 字段及凭据类环境变量的值。
+保留报错上下文、路径、换行和非凭据 URL，不再替换所有环境变量值或因出现 message/content 就隐藏整段报错。
+原始错误片段使用 [诊断字段及预算](remote-diagnostics-telemetry.md)，不主动序列化环境变量或请求正文。
 
 reader 在正常退出、Core crash、spawn 后初始化失败、protocol fatal、deadline 强杀和 Tauri
 shutdown 后都必须由 runtime 显式 join；pipe read failure 记录 `STDERR_READ_FAILED` 后仍进入同一
@@ -109,6 +102,11 @@ cleanup。stderr EOF 是可观测终止事实，不单独改变 Supervisor 状�
 平台原生错误只在 platform backend 映射为既有稳定 `PlatformError`；公共 IPC DTO 不暴露 native
 handle/fd/signal/PID/PGID。错误 message、details、Debug 和测试断言均不得包含 credential 或 secret。
 
+失败响应允许在 `error.details.diagnostics` 携带本地诊断：原始错误、异常类型、异常链、调用栈、阶段、代码位置和系统错误码。
+字段均为经过脱敏的有界标量，预算遵循 [本地运行日志](WP-4L-02-human-readable-runtime-log-agent-trace.md)。
+业务 `error.code/message/retryable` 与 feature/field 不变，Rust 在投影日志时读取诊断；成功响应不附加当前异常。
+接收端允许字段缺省，无原始异常时不得根据业务码伪造根因。诊断不携带任意异常对象、locals、凭据或完整请求/回复正文。
+
 ## 6. Timeout、资源上限与三平台责任
 
 - hello 3 秒；initialize 接受 5 秒；readiness watchdog 30 秒；shutdown 3 秒；完整树停止 5 秒。
@@ -124,7 +122,7 @@ handle/fd/signal/PID/PGID。错误 message、details、Debug 和测试断言均�
 退出条件：本文列出的协商、credential、stderr、framing/EOF/deadline/crash/queue/shutdown 竞态
 测试全部通过；三平台最新实现 HEAD 与 accepted 文档 HEAD 的 Unit/UI、platform foundation 全绿；
 完整树、pipe、fd/handle、reader/writer/init thread、锁和临时目录零残留；真实 `data/`、`runtime/`
-内容清单前后相同；P0/P1 为 0；PR 保持 Draft。后续 WP 不得在本验收中顺手激活。
+内容清单无非预期变化；没有未解决的 P0/P1 缺陷。自动测试与设备验收分别记录，不以 PR 或工作包状态替代证据。
 
 独立回退：依次 revert accepted 文档、实现/修正提交和 activation 提交，恢复 WP-1P-06 的兼容
 最小握手路径；保留基础 framing、Snapshot、RuntimeLocator、三平台进程树/共享锁/窗口 backend，

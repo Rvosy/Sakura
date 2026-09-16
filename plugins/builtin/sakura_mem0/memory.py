@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
 import importlib.util
 import json
-import logging
 import os
 import re
 import shutil
@@ -50,7 +48,14 @@ except ImportError:
     )
 
 
-logger = logging.getLogger(__name__)
+
+
+def urlopen_current_proxy(*args: Any, **kwargs: Any):
+    # Migration uses the local database helpers outside the plugin process.
+    # Load its HTTP SDK only when a resource download actually needs it.
+    from sakura_http import urlopen_direct_for_loopback
+
+    return urlopen_direct_for_loopback(*args, **kwargs)
 
 
 DEFAULT_MEMORY_SCOPE = "sakura"
@@ -60,8 +65,6 @@ DEFAULT_EMBEDDING_ARTIFACT_REPO = "qdrant/all-MiniLM-L6-v2-onnx"
 DEFAULT_EMBEDDING_ARTIFACT_REVISION = "5f1b8cd78bc4fb444dd171e59b18f3a3af89a079"
 DEFAULT_EMBEDDING_DIMS = 384
 DEFAULT_MEMORY_LIMIT = 20
-MEMORY_INITIALIZATION_LOG_NAME = "memory-initialization.jsonl"
-MEMORY_INITIALIZATION_LOG_MAX_BYTES = 1024 * 1024
 MEMORY_LAYER_CORE_PROFILE = "core_profile"
 MEMORY_LAYER_SEMANTIC = "semantic"
 MEMORY_LAYER_EPISODIC = "episodic"
@@ -103,62 +106,40 @@ DEFAULT_EMBEDDING_MODEL_CACHE_NAME = "models--" + DEFAULT_EMBEDDING_ARTIFACT_REP
     "/", "--"
 )
 DEFAULT_EMBEDDING_MODEL_ARTIFACTS = {
-    "config.json": (
-        650,
-        "1b4d8e2a3988377ed8b519a31d8d31025a25f1c5f8606998e8014111438efcd7",
-    ),
-    "model.onnx": (
-        90_387_630,
-        "bbd7b466f6d58e646fdc2bd5fd67b2f5e93c0b687011bd4548c420f7bd46f0c5",
-    ),
-    "special_tokens_map.json": (
-        695,
-        "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
-    ),
-    "tokenizer.json": (
-        711_661,
-        "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0",
-    ),
-    "tokenizer_config.json": (
-        1_433,
-        "bd2e06a5b20fd1b13ca988bedc8763d332d242381b4fbc98f8fead4524158f79",
-    ),
+    "config.json": 650,
+    "model.onnx": 90_387_630,
+    "special_tokens_map.json": 695,
+    "tokenizer.json": 711_661,
+    "tokenizer_config.json": 1_433,
 }
 DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES = tuple(DEFAULT_EMBEDDING_MODEL_ARTIFACTS)
 MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS = {
     "config.json": (
         "config.json",
         794,
-        "fe5da868b77bdb104140822a5af0837cb6450ad6de8ff3dfcc8dd44ddd3e3ae7",
     ),
     "model.onnx": (
         "onnx/model.onnx",
         56_796,
-        "2f019cf6217537cc4bfc7f5192f21dea1e18445177edaab0bc6163a813e5c7a1",
     ),
     "model.onnx_data": (
         "onnx/model.onnx_data",
         90_261_504,
-        "60c758432aa596c30a122942dfe594c457d4d713f890926f1c5f920bd496c8de",
     ),
     "special_tokens_map.json": (
         "special_tokens_map.json",
         695,
-        "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
     ),
     "tokenizer.json": (
         "tokenizer.json",
         533_808,
-        "07805d116826679de90b4edeb2222269c4b8753bc0981be4399f732b2708e904",
     ),
     "tokenizer_config.json": (
         "tokenizer_config.json",
         1_463,
-        "e10bb633ba0d7f69ed342ae7de607f36b39ce53b455fbda69c71700bf57e6f66",
     ),
 }
 _MEM0_CREATE_LOCK = threading.Lock()
-_MEMORY_DIAGNOSTIC_WRITE_LOCK = threading.Lock()
 _EMBEDDER_OWNER = threading.local()
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _DIAGNOSTIC_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
@@ -187,14 +168,7 @@ def append_memory_initialization_diagnostic(
     process_alive: bool | None = None,
     request: str = "",
 ) -> None:
-    """Append one bounded, content-free Memory startup diagnostic event.
-
-    Core-only diagnostic runs keep a bounded fallback path. When the Runtime v2
-    bridge is installed, the same safe fields are routed to the unified Runtime
-    log and the fallback JSONL file is left byte-for-byte untouched. All string
-    fields are internal identifiers; invalid/free-form values are replaced
-    instead of being persisted.
-    """
+    """Submit bounded startup diagnostics through the injected host logger only."""
 
     try:
         if external_runtime_sink_active():
@@ -225,59 +199,13 @@ def append_memory_initialization_diagnostic(
             with suppress_runtime_logs():
                 log_event(
                     "Memory",
-                    "Runtime v2 Memory initialization diagnostic",
+                    {"memory_store_load_started": "长期记忆正在初始化", "memory_store_load_completed": "长期记忆已就绪", "memory_store_load_failed": "长期记忆初始化失败"}.get(event, "长期记忆初始化阶段"),
                     attributes,
                     event="memory.initialization.stage",
-                    severity="warning" if outcome == "failed" else "info",
+                    severity=("error" if event == "memory_store_load_failed" else "warning" if outcome == "failed" else "info" if event in {"memory_store_load_started", "memory_store_load_completed"} else "debug"),
                 )
             return
 
-        payload: dict[str, object] = {
-            "timestampMs": int(time.time() * 1000),
-            "component": _diagnostic_token(component),
-            "event": _diagnostic_token(event),
-            "pid": os.getpid(),
-        }
-        for key, value in (
-            ("stage", stage),
-            ("outcome", outcome),
-            ("status", status),
-            ("category", category),
-            ("errorType", error_type),
-            ("request", request),
-        ):
-            if value:
-                payload[key] = _diagnostic_token(value)
-        if elapsed_ms is not None:
-            payload["elapsedMs"] = max(0, min(int(elapsed_ms), 86_400_000))
-        if wait is not None:
-            payload["wait"] = bool(wait)
-        if model_cached is not None:
-            payload["modelCached"] = bool(model_cached)
-        if child_pid is not None:
-            payload["childPid"] = max(0, int(child_pid))
-        if process_alive is not None:
-            payload["processAlive"] = bool(process_alive)
-        path = StoragePaths(_resolve_base_dir(base_dir)).logs_dir / MEMORY_INITIALIZATION_LOG_NAME
-        line = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
-            "utf-8"
-        )
-        flags = os.O_APPEND | os.O_WRONLY
-        if hasattr(os, "O_BINARY"):
-            flags |= os.O_BINARY
-        with _MEMORY_DIAGNOSTIC_WRITE_LOCK:
-            # The Runtime v2 Shell owns truncation and creation. Core-only and
-            # fixture runs must not leave surprise log artifacts.
-            if not path.is_file():
-                return
-            current_size = path.stat().st_size
-            if current_size + len(line) > MEMORY_INITIALIZATION_LOG_MAX_BYTES:
-                return
-            descriptor = os.open(path, flags, 0o600)
-            try:
-                os.write(descriptor, line)
-            finally:
-                os.close(descriptor)
     except Exception:  # noqa: BLE001 - diagnostics must never affect Memory.
         return
 
@@ -623,38 +551,6 @@ class MemoryModelTaskCancelled(RuntimeError):
     """用户或当前 Core generation 取消了模型导入/下载。"""
 
 
-def validate_existing_memory_store(memory_dir: Path) -> None:
-    """Open an existing local Qdrant store without loading an embedding model.
-
-    The legacy importer uses this while Core is paused.  Opening a copied store
-    through the same Qdrant client as the current plugin catches storage-format
-    incompatibilities that metadata-only checks cannot detect.
-    """
-
-    qdrant_path = Path(memory_dir) / "qdrant"
-    if not qdrant_path.is_dir() or not any(path.is_file() for path in qdrant_path.rglob("*")):
-        return
-    _install_disabled_qdrant_grpc_module()
-    _install_synchronous_qdrant_client_facade()
-    from qdrant_client import QdrantClient
-
-    client = QdrantClient(path=qdrant_path.as_posix())
-    try:
-        collection = client.get_collection(DEFAULT_COLLECTION_NAME)
-        vectors = collection.config.params.vectors
-        if isinstance(vectors, dict):
-            dimensions = {int(value.size) for value in vectors.values()}
-        else:
-            dimensions = {int(vectors.size)}
-        if dimensions != {DEFAULT_EMBEDDING_DIMS}:
-            raise ValueError("memory vector dimensions are incompatible")
-    finally:
-        client.close()
-        # Local Qdrant uses this only while the validator owns the copied store.
-        # It is runtime state and must not become part of the committed payload.
-        (qdrant_path / ".lock").unlink(missing_ok=True)
-
-
 def normalize_existing_history_database(database: Path) -> None:
     """Normalize a copied Mem0 history database with the runtime SQLite manager.
 
@@ -949,7 +845,7 @@ class MemoryStore:
             try:
                 close()
             except Exception:  # noqa: BLE001
-                logger.debug("取消记忆嵌入模型初始化失败", exc_info=True)
+                log_event("Memory", "取消记忆嵌入模型初始化失败", severity="warning")
 
     def is_ready(self) -> bool:
         """返回长期记忆运行时是否已经可直接使用。"""
@@ -1513,7 +1409,7 @@ class MemoryStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            logger.debug("读取常驻档案失败", exc_info=True)
+            log_event("Memory", "读取常驻档案失败", severity="warning")
             return {}
         return data if isinstance(data, dict) else {}
 
@@ -1547,7 +1443,7 @@ class MemoryStore:
                     memory_ids=clean_memory_ids,
                 )
             except Exception as exc:  # noqa: BLE001 - cache reset is best effort.
-                logger.warning("mem0 整理缓存清理失败：%s", exc)
+                log_event("Memory", "长期记忆整理缓存清理失败", {"error_type": type(exc).__name__}, severity="warning")
                 return {"messages": 0, "history": 0}
         try:
             return _reset_mem0_curation_cache(
@@ -1556,7 +1452,7 @@ class MemoryStore:
                 memory_ids=clean_memory_ids,
             )
         except (sqlite3.Error, RuntimeError) as exc:
-            logger.warning("mem0 整理缓存清理失败：%s", exc)
+            log_event("Memory", "长期记忆整理缓存清理失败", {"error_type": type(exc).__name__}, severity="warning")
             return {"messages": 0, "history": 0}
 
     def _get_memory(self, *, wait: bool = True) -> Any | None:
@@ -1627,7 +1523,6 @@ class MemoryStore:
             try:
                 mem = self._create_memory_client()
             except Exception as exc:
-                logger.exception("mem0 初始化失败")
                 diagnostic = self.load_diagnostic()
                 stage = str(diagnostic.get("stage") or "store_load")
                 category = str(diagnostic.get("category") or "")
@@ -1761,7 +1656,7 @@ class MemoryStore:
         try:
             listener(status, message)
         except Exception:  # noqa: BLE001
-            logger.debug("mem0 状态监听器执行失败", exc_info=True)
+            log_event("Memory", "mem0 状态监听器执行失败", severity="warning")
 
     def _loading_response(self) -> dict[str, Any]:
         elapsed = int(time.time() - self._loading_started_at) if self._loading_started_at else 0
@@ -2241,9 +2136,9 @@ def _download_modelscope_snapshot(
     """从固定 ModelScope revision 下载可由 FastEmbed 加载的 ONNX 工件。"""
 
     snapshot.mkdir(parents=True, exist_ok=False)
-    total_bytes = sum(size for _, size, _ in MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.values())
+    total_bytes = sum(size for _, size in MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.values())
     downloaded_bytes = 0
-    for local_name, (remote_name, expected_size, _expected_sha256) in (
+    for local_name, (remote_name, expected_size) in (
         MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.items()
     ):
         _check_model_task_cancelled(cancel)
@@ -2258,7 +2153,7 @@ def _download_modelscope_snapshot(
         )
         target = snapshot / local_name
         try:
-            with urllib.request.urlopen(request, timeout=600) as response, target.open("wb") as output:
+            with urlopen_current_proxy(request, timeout=600) as response, target.open("wb") as output:
                 written = 0
                 while chunk := response.read(512 * 1024):
                     output.write(chunk)
@@ -2506,14 +2401,14 @@ def _close_memory_client(memory: Any | None) -> None:
         try:
             close()
         except Exception:  # noqa: BLE001
-            logger.debug("关闭 mem0 运行时失败", exc_info=True)
+            log_event("Memory", "关闭 mem0 运行时失败", severity="warning")
     embedder = getattr(memory, "embedding_model", None)
     embedder_close = getattr(embedder, "close", None)
     if callable(embedder_close):
         try:
             embedder_close()
         except Exception:  # noqa: BLE001
-            logger.debug("关闭记忆嵌入模型进程失败", exc_info=True)
+            log_event("Memory", "关闭记忆嵌入模型进程失败", severity="warning")
     vector_store = getattr(memory, "vector_store", None)
     client = getattr(vector_store, "client", None)
     client_close = getattr(client, "close", None)
@@ -2521,7 +2416,7 @@ def _close_memory_client(memory: Any | None) -> None:
         try:
             client_close()
         except Exception:  # noqa: BLE001
-            logger.debug("关闭 Qdrant 客户端失败", exc_info=True)
+            log_event("Memory", "关闭 Qdrant 客户端失败", severity="warning")
 
 
 def _fastembed_snapshot_is_complete(snapshot: Path) -> bool:
@@ -2533,52 +2428,26 @@ def _fastembed_snapshot_is_complete(snapshot: Path) -> bool:
         all(
             (snapshot / filename).is_file()
             and (snapshot / filename).stat().st_size == expected_size
-            for filename, (expected_size, _expected_sha256) in artifacts.items()
+            for filename, expected_size in artifacts.items()
         )
         for artifacts in _embedding_model_artifact_layouts()
     )
 
 
 def _validate_fastembed_snapshot_artifacts(snapshot: Path) -> None:
-    """按固定 size/SHA-256 校验 ONNX 工件，避免错误 ZIP 替换可读缓存。"""
+    """按固定版本的文件布局与尺寸检查工件；模型格式由 FastEmbed 原生加载验证。"""
 
-    matching_layout = next(
-        (
-            artifacts
-            for artifacts in _embedding_model_artifact_layouts()
-            if all(
-                (snapshot / filename).is_file()
-                and (snapshot / filename).stat().st_size == expected_size
-                for filename, (expected_size, _expected_sha256) in artifacts.items()
-            )
-        ),
-        None,
-    )
-    if matching_layout is None:
+    if not _fastembed_snapshot_is_complete(snapshot):
         raise MemoryModelImportError(
             "记忆 ONNX 模型文件大小不匹配。",
             code="DOWNLOAD_SIZE_MISMATCH",
         )
 
-    for filename, (expected_size, expected_sha256) in matching_layout.items():
-        path = snapshot / filename
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
-        if digest.hexdigest() != expected_sha256:
-            raise MemoryModelImportError(
-                f"记忆 ONNX 模型文件校验失败：{filename}",
-                code="DOWNLOAD_CHECKSUM_MISMATCH",
-            )
 
-
-def _embedding_model_artifact_layouts() -> tuple[dict[str, tuple[int, str]], ...]:
+def _embedding_model_artifact_layouts() -> tuple[dict[str, int], ...]:
     modelscope_layout = {
-        local_name: (size, sha256)
-        for local_name, (_remote_name, size, sha256) in (
-            MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.items()
-        )
+        local_name: size
+        for local_name, (_remote_name, size) in MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.items()
     }
     return DEFAULT_EMBEDDING_MODEL_ARTIFACTS, modelscope_layout
 

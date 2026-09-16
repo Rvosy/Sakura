@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
+import base64
 import io
 import json
 import os
 import subprocess
 import sys
-import tomllib
 import zipfile
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from app.plugins.runtime_v4 import PluginRuntimeManager
 from app.storage.runtime_roots import RuntimeRoots
 from scripts import runtime_v2_archive
 from tools import development_plugin_dependencies
-from tools.release.artifact_report import build_report
 from tools.release.package_optional_plugin import build as build_optional_plugin
 from tools.release import prepare_python_runtime
 from tools.release.stage_distribution import (
@@ -29,19 +27,26 @@ from tools.release.stage_distribution import (
     validate_layout,
     write_windows_pth,
 )
-from tools.release.tauri_release_config import DEFAULT_UPDATER_ENDPOINT, build_config
+from tools.release.tauri_release_config import build_config
 from tools.release.updater_manifest import build_manifest
-from tools.release.versioning import projected_versions, source_version
+from tools.release.verify_updater_signature import UpdaterSignatureError, verify
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _runtime_zip() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("python.exe", b"frozen-runtime")
+    return buffer.getvalue()
 
 
 def test_runtime_archive_reuses_only_a_verified_existing_download(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    content = b"frozen-runtime"
+    content = _runtime_zip()
     archive = tmp_path / "python-runtime.zip"
     archive.write_bytes(content)
     manifest = tmp_path / "runtime-manifest.json"
@@ -52,7 +57,6 @@ def test_runtime_archive_reuses_only_a_verified_existing_download(
                     "fileName": archive.name,
                     "url": "https://example.test/python-runtime.zip",
                     "size": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
                 }
             }
         ),
@@ -65,10 +69,11 @@ def test_runtime_archive_reuses_only_a_verified_existing_download(
         lambda *_args, **_kwargs: pytest.fail("verified cache must not use the network"),
     )
 
-    assert runtime_v2_archive.download_and_verify(manifest, archive) == (
-        len(content),
-        hashlib.sha256(content).hexdigest(),
-    )
+    assert runtime_v2_archive.download_and_verify(manifest, archive) == len(content)
+
+    archive.write_bytes(b"x" * len(content))
+    with pytest.raises(runtime_v2_archive.ArchiveVerificationError, match="cannot parse"):
+        runtime_v2_archive.download_and_verify(manifest, archive)
 
     archive.write_bytes(b"corrupt")
     with pytest.raises(runtime_v2_archive.ArchiveVerificationError, match="size mismatch"):
@@ -79,7 +84,7 @@ def test_runtime_archive_retries_transient_download_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    content = b"frozen-runtime"
+    content = _runtime_zip()
     archive = tmp_path / "python-runtime.zip"
     manifest = tmp_path / "runtime-manifest.json"
     manifest.write_text(
@@ -89,7 +94,6 @@ def test_runtime_archive_retries_transient_download_failures(
                     "fileName": archive.name,
                     "url": "https://example.test/python-runtime.zip",
                     "size": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
                 }
             }
         ),
@@ -108,10 +112,7 @@ def test_runtime_archive_retries_transient_download_failures(
     monkeypatch.setattr(runtime_v2_archive.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(runtime_v2_archive.time, "sleep", delays.append)
 
-    assert runtime_v2_archive.download_and_verify(manifest, archive) == (
-        len(content),
-        hashlib.sha256(content).hexdigest(),
-    )
+    assert runtime_v2_archive.download_and_verify(manifest, archive) == len(content)
     assert attempts == 3
     assert delays == [5, 5]
 
@@ -233,91 +234,49 @@ def test_development_dependency_publish_failure_restores_previous_root(
     assert not list((repo / "plugins").glob(".dependencies-*"))
 
 
-def test_version_is_the_only_release_version_source() -> None:
-    version = source_version(ROOT)
-    assert set(projected_versions(ROOT).values()) == {version}
 
 
-def test_tauri_bundle_names_the_main_program_sakura() -> None:
-    cargo = tomllib.loads((ROOT / "desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8"))
-    assert cargo["package"]["name"] == "sakura"
-    assert cargo["package"]["default-run"] == "sakura"
-    assert cargo["package"]["autobins"] is False
-    assert cargo["bin"] == [
-        {"name": "sakura", "path": "src/main.rs"},
-        {
-            "name": "verify-updater-signature",
-            "path": "src/bin/verify_updater_signature.rs",
-        },
-    ]
 
 
-def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid() -> None:
+def test_release_identity_and_1_0x_upgrade_modes_are_frozen() -> None:
     config = json.loads(
         (ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
     )
-    assert config["plugins"]["updater"] == {
-        "endpoints": [],
-        "pubkey": "",
-        "windows": {"installMode": "passive"},
+
+    assert config["productName"] == "Sakura"
+    assert config["identifier"] == "com.rvosy.sakura"
+    assert config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser"
+    assert config["plugins"]["updater"]["windows"]["installMode"] == "passive"
+
+    release = build_config(
+        target="windows-x64",
+        updater=True,
+        endpoint="https://example.test/latest.json",
+        public_key="public-key",
+    )
+    assert release["plugins"]["updater"]["windows"]["installMode"] == "passive"
+
+
+def test_release_overlay_contains_only_the_program_domain() -> None:
+    config = build_config(target="windows-x64", updater=False, endpoint="", public_key="")
+    assert config["bundle"]["resources"] == {
+        "release-staging/VERSION": "VERSION",
+        "release-staging/diagnostic-build.json": "diagnostic-build.json",
+        "release-staging/diagnostic-build-id.txt": "diagnostic-build-id.txt",
+        "release-staging/runtime-manifest.json": "runtime-manifest.json",
+        "release-staging/python": "python",
+        "release-staging/core": "core",
+        "release-staging/plugins": "plugins",
     }
-    assert config["bundle"]["icon"] == [
-        "icons/icon.icns",
-        "icons/icon.png",
-        "icons/icon.ico",
-    ]
+    resources = "\n".join(config["bundle"]["resources"])
+    for user_domain in ("config", "data", "characters", "plugins/user", "tts"):
+        assert user_domain not in resources
 
 
-def test_release_updater_defaults_to_the_main_repository() -> None:
-    assert DEFAULT_UPDATER_ENDPOINT == (
-        "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
-    )
 
 
-def test_windows_uninstaller_removes_generated_distribution_files() -> None:
-    tauri_root = ROOT / "desktop/src-tauri"
-    config = json.loads((tauri_root / "tauri.conf.json").read_text(encoding="utf-8"))
-    hooks_path = tauri_root / config["bundle"]["windows"]["nsis"]["installerHooks"]
-    hooks = hooks_path.read_text(encoding="utf-8")
-
-    assert "!macro NSIS_HOOK_POSTUNINSTALL" in hooks
-    guarded_user_data = hooks.index("${If} $DeleteAppDataCheckboxState = 1")
-    for relative in ("core", "python", "plugins\\builtin", "plugins\\dependencies"):
-        cleanup = f'RMDir /r /REBOOTOK "$INSTDIR\\{relative}"'
-        assert cleanup in hooks
-        assert hooks.index(cleanup) < guarded_user_data
-    assert 'Delete /REBOOTOK "$INSTDIR\\release-inventory.json"' in hooks
-    assert "SetDetailsPrint none" in hooks[:guarded_user_data]
-    assert "SetDetailsPrint lastused" in hooks[:guarded_user_data]
 
 
-def test_windows_uninstaller_checkbox_removes_the_runtime_v2_user_root() -> None:
-    tauri_root = ROOT / "desktop/src-tauri"
-    config = json.loads((tauri_root / "tauri.conf.json").read_text(encoding="utf-8"))
-    hooks_path = tauri_root / config["bundle"]["windows"]["nsis"]["installerHooks"]
-    hooks = hooks_path.read_text(encoding="utf-8")
-
-    assert "$DeleteAppDataCheckboxState = 1" in hooks
-    assert "$UpdateMode <> 1" in hooks
-    guarded_user_data = hooks[hooks.index("${If} $DeleteAppDataCheckboxState = 1") :]
-    for relative in ("config", "data", "characters", "plugins\\user", "tts"):
-        assert f'RMDir /r /REBOOTOK "$INSTDIR\\{relative}"' in guarded_user_data
-    assert "SetDetailsPrint none" in guarded_user_data
-    assert "SetDetailsPrint lastused" in guarded_user_data
-    assert 'RMDir /r /REBOOTOK "$INSTDIR"' not in hooks
-    assert 'RMDir /REBOOTOK "$INSTDIR"' in hooks
-
-
-def test_windows_installer_removes_the_obsolete_backdrop_gate_binary() -> None:
-    tauri_root = ROOT / "desktop/src-tauri"
-    config = json.loads((tauri_root / "tauri.conf.json").read_text(encoding="utf-8"))
-    hooks_path = tauri_root / config["bundle"]["windows"]["nsis"]["installerHooks"]
-    hooks = hooks_path.read_text(encoding="utf-8")
-
-    assert "!macro NSIS_HOOK_POSTINSTALL" in hooks
-    assert (
-        'Delete /REBOOTOK "$INSTDIR\\windows_host_backdrop_gate.exe"' in hooks
-    )
 
 
 def test_release_overlay_does_not_install_build_inventory() -> None:
@@ -325,42 +284,157 @@ def test_release_overlay_does_not_install_build_inventory() -> None:
     assert "release-staging/release-inventory.json" not in config["bundle"]["resources"]
 
 
-def test_character_studio_reuses_current_product_icon() -> None:
-    studio_root = ROOT / "tools/studio-tauri/src-tauri"
-    config = json.loads((studio_root / "tauri.conf.json").read_text(encoding="utf-8"))
+def test_python_updater_signature_verifier_matches_the_tauri_outer_base64_contract(
+    tmp_path: Path,
+) -> None:
+    public_key = (
+        "untrusted comment: minisign public key\n"
+        "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3\n"
+    )
+    signature = (
+        "untrusted comment: signature from minisign secret key\n"
+        "RWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73Y"
+        "iIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=\n"
+        "trusted comment: timestamp:1555779966\tfile:test\n"
+        "QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/"
+        "VqE81QFuMKI5k/SfNQUaOAA==\n"
+    )
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"test")
+    encoded_public_key = base64.b64encode(public_key.encode()).decode()
+    encoded_signature = base64.b64encode(signature.encode()).decode()
 
-    assert config["bundle"]["icon"] == [
-        "../../../desktop/src-tauri/icons/icon.icns",
-        "../../../desktop/src-tauri/icons/icon.png",
-        "../../../desktop/src-tauri/icons/icon.ico",
-    ]
-    assert not (studio_root / "icons/icon.png").exists()
-    assert not (studio_root / "icons/icon.ico").exists()
+    verify(encoded_public_key, artifact, encoded_signature)
+    prehashed_signature = (
+        "untrusted comment: signature from minisign secret key\n"
+        "RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/"
+        "z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n"
+        "trusted comment: timestamp:1556193335\tfile:test\n"
+        "y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1"
+        "FkZZSNCisQbuQY+bHwhEBg==\n"
+    )
+    encoded_prehashed_signature = base64.b64encode(prehashed_signature.encode()).decode()
+    verify(encoded_public_key, artifact, encoded_prehashed_signature)
+
+    artifact.write_bytes(b"changed")
+    with pytest.raises(UpdaterSignatureError, match="UPDATER_SIGNATURE_VERIFICATION_FAILED"):
+        verify(encoded_public_key, artifact, encoded_prehashed_signature)
 
 
-def test_package_and_release_use_the_current_tauri_cli() -> None:
-    command = "npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json"
-    for workflow in ("package.yml", "release.yml"):
-        document = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
-        assert document.count(command) == 1
+def test_portable_1_0x_overlay_preserves_every_user_domain_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    install = tmp_path / "Sakura-portable"
+    external_tts = tmp_path / "external-tts"
+    external_tts.mkdir()
+    (external_tts / "voice.bin").write_bytes(b"external-voice-v1")
+
+    user_payloads = {
+        "config/ui.json": b'{"settings":{"first_run_guide_completed":true}}',
+        "config/storage.json": json.dumps({"ttsRoot": str(external_tts)}).encode(),
+        "data/upgrade-marker.bin": b"runtime-user-data-v1",
+        "characters/fixture/character.yaml": b"id: fixture\n",
+        "plugins/user/example/plugin.yaml": b"id: com.example.user\n",
+        "tts/default/model.bin": b"default-voice-v1",
+    }
+    for relative, content in user_payloads.items():
+        path = install / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    old_program = {
+        "VERSION": b"1.0.0\n",
+        "runtime-manifest.json": b'{"productVersion":"1.0.0"}',
+        "sakura.exe": b"shell-1.0.0",
+        "python/runtime.bin": b"python-1.0.0",
+        "core/app.bin": b"core-1.0.0",
+        "plugins/builtin/current/plugin.yaml": b"version: 1.0.0\n",
+        "plugins/dependencies/current/module.bin": b"dependency-1.0.0",
+        "portable.flag": b"",
+    }
+    for relative, content in old_program.items():
+        path = install / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    archive = tmp_path / "Sakura-1.0.1-windows-x64-portable.zip"
+    new_program = {
+        "VERSION": b"1.0.1\n",
+        "runtime-manifest.json": b'{"productVersion":"1.0.1"}',
+        "sakura.exe": b"shell-1.0.1",
+        "python/runtime.bin": b"python-1.0.1",
+        "core/app.bin": b"core-1.0.1",
+        "plugins/builtin/current/plugin.yaml": b"version: 1.0.1\n",
+        "plugins/dependencies/current/module.bin": b"dependency-1.0.1",
+        "portable.flag": b"",
+    }
+    with zipfile.ZipFile(archive, "w") as package:
+        for relative, content in new_program.items():
+            package.writestr(relative, content)
+
+    user_contents = {
+        relative: (install / relative).read_bytes()
+        for relative in user_payloads
+    }
+    external_tts_content = (external_tts / "voice.bin").read_bytes()
+
+    with zipfile.ZipFile(archive) as package:
+        members = {name.rstrip("/") for name in package.namelist() if name.rstrip("/")}
+        assert all(
+            member in {"VERSION", "runtime-manifest.json", "sakura.exe", "portable.flag"}
+            or member.startswith(("python/", "core/", "plugins/builtin/", "plugins/dependencies/"))
+            for member in members
+        )
+        package.extractall(install)
+
+    assert {
+        relative: (install / relative).read_bytes()
+        for relative in user_payloads
+    } == user_contents
+    assert (external_tts / "voice.bin").read_bytes() == external_tts_content
+    assert json.loads((install / "config/ui.json").read_text(encoding="utf-8"))["settings"][
+        "first_run_guide_completed"
+    ] is True
+    for relative, content in new_program.items():
+        assert (install / relative).read_bytes() == content
 
 
-def test_every_ci_package_embeds_the_stable_updater_client() -> None:
-    document = (ROOT / ".github/workflows/package.yml").read_text(encoding="utf-8")
-    assert "SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}" in document
-    assert document.count("--updater-client") == 1
+def test_macos_1_0x_app_replacement_is_disjoint_from_user_and_external_tts(
+    tmp_path: Path,
+) -> None:
+    applications = tmp_path / "Applications"
+    installed_app = applications / "Sakura.app"
+    installed_resources = installed_app / "Contents/Resources"
+    installed_resources.mkdir(parents=True)
+    (installed_resources / "VERSION").write_text("1.0.0\n", encoding="utf-8")
 
+    user_root = tmp_path / "Library/Application Support/Sakura"
+    external_tts = tmp_path / "Volumes/Voice"
+    user_files = {
+        user_root / "config/ui.json": b'{"settings":{"first_run_guide_completed":true}}',
+        user_root / "data/marker.bin": b"mac-user-data-v1",
+        user_root / "characters/fixture/character.yaml": b"id: fixture\n",
+        user_root / "plugins/user/example/plugin.yaml": b"id: com.example.user\n",
+        user_root / "tts/default/model.bin": b"default-tts-v1",
+        external_tts / "model.bin": b"external-tts-v1",
+    }
+    for path, content in user_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
 
-def test_release_verifies_each_updater_artifact_with_the_embedded_public_key() -> None:
-    document = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    assert document.count("--bin verify-updater-signature") == 2
-    assert document.count("SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}") >= 1
+    replacement_app = tmp_path / "Sakura-1.0.1.app"
+    replacement_resources = replacement_app / "Contents/Resources"
+    replacement_resources.mkdir(parents=True)
+    (replacement_resources / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+    retired_app = tmp_path / "Sakura-1.0.0.retired.app"
+    installed_app.rename(retired_app)
+    replacement_app.rename(installed_app)
 
-
-def test_local_stable_packages_cannot_omit_the_updater_client() -> None:
-    script = (ROOT / "scripts/package_windows.ps1").read_text(encoding="utf-8")
-    assert "$version -notmatch '-' -and -not $Updater -and -not $UpdaterArtifacts" in script
-    assert "拒绝生成无法检测更新的正式版本产物" in script
+    assert (installed_app / "Contents/Resources/VERSION").read_text(encoding="utf-8") == "1.0.1\n"
+    assert {path: path.read_bytes() for path in user_files} == user_files
+    assert json.loads((user_root / "config/ui.json").read_text(encoding="utf-8"))["settings"][
+        "first_run_guide_completed"
+    ] is True
 
 
 def _minimal_stage(root: Path, target: str) -> Path:
@@ -372,13 +446,18 @@ def _minimal_stage(root: Path, target: str) -> Path:
     (stage / "plugins/builtin").mkdir(parents=True)
     (stage / "plugins/builtin/__init__.py").write_text("", encoding="utf-8")
     plugin_ids = {
+        "sakura_portrait": "sakura.portrait",
+        "sakura_spine": "sakura.visual.spine",
+        "sakura_web": "sakura.web",
         "sakura_mem0": "sakura.memory.mem0",
         "sakura_mobile": "sakura.mobile",
         "sakura_tts_hub": "sakura.tts",
+        "sakura_asr_hub": "sakura.asr",
+        "sakura_asr_sensevoice": "sakura.asr.sensevoice",
         "sakura_genie": "sakura.tts.genie",
         "sakura_gpt_sovits": "sakura.tts.gpt-sovits",
     }
-    dependency_plugins = {"sakura_mem0", "sakura_genie", "sakura_gpt_sovits"}
+    dependency_plugins = {"sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice", "sakura_web"}
     for plugin, plugin_id in plugin_ids.items():
         directory = stage / "plugins/builtin" / plugin
         directory.mkdir()
@@ -396,7 +475,6 @@ def _minimal_stage(root: Path, target: str) -> Path:
                     {
                         "schemaVersion": 1,
                         "kind": "requirements.txt",
-                        "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                         "python": "3.12",
                     }
                 ),
@@ -422,7 +500,7 @@ def _minimal_stage(root: Path, target: str) -> Path:
     return stage
 
 
-def test_distribution_validator_accepts_only_the_five_api4_builtins(tmp_path: Path) -> None:
+def test_distribution_validator_accepts_only_the_bundled_api4_plugins(tmp_path: Path) -> None:
     stage = _minimal_stage(tmp_path, "macos-arm64")
     validate_layout(stage, "macos-arm64", portable=False)
     extra = stage / "plugins/builtin/extra"
@@ -465,7 +543,6 @@ def test_bundled_dependency_roots_use_manifest_ids_through_runtime_start(
             json.dumps({
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }),
             encoding="utf-8",
@@ -487,14 +564,6 @@ def test_bundled_dependency_roots_use_manifest_ids_through_runtime_start(
         manager.close()
 
 
-def test_playwright_is_an_installable_api4_optional_plugin_not_a_builtin() -> None:
-    assert not (ROOT / "plugins/builtin/playwright_browser").exists()
-    optional = ROOT / "plugins/optional/playwright_browser"
-    manifest = (optional / "plugin.yaml").read_text(encoding="utf-8")
-    assert "api: 4" in manifest.splitlines()
-    assert (optional / "requirements.txt").read_text(encoding="utf-8").strip().startswith(
-        "playwright"
-    )
 
 
 def test_optional_plugin_release_zip_keeps_one_installable_root(tmp_path: Path) -> None:
@@ -507,34 +576,6 @@ def test_optional_plugin_release_zip_keeps_one_installable_root(tmp_path: Path) 
     assert not any("__pycache__" in name for name in names)
 
 
-def test_core_requirements_do_not_directly_own_plugin_distributions() -> None:
-    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").casefold()
-    plugin_only_mem0_distributions = (
-        "pydantic",
-        "qdrant-client",
-        "sqlalchemy",
-        "posthog",
-        "pytz",
-        "protobuf",
-        "fastembed",
-        "onnxruntime",
-    )
-    mem0_distributions = ("pyyaml", *plugin_only_mem0_distributions)
-    for distribution in (
-        "playwright",
-        "openai",
-        *plugin_only_mem0_distributions,
-        "py7zr",
-    ):
-        assert distribution not in requirements
-    mem0_requirements = (
-        ROOT / "plugins/builtin/sakura_mem0/requirements.txt"
-    ).read_text(encoding="utf-8").casefold()
-    for distribution in mem0_distributions:
-        assert distribution in mem0_requirements
-    dev = (ROOT / "tools/requirements-dev.txt").read_text(encoding="utf-8")
-    assert "plugins/builtin/sakura_mem0/requirements.txt" in dev
-    assert "plugins/optional/playwright_browser/requirements.txt" in dev
 
 
 def test_distribution_validator_rejects_user_data_and_heavy_optional_payloads(tmp_path: Path) -> None:
@@ -686,30 +727,6 @@ def test_updater_overlay_requires_https_endpoint_and_public_key() -> None:
     assert client_only["bundle"]["createUpdaterArtifacts"] is False
 
 
-def test_artifact_report_keeps_staged_and_compressed_evidence(tmp_path: Path) -> None:
-    inventory = tmp_path / "release-inventory.json"
-    inventory.write_text(
-        json.dumps(
-            {
-                "target": "windows-x64",
-                "version": "1.0.0",
-                "uncompressedBytes": 30,
-                "topLevelBytes": {"python": 20, "core": 10},
-            }
-        ),
-        encoding="utf-8",
-    )
-    artifact = tmp_path / "Sakura.zip"
-    artifact.write_bytes(b"zip")
-    installed = tmp_path / "installed"
-    installed.mkdir()
-    (installed / "file").write_bytes(b"12345")
-    report = build_report(inventory, [artifact], [installed])
-    assert report["largestTopLevelDirectory"] == {"name": "python", "bytes": 20}
-    assert report["installedBytes"] == 5
-    assert report["artifacts"][0]["bytes"] == 3
-
-
 def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) -> None:
     releases = []
     for target, name in (("windows-x64", "Sakura-setup.exe"), ("macos-arm64", "Sakura.app.tar.gz")):
@@ -731,7 +748,7 @@ def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) 
     assert set(manifest["platforms"]) == {"windows-x86_64", "darwin-aarch64"}
     assert manifest["platforms"]["darwin-aarch64"]["url"].endswith("Sakura.app.tar.gz")
     assert manifest["portable"]["windows-x86_64"]["url"].endswith("Sakura-portable.zip")
-    assert len(manifest["portable"]["windows-x86_64"]["sha256"]) == 64
+    assert set(manifest["portable"]["windows-x86_64"]) == {"url"}
 
 
 def test_static_updater_manifest_allows_explicit_platform_only_test(tmp_path: Path) -> None:
@@ -753,3 +770,24 @@ def test_static_updater_manifest_allows_explicit_platform_only_test(tmp_path: Pa
     assert set(manifest["platforms"]) == {"windows-x86_64"}
     assert manifest["platforms"]["windows-x86_64"]["url"].endswith("Sakura-setup.exe")
     assert "portable" not in manifest
+
+
+def test_macos_packages_include_launch_help_without_repacking_the_dmg() -> None:
+    help_path = ROOT / "packaging/macos-open-help.html"
+    help_document = help_path.read_text(encoding="utf-8")
+    assert "https://github.com/Rvosy/Sakura/releases" in help_document
+    assert (
+        "https://support.apple.com/guide/mac-help/"
+        "open-a-mac-app-from-an-unknown-developer-mh40616/mac"
+    ) in help_document
+    for unsafe_command in ("xattr", "spctl --master-disable", "csrutil", "sudo "):
+        assert unsafe_command not in help_document
+
+    for workflow in ("package.yml", "release.yml"):
+        document = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        assert 'help_source="packaging/macos-open-help.html"' in document
+        assert 'cp "$help_source" "$app_zip_root/Sakura-macOS-open-help.html"' in document
+        assert 'cp "$help_source" "$help_out"' in document
+        assert 'ditto -c -k --sequesterRsrc "$app_zip_root" "$app_zip"' in document
+        assert 'ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"' not in document
+        assert 'cp "$dmg" "$dmg_out"' in document

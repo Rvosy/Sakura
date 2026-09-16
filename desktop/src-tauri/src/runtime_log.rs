@@ -11,9 +11,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::telemetry::TelemetryService;
+
 pub const CORE_BRIDGE_PREFIX: &str = "SAKURA_RUNTIME_LOG_V1\t";
 pub const PRODUCTION_QUEUE_CAPACITY: usize = 1024;
-pub const PRODUCTION_MAX_RECORD_BYTES: usize = 4 * 1024;
+pub const PRODUCTION_MAX_RECORD_BYTES: usize = 32 * 1024;
 pub const PRODUCTION_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const PRODUCTION_BACKUP_COUNT: usize = 5;
 pub const PRODUCTION_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
@@ -114,6 +116,7 @@ pub enum LogSource {
     Rust,
     Core,
     Webview,
+    Plugin,
 }
 
 impl LogSource {
@@ -122,6 +125,7 @@ impl LogSource {
             Self::Rust => "rust",
             Self::Core => "core",
             Self::Webview => "webview",
+            Self::Plugin => "plugin",
         }
     }
 }
@@ -140,6 +144,9 @@ pub struct Correlation {
 #[derive(Clone, Debug)]
 pub struct RuntimeLogEvent {
     source: LogSource,
+    plugin_id: Option<String>,
+    plugin_name: Option<String>,
+    custom: bool,
     pid: u32,
     severity: Severity,
     verbosity: Verbosity,
@@ -151,6 +158,19 @@ pub struct RuntimeLogEvent {
 }
 
 impl RuntimeLogEvent {
+    /// Custom messages use the same sanitation, queue and projections as fixed events.
+    pub fn message(
+        severity: Severity,
+        component: &'static str,
+        message: &str,
+        fields: Value,
+    ) -> Self {
+        let mut event = Self::rust(severity, component, "runtime.message", "");
+        event.custom = true;
+        event.message = message.to_string();
+        event.attributes = Some(fields);
+        event
+    }
     pub fn rust(
         severity: Severity,
         channel: &'static str,
@@ -159,6 +179,9 @@ impl RuntimeLogEvent {
     ) -> Self {
         Self {
             source: LogSource::Rust,
+            plugin_id: None,
+            plugin_name: None,
+            custom: false,
             pid: std::process::id(),
             severity,
             verbosity: verbosity_for_severity(severity),
@@ -241,6 +264,7 @@ struct RuntimeLogInner {
     wake: Condvar,
     completion: Mutex<Option<mpsc::Receiver<()>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    telemetry: Mutex<Option<TelemetryService>>,
 }
 
 #[derive(Debug)]
@@ -250,6 +274,7 @@ struct QueueState {
     viewer_last_evicted_sequence: Option<u64>,
     next_sequence: u64,
     dropped: BTreeMap<String, u64>,
+    failed_files: Vec<String>,
     stopping: bool,
     shutdown_deadline: Option<Instant>,
 }
@@ -267,6 +292,11 @@ struct RuntimeLogRecord {
     run_id: String,
     sequence: u64,
     source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_id: Option<String>,
+    #[serde(default)]
+    plugin_name: Option<String>,
+    custom: bool,
     pid: u32,
     severity: String,
     verbosity: String,
@@ -301,6 +331,11 @@ pub struct RuntimeLogViewerDetail {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeLogViewerRecord {
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_name: Option<String>,
     pub sequence: u64,
     pub timestamp: String,
     pub scopes: Vec<String>,
@@ -308,6 +343,8 @@ pub struct RuntimeLogViewerRecord {
     pub category: String,
     pub event_code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub details: Vec<RuntimeLogViewerDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
@@ -321,11 +358,18 @@ pub struct RuntimeLogViewerSnapshot {
     pub latest_sequence: u64,
     pub reset_required: bool,
     pub records: Vec<RuntimeLogViewerRecord>,
+    pub failed_files: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CoreBridgeRecord {
+    #[serde(default)]
+    plugin_id: Option<String>,
+    #[serde(default)]
+    plugin_name: Option<String>,
+    #[serde(default)]
+    custom: bool,
     severity: String,
     verbosity: String,
     channel: String,
@@ -346,8 +390,14 @@ struct CoreBridgeRecord {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebviewDiagnosticEntry {
+    #[serde(default)]
+    details: Option<crate::telemetry::DiagnosticDetail>,
     level: String,
     event: String,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    fields: Option<Value>,
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
@@ -355,7 +405,13 @@ pub struct WebviewDiagnosticEntry {
     #[serde(default)]
     code: Option<String>,
     #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
     diagnostic: Option<String>,
+    #[serde(default)]
+    exception_stack: Option<String>,
+    #[serde(default)]
+    exception_chain: Option<String>,
     #[serde(default)]
     elapsed_ms: Option<f64>,
     #[serde(default)]
@@ -369,7 +425,14 @@ impl RuntimeLogService {
         Self::start_with_config(RuntimeLogConfig::production(path))
     }
 
-    pub fn start_with_config(mut config: RuntimeLogConfig) -> Self {
+    pub fn start_with_config(config: RuntimeLogConfig) -> Self {
+        Self::start_with_writer(config, run_writer)
+    }
+
+    fn start_with_writer(
+        mut config: RuntimeLogConfig,
+        write: impl FnOnce(&RuntimeLogInner) + Send + 'static,
+    ) -> Self {
         config.queue_capacity = config.queue_capacity.max(1);
         config.max_record_bytes = config.max_record_bytes.max(512);
         config.flush_interval = config.flush_interval.max(Duration::from_millis(1));
@@ -385,18 +448,20 @@ impl RuntimeLogService {
                 viewer_last_evicted_sequence: None,
                 next_sequence: 1,
                 dropped: BTreeMap::new(),
+                failed_files: Vec::new(),
                 stopping: false,
                 shutdown_deadline: None,
             }),
             wake: Condvar::new(),
             completion: Mutex::new(Some(completion)),
             worker: Mutex::new(None),
+            telemetry: Mutex::new(None),
         });
         let worker_inner = Arc::clone(&inner);
         let worker = thread::Builder::new()
             .name("sakura-runtime-log-writer".to_string())
             .spawn(move || {
-                run_writer(&worker_inner);
+                write(&worker_inner);
                 let _ = completion_sender.send(());
             });
         match worker {
@@ -416,10 +481,53 @@ impl RuntimeLogService {
     }
 
     pub fn submit(&self, event: RuntimeLogEvent) -> bool {
-        if !self.inner.config.level.permits(event.severity) {
+        let permitted = self.inner.config.level.permits(event.severity);
+        // Capture diagnostic evidence before the local log viewer's attribute
+        // projection. Only the known evidence fields are serialized remotely.
+        let telemetry_attributes = {
+            let mut attributes = event.attributes.clone().unwrap_or_else(|| json!({}));
+            if let Some(fields) = attributes.as_object_mut() {
+                for value in fields.values_mut() {
+                    if let Some(text) = value.as_str() {
+                        *value =
+                            Value::String(sanitize_diagnostic(text, &self.inner.secrets, 8192));
+                    }
+                }
+                if let Some(plugin) = &event.plugin_id {
+                    fields.insert("plugin_id".into(), Value::String(plugin.clone()));
+                }
+                if !fields.contains_key("diagnostic") && event.custom {
+                    fields.insert(
+                        "diagnostic".into(),
+                        Value::String(sanitize_diagnostic(
+                            &event.message,
+                            &self.inner.secrets,
+                            4096,
+                        )),
+                    );
+                }
+            }
+            attributes
+        };
+        let normalized = self.normalize_event(event);
+        if let Ok(telemetry) = self.inner.telemetry.lock() {
+            if let Some(telemetry) = telemetry
+                .as_ref()
+                .filter(|t| t.accepts_event_generation(normalized.record.generation_id.as_deref()))
+            {
+                telemetry.observe_runtime_event(
+                    &normalized.record.source,
+                    &normalized.record.severity,
+                    &normalized.record.channel,
+                    &normalized.record.event,
+                    normalized.record.operation_id.as_deref(),
+                    Some(&telemetry_attributes),
+                );
+            }
+        }
+        if !permitted {
             return true;
         }
-        let normalized = self.normalize_event(event);
         let Ok(mut state) = self.inner.state.lock() else {
             return false;
         };
@@ -462,6 +570,37 @@ impl RuntimeLogService {
         true
     }
 
+    pub fn run_id(&self) -> &str {
+        &self.inner.run_id
+    }
+
+    pub fn attach_telemetry(&self, telemetry: TelemetryService) {
+        if let Ok(mut target) = self.inner.telemetry.lock() {
+            *target = Some(telemetry);
+        }
+    }
+
+    pub fn activate_telemetry_generation(&self, generation_id: &str) {
+        if let Ok(telemetry) = self.inner.telemetry.lock() {
+            if let Some(telemetry) = telemetry.as_ref() {
+                telemetry.activate_generation(generation_id);
+            }
+        }
+    }
+
+    pub fn submit_core_telemetry_bridge(
+        &self,
+        line: &str,
+        context: &CoreLogContext,
+        forbidden_secret: Option<&str>,
+    ) -> Result<bool, ()> {
+        let telemetry = self.inner.telemetry.lock().map_err(|_| ())?;
+        let Some(telemetry) = telemetry.as_ref() else {
+            return Ok(false);
+        };
+        telemetry.submit_core_bridge(line, context, forbidden_secret)
+    }
+
     pub fn viewer_snapshot(
         &self,
         after_sequence: Option<u64>,
@@ -489,10 +628,11 @@ impl RuntimeLogService {
             .or(state.viewer_last_evicted_sequence)
             .unwrap_or_default();
         Ok(RuntimeLogViewerSnapshot {
-            schema_version: 1,
+            schema_version: 3,
             run_id: self.inner.run_id.clone(),
             latest_sequence,
             reset_required,
+            failed_files: state.failed_files.clone(),
             records,
         })
     }
@@ -511,29 +651,59 @@ impl RuntimeLogService {
         if line.len() > PRODUCTION_MAX_RECORD_BYTES {
             return Err(());
         }
-        if forbidden_secret.is_some_and(|secret| !secret.is_empty() && line.contains(secret)) {
-            return Err(());
-        }
-        let parsed: CoreBridgeRecord = serde_json::from_str(line).map_err(|_| ())?;
+        let cleaned = forbidden_secret
+            .filter(|s| !s.is_empty())
+            .map(|secret| line.replace(secret, "[REDACTED]"));
+        let parsed: CoreBridgeRecord =
+            serde_json::from_str(cleaned.as_deref().unwrap_or(line)).map_err(|_| ())?;
         let severity = Severity::from_wire(&parsed.severity).ok_or(())?;
         let verbosity = Verbosity::from_wire(&parsed.verbosity).ok_or(())?;
         if normalize_token(&parsed.channel, 64).is_none()
             || normalize_token(&parsed.event, 96).is_none()
-            || parsed.message.len() > 192
+            || parsed.message.len() > if parsed.custom { 1024 } else { 192 }
             || contains_secret(&parsed.channel, &self.inner.secrets, forbidden_secret)
             || contains_secret(&parsed.event, &self.inner.secrets, forbidden_secret)
         {
             return Err(());
         }
-        let event_name = parsed.event.clone();
+        if parsed.plugin_name.is_some() && parsed.plugin_id.is_none() {
+            return Err(());
+        }
+        if parsed.plugin_id.as_ref().is_some_and(|id| {
+            (id.is_empty()
+                || id.len() > 64
+                || !id.as_bytes()[0].is_ascii_alphanumeric()
+                || !id
+                    .bytes()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'.' | b'-')))
+                || contains_secret(id, &self.inner.secrets, forbidden_secret)
+        }) {
+            return Err(());
+        }
+        let event_name = if parsed.custom {
+            "runtime.message".to_string()
+        } else {
+            parsed.event.clone()
+        };
         let event = RuntimeLogEvent {
-            source: LogSource::Core,
+            source: if parsed.plugin_id.is_some() {
+                LogSource::Plugin
+            } else {
+                LogSource::Core
+            },
+            plugin_id: parsed.plugin_id,
+            plugin_name: parsed.plugin_name,
+            custom: parsed.custom,
             pid: context.core_pid,
             severity,
             verbosity,
             channel: parsed.channel,
             event: event_name.clone(),
-            message: core_message(&event_name).to_string(),
+            message: if parsed.custom {
+                parsed.message
+            } else {
+                core_message(&event_name).to_string()
+            },
             correlation: Correlation {
                 generation_id: Some(context.generation_id.clone()),
                 generation_number: Some(context.generation_number),
@@ -569,7 +739,7 @@ impl RuntimeLogService {
         window_label: &str,
         entry: WebviewDiagnosticEntry,
     ) -> Result<RuntimeLogEvent, &'static str> {
-        if !matches!(window_label, "main" | "settings") {
+        if !matches!(window_label, "main" | "settings" | "studio") {
             return Err("RUNTIME_DIAGNOSTIC_WINDOW_INVALID");
         }
         let submitted_severity = match entry.level.as_str() {
@@ -580,7 +750,38 @@ impl RuntimeLogService {
             "error" => Severity::Error,
             _ => return Err("RUNTIME_DIAGNOSTIC_LEVEL_INVALID"),
         };
-        if !allowed_webview_event(&entry.event) {
+        if entry.event == "runtime.message" {
+            let message = entry
+                .message
+                .as_deref()
+                .ok_or("RUNTIME_DIAGNOSTIC_FIELDS_INVALID")?;
+            let fields = entry.fields.unwrap_or_else(|| json!({}));
+            if message.trim().is_empty()
+                || message.len() > 1024
+                || !fields.is_object()
+                || serde_json::to_vec(&fields)
+                    .map_err(|_| "RUNTIME_DIAGNOSTIC_FIELDS_INVALID")?
+                    .len()
+                    > 1800
+            {
+                return Err("RUNTIME_DIAGNOSTIC_FIELDS_INVALID");
+            }
+            let mut event =
+                RuntimeLogEvent::message(submitted_severity, "webview", message, fields);
+            event.source = LogSource::Webview;
+            event.channel = format!("webview.{window_label}");
+            event
+                .attributes
+                .as_mut()
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("window_label".to_string(), json!(window_label));
+            event.correlation.operation_id = entry.operation_id;
+            return Ok(event);
+        }
+        if entry.message.is_some() || entry.fields.is_some() || !allowed_webview_event(&entry.event)
+        {
             return Err("RUNTIME_DIAGNOSTIC_EVENT_INVALID");
         }
         let severity = if matches!(
@@ -594,9 +795,12 @@ impl RuntimeLogService {
         if entry.command.as_deref().is_some_and(|value| {
             normalize_token(value, 96).is_none() || value == "record_runtime_diagnostics"
         }) || entry
-            .outcome
+            .stage
             .as_deref()
-            .is_some_and(|value| !matches!(value, "started" | "completed" | "failed" | "cancelled"))
+            .is_some_and(|value| normalize_token(value, 96).is_none())
+            || entry.outcome.as_deref().is_some_and(|value| {
+                !matches!(value, "started" | "completed" | "failed" | "cancelled")
+            })
             || entry.code.as_deref().is_some_and(|value| {
                 value.len() > 64
                     || value.is_empty()
@@ -611,22 +815,31 @@ impl RuntimeLogService {
                 .operation_id
                 .as_deref()
                 .is_some_and(|value| valid_id(value, 128).is_none())
-            || entry.diagnostic.as_deref().is_some_and(|value| {
-                value.is_empty()
-                    || value.chars().count() > 240
-                    || value.chars().any(char::is_control)
-                    || value.contains("://")
-                    || looks_secret_shaped(value)
-                    || self
-                        .inner
-                        .secrets
-                        .iter()
-                        .any(|secret| value.contains(secret))
-            })
+            || entry
+                .diagnostic
+                .as_deref()
+                .is_some_and(|value| value.is_empty() || value.chars().count() > 4096)
+            || entry
+                .exception_chain
+                .as_ref()
+                .is_some_and(|value| value.chars().count() > 8192)
+            || entry
+                .exception_stack
+                .as_ref()
+                .is_some_and(|value| value.len() > 32768)
         {
             return Err("RUNTIME_DIAGNOSTIC_FIELDS_INVALID");
         }
         let mut attributes = Map::new();
+        if let Some(details) = entry.details {
+            if !crate::telemetry::validate_detail(&details) {
+                return Err("RUNTIME_DIAGNOSTIC_FIELDS_INVALID");
+            }
+            attributes.insert(
+                "diagnostic_detail".into(),
+                serde_json::to_value(details).map_err(|_| "RUNTIME_DIAGNOSTIC_FIELDS_INVALID")?,
+            );
+        }
         attributes.insert(
             "window_label".to_string(),
             Value::String(window_label.to_string()),
@@ -640,8 +853,17 @@ impl RuntimeLogService {
         if let Some(code) = entry.code {
             attributes.insert("code".to_string(), Value::String(code));
         }
+        if let Some(stage) = entry.stage {
+            attributes.insert("stage".to_string(), Value::String(stage));
+        }
         if let Some(diagnostic) = entry.diagnostic {
             attributes.insert("diagnostic".to_string(), Value::String(diagnostic));
+        }
+        if let Some(chain) = entry.exception_chain {
+            attributes.insert("exception_chain".into(), Value::String(chain));
+        }
+        if let Some(stack) = entry.exception_stack {
+            attributes.insert("exception_stack".to_string(), Value::String(stack));
         }
         if let Some(elapsed_ms) = entry.elapsed_ms {
             if let Some(value) = serde_json::Number::from_f64(elapsed_ms) {
@@ -654,6 +876,9 @@ impl RuntimeLogService {
         let event_name = entry.event.clone();
         Ok(RuntimeLogEvent {
             source: LogSource::Webview,
+            plugin_id: None,
+            plugin_name: None,
+            custom: false,
             pid: std::process::id(),
             severity,
             verbosity: verbosity_for_severity(severity),
@@ -670,10 +895,24 @@ impl RuntimeLogService {
 
     pub fn shutdown(&self, timeout: Duration) -> bool {
         let timeout = timeout.min(PRODUCTION_SHUTDOWN_TIMEOUT);
+        self.stop_writer(Some(timeout), timeout)
+    }
+
+    /// Content tests need the final flush and closed files, not the application's
+    /// best-effort exit deadline. Keep a watchdog so a stuck writer still fails.
+    #[cfg(test)]
+    pub(crate) fn drain_and_shutdown_for_test(&self) {
+        assert!(
+            self.stop_writer(None, Duration::from_secs(10)),
+            "runtime log writer did not finish draining and closing its files"
+        );
+    }
+
+    fn stop_writer(&self, drain_timeout: Option<Duration>, wait_timeout: Duration) -> bool {
         if let Ok(mut state) = self.inner.state.lock() {
             if !state.stopping {
                 state.stopping = true;
-                state.shutdown_deadline = Some(Instant::now() + timeout);
+                state.shutdown_deadline = drain_timeout.map(|timeout| Instant::now() + timeout);
             }
             self.inner.wake.notify_all();
         } else {
@@ -687,7 +926,7 @@ impl RuntimeLogService {
             .ok()
             .and_then(|mut completion| completion.take());
         let completed =
-            completion.is_some_and(|completion| completion.recv_timeout(timeout).is_ok());
+            completion.is_some_and(|completion| completion.recv_timeout(wait_timeout).is_ok());
         if completed {
             if let Ok(mut worker) = self.inner.worker.lock() {
                 if let Some(worker) = worker.take() {
@@ -707,7 +946,11 @@ impl RuntimeLogService {
         } else {
             event.severity
         };
-        let message = sanitize_fixed_message(&event.message);
+        let message = if event.custom {
+            sanitize_log_text(&event.message, &self.inner.secrets, 1024)
+        } else {
+            sanitize_fixed_message(&event.message)
+        };
         let correlation = sanitize_correlation(event.correlation, &self.inner.secrets);
         PendingRecord {
             severity,
@@ -717,6 +960,11 @@ impl RuntimeLogService {
                 run_id: self.inner.run_id.clone(),
                 sequence: 0,
                 source: event.source.as_str().to_string(),
+                plugin_id: event.plugin_id,
+                plugin_name: event
+                    .plugin_name
+                    .map(|name| sanitize_log_text(&name, &self.inner.secrets, 256)),
+                custom: event.custom,
                 pid: event.pid,
                 severity: severity.as_str().to_string(),
                 verbosity: verbosity_for_severity(severity).as_str().to_string(),
@@ -730,10 +978,13 @@ impl RuntimeLogService {
                 operation_id: correlation.operation_id,
                 action_id: correlation.action_id,
                 trace_id: correlation.trace_id,
-                attributes: event
-                    .attributes
-                    .as_ref()
-                    .and_then(|value| sanitize_attributes(value, &self.inner.secrets)),
+                attributes: event.attributes.as_ref().and_then(|value| {
+                    if event.custom {
+                        sanitize_custom_attributes(value, &self.inner.secrets)
+                    } else {
+                        sanitize_attributes(value, &self.inner.secrets)
+                    }
+                }),
             },
         }
     }
@@ -759,6 +1010,9 @@ fn enqueue_drop_summary(inner: &RuntimeLogInner, state: &mut QueueState) {
             run_id: inner.run_id.clone(),
             sequence: 0,
             source: "rust".to_string(),
+            plugin_id: None,
+            plugin_name: None,
+            custom: false,
             pid: std::process::id(),
             severity: "warning".to_string(),
             verbosity: "warn".to_string(),
@@ -803,7 +1057,11 @@ fn note_dropped(state: &mut QueueState, source: &str, severity: Severity) {
 }
 
 fn run_writer(inner: &RuntimeLogInner) {
-    let mut writer = FileWriter::new(&inner.config);
+    let mut writers = [FileWriter::new(&inner.config), {
+        let mut config = inner.config.clone();
+        config.path.set_file_name("sakura-plugins.log");
+        FileWriter::new(&config)
+    }];
     let mut last_flush = Instant::now();
     loop {
         let (pending, flush_only, stop) = {
@@ -842,7 +1100,10 @@ fn run_writer(inner: &RuntimeLogInner) {
         };
 
         if flush_only {
-            let _ = writer.flush();
+            for writer in &mut writers {
+                let _ = writer.flush();
+            }
+            publish_writer_status(inner, &writers);
             last_flush = Instant::now();
             continue;
         }
@@ -853,13 +1114,202 @@ fn run_writer(inner: &RuntimeLogInner) {
             continue;
         };
         let priority = pending.severity.is_priority();
+        let writer = &mut writers[usize::from(pending.record.plugin_id.is_some())];
         let _ = writer.write_record(&pending.record);
         if priority || last_flush.elapsed() >= inner.config.flush_interval {
             let _ = writer.flush();
             last_flush = Instant::now();
         }
+        publish_writer_status(inner, &writers);
     }
-    let _ = writer.flush();
+    for writer in &mut writers {
+        let _ = writer.flush();
+    }
+    publish_writer_status(inner, &writers);
+}
+
+fn publish_writer_status(inner: &RuntimeLogInner, writers: &[FileWriter; 2]) {
+    if let Ok(mut state) = inner.state.lock() {
+        state.failed_files = writers
+            .iter()
+            .zip(["runtime", "plugins"])
+            .filter(|(writer, _)| writer.failed)
+            .map(|(_, name)| name.to_string())
+            .collect();
+    }
+}
+
+fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
+    record
+        .attributes
+        .as_ref()
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|fields| fields.iter())
+        .map(|(key, value)| RuntimeLogViewerDetail {
+            label: if matches!(
+                key.as_str(),
+                "diagnostic"
+                    | "exception_chain"
+                    | "exception_stack"
+                    | "recovery_diagnostic"
+                    | "cause_type"
+                    | "cause_code"
+                    | "validation_field"
+                    | "error_type"
+                    | "exception_site"
+                    | "errno"
+                    | "winerror"
+            ) {
+                viewer_detail_label(key).to_string()
+            } else {
+                key.clone()
+            },
+            value: value
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string()),
+        })
+        .collect()
+}
+
+fn sanitize_log_text(value: &str, secrets: &[String], maximum: usize) -> String {
+    sanitize_diagnostic(value, secrets, maximum)
+}
+
+fn raw_diagnostic_field(key: &str) -> bool {
+    matches!(
+        key,
+        "diagnostic" | "exception_chain" | "exception_stack" | "recovery_diagnostic"
+    )
+}
+
+fn sanitize_custom_attributes(value: &Value, secrets: &[String]) -> Option<Value> {
+    let source = value.as_object()?;
+    let ordinary = source
+        .iter()
+        .filter(|(key, _)| !raw_diagnostic_field(key) && key.as_str() != "record_truncated")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let mut budget = 32;
+    let mut truncated = source.get("record_truncated").and_then(Value::as_bool) == Some(true);
+    let mut fields = sanitize_log_fields(
+        &Value::Object(ordinary),
+        secrets,
+        0,
+        &mut budget,
+        &mut truncated,
+    );
+    let target = fields.as_object_mut()?;
+    if truncated {
+        target.insert("record_truncated".into(), json!(true));
+    }
+    // Raw exception text has its own limits. Ordinary error metadata keeps its
+    // existing specialized sanitation only when it survived the ordinary budget.
+    let diagnostics = source
+        .iter()
+        .filter(|(key, _)| {
+            raw_diagnostic_field(key)
+                || matches!(
+                    key.as_str(),
+                    "cause_type"
+                        | "cause_code"
+                        | "validation_field"
+                        | "error_type"
+                        | "exception_site"
+                        | "errno"
+                        | "winerror"
+                )
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let safe = sanitize_attributes(&Value::Object(diagnostics), secrets);
+    if let Some(Value::Object(safe)) = &safe {
+        for (key, value) in safe {
+            if !raw_diagnostic_field(key) && target.contains_key(key) {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    // The truncation marker belongs to the byte budget, not the traversal budget.
+    while serde_json::to_vec(target).ok()?.len() > 1800 {
+        let key = target
+            .keys()
+            .rev()
+            .find(|key| key.as_str() != "record_truncated")?
+            .clone();
+        target.remove(&key);
+        target.insert("record_truncated".into(), json!(true));
+    }
+    if let Some(Value::Object(safe)) = safe {
+        for (key, value) in safe {
+            if raw_diagnostic_field(&key) {
+                target.insert(key, value);
+            }
+        }
+    }
+    Some(fields)
+}
+
+fn sanitize_log_fields(
+    value: &Value,
+    secrets: &[String],
+    depth: usize,
+    budget: &mut usize,
+    truncated: &mut bool,
+) -> Value {
+    if depth > 3 || *budget == 0 {
+        *truncated = true;
+        return json!("[truncated]");
+    }
+    *budget -= 1;
+    match value {
+        Value::String(text) => json!(sanitize_log_text(text, secrets, 256)),
+        Value::Array(items) => {
+            let mut result = Vec::new();
+            for item in items {
+                if result.len() >= 8 || *budget == 0 {
+                    *truncated = true;
+                    break;
+                }
+                result.push(sanitize_log_fields(
+                    item,
+                    secrets,
+                    depth + 1,
+                    budget,
+                    truncated,
+                ));
+            }
+            Value::Array(result)
+        }
+        Value::Object(fields) => {
+            let mut result = Map::new();
+            for (key, item) in fields {
+                if key == "record_truncated" && item.as_bool() == Some(true) {
+                    *truncated = true;
+                    continue;
+                }
+                if (depth > 0 && result.len() >= 8) || *budget == 0 {
+                    *truncated = true;
+                    break;
+                }
+                if normalize_token(key, 64).is_none() || forbidden_key(&normalize_key(key)) {
+                    if !result.contains_key("redacted") {
+                        *budget -= 1;
+                        result.insert("redacted".to_string(), json!("[REDACTED]"));
+                    }
+                    continue;
+                }
+                result.insert(
+                    key.clone(),
+                    sanitize_log_fields(item, secrets, depth + 1, budget, truncated),
+                );
+            }
+            Value::Object(result)
+        }
+        _ => value.clone(),
+    }
 }
 
 struct FileWriter {
@@ -976,14 +1426,38 @@ impl FileWriter {
 
 fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>> {
     let channel = display_channel(&record.channel, &record.event);
-    let message = human_message(&record.event, &record.message);
+    let message = if record.custom {
+        &record.message
+    } else {
+        human_message(&record.event, &record.message)
+    };
     let mut summary_parts = correlation_summary(record);
-    let attribute_summary = format_human_summary(&record.event, record.attributes.as_ref());
+    if let Some(id) = &record.plugin_id {
+        summary_parts.push(format!("plugin={id}"));
+    }
+    let attribute_summary = if record.custom {
+        custom_viewer_details(record)
+            .into_iter()
+            .map(|d| {
+                format!(
+                    "{}={}",
+                    d.label,
+                    d.value.replace('\n', " \\n ").replace('\r', "")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        format_human_summary(&record.event, record.attributes.as_ref())
+    };
     if !attribute_summary.is_empty() {
         summary_parts.push(attribute_summary);
     }
     let summary = summary_parts.join(" ");
-    let mut text = format!("[{}] [{channel}] {message}", record.timestamp);
+    let mut text = format!(
+        "[{}] [{channel}] [{}] {message}",
+        record.timestamp, record.severity
+    );
     if !summary.is_empty() {
         text.push_str(" │ ");
         text.push_str(&summary);
@@ -996,7 +1470,7 @@ fn project_viewer_record(
     record: &RuntimeLogRecord,
     severity: Severity,
 ) -> Option<RuntimeLogViewerRecord> {
-    if !viewer_event_is_visible(&record.event, severity) {
+    if !record.custom && !viewer_event_is_visible(&record.event, severity) {
         return None;
     }
     let is_tts = record.event.starts_with("tts.")
@@ -1005,46 +1479,512 @@ fn project_viewer_record(
             .split('.')
             .next()
             .is_some_and(|channel| channel.eq_ignore_ascii_case("tts"));
-    let scopes = if record.event.starts_with("tts.service.") {
+    let scopes = if is_tts {
         vec!["tts".to_string()]
-    } else if is_tts {
-        vec!["software".to_string(), "tts".to_string()]
+    } else if record.plugin_id.is_some() {
+        vec!["plugins".to_string()]
     } else {
         vec!["software".to_string()]
     };
     Some(RuntimeLogViewerRecord {
+        source: record.source.clone(),
+        plugin_id: record.plugin_id.clone(),
+        plugin_name: record.plugin_name.clone(),
         sequence: record.sequence,
         timestamp: record.timestamp.clone(),
         scopes,
         severity: severity.as_str().to_string(),
         category: display_channel(&record.channel, &record.event),
         event_code: record.event.clone(),
-        message: viewer_message(&record.event, severity).to_string(),
-        details: viewer_details(record),
+        message: if record.custom {
+            record.message.clone()
+        } else {
+            viewer_record_message(record, severity)
+        },
+        description: viewer_problem_description(record, severity).map(str::to_string),
+        details: {
+            let mut details = if record.custom {
+                custom_viewer_details(record)
+            } else {
+                viewer_details(record)
+            };
+            if matches!(severity, Severity::Warning | Severity::Error) {
+                details.push(RuntimeLogViewerDetail {
+                    label: "应用版本".into(),
+                    value: env!("CARGO_PKG_VERSION").into(),
+                });
+                for (label, value) in [
+                    ("请求编号", &record.request_id),
+                    ("操作编号", &record.operation_id),
+                ] {
+                    if let Some(value) = value {
+                        details.push(RuntimeLogViewerDetail {
+                            label: label.into(),
+                            value: value.clone(),
+                        });
+                    }
+                }
+            }
+            details
+        },
         correlation_id: viewer_correlation(record),
     })
 }
 
 fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
+    if severity == Severity::Info
+        && matches!(
+            event,
+            "tts.service.warmup_queued"
+                | "tts.conversion.checking"
+                | "tts.conversion.cache_hit"
+                | "tts.conversion.reused"
+        )
+    {
+        return false;
+    }
     if severity.is_priority() {
         return true;
     }
     severity == Severity::Info && business_message(event).is_some()
 }
 
+fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> String {
+    if let Some(message) = viewer_ipc_request_message(record) {
+        return message;
+    }
+    viewer_record_default_message(record, severity).to_string()
+}
+
+fn viewer_record_default_message(record: &RuntimeLogRecord, severity: Severity) -> &'static str {
+    if viewer_is_gpt_sovits(record) {
+        match record.event.as_str() {
+            "tts.service.started" => return "正在启动 GPT-SoVITS 服务",
+            "tts.service.waiting_ready" => return "GPT-SoVITS 进程已启动，正在等待服务就绪",
+            "tts.service.ready" => return "GPT-SoVITS 服务已就绪",
+            "tts.service.failed" | "tts.service.warmup_failed" => return "GPT-SoVITS 服务启动失败",
+            "tts.weights.loading" => return "正在加载角色语音模型",
+            "tts.weights.ready" => return "角色语音模型已就绪",
+            "tts.weights.failed" => return "角色语音模型加载失败",
+            _ => {}
+        }
+    }
+    if viewer_has_code(record, &["TTS_DEVICE_PROBE_FAILED"]) {
+        return "语音服务启动失败";
+    }
+    match record.event.as_str() {
+        "appearance.input_visual_effect.degraded" => "输入栏视觉效果已降级",
+        "appearance.input_visual_effect.limited" => "输入栏视觉效果受限",
+        "core.spawn.failed" | "first_run.core_start.failed" => "后台程序启动失败",
+        "core.error.unhandled" | "shell.error.unhandled" => "后台程序发生错误",
+        "ipc.request.failed" => "后台请求失败",
+        "mcp.server.failed" => "工具服务连接失败",
+        "mcp.config.failed" => "工具配置读取失败",
+        "mcp.tool.failed" => "工具调用失败",
+        "tts.service.failed" | "tts.service.warmup_failed" => "语音服务启动失败",
+        "tts.weights.failed" => "角色语音模型加载失败",
+        "tts.service.probe.failed" => "语音服务尚未就绪",
+        _ => viewer_message(&record.event, severity),
+    }
+}
+
+fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
+    let suffix = match record.event.as_str() {
+        "ipc.request.started" | "webview.command.started" => "中",
+        "ipc.request.completed" | "webview.command.completed" => "完成",
+        "ipc.request.cancelled" | "webview.command.cancelled" => "已取消",
+        "ipc.request.failed" | "webview.command.failed" => "失败",
+        _ => return None,
+    };
+    let command = viewer_attribute_strings(record, &["command"]).next()?;
+    let action = match command {
+        "system.hello" => "连接后台程序",
+        "system.health" => "检查后台程序状态",
+        "system.shutdown" => "停止后台程序",
+        "core.initialize" => "初始化后台程序",
+        "core.snapshot" => "读取运行状态",
+        "chat.send" => "发送对话",
+        "chat.cancel" => "取消对话",
+        "settings.provider_model.get" => "读取模型设置",
+        "settings.provider_model.save" => "保存模型设置",
+        "settings.provider_model.list_models" => "获取模型列表",
+        "settings.provider_model.test_connection" => "测试模型连接",
+        "settings.provider_model.cancel" => "取消模型测试",
+        "tools.settings.get" => "读取工具设置",
+        "tools.settings.save" => "保存工具设置",
+        "mcp.status.get" => "读取工具服务状态",
+        "plugins.settings.get" => "读取插件设置",
+        "plugins.settings.save" => "保存插件设置",
+        "plugins.enabled.set" => "更改插件开关",
+        "plugins.settings.action" => "执行插件操作",
+        "plugins.install" => "安装插件",
+        "plugins.uninstall" => "卸载插件",
+        "plugins.collection.query" => "读取插件数据",
+        "plugins.collection.create" => "新增插件数据",
+        "plugins.collection.update" => "更新插件数据",
+        "plugins.collection.delete" => "删除插件数据",
+        "ui.composer_tools.get" => "读取输入栏工具",
+        "ui.composer_tools.invoke" => "运行输入栏工具",
+        "tts.synthesis.start" => "提交语音生成",
+        "tts.synthesis.cancel" => "取消语音生成",
+        "tts.settings.get" => "读取语音设置",
+        "tts.settings.save" => "保存语音设置",
+        "tts.status.get" => "读取语音状态",
+        "tts.playback.observe" => "更新语音播放状态",
+        "screen_awareness.settings.get" => "读取屏幕感知设置",
+        "screen_awareness.settings.save" => "保存屏幕感知设置",
+        "studio.bootstrap" => "打开角色工坊",
+        "studio.character.open" => "打开角色草稿",
+        "studio.character.create" => "新建角色",
+        "studio.character.publish" => "保存角色",
+        "studio.draft.save" => "保存角色草稿",
+        "studio.visual.catalog" => "读取形态插件目录",
+        "studio.visual.open" | "studio_visual_open" | "studio_visual_editor" => "打开形态编辑器",
+        "studio.visual.previews" | "studio_visual_previews" | "studio_visual_cover" => {
+            "加载形态封面"
+        }
+        "studio.visual.create" => "添加形态",
+        "studio.visual.import" => "导入形态",
+        "studio.visual.export" => "导出形态",
+        "studio.asset.import" => "导入角色资源",
+        "characters.visuals.get" | "settings_character_visuals_get" => "读取角色形态",
+        "visual_renderer" | "visual_startup" => "加载角色表现",
+        "visual_control" => "执行表现控制",
+        "visual_preview" => "预览角色",
+        "visual_rebind" => "切换角色表现",
+        "characters.settings.get" => "读取角色设置",
+        "characters.settings.import" => "导入角色",
+        "characters.settings.import_voice" => "导入角色语音",
+        "characters.settings.export" => "导出角色包",
+        "characters.settings.select" => "切换角色",
+        "storage.settings.get" => "读取存储设置",
+        "storage.settings.choose_tts_root" => "更改语音数据目录",
+        "storage.settings.reset_tts_root" => "恢复默认语音目录",
+        "ui.history.page" => "读取对话记录",
+        _ => return None,
+    };
+    Some(
+        if matches!(
+            record.event.as_str(),
+            "ipc.request.started" | "webview.command.started"
+        ) {
+            format!("正在{action}")
+        } else {
+            format!("{action}{suffix}")
+        },
+    )
+}
+
+fn viewer_is_gpt_sovits(record: &RuntimeLogRecord) -> bool {
+    viewer_attribute_strings(record, &["provider"])
+        .any(|value| value.eq_ignore_ascii_case("sakura.tts.gpt-sovits"))
+}
+
+fn viewer_problem_description(
+    record: &RuntimeLogRecord,
+    severity: Severity,
+) -> Option<&'static str> {
+    if !severity.is_priority() {
+        return None;
+    }
+
+    let event = record.event.as_str();
+
+    if viewer_has_code(
+        record,
+        &[
+            "AUTHENTICATION_FAILED",
+            "CREDENTIAL_REQUIRED",
+            "invalid_api_key",
+        ],
+    ) {
+        return Some("模型服务没有接受当前凭据，这次回复无法生成。");
+    }
+    if viewer_has_code(
+        record,
+        &["INSUFFICIENT_QUOTA", "QUOTA_EXCEEDED", "insufficient_quota"],
+    ) {
+        return Some("模型服务暂时没有接受这次请求，回复未能生成。");
+    }
+    if viewer_has_code(record, &["MODEL_NOT_FOUND", "model_not_found"]) {
+        return Some("模型服务找不到当前模型，这次回复无法生成。");
+    }
+    if event.starts_with("api.")
+        && viewer_has_code(
+            record,
+            &[
+                "NETWORK_UNAVAILABLE",
+                "CONNECTION_INTERRUPTED",
+                "PROVIDER_REQUEST_FAILED",
+                "REQUEST_TIMEOUT",
+            ],
+        )
+    {
+        return Some("Sakura 没有收到模型服务的响应，这次回复未能生成。");
+    }
+
+    if viewer_has_code(record, &["TTS_DEVICE_PROBE_FAILED"]) {
+        return Some("语音服务启动时没能确认可用设备，暂时不能生成语音。");
+    }
+    if viewer_has_code(record, &["TTS_ONNX_CONVERSION_UNAVAILABLE"]) {
+        return Some("Genie 转换工具或运行环境不完整，无法转换角色模型。");
+    }
+    if event == "tts.conversion.failed" {
+        return Some(
+            "角色模型未能转换为 ONNX。可查看原因码及插件的 genie-converter.log 获取详情。",
+        );
+    }
+    if viewer_has_code(record, &["TTS_RUNTIME_PYTHON_MISSING"]) {
+        return Some("语音运行环境不完整，暂时不能生成语音。");
+    }
+    if viewer_has_code(record, &["TTS_ACCELERATOR_UNAVAILABLE"]) {
+        return Some("没有检测到语音服务需要的运行设备，暂时不能生成语音。");
+    }
+    if viewer_has_code(record, &["TTS_RUNTIME_TIMEOUT"]) {
+        return Some("等待 GPT-SoVITS 服务响应超时，语音暂时不可用。");
+    }
+    if viewer_has_code(record, &["TTS_RUNTIME_EXITED"]) {
+        return Some("GPT-SoVITS 进程在启动期间提前退出，语音暂时不可用。");
+    }
+    if viewer_has_code(record, &["TTS_RUNTIME_INVALID", "TTS_RUNTIME_START_FAILED"]) {
+        return Some("GPT-SoVITS 运行环境不完整或无法启动，语音暂时不可用。");
+    }
+    if viewer_has_code(
+        record,
+        &["TTS_PORT_OCCUPIED", "TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"],
+    ) {
+        return Some("GPT-SoVITS 使用的端口已被占用，服务没有启动。");
+    }
+    if viewer_has_code(record, &["TTS_WEIGHTS_UNAVAILABLE"]) {
+        if viewer_has_stage(record, "gpt_weights") {
+            return Some("GPT 角色语音权重加载失败，文字回复仍可使用。");
+        }
+        if viewer_has_stage(record, "sovits_weights") {
+            return Some("SoVITS 角色语音权重加载失败，文字回复仍可使用。");
+        }
+        return Some("角色语音模型加载失败，文字回复仍可使用。");
+    }
+    if viewer_has_code(
+        record,
+        &[
+            "TTS_CONNECTION_FAILED",
+            "TTS_REQUEST_TIMEOUT",
+            "TTS_PROBE_TIMEOUT",
+            "TTS_PROBE_UNAVAILABLE",
+        ],
+    ) {
+        return Some("Sakura 没有收到语音服务的响应，这次语音没有生成。");
+    }
+    if viewer_has_code(record, &["TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"]) {
+        return Some("语音服务使用的端口已被其他程序占用，语音服务没有启动。");
+    }
+
+    if viewer_has_code(record, &["WINDOWS_ADVANCED_EFFECTS_DISABLED"]) {
+        return Some("Windows 已关闭高级视觉效果，输入栏改用普通背景。");
+    }
+    if viewer_has_code(record, &["WINDOWS_ENERGY_SAVER_ACTIVE"]) {
+        return Some("Windows 正在使用节能模式，输入栏暂时改用普通背景。");
+    }
+    if viewer_has_code(record, &["WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000"]) {
+        return Some("当前 Windows 版本不支持这项视觉效果，输入栏会使用普通背景。");
+    }
+
+    if event.starts_with("mcp.")
+        && viewer_has_code(
+            record,
+            &["CONFIG_INVALID", "CONFIG_MISSING", "MCP_CONFIG_LOAD_FAILED"],
+        )
+    {
+        return Some("工具配置无法读取，相关工具没有加载。");
+    }
+    if event.starts_with("mcp.") && viewer_has_code(record, &["NO_READY_SERVERS"]) {
+        return Some("没有可用的 MCP 服务，相关工具没有加载。");
+    }
+    if (event.starts_with("mcp.") || event.starts_with("plugin."))
+        && viewer_has_code(
+            record,
+            &[
+                "CLOSE_TIMEOUT",
+                "PLUGIN_CALL_TIMEOUT",
+                "REGISTRATION_TIMEOUT",
+            ],
+        )
+    {
+        return Some("工具服务没有及时回应，本次操作没有完成。");
+    }
+    if viewer_has_code(
+        record,
+        &[
+            "PLUGIN_DISABLED",
+            "PLUGIN_PROCESS_EXITED",
+            "API_VERSION_UNSUPPORTED",
+            "DEPENDENCY_CYCLE",
+            "SERVICE_CONFLICT",
+            "MISSING_SERVICE",
+        ],
+    ) {
+        return Some("插件没有正常运行，依赖它的功能暂时不可用。");
+    }
+
+    if event == "api.request.failed" {
+        if matches!(viewer_http_status(record), Some(401 | 403)) {
+            return Some("模型服务没有接受当前凭据，这次回复无法生成。");
+        }
+        if matches!(viewer_http_status(record), Some(404)) {
+            return Some("模型服务找不到当前模型，这次回复无法生成。");
+        }
+        if matches!(viewer_http_status(record), Some(408 | 429 | 500..=599))
+            || viewer_has_error_type(record, &["TimeoutError", "RemoteDisconnected"])
+        {
+            return Some("Sakura 没有收到模型服务的正常响应，这次回复未能生成。");
+        }
+    }
+
+    let description = match event {
+        "core.spawn.failed" | "first_run.core_start.failed" => {
+            "Sakura 的后台程序没有启动，聊天和部分功能暂时不可用。"
+        }
+        "shell.error.unhandled" | "core.error.unhandled" | "ipc.request.failed" => {
+            "Sakura 的后台功能遇到问题，相关操作可能无法完成。"
+        }
+        "chat.request.failed"
+        | "api.request.failed"
+        | "reply.processing.failed"
+        | "reply.display.failed" => "这次回复没有正常完成。",
+        "memory.recall.failed" | "memory.recall.unavailable" => {
+            "这轮对话没有读到长期记忆，但仍会继续生成回复。"
+        }
+        "memory.curation.failed" | "memory.curation.request_fuse_opened" => {
+            "后台记忆整理没有完成，不影响当前对话。"
+        }
+        "context.dependencies.degraded" => "这次对话没有使用到全部记忆或辅助信息。",
+        "screen.capture.failed" => "这次请求没有附带屏幕画面，文字内容仍会正常发送。",
+        "updater.signature.failed" => "更新包没有通过安全校验，本次更新已经停止。",
+        value if value.starts_with("updater.") => "本次更新没有完成，当前版本仍可继续使用。",
+        value if value.starts_with("legacy_import.") => "旧版本数据没有全部迁移完成。",
+        value if value.starts_with("tts.") => "语音功能没有正常完成，文字回复仍可使用。",
+        value if value.starts_with("appearance.") || value.starts_with("ui.") => {
+            "界面效果已改用兼容模式。"
+        }
+        value
+            if value.starts_with("tool.")
+                || value.starts_with("mcp.")
+                || value.starts_with("plugin.") =>
+        {
+            "相关工具没有正常完成，本次操作可能缺少对应结果。"
+        }
+        value if value.starts_with("memory.") || value.starts_with("context.") => {
+            "这次对话没有使用到全部记忆或辅助信息。"
+        }
+        value if value.starts_with("screen.") => "这次请求没有附带屏幕画面。",
+        value
+            if value.starts_with("settings.")
+                || value.starts_with("config.")
+                || value.starts_with("storage.") =>
+        {
+            "相关设置或数据操作没有完成。"
+        }
+        value if value.starts_with("core.") || value.starts_with("ipc.") => {
+            "Sakura 的后台功能遇到问题，相关操作可能无法完成。"
+        }
+        _ if severity == Severity::Warning => "这项功能没有按预期工作，Sakura 仍在运行。",
+        _ => "这项操作没有正常完成。",
+    };
+    Some(description)
+}
+
+fn viewer_has_code(record: &RuntimeLogRecord, candidates: &[&str]) -> bool {
+    viewer_attribute_strings(record, &["reason_code", "provider_error_code", "code"]).any(|value| {
+        candidates
+            .iter()
+            .any(|candidate| value.eq_ignore_ascii_case(candidate))
+    })
+}
+
+fn viewer_has_error_type(record: &RuntimeLogRecord, candidates: &[&str]) -> bool {
+    viewer_attribute_strings(record, &["error_type", "provider_error_type", "cause_type"]).any(
+        |value| {
+            candidates
+                .iter()
+                .any(|candidate| value.eq_ignore_ascii_case(candidate))
+        },
+    )
+}
+
+fn viewer_has_stage(record: &RuntimeLogRecord, candidate: &str) -> bool {
+    viewer_attribute_strings(record, &["stage"]).any(|value| value.eq_ignore_ascii_case(candidate))
+}
+
+fn viewer_attribute_strings<'a>(
+    record: &'a RuntimeLogRecord,
+    keys: &'a [&str],
+) -> impl Iterator<Item = &'a str> {
+    record
+        .attributes
+        .as_ref()
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|attributes| attributes.iter())
+        .filter(move |(key, _)| keys.contains(&normalize_key(key).as_str()))
+        .filter_map(|(_, value)| value.as_str())
+}
+
+fn viewer_http_status(record: &RuntimeLogRecord) -> Option<u16> {
+    let attributes = record.attributes.as_ref()?.as_object()?;
+    let (_, value) = attributes
+        .iter()
+        .find(|(key, _)| matches!(normalize_key(key).as_str(), "status" | "http_status"))?;
+    value
+        .as_u64()
+        .and_then(|status| u16::try_from(status).ok())
+        .or_else(|| value.as_str()?.parse::<u16>().ok())
+}
+
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 41] = [
+    const PRIORITY: &[&str] = &[
         "diagnostic",
+        "exception_chain",
+        "exception_stack",
+        "recovery_diagnostic",
+        "errno",
+        "winerror",
+        "context_window_tokens",
+        "context_window_source",
+        "input_target",
+        "required_tokens",
+        "static_prompt_tokens",
+        "tool_schema_tokens",
+        "current_required_tokens",
+        "required_context_tokens",
+        "output_reserve",
+        "safety_margin",
         "code",
         "provider_error_code",
         "reason_code",
+        "recording_id",
         "stage",
         "detail_stage",
+        "copy_method",
+        "return_code",
+        "source_files",
+        "source_bytes",
+        "expected_files",
+        "expected_bytes",
+        "actual_files",
+        "actual_bytes",
         "error_type",
         "provider_error_type",
+        "cause_type",
+        "cause_code",
+        "validation_field",
+        "exception_site",
         "command",
         "status",
         "http_status",
+        "is_timeout",
+        "is_connect",
+        "endpoint_alias",
+        "io_error_kind",
         "outcome",
         "elapsed_ms",
         "duration_ms",
@@ -1081,14 +2021,14 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
     };
     let mut details = Vec::new();
     let mut labels = Vec::new();
-    for wanted in PRIORITY {
+    for &wanted in PRIORITY {
         let Some((_, value)) = attributes
             .iter()
             .find(|(key, value)| normalize_key(key) == wanted && is_human_scalar(value))
         else {
             continue;
         };
-        let rendered = render_human_scalar(wanted, value);
+        let rendered = viewer_render_detail(record, wanted, value);
         if rendered.is_empty() || rendered == "null" {
             continue;
         }
@@ -1099,10 +2039,16 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         labels.push(label);
         details.push(RuntimeLogViewerDetail {
             label: label.to_string(),
-            value: if wanted.ends_with("_ms") {
+            value: if wanted.ends_with("_ms") && viewer_is_gpt_lifecycle(record) {
+                rendered
+            } else if wanted.ends_with("_ms") {
                 format!("{rendered} ms")
-            } else if wanted == "bytes" {
+            } else if wanted == "bytes" || wanted.ends_with("_bytes") {
                 value.as_u64().map(format_bytes).unwrap_or(rendered)
+            } else if wanted.ends_with("_tokens")
+                || matches!(wanted, "input_target" | "output_reserve" | "safety_margin")
+            {
+                format!("{rendered} tokens")
             } else if wanted == "retryable" {
                 match value.as_bool() {
                     Some(true) => "是".to_string(),
@@ -1113,21 +2059,96 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
                 rendered
             },
         });
-        if details.len() >= 9 {
+        if details.len() >= 24 {
             break;
         }
     }
     details
 }
 
+fn viewer_is_gpt_lifecycle(record: &RuntimeLogRecord) -> bool {
+    viewer_is_gpt_sovits(record)
+        && matches!(
+            record.event.as_str(),
+            "tts.service.started"
+                | "tts.service.waiting_ready"
+                | "tts.service.ready"
+                | "tts.service.failed"
+                | "tts.weights.loading"
+                | "tts.weights.ready"
+                | "tts.weights.failed"
+        )
+}
+
+fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> String {
+    let rendered = render_human_scalar(key, value);
+    if key == "provider" && rendered == "sakura.tts.genie" {
+        return "Genie TTS".to_string();
+    }
+    if key == "context_window_source" {
+        return match rendered.as_str() {
+            "user" => "用户设置".to_string(),
+            "provider" => "供应商元数据".to_string(),
+            "fallback" => "默认值".to_string(),
+            _ => rendered,
+        };
+    }
+    if !viewer_is_gpt_lifecycle(record) {
+        return rendered;
+    }
+    match (key, rendered.as_str()) {
+        ("provider", "sakura.tts.gpt-sovits") => "GPT-SoVITS".to_string(),
+        ("stage", "runtime_start") => "启动服务".to_string(),
+        ("stage", "weights") => "加载角色语音模型".to_string(),
+        ("stage", "gpt_weights") => "GPT 权重".to_string(),
+        ("stage", "sovits_weights") => "SoVITS 权重".to_string(),
+        ("status", "starting") => "正在启动".to_string(),
+        ("status", "waiting") => "等待就绪".to_string(),
+        ("status", "ready") => "已就绪".to_string(),
+        ("status", "loading") => "正在加载".to_string(),
+        ("status", "failed") => "失败".to_string(),
+        ("elapsed_ms" | "duration_ms", raw) => raw
+            .parse::<f64>()
+            .ok()
+            .filter(|elapsed| elapsed.is_finite() && *elapsed >= 0.0)
+            .map(|elapsed| format!("{:.1} 秒", elapsed / 1000.0))
+            .unwrap_or(rendered),
+        _ => rendered,
+    }
+}
+
 fn viewer_detail_label(key: &str) -> &'static str {
     match key {
         "diagnostic" => "诊断",
+        "exception_chain" => "异常链",
+        "exception_stack" => "调用栈",
+        "recovery_diagnostic" => "回滚报错",
+        "errno" => "系统错误码",
+        "winerror" => "Windows 错误码",
+        "context_window_tokens" => "模型上下文窗口",
+        "context_window_source" => "窗口来源",
+        "input_target" => "输入预算",
+        "required_tokens" => "不可裁剪内容",
+        "static_prompt_tokens" => "静态提示",
+        "tool_schema_tokens" => "工具定义",
+        "current_required_tokens" => "当前消息与工具结果",
+        "required_context_tokens" => "必需上下文",
+        "output_reserve" => "输出预留",
+        "safety_margin" => "安全余量",
         "code" | "provider_error_code" => "错误码",
         "reason_code" => "原因码",
+        "recording_id" => "录音编号",
         "stage" => "阶段",
         "detail_stage" => "阶段",
         "error_type" | "provider_error_type" => "类型",
+        "cause_type" => "根因类型",
+        "cause_code" => "底层原因码",
+        "validation_field" => "校验字段",
+        "is_timeout" => "请求超时",
+        "is_connect" => "连接失败",
+        "endpoint_alias" => "请求目标",
+        "io_error_kind" => "文件错误类型",
+        "exception_site" => "代码位置",
         "status" => "状态",
         "http_status" | "outcome" => "状态",
         "dependency" => "依赖",
@@ -1157,7 +2178,7 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "return_code" => "返回码",
         "copy_method" => "复制方式",
         "detected_version" => "检测到的版本",
-        "errno" | "winerror" | "sqlite_errorcode" => "系统错误码",
+        "sqlite_errorcode" => "系统错误码",
         "sqlite_errorname" => "SQLite 错误",
         "lines" => "行数",
         "items" => "项目数",
@@ -1182,6 +2203,10 @@ fn viewer_detail_label(key: &str) -> &'static str {
 
 fn business_message(event: &str) -> Option<&'static str> {
     Some(match event {
+        "asr.capture.started" => "开始录音",
+        "asr.capture.finished" => "录音结束",
+        "asr.capture.cancelled" => "录音已取消",
+        "asr.capture.failed" => "录音失败",
         "shell.started" => "Sakura 已启动",
         "shell.ready" => "Sakura 已就绪",
         "shell.stopping" => "Sakura 正在退出",
@@ -1212,6 +2237,7 @@ fn business_message(event: &str) -> Option<&'static str> {
         "agent.turn.finished" => "Assistant 已生成回复",
         "chat.request.received" => "已收到对话请求",
         "chat.request.completed" => "对话请求已完成",
+        "chat.finished" => "对话已结束",
         "chat.request.cancelled" => "对话请求已取消",
         "chat.request.failed" => "对话请求失败",
         "memory.recall.started" => "开始召回记忆",
@@ -1220,6 +2246,7 @@ fn business_message(event: &str) -> Option<&'static str> {
         "memory.recall.unavailable" => "记忆尚未就绪，本轮未执行召回",
         "memory.initialization.stage" => "Memory 初始化阶段已更新",
         "memory.curation.triggered" => "已触发后台记忆整理",
+        "memory.curation.request_fuse_opened" => "自动记忆整理请求保险丝已触发，本次运行不再重试",
         "memory.curation.started" => "开始后台记忆整理",
         "memory.curation.finished" => "后台记忆整理完成",
         "memory.curation.failed" => "后台记忆整理失败",
@@ -1235,6 +2262,10 @@ fn business_message(event: &str) -> Option<&'static str> {
         "reply.processing.failed" => "模型回复处理失败",
         "reply.display.completed" => "回复已显示",
         "reply.display.failed" => "回复显示失败",
+        "visual.binding.failed" => "角色表现加载失败",
+        "visual.control.failed" => "表现控制未应用",
+        "visual.preview.failed" => "角色预览加载失败",
+        "visual.resource.failed" => "角色表现资源加载失败",
         "tool.execution.started" => "正在执行工具",
         "tool.execution.finished" => "工具执行完成",
         "tool.execution.waiting_confirmation" => "工具正在等待确认",
@@ -1244,6 +2275,7 @@ fn business_message(event: &str) -> Option<&'static str> {
         "screen.capture.cancelled" => "截图已取消",
         "screen.capture.failed" => "截图失败",
         "tts.service.started" => "TTS 服务正在启动",
+        "tts.service.waiting_ready" => "TTS 进程已启动，正在等待服务就绪",
         "tts.service.ready" => "TTS 服务已就绪",
         "tts.service.failed" => "TTS 服务启动失败",
         "tts.service.http" => "TTS 服务请求已完成",
@@ -1274,7 +2306,17 @@ fn business_message(event: &str) -> Option<&'static str> {
         "tts.playback.finished" => "语音播放完成",
         "tts.playback.stopped" => "语音播放已停止",
         "tts.playback.failed" => "语音播放失败",
+        "tts.weights.loading" => "正在加载 TTS 角色权重",
         "tts.weights.ready" => "TTS 角色权重已就绪",
+        "tts.weights.failed" => "TTS 角色权重加载失败",
+        "tts.conversion.checking" => "Genie 正在检查角色 ONNX 模型和转换缓存",
+        "tts.conversion.reused" => "Genie 已复用角色包内的 ONNX 模型",
+        "tts.conversion.cache_hit" => "Genie 已命中 ONNX 缓存，无需重新转换",
+        "tts.conversion.started" => "Genie 已启动转换器，开始将角色权重转换为 ONNX",
+        "tts.conversion.running" => "Genie 正在转换角色模型，请等待",
+        "tts.conversion.finished" => "Genie ONNX 转换完成，模型已保存",
+        "tts.conversion.failed" => "Genie ONNX 转换失败",
+        "tts.conversion.cancelled" => "Genie ONNX 转换已取消",
         "mcp.server.connecting" => "正在连接 MCP 服务器",
         "mcp.server.ready" => "MCP 服务器已就绪",
         "mcp.ready" => "MCP 工具已就绪",
@@ -1363,6 +2405,10 @@ fn legacy_import_business_message(event: &str) -> Option<&'static str> {
         "legacy_import.tts_profiles_adapted" => "旧版 TTS 托管配置已适配",
         "legacy_import.tts_runtime_paths_sanitized" => "旧版 TTS Python 路径已适配",
         "legacy_import.tts_completed" => "旧版本 TTS 资源迁移完成",
+        "legacy_import.tts_skipped" => "TTS 资源迁移失败，已保留聊天和记忆",
+        "legacy_import.tts_config_skipped" => "TTS 配置迁移失败，已保留聊天和记忆",
+        "legacy_import.tts_onnx_binding_skipped" => "TTS ONNX 角色绑定失败，模型资源已保留",
+        "legacy_import.characters_skipped" => "角色包迁移失败，已保留聊天和记忆",
         "legacy_import.character_validation_failed" => "迁移后的角色包校验失败",
         _ => return None,
     })
@@ -1402,6 +2448,7 @@ fn viewer_message(event: &str, severity: Severity) -> &'static str {
         }
         "chat.request.received" => "已收到对话请求",
         "chat.request.completed" => "对话请求已完成",
+        "chat.finished" => "对话已结束",
         "chat.request.cancelled" => "对话请求已取消",
         "chat.request.failed" => "对话请求失败",
         "api.request.started" => "正在请求模型回复",
@@ -1411,6 +2458,10 @@ fn viewer_message(event: &str, severity: Severity) -> &'static str {
         "reply.processing.failed" => "模型回复处理失败",
         "reply.display.completed" => "回复已显示",
         "reply.display.failed" => "回复显示失败",
+        "visual.binding.failed" => "角色表现加载失败",
+        "visual.control.failed" => "表现控制未应用",
+        "visual.preview.failed" => "角色预览加载失败",
+        "visual.resource.failed" => "角色表现资源加载失败",
         "tool.execution.started" => "正在执行工具",
         "tool.execution.finished" => "工具执行完成",
         "tool.execution.waiting_confirmation" => "工具正在等待确认",
@@ -1572,7 +2623,7 @@ fn short_correlation_id(value: &str) -> String {
 }
 
 fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
-    const DEFAULT_PRIORITY: [&str; 48] = [
+    const DEFAULT_PRIORITY: [&str; 50] = [
         "dependency",
         "stage",
         "detail_stage",
@@ -1582,6 +2633,8 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "error_type",
         "diagnostic",
         "reason_code",
+        "cause_type",
+        "exception_site",
         "elapsed_ms",
         "command_elapsed_ms",
         "event_delay_ms",
@@ -1632,8 +2685,23 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "memory_estimated_tokens",
         "model",
     ];
+    const CONTEXT_FAILURE_PRIORITY: [&str; 12] = [
+        "diagnostic",
+        "context_window_tokens",
+        "context_window_source",
+        "input_target",
+        "required_tokens",
+        "static_prompt_tokens",
+        "tool_schema_tokens",
+        "current_required_tokens",
+        "required_context_tokens",
+        "output_reserve",
+        "safety_margin",
+        "code",
+    ];
     const API_STARTED_PRIORITY: [&str; 5] =
         ["model_call", "purpose", "provider", "model", "attempt"];
+    const SHELL_STARTED_PRIORITY: [&str; 1] = ["current_version"];
     const MEMORY_PRIORITY: [&str; 6] = [
         "selected",
         "candidates",
@@ -1653,13 +2721,17 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "total_tokens",
         "model",
     ];
-    const API_FAILED_PRIORITY: [&str; 12] = [
+    const API_FAILED_PRIORITY: [&str; 16] = [
         "model_call",
         "status",
         "provider_error_type",
         "provider_error_code",
         "error_type",
         "diagnostic",
+        "reason_code",
+        "stage",
+        "cause_type",
+        "exception_site",
         "elapsed_ms",
         "attempt",
         "retryable",
@@ -1667,9 +2739,11 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "model",
         "purpose",
     ];
-    const IPC_FAILED_PRIORITY: [&str; 7] = [
+    const IPC_FAILED_PRIORITY: [&str; 9] = [
         "code",
         "diagnostic",
+        "exception_site",
+        "cause_type",
         "deadline_ms",
         "elapsed_ms",
         "command",
@@ -1715,8 +2789,9 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "status",
         "code",
     ];
-    const TTS_PRIORITY: [&str; 14] = [
+    const TTS_PRIORITY: [&str; 15] = [
         "provider",
+        "provider_error_code",
         "segment_index",
         "segment_count",
         "recording_id",
@@ -1731,11 +2806,48 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "status",
         "code",
     ];
+    const LEGACY_COPY_PRIORITY: [&str; 12] = [
+        "detail_stage",
+        "copy_method",
+        "return_code",
+        "source_files",
+        "source_bytes",
+        "expected_files",
+        "expected_bytes",
+        "actual_files",
+        "actual_bytes",
+        "code",
+        "reason_code",
+        "error_type",
+    ];
+    const FAILURE_DETAIL_PRIORITY: [&str; 12] = [
+        "diagnostic",
+        "exception_chain",
+        "exception_stack",
+        "recovery_diagnostic",
+        "errno",
+        "winerror",
+        "code",
+        "reason_code",
+        "stage",
+        "error_type",
+        "cause_type",
+        "exception_site",
+    ];
     let Some(object) = attributes.and_then(Value::as_object) else {
         return String::new();
     };
     let priority: &[&str] = match event {
+        "shell.started" => &SHELL_STARTED_PRIORITY,
         "context.prompt.prepared" => &CONTEXT_PRIORITY,
+        "chat.request.failed"
+            if object
+                .get("reason_code")
+                .and_then(Value::as_str)
+                .is_some_and(|code| code == "CONTEXT_WINDOW_EXCEEDED") =>
+        {
+            &CONTEXT_FAILURE_PRIORITY
+        }
         value if value.starts_with("context.dependencies.") => &DEFAULT_PRIORITY,
         value if value.starts_with("memory.recall.") => &MEMORY_PRIORITY,
         "api.request.started" => &API_STARTED_PRIORITY,
@@ -1747,19 +2859,40 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         value if value.starts_with("reply.") => &REPLY_PRIORITY,
         value if value.starts_with("screen.capture.") => &SCREEN_PRIORITY,
         value if value.starts_with("tts.") => &TTS_PRIORITY,
+        value if value.starts_with("asr.") => &[
+            "recording_id",
+            "duration_ms",
+            "reason_code",
+            "provider",
+            "status",
+        ],
+        value if value.starts_with("legacy_import.tts_copy_") => &LEGACY_COPY_PRIORITY,
         _ => &DEFAULT_PRIORITY,
     };
     let mut parts = Vec::new();
-    for wanted in priority {
+    let mut seen = Vec::new();
+    let (first, second): (&[&str], &[&str]) = if object.contains_key("diagnostic") {
+        (&FAILURE_DETAIL_PRIORITY, priority)
+    } else {
+        (priority, &FAILURE_DETAIL_PRIORITY)
+    };
+    for wanted in first.iter().copied().chain(second.iter().copied()) {
+        if seen.contains(&wanted) {
+            continue;
+        }
+        seen.push(wanted);
         let Some((_, value)) = object
             .iter()
-            .find(|(key, value)| normalize_key(key) == *wanted && is_human_scalar(value))
+            .find(|(key, value)| normalize_key(key) == wanted && is_human_scalar(value))
         else {
             continue;
         };
-        let rendered = render_human_scalar(wanted, value);
+        let rendered = render_human_scalar(wanted, value)
+            .replace('\r', "")
+            .replace('\n', " \\n ")
+            .replace('│', "|");
         let suffix = if wanted.ends_with("_ms") { "ms" } else { "" };
-        let display_key = match *wanted {
+        let display_key = match wanted {
             "model_call" => "call",
             "history_messages" => "history",
             "tool_count" => "tools",
@@ -1767,7 +2900,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
             other => other,
         };
         parts.push(format!("{display_key}={rendered}{suffix}"));
-        if parts.len() >= 9 {
+        if parts.len() >= 24 {
             break;
         }
     }
@@ -1869,6 +3002,21 @@ fn sanitize_attributes(value: &Value, secrets: &[String]) -> Option<Value> {
                 .map(Value::String)
                 .unwrap_or_else(|| json!({"type": "text", "chars": text.chars().count()})),
             Value::Array(values) => json!({"type": "list", "items": values.len()}),
+            Value::Object(_) if normalized == "diagnostic_detail" => {
+                let Ok(detail) =
+                    serde_json::from_value::<crate::telemetry::DiagnosticDetail>(value.clone())
+                else {
+                    continue;
+                };
+                if !crate::telemetry::validate_detail(&detail)
+                    || secrets
+                        .iter()
+                        .any(|s| !s.is_empty() && value.to_string().contains(s))
+                {
+                    continue;
+                }
+                value.clone()
+            }
             Value::Object(values) if normalized == "counts" => {
                 let mut counts = Map::new();
                 for (name, count) in values.iter().take(16) {
@@ -1897,18 +3045,19 @@ fn sanitize_attribute_string(
     if matches!(normalized_key, "error" | "reason" | "message") {
         return None;
     }
-    let stripped = strip_ansi(value);
-    if normalized_key == "diagnostic" {
-        if stripped.is_empty()
-            || looks_absolute_path(&stripped)
-            || stripped.contains("://")
-            || looks_secret_shaped(&stripped)
-            || secrets.iter().any(|secret| stripped.contains(secret))
-        {
-            return None;
-        }
-        return Some(stripped.chars().take(320).collect());
+    if matches!(
+        normalized_key,
+        "diagnostic" | "exception_chain" | "exception_stack" | "recovery_diagnostic"
+    ) {
+        let maximum = if normalized_key == "diagnostic" {
+            4096
+        } else {
+            8192
+        };
+        let cleaned = sanitize_diagnostic(value, secrets, maximum);
+        return (!cleaned.is_empty()).then_some(cleaned);
     }
+    let stripped = strip_ansi(value);
     if stripped.is_empty()
         || looks_absolute_path(&stripped)
         || stripped.contains("://")
@@ -1923,18 +3072,35 @@ fn sanitize_attribute_string(
 fn forbidden_key(key: &str) -> bool {
     if matches!(
         key,
+        "exception_chain" | "exception_stack" | "recovery_diagnostic" | "errno" | "winerror"
+    ) {
+        return false;
+    }
+    if matches!(
+        key,
         "diagnostic"
+            | "cause_type"
             | "error_type"
+            | "exception_site"
             | "provider_error_code"
             | "provider_error_type"
             | "reason_code"
             | "prompt_tokens"
             | "completion_tokens"
             | "total_tokens"
+            | "context_window_tokens"
+            | "current_required_tokens"
             | "estimated_tokens"
+            | "input_target"
             | "memory_estimated_tokens"
+            | "output_reserve"
             | "request_estimated_tokens"
+            | "required_context_tokens"
+            | "required_tokens"
+            | "safety_margin"
+            | "static_prompt_tokens"
             | "tool_schema_estimated_tokens"
+            | "tool_schema_tokens"
     ) {
         return false;
     }
@@ -1963,9 +3129,36 @@ fn forbidden_key(key: &str) -> bool {
 }
 
 fn allowed_attribute_key(key: &str) -> bool {
+    if matches!(
+        key,
+        "exception_chain" | "exception_stack" | "recovery_diagnostic" | "errno" | "winerror"
+    ) {
+        return true;
+    }
     matches!(
         key,
-        "action"
+        "source_file"
+            | "cause_code"
+            | "validation_field"
+            | "is_timeout"
+            | "is_connect"
+            | "endpoint_alias"
+            | "io_error_kind"
+            | "source_line"
+            | "diagnostic_detail"
+            | "timeout_ms"
+            | "exit_code"
+            | "child_exited"
+            | "probe_outcome"
+            | "primary_code"
+            | "recovery_code"
+            | "recovery_outcome"
+            | "source_exists"
+            | "staged_exists"
+            | "backup_exists"
+            | "repair_reason"
+            | "repair_outcome"
+            | "action"
             | "actual_bytes"
             | "actual_files"
             | "attempt"
@@ -1981,6 +3174,9 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "component"
             | "count"
             | "counts"
+            | "context_window_source"
+            | "context_window_tokens"
+            | "current_required_tokens"
             | "client_epoch_ms"
             | "client_perf_ms"
             | "deadline_ms"
@@ -1998,6 +3194,8 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "event_perf_ms"
             | "eof"
             | "error_type"
+            | "cause_type"
+            | "exception_site"
             | "errno"
             | "expected_bytes"
             | "expected_files"
@@ -2012,6 +3210,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "height"
             | "history_messages"
             | "host_state"
+            | "input_target"
             | "items"
             | "listed"
             | "filtered"
@@ -2026,6 +3225,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "name"
             | "operation"
             | "outcome"
+            | "output_reserve"
             | "perf_ms"
             | "process_ms"
             | "process_alive"
@@ -2066,9 +3266,12 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "revision"
             | "reply_chars"
             | "request_estimated_tokens"
+            | "required_context_tokens"
+            | "required_tokens"
             | "resolution"
             | "retryable"
             | "risk"
+            | "safety_margin"
             | "selected"
             | "segment_count"
             | "segment_index"
@@ -2082,6 +3285,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "sqlite_errorname"
             | "sqlite_version"
             | "stage"
+            | "static_prompt_tokens"
             | "status"
             | "succeeded"
             | "step_index"
@@ -2089,6 +3293,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "tool_call_count"
             | "tool_count"
             | "tool_schema_estimated_tokens"
+            | "tool_schema_tokens"
             | "tool_name"
             | "trigger"
             | "transport"
@@ -2122,6 +3327,21 @@ fn normalize_key(value: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect::<String>()
+        .replace("diagnosticdetail", "diagnostic_detail")
+        .replace("sourcefile", "source_file")
+        .replace("sourceline", "source_line")
+        .replace("timeoutms", "timeout_ms")
+        .replace("exitcode", "exit_code")
+        .replace("childexited", "child_exited")
+        .replace("probeoutcome", "probe_outcome")
+        .replace("primarycode", "primary_code")
+        .replace("recoverycode", "recovery_code")
+        .replace("recoveryoutcome", "recovery_outcome")
+        .replace("sourceexists", "source_exists")
+        .replace("stagedexists", "staged_exists")
+        .replace("backupexists", "backup_exists")
+        .replace("repairreason", "repair_reason")
+        .replace("repairoutcome", "repair_outcome")
         .replace("actualbytes", "actual_bytes")
         .replace("actualfiles", "actual_files")
         .replace("bytedelta", "byte_delta")
@@ -2138,16 +3358,31 @@ fn normalize_key(value: &str) -> String {
         .replace("receivedepochms", "received_epoch_ms")
         .replace("receivedprocessms", "received_process_ms")
         .replace("elapsedms", "elapsed_ms")
+        .replace("durationms", "duration_ms")
         .replace("epochms", "epoch_ms")
         .replace("eventdelayms", "event_delay_ms")
         .replace("eventperfms", "event_perf_ms")
         .replace("errortype", "error_type")
+        .replace("causetype", "cause_type")
+        .replace("causecode", "cause_code")
+        .replace("validationfield", "validation_field")
+        .replace("istimeout", "is_timeout")
+        .replace("isconnect", "is_connect")
+        .replace("endpointalias", "endpoint_alias")
+        .replace("ioerrorkind", "io_error_kind")
+        .replace("exceptionsite", "exception_site")
+        .replace("exceptionchain", "exception_chain")
+        .replace("exceptionstack", "exception_stack")
+        .replace("recoverydiagnostic", "recovery_diagnostic")
         .replace("expectedbytes", "expected_bytes")
         .replace("expectedfiles", "expected_files")
         .replace("finalreplyelapsedms", "final_reply_elapsed_ms")
         .replace("gestureid", "gesture_id")
         .replace("hoststate", "host_state")
         .replace("historymessages", "history_messages")
+        .replace("contextwindowsource", "context_window_source")
+        .replace("contextwindowtokens", "context_window_tokens")
+        .replace("currentrequiredtokens", "current_required_tokens")
         .replace("childpid", "child_pid")
         .replace("memoryestimatedtokens", "memory_estimated_tokens")
         .replace("modelcall", "model_call")
@@ -2157,6 +3392,7 @@ fn normalize_key(value: &str) -> String {
         .replace("journalmode", "journal_mode")
         .replace("pagecount", "page_count")
         .replace("operationid", "operation")
+        .replace("outputreserve", "output_reserve")
         .replace("perfms", "perf_ms")
         .replace("processms", "process_ms")
         .replace("processalive", "process_alive")
@@ -2168,6 +3404,7 @@ fn normalize_key(value: &str) -> String {
         .replace("proxynoproxyconfigured", "proxy_no_proxy_configured")
         .replace("parsestatus", "parse_status")
         .replace("prompttokens", "prompt_tokens")
+        .replace("staticprompt_tokens", "static_prompt_tokens")
         .replace("providererrorcode", "provider_error_code")
         .replace("providererrortype", "provider_error_type")
         .replace("providererror_type", "provider_error_type")
@@ -2179,9 +3416,13 @@ fn normalize_key(value: &str) -> String {
         .replace("pthfiles", "pth_files")
         .replace("quickcheck", "quick_check")
         .replace("recordbytes", "record_bytes")
+        .replace("recordingid", "recording_id")
         .replace("recordtruncated", "record_truncated")
         .replace("replychars", "reply_chars")
         .replace("requestestimatedtokens", "request_estimated_tokens")
+        .replace("requiredcontexttokens", "required_context_tokens")
+        .replace("requiredtokens", "required_tokens")
+        .replace("safetymargin", "safety_margin")
         .replace("segmentcount", "segment_count")
         .replace("segmentindex", "segment_index")
         .replace("serverid", "server_id")
@@ -2193,11 +3434,14 @@ fn normalize_key(value: &str) -> String {
         .replace("sqliteerrorname", "sqlite_errorname")
         .replace("sqliteversion", "sqlite_version")
         .replace("stepindex", "step_index")
+        .replace("staticprompttokens", "static_prompt_tokens")
         .replace("textchars", "text_chars")
         .replace("toolcallcount", "tool_call_count")
         .replace("toolcount", "tool_count")
         .replace("toolschemaestimatedtokens", "tool_schema_estimated_tokens")
+        .replace("toolschematokens", "tool_schema_tokens")
         .replace("estimatedtokens", "estimated_tokens")
+        .replace("inputtarget", "input_target")
         .replace("toolname", "tool_name")
         .replace("treeempty", "tree_empty")
         .replace("truncatedrecords", "truncated_records")
@@ -2234,6 +3478,68 @@ fn sanitize_fixed_message(value: &str) -> String {
     stripped.chars().take(192).collect()
 }
 
+/// Preserve the failure text while redacting only credential values.
+/// Multiline diagnostics stay multiline in the viewer; the text writer escapes them.
+pub(crate) fn diagnostic_error(code: &str, error: impl std::fmt::Display) -> String {
+    format!(
+        "{code}: {}",
+        sanitize_diagnostic(&error.to_string(), &[], 4096)
+    )
+}
+
+pub(crate) fn redact_diagnostic_credentials(value: &str, secrets: &[String]) -> String {
+    use regex::{Captures, Regex};
+    use std::sync::LazyLock;
+    static SECRET: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+        r#"(?i)(\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)|(\bbearer\s+)[^\s,;}&]+|\bsk-[\w.-]{6,}"#
+    ).expect("diagnostic credential pattern")
+    });
+    static URL_AUTH: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@").unwrap());
+    let mut text = strip_ansi(value);
+    for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
+        text = text.replace(secret, "[REDACTED]");
+    }
+    text = SECRET
+        .replace_all(&text, |c: &Captures<'_>| {
+            format!(
+                "{}[REDACTED]",
+                c.get(1)
+                    .or_else(|| c.get(2))
+                    .map(|m| m.as_str())
+                    .unwrap_or("")
+            )
+        })
+        .into_owned();
+    text = URL_AUTH.replace_all(&text, "${1}[REDACTED]@").into_owned();
+    text
+}
+
+pub(crate) fn sanitize_diagnostic(value: &str, secrets: &[String], maximum: usize) -> String {
+    let mut text = redact_diagnostic_credentials(value, secrets)
+        .trim()
+        .to_string();
+    if text.chars().count() > maximum {
+        let chars: Vec<_> = text.chars().collect();
+        let marker = format!("\n[truncated: {} characters]\n", chars.len());
+        let kept = maximum.saturating_sub(marker.chars().count());
+        text = if kept == 0 {
+            marker.chars().take(maximum).collect()
+        } else {
+            format!(
+                "{}{}{}",
+                chars[..kept / 2].iter().collect::<String>(),
+                marker,
+                chars[chars.len() - (kept - kept / 2)..]
+                    .iter()
+                    .collect::<String>()
+            )
+        };
+    }
+    text
+}
+
 fn strip_ansi(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut characters = value.chars();
@@ -2251,7 +3557,7 @@ fn strip_ansi(value: &str) -> String {
     output
 }
 
-fn looks_absolute_path(value: &str) -> bool {
+pub(crate) fn looks_absolute_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     let contains_windows_path = bytes.windows(3).any(|window| {
         window[0].is_ascii_alphabetic() && window[1] == b':' && matches!(window[2], b'/' | b'\\')
@@ -2291,6 +3597,7 @@ fn core_message(event: &str) -> &'static str {
         "agent.turn.finished" => "模型回复已生成",
         "chat.request.received" => "对话请求已接收",
         "chat.request.completed" => "对话请求已完成",
+        "chat.finished" => "对话已结束",
         "chat.request.cancelled" => "对话请求已取消",
         "chat.request.failed" => "对话请求失败",
         "memory.recall.started" => "开始召回记忆",
@@ -2320,6 +3627,7 @@ fn core_message(event: &str) -> &'static str {
         "screen.capture.cancelled" => "截图已取消",
         "screen.capture.failed" => "截图失败",
         "tts.service.started" => "TTS 服务启动中",
+        "tts.service.waiting_ready" => "TTS 进程已启动，正在等待服务就绪",
         "tts.service.ready" => "TTS 服务已就绪",
         "tts.service.failed" => "TTS 服务启动失败",
         "tts.process.cleanup.started" => "正在检查旧 TTS 进程",
@@ -2346,7 +3654,9 @@ fn core_message(event: &str) -> &'static str {
         "tts.service.probe" => "TTS 服务探测未就绪",
         "tts.service.probe.started" => "正在探测 TTS 服务",
         "tts.service.probe.failed" => "TTS 服务探测未就绪",
+        "tts.weights.loading" => "正在加载 TTS 角色权重",
         "tts.weights.ready" => "TTS 角色权重已就绪",
+        "tts.weights.failed" => "TTS 角色权重加载失败",
         "mcp.server.ready" => "MCP 服务器工具已就绪",
         "mcp.ready" => "MCP 工具已就绪",
         "mcp.config.disabled" => "MCP 未启用",
@@ -2413,8 +3723,23 @@ fn webview_message(event: &str) -> &'static str {
     }
 }
 
-fn environment_secrets() -> Vec<String> {
+pub(crate) fn environment_secrets() -> Vec<String> {
     let mut values = std::env::vars_os()
+        .filter(|(key, _)| {
+            let key = key.to_string_lossy().to_ascii_lowercase();
+            [
+                "api_key",
+                "apikey",
+                "token",
+                "secret",
+                "password",
+                "credential",
+                "authorization",
+                "cookie",
+            ]
+            .iter()
+            .any(|part| key.contains(part))
+        })
         .map(|(_, value)| value.to_string_lossy().into_owned())
         .filter(|value| (8..=4096).contains(&value.len()))
         .collect::<Vec<_>>();
@@ -2448,6 +3773,331 @@ fn local_clock_timestamp() -> String {
 mod tests {
     use super::*;
 
+    fn paused_writer(path: PathBuf) -> (RuntimeLogService, mpsc::Sender<()>) {
+        let (resume, paused) = mpsc::channel();
+        let log = RuntimeLogService::start_with_writer(test_config(path), move |inner| {
+            paused.recv_timeout(Duration::from_secs(10)).unwrap();
+            run_writer(inner);
+        });
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "test",
+            "test.delayed_writer",
+            "Delayed writer event",
+        )));
+        (log, resume)
+    }
+
+    #[test]
+    fn test_drain_preserves_pending_records_past_the_production_exit_budget() {
+        let root = temp_root("delayed-drain");
+        let path = root.join("sakura-runtime.log");
+        let (log, resume) = paused_writer(path.clone());
+        let draining = log.clone();
+        let (done, completion) = mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            draining.drain_and_shutdown_for_test();
+            done.send(()).unwrap();
+        });
+        // Synchronize with stop_writer before delaying the writer. No queue-empty
+        // polling: the completion signal must include its final flush and close.
+        let (state, wait) = log
+            .inner
+            .wake
+            .wait_timeout_while(
+                log.inner.state.lock().unwrap(),
+                Duration::from_secs(5),
+                |state| !state.stopping,
+            )
+            .unwrap();
+        assert!(!wait.timed_out());
+        drop(state);
+        let early_completion = completion.recv_timeout(PRODUCTION_SHUTDOWN_TIMEOUT * 2);
+        resume.send(()).unwrap();
+        let drained = shutdown.join();
+        if drained.is_err() {
+            if let Some(worker) = log.inner.worker.lock().unwrap().take() {
+                worker.join().unwrap();
+            }
+        }
+        drained.unwrap();
+        assert!(matches!(
+            early_completion,
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("Delayed writer event"));
+        assert!(log.inner.worker.lock().unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn production_shutdown_keeps_its_deadline_when_the_writer_is_stalled() {
+        let root = temp_root("delayed-production-shutdown");
+        let path = root.join("sakura-runtime.log");
+        let (log, resume) = paused_writer(path.clone());
+        let stopping = log.clone();
+        let (done, completion) = mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            done.send(stopping.shutdown(Duration::from_secs(30)))
+                .unwrap();
+        });
+        let completed = completion.recv_timeout(Duration::from_secs(5));
+        // Always release and join the fixture before asserting the timeout result.
+        resume.send(()).unwrap();
+        shutdown.join().unwrap();
+        log.inner
+            .worker
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(!completed.expect("production shutdown exceeded its bounded wait"));
+        let state = log.inner.state.lock().unwrap();
+        assert!(state.records.is_empty());
+        assert!(!path.exists(), "expired queued records must not be written");
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_01_unified_real_core_plugins_and_webview_share_writer_and_snapshot() {
+        let root = temp_root("unified-real-processes");
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let python = repo.join(if cfg!(windows) {
+            "runtime/python.exe"
+        } else {
+            "runtime/bin/python"
+        });
+        let result = std::process::Command::new(python)
+            .current_dir(repo)
+            .args(["-I", "-X", "utf8"])
+            .arg("-c")
+            .arg(include_str!(
+                "../../../tests/fixtures/runtime_v2/unified_logging_producer.py"
+            ))
+            .arg(root.join("fixture"))
+            .arg(repo)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "fixture failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let path = root.join("logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-unified-test".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        for line in String::from_utf8(result.stderr).unwrap().lines() {
+            if let Some(record) = line.strip_prefix(CORE_BRIDGE_PREFIX) {
+                assert!(log.submit_core_bridge(record, &context).unwrap());
+            }
+        }
+        log.submit(RuntimeLogEvent::message(
+            Severity::Info,
+            "app",
+            "宿主运行正常",
+            json!({"count": 1}),
+        ));
+        let entry = serde_json::from_value(
+            json!({"level":"info", "event":"runtime.message", "message":"前端运行正常",
+            "fields":{"window_label":"forged", "count":2}}),
+        )
+        .unwrap();
+        log.submit(log.prepare_webview("settings", entry).unwrap());
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        assert_eq!(snapshot.schema_version, 3);
+        assert_eq!(snapshot.records.len(), 11);
+        assert!(snapshot
+            .records
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence));
+        for id in ["fixture.one", "fixture.two"] {
+            let records: Vec<_> = snapshot
+                .records
+                .iter()
+                .filter(|r| r.plugin_id.as_deref() == Some(id))
+                .collect();
+            assert_eq!(records.len(), 4);
+            assert!(records.iter().any(|r| r.event_code == "plugin.loaded"));
+            assert!(records
+                .iter()
+                .all(|r| r.plugin_name.as_deref() == Some("日志示例")));
+            assert!(records
+                .iter()
+                .all(|r| r.source == "plugin" && r.scopes == ["plugins"]));
+        }
+        let frontend = snapshot
+            .records
+            .iter()
+            .find(|r| r.source == "webview")
+            .unwrap();
+        assert!(frontend
+            .details
+            .iter()
+            .any(|d| d.label == "window_label" && d.value == "settings"));
+        log.drain_and_shutdown_for_test();
+        let software = fs::read_to_string(&path).unwrap();
+        let plugins = fs::read_to_string(path.with_file_name("sakura-plugins.log")).unwrap();
+        assert!(software.contains("Core 资源加载完成") && software.contains("前端运行正常"));
+        assert!(!software.contains("插件资源加载完成"));
+        assert!(plugins.contains("插件资源加载完成") && plugins.contains("插件清理完成"));
+        assert!(plugins.contains("fixture.one") && plugins.contains("fixture.two"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn custom_field_budget_survives_repeated_sanitation_and_file_projection() {
+        let root = temp_root("custom-field-budget");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let mut fields = Map::new();
+        for index in 0..31 {
+            fields.insert(format!("metric_{index:02}"), json!(index));
+        }
+        fields.insert("api_key".into(), json!("fixture-private"));
+        fields.insert("record_truncated".into(), json!(true));
+        fields.insert(
+            "diagnostic".into(),
+            json!(format!(
+                "{} token=fixture-private",
+                "startup context ".repeat(30)
+            )),
+        );
+        let first = log
+            .normalize_event(RuntimeLogEvent::message(
+                Severity::Warning,
+                "runtime",
+                "诊断记录",
+                Value::Object(fields),
+            ))
+            .record
+            .attributes
+            .unwrap();
+        let second = log
+            .normalize_event(RuntimeLogEvent::message(
+                Severity::Warning,
+                "runtime",
+                "诊断记录",
+                first.clone(),
+            ))
+            .record
+            .attributes
+            .unwrap();
+        assert_eq!(
+            first, second,
+            "repeated sanitation must not consume another field"
+        );
+        assert_eq!(second["metric_29"], 29);
+        assert!(second.get("metric_30").is_none());
+        assert_eq!(second["redacted"], "[REDACTED]");
+        assert_eq!(second["record_truncated"], true);
+        assert!(second["diagnostic"].as_str().unwrap().len() > 256);
+        assert!(!second.to_string().contains("fixture-private"));
+        assert!(log.submit(RuntimeLogEvent::message(
+            Severity::Warning,
+            "runtime",
+            "诊断记录",
+            second,
+        )));
+        log.drain_and_shutdown_for_test();
+        let contents = fs::read_to_string(path).unwrap();
+        for index in 0..30 {
+            assert!(contents.contains(&format!("metric_{index:02}={index}")));
+        }
+        let _ = fs::remove_dir_all(root);
+
+        let oversized = (0..10)
+            .map(|index| (format!("field_{index:02}"), json!("界".repeat(256))))
+            .collect::<Map<String, Value>>();
+        for fields in [
+            Value::Object(oversized),
+            json!({"nested": (0..10).collect::<Vec<_>>()}),
+        ] {
+            let safe = sanitize_custom_attributes(&fields, &[]).unwrap();
+            assert!(serde_json::to_vec(&safe).unwrap().len() <= 1800);
+            assert_eq!(safe["record_truncated"], true);
+            assert_eq!(sanitize_custom_attributes(&safe, &[]), Some(safe.clone()));
+            if let Some(nested) = safe.get("nested") {
+                assert_eq!(nested, &json!((0..8).collect::<Vec<_>>()));
+            }
+        }
+    }
+
+    #[test]
+    fn wp_4l_01_unified_custom_sanitizer_and_file_failure_are_shared() {
+        let root = temp_root("unified-file-failure");
+        let path = root.join("logs/sakura-runtime.log");
+        fs::create_dir_all(path.with_file_name("sakura-plugins.log")).unwrap();
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-one".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        let wire = json!({"severity":"error", "verbosity":"error", "channel":"plugin", "event":"runtime.message",
+            "custom":true, "plugin_id":"fixture.one", "message":"token=private-secret", "attributes":{
+                "nested":{"password":"PRIVATE PASSWORD", "path":"C:/private/model", "count":2}, "ok":"<b>纯文本</b>"}});
+        assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        assert!(log.submit(RuntimeLogEvent::message(
+            Severity::Info,
+            "app",
+            "软件仍可记录",
+            json!({})
+        )));
+        log.drain_and_shutdown_for_test();
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        assert_eq!(snapshot.failed_files, ["plugins"]);
+        assert_eq!(snapshot.records.len(), 2);
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        for private in ["private-secret", "PRIVATE PASSWORD", "C:/private/model"] {
+            assert!(!serialized.contains(private));
+        }
+        assert!(fs::read_to_string(path).unwrap().contains("软件仍可记录"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_01_unified_plugin_rotation_uses_the_same_retention() {
+        let root = temp_root("plugin-rotation");
+        let path = root.join("logs/sakura-runtime.log");
+        let mut config = test_config(path.clone());
+        config.queue_capacity = 64;
+        config.max_file_bytes = 512;
+        config.backup_count = 2;
+        let log = RuntimeLogService::start_with_config(config);
+        let context = CoreLogContext {
+            generation_id: "generation-one".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        for index in 0..30 {
+            let wire = json!({"severity":"info", "verbosity":"info", "channel":"plugin", "event":"runtime.message",
+                "custom":true, "plugin_id":"fixture.one", "message":"插件日志轮转", "attributes":{"index":index}});
+            assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        }
+        log.drain_and_shutdown_for_test();
+        let plugin_path = path.with_file_name("sakura-plugins.log");
+        assert!(
+            plugin_path.exists()
+                && backup_path(&plugin_path, 1).exists()
+                && backup_path(&plugin_path, 2).exists()
+        );
+        assert!(!backup_path(&plugin_path, 3).exists() && !path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2479,18 +4129,22 @@ mod tests {
         fs::write(&path, "[20:00:00] [APP] 已有纯文本日志\n").unwrap();
 
         let log = RuntimeLogService::start_with_config(test_config(path.clone()));
-        assert!(log.submit(RuntimeLogEvent::rust(
-            Severity::Info,
-            "shell",
-            "shell.started",
-            "Runtime shell started",
-        )));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Info,
+                "shell",
+                "shell.started",
+                "Runtime shell started",
+            )
+            .attributes(json!({"current_version": "1.2.3"})),
+        ));
+        log.drain_and_shutdown_for_test();
 
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents.lines().count(), 2);
         assert!(contents.contains("已有纯文本日志"));
-        assert!(contents.contains("[APP] Sakura 已启动"));
+        assert!(contents.contains("[APP]"));
+        assert!(contents.contains("current_version=1.2.3"));
         assert!(!fs::read_dir(path.parent().unwrap())
             .unwrap()
             .filter_map(Result::ok)
@@ -2502,7 +4156,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_4l_02_core_api_failure_uses_legacy_console_shape_and_chinese_message() {
+    fn wp_4l_02_core_api_failure_uses_the_console_shape_and_safe_fields() {
         let root = temp_root("human-api-failure");
         let path = root.join("data/logs/sakura-runtime.log");
         let log = RuntimeLogService::start_with_config(test_config(path.clone()));
@@ -2517,10 +4171,11 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.starts_with('['));
-        assert!(line.contains("] [API] 模型请求失败 │ status=400 elapsed_ms=2789ms\n"));
+        assert!(line.contains("] [API]"));
+        assert!(line.contains("status=400 elapsed_ms=2789ms\n"));
         assert!(!line.trim_start().starts_with('{'));
         let _ = fs::remove_dir_all(root);
     }
@@ -2541,9 +4196,12 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
-        assert!(line.contains("[API] 模型请求失败 │ trace=17 call=2 status=401"));
+        assert!(line.contains("[API]"));
+        for field in ["trace=17", "call=2", "status=401"] {
+            assert!(line.contains(field));
+        }
         assert!(line.contains("provider_error_type=authentication_error"));
         assert!(line.contains("provider_error_code=invalid_api_key"));
         assert!(line.contains("diagnostic=Invalid authentication credentials"));
@@ -2567,9 +4225,9 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
-        assert!(line.contains("[CONTEXT] 模型上下文已构建"));
+        assert!(line.contains("[CONTEXT]"));
         assert!(line.contains("op=chat-123 trace=17 call=2 purpose=agent_step"));
         assert!(line.contains("history=8 memories=3 tools=18 estimated_tokens=11684"));
         assert!(!line.contains("ignored"));
@@ -2592,11 +4250,36 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
-        assert!(
-            line.contains("] [TTS] 开始合成语音 │ provider=gpt_sovits text_chars=41 attempt=1\n")
-        );
+        assert!(line.contains(
+            "] [TTS] [info] 开始合成语音 │ provider=gpt_sovits text_chars=41 attempt=1\n"
+        ));
+        assert!(!line.contains("ignored"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_forwarded_tts_failure_preserves_provider_diagnostic() {
+        let root = temp_root("forwarded-tts-failure");
+        let path = root.join("data/logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-17".to_string(),
+            generation_number: 17,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"warning","verbosity":"warn","channel":"tts","event":"tts.synthesis.failed","message":"ignored","attributes":{"provider":"sakura.tts.gpt-sovits","provider_error_code":"TTS_RUNTIME_PYTHON_MISSING","code":"TTS_SYNTHESIS_FAILED","stage":"python","error_type":"RuntimeConfigurationError"}}"#,
+                &context,
+            )
+            .unwrap());
+        log.drain_and_shutdown_for_test();
+        let line = fs::read_to_string(path).unwrap();
+        assert!(line.contains("provider=sakura.tts.gpt-sovits"));
+        assert!(line.contains("provider_error_code=TTS_RUNTIME_PYTHON_MISSING"));
+        assert!(line.contains("stage=python error_type=RuntimeConfigurationError"));
         assert!(!line.contains("ignored"));
         let _ = fs::remove_dir_all(root);
     }
@@ -2617,9 +4300,9 @@ mod tests {
                 &context,
             )
             .unwrap());
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
-        assert!(line.contains("[CONTEXT] Prompt 依赖未就绪，继续降级对话"));
+        assert!(line.contains("[CONTEXT]"));
         assert!(line.contains("op=chat-123 dependency=memory stage=process_exit status=degraded"));
         assert!(line.contains("reason_code=PROCESS_EXITED elapsed_ms=5021ms"));
         assert!(line.contains("category=process_exited"));
@@ -2640,6 +4323,24 @@ mod tests {
                 }))
             ),
             "status=ready elapsed_ms=1.8ms command_elapsed_ms=12.35ms"
+        );
+    }
+
+    #[test]
+    fn legacy_tts_copy_summary_preserves_post_scan_comparison() {
+        assert_eq!(
+            format_human_summary(
+                "legacy_import.tts_copy_failed",
+                Some(&json!({
+                    "detail_stage": "post_scan",
+                    "copy_method": "robocopy",
+                    "expected_files": 120,
+                    "expected_bytes": 4096,
+                    "actual_files": 119,
+                    "actual_bytes": 4000,
+                }))
+            ),
+            "detail_stage=post_scan copy_method=robocopy expected_files=120 expected_bytes=4096 actual_files=119 actual_bytes=4000"
         );
     }
 
@@ -2672,7 +4373,7 @@ mod tests {
             log.prepare_webview("main", failed).unwrap().severity,
             Severity::Warning
         );
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2694,7 +4395,7 @@ mod tests {
                 .attributes(json!({"revision": revision}))
             ));
         }
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         assert!(path.exists());
         assert!(backup_path(&path, 1).exists());
         assert!(backup_path(&path, 2).exists());
@@ -2703,7 +4404,7 @@ mod tests {
             for line in fs::read_to_string(candidate).unwrap().lines() {
                 assert!(line.len() + 1 <= 4096);
                 assert!(line.starts_with('['));
-                assert!(line.contains("[APP] Rotation test event"));
+                assert!(line.contains("[APP] [info] Rotation test event"));
             }
         }
         let _ = fs::remove_dir_all(root);
@@ -2723,12 +4424,14 @@ mod tests {
                 viewer_last_evicted_sequence: None,
                 next_sequence: 1,
                 dropped: BTreeMap::new(),
+                failed_files: Vec::new(),
                 stopping: false,
                 shutdown_deadline: None,
             }),
             wake: Condvar::new(),
             completion: Mutex::new(None),
             worker: Mutex::new(None),
+            telemetry: Mutex::new(None),
         });
         let log = RuntimeLogService {
             inner: Arc::clone(&inner),
@@ -2805,7 +4508,7 @@ mod tests {
         for producer in producers {
             producer.join().unwrap();
         }
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
 
         let records = fs::read_to_string(path)
             .unwrap()
@@ -2816,7 +4519,7 @@ mod tests {
         assert!(records.iter().all(|line| line.starts_with('[')));
         assert!(records
             .iter()
-            .all(|line| line.contains("[TEST] Concurrent test event")));
+            .all(|line| line.contains("[TEST] [info] Concurrent test event")));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2834,7 +4537,7 @@ mod tests {
             "test.failure.write",
             "Writer failure test event",
         )));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
         let _ = fs::remove_dir_all(root);
     }
@@ -2864,7 +4567,7 @@ mod tests {
                 "gestureId": "gesture-1",
             }))
         ));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let contents = fs::read_to_string(path).unwrap();
         assert!(!contents.contains("PRIVATE CHAT BODY"));
         assert!(!contents.contains(sentinel));
@@ -2904,10 +4607,10 @@ mod tests {
                 &context,
                 Some(credential),
             )
-            .is_err());
-        assert!(log.shutdown(Duration::from_millis(500)));
+            .is_ok());
+        log.drain_and_shutdown_for_test();
         let contents = fs::read_to_string(path).unwrap();
-        assert!(contents.contains("[AGENT] 开始处理用户消息"));
+        assert!(contents.contains("[AGENT]"));
         assert!(!contents.contains("ignored"));
         assert!(!contents.contains(credential));
         let _ = fs::remove_dir_all(root);
@@ -2968,11 +4671,13 @@ mod tests {
         ));
 
         let snapshot = log.viewer_snapshot(None).unwrap();
+        assert_eq!(snapshot.schema_version, 3);
         assert_eq!(snapshot.records.len(), 3);
         assert_eq!(snapshot.records[0].event_code, "shell.started");
         assert_eq!(snapshot.records[0].message, "Sakura 已启动");
+        assert_eq!(snapshot.records[0].description, None);
         assert_eq!(snapshot.records[1].event_code, "ipc.request.completed");
-        assert_eq!(snapshot.records[1].message, "Core 请求完成");
+        assert_eq!(snapshot.records[1].message, "读取插件设置完成");
         assert_eq!(
             snapshot.records[1].details,
             vec![
@@ -2993,11 +4698,89 @@ mod tests {
         assert_eq!(snapshot.records[2].event_code, "plugin.private.warning");
         assert_eq!(snapshot.records[2].severity, "warning");
         assert_eq!(snapshot.records[2].message, "运行过程中出现提醒");
+        assert_eq!(
+            snapshot.records[2].description.as_deref(),
+            Some("相关工具没有正常完成，本次操作可能缺少对应结果。")
+        );
         assert!(!serde_json::to_string(&snapshot)
             .unwrap()
             .contains("不应展示的正文"));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_viewer_names_core_requests_in_plain_chinese() {
+        let record = |event: &str, command: &str| RuntimeLogRecord {
+            schema_version: 1,
+            sequence: 1,
+            timestamp: "12:34:56".to_string(),
+            run_id: "run-test".to_string(),
+            source: "rust".to_string(),
+            plugin_id: None,
+            plugin_name: None,
+            custom: false,
+            pid: 1,
+            severity: "info".to_string(),
+            verbosity: "info".to_string(),
+            channel: "core.ipc".to_string(),
+            event: event.to_string(),
+            message: "ignored".to_string(),
+            generation_id: None,
+            generation_number: None,
+            core_pid: None,
+            request_id: None,
+            operation_id: None,
+            action_id: None,
+            trace_id: None,
+            attributes: Some(json!({"command": command})),
+        };
+
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.started", "core.snapshot")).as_deref(),
+            Some("正在读取运行状态")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.completed", "core.snapshot"))
+                .as_deref(),
+            Some("读取运行状态完成")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.cancelled", "chat.send")).as_deref(),
+            Some("发送对话已取消")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.failed", "plugins.install")).as_deref(),
+            Some("安装插件失败")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.completed", "future.command")),
+            None
+        );
+    }
+
+    #[test]
+    fn visual_webview_failure_reaches_viewer_with_stage_and_redacted_stack() {
+        let root = temp_root("visual-diagnostics");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let entry: WebviewDiagnosticEntry = serde_json::from_value(json!({
+            "level": "warn", "event": "webview.command.failed", "command": "studio_visual_editor",
+            "outcome": "failed", "code": "VISUAL_EDITOR_FAILED", "stage": "studio.visual.ready",
+            "diagnostic": "TypeError: texture decode failed token=private-value",
+            "exceptionStack": "TypeError: texture decode failed\n at mount (C:/Users/private/renderer.js:12:3)"
+        })).unwrap();
+        let event = log
+            .prepare_webview(crate::character_studio_window::STUDIO_WINDOW_LABEL, entry)
+            .unwrap();
+        assert!(log.submit(event));
+        let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+        let text = serde_json::to_string(&record).unwrap();
+        assert!(text.contains("texture decode failed"));
+        assert!(text.contains("studio.visual.ready"));
+        assert!(text.contains("renderer.js"));
+        assert!(!text.contains("private-value"));
+        assert!(text.contains("C:/Users/private/renderer.js:12:3"));
+        assert!(log.shutdown(Duration::from_secs(2)));
     }
 
     #[test]
@@ -3011,13 +4794,17 @@ mod tests {
         };
         assert!(log
             .submit_core_bridge(
-                r#"{"severity":"error","verbosity":"error","channel":"api","event":"api.request.failed","message":"ignored","operation_id":"operation-1234567890","attributes":{"diagnostic":"模型服务拒绝了身份验证","code":"MODEL_REQUEST_FAILED","reason_code":"AUTHENTICATION_FAILED","stage":"request","error_type":"authentication_error","elapsed_ms":2789.25,"content":"PRIVATE CHAT BODY","path":"/private/runtime.log"}}"#,
+                r#"{"severity":"error","verbosity":"error","channel":"api","event":"api.request.failed","message":"ignored","operation_id":"operation-1234567890","attributes":{"diagnostic":"模型服务拒绝了身份验证","code":"MODEL_REQUEST_FAILED","reason_code":"AUTHENTICATION_FAILED","stage":"request","error_type":"authentication_error","cause_type":"PermissionError","exception_site":"app.llm.api_client:request:752","elapsed_ms":2789.25,"content":"PRIVATE CHAT BODY","path":"/private/runtime.log"}}"#,
                 &context,
             )
             .unwrap());
 
         let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
         assert_eq!(record.message, "模型回复请求失败");
+        assert_eq!(
+            record.description.as_deref(),
+            Some("模型服务没有接受当前凭据，这次回复无法生成。")
+        );
         assert_eq!(record.correlation_id.as_deref(), Some("op:operatio"));
         assert_eq!(
             record
@@ -3025,12 +4812,340 @@ mod tests {
                 .iter()
                 .map(|detail| detail.label.as_str())
                 .collect::<Vec<_>>(),
-            ["诊断", "错误码", "原因码", "阶段", "类型", "耗时"]
+            [
+                "诊断",
+                "错误码",
+                "原因码",
+                "阶段",
+                "类型",
+                "根因类型",
+                "代码位置",
+                "耗时",
+                "应用版本",
+                "操作编号"
+            ]
         );
         let serialized = serde_json::to_string(&record).unwrap();
         assert!(!serialized.contains("PRIVATE CHAT BODY"));
         assert!(!serialized.contains("private/runtime"));
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn context_budget_failure_is_visible_in_viewer_and_file_log() {
+        let root = temp_root("viewer-context-budget");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-viewer".to_string(),
+            generation_number: 1,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"error","verbosity":"error","channel":"chat","event":"chat.request.failed","message":"ignored","operation_id":"chat-context-budget-1","attributes":{"diagnostic":"本地上下文预算不足：预计总量 141626 tokens，超过模型窗口 131072 tokens。","code":"CONTEXT_WINDOW_EXCEEDED","reason_code":"CONTEXT_WINDOW_EXCEEDED","detail_stage":"window_capacity","context_window_tokens":131072,"context_window_source":"user","input_target":0,"required_tokens":4000,"static_prompt_tokens":2000,"tool_schema_tokens":500,"current_required_tokens":1500,"required_context_tokens":0,"output_reserve":131072,"safety_margin":6554}}"#,
+                &context,
+            )
+            .unwrap());
+
+        let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+        assert_eq!(record.message, "对话请求失败");
+        assert_eq!(
+            record
+                .details
+                .iter()
+                .map(|detail| (detail.label.as_str(), detail.value.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "诊断",
+                    "本地上下文预算不足：预计总量 141626 tokens，超过模型窗口 131072 tokens。"
+                ),
+                ("模型上下文窗口", "131072 tokens"),
+                ("窗口来源", "用户设置"),
+                ("输入预算", "0 tokens"),
+                ("不可裁剪内容", "4000 tokens"),
+                ("静态提示", "2000 tokens"),
+                ("工具定义", "500 tokens"),
+                ("当前消息与工具结果", "1500 tokens"),
+                ("必需上下文", "0 tokens"),
+                ("输出预留", "131072 tokens"),
+                ("安全余量", "6554 tokens"),
+                ("错误码", "CONTEXT_WINDOW_EXCEEDED"),
+                ("原因码", "CONTEXT_WINDOW_EXCEEDED"),
+                ("阶段", "window_capacity"),
+                ("应用版本", env!("CARGO_PKG_VERSION")),
+                ("操作编号", "chat-context-budget-1"),
+            ]
+        );
+        log.drain_and_shutdown_for_test();
+        let contents = fs::read_to_string(path).unwrap();
+        assert!(contents.contains("context_window_tokens=131072"));
+        assert!(contents.contains("tool_schema_tokens=500"));
+        assert!(contents.contains("output_reserve=131072"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_viewer_uses_specific_plain_language_before_safe_diagnostics() {
+        let root = temp_root("viewer-descriptions");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Warning,
+                "tts",
+                "tts.service.warmup_failed",
+                "ignored",
+            )
+            .attributes(json!({
+                "reason_code": "TTS_DEVICE_PROBE_FAILED",
+                "stage": "runtime_start",
+                "error_type": "RuntimePreparationError",
+                "provider": "sakura.tts.gpt-sovits",
+            })),
+        ));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Warning,
+                "appearance",
+                "appearance.input_visual_effect.degraded",
+                "ignored",
+            )
+            .attributes(json!({
+                "diagnostic": "os_build=22631 advanced_effects_enabled=false",
+                "code": "WINDOWS_ADVANCED_EFFECTS_DISABLED",
+                "reason_code": "WINDOWS_ADVANCED_EFFECTS_DISABLED",
+                "stage": "windows_input_glass",
+                "status": "degraded",
+            })),
+        ));
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Warning,
+            "custom",
+            "custom.warning",
+            "ignored",
+        )));
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Error,
+            "custom",
+            "custom.failure",
+            "ignored",
+        )));
+
+        let records = log.viewer_snapshot(None).unwrap().records;
+        assert_eq!(records[0].message, "GPT-SoVITS 服务启动失败");
+        assert_eq!(
+            records[0].description.as_deref(),
+            Some("语音服务启动时没能确认可用设备，暂时不能生成语音。")
+        );
+        assert_eq!(records[1].message, "输入栏视觉效果已降级");
+        assert_eq!(
+            records[1].description.as_deref(),
+            Some("Windows 已关闭高级视觉效果，输入栏改用普通背景。")
+        );
+        assert!(!records[1]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("os_build"));
+        assert_eq!(
+            records[2].description.as_deref(),
+            Some("这项功能没有按预期工作，Sakura 仍在运行。")
+        );
+        assert_eq!(
+            records[3].description.as_deref(),
+            Some("这项操作没有正常完成。")
+        );
+        log.drain_and_shutdown_for_test();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_gpt_sovits_lifecycle_is_plain_language_and_hides_warmup_queue() {
+        let root = temp_root("viewer-gpt-lifecycle");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let provider = "sakura.tts.gpt-sovits";
+        assert!(!viewer_event_is_visible(
+            "tts.service.warmup_queued",
+            Severity::Info
+        ));
+        assert!(viewer_event_is_visible(
+            "tts.service.warmup_queued",
+            Severity::Warning
+        ));
+        for (event, attributes) in [
+            (
+                "tts.service.warmup_queued",
+                json!({"provider": provider, "status": "queued"}),
+            ),
+            (
+                "tts.service.started",
+                json!({"provider": provider, "stage": "runtime_start", "status": "starting"}),
+            ),
+            (
+                "tts.service.waiting_ready",
+                json!({"provider": provider, "stage": "runtime_start", "status": "waiting"}),
+            ),
+            (
+                "tts.service.ready",
+                json!({"provider": provider, "stage": "runtime_start", "status": "ready", "elapsed_ms": "12400"}),
+            ),
+            (
+                "tts.weights.loading",
+                json!({"provider": provider, "stage": "weights", "status": "loading"}),
+            ),
+            (
+                "tts.weights.ready",
+                json!({"provider": provider, "stage": "weights", "status": "ready", "elapsed_ms": "4100"}),
+            ),
+        ] {
+            assert!(log.submit(
+                RuntimeLogEvent::rust(Severity::Info, "tts", event, "ignored")
+                    .attributes(attributes),
+            ));
+        }
+
+        let records = log.viewer_snapshot(None).unwrap().records;
+        assert_eq!(records.len(), 5);
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.message.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "正在启动 GPT-SoVITS 服务",
+                "GPT-SoVITS 进程已启动，正在等待服务就绪",
+                "GPT-SoVITS 服务已就绪",
+                "正在加载角色语音模型",
+                "角色语音模型已就绪",
+            ]
+        );
+        assert_eq!(records[0].scopes, ["tts"]);
+        assert_eq!(records[3].scopes, ["tts"]);
+        assert_eq!(
+            records[2].details,
+            [
+                RuntimeLogViewerDetail {
+                    label: "阶段".to_string(),
+                    value: "启动服务".to_string(),
+                },
+                RuntimeLogViewerDetail {
+                    label: "状态".to_string(),
+                    value: "已就绪".to_string(),
+                },
+                RuntimeLogViewerDetail {
+                    label: "耗时".to_string(),
+                    value: "12.4 秒".to_string(),
+                },
+                RuntimeLogViewerDetail {
+                    label: "服务".to_string(),
+                    value: "GPT-SoVITS".to_string(),
+                },
+            ]
+        );
+        log.drain_and_shutdown_for_test();
+        assert!(fs::read_to_string(path)
+            .unwrap()
+            .contains("TTS 服务预热已排队"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn genie_conversion_bridge_is_visible_and_written_to_file() {
+        let root = temp_root("genie-conversion-log");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "genie-test".to_string(),
+            generation_number: 1,
+            core_pid: 4242,
+        };
+        let stages = [
+            "checking",
+            "started",
+            "running",
+            "finished",
+            "cache_hit",
+            "reused",
+            "failed",
+            "cancelled",
+        ];
+        for stage in stages {
+            let event = json!({
+                "severity": if stage == "failed" { "warning" } else { "info" },
+                "verbosity": if stage == "failed" { "warn" } else { "info" },
+                "channel": "tts",
+                "event": format!("tts.conversion.{stage}"),
+                "message": "ignored",
+                "attributes": {"provider": "sakura.tts.genie", "elapsed_ms": "5200.0"},
+            });
+            assert!(log
+                .submit_core_bridge(&event.to_string(), &context)
+                .unwrap());
+        }
+        let records = log.viewer_snapshot(None).unwrap().records;
+        let visible_stages = ["started", "running", "finished", "failed", "cancelled"];
+        assert_eq!(records.len(), visible_stages.len());
+        for (record, stage) in records.iter().zip(visible_stages) {
+            assert_eq!(record.event_code, format!("tts.conversion.{stage}"));
+            assert_eq!(record.scopes, ["tts"]);
+            assert!(record.message.contains("Genie"));
+            assert!(record.details.iter().any(|detail| detail.label == "耗时"));
+            assert_eq!(record.description.is_some(), stage == "failed");
+        }
+        log.drain_and_shutdown_for_test();
+        let written = fs::read_to_string(path).unwrap();
+        for record in records {
+            assert!(written.contains(&record.message));
+        }
+        for stage in ["checking", "cache_hit", "reused"] {
+            let event = format!("tts.conversion.{stage}");
+            assert!(written.contains(business_message(&event).unwrap()));
+            assert!(viewer_event_is_visible(&event, Severity::Warning));
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_gpt_sovits_failures_have_specific_plain_language_reasons() {
+        let root = temp_root("viewer-gpt-failures");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let provider = "sakura.tts.gpt-sovits";
+        assert!(log.submit(
+            RuntimeLogEvent::rust(Severity::Warning, "tts", "tts.service.failed", "ignored",)
+                .attributes(json!({
+                    "provider": provider,
+                    "reason_code": "TTS_RUNTIME_TIMEOUT",
+                    "stage": "runtime_start",
+                    "status": "failed",
+                    "elapsed_ms": "60200",
+                })),
+        ));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(Severity::Warning, "tts", "tts.weights.failed", "ignored",)
+                .attributes(json!({
+                    "provider": provider,
+                    "reason_code": "TTS_WEIGHTS_UNAVAILABLE",
+                    "stage": "sovits_weights",
+                    "status": "failed",
+                    "elapsed_ms": "4100",
+                })),
+        ));
+
+        let records = log.viewer_snapshot(None).unwrap().records;
+        assert_eq!(records[0].message, "GPT-SoVITS 服务启动失败");
+        assert_eq!(
+            records[0].description.as_deref(),
+            Some("等待 GPT-SoVITS 服务响应超时，语音暂时不可用。")
+        );
+        assert_eq!(records[1].message, "角色语音模型加载失败");
+        assert_eq!(
+            records[1].description.as_deref(),
+            Some("SoVITS 角色语音权重加载失败，文字回复仍可使用。")
+        );
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3083,7 +5198,7 @@ mod tests {
 
         let initial = log.viewer_snapshot(None).unwrap();
         assert_eq!(initial.records.len(), RUNTIME_LOG_VIEWER_CAPACITY);
-        assert_eq!(initial.records.last().unwrap().scopes, ["software", "tts"]);
+        assert_eq!(initial.records.last().unwrap().scopes, ["tts"]);
         let reset = log.viewer_snapshot(Some(1)).unwrap();
         assert!(reset.reset_required);
         assert_eq!(reset.records.len(), RUNTIME_LOG_VIEWER_CAPACITY);
@@ -3092,7 +5207,7 @@ mod tests {
             .unwrap();
         assert!(!incremental.reset_required);
         assert_eq!(incremental.records.len(), 1);
-        assert!(log.shutdown(Duration::from_millis(500)));
+        log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
 }

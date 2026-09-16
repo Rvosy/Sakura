@@ -57,7 +57,12 @@ unsafe impl Send for SharedInstanceGuard {}
 impl SharedInstanceGuard {
     #[cfg(windows)]
     pub fn acquire() -> AcquireOutcome {
-        let wide_name = SHARED_MUTEX_NAME
+        Self::acquire_named(SHARED_MUTEX_NAME)
+    }
+
+    #[cfg(windows)]
+    fn acquire_named(name: &str) -> AcquireOutcome {
+        let wide_name = name
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
@@ -332,14 +337,10 @@ fn os_error_code(error: &std::io::Error) -> u32 {
 mod windows_tests {
     use super::*;
 
-    use std::sync::Mutex;
-
     use windows::{
         core::PCWSTR,
         Win32::{Foundation::CloseHandle, System::Threading::CreateEventW},
     };
-
-    static KERNEL_OBJECT_TEST: Mutex<()> = Mutex::new(());
 
     #[test]
     fn uses_the_frozen_shared_user_data_object_name() {
@@ -348,32 +349,32 @@ mod windows_tests {
 
     #[test]
     fn a_second_guard_conflicts_until_the_first_is_dropped() {
-        let _serial = KERNEL_OBJECT_TEST.lock().expect("test mutex should lock");
-        let first = match SharedInstanceGuard::acquire() {
+        let name = format!(r"Local\SakuraTest.{}", uuid::Uuid::new_v4());
+        let first = match SharedInstanceGuard::acquire_named(&name) {
             AcquireOutcome::Acquired(guard) => guard,
             other => panic!("first acquisition should succeed, got {other:?}"),
         };
         assert!(matches!(
-            SharedInstanceGuard::acquire(),
+            SharedInstanceGuard::acquire_named(&name),
             AcquireOutcome::AlreadyRunning
         ));
         drop(first);
         assert!(matches!(
-            SharedInstanceGuard::acquire(),
+            SharedInstanceGuard::acquire_named(&name),
             AcquireOutcome::Acquired(_)
         ));
     }
 
     #[test]
     fn a_same_name_non_mutex_kernel_object_is_fatal_not_a_conflict() {
-        let _serial = KERNEL_OBJECT_TEST.lock().expect("test mutex should lock");
-        let wide_name = SHARED_MUTEX_NAME
+        let name = format!(r"Local\SakuraTest.{}", uuid::Uuid::new_v4());
+        let wide_name = name
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
         let event = unsafe { CreateEventW(None, true, false, PCWSTR(wide_name.as_ptr())) }
             .expect("same-name event should be created");
-        let outcome = SharedInstanceGuard::acquire();
+        let outcome = SharedInstanceGuard::acquire_named(&name);
         unsafe { CloseHandle(event).expect("event handle should close") };
 
         assert!(matches!(outcome, AcquireOutcome::Fatal(code) if code != 0));

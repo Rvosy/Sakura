@@ -131,11 +131,11 @@ class MemoryCurationState:
         state["pending_turns"] = pending
         self._save(state)
 
-    def mark_timeline_processed(self, cursor: str) -> None:
+    def mark_timeline_processed(self, cursor: str, *, pending_turns: int = 0) -> None:
         state = self.snapshot()
         state["timeline_sync_cursor"] = cursor
         state["curation_cursor"] = cursor
-        state["pending_turns"] = 0
+        state["pending_turns"] = max(0, pending_turns)
         state["backfill_completed"] = True
         self._save(state)
 
@@ -321,7 +321,7 @@ class MemoryCurator:
         curation_evidence_kinds: tuple[str, ...] = (),
         cancel_checker: CancelChecker | None = None,
     ) -> list[dict[str, Any]]:
-        """让模型以第一人称对照已有记忆，产出整理操作；解析失败必须重试。"""
+        """让模型以第一人称对照已有记忆，产出整理操作；每块最多生成一次、修复一次。"""
 
         system_prompt = self._build_self_curation_system_prompt()
         user_prompt = _build_curation_user_prompt(

@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-02
+updated: 2026-09-07
 ---
 
 # ADR-0004：Runtime v2 跨平台基础与平台后端边界
@@ -41,7 +41,7 @@ macOS x64、Windows ARM64 和其他 Linux 架构不作为 Phase 1P 首个发布 
 Rust/Tauri 必须通过稳定的平台服务边界使用原生能力：
 
 ```text
-PlatformRuntime
+Tauri 装配入口及使用平台能力的现有模块
 ├─ InstanceLockBackend
 ├─ ManagedProcessTreeBackend
 ├─ WindowInteractionBackend
@@ -51,11 +51,15 @@ PlatformRuntime
 
 约束：
 
-- `CoreSupervisor`、generation、restart budget、IPC Envelope、CoreReadiness 和 Snapshot 不依赖具体操作系统。
+- `CoreSupervisor`、generation、IPC Envelope、CoreReadiness 和 Snapshot 不依赖具体操作系统。
 - 平台 backend 只拥有原生资源与错误转换，不拥有 Assistant 业务状态。
 - 公共层不得以 `cfg(not(windows)) => Unsupported/Fatal` 作为已支持平台的最终实现。
 - 平台失败必须映射到稳定、可诊断的错误类别；不得静默降级成未受监管 Core、并发数据写入者或不可关闭窗口。
 - Windows backend 可以保留 Job Object、named mutex 和 Win32 window region，不要求为了形式统一而改写已经验证的实现。
+
+当前实现分别构造所需平台服务，没有 `PlatformRuntime` 聚合对象。原草案中的聚合 trait 从未投入使用，
+现已删除；服务边界、资源所有权和调用顺序保持不变。自动恢复策略以
+[ADR-0030](0030-core-explicit-failure-and-manual-retry.md) 为准。
 
 ## 共享应用锁
 

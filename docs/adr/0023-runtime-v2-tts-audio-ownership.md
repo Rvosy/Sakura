@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-09-05
 ---
 
 # ADR-0023：Runtime v2 分离 TTS 合成、播放与语音留存所有权
@@ -16,8 +16,8 @@ GPT-SoVITS 可能携带旧权重或损坏管道并持续返回 HTTP 400；`data/
 
 ## Decision
 
-- Python Core 独占配置、本地 TTS 子进程、合成和持久 recording。bundled GPT-SoVITS 启动前强杀同一
-  用户且 Python/work_dir/api_v2.py 精确匹配的旧进程树；未知监听者不杀并 fail closed。
+- Provider 插件独占自己的配置、合成和 Managed Runtime；Python Core 负责段落授权、接收合成产物和持久
+  recording。Managed GPT-SoVITS 遇到已有端口监听者时明确报错，只启动和回收自己创建的受控进程。
 - Rust 独占默认音频设备、播放队列和临时播放文件门禁，每次播放重新打开当前默认设备。WebView 只提交
   已授权的 chat operation/segment identity。
 - 持久 recording 位于 `data/voice/recordings/<character>/<recording>/`；每角色保留最近 100 条非收藏
@@ -26,14 +26,13 @@ GPT-SoVITS 可能携带旧权重或损坏管道并持续返回 HTTP 400；`data/
 
 ## Consequences
 
-旧服务不会再被当作当前 generation 的健康服务，播放失败也不会拖垮聊天。代价是新增 Rust 音频依赖、
+旧服务不会再被当作当前 generation 的健康服务，播放失败也不会拖垮聊天。代价是 Rust 音频依赖、
 语音持久数据和跨层状态机；三平台真实设备仍是 accepted 的人工硬门。回退只关闭能力与临时副本，不删除
 持久 recording、收藏、配置或 bundle。
 
-## Plugin Kernel v3 refinement
+## Plugin Runtime v4 所有权
 
-ADR-0027 的 TTS 原子切换把具体 Provider 配置、合成和 Managed Runtime 移入 generation 私有 Plugin
-Worker；这里的“Python Core 独占”现在指 Sakura 受控 Python generation，而不是 `app/core_host` 直接实例化
-GPT/Genie factory。Core TTS boundary 仍独占 segment authorization、artifact 消费、recording 和 opaque
-playback descriptor，Rust 的默认设备与进程树最终所有权不变。Provider 子进程不得脱离 Rust generation
-process group。
+按 ADR-0037，Hub 和各 Provider 分别运行在独立插件进程中，通过 Service descriptor 和 `jobId` 协作。
+Core 只调用 `sakura.tts`，不保留 Provider Registry、合成队列或进程 supervisor 的备用实现。
+Core TTS boundary 独占 segment authorization、artifact 消费、recording 和 opaque playback descriptor；
+Rust 拥有默认设备与进程树的最终回收权。Provider 子进程不得脱离 Rust generation process group。

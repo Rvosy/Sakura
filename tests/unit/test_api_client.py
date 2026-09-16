@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import io
+import json
+import urllib.error
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from app.config.app_version import read_app_version
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.agent.trace import AgentTraceRecorder
 from app.llm.api_client import (
-    ApiConfigError,
     ApiRequestError,
     ApiSettings,
     OpenAICompatibleClient,
-    _build_segmented_reply_instruction,
     _build_chat_completion_payload,
     _filter_supported_chat_params,
-    _is_temperature_unsupported_error,
 )
 from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply, sanitize_reply_tones
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
@@ -36,16 +41,6 @@ def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
     assert out.segments[0].text == "hi"
     assert out.segments[0].translation == "你好"
     assert out.segments[0].portrait == "站立待机"
-
-
-def test_sanitize_reply_tones_keeps_object_when_all_valid() -> None:
-    allowed = ["中性", "害羞"]
-    reply = ChatReply([ChatSegment("a", "中性"), ChatSegment("b", "害羞")])
-
-    # 全合法时原样返回，避免无谓拷贝
-    assert sanitize_reply_tones(reply, allowed) is reply
-    # allowed 为空时不处理（向后兼容）
-    assert sanitize_reply_tones(reply, None) is reply
 
 
 def test_chat_param_filter_keeps_supported_values() -> None:
@@ -79,30 +74,6 @@ def test_build_chat_payload_drops_unsupported_params() -> None:
     assert payload["presence_penalty"] == 0.1
     assert "bad" not in payload
     assert payload["messages"][0] == {"role": "system", "content": "system"}
-
-
-def test_build_chat_payload_adds_json_keyword_for_json_object_response() -> None:
-    payload = _build_chat_completion_payload(
-        model="gpt-compatible",
-        system_prompt="只返回对象，不要解释。",
-        messages=[{"role": "user", "content": "提取字段"}],
-        temperature=0.8,
-        chat_params={"response_format": {"type": "json_object"}},
-    )
-
-    assert "json" in payload["messages"][0]["content"].lower()
-
-
-def test_build_chat_payload_keeps_existing_json_keyword() -> None:
-    payload = _build_chat_completion_payload(
-        model="gpt-compatible",
-        system_prompt="Return a JSON object only.",
-        messages=[{"role": "user", "content": "提取字段"}],
-        temperature=0.8,
-        chat_params={"response_format": {"type": "json_object"}},
-    )
-
-    assert payload["messages"][0]["content"] == "Return a JSON object only."
 
 
 def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -205,36 +176,6 @@ def test_complete_raw_retries_without_temperature_when_provider_rejects(monkeypa
 
     assert "temperature" in calls[0]
     assert "temperature" not in calls[1]
-
-
-def test_is_temperature_unsupported_error_matches_varied_provider_wordings() -> None:
-    # 各家供应商对「仅支持默认温度」的措辞不一，都应触发自动回退。
-    recoverable = [
-        "Unsupported value: 'temperature' does not support 0.8 with this model."
-        " Only the default (1) value is supported.",
-        "temperature only supports the default value",
-        "temperature is not supported with this model",
-        "temperature must be 1 for this model",
-        "temperature can only be set to the default",
-        "this model only accepts the default temperature",
-        "temperature cannot be modified for reasoning models",
-        "Invalid value for 'temperature'.",
-    ]
-    for message in recoverable:
-        assert _is_temperature_unsupported_error(ApiRequestError(message)), message
-
-
-def test_is_temperature_unsupported_error_ignores_value_range_and_unrelated_errors() -> None:
-    # 值域错误是用户配置问题，应原样抛出；与温度无关的错误更不该误判。
-    non_recoverable = [
-        "temperature must be between 0 and 2",
-        "temperature should be in the range [0, 2]",
-        "temperature must be less than or equal to 2",
-        "invalid api key",
-        "model not found",
-    ]
-    for message in non_recoverable:
-        assert not _is_temperature_unsupported_error(ApiRequestError(message)), message
 
 
 def test_complete_raw_remembers_temperature_unsupported(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -345,6 +286,149 @@ def test_response_format_falls_back_when_provider_rejects(monkeypatch) -> None: 
     assert "response_format" not in calls[1]
 
 
+@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
+def test_trailing_system_rejection_retries_and_records_compatibility(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, method: str,
+) -> None:
+    recorder = AgentTraceRecorder(tmp_path)
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", "key", "model"),
+        agent_trace_recorder=recorder,
+    )
+    payloads = []
+    metrics = []
+
+    def read_response(_opener, request, **_kwargs):  # type: ignore[no-untyped-def]
+        payload = json.loads(request.data)
+        payloads.append(payload)
+        if payload["messages"][-1]["role"] == "system":
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "Bad Request", {},
+                io.BytesIO(b'{"error":{"message":"System message must be at the beginning."}}'),
+            )
+        return b'{"choices":[{"message":{"role":"assistant","content":"OK"}}]}', 200
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    monkeypatch.setattr("app.llm.api_client.submit_telemetry_model_call", metrics.append)
+
+    with recorder.operation("trailing-system", finalize_external=True):
+        for _ in range(2):
+            reply = getattr(client, method)(
+                "private system prompt", [{"role": "user", "content": "private user text"}],
+                runtime_context="private runtime context",
+            )
+            assert (reply if method == "complete_raw" else reply.content) == "OK"
+
+    assert [[message["role"] for message in payload["messages"]] for payload in payloads] == [
+        ["system", "user", "system"], ["system", "user", "user"], ["system", "user", "user"],
+    ]
+    assert client.runtime_context_role == "user"
+    assert [metric["outcome"] for metric in metrics] == ["failed", "success", "success"]
+    assert metrics[0]["request"]["httpStatus"] == 400
+    assert metrics[0]["request"]["faultDomain"] == "compatibility"
+    assert metrics[0]["request"]["reasonCode"] == "MODEL_PARAMETER_UNSUPPORTED"
+    assert metrics[1]["request"]["compatibilityFallback"] == "runtime_context_role"
+    assert all(metric["operationId"] == "trailing-system" for metric in metrics)
+    assert [metric["modelCall"] for metric in metrics] == [1, 2, 3]
+    assert "private" not in json.dumps(metrics)
+
+
+@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
+@pytest.mark.parametrize("scenario", ["no_runtime", "tail_runtime", "tool_runtime", "supported"])
+def test_proactive_history_fallback_preserves_context_and_provider_defaults(
+    monkeypatch: pytest.MonkeyPatch, method: str, scenario: str,
+) -> None:
+    from types import SimpleNamespace
+    from app.agent.context_orchestrator import messages_for_context_snapshot
+    from app.core_host.real_chat import _ProjectedTurn, _TurnProjection, _messages_from_turn_projection
+
+    messages = _messages_from_turn_projection(_TurnProjection(
+        (_ProjectedTurn("conversation", (
+            {"role": "user", "content": "previous user"},
+            {"role": "assistant", "content": "previous assistant"},
+        ), "conversation"),), (),
+        (_ProjectedTurn("proactive", ({"role": "assistant", "content": "previous proactive reply"},), "proactive"),),
+    ))
+    messages.append({"role": "user", "content": "current user"})
+    messages = messages_for_context_snapshot(
+        messages, SimpleNamespace(selected_turns=[SimpleNamespace(turn_id="conversation")]),
+    )
+    if scenario == "tool_runtime":
+        messages.extend([
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call-1", "type": "function", "function": {"name": "fixture", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call-1", "content": "tool result"},
+        ])
+    original_messages = [dict(message) for message in messages]
+    payloads = []
+
+    def read_response(_opener, request, **_kwargs):  # type: ignore[no-untyped-def]
+        payload = json.loads(request.data)
+        payloads.append(payload)
+        if scenario != "supported" and any(message["role"] == "system" for message in payload["messages"][1:]):
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "Bad Request", {},
+                io.BytesIO(b'{"error":{"message":"System message must be at the beginning."}}'),
+            )
+        return b'{"choices":[{"message":{"role":"assistant","content":"OK"}}]}', 200
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", "model"))
+    for _ in range(2):
+        reply = getattr(client, method)(
+            "primary system", messages, runtime_context="" if scenario == "no_runtime" else "runtime facts",
+        )
+        assert (reply if method == "complete_raw" else reply.content) == "OK"
+
+    assert messages == original_messages
+    assert payloads[0]["messages"][3]["role"] == "system"
+    if scenario == "supported":
+        assert len(payloads) == 2
+        assert payloads[0] == payloads[1]
+        assert client.runtime_context_role == "system"
+    else:
+        assert len(payloads) == 3
+        assert payloads[1] == payloads[2]
+        assert [message["role"] for message in payloads[1]["messages"]].count("system") == 1
+        proactive = payloads[1]["messages"][3]
+        assert proactive["role"] == "user"
+        assert proactive["content"] == original_messages[2]["content"]
+        assert "previous proactive reply" not in payloads[1]["messages"][0]["content"]
+        assert client.runtime_context_role == "user"
+
+
+@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
+@pytest.mark.parametrize(
+    ("message", "runtime_context", "messages", "attempts"),
+    [
+        ("System message must be at the beginning.", "", [{"role": "user", "content": "hi"}], 1),
+        ("Unknown model", "context", [{"role": "user", "content": "hi"}], 1),
+        ("System message must be at the beginning.", "", [{"role": "system", "content": "unmarked input"}], 1),
+        ("System message must be at the beginning.", "context", [{"role": "user", "content": "hi"}], 2),
+        ("System message must be at the beginning.", "context", [{"role": "tool", "tool_call_id": "call-1", "content": "ok"}], 1),
+    ],
+)
+def test_runtime_context_fallback_only_changes_an_actual_trailing_system_once(
+    monkeypatch: pytest.MonkeyPatch, method: str, message: str,
+    runtime_context: str, messages: list[dict[str, Any]], attempts: int,
+) -> None:
+    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", "model"))
+    payloads = []
+
+    def read_response(_opener, request, **_kwargs):  # type: ignore[no-untyped-def]
+        payloads.append(json.loads(request.data))
+        raise urllib.error.HTTPError(
+            request.full_url, 400, "Bad Request", {},
+            io.BytesIO(json.dumps({"error": {"message": message}}).encode()),
+        )
+
+    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    with pytest.raises(ApiRequestError):
+        getattr(client, method)("system", messages, runtime_context=runtime_context)
+    assert len(payloads) == attempts
+
+
 def test_compatibility_fallback_attempts_are_bounded_by_shared_policy(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[dict[str, Any]] = []
     client = OpenAICompatibleClient(
@@ -444,61 +528,6 @@ def test_complete_with_tools_sends_tools_and_parses_tool_calls(monkeypatch) -> N
     assert turn.message["tool_calls"][0]["id"] == "call_1"
 
 
-def test_complete_with_tools_normalizes_tool_call_message_when_provider_omits_id(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="key",
-            model="model",
-        )
-    )
-
-    def fake_post(_payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "echo_tool",
-                                    "arguments": '{"value":"ok"}',
-                                },
-                            }
-                        ],
-                    }
-                }
-            ]
-        }
-
-    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-
-    turn = client.complete_with_tools(
-        "system",
-        [{"role": "user", "content": "hello"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "echo_tool",
-                    "description": "Echo",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }
-        ],
-    )
-
-    assert turn.tool_calls[0].id == "tool_call_0"
-    assert turn.message["tool_calls"][0] == {
-        "id": "tool_call_0",
-        "type": "function",
-        "function": {"name": "echo_tool", "arguments": '{"value":"ok"}'},
-    }
-
-
 def test_complete_with_tools_preserves_provider_tool_call_metadata_for_continuation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     client = OpenAICompatibleClient(
         ApiSettings(base_url="https://api.example.com/v1", api_key="key", model="gemini-3")
@@ -539,31 +568,6 @@ def test_complete_with_tools_preserves_provider_tool_call_metadata_for_continuat
     assert turn.message["tool_calls"][0]["extra_content"] == {
         "google": {"thought_signature": "opaque-signature"}
     }
-
-
-def test_complete_with_tools_can_request_structured_json(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    captured: dict[str, Any] = {}
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="key",
-            model="model",
-        )
-    )
-
-    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        captured.update(payload)
-        return {"choices": [{"message": {"role": "assistant", "content": '{"segments":[]}'}}]}
-
-    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-
-    client.complete_with_tools(
-        "system",
-        [{"role": "user", "content": "hello"}],
-        structured_response=True,
-    )
-
-    assert captured["response_format"] == {"type": "json_object"}
 
 
 def test_complete_with_tools_parses_pseudo_tool_call_json_content(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -640,62 +644,6 @@ def test_complete_with_tools_ignores_plain_json_reply_without_tool_call(monkeypa
     assert "tool_calls" not in turn.message
 
 
-def test_complete_with_tools_parses_nested_pseudo_tool_call(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="key",
-            model="model",
-        )
-    )
-
-    monkeypatch.setattr(
-        client,
-        "_post_chat_completions",
-        lambda _payload, **_kwargs: {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": (
-                            '{"tool_call":{"name":"playwright_navigate",'
-                            '"arguments":{"url":"https://example.com"}}}'
-                        ),
-                    }
-                }
-            ]
-        },
-    )
-
-    turn = client.complete_with_tools(
-        "system",
-        [{"role": "user", "content": "open"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "playwright_navigate",
-                    "description": "Open",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }
-        ],
-    )
-
-    assert turn.tool_calls[0].name == "playwright_navigate"
-    assert turn.tool_calls[0].arguments == {"url": "https://example.com"}
-
-
-def test_segmented_reply_instruction_requests_portrait_field() -> None:
-    instruction = _build_segmented_reply_instruction(
-        ["中性", "请求"],
-        ["站立待机", "伸手命令"],
-    )
-
-    assert '"portrait":"站立待机"' in instruction
-    assert "portrait 只能从这些类别中选择：站立待机、伸手命令" in instruction
-
-
 def test_list_models_requests_models_endpoint(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     captured: dict[str, Any] = {}
     client = OpenAICompatibleClient(
@@ -723,18 +671,21 @@ def test_list_models_requests_models_endpoint(monkeypatch) -> None:  # type: ign
         captured["url"] = request.full_url
         captured["method"] = request.get_method()
         captured["auth"] = request.headers.get("Authorization")
+        captured["user_agent"] = request.get_header("User-agent")
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     assert client.list_models() == ["a-model", "z-model"]
     assert captured == {
         "url": "https://api.example.com/v1/models",
         "method": "GET",
         "auth": "Bearer key",
+        "user_agent": f"Sakura/{read_app_version(REPO_ROOT)}",
         "timeout": 12,
     }
+    assert not captured["user_agent"].startswith("Python-urllib/")
 
 
 def test_list_models_normalizes_google_ai_studio_base_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -764,17 +715,18 @@ def test_list_models_normalizes_google_ai_studio_base_url(monkeypatch) -> None: 
         captured["url"] = request.full_url
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     assert client.list_models() == ["gemini-2.5-flash"]
     assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/models"
 
 
-def test_chat_completions_normalizes_google_ai_studio_base_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("base_path", ["", "/v1", "/v1/", "/v1beta", "/v1/openai", "/v1beta/openai/"])
+def test_chat_completions_normalizes_google_ai_studio_base_url(monkeypatch, base_path: str) -> None:  # type: ignore[no-untyped-def]
     captured: dict[str, Any] = {}
     client = OpenAICompatibleClient(
         ApiSettings(
-            base_url="https://generativelanguage.googleapis.com/v1",
+            base_url=f"https://generativelanguage.googleapis.com{base_path}",
             api_key="key",
             model="gemini-2.5-flash",
         )
@@ -795,12 +747,15 @@ def test_chat_completions_normalizes_google_ai_studio_base_url(monkeypatch) -> N
     def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
         _ = timeout
         captured["url"] = request.full_url
+        captured["user_agent"] = request.get_header("User-agent")
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     assert client.test_connection() == "OK"
-    assert captured["url"] == "https://generativelanguage.googleapis.com/v1/openai/chat/completions"
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert captured["user_agent"] == f"Sakura/{read_app_version(REPO_ROOT)}"
+    assert not captured["user_agent"].startswith("Python-urllib/")
 
 
 def test_connection_omits_temperature(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -828,11 +783,13 @@ def test_connection_omits_temperature(monkeypatch) -> None:  # type: ignore[no-u
         captured["payload"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     # 只接受默认温度的模型在检测阶段不应被显式 temperature 拒绝。
     assert client.test_connection() == "OK"
     assert "temperature" not in captured["payload"]
+    assert "max_tokens" not in captured["payload"]
+    assert "max_completion_tokens" not in captured["payload"]
 
 
 def test_local_chat_completion_base_url_uses_loopback_http_helper(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -904,25 +861,6 @@ def test_http_auto_retry_uses_shared_attempt_limit(monkeypatch) -> None:  # type
     assert len(calls) == MAX_AUTO_RETRY_ATTEMPTS
 
 
-def test_list_models_allows_empty_model_but_requires_key() -> None:
-    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "", ""))
-
-    try:
-        client.list_models()
-    except ApiConfigError as exc:
-        assert "API_KEY" in str(exc)
-    else:
-        raise AssertionError("缺少 API Key 时应拒绝检测模型列表")
-
-
-def test_list_models_returns_empty_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", ""))
-
-    monkeypatch.setattr(client, "_send_with_retries", lambda _request: '{"data":[]}')
-
-    assert client.list_models() == []
-
-
 def test_list_models_rejects_bad_response_shape(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", ""))
 
@@ -937,9 +875,13 @@ def test_list_models_rejects_bad_response_shape(monkeypatch) -> None:  # type: i
 
 
 def test_list_models_wraps_http_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", "", timeout_seconds=1))
+    api_key = "opaque-provider-secret"
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", api_key, "", timeout_seconds=1)
+    )
 
     def fake_urlopen(_request, timeout):  # type: ignore[no-untyped-def]
+        import io
         import urllib.error
 
         raise urllib.error.HTTPError(
@@ -947,52 +889,26 @@ def test_list_models_wraps_http_error(monkeypatch) -> None:  # type: ignore[no-u
             401,
             "Unauthorized",
             {},
-            None,
+            io.BytesIO(
+                (
+                    '{"error":{"message":"invalid key '
+                    + api_key
+                    + '","code":"invalid_api_key"}}'
+                ).encode("utf-8")
+            ),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     try:
         client.list_models()
     except ApiRequestError as exc:
         assert "API HTTP 401" in str(exc)
+        assert "invalid_api_key" in str(exc)
+        assert "[REDACTED]" in str(exc)
+        assert api_key not in str(exc)
     else:
         raise AssertionError("HTTP 错误应包装为 ApiRequestError")
-
-
-def test_google_ai_studio_auth_error_gets_actionable_message(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = OpenAICompatibleClient(
-        ApiSettings("https://generativelanguage.googleapis.com/v1beta", "key", "", timeout_seconds=1)
-    )
-    error_body = (
-        '{"error":{"code":401,"message":"Request had invalid authentication credentials.",'
-        '"status":"UNAUTHENTICATED","details":[{"reason":"API_KEY_SERVICE_BLOCKED",'
-        '"method":"google.ai.generativelanguage.v1.ModelService.ListModels"}]}}'
-    )
-
-    def fake_urlopen(_request, timeout):  # type: ignore[no-untyped-def]
-        _ = timeout
-        import urllib.error
-
-        raise urllib.error.HTTPError(
-            "https://generativelanguage.googleapis.com/v1beta/openai/models",
-            401,
-            "Unauthorized",
-            {},
-            io.BytesIO(error_body.encode("utf-8")),
-        )
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-
-    try:
-        client.list_models()
-    except ApiRequestError as exc:
-        message = str(exc)
-        assert "Google AI Studio 认证失败" in message
-        assert "AI Studio API Key" in message
-        assert "/v1beta/openai" in message
-    else:
-        raise AssertionError("Google AI Studio 认证错误应包装为中文提示")
 
 
 def test_list_models_wraps_url_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1003,7 +919,7 @@ def test_list_models_wraps_url_error(monkeypatch) -> None:  # type: ignore[no-un
 
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
 
     try:
@@ -1036,25 +952,6 @@ def test_parse_chat_reply_bad_json_does_not_echo_raw() -> None:
     )
 
     assert reply.segments[0].text != '{"segments":[{"ja":"うん。","zh":"这里有 `""` 裸双引号","tone":"中性"}]}'
-
-
-def test_parse_chat_reply_swaps_chinese_ja_with_japanese_zh() -> None:
-    reply = parse_chat_reply(
-        '{"segments":[{"ja":"原因是 Mermaid 语法。","zh":"原因はマーメイドの構文だよ。","tone":"中性"}]}'
-    )
-
-    assert reply.segments[0].text == "原因はマーメイドの構文だよ。"
-    assert reply.segments[0].translation == "原因是 Mermaid 语法。"
-
-
-def test_parse_chat_reply_replaces_chinese_ja_with_safe_japanese() -> None:
-    reply = parse_chat_reply(
-        '{"segments":[{"ja":"原因是 Mermaid 语法。","zh":"原因是 Mermaid 语法。","tone":"中性"}]}'
-    )
-
-    assert "原因是" not in reply.segments[0].text
-    assert reply.segments[0].translation == "原因是 Mermaid 语法。"
-    assert reply.segments[0].suppress_tts is True
 
 
 def test_parse_chat_reply_suppresses_tts_for_safe_parse_failure() -> None:

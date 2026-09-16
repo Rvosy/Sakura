@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 import hmac
-import json
 import re
 import secrets
 import sys
 import threading
-import urllib.error
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from .chat_fixture import CHAT_CLOSE_TIMEOUT_SECONDS, CHAT_MESSAGE_LIMIT
+from app.llm.provider_errors import provider_http_status, public_provider_http_message
+
 from .protocol import event, response
 
 if TYPE_CHECKING:
@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 
 REAL_CHAT_EXECUTION_LIMIT = 1
+CHAT_MESSAGE_LIMIT = 64 * 1024
+CHAT_CLOSE_TIMEOUT_SECONDS = 3.0
 MANUAL_SCREEN_ATTACHMENT_LIMIT = 6
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
 RECENT_PROACTIVE_LIMIT = 3
@@ -101,13 +103,15 @@ class RealChatBoundary:
                 self._timeline = None
                 self._timeline_error = exc
         self._segment_authorizer = segment_authorizer
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
         self._executions: dict[str, _Execution] = {}
         self._pending_screen_attachment: _ScreenAttachment | None = None
+        self._screen_session_id = secrets.token_hex(16)
         self._pending_runtime_updates: dict[str, Callable[[], None]] = {}
         self._revision = 0
         self._closed = False
+        self._switching_character = False
 
     def set_event_publisher(self, publisher: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:
@@ -119,6 +123,8 @@ class RealChatBoundary:
         payload = self._validate_send(request)
         operation_id = str(request["id"])
         with self._changed:
+            if self._switching_character:
+                raise RealChatRejection("CHARACTER_SWITCH_IN_PROGRESS", "角色正在切换", retryable=True)
             if self._closed:
                 raise RealChatRejection("GENERATION_INVALIDATED", "chat generation is closing")
             if self._session_provider() is None:
@@ -161,21 +167,15 @@ class RealChatBoundary:
                     "GENERATION_INVALIDATED", "chat generation is closing"
                 )
             self._pending_runtime_updates[key] = update
-            if not self._executions:
+            if not self._executions and not self._switching_character:
                 self._apply_pending_runtime_updates_locked()
 
     def _apply_pending_runtime_updates_locked(self) -> None:
-        pending = self._pending_runtime_updates
-        self._pending_runtime_updates = {}
-        for key in sorted(pending):
-            try:
-                pending[key]()
-            except Exception:
-                # Persisted configuration remains authoritative.  Preserve the
-                # newest update for the next operation boundary and surface the
-                # immediate failure to the settings/chat caller.
-                self._pending_runtime_updates[key] = pending[key]
-                raise
+        for key in sorted(self._pending_runtime_updates):
+            # Failed and not-yet-applied domains remain pending for the next
+            # operation boundary; successful domains must not be replayed.
+            self._pending_runtime_updates[key]()
+            del self._pending_runtime_updates[key]
 
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))
@@ -206,11 +206,14 @@ class RealChatBoundary:
                 with interaction_context(operation_id):
                     self.handle_send(request, _on_started=started.set)
             except BaseException as error:  # noqa: BLE001 - owned generation worker
-                if not started.is_set():
-                    kickoff_errors.append(error)
-                else:
-                    _safe_diagnostic(error)
-                self._drop_execution(operation_id)
+                try:
+                    if not started.is_set():
+                        kickoff_errors.append(error)
+                    else:
+                        code, _, _ = _classify_error(error)
+                        _safe_diagnostic(error, code=code, stage="worker", operation_id=operation_id)
+                finally:
+                    self._drop_execution(operation_id)
             finally:
                 started.set()
 
@@ -241,6 +244,7 @@ class RealChatBoundary:
         _terminal_sink: Callable[[str, Mapping[str, Any]], None] | None = None,
         _publish_events: bool = True,
     ) -> dict[str, Any]:
+        started_at = monotonic()
         payload = self._validate_send(request)
         operation_id = str(request["id"])
         with self._changed:
@@ -268,6 +272,7 @@ class RealChatBoundary:
         runtime = None
         completed_fact: dict[str, Any] | None = None
         plugin_application: object | None = None
+        stage = "prepare"
         try:
             from app.core.runtime_log import suppress_runtime_logs
             from app.agent.trace import traced_message
@@ -283,6 +288,7 @@ class RealChatBoundary:
             if callable(wait_dependencies):
                 from app.core.runtime_log import log_event
 
+                stage = "prompt_dependencies"
                 dependency_results = wait_dependencies(
                     cancel_checker=execution.cancel.throw_if_cancelled
                 )
@@ -295,6 +301,7 @@ class RealChatBoundary:
                         severity="info" if ready else "warning",
                         verbosity=1 if ready else 0,
                     )
+            stage = "timeline_read"
             timeline = self._timeline
             if timeline is None:
                 history_status = "degraded"
@@ -303,13 +310,14 @@ class RealChatBoundary:
                     "Chat history database is unavailable",
                     False,
                 ) from self._timeline_error
+            stage = "input_prepare"
             proactive_event = payload.get("event")
             is_update_event = isinstance(proactive_event, Mapping)
             message = "" if is_update_event else str(payload["message"])
             plugin_application = (
                 self._plugin_application_provider()
                 if self._plugin_application_provider is not None
-                else getattr(session, "plugin_application", None)
+                else None
             )
             if plugin_application is not None and not is_update_event:
                 try:
@@ -329,12 +337,14 @@ class RealChatBoundary:
                 event_payload = proactive_event.get("payload")
                 assert isinstance(event_payload, Mapping)
                 execution.cancel.throw_if_cancelled()
+                stage = "pipeline"
                 with suppress_runtime_logs():
                     result = getattr(session, "pipeline").run_event(
                         AgentEvent(type="update_available", payload=dict(event_payload)),
                         cancel_checker=execution.cancel.throw_if_cancelled,
                     )
             else:
+                stage = "timeline_read"
                 try:
                     history_now = datetime.now().astimezone()
                     history_projection = assemble_recent_turns(
@@ -353,6 +363,7 @@ class RealChatBoundary:
                     raise _BoundaryFailure(
                         "TIMELINE_READ_FAILED", "Chat history could not be read", False
                     ) from exc
+                stage = "input_prepare"
                 request_user_message: dict[str, Any] = {"role": "user", "content": message}
                 if screen_attachment is None or screen_attachment.source != "screen_awareness":
                     input_entries.append(
@@ -385,8 +396,7 @@ class RealChatBoundary:
                             message, screen_attachment.observations
                         )
                         observation_text = (
-                            f"用户手动选择的 {len(screen_attachment.observations)} 张屏幕截图"
-                            "已提交给对话模型。"
+                            f"你分享了 {len(screen_attachment.observations)} 张屏幕截图。"
                         )
                         append_manual_observation_batch_marker(
                             message,
@@ -463,6 +473,7 @@ class RealChatBoundary:
                     history_drops=history_projection.dropped,
                 )
                 messages = [*recent_messages, request_user_message]
+                stage = "timeline_write"
                 try:
                     execution.cancel.throw_if_cancelled()
                     timeline.append_many(input_entries)
@@ -475,6 +486,7 @@ class RealChatBoundary:
                     ) from exc
 
                 execution.cancel.throw_if_cancelled()
+                stage = "pipeline"
                 with suppress_runtime_logs():
                     pipeline_kwargs: dict[str, Any] = {
                         "cancel_checker": execution.cancel.throw_if_cancelled,
@@ -485,6 +497,7 @@ class RealChatBoundary:
                         messages,
                         **pipeline_kwargs,
                     )
+            stage = "reply_processing"
             execution.cancel.throw_if_cancelled()
             allowed_action_types = {"tool_call", "event"} if is_update_event else {"tool_call"}
             unsupported = [
@@ -543,6 +556,7 @@ class RealChatBoundary:
                     )
             assistant_entry_id = uuid.uuid4().hex
             authorized_segments: list[tuple[int, dict[str, Any]]] = []
+            stage = "segment_authorization"
             for segment_index, segment in enumerate(segments):
                 if not segment["text"].strip():
                     continue
@@ -560,6 +574,7 @@ class RealChatBoundary:
                     if tts_authorized is False:
                         segment["suppressTts"] = True
                 authorized_segments.append((segment_index, segment))
+            stage = "reply_processing"
             if is_update_event and not authorized_segments:
                 raise _BoundaryFailure(
                     "UPDATE_ANNOUNCEMENT_EMPTY",
@@ -568,6 +583,7 @@ class RealChatBoundary:
                 )
             if authorized_segments:
                 execution.cancel.throw_if_cancelled()
+                stage = "timeline_write"
                 try:
                     assistant_entry = NewTimelineEntry(
                         entry_id=assistant_entry_id,
@@ -631,8 +647,8 @@ class RealChatBoundary:
                     "historyStatus": history_status,
                 }
             else:
-                _safe_diagnostic(error)
                 code, message, retryable = _classify_error(error)
+                _safe_diagnostic(error, code=code, stage=stage, operation_id=operation_id)
                 terminal_payload = {
                     "operationId": operation_id,
                     "error": {
@@ -645,6 +661,19 @@ class RealChatBoundary:
                 }
 
         resolved_terminal = self._finish(operation_id, terminal)
+        if resolved_terminal is not None:
+            from app.core.runtime_log import log_event
+            finished_attributes: dict[str, Any] = {
+                "operation_id": operation_id,
+                "outcome": {"chat.completed": "success", "chat.cancelled": "cancelled"}.get(resolved_terminal, "failed"),
+                "elapsed_ms": int((monotonic() - started_at) * 1000),
+            }
+            if resolved_terminal == "chat.failed":
+                finished_attributes.update(
+                    reason_code=terminal_payload["error"]["code"],
+                    stage=stage,
+                )
+            log_event("Chat", "对话已结束", finished_attributes, event="chat.finished", severity="info")
         try:
             if resolved_terminal == "chat.completed":
                 if plugin_application is not None and completed_fact is not None:
@@ -669,21 +698,27 @@ class RealChatBoundary:
                     )
                 except Exception:
                     pass
-            if resolved_terminal is not None:
-                if resolved_terminal == "chat.cancelled" and terminal != "chat.cancelled":
-                    terminal_payload = {
-                        "operationId": operation_id,
-                        "historyStatus": history_status,
-                    }
-                if _terminal_sink is not None:
-                    _terminal_sink(resolved_terminal, terminal_payload)
-                if _publish_events:
-                    self._publish(request, resolved_terminal, terminal_payload)
-            return self._accepted_send_response(request, operation_id)
-        finally:
-            # Keep the execution registered until its terminal event has been
-            # acknowledged so generation shutdown can drain detached workers.
+        except BaseException:
             self._drop_execution(operation_id)
+            raise
+
+        # A new send may arrive as soon as the terminal reaches the Shell. Keep
+        # publication and release atomic without locking the domain callbacks.
+        with self._changed:
+            try:
+                if resolved_terminal is not None:
+                    if resolved_terminal == "chat.cancelled" and terminal != "chat.cancelled":
+                        terminal_payload = {
+                            "operationId": operation_id,
+                            "historyStatus": history_status,
+                        }
+                    if _terminal_sink is not None:
+                        _terminal_sink(resolved_terminal, terminal_payload)
+                    if _publish_events:
+                        self._publish(request, resolved_terminal, terminal_payload)
+                return self._accepted_send_response(request, operation_id)
+            finally:
+                self._drop_execution(operation_id)
 
     def run_host_message(
         self,
@@ -858,20 +893,37 @@ class RealChatBoundary:
             payload={"accepted": accepted, "operationId": operation_id},
         )
 
+    def handle_screen_session(self, request: dict[str, Any]) -> dict[str, Any]:
+        if request.get("payload") != {}:
+            raise ValueError("screen.session payload is invalid")
+        with self._lock:
+            self._check_screen_session(self._screen_session_id)
+            session_id = self._screen_session_id
+        return response(request, generation_id=self._generation_id,
+                        generation_credential=self._generation_credential,
+                        protocol_minor=2, payload={"sessionId": session_id})
+
+    def _check_screen_session(self, session_id: object) -> None:
+        # Called under the chat lock both before reading a resource and before
+        # publishing it. The token changes even when A is selected again.
+        if self._closed or self._switching_character or session_id != self._screen_session_id:
+            raise LookupError("SCREEN_SESSION_STALE")
+
     def handle_screen_attach(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"resource"}:
+        if not isinstance(payload, Mapping) or set(payload) != {"resource", "sessionId"}:
             raise ValueError("screen.attach payload is invalid")
         from app.core_host.screen_capture import consume_screen_resource
         from app.storage.visual_observation import generate_visual_observation_id
 
+        with self._lock:
+            self._check_screen_session(payload["sessionId"])
         observation = consume_screen_resource(
             payload["resource"], generation_id=self._generation_id
         )
         item_id = f"shot-{secrets.token_hex(16)}"
         with self._lock:
-            if self._closed:
-                raise LookupError("screen attachment generation is closing")
+            self._check_screen_session(payload["sessionId"])
             pending = self._pending_screen_attachment
             if pending is None:
                 attachment = _ScreenAttachment(
@@ -910,7 +962,7 @@ class RealChatBoundary:
 
     def handle_screen_attach_batch(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"resources"}:
+        if not isinstance(payload, Mapping) or set(payload) != {"resources", "sessionId"}:
             raise ValueError("screen.attachBatch payload is invalid")
         resources = payload.get("resources")
         if not isinstance(resources, list) or not 1 <= len(resources) <= 20:
@@ -919,6 +971,8 @@ class RealChatBoundary:
             raise ValueError("screen.attachBatch resource is invalid")
         from app.core_host.screen_capture import consume_screen_resource
 
+        with self._lock:
+            self._check_screen_session(payload["sessionId"])
         observations = tuple(
             consume_screen_resource(resource, generation_id=self._generation_id)
             for resource in resources
@@ -930,8 +984,7 @@ class RealChatBoundary:
             source="screen_awareness",
         )
         with self._lock:
-            if self._closed:
-                raise LookupError("screen attachment generation is closing")
+            self._check_screen_session(payload["sessionId"])
             if self._pending_screen_attachment is not None:
                 raise LookupError("another screen attachment is pending")
             self._pending_screen_attachment = attachment
@@ -1048,6 +1101,28 @@ class RealChatBoundary:
             ),
             "activeInteractionSummary": interaction,
         }
+
+    @contextmanager
+    def suspend_for_character_change(self):
+        deadline = monotonic() + CHAT_CLOSE_TIMEOUT_SECONDS
+        with self._changed:
+            self._switching_character = True
+            self._screen_session_id = secrets.token_hex(16)
+            self._pending_screen_attachment = None
+            self.cancel_all()
+            try:
+                while self._executions and monotonic() < deadline:
+                    self._changed.wait(timeout=max(0.0, deadline - monotonic()))
+                if self._executions:
+                    raise RuntimeError("CHARACTER_SWITCH_CHAT_BUSY")
+            except BaseException:
+                self._switching_character = False
+                raise
+        try:
+            yield
+        finally:
+            with self._changed:
+                self._switching_character = False
 
     def cancel_all(self) -> None:
         with self._lock:
@@ -1512,6 +1587,7 @@ def _prepare_runtime_timeline(app_root: Path) -> TimelineStore:
 
 
 def _project_reply(reply: object) -> list[dict[str, object]]:
+    from app.llm.visual_control import validate_visual_control
     raw_segments = getattr(reply, "segments", None)
     if not isinstance(raw_segments, list):
         raise _BoundaryFailure("INVALID_CHAT_REPLY", "Assistant reply was invalid", False)
@@ -1535,6 +1611,19 @@ def _project_reply(reply: object) -> list[dict[str, object]]:
                 "suppressTts": values[4],
             }
         )
+        control = getattr(segment, "control", None)
+        if control is not None:
+            try:
+                projected[-1]["control"] = validate_visual_control(control)
+            except ValueError:
+                pass
+    # Optional controls must not make a valid text reply exceed Timeline's
+    # record limit. Prefer dropping visual data to losing the completed turn.
+    import json
+    from app.storage.timeline import MAX_PAYLOAD_BYTES
+    if len(json.dumps({"segments": projected}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_PAYLOAD_BYTES:
+        for segment in projected:
+            segment.pop("control", None)
     return projected
 
 
@@ -1546,7 +1635,7 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     if isinstance(error, ContextWindowExceededError):
         return (
             "CONTEXT_WINDOW_EXCEEDED",
-            "Current request exceeds the configured model context window",
+            error.public_message(),
             False,
         )
     from app.llm.api_client import ApiConfigError, ApiRequestError
@@ -1555,16 +1644,14 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
         return "PROVIDER_CONFIGURATION_INVALID", "Provider configuration is invalid", False
     if isinstance(error, ApiRequestError):
         text = str(error).lower()
-        cause: BaseException | None = error
-        while cause is not None:
-            if isinstance(cause, urllib.error.HTTPError):
-                retryable = cause.code == 429 or cause.code >= 500
-                return (
-                    "PROVIDER_REQUEST_FAILED",
-                    _public_provider_http_message(error, cause.code),
-                    retryable,
-                )
-            cause = cause.__cause__
+        status = provider_http_status(error)
+        if status is not None:
+            retryable = status == 429 or status >= 500
+            return (
+                "PROVIDER_REQUEST_FAILED",
+                public_provider_http_message(error, status),
+                retryable,
+            )
         response_invalid = any(
             marker in text
             for marker in (
@@ -1577,88 +1664,43 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
         )
         if response_invalid:
             message = (
-                "供应商响应格式无效：返回内容不是有效 JSON。"
+                "模型服务响应格式无效：返回内容不是有效 JSON。"
                 if "格式无法解析" in text or "invalid json" in text
-                else "供应商响应格式无效：回复结构不符合协议。"
+                else "模型服务响应格式无效：回复结构不符合协议。"
             )
             return "PROVIDER_RESPONSE_INVALID", message, False
         return "PROVIDER_REQUEST_FAILED", "Provider request failed", True
     return "CHAT_EXECUTION_FAILED", "Chat execution failed", False
 
 
-_PROVIDER_PUBLIC_FIELDS = ("message", "code", "type", "status")
-_PROVIDER_DIAGNOSTIC_LIMIT = 360
-_PROVIDER_SENSITIVE_PATTERNS = (
-    re.compile(r"\bPRIVATE_[A-Z0-9_]+\b"),
-    re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{6,}\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:api[_ -]?key|authorization|bearer|token|secret|password|credential)\b"
-        r"\s*[:=]\s*[^\s,;]+",
-        re.IGNORECASE,
-    ),
-    re.compile(r"https?://[^\s\])}>,;]+", re.IGNORECASE),
-    re.compile(r"\b[A-Za-z]:\\[^\s\])}>,;]+"),
-    re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s\])}>,;]+"),
-)
-
-
-def _public_provider_http_message(error: BaseException, status_code: int) -> str:
-    payload = _provider_error_payload(str(error), status_code)
-    if payload is None:
-        return f"API HTTP {status_code}: 供应商请求失败。"
-
-    raw_error = payload.get("error")
-    public_source = raw_error if isinstance(raw_error, Mapping) else payload
-    public_values: dict[str, str] = {}
-    for field in _PROVIDER_PUBLIC_FIELDS:
-        value = public_source.get(field)
-        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-            continue
-        sanitized = _sanitize_provider_diagnostic(str(value))
-        if sanitized:
-            public_values[field] = sanitized
-
-    message = public_values.pop("message", "")
-    metadata = "; ".join(
-        f"{field}: {public_values[field]}"
-        for field in _PROVIDER_PUBLIC_FIELDS[1:]
-        if field in public_values
-    )
-    if message and metadata:
-        return f"API HTTP {status_code}: {message} ({metadata})"
-    if message:
-        return f"API HTTP {status_code}: {message}"
-    if metadata:
-        return f"API HTTP {status_code}: {metadata}"
-    return f"API HTTP {status_code}: 供应商请求失败。"
-
-
-def _provider_error_payload(error_text: str, status_code: int) -> Mapping[str, Any] | None:
-    raw_marker = "\n原始响应："
-    if raw_marker in error_text:
-        candidate = error_text.rsplit(raw_marker, 1)[1].strip()
-    else:
-        prefix = f"API HTTP {status_code}:"
-        candidate = error_text.split(prefix, 1)[1].strip() if prefix in error_text else ""
-    if not candidate.startswith("{"):
-        return None
+def _safe_diagnostic(error: BaseException, *, code: str, stage: str, operation_id: str) -> None:
     try:
-        decoded = json.loads(candidate)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return decoded if isinstance(decoded, Mapping) else None
+        from app.core.runtime_log import external_runtime_sink_active, log_event, diagnostic_attributes
+        from app.llm.prompts.runtime import ContextWindowExceededError
 
-
-def _sanitize_provider_diagnostic(value: str) -> str:
-    sanitized = " ".join(value.split())
-    for pattern in _PROVIDER_SENSITIVE_PATTERNS:
-        sanitized = pattern.sub("[REDACTED]", sanitized)
-    if len(sanitized) > _PROVIDER_DIAGNOSTIC_LIMIT:
-        sanitized = sanitized[: _PROVIDER_DIAGNOSTIC_LIMIT - 1].rstrip() + "…"
-    return sanitized
-
-
-def _safe_diagnostic(error: BaseException) -> None:
+        if external_runtime_sink_active():
+            attributes: dict[str, Any] = {
+                "operation_id": operation_id,
+                "code": code,
+                "reason_code": code,
+                "error_type": type(error).__name__,
+                **diagnostic_attributes(error, reason_code=code, stage=stage),
+            }
+            if isinstance(error, ContextWindowExceededError):
+                attributes.update(error.log_attributes())
+            elif (status := provider_http_status(error)) is not None:
+                attributes["http_status"] = status
+            log_event(
+                "Chat",
+                "对话请求失败",
+                attributes,
+                event="chat.request.failed",
+                severity="error",
+                verbosity=0,
+            )
+            return
+    except Exception:
+        pass
     try:
         print(f"Real chat failed: {type(error).__name__}", file=sys.stderr)
     except Exception:

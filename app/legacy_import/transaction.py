@@ -8,9 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import LegacyImportError
+from .files import is_link_or_junction
 
 
-_ATOMIC_TREE_NAMES = ("characters", "tts")
+_ATOMIC_TREE_PATHS = (
+    Path("characters"),
+    Path("tts"),
+    Path("data/chat_history"),
+    Path("data/memory"),
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,7 @@ class PendingCommit:
 
 def commit_payload(target: Path, import_id: str, payload: Path) -> PendingCommit:
     pending = PendingCommit(import_id, target)
+    _assert_no_link_ancestors(target, target)
     journal: dict[str, object] = {
         "schemaVersion": 1,
         "importId": import_id,
@@ -49,7 +56,11 @@ def commit_payload(target: Path, import_id: str, payload: Path) -> PendingCommit
         for staged_file in sorted(path for path in payload.rglob("*") if path.is_file()):
             relative = staged_file.relative_to(payload)
             destination = target / relative
+            _assert_no_link_ancestors(target, destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
+            # Recheck after mkdir: a concurrent replacement of an ancestor must
+            # not turn an approved user-root overwrite into an external write.
+            _assert_no_link_ancestors(target, destination)
             if destination.exists():
                 if not destination.is_file():
                     raise LegacyImportError("LEGACY_COMMIT_TARGET_CONFLICT", "committing", relative.as_posix())
@@ -72,6 +83,29 @@ def commit_payload(target: Path, import_id: str, payload: Path) -> PendingCommit
         if isinstance(exc, LegacyImportError):
             raise
         raise LegacyImportError("LEGACY_COMMIT_FAILED", "committing") from exc
+
+
+def _assert_no_link_ancestors(target: Path, destination: Path) -> None:
+    """Reject symlink/Junction traversal at the final commit boundary."""
+
+    try:
+        relative = destination.relative_to(target)
+    except ValueError as exc:
+        raise LegacyImportError("LEGACY_COMMIT_TARGET_ESCAPE", "committing") from exc
+    candidates = (
+        target,
+        *(
+            target / Path(*relative.parts[:index])
+            for index in range(1, len(relative.parts))
+        ),
+    )
+    for current in candidates:
+        if os.path.lexists(current) and is_link_or_junction(current):
+            raise LegacyImportError(
+                "LEGACY_COMMIT_TARGET_LINK_UNSUPPORTED",
+                "committing",
+                relative.as_posix() if relative.parts else "",
+            )
 
 
 def finalize_commit(pending: PendingCommit) -> None:
@@ -106,53 +140,189 @@ def rollback_commit(pending: PendingCommit) -> None:
         journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise LegacyImportError("LEGACY_JOURNAL_INVALID", "committing") from exc
+    if not isinstance(journal, dict):
+        raise LegacyImportError("LEGACY_JOURNAL_INVALID", "committing")
     state = journal.get("state")
     if state == "finalizing":
         raise LegacyImportError("LEGACY_ROLLBACK_FORBIDDEN", "core_validating")
-    if state not in {"committing", "pending_core_validation"}:
+    if state not in {"committing", "pending_core_validation", "rolling_back"}:
         raise LegacyImportError("LEGACY_JOURNAL_INVALID", "committing")
-    installed = journal.get("installed", [])
-    backups = journal.get("backups", [])
-    installed_trees = journal.get("installedTrees", [])
-    backup_trees = journal.get("backupTrees", [])
-    if not all(
-        isinstance(value, list)
-        for value in (installed, backups, installed_trees, backup_trees)
-    ):
+    installed, backups, installed_trees, backup_trees = _validated_rollback_lists(journal)
+    journal["installed"] = installed
+    journal["backups"] = backups
+    journal["installedTrees"] = installed_trees
+    journal["backupTrees"] = backup_trees
+
+    try:
+        if state != "rolling_back":
+            # Older journals did not checkpoint rollback progress.  A missing
+            # backup with the expected target still present means either the
+            # commit rename never ran or an earlier rollback already restored
+            # it.  Remove both intents before any installed target is deleted.
+            _reconcile_legacy_restores(
+                pending,
+                installed,
+                backups,
+                installed_trees,
+                backup_trees,
+            )
+            journal["state"] = "rolling_back"
+            _write_journal(pending.journal_path, journal)
+
+        _remove_installed_files(pending, journal, installed)
+        _restore_backup_files(pending, journal, backups)
+        _remove_installed_trees(pending, journal, installed_trees)
+        _restore_backup_trees(pending, journal, backup_trees)
+        _cleanup_rollback(pending)
+    except LegacyImportError:
+        raise
+    except OSError as exc:
+        raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing") from exc
+
+
+def _validated_rollback_lists(
+    journal: dict[str, object],
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    values = (
+        journal.get("installed", []),
+        journal.get("backups", []),
+        journal.get("installedTrees", []),
+        journal.get("backupTrees", []),
+    )
+    if not all(isinstance(value, list) for value in values):
         raise LegacyImportError("LEGACY_JOURNAL_INVALID", "committing")
-    for relative_text in reversed(installed):
-        relative = _validated_relative(relative_text)
-        path = pending.target / relative
-        if path.is_file():
-            path.unlink()
-    for relative_text in reversed(backups):
-        relative = _validated_relative(relative_text)
+    installed = [_validated_relative(value).as_posix() for value in values[0]]
+    backups = [_validated_relative(value).as_posix() for value in values[1]]
+    installed_trees = [_validated_atomic_tree(value).as_posix() for value in values[2]]
+    backup_trees = [_validated_atomic_tree(value).as_posix() for value in values[3]]
+    return installed, backups, installed_trees, backup_trees
+
+
+def _reconcile_legacy_restores(
+    pending: PendingCommit,
+    installed: list[str],
+    backups: list[str],
+    installed_trees: list[str],
+    backup_trees: list[str],
+) -> None:
+    restored_files = _completed_legacy_restores(pending, backups, tree=False)
+    restored_trees = _completed_legacy_restores(pending, backup_trees, tree=True)
+    if restored_files:
+        backups[:] = [value for value in backups if value not in restored_files]
+        installed[:] = [value for value in installed if value not in restored_files]
+    if restored_trees:
+        backup_trees[:] = [value for value in backup_trees if value not in restored_trees]
+        installed_trees[:] = [value for value in installed_trees if value not in restored_trees]
+
+
+def _completed_legacy_restores(
+    pending: PendingCommit,
+    backups: list[str],
+    *,
+    tree: bool,
+) -> set[str]:
+    completed: set[str] = set()
+    for relative_text in backups:
+        relative = (
+            _validated_atomic_tree(relative_text) if tree else _validated_relative(relative_text)
+        )
         backup = pending.backup_path / relative
         destination = pending.target / relative
+        backup_matches = backup.is_dir() if tree else backup.is_file()
+        destination_matches = destination.is_dir() if tree else destination.is_file()
+        if backup_matches:
+            continue
+        if backup.exists() or not destination_matches:
+            raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
+        completed.add(relative_text)
+    return completed
+
+
+def _remove_installed_files(
+    pending: PendingCommit,
+    journal: dict[str, object],
+    remaining: list[str],
+) -> None:
+    while remaining:
+        relative = _validated_relative(remaining[-1])
+        path = pending.target / relative
+        _assert_no_link_ancestors(pending.target, path)
+        if path.is_file():
+            path.unlink()
+        elif path.exists():
+            raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
+        remaining.pop()
+        _write_journal(pending.journal_path, journal)
+
+
+def _restore_backup_files(
+    pending: PendingCommit,
+    journal: dict[str, object],
+    remaining: list[str],
+) -> None:
+    while remaining:
+        relative = _validated_relative(remaining[-1])
+        backup = pending.backup_path / relative
+        destination = pending.target / relative
+        _assert_no_link_ancestors(pending.target, destination)
         if backup.is_file():
+            if destination.exists():
+                raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.replace(backup, destination)
-    for relative_text in reversed(installed_trees):
-        relative = _validated_atomic_tree(relative_text)
+        elif backup.exists() or not destination.is_file():
+            raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
+        remaining.pop()
+        _write_journal(pending.journal_path, journal)
+
+
+def _remove_installed_trees(
+    pending: PendingCommit,
+    journal: dict[str, object],
+    remaining: list[str],
+) -> None:
+    while remaining:
+        relative = _validated_atomic_tree(remaining[-1])
         path = pending.target / relative
+        _assert_no_link_ancestors(pending.target, path)
         if path.is_dir():
             shutil.rmtree(path)
         elif path.exists():
             raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
-    for relative_text in reversed(backup_trees):
-        relative = _validated_atomic_tree(relative_text)
+        remaining.pop()
+        _write_journal(pending.journal_path, journal)
+
+
+def _restore_backup_trees(
+    pending: PendingCommit,
+    journal: dict[str, object],
+    remaining: list[str],
+) -> None:
+    while remaining:
+        relative = _validated_atomic_tree(remaining[-1])
         backup = pending.backup_path / relative
         destination = pending.target / relative
+        _assert_no_link_ancestors(pending.target, destination)
         if backup.is_dir():
+            if destination.exists():
+                raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.replace(backup, destination)
-    shutil.rmtree(pending.backup_path, ignore_errors=True)
-    shutil.rmtree(pending.staging_path, ignore_errors=True)
+        elif backup.exists() or not destination.is_dir():
+            raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
+        remaining.pop()
+        _write_journal(pending.journal_path, journal)
+
+
+def _cleanup_rollback(pending: PendingCommit) -> None:
+    for temporary in (pending.backup_path, pending.staging_path):
+        if temporary.is_dir():
+            shutil.rmtree(temporary)
+        elif temporary.exists():
+            raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
+        if temporary.exists():
+            raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
     pending.journal_path.unlink(missing_ok=True)
-    _remove_empty_dirs(
-        pending.target,
-        preserve={pending.target / _validated_atomic_tree(value) for value in backup_trees},
-    )
 
 
 def recover_pending_commits(target: Path) -> list[str]:
@@ -201,7 +371,7 @@ def _validated_relative(value: object) -> Path:
 
 def _validated_atomic_tree(value: object) -> Path:
     path = _validated_relative(value)
-    if len(path.parts) != 1 or path.as_posix() not in _ATOMIC_TREE_NAMES:
+    if path not in _ATOMIC_TREE_PATHS:
         raise LegacyImportError("LEGACY_JOURNAL_INVALID", "committing")
     return path
 
@@ -211,18 +381,22 @@ def _commit_atomic_trees(
     payload: Path,
     journal: dict[str, object],
 ) -> None:
-    for name in _ATOMIC_TREE_NAMES:
-        staged = payload / name
+    for relative in _ATOMIC_TREE_PATHS:
+        name = relative.as_posix()
+        staged = payload / relative
         if not staged.is_dir():
             continue
-        relative = Path(name)
         destination = pending.target / relative
+        _assert_no_link_ancestors(pending.target, destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _assert_no_link_ancestors(pending.target, destination)
         if destination.exists():
             if not destination.is_dir():
                 raise LegacyImportError(
                     "LEGACY_COMMIT_TARGET_CONFLICT", "committing", name
                 )
             backup = pending.backup_path / relative
+            backup.parent.mkdir(parents=True, exist_ok=True)
             journal["backupTrees"].append(name)  # type: ignore[union-attr]
             _write_journal(pending.journal_path, journal)
             os.replace(destination, backup)
@@ -257,14 +431,3 @@ def _replace_journal(temporary: Path, path: Path) -> None:
                 raise
             time.sleep(delay)
     os.replace(temporary, path)
-
-
-def _remove_empty_dirs(root: Path, *, preserve: set[Path] | None = None) -> None:
-    preserved = preserve or set()
-    for directory in sorted((path for path in root.rglob("*") if path.is_dir()), reverse=True):
-        if directory in preserved:
-            continue
-        try:
-            directory.rmdir()
-        except OSError:
-            pass

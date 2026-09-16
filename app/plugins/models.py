@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from app.llm.prompts.types import ContextFragment, ContextRequest
+from app.plugins.visuals import VisualCapability
 
 
 PLUGIN_API_V4_VERSION = 4
@@ -52,3 +53,4 @@ class PluginSpec:
     plugin_root: Path | None = None
     source: str = "manifest"
     priority_override: bool = False
+    visuals: tuple[VisualCapability, ...] = ()

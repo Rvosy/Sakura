@@ -72,9 +72,15 @@ export function computeHitRegions(
     "transformedPortraitRect",
     layout.windowSize,
   );
-  const bubble = optionalRect(layout.bubbleRect, "bubbleRect", layout.windowSize);
-  const input = optionalRect(layout.inputRect, "inputRect", layout.windowSize);
-  const controls = copyRect(layout.controlsRect, "controlsRect", layout.windowSize);
+  const bubble = layout.bubbleVisible === false
+    ? null
+    : optionalRect(layout.bubbleRect, "bubbleRect", layout.windowSize);
+  const input = layout.inputVisible === false
+    ? null
+    : optionalRect(layout.inputRect, "inputRect", layout.windowSize);
+  const controls = layout.bubbleVisible === false
+    ? null
+    : copyRect(layout.controlsRect, "controlsRect", layout.windowSize);
   return Object.freeze({
     state: layout.state,
     interactive: Object.freeze([input, controls].filter(Boolean)),

@@ -1,3 +1,4 @@
+import { createIcon } from "../core/icons.js";
 export function createScreenAttachmentController({
   composer,
   toggle,
@@ -7,6 +8,7 @@ export function createScreenAttachmentController({
   invoke,
   onError = () => {},
   onAttachmentsChanged = () => {},
+  onStateChanged = () => {},
   beforeOpen = async () => {},
   openSurface = async () => {},
   closeSurface = async () => {},
@@ -14,9 +16,6 @@ export function createScreenAttachmentController({
   surfaceAnchor = () => (composer.dataset.inputExpanded === "true" ? "above" : "below"),
   requestFrame = (callback) => globalThis.requestAnimationFrame?.(callback) ?? callback(),
   waitForMotion = (element) => {
-    if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
-      return Promise.resolve();
-    }
     return new Promise((resolve) => {
       let settled = false;
       const finish = (event) => {
@@ -43,6 +42,7 @@ export function createScreenAttachmentController({
   let attachments = [];
   const removing = new Set();
   let layoutRevision = 0;
+  let captureRevision = 0;
 
   function releaseAttachment(value) {
     if (!value) return;
@@ -56,18 +56,22 @@ export function createScreenAttachmentController({
   }
 
   function renderControls() {
+    const voiceActive = composer.dataset.voiceActive === "true";
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     toggle.dataset.attached = attachments.length ? "true" : "false";
     toggle.dataset.attachmentCount = String(attachments.length);
-    toggle.disabled = capturing || submitting;
+    toggle.disabled = !voiceActive && (capturing || submitting);
     captureItem.disabled = capturing || submitting || attachments.length >= attachmentLimit;
     const detail = attachments.length ? `，已附加 ${attachments.length} 张截图` : "";
-    toggle.setAttribute("aria-label", `添加附件${detail}`);
-    toggle.title = `添加附件${detail}`;
-    captureItem.title = attachments.length >= attachmentLimit
-      ? `每条消息最多附加 ${attachmentLimit} 张截图`
-      : "框选屏幕区域并随消息发送";
+    toggle.setAttribute("aria-label", voiceActive ? "取消语音输入" : `添加附件${detail}`);
     renderAttachmentList();
+    onStateChanged(Object.freeze({
+      open,
+      capturing,
+      submitting,
+      attachmentCount: attachments.length,
+      busy: open || capturing || submitting || attachments.length > 0,
+    }));
   }
 
   function renderAttachmentList() {
@@ -97,7 +101,7 @@ export function createScreenAttachmentController({
         "aria-label",
         `移除截图 ${index + 1}（${attachment.width} × ${attachment.height}）`,
       );
-      remove.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9" /></svg>';
+      remove.append(createIcon(doc, "x"));
       remove.addEventListener("click", () => { void removeAttachment(attachment.itemId); });
       chip.append(copy, remove);
       attachmentList.append(chip);
@@ -114,7 +118,7 @@ export function createScreenAttachmentController({
   }
 
   async function setOpen(value, { focus = false } = {}) {
-    const next = Boolean(value) && !capturing;
+    const next = Boolean(value) && !capturing && composer.dataset.voiceActive !== "true";
     if (next === open) return false;
     open = next;
     const revision = ++layoutRevision;
@@ -159,18 +163,21 @@ export function createScreenAttachmentController({
   }
 
   async function startCapture() {
-    if (capturing || submitting) return false;
+    if (capturing || submitting || composer.dataset.voiceActive === "true") return false;
     if (attachments.length >= attachmentLimit) {
       onError(`每条消息最多附加 ${attachmentLimit} 张截图。`);
       return false;
     }
     capturing = true;
     renderControls();
+    const revision = captureRevision;
     await setOpen(false);
+    if (revision !== captureRevision) return false;
     try {
-      await invoke("start_screen_capture");
-      return true;
+      await invoke("start_screen_capture", { payload: { captureRevision: revision } });
+      return revision === captureRevision;
     } catch {
+      if (revision !== captureRevision) return false;
       capturing = false;
       renderControls();
       onError("无法开始截图，请检查系统屏幕录制权限。");
@@ -206,7 +213,10 @@ export function createScreenAttachmentController({
     }
   }
 
-  toggle.addEventListener("click", () => { void setOpen(!open, { focus: !open }); });
+  toggle.addEventListener("click", () => {
+    if (composer.dataset.voiceActive === "true") return;
+    void setOpen(!open, { focus: !open });
+  });
   captureItem.addEventListener("click", () => { void startCapture(); });
   menu.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -239,6 +249,7 @@ export function createScreenAttachmentController({
     close(options) {
       return setOpen(false, options);
     },
+    refreshControls: renderControls,
     startCapture,
     isOpen: () => open,
     busy: () => open || capturing || submitting || attachments.length > 0,
@@ -246,6 +257,7 @@ export function createScreenAttachmentController({
     attachments: () => attachments.map((item) => ({ ...item })),
     removeAttachment,
     handleAttached(value) {
+      if (value?.captureRevision !== captureRevision) return false;
       const nextAttachmentId = String(value?.attachmentId || "");
       const itemId = String(value?.itemId || "");
       const width = Number(value?.width);
@@ -264,11 +276,13 @@ export function createScreenAttachmentController({
       renderControls();
       return true;
     },
-    handleCancelled() {
+    handleCancelled(value) {
+      if (value?.captureRevision !== captureRevision) return;
       capturing = false;
       renderControls();
     },
-    handleError(message) {
+    handleError(message, revision = captureRevision) {
+      if (revision !== captureRevision) return;
       capturing = false;
       renderControls();
       onError(String(message || "截图失败，请重试。"));
@@ -288,6 +302,7 @@ export function createScreenAttachmentController({
       return true;
     },
     invalidate() {
+      captureRevision += 1;
       releaseAttachment(attachmentId);
       attachmentId = null;
       attachments = [];

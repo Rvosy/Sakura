@@ -8,14 +8,19 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from app.config.character_loader import (
+    THEME_SOURCE_PACKAGE,
     CharacterConfigError,
     CharacterProfile,
     CharacterRegistry,
     character_theme_from_mapping,
     character_theme_to_mapping,
+)
+from app.config.character_packages import (
+    allocate_character_installation,
+    ensure_legacy_voice_extensions,
 )
 from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
 from app.storage.archive_security import ArchiveLimits, validate_zip_resource_limits
@@ -29,11 +34,13 @@ VOICE_ARCHIVE_FORMAT = "sakura.character.voice"
 VOICE_ARCHIVE_VERSION = 1
 VOICE_ARCHIVE_ROOT = PurePosixPath("voice")
 MAX_ARCHIVE_MEMBERS = 4096
-MAX_ARCHIVE_MEMBER_BYTES = 2 * 1024 * 1024 * 1024
-MAX_ARCHIVE_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 32 * 1024 * 1024 * 1024
 MAX_ARCHIVE_COMPRESSION_RATIO = 200
 MAX_CHARACTER_EXTENSIONS_BYTES = 256 * 1024
 MAX_CHARACTER_EXTENSION_BYTES = 64 * 1024
+MAX_CHARACTER_MANIFEST_BYTES = 1024 * 1024
+_COPY_CHUNK_SIZE = 1024 * 1024
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _SAFE_CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -81,9 +88,11 @@ def import_character_archive(path: Path, base_dir: Path) -> CharacterArchiveImpo
 
             original_id = _required_character_id(character_data, "character.id")
             display_name = _required_text(character_data, "display_name", "character.display_name")
-            target_id = _unique_character_id(original_id, characters_dir)
+            target_id, target_dir = allocate_character_installation(
+                characters_dir,
+                original_id,
+            )
             target_name = _unique_display_name(display_name, characters_dir)
-            target_dir = characters_dir / target_id
 
             temp_root = characters_dir / f"char_import_{uuid.uuid4().hex}"
             try:
@@ -161,6 +170,13 @@ def import_character_voice_archive(
             manifest = _read_manifest(zf)
             voice_data = _validated_voice_data(manifest)
             normalized_voice = _normalized_voice_archive(voice_data)
+            from app.config.plugin_requirements import parse_requirements
+            try:
+                requirements = parse_requirements(manifest.get("pluginRequirements", []))
+                if any(item["kind"] != "tts" for item in requirements):
+                    raise ValueError("VOICE_PLUGIN_REQUIREMENTS_INVALID")
+            except ValueError as exc:
+                raise CharacterArchiveError("语音包插件需求声明无效。") from exc
 
             temp_root = characters_dir / f"voice_import_{uuid.uuid4().hex}"
             backup_voice_dir = temp_root / "backup_voice"
@@ -185,7 +201,7 @@ def import_character_voice_archive(
                         rename_with_retry(target_voice_dir, backup_voice_dir)
                         old_voice_moved = True
                     rename_with_retry(staging_voice_dir, target_voice_dir)
-                    _write_character_voice_manifest(target_dir, normalized_voice)
+                    _write_character_voice_manifest(target_dir, normalized_voice, requirements)
                     profile = CharacterRegistry(base_dir).get(character_id)
                 except Exception as exc:
                     recovery_errors: list[str] = []
@@ -228,7 +244,13 @@ def import_character_voice_archive(
     )
 
 
-def export_character_archive(profile: CharacterProfile, output_path: Path, *, include_voice: bool = True) -> None:
+def export_character_archive(
+    profile: CharacterProfile,
+    output_path: Path,
+    *,
+    include_voice: bool = True,
+    cancel_check: Callable[[], None] | None = None,
+) -> None:
     """导出 Sakura 角色包为自有 .char 归档。"""
 
     destination = Path(output_path)
@@ -236,18 +258,33 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
         destination = destination.with_suffix(".char")
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    try:
+        source_manifest = json.loads(
+            (profile.package_dir / "character.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CharacterArchiveError("角色清单无法读取。") from exc
+    character_manifest = _clone_character_data(source_manifest)
+
     package_files = [
         path
         for path in profile.package_dir.rglob("*")
         if (
             path.is_file()
             and _resolved(path) != _resolved(destination)
-            and path.name != "character.json"
+            and path != profile.package_dir / "character.json"
             and not _is_voice_package_file(profile.package_dir, path)
         )
     ]
     if include_voice:
         package_files.extend(_referenced_voice_package_files(profile.package_dir, profile.voice))
+        package_files.extend(
+            _referenced_extension_voice_files(
+                profile.package_dir,
+                _opaque_extensions(character_manifest.get("extensions")),
+            )
+        )
+    package_files = list(dict.fromkeys(package_files))
     package_archive_names = {
         _archive_path_for_package_file(profile.package_dir, path).as_posix()
         for path in package_files
@@ -267,37 +304,40 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
         return archive_path.as_posix()
 
     card_archive_path = archive_path_for_resource(profile.card_path, "card")
-    default_portrait_archive_path = archive_path_for_resource(profile.default_portrait_path, "portrait")
-    expression_archive_paths = {
-        label: archive_path_for_resource(path, "portrait")
-        for label, path in profile.expression_portraits.items()
-    }
-    character_manifest: dict[str, Any] = {
-        "id": profile.id,
-        "display_name": profile.display_name,
-        "initial_message": profile.initial_message,
-        "card": card_archive_path,
-        "portrait": {
-            "default": default_portrait_archive_path,
-            "expressions": expression_archive_paths,
-        },
-        "reply": {"tones": [*profile.reply_tones]},
-        "theme": character_theme_to_mapping(
+    character_manifest.update(
+        {
+            "id": profile.id,
+            "display_name": profile.display_name,
+            "initial_message": profile.initial_message,
+            "card": card_archive_path,
+        }
+    )
+    if "visuals" not in character_manifest:
+        _project_legacy_portrait_archive_paths(character_manifest, profile.package_dir, archive_path_for_resource)
+    reply = (
+        dict(character_manifest.get("reply"))
+        if isinstance(character_manifest.get("reply"), dict)
+        else {}
+    )
+    reply["tones"] = [*profile.reply_tones]
+    character_manifest["reply"] = reply
+    theme = (
+        dict(character_manifest.get("theme"))
+        if isinstance(character_manifest.get("theme"), dict)
+        else {}
+    )
+    theme.update(
+        character_theme_to_mapping(
             profile.theme_settings,
             source=profile.theme_source,
-        ),
-    }
-    try:
-        source_manifest = json.loads(
-            (profile.package_dir / "character.json").read_text(encoding="utf-8")
         )
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CharacterArchiveError("角色清单无法读取。") from exc
-    if not isinstance(source_manifest, dict):
-        raise CharacterArchiveError("角色清单必须是 JSON 对象。")
-    extensions = _opaque_extensions(source_manifest.get("extensions"))
-    if extensions:
-        character_manifest["extensions"] = extensions
+    )
+    character_manifest["theme"] = theme
+    if profile.backchannel_manifest_path is not None:
+        character_manifest["backchannel"] = archive_path_for_resource(
+            profile.backchannel_manifest_path,
+            "backchannel",
+        )
     if include_voice and profile.voice is not None:
         character_manifest["voice"] = {
             "gpt_model": archive_path_for_resource(profile.voice.gpt_model_path, "voice/models"),
@@ -306,10 +346,16 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
             "ref_lang": profile.voice.ref_lang,
             "text_lang": profile.voice.text_lang,
         }
+    elif not include_voice:
+        character_manifest.pop("voice", None)
+
+    from app.config.plugin_requirements import requirements_for_manifest
+    character_manifest["pluginRequirements"] = requirements_for_manifest(character_manifest, include_tts=include_voice)
 
     archive_manifest = {
         "format": ARCHIVE_FORMAT,
-        "version": ARCHIVE_VERSION,
+        "version": 2 if "visuals" in character_manifest else ARCHIVE_VERSION,
+        "kind": "character",
         "character": character_manifest,
     }
 
@@ -323,9 +369,17 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
                     source,
                     _archive_path_for_package_file(profile.package_dir, source),
                     written,
+                    cancel_check=cancel_check,
                 )
             for source, archive_path in external_paths.items():
-                _write_zip_file(zf, source, archive_path, written)
+                _write_zip_file(
+                    zf,
+                    source,
+                    archive_path,
+                    written,
+                    cancel_check=cancel_check,
+                )
+            _operation_checkpoint(cancel_check)
             zf.writestr(
                 PurePosixPath(ARCHIVE_CHARACTER_ROOT.as_posix(), "character.json").as_posix(),
                 json.dumps(_package_character_data(character_manifest), ensure_ascii=False, indent=2),
@@ -337,6 +391,28 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
         replace_with_retry(temp_output, destination)
     finally:
         temp_output.unlink(missing_ok=True)
+
+
+def _project_legacy_portrait_archive_paths(manifest, package_dir, map_path) -> None:
+    """Only the v1 archive path representation; image semantics belong to its provider."""
+    if not isinstance(manifest.get("portrait"), dict):
+        return
+    portrait = dict(manifest["portrait"])
+    def archived(relative):
+        if not isinstance(relative, str):
+            raise CharacterArchiveError("角色资源路径无效。")
+        raw = relative.strip().strip('"').strip("'").replace("\\", "/")
+        if not raw or raw.startswith("/") or ":" in raw:
+            raise CharacterArchiveError("角色资源必须使用包内相对路径。")
+        resolved = _resolved(package_dir / raw)
+        try:
+            resolved.relative_to(_resolved(package_dir))
+        except ValueError as error:
+            raise CharacterArchiveError("角色资源路径逃逸角色包。") from error
+        return map_path(resolved, "portrait")
+    portrait["default"] = archived(portrait.get("default"))
+    portrait["expressions"] = {key: archived(path) for key, path in (portrait.get("expressions") or {}).items()}
+    manifest["portrait"] = portrait
 
 
 def export_character_voice_archive(profile: CharacterProfile, output_path: Path) -> None:
@@ -385,7 +461,16 @@ def export_character_voice_archive(profile: CharacterProfile, output_path: Path)
     if sovits_model is not None:
         voice_manifest["sovits_model"] = sovits_model
 
+    from app.config.plugin_requirements import requirements_for_manifest
+    # Only resources actually carried by this voice archive contribute requirements.
+    source_manifest = json.loads((profile.package_dir / "character.json").read_text(encoding="utf-8"))
+    voice_requirements = requirements_for_manifest({"voice": voice_manifest})
+    resource_types = {item["type"] for item in voice_requirements}
+    declared = [item for item in requirements_for_manifest(source_manifest)
+                if item["kind"] == "tts" and item["type"] in resource_types]
+    voice_requirements = requirements_for_manifest({"voice": voice_manifest, "pluginRequirements": declared})
     archive_manifest = {
+        "pluginRequirements": voice_requirements,
         "format": VOICE_ARCHIVE_FORMAT,
         "version": VOICE_ARCHIVE_VERSION,
         "voice": voice_manifest,
@@ -485,7 +570,7 @@ def _read_manifest(zf: zipfile.ZipFile) -> dict[str, Any]:
 def _validated_character_data(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest.get("format") != ARCHIVE_FORMAT:
         raise CharacterArchiveError("不支持的角色包格式。")
-    if manifest.get("version") != ARCHIVE_VERSION:
+    if type(manifest.get("version")) is not int or manifest["version"] not in (1, 2) or manifest.get("kind", "character") != "character":
         raise CharacterArchiveError("不支持的角色包版本。")
     character_data = manifest.get("character")
     if not isinstance(character_data, dict):
@@ -512,35 +597,57 @@ def _normalized_import_character_data(
     package_dir: Path,
 ) -> dict[str, Any]:
     card = _package_path_text(_required_archive_resource(character_data, "card", "character.card"))
-    portrait_data = _required_mapping(character_data, "portrait", "character.portrait")
-    default_portrait = _package_path_text(
-        _required_archive_resource(portrait_data, "default", "character.portrait.default")
-    )
-    expressions = _normalized_expressions(portrait_data.get("expressions", {}))
+    if "visuals" not in character_data:
+        portrait_data = _required_mapping(character_data, "portrait", "character.portrait")
+        default_portrait = _package_path_text(
+            _required_archive_resource(portrait_data, "default", "character.portrait.default")
+        )
+        expressions = _normalized_expressions(portrait_data.get("expressions", {}))
 
-    normalized: dict[str, Any] = {
-        "id": character_id,
-        "display_name": display_name,
-        "initial_message": _optional_text(character_data, "initial_message", "……起動した。用事があるなら、呼んで。"),
-        "card": card,
-        "portrait": {
-            "default": default_portrait,
-            "expressions": expressions,
-        },
-        "theme": _normalized_theme(character_data.get("theme")),
-    }
+    normalized = _clone_character_data(character_data)
+    normalized.update(
+        {
+            "id": character_id,
+            "display_name": display_name,
+            "initial_message": _optional_text(
+                character_data,
+                "initial_message",
+                "……起動した。用事があるなら、呼んで。",
+            ),
+            "card": card,
+        }
+    )
+    if "visuals" not in character_data:
+        portrait = dict(portrait_data)
+        portrait.update({"default": default_portrait, "expressions": expressions})
+        normalized["portrait"] = portrait
+    theme = dict(character_data.get("theme")) if isinstance(character_data.get("theme"), dict) else {}
+    theme.update(_normalized_theme(character_data.get("theme")))
+    normalized["theme"] = theme
 
     reply_data = character_data.get("reply")
     tones = _normalized_reply_tones(reply_data)
+    reply = dict(reply_data) if isinstance(reply_data, dict) else {}
     if tones:
-        normalized["reply"] = {"tones": tones}
+        reply["tones"] = tones
+    else:
+        reply.pop("tones", None)
+    if reply:
+        normalized["reply"] = reply
+    else:
+        normalized.pop("reply", None)
 
     voice_data = character_data.get("voice")
     if voice_data is not None:
         normalized["voice"] = _normalized_voice(voice_data)
-    extensions = _opaque_extensions(character_data.get("extensions"))
-    if extensions:
-        normalized["extensions"] = extensions
+    backchannel = character_data.get("backchannel")
+    if isinstance(backchannel, str) and backchannel.strip():
+        normalized["backchannel"] = _package_path_text(
+            _archive_resource_path(backchannel, "character.backchannel")
+        )
+    # The clone already preserved extensions and removed the package's local
+    # voice choice. Do not restore it from the original archive before startup.
+    ensure_legacy_voice_extensions(normalized, package_dir)
 
     _validate_referenced_files(package_dir, normalized)
     return normalized
@@ -571,8 +678,15 @@ def _normalized_reply_tones(reply_data: Any) -> list[str]:
 
 
 def _normalized_theme(theme_data: Any) -> dict[str, object]:
-    theme_settings, theme_source, _missing = character_theme_from_mapping(theme_data)
-    return character_theme_to_mapping(theme_settings, source=theme_source)
+    archive_theme = dict(theme_data) if isinstance(theme_data, dict) else theme_data
+    if isinstance(archive_theme, dict):
+        # Archive provenance is not part of the installed character contract.
+        # Older Sakura releases exported internal labels such as
+        # ``compat_default``; keep their colors and install them as a normal
+        # package-owned theme.
+        archive_theme.pop("source", None)
+    theme_settings, _theme_source, _missing = character_theme_from_mapping(archive_theme)
+    return character_theme_to_mapping(theme_settings, source=THEME_SOURCE_PACKAGE)
 
 
 def _normalized_voice(voice_data: Any) -> dict[str, str]:
@@ -610,22 +724,31 @@ def _normalized_voice_archive(voice_data: Any) -> dict[str, str]:
 
 
 def _validate_referenced_files(package_dir: Path, character_data: dict[str, Any]) -> None:
-    paths = [
-        ("角色卡", character_data["card"]),
-        ("默认立绘", character_data["portrait"]["default"]),
-    ]
-    for label, path_text in character_data["portrait"].get("expressions", {}).items():
-        paths.append((f"{label} 表情立绘", path_text))
+    paths = [("角色卡", character_data["card"])]
+    if "visuals" in character_data:
+        from app.config.character_resources import character_visual_resources
+        character_visual_resources(character_data, package_dir)
+    else:
+        paths.append(("默认立绘", character_data["portrait"]["default"]))
+        for label, path_text in character_data["portrait"].get("expressions", {}).items():
+            paths.append((f"{label} 表情立绘", path_text))
     voice_data = character_data.get("voice")
     if isinstance(voice_data, dict):
         paths.append(("语气参考表", voice_data["tone_refs"]))
         for key, label in (("gpt_model", "GPT 模型"), ("sovits_model", "SoVITS 模型")):
             if key in voice_data:
                 paths.append((label, voice_data[key]))
+    backchannel = character_data.get("backchannel")
+    if isinstance(backchannel, str) and backchannel.strip():
+        paths.append(("角色 backchannel 清单", backchannel))
     for label, path_text in paths:
         path = package_dir / _safe_package_path(path_text, label)
         if not path.is_file():
             raise CharacterArchiveError(f"{label}不存在：{path}")
+    _referenced_extension_voice_files(
+        package_dir,
+        _opaque_extensions(character_data.get("extensions")),
+    )
 
 
 def _validate_voice_referenced_files(package_dir: Path, voice_data: dict[str, str]) -> None:
@@ -670,6 +793,74 @@ def _referenced_voice_package_files(package_dir: Path, voice: Any) -> list[Path]
     return result
 
 
+def _referenced_extension_voice_files(
+    package_dir: Path,
+    extensions: dict[str, Any],
+) -> list[Path]:
+    package_root = _resolved(package_dir)
+    result: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_file(value: object, label: str) -> Path | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        path = _resolved(package_dir / _safe_package_path(value.strip(), label))
+        try:
+            path.relative_to(package_root)
+        except ValueError as exc:
+            raise CharacterArchiveError(f"{label}不能指向角色包外。") from exc
+        if not path.is_file() or path.is_symlink():
+            raise CharacterArchiveError(f"{label}不存在或不是普通文件：{path}")
+        if path not in seen:
+            seen.add(path)
+            result.append(path)
+        return path
+
+    for plugin_id in ("sakura.tts.gpt-sovits", "sakura.tts.genie"):
+        extension = extensions.get(plugin_id)
+        if not isinstance(extension, dict):
+            continue
+        tone_refs = add_file(extension.get("toneRefs"), f"{plugin_id}.toneRefs")
+        add_file(extension.get("gptModel"), f"{plugin_id}.gptModel")
+        add_file(extension.get("sovitsModel"), f"{plugin_id}.sovitsModel")
+        if tone_refs is not None:
+            for audio in _tone_ref_audio_files(package_dir, tone_refs):
+                resolved_audio = _resolved(audio)
+                try:
+                    relative_audio = resolved_audio.relative_to(package_root)
+                except ValueError as exc:
+                    raise CharacterArchiveError(
+                        f"{plugin_id}.toneRefs 音频不能指向角色包外。"
+                    ) from exc
+                add_file(
+                    relative_audio.as_posix(),
+                    f"{plugin_id}.toneRefs 音频",
+                )
+        if plugin_id == "sakura.tts.genie":
+            onnx_dir = extension.get("onnxModelDir")
+            if isinstance(onnx_dir, str) and onnx_dir.strip():
+                directory = _resolved(
+                    package_dir / _safe_package_path(onnx_dir.strip(), f"{plugin_id}.onnxModelDir")
+                )
+                try:
+                    directory.relative_to(package_root)
+                except ValueError as exc:
+                    raise CharacterArchiveError(
+                        f"{plugin_id}.onnxModelDir 不能指向角色包外。"
+                    ) from exc
+                if not directory.is_dir() or directory.is_symlink():
+                    raise CharacterArchiveError(f"{plugin_id}.onnxModelDir 不存在或不是普通目录。")
+                for path in directory.rglob("*"):
+                    if path.is_symlink():
+                        raise CharacterArchiveError(f"{plugin_id}.onnxModelDir 不能包含符号链接。")
+                    if path.is_file():
+                        add_file(
+                            path.relative_to(package_root).as_posix(),
+                            f"{plugin_id}.onnxModelDir 资源",
+                        )
+    return result
+
+
 def _tone_ref_audio_files(package_dir: Path, tone_ref_path: Path | None) -> list[Path]:
     if tone_ref_path is None or not tone_ref_path.is_file():
         return []
@@ -693,7 +884,7 @@ def _write_character_manifest(package_dir: Path, character_data: dict[str, Any])
     )
 
 
-def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str]) -> None:
+def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str], requirements: list[dict]) -> None:
     manifest_path = package_dir / "character.json"
     try:
         character_data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -702,35 +893,97 @@ def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str
     if not isinstance(character_data, dict):
         raise CharacterArchiveError(f"角色清单必须是 JSON 对象：{manifest_path}")
     character_data["voice"] = voice_data
+    if isinstance(character_data.get("extensions"), dict):
+        character_data["extensions"].pop("sakura.tts", None)
+    ensure_legacy_voice_extensions(character_data, package_dir)
+    # Import replaces shared voice resources, including any previous Studio
+    # paths. Keep explicit Genie resource overrides intact.
+    provider = character_data["extensions"]["sakura.tts.gpt-sovits"]
+    for source_key, target_key in (
+        ("tone_refs", "toneRefs"), ("ref_lang", "refLang"),
+        ("text_lang", "textLang"), ("gpt_model", "gptModel"),
+        ("sovits_model", "sovitsModel"),
+    ):
+        if source_key in voice_data:
+            provider[target_key] = voice_data[source_key]
+        else:
+            provider.pop(target_key, None)
+    from app.config.plugin_requirements import GPT_SOVITS_MODELS, requirements_for_manifest, parse_requirements
+    preserved = [item for item in parse_requirements(character_data.get("pluginRequirements", []))
+                 if (item["kind"], item["type"]) != ("tts", GPT_SOVITS_MODELS)]
+    character_data["pluginRequirements"] = preserved + requirements
+    character_data["pluginRequirements"] = requirements_for_manifest(character_data)
     _write_character_manifest(package_dir, character_data)
 
 
 def _package_character_data(character_manifest: dict[str, Any]) -> dict[str, Any]:
-    portrait = _required_mapping(character_manifest, "portrait", "character.portrait")
-    package_data: dict[str, Any] = {
-        "id": _required_text(character_manifest, "id", "character.id"),
-        "display_name": _required_text(character_manifest, "display_name", "character.display_name"),
-        "initial_message": _optional_text(character_manifest, "initial_message", ""),
-        "card": _package_path_text(_archive_resource_path(character_manifest.get("card"), "character.card")),
-        "portrait": {
-            "default": _package_path_text(
-                _archive_resource_path(portrait.get("default"), "character.portrait.default")
+    package_data = _clone_character_data(character_manifest)
+    package_data.update(
+        {
+            "id": _required_text(character_manifest, "id", "character.id"),
+            "display_name": _required_text(
+                character_manifest,
+                "display_name",
+                "character.display_name",
             ),
-            "expressions": {
-                label: _package_path_text(_archive_resource_path(path_text, f"character.portrait.expressions.{label}"))
-                for label, path_text in portrait.get("expressions", {}).items()
-            },
-        },
-        "reply": character_manifest.get("reply", {}),
-        "theme": character_manifest.get("theme", {}),
-    }
+            "initial_message": _optional_text(character_manifest, "initial_message", ""),
+            "card": _package_path_text(
+                _archive_resource_path(character_manifest.get("card"), "character.card")
+            ),
+        }
+    )
+    if "visuals" not in character_manifest:
+        portrait = _required_mapping(character_manifest, "portrait", "character.portrait")
+        package_portrait = dict(portrait)
+        package_portrait.update(
+            {
+                "default": _package_path_text(
+                    _archive_resource_path(portrait.get("default"), "character.portrait.default")
+                ),
+                "expressions": {
+                    label: _package_path_text(
+                        _archive_resource_path(
+                            path_text,
+                            f"character.portrait.expressions.{label}",
+                        )
+                    )
+                    for label, path_text in portrait.get("expressions", {}).items()
+                },
+            }
+        )
+        package_data["portrait"] = package_portrait
+    backchannel = character_manifest.get("backchannel")
+    if isinstance(backchannel, str) and backchannel.strip():
+        package_data["backchannel"] = _package_path_text(
+            _archive_resource_path(backchannel, "character.backchannel")
+        )
     voice_data = character_manifest.get("voice")
     if isinstance(voice_data, dict):
         package_data["voice"] = _package_voice_data(voice_data)
-    extensions = _opaque_extensions(character_manifest.get("extensions"))
-    if extensions:
-        package_data["extensions"] = extensions
     return package_data
+
+
+def _clone_character_data(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise CharacterArchiveError("角色清单必须是 JSON 对象。")
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        cloned = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise CharacterArchiveError("角色清单必须是 JSON-compatible 对象。") from exc
+    if len(encoded) > MAX_CHARACTER_MANIFEST_BYTES:
+        raise CharacterArchiveError("角色清单超过大小限制。")
+    if not isinstance(cloned, dict):
+        raise CharacterArchiveError("角色清单必须是 JSON 对象。")
+    _opaque_extensions(cloned.get("extensions"))
+    if isinstance(cloned.get("extensions"), dict):
+        cloned["extensions"].pop("sakura.tts", None)
+    return cloned
 
 
 def _opaque_extensions(value: Any) -> dict[str, Any]:
@@ -883,16 +1136,6 @@ def _optional_text(data: dict[str, Any], key: str, default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
-
-
-def _unique_character_id(character_id: str, characters_dir: Path) -> str:
-    used = {path.name for path in characters_dir.iterdir() if path.is_dir()}
-    if character_id not in used:
-        return character_id
-    index = 1
-    while f"{character_id}_{index}" in used:
-        index += 1
-    return f"{character_id}_{index}"
 
 
 def _unique_display_name(display_name: str, characters_dir: Path) -> str:
@@ -1058,6 +1301,8 @@ def _write_zip_file(
     source: Path,
     archive_path: PurePosixPath,
     written: set[str],
+    *,
+    cancel_check: Callable[[], None] | None = None,
 ) -> None:
     archive_name = archive_path.as_posix()
     _safe_archive_path(archive_name, "archive path")
@@ -1065,8 +1310,23 @@ def _write_zip_file(
         return
     if not source.is_file():
         raise CharacterArchiveError(f"角色资源不存在：{source}")
-    zf.write(source, archive_name)
+    _operation_checkpoint(cancel_check)
+    info = zipfile.ZipInfo.from_file(source, archive_name)
+    info.compress_type = zf.compression
+    with source.open("rb") as input_file, zf.open(info, "w") as output_file:
+        while True:
+            _operation_checkpoint(cancel_check)
+            chunk = input_file.read(_COPY_CHUNK_SIZE)
+            if not chunk:
+                break
+            output_file.write(chunk)
+    _operation_checkpoint(cancel_check)
     written.add(archive_name)
+
+
+def _operation_checkpoint(cancel_check: Callable[[], None] | None) -> None:
+    if cancel_check is not None:
+        cancel_check()
 
 
 def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:

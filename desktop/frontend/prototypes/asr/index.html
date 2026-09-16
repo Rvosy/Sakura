@@ -1,0 +1,152 @@
+<!doctype html>
+<html
+  lang="zh-CN"
+  data-theme="character"
+  data-input-visual-effect="gaussian_blur"
+>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura · 输入栏状态原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body data-shell-state="ready" data-chat-state="ready">
+    <main class="demo-viewport" aria-label="立绘与输入栏预览">
+      <div id="stage-frame">
+        <div id="pet-stage" class="pet-stage">
+          <figure id="portrait" class="portrait" aria-label="N.A.V.I. 立绘">
+            <div class="portrait-frame">
+              <img
+                class="portrait-image portrait-image--current"
+                src="./assets/navi.png"
+                alt="N.A.V.I."
+                draggable="false"
+              />
+            </div>
+          </figure>
+          <form
+            id="composer"
+            class="composer"
+            data-input-expanded="false"
+            data-state="idle"
+            aria-label="聊天输入"
+          >
+            <button
+              type="button"
+              id="composer-attachment"
+              aria-label="添加附件"
+              aria-expanded="false"
+              title="添加附件"
+            >
+              <span class="sakura-icon icon-plus" aria-hidden="true"></span>
+            </button>
+            <textarea
+              id="composer-input"
+              rows="1"
+              lang="zh-CN"
+              aria-label="消息草稿"
+              placeholder="和 N.A.V.I. 说点什么……"
+            ></textarea>
+            <div id="voice-status" role="status" hidden></div>
+            <div id="voice-recording" class="voice-region" hidden>
+              <span class="visually-hidden">正在录音（模拟）</span>
+              <div id="waveform" aria-hidden="true"></div>
+            </div>
+            <div
+              id="composer-attachments"
+              class="composer-attachment-strip"
+              hidden
+            >
+              <div class="composer-attachment-chip">
+                <span class="composer-attachment-chip__copy"
+                  ><span class="composer-attachment-chip__name"
+                    >示例截图</span
+                  ></span
+                ><button
+                  type="button"
+                  id="remove-attachment"
+                  class="composer-attachment-chip__remove"
+                  aria-label="移除附件"
+                >
+                  <span class="sakura-icon icon-x" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              id="voice-mic"
+              aria-label="开始语音输入"
+              title="开始语音输入"
+            >
+              <span class="sakura-icon icon-mic" aria-hidden="true"></span>
+            </button>
+            <button
+              type="submit"
+              id="composer-send"
+              data-action="send"
+              aria-label="发送消息"
+              title="发送 · Enter"
+              disabled
+            >
+              <span
+                class="composer-action-icon composer-action-icon--send"
+                aria-hidden="true"
+                ><span class="sakura-icon icon-send-horizontal"></span
+              ></span>
+            </button>
+          </form>
+          <div
+            id="composer-tool-dock"
+            class="composer-tool-dock"
+            data-open="true"
+            hidden
+          >
+            <div class="composer-tool-dock__list">
+              <button
+                type="button"
+                id="add-screenshot"
+                class="composer-tool-dock__item"
+              >
+                <span class="composer-tool-dock__icon"
+                  ><span
+                    class="sakura-icon icon-scan-line"
+                    aria-hidden="true"
+                  ></span></span
+                ><span class="composer-tool-dock__copy"
+                  ><strong>截图（示例）</strong></span
+                >
+              </button>
+            </div>
+          </div>
+          <div id="voice-feedback" role="status" hidden></div>
+        </div>
+      </div>
+    </main>
+    <details id="demo-controls">
+      <summary>状态预览<span>仅前端模拟</span></summary>
+      <div class="demo-options">
+        <label for="preview-state">固定显示某个状态</label
+        ><select id="preview-state">
+          <option value="idle">普通输入</option>
+          <option value="preparing">正在准备</option>
+          <option value="recording">正在录音</option>
+          <option value="recognizing">正在识别</option>
+          <option value="filled">识别完成</option>
+          <option value="silence">未检测到人声</option>
+          <option value="error">识别失败</option>
+          <option value="unavailable">引擎不可用</option>
+        </select>
+        <label class="demo-check"
+          ><input id="quiet" type="checkbox" />模拟安静时的波形</label
+        ><label class="demo-check"
+          ><input id="dark-background" type="checkbox" />深色背景</label
+        >
+        <button id="reset" type="button">重置原型</button>
+        <p>
+          点击麦克风开始，再次点击回填固定文字。Esc 取消；以上状态可停留查看。
+        </p>
+      </div>
+    </details>
+  </body>
+</html>

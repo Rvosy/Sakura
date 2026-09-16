@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spine · Sakura</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/preview/preview.css">
+  <script type="module" src="/preview/preview.mjs"></script>
+</head>
+<body>
+  <header><div class="brand">Sakura <span>/</span> <strong>Spine</strong></div><span id="status" role="status">正在加载</span></header>
+  <main>
+    <section class="stage-area" aria-label="角色预览">
+      <div class="stage-top"><span class="stage-label">角色预览</span><label class="background-control">背景 <select id="background"><option value="light">浅色</option><option value="dark">深色</option><option value="grid">透明网格</option></select></label></div>
+      <div id="stage"></div>
+      <div class="stage-bottom"><span id="playing"></span><div><button id="pause" disabled>暂停</button><button id="cancel" disabled>恢复待机</button></div></div>
+      <p id="error" role="alert" hidden></p>
+    </section>
+    <aside>
+      <div class="panel-heading"><h1>角色形态</h1><span id="version"></span></div>
+      <label class="model-label">资源<select id="models" disabled></select></label>
+      <div id="editor"></div>
+      <footer><span id="saved" role="status"></span><button id="save" class="primary" disabled>保存草稿</button></footer>
+      <details><summary>控制协议</summary><pre id="protocol"></pre></details>
+    </aside>
+  </main>
+</body>
+</html>

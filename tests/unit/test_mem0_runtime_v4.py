@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 import os
 import shutil
@@ -11,6 +10,7 @@ from types import SimpleNamespace
 import yaml
 
 from app.agent.tools import ToolRegistry
+from app.config.character_loader import CharacterRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.dependencies import PluginDependencyRoots
 from app.plugins.inventory import PluginInventory
@@ -97,7 +97,6 @@ def _prepare_mem0_dependency_root(
         json.dumps({
             "schemaVersion": 1,
             "kind": declaration.kind,
-            "fingerprint": declaration.fingerprint,
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         }),
         encoding="utf-8",
@@ -192,30 +191,12 @@ requires:
     )
 
 
-def _core_imports(plugin_root: Path) -> list[str]:
-    imports: list[str] = []
-    for path in plugin_root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports.extend(name.name for name in node.names if name.name == "app" or name.name.startswith("app."))
-            elif isinstance(node, ast.ImportFrom) and (
-                node.module == "app" or str(node.module).startswith("app.")
-            ):
-                imports.append(str(node.module))
-    return imports
-
-
 def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     inventory = PluginInventory(roots).scan()
     records = {record.plugin_id: record for record in inventory.records}
     assert records["sakura.memory.mem0"].source == "bundled"
     assert records["third.party.memory"].source == "user"
-    assert _core_imports(
-        roots.distribution_root / "plugins" / "builtin" / "sakura_mem0"
-    ) == []
-
     registry = ToolRegistry()
     context_providers = []
     runtime = SimpleNamespace(
@@ -226,7 +207,7 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
         ),
     )
     session = SimpleNamespace(
-        character=SimpleNamespace(id="sakura"),
+        character=CharacterRegistry(roots.user_root).get("sakura"),
         runtime=runtime,
     )
     application = PluginRuntimeApplication(

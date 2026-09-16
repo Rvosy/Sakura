@@ -1,4 +1,6 @@
+@import url("./core/icons.css");
 @import url("./assets/fonts/fonts.css");
+@import url("./core/selection.css");
 
 :root {
   color: #27445a;
@@ -109,68 +111,16 @@ textarea:focus-visible,
 .portrait:active,
 .portrait.is-native-dragging { cursor: grabbing; }
 
-.portrait-frame {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  background: transparent;
-}
+.visual-renderer, .visual-renderer-surface { position: absolute; inset: 0; width: 100%; height: 100%; }
+.visual-renderer-staging { visibility: hidden; pointer-events: none; }
 
-.portrait-image {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  object-position: center bottom;
-  background: transparent;
-  border: 0;
-  outline: 0;
-  -webkit-user-drag: none;
-  -webkit-user-select: none;
-  user-select: none;
-  transform: scale(var(--portrait-render-scale));
+.visual-renderer-surface {
+  inset: auto auto 0 50%;
+  width: var(--visual-surface-width, 100%);
+  height: var(--visual-surface-height, 100%);
+  transform: translateX(-50%) scale(var(--portrait-render-scale));
   transform-origin: center bottom;
-  /* Keep the decoded portrait on its own compositor layer before the first settings drag. */
   will-change: transform;
-}
-
-/*
- * An image element without a source is still laid out at the full portrait
- * size by WebView2.  When it has alt text, WebView2 paints the native broken
- * image frame (a bright rectangle) even though the element itself is meant to
- * be transparent.  This is visible during core startup and for the spare
- * cross-fade layer after its source is cleared.  Keep empty layers out of the
- * paint tree until a decoded source has been committed.
- */
-.portrait-image:not([src]) { visibility: hidden; }
-
-.portrait-image--current {
-  opacity: 1;
-}
-
-.portrait-image--next {
-  opacity: 0;
-}
-
-.portrait.is-transitioning .portrait-image--current {
-  animation: portrait-current-fade-out 250ms ease forwards;
-}
-
-.portrait.is-transitioning .portrait-image--next {
-  animation: portrait-next-fade-in 250ms ease 50ms forwards;
-}
-
-@keyframes portrait-current-fade-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-
-@keyframes portrait-next-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 
 .portrait-fallback {
@@ -210,11 +160,33 @@ textarea:focus-visible,
   backdrop-filter: blur(18px) saturate(1.08);
   touch-action: none;
   cursor: grab;
-  transition: border-color 140ms ease;
+  transition:
+    opacity 220ms ease,
+    visibility 0s linear,
+    border-color 140ms ease;
+}
+
+.bubble[data-surface-visible="false"] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 220ms ease,
+    visibility 0s linear 220ms,
+    border-color 140ms ease;
 }
 
 .bubble:active,
 .bubble.is-native-dragging { cursor: grabbing; }
+
+.bubble[data-size-motion] {
+  will-change: height, transform;
+}
+
+.bubble[data-auto-expand="true"] .bubble-copy {
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
 
 /* Adaptive geometry commits atomically after its native region, so top/height never have a CSS
    tail. Settings previews also suppress the remaining cosmetic transitions during slider bursts. */
@@ -339,14 +311,9 @@ body[data-chat-state="thinking"] .bubble::after {
   transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease, transform 120ms ease;
 }
 
-.reply-history-button svg {
+.reply-history-button .sakura-icon {
   width: 17px;
   height: 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
 }
 
 .reply-history-button:not(:disabled):hover,
@@ -363,14 +330,6 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .bubble [data-selectable-text] { cursor: text; }
-
-.bubble-copy::selection,
-.bubble-copy *::selection,
-.composer textarea::selection {
-  color: var(--text);
-  background: color-mix(in srgb, var(--primary), transparent 72%);
-  text-shadow: none;
-}
 
 .bubble-copy p { margin: 0 0 10px; }
 .bubble-copy p:last-child { margin-bottom: 0; }
@@ -424,6 +383,19 @@ body[data-chat-state="thinking"] .bubble::after {
   box-shadow: none;
   backdrop-filter: none;
   transition:
+    opacity 220ms ease,
+    visibility 0s linear,
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.composer[data-surface-visible="false"] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 220ms ease,
+    visibility 0s linear 220ms,
     border-color 140ms ease,
     background-color 140ms ease;
 }
@@ -470,7 +442,7 @@ body[data-chat-state="thinking"] .bubble::after {
   min-width: 0;
   width: 100%;
   min-height: 40px;
-  padding: 8px 0;
+  padding: max(0px, calc((40px - 1.5em) / 2)) 0;
   overflow-y: hidden;
   resize: none;
   border: 0;
@@ -487,11 +459,14 @@ body[data-chat-state="thinking"] .bubble::after {
   scrollbar-color: color-mix(in srgb, var(--primary) 46%, transparent) transparent;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  transition: opacity 140ms ease;
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(.22, 1, .36, 1);
 }
 
 .composer[data-input-expanded="true"] textarea {
   grid-column: 1 / -1;
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
   padding-right: 12px;
   padding-left: 12px;
 }
@@ -500,8 +475,14 @@ body[data-chat-state="thinking"] .bubble::after {
    visible element is still held in its narrow staging layout. */
 .composer[data-input-measure="expanded"] textarea {
   grid-column: 1 / -1;
+  padding-top: 0;
+  padding-bottom: 0;
   padding-right: 12px;
   padding-left: 12px;
+}
+
+.composer[data-input-measure] textarea {
+  min-height: 0;
 }
 
 .composer textarea[data-overflow="true"] { overflow-y: auto; }
@@ -542,6 +523,9 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer #composer-send {
+  grid-column: 3;
+  grid-row: 1;
+  overflow: hidden;
   position: relative;
   display: grid;
   place-items: center;
@@ -551,17 +535,15 @@ body[data-chat-state="thinking"] .bubble::after {
   padding: 0;
   border: 0;
   border-radius: 50%;
-  color: white;
-  background: var(--primary);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 38%);
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  box-shadow: none;
   cursor: pointer;
   transition: background-color 140ms ease, box-shadow 140ms ease, transform 120ms ease, opacity 120ms ease;
 }
 
 .composer #composer-send:hover {
-  background: var(--primary-hover);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 42%);
-  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--primary) 22%, transparent);
 }
 .composer #composer-send:active { transform: scale(.94); }
 .composer #composer-send:disabled { cursor: default; opacity: .48; transform: none; box-shadow: none; }
@@ -587,18 +569,15 @@ body[data-chat-state="thinking"] .bubble::after {
   grid-row: 2;
 }
 
-#composer-attachment svg {
+#composer-attachment .sakura-icon {
   width: 22px;
   height: 22px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-width: 1.8;
   transform: rotate(0deg);
-  transition: transform 240ms cubic-bezier(.22, 1, .36, 1);
+  transition: transform 160ms cubic-bezier(.22, 1, .36, 1);
 }
 
-#composer-attachment[aria-expanded="true"] svg { transform: rotate(225deg); }
+#composer-attachment[aria-expanded="true"] .sakura-icon,
+#composer-attachment[data-action="cancel"] .sakura-icon { transform: rotate(225deg); }
 
 #composer-attachment:hover,
 #composer-attachment[aria-expanded="true"] {
@@ -682,13 +661,9 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer-attachment-chip__remove:disabled { cursor: wait; opacity: .45; }
-.composer-attachment-chip__remove svg {
+.composer-attachment-chip__remove .sakura-icon {
   width: 12px;
   height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-width: 1.8;
 }
 
 .composer-tool-dock {
@@ -770,14 +745,9 @@ body[data-chat-state="thinking"] .bubble::after {
   background: color-mix(in srgb, var(--primary) 9%, white 91%);
 }
 
-.composer-tool-dock__icon svg {
+.composer-tool-dock__icon .sakura-icon {
   width: 14px;
   height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.7;
 }
 
 .composer-tool-dock__copy { display: grid; min-width: 0; gap: 1px; }
@@ -793,13 +763,6 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 .composer-tool-dock__copy small {
   display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .composer-tool-dock,
-  .composer-tool-dock__item {
-    transition-duration: 0ms;
-  }
 }
 
 .composer[data-input-expanded="true"] #composer-send {
@@ -842,20 +805,11 @@ body[data-chat-state="thinking"] .bubble::after {
   transform: translateY(var(--input-toolbar-staging-shift));
 }
 
-.composer-action-icon {
-  position: absolute;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  transition: opacity 120ms ease, transform 150ms cubic-bezier(.22, .8, .28, 1);
-}
-
-.composer-action-icon svg { display: block; width: 100%; height: 100%; fill: currentColor; }
-.composer-action-icon--send { opacity: 1; transform: scale(1) rotate(0deg); }
-.composer-action-icon--cancel { opacity: 0; transform: scale(.55); }
-.composer button[data-action="cancel"] .composer-action-icon--send { opacity: 0; transform: scale(.55) rotate(12deg); }
-.composer button[data-action="cancel"] .composer-action-icon--cancel { opacity: 1; transform: scale(1); }
+.sakura-morph-icon { display: block; flex: none; width: 22px; height: 22px; pointer-events: none; }
+.sakura-morph-icon > svg, .sakura-morph-icon > .sakura-icon { display: block; width: 100%; height: 100%; }
+.sakura-morph-icon > svg { overflow: visible; }
+.sakura-morph-icon path { fill: currentColor; fill-opacity: 0; transition: fill-opacity 180ms ease; }
+.sakura-morph-icon[data-icon="stop"] path { fill-opacity: 1; }
 
 @keyframes bubble-thinking-sheen {
   0%, 100% { left: 12%; transform: scaleX(.72); }
@@ -956,13 +910,4 @@ body[data-chat-state="thinking"] .bubble::after {
 @keyframes pet-context-menu-in {
   from { opacity: 0; transform: translateY(-3px) scale(.985); }
   to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    scroll-behavior: auto !important;
-    animation-duration: .01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
-  }
 }

@@ -1,15 +1,21 @@
+import { enhanceSelect, refreshSelect, closeSelects } from "../settings/select-control.js";
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
 import {
   applyViewerSnapshot,
   collapseViewerRecords,
+  filterViewerRecords,
   validateViewerBootstrap,
   validateViewerSnapshot,
   viewerCopyText,
   viewerInlineSummary,
   viewerItemKey,
+  viewerProblemCount,
   viewerScopeCounts,
+  viewerPluginName,
+  viewerPluginOptions,
+  viewerFailureText,
 } from "./runtime-log-presentation.js";
 
 installDevtoolsShortcutGuard();
@@ -23,16 +29,25 @@ const status = document.querySelector("#log-status");
 const scroll = document.querySelector("#log-scroll");
 const list = document.querySelector("#log-list");
 const empty = document.querySelector("#log-empty");
+const emptyTitle = document.querySelector("#log-empty-title");
 const softwareCount = document.querySelector("#count-software");
+const pluginCount = document.querySelector("#count-plugins");
+const pluginFilter = document.querySelector("#plugin-filter");
+const pluginFilterControl = document.querySelector("#plugin-filter-control");
+enhanceSelect(pluginFilter);
+const saveStatus = document.querySelector("#log-save-status");
 const ttsCount = document.querySelector("#count-tts");
 const autoScroll = document.querySelector("#auto-scroll");
 const refresh = document.querySelector("#refresh");
 const copy = document.querySelector("#copy");
 const close = document.querySelector("#close");
 const tabs = [...document.querySelectorAll(".log-tab")];
+const problemFilter = document.querySelector("#problem-filter");
+const problemCount = document.querySelector("#count-problems");
 
 let viewerState = null;
 let activeScope = "software";
+let viewMode = "all";
 let selectedItemKey = null;
 const disclosureStates = new Map();
 let pollActive = false;
@@ -64,12 +79,15 @@ function detailsPanel(item) {
   panel.className = "record-details";
   const pairs = [
     ["事件代码", item.record.eventCode],
+    ...(item.record.pluginId ? [["插件标识", item.record.pluginId]] : []),
     ...item.record.details.map((detail) => [detail.label, detail.value]),
     ...(item.record.correlationId ? [["关联编号", item.record.correlationId]] : []),
   ];
   for (const [label, value] of pairs) {
+    if (viewerFailureText(item.record) && ["诊断", "原始报错"].includes(label)) continue;
     const row = document.createElement("div");
     row.className = "detail-row";
+    if (["异常链", "调用栈", "回滚报错", "代码位置"].includes(label)) row.classList.add("detail-wide");
     const term = document.createElement("dt");
     term.textContent = label;
     const description = document.createElement("dd");
@@ -80,18 +98,44 @@ function detailsPanel(item) {
   return panel;
 }
 
-function recordMain(item) {
-  const main = document.createElement("div");
+function fillRecordMain(main, item) {
+  main.replaceChildren();
   main.className = "record-main";
-  appendText(main, "record-time", item.record.timestamp);
-  appendText(main, "record-category", item.record.category);
-  if (item.record.severity !== "info") {
-    appendText(main, `record-level record-level-${item.record.severity}`, item.record.severity === "error" ? "错误" : "提醒");
+  const headline = document.createElement("div");
+  headline.className = "record-headline";
+  appendText(headline, "record-time", item.record.timestamp);
+  appendText(headline, "record-category", item.record.category === "PLUGIN" ? "插件" : item.record.category);
+  if (item.record.pluginId) appendText(headline, "record-plugin", viewerPluginName(item.record));
+  if (["warning", "error"].includes(item.record.severity)) {
+    appendText(headline, `record-level record-level-${item.record.severity}`, item.record.severity === "error" ? "错误" : "提醒");
   }
-  appendText(main, "record-message", item.record.message);
+  appendText(headline, "record-message", item.record.message);
   const inline = viewerInlineSummary(item.record);
-  if (inline) appendText(main, "record-inline", inline);
-  if (item.repeatCount > 1) appendText(main, "record-repeat", `×${item.repeatCount}`);
+  if (inline) appendText(headline, "record-inline", inline);
+  if (item.repeatCount > 1) appendText(headline, "record-repeat", `×${item.repeatCount}`);
+  main.append(headline);
+  const failure = viewerFailureText(item.record);
+  if (failure) {
+    appendFailure(main, failure, failure === "未记录底层原因");
+    const recovery = item.record.details.find(detail => detail.label === "回滚报错");
+    if (recovery) appendFailure(main, `回滚也失败：${recovery.value}`);
+  } else if (item.record.description) appendText(main, "record-description", item.record.description);
+}
+
+function appendFailure(parent, text, missing = false) {
+  const element = document.createElement("span");
+  element.className = `record-raw${missing ? " is-missing" : ""}`;
+  const type = text.match(/^([A-Za-z_][A-Za-z0-9_.]*:)(?=\s)/);
+  if (type) {
+    appendText(element, "record-raw-type", type[1]);
+    element.append(document.createTextNode(text.slice(type[1].length)));
+  } else element.textContent = text;
+  parent.append(element);
+}
+
+function recordMain(item, hasDetails = false) {
+  const main = document.createElement(hasDetails ? "summary" : "div");
+  fillRecordMain(main, item);
   return main;
 }
 
@@ -109,22 +153,27 @@ function createRecordCard(item, itemKey) {
   card.className = `log-record severity-${item.record.severity}`;
   card.dataset.itemKey = itemKey;
   card.dataset.collapseKey = item.collapseKey;
-  card.tabIndex = 0;
-  card.append(recordMain(item));
+  const hasDetails = Boolean(
+    item.record.severity !== "info"
+    || item.record.details.length
+    || item.record.correlationId
+    || item.record.pluginId,
+  );
 
-  if (item.record.severity !== "info") {
+  if (hasDetails) {
     const disclosure = document.createElement("details");
     disclosure.className = "record-disclosure";
     disclosure.open = disclosureStates.get(itemKey) ?? item.record.severity === "error";
-    const disclosureLabel = document.createElement("summary");
-    disclosureLabel.textContent = item.record.severity === "error" ? "错误详情" : "查看详情";
-    disclosure.append(disclosureLabel, detailsPanel(item));
+    disclosure.append(recordMain(item, true), detailsPanel(item));
     disclosure.addEventListener("toggle", () => disclosureStates.set(itemKey, disclosure.open));
     card.append(disclosure);
+  } else {
+    card.tabIndex = 0;
+    card.append(recordMain(item));
   }
 
   card.addEventListener("click", () => selectCard(card));
-  card.addEventListener("focus", () => selectCard(card));
+  card.addEventListener("focusin", () => selectCard(card));
   card.addEventListener("animationend", () => card.classList.remove("is-new", "is-updated"));
   return card;
 }
@@ -143,7 +192,7 @@ function updateRecordCard(card, item, itemKey, newAfterSequence) {
     || card.dataset.repeatCount !== repeatCount;
   if (!changed) return;
 
-  card.querySelector(".record-main").replaceWith(recordMain(item));
+  fillRecordMain(card.querySelector(".record-main"), item);
   card.dataset.latestSequence = latestSequence;
   card.dataset.repeatCount = repeatCount;
   card.classList.remove("is-new", "is-updated");
@@ -157,7 +206,7 @@ function updateRecordCard(card, item, itemKey, newAfterSequence) {
 function pruneViewState() {
   const records = viewerState?.records || [];
   const currentKeys = new Set();
-  for (const scopeName of ["software", "tts"]) {
+  for (const scopeName of ["software", "tts", "plugins"]) {
     for (const item of collapseViewerRecords(records, scopeName)) {
       currentKeys.add(runtimeItemKey(item, scopeName));
     }
@@ -173,8 +222,34 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   const counts = viewerScopeCounts(records);
   softwareCount.textContent = String(counts.software);
   ttsCount.textContent = String(counts.tts);
-  const visible = collapseViewerRecords(records, activeScope);
-  summary.textContent = `${activeScope === "software" ? "软件" : "TTS"}：${visible.length} 条可见记录`;
+  pluginCount.textContent = String(counts.plugins);
+  pluginFilterControl.hidden = activeScope !== "plugins";
+  if (pluginFilterControl.hidden) closeSelects(pluginFilterControl);
+  const options = viewerPluginOptions(records);
+  // Preserve both identity and display name when the last record leaves the ring.
+  if (pluginFilter.value && !options.some(option => option.id === pluginFilter.value)) {
+    options.push({ id: pluginFilter.value, name: pluginFilter.selectedOptions[0].textContent });
+  }
+  if (pluginFilter.dataset.options !== JSON.stringify(options)) {
+    closeSelects(pluginFilterControl);
+    const selected = pluginFilter.value;
+    pluginFilter.replaceChildren(new Option("全部插件", ""), ...options.map(({ id, name }) => new Option(name, id)));
+    pluginFilter.value = selected;
+    pluginFilter.dataset.options = JSON.stringify(options);
+    refreshSelect(pluginFilter);
+  }
+  const pluginId = activeScope === "plugins" ? pluginFilter.value : "";
+  const failures = viewerState?.failedFiles || [];
+  saveStatus.hidden = failures.length === 0;
+  saveStatus.textContent = failures.length ? `${failures.map((name) => name === "plugins" ? "插件" : "软件").join("、")}日志文件保存失败，窗口中的记录仍可查看。` : "";
+  const problems = viewerProblemCount(records, activeScope, pluginId);
+  problemCount.textContent = String(problems);
+  const filtered = filterViewerRecords(records, activeScope, viewMode, pluginId);
+  const visible = collapseViewerRecords(filtered, activeScope);
+  const scopeLabel = { software: "软件", tts: "TTS", plugins: "插件" }[activeScope];
+  summary.textContent = viewMode === "problems"
+    ? `${scopeLabel}：${visible.length} 条问题记录`
+    : `${scopeLabel}：${visible.length} 条记录，${problems} 个问题`;
 
   const existingCards = new Map(
     [...list.querySelectorAll(":scope > .log-record")].map((card) => [card.dataset.itemKey, card]),
@@ -199,6 +274,7 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   }
   for (const card of existingCards.values()) card.remove();
   empty.hidden = visible.length !== 0;
+  emptyTitle.textContent = viewMode === "problems" ? "当前筛选下没有问题记录" : "暂无记录";
   if (!selectedItem) {
     selectedItemKey = null;
     copy.disabled = true;
@@ -219,7 +295,7 @@ function scrollToLatest() {
 
 async function bootstrap() {
   if (!invoke || bootstrapActive) {
-    if (!invoke) status.textContent = "运行日志界面未连接到 Sakura，请关闭后重新打开。";
+    if (!invoke) status.textContent = "无法连接 Sakura，请重新打开运行日志。";
     return;
   }
   bootstrapActive = true;
@@ -238,8 +314,8 @@ async function bootstrap() {
     viewerState = null;
     applySnapshot(result.snapshot);
     status.textContent = result.snapshot.records.length
-      ? "已显示本次启动以来可观察到的运行事件。"
-      : "等待新的运行事件。";
+      ? "已显示本次运行日志。"
+      : "等待新记录。";
     scrollToLatest();
   } catch {
     status.textContent = "运行日志读取失败，请稍后刷新。";
@@ -262,12 +338,12 @@ async function poll() {
     if (generation !== requestGeneration) return;
     applySnapshot(snapshot, { animateAfter: previousLatest });
     if (viewerState.latestSequence > previousLatest) {
-      status.textContent = "已收到新的运行事件。";
+      status.textContent = "日志已更新。";
       scrollToLatest();
     }
   } catch {
     if (generation === requestGeneration) {
-      status.textContent = "日志更新暂时中断，Sakura 会继续尝试连接。";
+      status.textContent = "日志更新中断，正在重连。";
     }
   } finally {
     pollActive = false;
@@ -288,18 +364,27 @@ for (const tab of tabs) {
   });
 }
 
+pluginFilter.addEventListener("change", () => { selectedItemKey = null; render(); });
+
+problemFilter.addEventListener("change", () => {
+  viewMode = problemFilter.checked ? "problems" : "all";
+  selectedItemKey = null;
+  render();
+  scrollToLatest();
+});
+
 scroll.addEventListener("scroll", (event) => {
   if (!event.isTrusted || !autoScroll.checked) return;
   const distanceFromBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
   if (distanceFromBottom > 72) {
     autoScroll.checked = false;
-    status.textContent = "已暂停自动滚动，勾选后可继续跟随最新记录。";
+    status.textContent = "已暂停自动滚动。";
   }
 });
 
 autoScroll.addEventListener("change", () => {
   if (autoScroll.checked) {
-    status.textContent = "已继续跟随最新记录。";
+    status.textContent = "";
     scrollToLatest();
   }
 });
@@ -310,7 +395,7 @@ copy.addEventListener("click", async () => {
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
-    status.textContent = "已复制选中的日志详情。";
+    status.textContent = "已复制。";
   } catch {
     status.textContent = "复制失败，请重新选择后再试。";
   }

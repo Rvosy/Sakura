@@ -38,11 +38,19 @@ PLUGIN_JOB_HOST_TIMEOUT_SECONDS = 305.0
 
 
 class TTSBoundaryError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        provider_error_code: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.provider_error_code = provider_error_code
 
     def public_error(self) -> dict[str, Any]:
         payload = error_payload(self.code, self.message)
@@ -134,10 +142,19 @@ class _PluginSynthesisHandle:
                 "TTS_SERVICE_UNAVAILABLE",
                 "configured TTS Provider is unavailable",
                 retryable=True,
+                provider_error_code=code,
             )
         if code in {"TTS_ARTIFACT_INVALID", "TTS_JOB_RESULT_INVALID"}:
-            raise TTSBoundaryError("AUDIO_RECORDING_INVALID", "TTS audio artifact is invalid")
-        raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider synthesis failed")
+            raise TTSBoundaryError(
+                "AUDIO_RECORDING_INVALID",
+                "TTS audio artifact is invalid",
+                provider_error_code=code,
+            )
+        raise TTSBoundaryError(
+            "TTS_SYNTHESIS_FAILED",
+            "TTS Provider synthesis failed",
+            provider_error_code=code,
+        )
 
 
 class TTSBoundary:
@@ -148,6 +165,7 @@ class TTSBoundary:
         user_root: Path,
         *,
         session_provider: Callable[[], object | None],
+        character_presentation_provider: Callable[[], object | None] | None = None,
         plugin_application_provider: Callable[[], object | None] | None = None,
         event_publisher: Callable[[dict[str, Any]], None] | None = None,
         recording_store: VoiceRecordingStore | None = None,
@@ -157,6 +175,7 @@ class TTSBoundary:
         self._user_root = Path(user_root)
         self._tts_storage = TtsStorage(self._user_root)
         self._session_provider = session_provider
+        self._character_presentation_provider = character_presentation_provider
         self._plugin_application_provider = plugin_application_provider
         self._event_publisher = event_publisher
         self._recordings = recording_store or VoiceRecordingStore(self._user_root)
@@ -214,18 +233,43 @@ class TTSBoundary:
             )
             return
         accepted = isinstance(result, Mapping) and bool(result.get("accepted"))
+        reason_code = (
+            result.get("reasonCode", "TTS_WARMUP_SKIPPED")
+            if isinstance(result, Mapping)
+            else "TTS_WARMUP_SKIPPED"
+        )
+        skipped = reason_code in {
+            "TTS_DISABLED",
+            "TTS_PROVIDER_NOT_SELECTED",
+            "TTS_WARMUP_SKIPPED",
+        }
+        attributes: dict[str, object] = {
+            "generation": self._generation_id,
+            "provider": result.get("providerId", "") if isinstance(result, Mapping) else "",
+            "status": "queued" if accepted else "skipped" if skipped else "failed",
+            "reason_code": reason_code,
+        }
+        if isinstance(result, Mapping):
+            if isinstance(result.get("stage"), str):
+                attributes["stage"] = result["stage"]
+            if isinstance(result.get("errorType"), str):
+                attributes["error_type"] = result["errorType"]
         log_event(
             "TTS",
-            "TTS startup warmup queued" if accepted else "TTS startup warmup skipped",
-            {
-                "generation": self._generation_id,
-                "provider": result.get("providerId", "") if isinstance(result, Mapping) else "",
-                "status": "queued" if accepted else "skipped",
-                "reason_code": result.get("reasonCode", "TTS_WARMUP_SKIPPED")
-                if isinstance(result, Mapping)
-                else "TTS_WARMUP_SKIPPED",
-            },
-            event="tts.service.warmup_queued" if accepted else "tts.service.warmup_skipped",
+            "TTS startup warmup queued"
+            if accepted
+            else "TTS startup warmup skipped"
+            if skipped
+            else "TTS startup warmup failed",
+            attributes,
+            event=(
+                "tts.service.warmup_queued"
+                if accepted
+                else "tts.service.warmup_skipped"
+                if skipped
+                else "tts.service.warmup_failed"
+            ),
+            severity="warning" if not accepted and not skipped else "info",
         )
 
     def authorize_segment(
@@ -336,6 +380,13 @@ class TTSBoundary:
             self._authorizations.clear()
         self._recordings.cleanup_generation(self._generation_id)
 
+    def reset_character(self) -> None:
+        self.cancel_all()
+        with self._lock:
+            for authorization in self._authorizations.values():
+                authorization.state = "cancelling"
+            self._authorizations.clear()
+
     def cancel_all(self) -> None:
         """Signal every in-flight synthesis before Router/generation teardown waits."""
 
@@ -412,6 +463,8 @@ class TTSBoundary:
                 event="tts.recording.committed",
             )
             with self._lock:
+                if authorization.state == "cancelling" or self._authorizations.get((operation_id, segment_index)) is not authorization:
+                    raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "角色语音任务已失效")
                 authorization.state = "ready"
             log_event(
                 "TTS", "TTS synthesis ready",
@@ -426,7 +479,10 @@ class TTSBoundary:
                 },
                 event="tts.synthesis.ready",
             )
-            self._publish(request, "tts.synthesis.ready", {**descriptor, "operationId": operation_id, "segmentIndex": segment_index})
+            with self._lock:
+                if authorization.state == "cancelling":
+                    raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "角色语音任务已失效")
+                self._publish(request, "tts.synthesis.ready", {**descriptor, "operationId": operation_id, "segmentIndex": segment_index})
             return descriptor
         except TTSBoundaryError as error:
             self._mark_failed(authorization)
@@ -443,7 +499,13 @@ class TTSBoundary:
                     self._segment_payload(authorization),
                 )
             else:
-                self._log_synthesis_terminal(authorization, error.code, started_at, "failed")
+                self._log_synthesis_terminal(
+                    authorization,
+                    error.code,
+                    started_at,
+                    "failed",
+                    provider_error_code=error.provider_error_code,
+                )
                 self._publish_failure(request, authorization, error)
             raise
         finally:
@@ -763,8 +825,8 @@ class TTSBoundary:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
         application = self._voice_application()
         if character_id is not None:
-            application, current_character = self._voice_application_and_character()
-            if character_id != str(getattr(current_character, "id", "")):
+            application, current_character_id = self._voice_application_and_character()
+            if character_id != current_character_id:
                 raise TTSBoundaryError("INVALID_TTS_SETTINGS", "character identity changed")
         allowed = {
             (section.get("pluginId"), section.get("sectionId"))
@@ -887,17 +949,16 @@ class TTSBoundary:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "status payload must be empty")
         return self._voice_settings_snapshot()
 
-    def _voice_application_and_character(self) -> tuple[object, object]:
-        session = self._session_provider()
+    def _voice_application_and_character(self) -> tuple[object, str]:
         application = self._voice_application()
-        character = getattr(session, "character", None) if session is not None else None
-        if character is None or not str(getattr(character, "id", "")):
+        identity = self._voice_character_identity()
+        if identity is None:
             raise TTSBoundaryError(
                 "TTS_SERVICE_UNAVAILABLE",
                 "TTS capability settings are unavailable",
                 retryable=True,
             )
-        return application, character
+        return application, identity[0]
 
     def _voice_application(self) -> object:
         application = self._plugin_application()
@@ -911,10 +972,8 @@ class TTSBoundary:
 
     def _voice_settings_snapshot(self) -> dict[str, Any]:
         application = self._voice_application()
-        session = self._session_provider()
-        candidate = getattr(session, "character", None) if session is not None else None
-        character_id = str(getattr(candidate, "id", ""))
-        character = candidate if character_id else None
+        character = self._voice_character_identity()
+        character_id = character[0] if character is not None else ""
         try:
             status = (
                 getattr(application, "call_service")("sakura.tts", "status", character_id)
@@ -942,7 +1001,7 @@ class TTSBoundary:
             "character": (
                 {
                     "characterId": character_id,
-                    "displayName": str(getattr(character, "display_name", character_id))[:120],
+                    "displayName": character[1][:120],
                 }
                 if character is not None
                 else None
@@ -985,6 +1044,29 @@ class TTSBoundary:
                 if isinstance(item, Mapping)
             ][:32],
         }
+
+    def _voice_character_identity(self) -> tuple[str, str] | None:
+        session = self._session_provider()
+        character = getattr(session, "character", None) if session is not None else None
+        character_id = str(getattr(character, "id", ""))
+        if character_id:
+            return character_id, str(
+                getattr(character, "display_name", character_id)
+            )
+
+        if self._character_presentation_provider is None:
+            return None
+        presentation = self._character_presentation_provider()
+        if not isinstance(presentation, Mapping):
+            return None
+        character_id = presentation.get("characterId")
+        display_name = presentation.get("displayName")
+        if not isinstance(character_id, str) or not character_id:
+            return None
+        return (
+            character_id,
+            display_name if isinstance(display_name, str) and display_name else character_id,
+        )
 
     def _handle_playback_observe(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
@@ -1039,8 +1121,7 @@ class TTSBoundary:
     def _plugin_application(self) -> object | None:
         if self._plugin_application_provider is not None:
             return self._plugin_application_provider()
-        session = self._session_provider()
-        return getattr(session, "plugin_application", None) if session is not None else None
+        return None
 
     def _require_storage_root(self) -> Path:
         try:
@@ -1085,17 +1166,22 @@ class TTSBoundary:
         code: str,
         started_at: float,
         outcome: str,
+        *,
+        provider_error_code: str | None = None,
     ) -> None:
         event_name = f"tts.synthesis.{outcome}"
+        attributes: dict[str, object] = {
+            "operation_id": authorization.operation_id,
+            "segment_index": authorization.segment_index,
+            "request_id": authorization.request_id,
+            "code": code,
+            "elapsed_ms": round((monotonic() - started_at) * 1000),
+        }
+        if provider_error_code:
+            attributes["provider_error_code"] = provider_error_code
         log_event(
             "TTS", "TTS synthesis did not complete",
-            {
-                "operation_id": authorization.operation_id,
-                "segment_index": authorization.segment_index,
-                "request_id": authorization.request_id,
-                "code": code,
-                "elapsed_ms": round((monotonic() - started_at) * 1000),
-            },
+            attributes,
             event=event_name,
             severity="warning" if outcome == "failed" else "info",
         )

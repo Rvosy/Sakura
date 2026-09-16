@@ -1,0 +1,6 @@
+{
+  "icon_source": "desktop/src-tauri/icons/icon-source.png",
+  "font_source": "desktop/frontend/assets/fonts/NotoSansSC-VariableFont_wght-400-700.woff2",
+  "font_subset_bytes": 136020,
+  "font_subset_codepoints": 686
+}

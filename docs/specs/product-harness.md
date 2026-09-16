@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-15
+updated: 2026-09-02
 ---
 
 # Sakura Product Harness
@@ -35,11 +35,16 @@ Product Harness 将 Sakura 已有的 Python、Rust、frontend 和平台检查组
 MCP、Plugins、Observability、Agent Trace journeys 保持可调用。平台专用 profile 在不支持的平台由调用方
 明确不执行，不产生伪造的通过结果。
 
+`release-distribution` 提供发行布局、升级数据保留、签名清单和下载镜像的窄入口。`legacy-import` 必须同时
+覆盖 Python 完整/增量迁移、Rust 首次启动门禁与事务进程边界，以及首次页交互。
+
 ## Verification
 
 - `tests/unit/test_harness_runner.py`
 - `python -m harness run harness`
 - `python -m harness run smoke`
+- `python -m harness run release-distribution`
+- `python -m harness run legacy-import`
 
 ## Related Decisions
 

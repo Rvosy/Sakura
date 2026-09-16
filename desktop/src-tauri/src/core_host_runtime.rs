@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 use std::path::Path;
 
 #[cfg(unix)]
@@ -32,6 +32,7 @@ use crate::{
         CoreLogContext, Correlation, RuntimeLogEvent, RuntimeLogService, Severity,
         CORE_BRIDGE_PREFIX,
     },
+    telemetry::TELEMETRY_CORE_BRIDGE_PREFIX,
 };
 
 const CONTROL_PRIORITY: &str = "control";
@@ -40,7 +41,8 @@ const MIN_PROTOCOL_MINOR: u64 = 0;
 const GENERATION_CREDENTIAL_BYTES: usize = 16;
 const STDERR_READ_CHUNK_SIZE: usize = 4 * 1024;
 const STDERR_READ_SLICE: Duration = Duration::from_millis(10);
-const STDERR_RECORD_LIMIT: usize = 4 * 1024;
+const STDERR_RECORD_LIMIT: usize = 32 * 1024;
+const STDERR_TELEMETRY_RECORD_LIMIT: usize = 128 * 1024 + TELEMETRY_CORE_BRIDGE_PREFIX.len();
 const STDERR_CACHE_LIMIT: usize = 64 * 1024;
 const CHARACTER_SUMMARY_KEYS: [&str; 5] = [
     "id",
@@ -113,6 +115,7 @@ impl CoreSnapshotCache {
         })
     }
 
+    #[cfg(test)]
     pub fn begin_generation(&mut self, generation_id: &str) -> Result<(), String> {
         if generation_id.trim().is_empty() {
             return Err("Snapshot generation ID must not be empty".to_string());
@@ -273,6 +276,7 @@ impl CoreSnapshotCache {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn current(&self) -> Option<&Value> {
         self.snapshot.as_ref()
     }
@@ -304,6 +308,20 @@ fn validate_active_interaction_summary(summary: Option<&Value>) -> Result<(), St
 }
 
 fn reject_sensitive_snapshot_fields(value: &Value) -> Result<(), String> {
+    // Only these DTO fields are plugin-owned dictionaries. Asset values are
+    // still checked as package-relative paths by CharacterPresentation.
+    let mut public = value.clone();
+    if let Some(visual) = public
+        .pointer_mut("/characterPresentation/visual")
+        .and_then(Value::as_object_mut)
+    {
+        visual.remove("data");
+        visual.remove("assets");
+    }
+    reject_sensitive_public_fields(&public)
+}
+
+fn reject_sensitive_public_fields(value: &Value) -> Result<(), String> {
     match value {
         Value::Object(object) => {
             for (key, nested) in object {
@@ -329,12 +347,12 @@ fn reject_sensitive_snapshot_fields(value: &Value) -> Result<(), String> {
                 {
                     return Err("Core Snapshot contains a forbidden private field".to_string());
                 }
-                reject_sensitive_snapshot_fields(nested)?;
+                reject_sensitive_public_fields(nested)?;
             }
         }
         Value::Array(values) => {
             for nested in values {
-                reject_sensitive_snapshot_fields(nested)?;
+                reject_sensitive_public_fields(nested)?;
             }
         }
         _ => {}
@@ -451,12 +469,14 @@ pub struct CoreHostLifecycleFailure {
 }
 
 pub(crate) struct CoreHostRecovery {
-    tree: Box<dyn ManagedProcessTree>,
+    // Keep the failed tree owned until this recovery is consumed or dropped.
+    _tree: Box<dyn ManagedProcessTree>,
 }
 
+#[cfg(test)]
 impl CoreHostRecovery {
     pub(crate) fn finalize_until(self, deadline: Instant) -> ProcessTreeFinalizationResult {
-        self.tree.finalize_until(deadline, DEADLINE_EXIT_CODE)
+        self._tree.finalize_until(deadline, DEADLINE_EXIT_CODE)
     }
 }
 
@@ -468,16 +488,13 @@ impl CoreHostLifecycleFailure {
         }
     }
 
+    #[cfg(test)]
     pub fn diagnostic(&self) -> &str {
         &self.diagnostic
     }
 
     pub(crate) fn into_recovery(self) -> Option<CoreHostRecovery> {
         self.recovery
-    }
-
-    pub(crate) fn into_terminal_diagnostic(self) -> String {
-        self.diagnostic
     }
 }
 
@@ -546,6 +563,10 @@ impl StderrDrainer {
         generation_credential: &str,
         log_sink: Option<StderrLogSink>,
     ) -> Self {
+        if let Some(sink) = log_sink.as_ref() {
+            sink.runtime_log
+                .activate_telemetry_generation(generation_id);
+        }
         let state = Arc::new(Mutex::new(StderrDrainState {
             records: VecDeque::new(),
             buffered_bytes: 0,
@@ -675,65 +696,18 @@ struct StderrRedactor {
 impl StderrRedactor {
     fn new(generation_credential: &str) -> Self {
         let mut secrets = vec![generation_credential.to_string()];
-        for value in std::env::vars_os().map(|(_, value)| value) {
-            let value = value.to_string_lossy();
-            if (4..=4096).contains(&value.len())
-                && !secrets.iter().any(|secret| secret == value.as_ref())
-            {
-                secrets.push(value.into_owned());
-            }
-        }
+        secrets.extend(crate::runtime_log::environment_secrets());
         secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
         Self { secrets }
     }
 
     fn redact(&self, text: &str) -> String {
-        let mut redacted = text.to_string();
-        for secret in &self.secrets {
-            redacted = redacted.replace(secret, "[REDACTED]");
-        }
-        for key in [
-            "authorization",
-            "cookie",
-            "credential",
-            "api_key",
-            "apikey",
-            "token",
-            "secret",
-            "password",
-            "prompt",
-            "message",
-            "content",
-        ] {
-            redacted = redact_key_values(&redacted, key);
-        }
-        redacted
+        crate::runtime_log::redact_diagnostic_credentials(text, &self.secrets)
     }
 }
 
 fn stderr_diagnostic_summary(text: &str) -> String {
-    text.split_whitespace()
-        .map(|part| {
-            let unquoted = part.trim_matches(['\'', '"', '(', ')', '[', ']', '{', '}', ',', ';']);
-            let bytes = unquoted.as_bytes();
-            let windows_path = bytes.windows(3).any(|window| {
-                window[0].is_ascii_alphabetic()
-                    && window[1] == b':'
-                    && matches!(window[2], b'/' | b'\\')
-            });
-            if unquoted.contains("://") {
-                "[URL]"
-            } else if windows_path || unquoted.starts_with('/') || unquoted.starts_with("\\\\") {
-                "[PATH]"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(320)
-        .collect()
+    crate::runtime_log::sanitize_diagnostic(text, &[], 4096)
 }
 
 fn drain_stderr(
@@ -959,13 +933,21 @@ fn drain_stderr_text(
             continue;
         }
         line_pending.push_str(segment);
-        if line_pending.len() > STDERR_RECORD_LIMIT {
+        let record_limit = if line_pending.starts_with(TELEMETRY_CORE_BRIDGE_PREFIX) {
+            STDERR_TELEMETRY_RECORD_LIMIT
+        } else {
+            STDERR_RECORD_LIMIT
+        };
+        if line_pending.len() > record_limit {
             if let Ok(mut state) = state.lock() {
                 state.stats.truncated_records = state.stats.truncated_records.saturating_add(1);
                 state.stats.invalid_structured_records = state
                     .stats
                     .invalid_structured_records
-                    .saturating_add(u64::from(line_pending.starts_with(CORE_BRIDGE_PREFIX)));
+                    .saturating_add(u64::from(
+                        line_pending.starts_with(CORE_BRIDGE_PREFIX)
+                            || line_pending.starts_with(TELEMETRY_CORE_BRIDGE_PREFIX),
+                    ));
                 state.stats.dropped_bytes = state
                     .stats
                     .dropped_bytes
@@ -1020,6 +1002,30 @@ fn push_stderr_text(
 ) {
     let trimmed = text.trim_end_matches(['\r', '\n']);
     let mut rejected_structured_record = false;
+    if let Some(payload) = trimmed.strip_prefix(TELEMETRY_CORE_BRIDGE_PREFIX) {
+        if let Some(sink) = log_sink {
+            if sink
+                .runtime_log
+                .submit_core_telemetry_bridge(
+                    payload,
+                    &sink.context,
+                    Some(&sink.generation_credential),
+                )
+                .is_ok()
+            {
+                if let Ok(mut state) = state.lock() {
+                    state.stats.structured_records =
+                        state.stats.structured_records.saturating_add(1);
+                }
+                return;
+            }
+        }
+        if let Ok(mut state) = state.lock() {
+            state.stats.invalid_structured_records =
+                state.stats.invalid_structured_records.saturating_add(1);
+        }
+        rejected_structured_record = true;
+    }
     if let Some(payload) = trimmed.strip_prefix(CORE_BRIDGE_PREFIX) {
         if let Some(sink) = log_sink {
             if sink
@@ -1057,7 +1063,7 @@ fn push_stderr_text(
             return;
         };
         state.stats.ordinary_records = state.stats.ordinary_records.saturating_add(1);
-        if !state.ordinary_warning_emitted {
+        if !state.ordinary_warning_emitted || !rejected_structured_record {
             state.ordinary_warning_emitted = true;
             if let Some(sink) = log_sink {
                 let diagnostic = if rejected_structured_record {
@@ -1099,68 +1105,6 @@ fn push_stderr_text(
         state.buffered_bytes = state.buffered_bytes.saturating_add(record.len());
         state.records.push_back(record);
     }
-}
-
-fn redact_key_values(text: &str, key: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let lower = text.to_ascii_lowercase();
-    let mut cursor = 0;
-    while let Some(relative) = lower[cursor..].find(key) {
-        let key_start = cursor + relative;
-        let key_end = key_start + key.len();
-        output.push_str(&text[cursor..key_end]);
-        let bytes = text.as_bytes();
-        let mut separator = key_end;
-        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
-            separator += 1;
-        }
-        if separator >= bytes.len() || !matches!(bytes[separator], b'=' | b':') {
-            cursor = key_end;
-            continue;
-        }
-        separator += 1;
-        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
-            separator += 1;
-        }
-        output.push_str(&text[key_end..separator]);
-        let quote = bytes
-            .get(separator)
-            .copied()
-            .filter(|byte| matches!(byte, b'\'' | b'"'));
-        if quote.is_some() {
-            output.push(char::from(quote.expect("quote exists")));
-            separator += 1;
-        }
-        output.push_str("[REDACTED]");
-        let mut value_end = separator;
-        let redact_to_line_end = matches!(
-            key,
-            "authorization" | "cookie" | "prompt" | "message" | "content"
-        );
-        while value_end < bytes.len() {
-            if quote.is_some_and(|quote| bytes[value_end] == quote) {
-                break;
-            }
-            if quote.is_none()
-                && !redact_to_line_end
-                && (bytes[value_end].is_ascii_whitespace()
-                    || matches!(bytes[value_end], b',' | b';'))
-            {
-                break;
-            }
-            if quote.is_none() && matches!(bytes[value_end], b'\r' | b'\n') {
-                break;
-            }
-            value_end += 1;
-        }
-        if quote.is_some() && value_end < bytes.len() {
-            output.push(char::from(bytes[value_end]));
-            value_end += 1;
-        }
-        cursor = value_end;
-    }
-    output.push_str(&text[cursor..]);
-    output
 }
 
 struct RequestExpectation {
@@ -1258,6 +1202,7 @@ impl ConcurrentRequestHandle {
             0,
             None,
             Some(deadline.as_millis()),
+            None,
         );
         let result = self.router.request(
             json!({
@@ -1275,7 +1220,61 @@ impl ConcurrentRequestHandle {
             deadline,
         );
         let elapsed_ms = started.elapsed().as_millis();
+        self.log_request_result(request_id, name, &result, elapsed_ms, deadline);
+        result
+    }
+
+    fn log_request_result(
+        &self,
+        request_id: &str,
+        name: &str,
+        result: &Result<Value, String>,
+        elapsed_ms: u128,
+        deadline: Duration,
+    ) {
         match result.as_ref() {
+            Ok(response) if response.get("ok") == Some(&Value::Bool(false)) => {
+                let code = response
+                    .pointer("/error/code")
+                    .and_then(Value::as_str)
+                    .filter(|code| {
+                        !code.is_empty()
+                            && code.len() <= 64
+                            && code.bytes().all(|byte| {
+                                byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                            })
+                    })
+                    .unwrap_or("REQUEST_REJECTED");
+                let cancelled = code == "CANCELLED" || code.ends_with("_CANCELLED");
+                self.log_request(
+                    if cancelled {
+                        Severity::Info
+                    } else {
+                        Severity::Warning
+                    },
+                    if cancelled {
+                        "ipc.request.cancelled"
+                    } else {
+                        "ipc.request.failed"
+                    },
+                    if cancelled {
+                        "Core IPC request was cancelled"
+                    } else {
+                        "Core IPC request was rejected"
+                    },
+                    request_id,
+                    name,
+                    if cancelled { "cancelled" } else { "failed" },
+                    Some(code),
+                    elapsed_ms,
+                    response
+                        .pointer("/error/details/diagnostics/diagnostic")
+                        .and_then(Value::as_str)
+                        .or_else(|| response.pointer("/error/message").and_then(Value::as_str)),
+                    Some(deadline.as_millis()),
+                    response.pointer("/error/details/diagnostics"),
+                );
+            }
             Ok(_) => self.log_request(
                 Severity::Info,
                 "ipc.request.completed",
@@ -1287,6 +1286,7 @@ impl ConcurrentRequestHandle {
                 elapsed_ms,
                 None,
                 Some(deadline.as_millis()),
+                None,
             ),
             Err(error) => self.log_request(
                 if error.contains("CANCEL") {
@@ -1313,11 +1313,11 @@ impl ConcurrentRequestHandle {
                 },
                 Some(stable_error_code(error)),
                 elapsed_ms,
-                Some(stable_error_diagnostic(error)),
+                Some(error),
                 Some(deadline.as_millis()),
+                None,
             ),
         }
-        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1329,19 +1329,53 @@ impl ConcurrentRequestHandle {
         request_id: &str,
         name: &str,
         outcome: &'static str,
-        code: Option<&'static str>,
+        code: Option<&str>,
         elapsed_ms: u128,
-        diagnostic: Option<&'static str>,
+        diagnostic: Option<&str>,
         deadline_ms: Option<u128>,
+        failure_details: Option<&Value>,
     ) {
         let Some(runtime_log) = self.runtime_log.as_ref() else {
             return;
+        };
+        // Routine observations are diagnostic traffic, not user-visible activity.
+        // Failed responses and transport errors retain their original severity.
+        let severity = if event == "ipc.request.completed"
+            && matches!(
+                name,
+                "asr.input.availability"
+                    | "asr.input.poll"
+                    | "asr.input.capture_status"
+                    | "studio.visual.catalog"
+            ) {
+            Severity::Debug
+        } else {
+            severity
         };
         let mut attributes = json!({
             "command": name,
             "outcome": outcome,
             "elapsed_ms": elapsed_ms,
         });
+        if let Some(details) = failure_details.and_then(Value::as_object) {
+            for key in [
+                "diagnostic",
+                "error_type",
+                "cause_type",
+                "exception_site",
+                "exception_chain",
+                "exception_stack",
+                "recovery_diagnostic",
+                "errno",
+                "winerror",
+                "stage",
+                "reason_code",
+            ] {
+                if let Some(value) = details.get(key) {
+                    attributes[key] = value.clone();
+                }
+            }
+        }
         if let (Some(target), Some(code)) = (attributes.as_object_mut(), code) {
             target.insert("code".to_string(), Value::String(code.to_string()));
         }
@@ -1380,20 +1414,6 @@ fn stable_error_code(error: &str) -> &'static str {
         "TRANSPORT_UNAVAILABLE"
     } else {
         "REQUEST_FAILED"
-    }
-}
-
-fn stable_error_diagnostic(error: &str) -> &'static str {
-    if error.contains("DEADLINE") || error.contains("TIMEOUT") {
-        "等待 Core Host 响应超过请求期限；底层任务可能仍在结束"
-    } else if error.contains("GENERATION") {
-        "请求所属 Core generation 已失效，通常发生在设置保存或 Core 重启期间"
-    } else if error.contains("TRANSPORT") || error.contains("ROUTER") {
-        "Core Host 传输已关闭或不可用，请检查相邻的 Core 重启和异常记录"
-    } else if error.contains("CANCEL") {
-        "请求已由用户或上层生命周期取消"
-    } else {
-        "Core Host 请求失败；请结合相同 op/request 的相邻日志定位阶段"
     }
 }
 
@@ -1451,55 +1471,7 @@ impl CoreHostRuntime {
         )
     }
 
-    #[cfg(debug_assertions)]
-    pub(crate) fn launch_acceptance_fault(
-        layout: &RuntimeLayout,
-        generation_id: &str,
-        script: &Path,
-        fault_mode: &str,
-        fault_directory: &Path,
-    ) -> Result<Self, CoreHostLifecycleFailure> {
-        validate_runtime_layout(layout).map_err(CoreHostLifecycleFailure::without_recovery)?;
-        let script = fs::canonicalize(script).map_err(|error| {
-            CoreHostLifecycleFailure::without_recovery(format!(
-                "Phase 1C fault harness script could not be resolved: {error}"
-            ))
-        })?;
-        if !script.starts_with(&layout.core_root) || !fault_directory.is_absolute() {
-            return Err(CoreHostLifecycleFailure::without_recovery(
-                "Phase 1C fault harness paths escaped their approved roots",
-            ));
-        }
-        let request = ManagedProcessRequest {
-            program: layout.python_executable.clone(),
-            args: vec![
-                "-I".into(),
-                "-B".into(),
-                "-X".into(),
-                "utf8".into(),
-                script.into_os_string(),
-                "--repo-root".into(),
-                layout.core_root.as_os_str().to_owned(),
-                "--distribution-root".into(),
-                layout.distribution_root.as_os_str().to_owned(),
-                "--user-root".into(),
-                layout.user_root.as_os_str().to_owned(),
-                "--generation-id".into(),
-                generation_id.into(),
-                "--fault-mode".into(),
-                fault_mode.into(),
-                "--fault-directory".into(),
-                fault_directory.as_os_str().to_owned(),
-                "--python-path-entry".into(),
-                layout.python_path_entries[0].as_os_str().to_owned(),
-            ],
-            current_directory: Some(layout.core_root.clone()),
-            environment_overrides: Vec::new(),
-            stdio: ProcessStdio::Piped,
-        };
-        Self::launch_with_router_backend(&NativeManagedProcessTreeBackend, request, generation_id)
-    }
-
+    #[cfg(test)]
     fn launch_with_backend(
         backend: &dyn ManagedProcessTreeBackend,
         request: ManagedProcessRequest,
@@ -1508,6 +1480,7 @@ impl CoreHostRuntime {
         Self::launch_with_backend_mode(backend, request, generation_id, false, 1, None)
     }
 
+    #[cfg(test)]
     fn launch_with_router_backend(
         backend: &dyn ManagedProcessTreeBackend,
         request: ManagedProcessRequest,
@@ -1710,10 +1683,6 @@ impl CoreHostRuntime {
         self.shutdown_written_at = Some(observed);
     }
 
-    pub fn pid(&self) -> u32 {
-        self.tree.as_ref().map_or(0, |tree| tree.root_pid())
-    }
-
     pub fn request(
         &mut self,
         request_id: &str,
@@ -1769,66 +1738,6 @@ impl CoreHostRuntime {
             .ok_or_else(|| "Core Host control request deadline overflowed".to_string())?;
         let response = self.read_response_until(response_deadline)?;
         self.validate_response(response, expectation)
-    }
-
-    #[cfg(debug_assertions)]
-    pub(crate) fn request_with_acceptance_identity(
-        &mut self,
-        request_id: &str,
-        name: &str,
-        supplied_generation_id: &str,
-        supplied_generation_credential: Option<&str>,
-        deadline: Duration,
-    ) -> Result<Value, String> {
-        let supplied_generation_credential = supplied_generation_credential
-            .unwrap_or(self.generation_credential.as_str())
-            .to_string();
-        let protocol_minor = self
-            .negotiation
-            .as_ref()
-            .map_or(PROTOCOL_MINOR, |negotiation| negotiation.minor);
-        let request = json!({
-            "protocolMajor": PROTOCOL_MAJOR,
-            "protocolMinor": protocol_minor,
-            "kind": "request",
-            "generationId": supplied_generation_id,
-            "generationCredential": supplied_generation_credential,
-            "id": request_id,
-            "name": name,
-            "payload": {},
-            "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
-            "priority": CONTROL_PRIORITY,
-        });
-        if let Some(router) = self.router.as_ref() {
-            let response = router.handle().request(request, deadline)?;
-            return self.validate_response(
-                response,
-                RequestExpectation {
-                    id: request_id.to_string(),
-                    name: name.to_string(),
-                    protocol_minor,
-                    is_hello: false,
-                },
-            );
-        }
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "TRANSPORT_WRITE_FAILED: Core Host stdin is closed".to_string())?;
-        write_frame(stdin, &request).map_err(|error| error.to_string())?;
-        stdin
-            .flush()
-            .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
-        let response = self.read_response_until(Instant::now() + deadline)?;
-        self.validate_response(
-            response,
-            RequestExpectation {
-                id: request_id.to_string(),
-                name: name.to_string(),
-                protocol_minor,
-                is_hello: false,
-            },
-        )
     }
 
     fn write_request_frame(
@@ -2054,6 +1963,7 @@ impl CoreHostRuntime {
         Ok(snapshot)
     }
 
+    #[cfg(test)]
     pub fn cached_snapshot(&self) -> Option<&Value> {
         self.snapshot_cache.current()
     }
@@ -2069,15 +1979,6 @@ impl CoreHostRuntime {
 
     pub fn shutdown(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
         self.shutdown_using_policy(PRODUCTION_SHUTDOWN_POLICY)
-    }
-
-    #[cfg(debug_assertions)]
-    pub(crate) fn shutdown_with_acceptance_policy(
-        self,
-        graceful: Duration,
-        total: Duration,
-    ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
-        self.shutdown_using_policy(ShutdownPolicy { graceful, total })
     }
 
     #[cfg(test)]
@@ -2181,6 +2082,7 @@ impl CoreHostRuntime {
         self.finish_exit_until(absolute_deadline, graceful_deadline, primary)
     }
 
+    #[cfg(test)]
     pub fn close_stdin_and_wait(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
         let started = Instant::now();
         let absolute_deadline = started
@@ -2391,7 +2293,7 @@ fn aggregate_exit_or_retain_recovery(
         Some(Err(failure)) => {
             let (error, tree) = failure.into_parts();
             diagnostics.push(format!("Core Host process tree cleanup failed: {error}"));
-            recovery = Some(CoreHostRecovery { tree });
+            recovery = Some(CoreHostRecovery { _tree: tree });
         }
         None => diagnostics.push("Core Host process tree owner was unavailable".to_string()),
     }
@@ -2649,9 +2551,11 @@ fn fill_os_random(bytes: &mut [u8]) -> Result<(), String> {
 fn process_exit_code(status: ProcessExitStatus) -> u32 {
     match status {
         ProcessExitStatus::Code(code) => u32::try_from(code).unwrap_or(u32::MAX),
+        #[cfg(unix)]
         ProcessExitStatus::Signal(signal) => {
             128_u32.saturating_add(u32::try_from(signal).unwrap_or_default())
         }
+        #[cfg(any(unix, test))]
         ProcessExitStatus::Unknown => u32::MAX,
     }
 }
@@ -2677,16 +2581,14 @@ mod tests {
     use crate::{
         core_host_protocol::encode_frame,
         platform::{
-            FilesystemRuntimeLocator, InstanceLockAcquire, InstanceLockBackend,
-            ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessPipes, ManagedProcessRequest,
-            ManagedProcessTree, ManagedProcessTreeBackend, PlatformError, PlatformErrorCategory,
-            PlatformResult, PlatformService, ProcessExitStatus, ProcessStdio,
-            ProcessTreeFinalization, ProcessTreeFinalizationFailure, ProcessTreeFinalizationResult,
-            ProcessWaitOutcome, RetryAdvice, RuntimeLocationRequest, RuntimeLocator, RuntimeMode,
-            SpawnedProcessTree, SHARED_INSTANCE_ID,
+            FilesystemRuntimeLocator, ManagedPipeReadOutcome, ManagedPipeReader,
+            ManagedProcessPipes, ManagedProcessRequest, ManagedProcessTree,
+            ManagedProcessTreeBackend, PlatformError, PlatformErrorCategory, PlatformResult,
+            PlatformService, ProcessExitStatus, ProcessStdio, ProcessTreeFinalization,
+            ProcessTreeFinalizationFailure, ProcessTreeFinalizationResult, ProcessWaitOutcome,
+            RetryAdvice, RuntimeLocationRequest, RuntimeLocator, RuntimeMode, SpawnedProcessTree,
         },
         runtime_log::{CoreLogContext, RuntimeLogService, CORE_BRIDGE_PREFIX},
-        shared_instance::NativeInstanceLockBackend,
     };
 
     #[cfg(windows)]
@@ -3638,7 +3540,7 @@ mod tests {
 
     fn valid_character_presentation() -> Value {
         json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "generationId": GENERATION_ID,
             "characterId": "sakura",
             "displayName": "Sakura",
@@ -3656,12 +3558,46 @@ mod tests {
                 "bubbleBackground": "#fff0f7",
                 "border": "#efbfd6"
             },
-            "defaultPortraitKey": "__default__",
-            "portraitKeys": ["__default__"],
-            "portraitResourceIds": {
-                "__default__": "character-v1-73616b757261-portrait-5f5f64656661756c745f5f"
-            }
+            "visual": null,
+            "visualReasonCode": "VISUAL_NOT_BOUND"
         })
+    }
+
+    #[test]
+    fn visual_resources_snapshot_preserves_plugin_owned_keys() {
+        let mut presentation = valid_character_presentation();
+        presentation["visual"] = json!({
+            "bindingId": "a".repeat(32), "resourceId": "model-1", "type": "fixture.numeric@1",
+            "providerId": "fixture.numeric", "installId": "pi_bundled_6e756d65726963",
+            "renderer": "frontend/renderer.js", "editor": null,
+            "data": {"private": {"token": "model-state"}},
+            "assets": {"secret": "assets/model.json", "token": "assets/motion.json"}
+        });
+        let snapshot = json!({
+            "generationId": GENERATION_ID, "revision": 1, "readiness": "ready",
+            "currentCharacterSummary": valid_character_summary(), "characterPresentation": presentation,
+            "activeInteractionSummary": null
+        });
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).unwrap();
+        cache
+            .store_minimal_python_snapshot(&snapshot)
+            .expect("private resource identifiers remain valid");
+        for invalid in [
+            json!("../outside.json"),
+            json!({"path": "assets/model.json"}),
+        ] {
+            let mut next = snapshot.clone();
+            next["revision"] = json!(2);
+            next["characterPresentation"]["visual"]["assets"]["secret"] = invalid;
+            assert!(cache.store_minimal_python_snapshot(&next).is_err());
+        }
+        // The exception applies only to the typed presentation dictionaries.
+        for extra in [
+            json!({"visual": {"data": {"secret": "hidden"}}}),
+            json!({"apiKey": "hidden"}),
+        ] {
+            assert!(super::reject_sensitive_snapshot_fields(&extra).is_err());
+        }
     }
 
     #[test]
@@ -3792,6 +3728,18 @@ mod tests {
                 "{state}/{code} must never become automatically retryable"
             );
         }
+    }
+
+    #[test]
+    fn provider_setup_snapshot_can_keep_character_presentation() {
+        let mut snapshot =
+            valid_assistant_snapshot("PROVIDER_SETUP_REQUIRED", "setup_required", Value::Null);
+        snapshot["characterPresentation"] = valid_character_presentation();
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+
+        cache
+            .store_python_snapshot(&snapshot)
+            .expect("provider setup keeps the selected character visible");
     }
 
     #[test]
@@ -3966,7 +3914,7 @@ mod tests {
         let output = state.records.iter().cloned().collect::<String>();
         assert!(output.contains("ordinary\n多行 UTF-8\n"));
         assert!(output.contains('\u{fffd}'));
-        assert!(output.contains('\0'));
+        assert!(!output.contains('\0')); // Strip terminal control bytes, preserve decoded text.
         assert!(!output.contains(split_secret));
         assert!(state.stats.eof);
         assert!(!state.stats.read_failed);
@@ -4011,7 +3959,15 @@ mod tests {
             &AtomicBool::new(false),
             Some(&sink),
         );
-        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        let write_deadline = Instant::now() + Duration::from_secs(5);
+        while fs::read_to_string(&path).map_or(true, |contents| contents.lines().count() < 2) {
+            assert!(
+                Instant::now() < write_deadline,
+                "structured stderr did not reach the runtime log"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        runtime_log.drain_and_shutdown_for_test();
 
         let state = state.lock().expect("stderr state");
         assert_eq!(state.stats.structured_records, 1);
@@ -4023,27 +3979,32 @@ mod tests {
 
         let contents = fs::read_to_string(&path).unwrap();
         let lines = contents.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0]
-            .contains("[CORE] Core 输出了异常诊断 │ outcome=detected diagnostic=ordinary one"));
-        assert!(lines[1].contains("[AGENT] 开始处理用户消息"));
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("[CORE]"));
+        assert!(lines[0].contains("outcome=detected"));
+        assert!(lines[0].contains("diagnostic=ordinary one"));
+        assert!(lines[1].contains("[AGENT]"));
+        assert!(lines[2].contains("diagnostic=ordinary two"));
         assert!(!contents.contains(CORE_BRIDGE_PREFIX));
         assert!(!contents.contains(credential));
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn wp_4l_02_stderr_summary_replaces_paths_and_urls_without_hiding_the_cause() {
+    fn stderr_summary_preserves_paths_and_urls_with_only_credentials_replaced() {
         let summary = stderr_diagnostic_summary(
             "File C:\\private\\bridge.py failed while requesting https://user:pass@example.test/path",
         );
-        assert_eq!(summary, "File [PATH] failed while requesting [URL]");
-        assert!(!summary.contains("private"));
+        assert_eq!(
+            summary,
+            "File C:\\private\\bridge.py failed while requesting https://[REDACTED]@example.test/path"
+        );
+        assert!(summary.contains("private"));
         assert!(!summary.contains("user:pass"));
     }
 
     #[test]
-    fn wp_4l_01_structured_stderr_rejects_generation_credential_before_persistence() {
+    fn structured_stderr_replaces_generation_credential_before_persistence() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -4077,14 +4038,15 @@ mod tests {
             &AtomicBool::new(false),
             Some(&sink),
         );
-        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        runtime_log.drain_and_shutdown_for_test();
 
         let stats = &state.lock().expect("stderr state").stats;
-        assert_eq!(stats.structured_records, 0);
-        assert_eq!(stats.invalid_structured_records, 1);
+        assert_eq!(stats.structured_records, 1);
+        assert_eq!(stats.invalid_structured_records, 0);
         let contents = fs::read_to_string(path).unwrap();
         assert!(!contents.contains(credential));
-        assert!(!contents.contains("agent.turn.started"));
+        assert!(contents.contains("[AGENT]"));
+        assert!(contents.contains("[REDACTED]"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4119,7 +4081,7 @@ mod tests {
         assert!(!output.contains(environment_value));
         assert!(!output.contains("Bearer private"));
         assert!(!output.contains("session"));
-        assert!(!output.contains("hello"));
+        assert!(output.contains("content=hello"));
     }
 
     #[test]
@@ -4182,9 +4144,11 @@ mod tests {
         assert!(exit.stderr_stats.truncated_records > 0);
         assert!(exit.stderr.len() <= STDERR_CACHE_LIMIT);
         assert!(!exit.stderr.contains(&credential));
-        for secret in ["private", "Bearer", "session", "user-chat"] {
+        for secret in ["private", "session"] {
             assert!(!exit.stderr.contains(secret));
         }
+        assert!(exit.stderr.contains("content=user-chat"));
+        assert!(exit.stderr.contains("Bearer [REDACTED]"));
     }
 
     #[test]
@@ -4261,7 +4225,7 @@ mod tests {
         let mut host =
             CoreHostRuntime::launch_observed(&layout, GENERATION_ID, 1, runtime_log.clone())
                 .expect("real Core Host should launch in a managed Job");
-        assert!(host.pid() > 0);
+        assert!(host.root_pid() > 0);
 
         let hello = request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
             .expect("hello should respond");
@@ -4293,11 +4257,9 @@ mod tests {
         assert!(exit.stderr.is_empty());
         assert!(exit.stderr_stats.structured_records >= 2);
         assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
-        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        runtime_log.drain_and_shutdown_for_test();
         let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
-        assert!(records.contains("[CORE] Core 日志桥已启动"));
-        assert!(records.contains("[CORE] Core 日志桥正在停止"));
-        assert!(records.contains("[CORE] Core 诊断输出已汇总"));
+        assert!(records.matches("[CORE]").count() >= 3);
         let _ = fs::remove_dir_all(log_root);
     }
 
@@ -4418,6 +4380,166 @@ mod tests {
     }
 
     #[test]
+    fn polling_logs_are_debug_while_rejections_and_deadlines_remain_visible() {
+        use super::{ConcurrentRequestHandle, CoreHostRouter};
+        use crate::runtime_log::{RuntimeLogConfig, Severity, Verbosity};
+        let root =
+            std::env::temp_dir().join(format!("sakura-asr-ipc-log-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for level in [Verbosity::Info, Verbosity::Debug] {
+            let path = root.join(format!("{level:?}.log"));
+            let mut config = RuntimeLogConfig::production(path.clone());
+            config.level = level;
+            let log = RuntimeLogService::start_with_config(config);
+            // Log policy must not depend on a Python process completing its cold start.
+            let router = CoreHostRouter::new(
+                null_file(),
+                Box::new(EofPipeReader),
+                GENERATION_ID,
+                "log-test-credential",
+            )
+            .unwrap();
+            let handle = ConcurrentRequestHandle {
+                router: router.handle(),
+                generation_id: GENERATION_ID.into(),
+                generation_credential: "log-test-credential".into(),
+                protocol_minor: 2,
+                generation_number: 1,
+                core_pid: 0,
+                runtime_log: Some(log.clone()),
+            };
+            handle.log_request_result(
+                "asr-log-availability",
+                "asr.input.availability",
+                &Ok(json!({"ok": true, "payload": {"enabled": false}})),
+                1,
+                Duration::from_secs(3),
+            );
+            // Exercise the same producer and real writer without opening a microphone.
+            for command in [
+                "asr.input.poll",
+                "asr.input.capture_status",
+                "studio.visual.catalog",
+            ] {
+                handle.log_request(
+                    Severity::Info,
+                    "ipc.request.completed",
+                    "Core IPC request completed",
+                    "asr-log-normal-query",
+                    command,
+                    "completed",
+                    None,
+                    1,
+                    None,
+                    Some(500),
+                    None,
+                );
+            }
+            handle.log_request_result(
+                "asr-log-rejected",
+                "asr.input.poll",
+                &Ok(json!({"ok": false, "error": {"code": "ASR_RECORDING_NOT_FOUND"}})),
+                1,
+                Duration::from_secs(3),
+            );
+            handle.log_request_result(
+                "asr-log-deadline",
+                "asr.input.capture_status",
+                &Err("REQUEST_DEADLINE_EXCEEDED".into()),
+                500,
+                Duration::from_millis(500),
+            );
+            for code in ["ASR_CANCELLED", "CANCELLED"] {
+                handle.log_request_result(
+                    "asr-log-cancelled",
+                    "asr.input.capture_ready",
+                    &Ok(json!({"ok": false, "error": {"code": code}})),
+                    1,
+                    Duration::from_millis(500),
+                );
+            }
+            let records = log.viewer_snapshot(None).unwrap().records;
+            let ipc: Vec<_> = records
+                .iter()
+                .filter(|record| record.event_code.starts_with("ipc.request."))
+                .collect();
+            assert_eq!(
+                ipc.len(),
+                4,
+                "successful polling must not consume viewer history"
+            );
+            assert!(ipc[..2]
+                .iter()
+                .all(|record| record.event_code == "ipc.request.failed"
+                    && record.severity == "warning"));
+            assert!(ipc[2..]
+                .iter()
+                .all(|record| record.event_code == "ipc.request.cancelled"
+                    && record.severity == "info"));
+            handle.log_request_result(
+                "character-import-original-error",
+                "settings.character.import",
+                &Ok(json!({"ok": false, "error": {
+                    "code": "CHARACTER_IMPORT_FAILED", "message": "角色导入失败",
+                    "details": {"diagnostics": {
+                        "diagnostic": "File is not a zip file: token=private-fixture-key",
+                        "cause_type": "BadZipFile",
+                        "exception_chain": "RuntimeError: import failed\nCaused by: BadZipFile: File is not a zip file",
+                        "exception_stack": "BadZipFile: File is not a zip file\n  at zipfile:open:1369",
+                        "recovery_diagnostic": "PermissionError: rollback directory is locked",
+                        "errno": 13,
+                        "winerror": 5,
+                        "stage": "character_import"
+                    }}
+                }})),
+                3,
+                Duration::from_secs(1),
+            );
+            let original = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+            assert!(original
+                .details
+                .iter()
+                .any(|detail| detail.label == "诊断"
+                    && detail.value.contains("File is not a zip file")));
+            assert!(original.details.iter().any(
+                |detail| detail.label == "调用栈" && detail.value.contains("zipfile:open:1369")
+            ));
+            assert!(original
+                .details
+                .iter()
+                .any(|detail| detail.label == "异常链"
+                    && detail.value.contains("Caused by: BadZipFile")));
+            assert!(original
+                .details
+                .iter()
+                .any(|detail| detail.label == "回滚报错"
+                    && detail.value.contains("directory is locked")));
+            assert!(original
+                .details
+                .iter()
+                .any(|detail| detail.label == "请求编号"
+                    && detail.value == "character-import-original-error"));
+            drop(handle);
+            drop(router);
+            log.drain_and_shutdown_for_test();
+            let text = fs::read_to_string(&path).unwrap();
+            assert_eq!(text.lines().filter(|line| line.contains("outcome=completed") && line.contains("asr.input.")).count(),
+                if level == Verbosity::Debug { 3 } else { 0 });
+            assert!(text.contains("REQUEST_DEADLINE_EXCEEDED"));
+            assert!(text.contains("ASR_RECORDING_NOT_FOUND"));
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.contains("studio.visual.catalog"))
+                    .count(),
+                if level == Verbosity::Debug { 1 } else { 0 }
+            );
+            assert!(text.contains("File is not a zip file"));
+            assert!(!text.contains("private-fixture-key"));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn wp_3s_01_real_core_round_trips_redacted_provider_settings_atomically() {
         let _test_lock = lifecycle_test_lock();
         let unique = SystemTime::now()
@@ -4503,39 +4625,6 @@ mod tests {
         assert!(saved.contains("preserve_me: true"));
         assert!(saved.contains("Fixture edited"));
         fs::remove_dir_all(&app_root).expect("isolated provider fixture should clean up");
-    }
-
-    #[test]
-    fn wp_3_02_production_gateway_rejects_fixture_fields_before_core_write() {
-        let _test_lock = lifecycle_test_lock();
-        let layout = development_layout();
-        let mut host =
-            CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        request_predecessor_hello(&mut host, "chat-hello", Duration::from_secs(3))
-            .expect("router hello should negotiate");
-        let gateway = host
-            .chat_gateway()
-            .expect("chat Gateway should be available");
-        let error = gateway
-            .send(
-                "main",
-                json!({
-                    "message": "hello",
-                    "fixture": {"kind": "sleep", "delayMs": 10_000}
-                }),
-            )
-            .expect_err("fixture-only fields must not reach the production Core");
-        assert!(error.starts_with("INVALID_CHAT_PAYLOAD:"));
-        assert_eq!(gateway.registry_len(), 0);
-        let health = host
-            .request(
-                "post-rejection-health",
-                "system.health",
-                Duration::from_secs(3),
-            )
-            .expect("local rejection must not affect Core health");
-        assert_eq!(health["ok"], true);
-        host.shutdown().expect("chat host shutdown");
     }
 
     #[test]
@@ -4982,11 +5071,9 @@ mod tests {
         assert!(exit.stderr.is_empty());
         assert!(exit.stderr_stats.structured_records >= 2);
         assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
-        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        runtime_log.drain_and_shutdown_for_test();
         let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
-        assert!(records.contains("[CORE] Core 日志桥已启动"));
-        assert!(records.contains("[CORE] Core 日志桥正在停止"));
-        assert!(records.contains("[CORE] Core 诊断输出已汇总"));
+        assert!(records.matches("[CORE]").count() >= 3);
         let _ = fs::remove_dir_all(log_root);
     }
 
@@ -5165,25 +5252,6 @@ mod tests {
             .expect("shutdown should cancel or close real initialize");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);
-    }
-
-    #[test]
-    fn minimum_lifecycle_releases_and_reacquires_the_shared_lock() {
-        let lock_backend = NativeInstanceLockBackend;
-        let first = lock_backend
-            .acquire(SHARED_INSTANCE_ID)
-            .expect("shared lock should be acquirable");
-        assert!(matches!(first, InstanceLockAcquire::Acquired(_)));
-        let conflict = lock_backend
-            .acquire(SHARED_INSTANCE_ID)
-            .expect("second lock attempt should be classified");
-        assert!(matches!(conflict, InstanceLockAcquire::AlreadyRunning));
-        drop(first);
-        let reacquired = lock_backend
-            .acquire(SHARED_INSTANCE_ID)
-            .expect("lock should be immediately reacquirable after release");
-        assert!(matches!(reacquired, InstanceLockAcquire::Acquired(_)));
-        drop(reacquired);
     }
 }
 

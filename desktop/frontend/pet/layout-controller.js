@@ -13,6 +13,7 @@ export function createLayoutController({
   let committedLayout = null;
   let nativeRunning = false;
   let pendingNative = null;
+  let latestPreviewRevision = 0;
 
   function rejectedResult({ revision, state }) {
     return Object.freeze({ applied: false, revision, state });
@@ -67,13 +68,13 @@ export function createLayoutController({
 
     try {
       const isCurrent = work.revision === requestedRevision;
-      if (work.previewed && !isCurrent) {
+      if (!isCurrent && (work.previewed || work.revision < latestPreviewRevision)) {
         work.resolve(rejectedResult(work));
         return;
       }
       // Ordinary adaptive changes remain paired with their precise Win32 clip. During an explicit
-      // settings preview the native region is already relaxed, so stale native acknowledgements
-      // must not paint over the newest immediate WebView frame.
+      // settings preview a coarse native region already follows the latest frame, so stale native
+      // acknowledgements must not paint over the newest immediate WebView frame.
       work.commitVisual?.(work.layout, nativeResult);
       commitLayout(work.layout, nativeResult, { interactionTrace: work.interactionTrace });
       committedLayout = work.layout;
@@ -115,10 +116,12 @@ export function createLayoutController({
       currentState = state;
       const layout = computeLayout(state, placeholderText, input);
       const previewed = Boolean(input?.visualPreview && previewLayout);
+      if (previewed) latestPreviewRevision = revision;
       if (previewed) previewLayout(layout, {
         rollback: false,
         revision,
         state,
+        deferNative: input?.deferNative === true,
         interactionTrace: input?.interactionTrace || null,
       });
       if (input?.deferNative) {
@@ -146,4 +149,25 @@ export function createLayoutController({
       return Object.freeze({ requestedRevision, currentState });
     },
   });
+}
+
+export async function runInitialLayoutWithBootstrapRecovery({
+  transition,
+  readBootstrapDiagnostics,
+  restoreBootstrap,
+}) {
+  if (
+    typeof transition !== "function"
+    || typeof readBootstrapDiagnostics !== "function"
+    || typeof restoreBootstrap !== "function"
+  ) {
+    throw new Error("initial layout recovery requires transition and bootstrap callbacks");
+  }
+  try {
+    const result = await transition();
+    if (result?.applied) return Object.freeze({ degraded: false, result });
+  } catch {}
+  const diagnostics = await readBootstrapDiagnostics();
+  const bootstrap = restoreBootstrap(diagnostics);
+  return Object.freeze({ degraded: true, bootstrap, diagnostics });
 }

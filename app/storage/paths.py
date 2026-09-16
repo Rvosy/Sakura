@@ -208,10 +208,6 @@ class StoragePaths:
         # faulthandler/未捕获异常的崩溃留痕；原生段错误不会进 runtime 日志,单列一份。
         return self.logs_dir / "sakura-crash.log"
 
-    def tts_service_log(self, provider: str) -> Path:
-        safe_provider = re.sub(r"[^A-Za-z0-9_.-]+", "-", provider.strip().lower()) or "tts"
-        return self.logs_dir / f"{safe_provider}-service.log"
-
     # ---- TTS 整合包 ----
     @property
     def tts_bundles_dir(self) -> Path:

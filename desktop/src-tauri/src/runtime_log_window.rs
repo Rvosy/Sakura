@@ -2,9 +2,12 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 use tauri::webview::Color;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-use crate::runtime_log::RuntimeLogViewerSnapshot;
+use crate::{
+    character_appearance, character_presentation,
+    runtime_log::{self, RuntimeLogService, RuntimeLogViewerSnapshot},
+};
 
 pub const RUNTIME_LOG_WINDOW_LABEL: &str = "runtime-log";
 pub const RUNTIME_LOG_REFRESH_REQUESTED_EVENT: &str = "sakura://runtime-log-refresh-requested";
@@ -82,6 +85,54 @@ pub fn show_or_focus(app: &AppHandle) -> Result<(), String> {
     .build()
     .map(|_| ())
     .map_err(|error| format!("RUNTIME_LOG_WINDOW_CREATE_FAILED: {error}"))
+}
+
+#[tauri::command]
+pub(crate) fn runtime_log_viewer_bootstrap(
+    window: WebviewWindow,
+    runtime_log: State<'_, RuntimeLogService>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+) -> Result<RuntimeLogViewerBootstrap, String> {
+    validate_runtime_log_window(&window)?;
+    let theme_tokens = resources
+        .active_presentation()
+        .ok()
+        .flatten()
+        .and_then(|presentation| appearance.current(&presentation).ok())
+        .map(|publication| publication.values.theme_tokens)
+        .unwrap_or_else(fallback_theme_tokens);
+    let snapshot = runtime_log.viewer_snapshot(None).map_err(str::to_string)?;
+    Ok(RuntimeLogViewerBootstrap {
+        schema_version: 3,
+        theme_tokens,
+        snapshot,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn runtime_log_viewer_snapshot(
+    window: WebviewWindow,
+    after_sequence: Option<u64>,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<runtime_log::RuntimeLogViewerSnapshot, String> {
+    validate_runtime_log_window(&window)?;
+    runtime_log
+        .viewer_snapshot(after_sequence)
+        .map_err(str::to_string)
+}
+
+#[tauri::command]
+pub(crate) fn close_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
+    validate_runtime_log_window(&window)?;
+    window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn reveal_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
+    validate_runtime_log_window(&window)?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

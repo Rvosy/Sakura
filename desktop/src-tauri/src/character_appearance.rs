@@ -17,13 +17,13 @@ const DOMAIN: &str = "ui";
 const PORTRAIT_SCALE_MIN: u16 = 50;
 const PORTRAIT_SCALE_MAX: u16 = 150;
 const CONTROL_PANEL_WIDTH_MIN: u16 = 420;
-const CONTROL_PANEL_WIDTH_MAX: u16 = 760;
+const CONTROL_PANEL_WIDTH_MAX: u16 = 860;
 const BUBBLE_MAX_HEIGHT_MIN: u16 = 96;
-const BUBBLE_MAX_HEIGHT_MAX: u16 = 260;
-const CONTROL_PANEL_VERTICAL_OFFSET_MIN: i16 = -60;
-const CONTROL_PANEL_VERTICAL_OFFSET_MAX: i16 = 160;
+const BUBBLE_MAX_HEIGHT_MAX: u16 = 400;
+const CONTROL_PANEL_VERTICAL_OFFSET_MIN: i16 = -400;
+const CONTROL_PANEL_VERTICAL_OFFSET_MAX: i16 = 400;
 const INPUT_BAR_OFFSET_MIN: u16 = 0;
-const INPUT_BAR_OFFSET_MAX: u16 = 60;
+const INPUT_BAR_OFFSET_MAX: u16 = 400;
 const DEFAULT_VISUAL_EFFECT_MODE: InputVisualEffectMode = InputVisualEffectMode::GaussianBlur;
 const THEME_TOKENS: [(&str, &str); 11] = [
     ("primary", "primary_color"),
@@ -64,6 +64,7 @@ pub struct AppearanceValues {
     pub portrait_scale_percent: u16,
     pub control_panel_width: u16,
     pub bubble_max_height: u16,
+    pub bubble_auto_expand: bool,
     pub control_panel_vertical_offset: i16,
     pub input_bar_offset: u16,
     pub speech_font_size: u16,
@@ -140,6 +141,7 @@ impl AppearanceValues {
             portrait_scale_percent: 100,
             control_panel_width: 640,
             bubble_max_height: 128,
+            bubble_auto_expand: false,
             control_panel_vertical_offset: 0,
             input_bar_offset: 0,
             speech_font_size: 19,
@@ -177,10 +179,10 @@ impl Default for AppearanceLimits {
     fn default() -> Self {
         Self {
             portrait_scale_percent: [50, 150, 100],
-            control_panel_width: [420, 760, 640],
-            bubble_max_height: [96, 260, 128],
-            control_panel_vertical_offset: [-60, 160, 0],
-            input_bar_offset: [0, 60, 0],
+            control_panel_width: [420, 860, 640],
+            bubble_max_height: [96, 400, 128],
+            control_panel_vertical_offset: [-400, 400, 0],
+            input_bar_offset: [0, 400, 0],
             speech_font_size: [10, 24, 19],
             name_font_size: [10, 20, 13],
             input_font_size: [12, 20, 15],
@@ -528,6 +530,10 @@ impl AppearanceRepository {
                 settings.insert(name.to_string(), Value::from(value));
             }
             settings.insert(
+                "bubble_auto_expand".to_string(),
+                Value::from(values.bubble_auto_expand),
+            );
+            settings.insert(
                 "visual_effect_mode".to_string(),
                 Value::from(match values.visual_effect_mode {
                     InputVisualEffectMode::Solid => "solid",
@@ -572,10 +578,11 @@ fn validate_document(document: &Value) -> Result<(), String> {
         .and_then(Value::as_object)
         .ok_or_else(|| "APPEARANCE_DOCUMENT_INVALID".to_string())?;
     validate_optional_number(settings, "portrait_scale_percent", 50, 150)?;
-    validate_optional_number(settings, "control_panel_width", 420, 760)?;
-    validate_optional_number(settings, "bubble_height", 96, 260)?;
-    validate_optional_signed_number(settings, "control_panel_vertical_offset", -60, 160)?;
-    validate_optional_number(settings, "input_bar_offset", 0, 60)?;
+    validate_optional_number(settings, "control_panel_width", 420, 860)?;
+    validate_optional_number(settings, "bubble_height", 96, 400)?;
+    validate_optional_bool(settings, "bubble_auto_expand")?;
+    validate_optional_signed_number(settings, "control_panel_vertical_offset", -400, 400)?;
+    validate_optional_number(settings, "input_bar_offset", 0, 400)?;
     validate_optional_number(settings, "speech_font_size", 10, 24)?;
     validate_optional_number(settings, "name_font_size", 10, 20)?;
     validate_optional_number(settings, "input_font_size", 12, 20)?;
@@ -614,6 +621,8 @@ fn values_from_document(
         optional_u16(settings, "control_panel_width")?.unwrap_or(values.control_panel_width);
     values.bubble_max_height =
         optional_u16(settings, "bubble_height")?.unwrap_or(values.bubble_max_height);
+    values.bubble_auto_expand =
+        optional_bool(settings, "bubble_auto_expand")?.unwrap_or(values.bubble_auto_expand);
     values.control_panel_vertical_offset = optional_i16(settings, "control_panel_vertical_offset")?
         .unwrap_or(values.control_panel_vertical_offset);
     values.input_bar_offset =
@@ -660,6 +669,24 @@ fn validate_optional_number(
         }
     }
     Ok(())
+}
+
+fn validate_optional_bool(settings: &Map<String, Value>, name: &str) -> Result<(), String> {
+    if settings.get(name).is_some_and(|value| !value.is_boolean()) {
+        return Err(format!("APPEARANCE_FIELD_INVALID:{name}"));
+    }
+    Ok(())
+}
+
+fn optional_bool(settings: &Map<String, Value>, name: &str) -> Result<Option<bool>, String> {
+    settings
+        .get(name)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| format!("APPEARANCE_FIELD_INVALID:{name}"))
+        })
+        .transpose()
 }
 
 fn validate_optional_signed_number(
@@ -779,7 +806,7 @@ mod tests {
 
         fn presentation(&self, generation: &str) -> CharacterPresentation {
             CharacterPresentation {
-                schema_version: 1,
+                schema_version: 2,
                 generation_id: generation.to_string(),
                 character_id: "Sakura".to_string(),
                 display_name: "Sakura".to_string(),
@@ -788,12 +815,8 @@ mod tests {
                     .iter()
                     .map(|(key, _)| ((*key).to_string(), "#a1b2c3".to_string()))
                     .collect(),
-                default_portrait_key: "__default__".to_string(),
-                portrait_keys: vec!["__default__".to_string()],
-                portrait_resource_ids: BTreeMap::from([(
-                    "__default__".to_string(),
-                    "character-v1-53616b757261-portrait-5f5f64656661756c745f5f".to_string(),
-                )]),
+                visual: None,
+                visual_reason_code: "VISUAL_RESOURCE_MISSING".to_string(),
             }
         }
     }
@@ -811,17 +834,19 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            br#"{"schema_version":1,"domain":"ui","settings":{"typewriter_cps":30,"control_panel_width":420,"bubble_height":260,"control_panel_vertical_offset":-60,"input_bar_offset":60,"button_font_size":19}}"#,
+            br#"{"schema_version":1,"domain":"ui","settings":{"typewriter_cps":30,"control_panel_width":860,"bubble_height":400,"control_panel_vertical_offset":-400,"input_bar_offset":400,"button_font_size":19}}"#,
         )
         .unwrap();
         let repository = AppearanceRepository::new(path.clone());
         let presentation = fixture.presentation("generation-a");
         let mut values = repository.load_for(&presentation).unwrap();
-        assert_eq!(values.control_panel_width, 420);
-        assert_eq!(values.bubble_max_height, 260);
-        assert_eq!(values.control_panel_vertical_offset, -60);
-        assert_eq!(values.input_bar_offset, 60);
+        assert_eq!(values.control_panel_width, 860);
+        assert_eq!(values.bubble_max_height, 400);
+        assert!(!values.bubble_auto_expand);
+        assert_eq!(values.control_panel_vertical_offset, -400);
+        assert_eq!(values.input_bar_offset, 400);
         values.portrait_scale_percent = 125;
+        values.bubble_auto_expand = true;
         values
             .theme_tokens
             .insert("accent".to_string(), "#112233".to_string());
@@ -831,6 +856,7 @@ mod tests {
         assert_eq!(document["settings"]["typewriter_cps"], 30);
         assert_eq!(document["settings"]["button_font_size"], 19);
         assert_eq!(document["settings"]["visual_effect_mode"], "gaussian_blur");
+        assert_eq!(document["settings"]["bubble_auto_expand"], true);
     }
 
     #[test]

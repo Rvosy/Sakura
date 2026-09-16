@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-30
+updated: 2026-09-12
 ---
 
 # Runtime v2 发行与存储合同
@@ -24,6 +24,11 @@ Runtime v2 只接受 `distribution_root` 与 `user_root`。Shell 必须通过
   `~/Library/Application Support/Sakura`；
 - Linux（仅保留编译）：用户根为 `${XDG_DATA_HOME:-~/.local/share}/Sakura`。
 
+0.9.x 与 1.0.x 是两套独立安装，发行根和用户根都不得复用同一个物理目录。1.0.x 正常启动、安装器和
+Updater 不扫描、不读取也不复用 0.9.x 目录；旧数据只允许用户从首次导航或设置页显式选择后，由只读
+legacy import 流程导入。源与目标发生相同、包含或被包含关系时必须拒绝，不为 0.9.x 目录建立安装前
+snapshot，也不提供 0.9.x → 1.0.x 覆盖安装。
+
 macOS `.app` 是不可写且可整体替换的签名资产。Updater 不得修改 Application Support；首版不提供 macOS
 Portable，也不把 `data/cache` 分拆到 `~/Library/Caches`。由于 Memory 发行依赖 `onnxruntime 1.28` 的
 arm64 wheel，首版最低系统版本冻结为 macOS 14.0。
@@ -34,12 +39,20 @@ arm64 wheel，首版最低系统版本冻结为 macOS 14.0。
 设置窗口先显示首次启动导航页，只提供“第一次使用”和“迁移0.9.x旧版本数据”两条路径。“第一次使用”进入
 真实设置页上的角色导入、供应商和模型三步指路教程；每一步都可以直接继续或跳过，不以完成配置为门禁，
 进入真实设置页前必须等待 Core 发布可用代际，不能让设置页自行撞上尚未建立的设置通道。结束后留在普通
-设置页。中途关窗不写完成标记，“设置 → 系统 → 使用帮助”可以重播且不重置标记。
+设置页。中途关窗不写完成标记，“设置 → 系统 → 使用帮助”可以重播且不重置标记。macOS 首次启动导航页另有
+“应用打开遇到问题？”次级入口，不增加第三条配置路径；普通设置页可再次打开同一说明。该入口只展示 Apple
+官方的单应用例外流程，不执行全局 Gatekeeper 修改。
 
 “迁移0.9.x旧版本数据”打开显式目录选择、检查和事务化导入流程；正常启动不会扫描旧目录，迁移期间源目录
 保持只读，完整合同见 [0.9.x 数据迁移](legacy-0.9-import.md)。缺少角色仍是受支持的 `CHARACTER_REQUIRED` 状态：Core 和设置可用，桌宠隐藏，
-托盘点击重新打开设置。角色导入使用已有 `.char` 原子 importer，通过类型化命令完成；不存在默认 `sakura`
-角色、首角色 fallback 或默认角色 prompt。
+托盘点击重新打开设置。角色导入使用已有 `.char` 原子 importer，通过类型化命令完成；逻辑角色 ID 与物理目录名
+分离，目录名必须经过跨平台安全编码，重复判断以清单中的逻辑 ID 为准，不能让 Windows 尾部点/空格归一化产生
+不可寻址目录或覆盖已有角色。Core 启动时会把历史遗留的 Windows 尾部点/空格角色目录改名到安全目录；若逻辑
+ID 已被其他可访问角色占用，则为遗留副本分配带序号的新 ID，清单写回保留备份。导入时主题颜色按包内配置
+保留，`theme.source` 仅为来源元数据并统一规范化为当前 `package`，不得因旧版内部来源标记拒绝角色。只有旧式
+`voice`、没有插件资源 `extensions` 的角色补齐语音资源扩展；已有资源字段保留。此过程不启用语音或选择引擎，
+运行选择仅保存在应用用户根的 `data/plugins/sakura.tts/config.json` 中。
+不存在默认 `sakura` 角色、首角色 fallback 或默认角色 prompt。
 
 主程序自带默认浅蓝主题。当前角色携带主题时覆盖它，否则所有窗口都使用主程序默认主题。
 角色无主题时也不得从角色名、旧 prompt 或内置角色资源推断默认外观。
@@ -63,8 +76,13 @@ TTS 返回 `TTS_STORAGE_UNAVAILABLE`，设置快照通过 `TTS_ROOT_MISSING`、`
 ## 发行内容
 
 随主安装包预装的五个官方默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、
-`sakura_genie` 和 `sakura_gpt_sovits`。它们默认启用、允许禁用、不可卸载；不可卸载只表示文件由安装器
-拥有，不赋予私有 API 或实现优先级。`playwright_browser` 是用户按需安装的可选插件，不进入主安装包。
+`sakura_genie` 和 `sakura_gpt_sovits`。它们允许禁用、不可卸载；不可卸载只表示文件由安装器拥有，不赋予私有 API 或实现优先级。
+新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天，其余插件沿用各自默认状态。
+Shell 首次创建用户配置目录时，将这三个关闭状态写入 `config/plugins.yaml`。已有配置目录不补写或覆盖，
+包括尚未生成 `plugins.yaml`、一直沿用清单默认启用状态的老用户。清单保留原启用默认值用于升级兼容，
+用户之后手动启用或关闭的状态优先。初始化默认清单位于 `desktop/src-tauri/src/new_user_plugins.yaml`。
+
+`playwright_browser` 是用户按需安装的可选插件，不进入主安装包。
 发行流程把它另行生成一个可由普通本地插件安装入口处理的 `.sakplugin.zip`，安装和启用仍使用与第三方插件
 相同的 user plugin 与 dependency root 路径。
 
@@ -85,9 +103,45 @@ Runner 校验；普通启动只读取并验证，不把预装环境复制到 use
 下降取决于预装插件集合；当前直接减少来自 Playwright 可选化，后续收益是增删插件不再改变 Core 依赖集合。
 
 Windows 生成 Setup 与带 `portable.flag` 的 ZIP；前者使用 Tauri Updater，后者只检查并下载新版 ZIP。
-macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名，开发 staging 可以无签名。
+发行资源清单 `release-inventory.json` 使用 schemaVersion 2，记录路径、大小与汇总，不生成逐文件内容摘要。
+Windows 签名的 `digestAlgorithm: sha256`、Tauri updater 签名算法和 pip/uv 上游锁文件哈希继续保留。
+macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名，开发 staging 可以无签名。macOS Release
+还发布独立的 `Sakura-<version>-macos-open-help.html`，并把同一说明放在 `.app.zip` 根目录，与 `.app` 并列。
+Tauri 生成的 DMG 不在签名或公证后重打包；外部说明不得改变 `.app`、DMG 或 updater artifact 的签名字节。
 Windows 安装版、Portable 和开发构建的主程序文件名统一为 `sakura.exe`；不得把 Cargo 内部架构名称暴露为
 用户可见的可执行文件名。
+
+所有 1.0.x 正式形态共用同一安装身份：`productName = Sakura`、bundle identifier
+`com.rvosy.sakura`、Windows NSIS `installMode = currentUser`、Windows Updater
+`installMode = passive`。这些字段是覆盖升级身份，不得按补丁版本或分发渠道变化。
+
+1.0.x 覆盖升级只拥有并替换程序域：`VERSION`、`runtime-manifest.json`、Windows 的 `sakura.exe`、
+`python/`、`core/`、`plugins/builtin/` 和 `plugins/dependencies/`。Setup 直接覆盖和内置 Updater 都必须
+先清理旧程序目录中的运行期缓存及已经退役的 builtin/dependency 文件，再安装新程序域。Updater 的卸载
+阶段不得进入用户域。
+
+以下用户域必须逐字节保留：`config/`、`data/`、`characters/`、`plugins/user/`、默认 `tts/`，以及
+`config/storage.json` 指向的安装目录外 TTS。`config/ui.json.settings.first_run_guide_completed` 也属于
+用户域；1.0.x 升级后不得重置首次设置、重新进入首次导航，或自动触发 0.9.x 迁移。
+
+Windows Portable 不增加后台替换器：客户端只下载新版 ZIP，由用户在原 1.0.x Portable 目录中覆盖解压。
+ZIP 只含程序域、`portable.flag` 和当前 `sakura.exe`，不得携带任何用户域。覆盖解压必须更新 ZIP 中的程序
+文件并原样保留用户域；需要完全清除不在新版 ZIP 中的未知旧程序残留时，发布说明应要求先替换上述程序
+目录，不得把删除范围扩大到整个 Portable 目录。macOS Updater 只整体替换 `.app`，不得触碰
+`Application Support/Sakura` 或外置 TTS。
+
+正式发行不等待 Windows Portable 打包：Windows Setup 与 macOS 安装类资产完成后立即创建 Release，并先发布
+不含 `portable` 字段的 `latest.json`；独立 Portable job 复用已经编译和签名链路验证过的 Windows Shell，完成后
+把 ZIP 追加到同一 Release，并用包含 Portable URL 的最终 `latest.json` 覆盖初始清单。Portable 条目不生成内容摘要。Portable 失败
+不得撤回已经发布的安装版资产；失败必须在 workflow 中明确可见，维护者修复后重新运行完整发行流程。
+
+稳定版的 Portable 与最终 `latest.json` 发布完成后，发行 workflow 必须把控制面版本元数据推送到
+`https://sakura.cialloo.cn/service/v1/releases.json`。该接口是公告、兼容性和下载入口使用的只读控制面，不替代
+Tauri Updater 的签名清单，也不由客户端据此安装更新。schema 1 固定包含 `latest`、可空的
+`minimumSupported`、`releaseUrl`、`publishedAt`、`urgent`、三个公开下载 URL 和
+`updaterManifestUrl`；下载文件仍由 GitHub Release 托管。prerelease 不更新该接口，服务端拒绝格式错误和版本
+降级。部署凭据只能调用服务器端受限发布命令，不得获得通用 shell 或站点其他文件的写权限。完整接口 schema、
+失败降级和部署权限合同见 [Sakura Service 静态控制面合同](sakura-service.md)。
 
 Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递归删除安装器拥有的 `core/`、`python/`、
 `plugins/builtin/` 和 `plugins/dependencies/` 发行根，包括运行期间在其中产生的字节码缓存；大量小文件的删除
@@ -104,7 +158,8 @@ prerelease；客户端不调用 GitHub Releases API，也不自行比较版本�
 Updater 负责 SemVer 比较、签名下载包选择和安装前验签。
 
 Updater 网络请求同时遵循 Windows/macOS 系统代理和标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、
-`NO_PROXY` 环境变量。检查、下载、验签和安装的开始、完成及失败阶段写入 `sakura-runtime.log`；失败记录保留
+`NO_PROXY` 环境变量。每次检查更新和开始下载安装包分别创建客户端，读取当时的代理；已开始的下载不换连接。
+诊断上报每个新批次也重新创建客户端，不缓存启动时的代理。检查、下载、验签和安装的开始、完成及失败阶段写入 `sakura-runtime.log`；失败记录保留
 稳定错误码、脱敏后的底层诊断和代理来源是否已配置，但不得记录代理地址、凭据、签名密钥或带查询参数的下载
 地址。版本清单检查整体超时为 10 秒；用户明确开始安装后，签名安装包下载整体超时为 30 分钟，不能把清单
 检查的短超时复用于大文件下载。
@@ -135,5 +190,11 @@ Portable 模式只显示清单中固定 HTTPS 资产的“下载新版 ZIP”。
 启动检查已经缓存候选版本时，“设置 → 关于”直接显示该候选和对应的用户操作，不重复发起网络请求；手动“重新
 检查”仍始终可用。缓存为空时保持初始“检查更新”状态。
 
-真实 Windows Setup、macOS codesign/notarization、安装退出、应用替换和 Portable ZIP 行为必须在发布机上使用
-签名产物验收；单元测试或开发包不能替代该门禁。
+真实升级门禁必须在发布机上使用签名产物验收；单元测试或开发包不能替代：
+
+- Windows 在 1920×1080、125% 与 150% DPI 下，从 1.0.0 分别执行同身份 Setup 直接覆盖和内置 Updater；
+  更新前后直接比较隔离用户域夹具内容，确认首次设置标记不变，应用可启动，旧 Python 缓存和退役 builtin 已清除。
+- Windows Portable 在 1.0.0 原目录覆盖解压新版 ZIP；确认 ZIP 内程序文件更新，全部用户域及默认/外置 TTS
+  夹具内容不变，应用可启动。
+- macOS 从已签名的 1.0.0 `.app` 经 Updater 替换；确认 codesign/notarization、退出和替换完成，
+  `Application Support/Sakura` 与外置 TTS 夹具内容不变，应用可重新启动。

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sakura 日志改造对比</title>
+  <link rel="stylesheet" href="./demo.css">
+</head>
+<body>
+  <main class="demo">
+    <header class="demo-header">
+      <div><h1>日志改造对比</h1><p>相同故障 · 模拟数据 · Sakura 默认主题</p></div>
+      <div class="versions" role="group" aria-label="对比版本">
+        <button data-mode="current" aria-pressed="false">当前版本</button>
+        <button data-mode="proposed" aria-pressed="true">改造版本</button>
+        <button data-mode="compare" aria-pressed="false">并排对比</button>
+      </div>
+    </header>
+    <div class="demo-controls">
+      <label for="scenario">故障场景</label>
+      <select id="scenario">
+        <option value="import">角色导入 · 文件缺失 / 包损坏 / 权限不足</option>
+        <option value="api">模型请求 · 401 / 429 / 超时</option>
+        <option value="tts">TTS · 服务启动 / 权重加载 / 音频保存</option>
+        <option value="plugins">插件 · 依赖缺失 / 安装与回滚失败</option>
+        <option value="mixed">综合 · 配置 / 前端异常 / 长错误 / 未知原因</option>
+      </select>
+      <span id="mode-note">原页面结构、样式与交互</span>
+    </div>
+    <section class="windows" aria-label="日志窗口对比">
+      <div class="window" id="current-window">
+        <div class="window-bar"><span>Sakura 运行日志</span><b>当前版本</b><span class="window-size">920 × 620</span></div>
+        <iframe id="current" title="当前版本运行日志" src="./viewer.html?mode=current&amp;scenario=import" allow="clipboard-write"></iframe>
+      </div>
+      <div class="window" id="proposed-window" hidden>
+        <div class="window-bar"><span>Sakura 运行日志</span><b>改造版本</b><span class="window-size">920 × 620</span></div>
+        <iframe id="proposed" title="改造版本运行日志" src="./viewer.html?mode=proposed&amp;scenario=import" allow="clipboard-write"></iframe>
+      </div>
+    </section>
+    <div id="closed" class="closed" hidden><p>日志窗口已关闭</p><button id="reopen">重新打开</button></div>
+    <p class="demo-footnote" id="scenario-note"></p>
+  </main>
+  <dialog id="copy-dialog"><div class="dialog-head"><strong>复制内容</strong><button id="dismiss-copy" aria-label="关闭复制预览">关闭</button></div><textarea id="copy-preview" readonly aria-label="完整错误报告"></textarea><div class="dialog-actions"><span id="copy-status" role="status"></span><button id="copy-report">复制到剪贴板</button></div></dialog>
+  <script type="module" src="./demo.js"></script>
+</body>
+</html>

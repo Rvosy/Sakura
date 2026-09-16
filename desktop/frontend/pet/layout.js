@@ -34,6 +34,31 @@ function validateAdjustmentRange(range, label) {
   }
 }
 
+export function validateBootstrapSurfaceDiagnostics(value) {
+  const bounds = value?.logicalBounds;
+  const revision = value?.revision;
+  const contentScale = value?.contentScale;
+  if (
+    !Array.isArray(bounds)
+    || bounds.length !== 4
+    || bounds.some((entry) => !Number.isSafeInteger(entry) || entry < 0)
+    || bounds[2] <= 0
+    || bounds[3] <= 0
+    || !Number.isSafeInteger(revision)
+    || revision < 0
+    || !Number.isFinite(contentScale)
+    || contentScale <= 0
+    || contentScale > 1
+  ) {
+    throw new Error("invalid bootstrap pet surface diagnostics");
+  }
+  return Object.freeze({
+    revision,
+    contentScale,
+    activeBounds: Object.freeze(bounds.map((entry) => Number(entry))),
+  });
+}
+
 function normalizedInteger(value, range) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return range.default;
@@ -63,17 +88,23 @@ export function validateLayoutContract(contract) {
     || !layout
     || !panel
     || !Array.isArray(contract.viewport?.windowSize)
+    || !Array.isArray(contract.viewport?.contentScaleSize)
     || !Array.isArray(contract.viewport?.portraitAnchor)
   ) {
     throw new Error("unsupported pet layout contract");
   }
   const windowSize = contract.viewport.windowSize;
+  const contentScaleSize = contract.viewport.contentScaleSize;
   const portraitAnchor = contract.viewport.portraitAnchor;
   if (
     windowSize.length !== 2
+    || contentScaleSize.length !== 2
     || portraitAnchor.length !== 2
-    || [...windowSize, ...portraitAnchor].some((value) => !Number.isFinite(value))
-    || windowSize.some((value) => value <= 0 || value > 1200)
+    || [...windowSize, ...contentScaleSize, ...portraitAnchor].some((value) => !Number.isFinite(value))
+    || windowSize.some((value) => value <= 0)
+    || contentScaleSize.some((value, index) => value <= 0 || value > windowSize[index])
+    || windowSize[0] > 1200
+    || windowSize[1] > 2000
     || layout.windowSize.length !== 2
     || layout.windowSize.some((value, index) => value !== windowSize[index])
     || layout.portraitAnchor.some((value, index) => value !== portraitAnchor[index])
@@ -134,12 +165,6 @@ export function validateLayoutContract(contract) {
 function computeControlPanelRects(contract, adjustments, measurements = {}) {
   const panel = contract.controlPanel;
   const width = adjustments.controlPanelWidth;
-  const bubbleHeight = normalizedMeasurement(
-    measurements.bubbleHeight,
-    panel.bubbleMinHeight,
-    adjustments.bubbleMaxHeight,
-    adjustments.bubbleMaxHeight,
-  );
   const inputHeight = normalizedMeasurement(
     measurements.inputHeight,
     panel.inputBaseHeight,
@@ -157,6 +182,18 @@ function computeControlPanelRects(contract, adjustments, measurements = {}) {
   );
   const inputTop = requestedInputTop - reservedOverflow;
   const bubbleBottom = referenceBubbleBottom - reservedOverflow;
+  const bubbleHeightMaximum = normalizedMeasurement(
+    measurements.bubbleHeightMaximum,
+    adjustments.bubbleMaxHeight,
+    bubbleBottom,
+    adjustments.bubbleMaxHeight,
+  );
+  const bubbleHeight = normalizedMeasurement(
+    measurements.bubbleHeight,
+    panel.bubbleMinHeight,
+    bubbleHeightMaximum,
+    adjustments.bubbleMaxHeight,
+  );
   const bubbleRect = [x, bubbleBottom - bubbleHeight, width, bubbleHeight];
   const inputRect = [x, inputTop, width, inputHeight];
   const controlsRect = [x + width - 40, bubbleRect[1] + 10, 30, 30];
@@ -169,21 +206,23 @@ export function computePetLayout(
   placeholderText = "",
   layoutAdjustments = {},
   measurements = {},
+  visibility = {},
 ) {
   validateLayoutContract(contract);
   if (state !== PRODUCT_LAYOUT_STATE) throw new Error(`unknown pet state: ${state}`);
   const source = contract.states[PRODUCT_LAYOUT_STATE];
   const adjustments = normalizeLayoutAdjustments(contract, layoutAdjustments);
   const controlPanel = computeControlPanelRects(contract, adjustments, measurements);
+  const bubbleVisible = visibility.bubbleVisible !== false;
+  const inputVisible = visibility.inputVisible !== false;
   validateRect(controlPanel.bubbleRect, source.windowSize, "adjusted bubbleRect");
   validateRect(controlPanel.inputRect, source.windowSize, "adjusted inputRect");
   validateRect(controlPanel.controlsRect, source.windowSize, "adjusted controlsRect");
-  const visibleRects = [
-    [source.portraitRect, 2],
-    [controlPanel.bubbleRect, 2],
-    [controlPanel.inputRect, 4],
-    [controlPanel.controlsRect, 4],
-  ];
+  const visibleRects = [[source.portraitRect, 2]];
+  if (bubbleVisible) {
+    visibleRects.push([controlPanel.bubbleRect, 2], [controlPanel.controlsRect, 4]);
+  }
+  if (inputVisible) visibleRects.push([controlPanel.inputRect, 4]);
   const left = Math.max(0, Math.min(...visibleRects.map(([rect, outset]) => rect[0] - outset)));
   const top = Math.max(0, Math.min(...visibleRects.map(([rect, outset]) => rect[1] - outset)));
   const right = Math.min(source.windowSize[0], Math.max(...visibleRects.map(([rect, outset]) => rect[0] + rect[2] + outset)));
@@ -198,6 +237,8 @@ export function computePetLayout(
     bubbleRect: copyRect(controlPanel.bubbleRect),
     inputRect: copyRect(controlPanel.inputRect),
     controlsRect: copyRect(controlPanel.controlsRect),
+    bubbleVisible,
+    inputVisible,
     portraitAnchor: copyRect(contract.viewport.portraitAnchor),
     layoutAdjustments: adjustments,
     measurements: Object.freeze({
@@ -229,7 +270,11 @@ export function applyControlPanelWidth(root, contract, adjustments = {}) {
 
 export function applyPetLayout(root, layout, contentScale, activeBounds = null) {
   const [windowWidth, windowHeight] = layout.windowSize;
-  const [activeX, activeY] = activeBounds ?? [layout.activeOffset[0], layout.activeOffset[1]];
+  // macOS moves a fixed native WebView inside the dynamic window. Its DOM stays canonical;
+  // applying the window crop here as well would translate the content twice.
+  const [activeX, activeY] = root.dataset.nativeViewport === "true"
+    ? [0, 0]
+    : activeBounds ?? [layout.activeOffset[0], layout.activeOffset[1]];
   root.style.setProperty("--stage-width", `${windowWidth}px`);
   root.style.setProperty("--stage-height", `${windowHeight}px`);
   root.style.setProperty("--content-scale", String(contentScale));
@@ -242,4 +287,26 @@ export function applyPetLayout(root, layout, contentScale, activeBounds = null) 
   setRect(root, "input", layout.inputRect);
   setRect(root, "controls", layout.controlsRect);
   root.dataset.layoutState = PRODUCT_LAYOUT_STATE;
+}
+
+export function samePetSurfaceGeometry(
+  currentContentScale,
+  currentActiveBounds,
+  nextSurface,
+) {
+  return (
+    currentContentScale === nextSurface?.contentScale
+    && Array.isArray(currentActiveBounds)
+    && Array.isArray(nextSurface?.activeBounds)
+    && currentActiveBounds.length === 4
+    && nextSurface.activeBounds.length === 4
+    && currentActiveBounds.every((value, index) => value === nextSurface.activeBounds[index])
+  );
+}
+
+export function applyBootstrapPetLayout(root, layout, diagnostics) {
+  const bootstrap = validateBootstrapSurfaceDiagnostics(diagnostics);
+  root.dataset.nativeViewport = String(diagnostics.backendMode === "macos_cursor_router");
+  applyPetLayout(root, layout, bootstrap.contentScale, bootstrap.activeBounds);
+  return bootstrap;
 }

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-30
+updated: 2026-09-11
 ---
 
 # WP-4-03 MCP 生命周期与工具调用等价规范
@@ -26,6 +26,9 @@ TTS、截图 resource token、浏览器、主动调度、提醒或通用 worker 
 
 ## 2. 配置、凭据与状态边界
 
+公开网页搜索与读取由[联网插件](web-plugin.md)贡献。Core 在启动工具提供者前完成旧内置 Web MCP 的
+配置交接；不再发行内置 Web Server 或生成默认 Web MCP 配置。MCP 状态仅描述外部工具接入。
+
 - 高级配置源为 `user_root/config/mcp.yaml`；缺失文件等价于 MCP 禁用。配置支持
   总开关、默认调用超时、server 启停、`stdio`/`sse`、command/args/env、URL/headers、工具名前缀、
   include/exclude 与风险元数据。`requires_confirmation` 字段已废止，当前 parser 直接拒绝。
@@ -39,6 +42,8 @@ TTS、截图 resource token、浏览器、主动调度、提醒或通用 worker 
 - Core 的只读 `mcp.status.get` 只公布配置有效性、稳定 reason code，以及 Server 的脱敏 ID、transport、
   启用状态、`disabled|starting|ready|degraded|stopping|stopped` 状态和工具数量；不得暴露 command、args、
   env、headers、URL 凭据或工具参数。
+- 状态从 Application 持有的 MCP Provider 读取。聊天 Provider 尚未配置、Session 退休或重建时，继续公布
+  同一 MCP 实例的真实状态；只有 Application 尚未发布时才用配置预览，并返回 `APPLICATION_NOT_READY`。
 
 ## 3. generation 生命周期与 transport
 

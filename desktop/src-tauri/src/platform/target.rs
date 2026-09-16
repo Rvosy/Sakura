@@ -13,8 +13,10 @@ pub enum PlatformTarget {
 }
 
 impl PlatformTarget {
+    #[cfg(test)]
     pub const ALL: [Self; 3] = [Self::WindowsX64, Self::MacOsArm64, Self::LinuxX64];
 
+    #[cfg(test)]
     pub const fn rust_triple(self) -> &'static str {
         match self {
             Self::WindowsX64 => "x86_64-pc-windows-msvc",
@@ -38,6 +40,7 @@ impl PlatformTarget {
         }
     }
 
+    #[cfg(test)]
     pub fn from_rust_triple(value: &str) -> Option<Self> {
         Self::ALL
             .into_iter()

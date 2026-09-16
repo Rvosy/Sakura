@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Sakura · 插件页体验原型</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./data.js" defer></script>
+  <script src="./controls.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="demo-bar" aria-label="演示场景">
+    <div class="demo-label"><span class="demo-dot"></span><strong>布局体验</strong><span class="demo-caption">演示数据 · 操作仅在本页生效</span></div>
+    <div class="demo-controls"><label for="scenario">演示场景</label><select id="scenario"><option value="current">当前规模 · 5 个</option><option value="near" selected>近期扩展 · 9 个</option><option value="ecosystem">生态扩展 · 30 个</option></select><button id="reset" class="text-button" type="button">重置演示</button></div>
+  </div>
+  <main class="app-shell">
+    <aside class="sidebar" aria-label="设置导航">
+      <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><g fill="currentColor"><ellipse cx="16" cy="9" rx="4.5" ry="7"/><ellipse cx="16" cy="9" rx="4.5" ry="7" transform="rotate(72 16 16)"/><ellipse cx="16" cy="9" rx="4.5" ry="7" transform="rotate(144 16 16)"/><ellipse cx="16" cy="9" rx="4.5" ry="7" transform="rotate(216 16 16)"/><ellipse cx="16" cy="9" rx="4.5" ry="7" transform="rotate(288 16 16)"/></g><circle cx="16" cy="16" r="3" fill="white"/></svg><span>Sakura</span></div>
+      <p class="sidebar-caption">设置</p>
+      <nav id="navigation"></nav>
+      <div class="sidebar-footer"><span class="avatar">S</span><div>Sakura 桌面端<small>插件管理体验原型</small></div></div>
+    </aside>
+    <section class="workspace" aria-labelledby="page-title">
+      <header class="page-header"><div><p class="breadcrumb">系统 <span>/</span> 插件</p><div class="title-line"><h1 id="page-title">插件</h1><span id="total-count" class="count-pill">9</span></div><p class="subtitle">为 Sakura 添加能力，在这里管理它们。</p></div><div class="install-wrap"><button id="install-trigger" class="button primary" type="button" aria-haspopup="menu" aria-expanded="false"><span data-icon="plus"></span>安装插件<span data-icon="chevronDown"></span></button><div id="install-menu" class="popover install-menu" role="menu" hidden><button role="menuitem" data-install="ZIP 插件包">从 ZIP 安装…</button><button role="menuitem" data-install="插件文件夹">从文件夹安装…</button></div></div></header>
+      <div class="toolbar"><div class="search-wrap"><span data-icon="search"></span><input id="search" type="search" aria-label="搜索插件" placeholder="搜索名称、作者、ID 或描述…" autocomplete="off"><kbd>/</kbd></div><div class="filter-wrap"><button id="filter-trigger" class="button" type="button" aria-expanded="false" aria-controls="filter-panel"><span data-icon="filter"></span>筛选<span id="filter-count" class="filter-count" hidden></span></button><div id="filter-panel" class="popover filter-panel" hidden><div class="popover-title">筛选插件<button id="clear-popover" class="text-button">清空</button></div><label for="category">领域</label><select id="category"><option value="all">所有领域</option></select><label for="status">状态</label><select id="status"><option value="all">所有状态</option><option value="problem">有问题</option><option value="disabled">已禁用</option></select><label for="source">来源</label><select id="source"><option value="all">所有来源</option><option value="bundled">内置</option><option value="user">用户安装</option></select></div></div></div>
+      <div class="role-bar"><div id="role-tabs" class="role-tabs" role="tablist" aria-label="插件角色"></div><button id="problem-shortcut" class="problem-shortcut" type="button"></button></div>
+      <div id="active-filters" class="active-filters" hidden></div>
+      <div class="workbench"><section class="list-panel" aria-label="插件列表"><div class="list-topline"><span id="results-count" aria-live="polite"></span><span>按角色分组</span></div><div id="plugin-list" class="plugin-list"></div><div id="system-dock" class="system-dock" hidden></div><div class="list-footer"><span data-icon="shield"></span>仅安装你信任的插件</div></section><section id="plugin-detail" class="detail-panel" aria-label="插件详情"></section></div>
+      <footer class="workspace-footer"><span><span class="tiny-dot"></span>本地演示 · 刷新后恢复初始状态</span><span id="footer-summary"></span></footer>
+    </section>
+  </main>
+  <dialog id="dialog" aria-labelledby="dialog-title"><form method="dialog"><button class="dialog-close icon-button" value="cancel" aria-label="关闭对话框"><span data-icon="close"></span></button><div id="dialog-icon" class="dialog-icon"></div><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="dialog-actions"><button id="dialog-cancel" class="button" value="cancel">取消</button><button id="dialog-confirm" class="button primary" value="confirm">知道了</button></div></form></dialog>
+  <dialog id="config-dialog" class="config-dialog" aria-labelledby="config-title" aria-describedby="config-description">
+    <form id="config-form" novalidate autocomplete="off">
+      <header class="config-header"><div id="config-identity"></div><button class="icon-button" type="button" data-config-close aria-label="关闭设置窗口"><span data-icon="close"></span></button></header>
+      <div id="config-body" class="config-body"></div>
+      <footer class="config-footer"><span>演示设置 · 仅保存在本页</span><div><button class="button" type="button" data-config-close>取消</button><button class="button primary" type="submit">保存设置</button></div></footer>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

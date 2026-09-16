@@ -23,6 +23,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
   let epoch = 0;
   let unlisten = null;
   let reply = null;
+  let captureActive = false;
   const playback = new Map();
 
   function invokeBestEffort(name, args) {
@@ -82,7 +83,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
 
   function prepare(index) {
     const current = reply;
-    if (!current || current.epoch !== epoch || !playable(current.segments[index])) {
+    if (captureActive || !current || current.epoch !== epoch || !playable(current.segments[index])) {
       return Promise.resolve(null);
     }
     if (!current.prepared.has(index)) {
@@ -90,7 +91,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         operationId: current.operationId,
         segmentIndex: index,
       } })).then((descriptor) => {
-        if (current !== reply || current.epoch !== epoch || !validDescriptor(descriptor)) return null;
+        if (captureActive || current !== reply || current.epoch !== epoch || !validDescriptor(descriptor)) return null;
         return descriptor;
       }).catch((error) => {
         if (current === reply && current.epoch === epoch) {
@@ -125,7 +126,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       const currentEpoch = epoch;
       const startedHook = typeof onStarted === "function" ? onStarted : () => {};
       if (!current || current.segments[index] !== segment) return;
-      if (!playable(segment)) {
+      if (captureActive || !playable(segment)) {
         try {
           startedHook({ state: "skipped" });
         } catch {
@@ -134,7 +135,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         return;
       }
       const descriptor = await prepare(index);
-      if (!descriptor || disposed || current !== reply || currentEpoch !== epoch) {
+      if (!descriptor || captureActive || disposed || current !== reply || currentEpoch !== epoch) {
         if (descriptor === null && !disposed && current === reply && currentEpoch === epoch) {
           try {
             startedHook({ state: "failed" });
@@ -176,6 +177,18 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
     async afterSegment(index) {
       const item = playback.get(`tts-${epoch}-${index}`);
       if (item) await item.settledPromise;
+    },
+    setInputCaptureActive(value) {
+      const next = Boolean(value);
+      if (captureActive === next) return;
+      captureActive = next;
+      if (!next) return;
+      const operationId = reply?.operationId;
+      epoch += 1;
+      reply = null;
+      releaseAll();
+      cancelSynthesis(operationId);
+      invokeBestEffort("tts_stop_playback");
     },
     cancel() {
       const operationId = reply?.operationId;

@@ -1,0 +1,6 @@
+- id: sakura.tts.genie
+  enabled: false
+- id: sakura.tts.gpt-sovits
+  enabled: false
+- id: sakura_mobile
+  enabled: false

@@ -8,60 +8,69 @@ import {
   presentPluginReason,
   presentPluginStatus,
   projectPluginActivity,
+  pluginMetadata,
+  pluginIconName,
+  pluginResourceContributions,
+  filterPluginCatalog,
 } from "../settings/plugin-presentation.js";
 
-test("plugin status uses plain language without diagnostic codes for routine states", () => {
-  assert.deepEqual(presentPluginStatus({ state: "active", reasonCode: "ACTIVE" }), {
-    label: "运行正常",
-    message: "",
-    diagnostic: "",
-  });
-  assert.deepEqual(presentPluginStatus({ state: "disabled", reasonCode: "PLUGIN_DISABLED" }), {
-    label: "已停用",
-    message: "",
-    diagnostic: "",
-  });
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "PLUGIN_APPLICATION_NOT_READY",
-  }), {
-    label: "正在启动",
-    message: "插件 Worker 正在初始化，请稍候。",
-    diagnostic: "",
-  });
+test("plugin transitions distinguish waiting and stopping even with a stale readiness reason", () => {
+  for (const [state, label] of [
+    ["starting", "正在启动"], ["waiting", "等待启动"], ["stopping", "正在停止"],
+  ]) {
+    for (const reason_code of ["", "PLUGIN_APPLICATION_NOT_READY"]) {
+      const activity = projectPluginActivity({ plugin_id: "fixture.worker", state, reason_code });
+      assert.equal(activity.label, label);
+      assert.equal(activity.state, "working");
+      assert.equal(activity.isTransient, true);
+    }
+  }
 });
 
-test("plugin status explains known failures and keeps diagnostics", () => {
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "API_VERSION_UNSUPPORTED",
-  }), {
-    label: "版本不兼容",
-    message: "这个插件版本与当前 Sakura 不兼容，无法使用。",
-    diagnostic: "诊断代码：API_VERSION_UNSUPPORTED",
+test("component overview combines enabled plugin resources across surfaces and keeps published installation state", () => {
+  const section = (surface, value) => ({
+    sectionId: "bundle", surface, values: { bundle: value },
+    fields: [{ key: "bundle", label: "组件", type: "resource", value: { ready: false } }, { key: "status", type: "status" }],
   });
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "MISSING_SERVICE",
-  }), {
-    label: "缺少所需组件",
-    message: "缺少运行所需的组件，暂时无法使用。",
-    diagnostic: "诊断代码：MISSING_SERVICE",
-  });
-  assert.equal(presentPluginStatus({
-    state: "failed",
-    reasonCode: "SERVICE_CONFLICT",
-  }).label, "与其他插件冲突");
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "MISSING_SERVICE",
-    unavailable: ["Sakura TTS Hub（sakura.tts）"],
-  }), {
-    label: "缺少所需组件",
-    message: "缺少运行所需的组件：Sakura TTS Hub（sakura.tts）。",
-    diagnostic: "诊断代码：MISSING_SERVICE；缺少组件：Sakura TTS Hub（sakura.tts）",
-  });
+  const installed = { ready: true, applicability: "required", taskState: "idle" };
+  const running = { ready: false, applicability: "required", taskState: "running", progress: 42 };
+  const plugins = [
+    { pluginId: "third-party", name: "A", enabled: true, sections: [section("plugin", installed), { ...section(null, running), sectionId: "second" }] },
+    { pluginId: "legacy", name: "B", enabled: true, settings: [section("about", running)] },
+    { pluginId: "disabled", name: "C", enabled: false, sections: [section("plugin", installed)] },
+    { pluginId: "no-resource", name: "D", enabled: true, sections: [{ fields: [{ key: "state", type: "status" }] }] },
+  ];
+  const resources = pluginResourceContributions(plugins);
+  assert.deepEqual(resources.map(({ plugin, section, value }) => [plugin.pluginId, section.sectionId, value]), [
+    ["third-party", "bundle", installed], ["third-party", "second", running], ["legacy", "bundle", running],
+  ]);
+  assert.equal(pluginResourceContributions([{ ...plugins[0], enabled: false }]).length, 0);
 });
+
+test("plugin icons use the local catalogue and fall back without interpreting supplied markup", () => {
+  assert.equal(pluginIconName({ presentation: { category: "connectivity", icon: "smartphone" } }), "smartphone");
+  for (const icon of [undefined, "future-icon", "../brain.svg", '<svg onload="alert(1)">']) {
+    assert.equal(pluginIconName({ presentation: { category: "memory", icon } }), "brain");
+  }
+  assert.equal(pluginIconName({ presentation: { kind: "infrastructure", category: "voice" } }), "layers");
+  assert.equal(pluginIconName({ plugin_id: "sakura_mem0" }), "puzzle");
+});
+
+test("catalog filters combine declared metadata, install source and actual activity", () => {
+  const plugins = [
+    { id: "one", name: "Voice", author: "作者", source: "user", state: "active", presentation: { kind: "provider", category: "voice" } },
+    { id: "two", name: "Hub", source: "bundled", state: "failed", presentation: { kind: "infrastructure", category: "voice" } },
+    { id: "three", name: "Old plugin", source: "user", state: "disabled" },
+  ];
+  assert.deepEqual(filterPluginCatalog(plugins, { query: "作者", category: "voice", source: "user", kind: "provider" }).map((plugin) => plugin.id), ["one"]);
+  assert.deepEqual(filterPluginCatalog(plugins, { status: "problem" }).map((plugin) => plugin.id), ["two"]);
+  assert.deepEqual(filterPluginCatalog(plugins, { status: "disabled" }).map((plugin) => plugin.id), ["three"]);
+  assert.deepEqual(filterPluginCatalog(plugins, { category: "model" }), []);
+  assert.deepEqual(pluginMetadata({ id: "sakura.tts", provides: ["sakura.tts"], required: true }), { kind: "extension", category: "other" });
+  assert.deepEqual(pluginMetadata({ presentation: { kind: "unknown", category: "unknown" } }), { kind: "extension", category: "other" });
+});
+
+
 
 test("plugin dependency projections cascade enablement and find affected consumers", () => {
   const hub = {
@@ -107,38 +116,7 @@ test("unknown plugin failures stay readable and retain the original code", () =>
   });
 });
 
-test("plugin settings reasons use the same presentation rules", () => {
-  assert.equal(presentPluginReason("READY"), null);
-  assert.equal(
-    presentPluginReason("SETTINGS_LOAD_FAILED").diagnostic,
-    "诊断代码：SETTINGS_LOAD_FAILED",
-  );
-});
 
-test("plugin activity projects active semantic status without relying on plugin ids", () => {
-  const plugin = (state) => ({
-    state: "active",
-    sections: [{
-      fields: [{ key: "health", type: "status", value: { state, label: state, message: "detail" } }],
-      values: { health: { state, label: state, message: "detail" } },
-    }],
-  });
-
-  assert.deepEqual(projectPluginActivity(plugin("working")), {
-    state: "working",
-    label: "working",
-    message: "detail",
-    hasRunningResource: false,
-    isTransient: true,
-  });
-  assert.deepEqual(projectPluginActivity(plugin("ready")), {
-    state: "ready",
-    label: "ready",
-    message: "detail",
-    hasRunningResource: false,
-    isTransient: false,
-  });
-});
 
 test("plugin activity keeps warning and failure stable", () => {
   const warning = projectPluginActivity({
@@ -165,7 +143,7 @@ test("plugin activity keeps warning and failure stable", () => {
   }), {
     state: "working",
     label: "正在启动",
-    message: "插件 Worker 正在初始化，请稍候。",
+    message: "插件正在启动，请稍等。",
     hasRunningResource: false,
     isTransient: true,
   });
@@ -195,23 +173,13 @@ test("plugin activity keeps warning and failure stable", () => {
   assert.equal(errorWithWorkingDetail.isTransient, false);
 });
 
-test("plugin activity recognizes running resources and tolerates missing status fields", () => {
-  const running = projectPluginActivity({
-    state: "active",
-    sections: [{
-      fields: [{ key: "model", type: "resource" }],
-      values: { model: { taskState: "running" } },
-    }],
-  });
-  assert.equal(running.state, "neutral");
-  assert.equal(running.hasRunningResource, true);
-  assert.equal(running.isTransient, true);
-
-  assert.deepEqual(projectPluginActivity({ state: "active", sections: [] }), {
-    state: "neutral",
-    label: "",
-    message: "",
-    hasRunningResource: false,
-    isTransient: false,
-  });
+test("search test progress does not replace plugin lifecycle status", () => {
+  for (const state of ["neutral", "working", "ready", "error"]) {
+    const activity = projectPluginActivity({state: "active", sections: [{fields: [
+      {key: "test", type: "status", placement: "row", value: {state, label: "搜索", message: ""}},
+    ]}]});
+    assert.equal(activity.state, "neutral");
+    assert.equal(activity.label, "");
+    assert.equal(activity.isTransient, false);
+  }
 });

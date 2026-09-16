@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from app.llm.prompts.blocks import (
     AGENT_REPLY_FORMAT,
-    DEFAULT_REPLY_PORTRAITS,
     DEFAULT_REPLY_TONES,
     SEGMENTED_REPLY_FORMAT,
     build_screen_awareness_check_segment_rules,
@@ -21,7 +23,7 @@ from app.llm.prompts.types import PromptBlock
 
 def build_segmented_reply_instruction(
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None = None,
+    reply_visual: Mapping[str, Any] | None = None,
     *,
     simple_segments: str = "2-3",
     default_segments: str = "3-4",
@@ -29,7 +31,7 @@ def build_segmented_reply_instruction(
     include_no_single_segment_rule: bool = False,
 ) -> str:
     tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
-    portraits = labels_or_default(reply_portraits, DEFAULT_REPLY_PORTRAITS)
+    visual = reply_visual
     rules = [
         f"- 尽量输出 {default_segments} 段文本，每段是一条可以单独显示和朗读的完整小消息，不要把一句话机械切碎。",
         "- 单段建议 35-90 个中文或日文字符；内容需要完整自然，宁可少分段也不要短到像碎片。",
@@ -45,7 +47,7 @@ def build_segmented_reply_instruction(
         )
     return build_segment_protocol(
         tones,
-        portraits,
+        visual,
         format_text=SEGMENTED_REPLY_FORMAT,
         segment_rules="\n".join(rules),
         include_translation_rules=include_translation_rules,
@@ -54,10 +56,10 @@ def build_segmented_reply_instruction(
 
 def build_agent_reply_protocol(
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None = None,
+    reply_visual: Mapping[str, Any] | None = None,
 ) -> str:
     tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
-    portraits = labels_or_default(reply_portraits, DEFAULT_REPLY_PORTRAITS)
+    visual = reply_visual
     segment_rules = "\n".join(
         [
             "- 尽量输出 2-4 段文本，每段是一条可以单独显示和朗读的完整小消息，不要把一句话机械切碎。",
@@ -69,7 +71,7 @@ def build_agent_reply_protocol(
     )
     return build_segment_protocol(
         tones,
-        portraits,
+        visual,
         format_text=AGENT_REPLY_FORMAT,
         segment_rules=segment_rules,
         include_translation_rules=True,
@@ -78,19 +80,19 @@ def build_agent_reply_protocol(
 
 def build_event_reply_protocol(
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None = None,
+    reply_visual: Mapping[str, Any] | None = None,
     *,
     example_tone: str = "请求",
     segment_rules: str = "",
 ) -> str:
     tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
-    portraits = labels_or_default(reply_portraits, DEFAULT_REPLY_PORTRAITS)
+    visual = reply_visual
     format_text = (
-        f'{{"segments":[{{"ja":"日文原文","zh":"中文译文","tone":"{example_tone}","portrait":"站立待机"}}]}}'
+        f'{{"segments":[{{"ja":"日文原文","zh":"中文译文","tone":"{example_tone}"}}]}}'
     )
     return build_segment_protocol(
         tones,
-        portraits,
+        visual,
         format_text=format_text,
         segment_rules=segment_rules,
         include_translation_rules=True,
@@ -99,13 +101,13 @@ def build_event_reply_protocol(
 
 def build_screen_awareness_check_reply_protocol(
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None = None,
+    reply_visual: Mapping[str, Any] | None = None,
 ) -> str:
     """构建主动屏幕感知事件专用回复协议。"""
 
     return build_event_reply_protocol(
         reply_tones,
-        reply_portraits,
+        reply_visual,
         example_tone="中性",
         segment_rules=build_screen_awareness_check_segment_rules(),
     )
@@ -148,7 +150,7 @@ def build_runtime_context_text(
 def build_screen_awareness_check_tool_system_prefix(
     character_prompt: str,
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None,
+    reply_visual: Mapping[str, Any] | None,
     *,
     max_tool_calls_per_step: int,
     max_tool_calls_per_turn: int,
@@ -160,7 +162,7 @@ def build_screen_awareness_check_tool_system_prefix(
     在消息数组末尾单独注入），使前缀在多步与多轮间保持稳定。
     """
 
-    reply_protocol = build_screen_awareness_check_reply_protocol(reply_tones, reply_portraits)
+    reply_protocol = build_screen_awareness_check_reply_protocol(reply_tones, reply_visual)
     return render_blocks(
         [
             PromptBlock(None, character_prompt.strip()),
@@ -216,7 +218,7 @@ def build_screen_awareness_check_tool_system_prefix(
 def build_screen_awareness_check_tool_system_prompt(
     character_prompt: str,
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None,
+    reply_visual: Mapping[str, Any] | None,
     *,
     memory_summary: str,
     current_time: str,
@@ -235,7 +237,7 @@ def build_screen_awareness_check_tool_system_prompt(
     prefix = build_screen_awareness_check_tool_system_prefix(
         character_prompt,
         reply_tones,
-        reply_portraits,
+        reply_visual,
         max_tool_calls_per_step=max_tool_calls_per_step,
         max_tool_calls_per_turn=max_tool_calls_per_turn,
         extra_instructions=extra_instructions,
@@ -254,7 +256,7 @@ def build_screen_awareness_check_tool_system_prompt(
 def build_event_system_prompt(
     character_prompt: str,
     reply_tones: list[str] | None,
-    reply_portraits: list[str] | None,
+    reply_visual: Mapping[str, Any] | None,
     *,
     event_type: str = "reminder_due",
 ) -> str:
@@ -269,7 +271,7 @@ def build_event_system_prompt(
             [
                 PromptBlock(
                     None,
-                    build_screen_awareness_check_reply_protocol(reply_tones, reply_portraits),
+                    build_screen_awareness_check_reply_protocol(reply_tones, reply_visual),
                 ),
                 PromptBlock(None, "- 不要提及内部事件类型、JSON 或工具实现。"),
                 screen_awareness_reply_decision_flow_block(),
@@ -285,7 +287,7 @@ def build_event_system_prompt(
                     None,
                     build_event_reply_protocol(
                         reply_tones,
-                        reply_portraits,
+                        reply_visual,
                         example_tone="通知",
                         segment_rules="\n".join(
                             [
@@ -312,7 +314,7 @@ def build_event_system_prompt(
                     None,
                     build_event_reply_protocol(
                         reply_tones,
-                        reply_portraits,
+                        reply_visual,
                         example_tone="请求",
                     ),
                 ),

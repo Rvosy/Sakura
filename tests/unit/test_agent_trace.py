@@ -418,6 +418,7 @@ def test_credentials_and_binary_bodies_never_reach_trace(tmp_path: Path) -> None
             },
         ],
         "tools": [{"authorization": "private", "password": "private"}],
+        "binary_input": b"private-binary-body",
     }
     with recorder.operation("op-private", finalize_external=True):
         call = recorder.start_model_call(
@@ -438,13 +439,16 @@ def test_credentials_and_binary_bodies_never_reach_trace(tmp_path: Path) -> None
         "alice:secret",
         "sk-private-known-value",
         "aGVsbG8=",
+        "private-binary-body",
     ):
         assert secret not in text
     assert "普通正文" in text
     request = _documents(recorder)[0]
     binary = request["prompt"][1]["user_input"]["content"][1]["image_url"]["url"]
     assert binary["type"] == "binary"
-    assert binary["bytes"] == 5
+    assert binary == {"type": "binary", "mime": "image/png", "bytes": 5}
+    assert request["parameters"]["binary_input"] == {"type": "binary", "bytes": 19}
+    assert "sha256" not in json.dumps(_documents(recorder))
 
 
 def test_known_credentials_are_removed_from_dynamic_context(tmp_path: Path) -> None:
@@ -496,6 +500,7 @@ def test_long_free_text_is_wrapped_and_one_mib_value_is_truncated(tmp_path: Path
     request = _documents(recorder)[0]
     assert len(request["prompt"][0]["history"]["items"][0]["content"]) > 1
     truncated = request["prompt"][1]["user_input"]["content"]
+    assert "sha256" not in truncated
     assert truncated["truncated"] is True
     assert truncated["bytes"] > 1024 * 1024
     assert truncated["head"] and truncated["tail"]

@@ -1,0 +1,275 @@
+/* Reuse the shipping composer, typography, icons, portrait and attachment styles. */
+@import url("../../styles.css");
+
+/* Current appearance snapshot; never reads or writes user settings. */
+:root {
+  --primary: #d55b91;
+  --primary-hover: #bf3f7a;
+  --accent: #b13e73;
+  --text: #3d2b35;
+  --secondary-text: #7a3656;
+  --muted-text: #9b4f72;
+  --page-background: #fff6fa;
+  --panel-background: #ffe8f1;
+  --input-background: #ffffff;
+  --bubble-background: #ffe8f1;
+  --border: #eeacc8;
+  --input-font-size: 15px;
+  --content-scale: 1;
+  --portrait-render-scale: 1;
+  --demo-background: #eeeeef;
+}
+body {
+  background: var(--demo-background);
+}
+body[data-background="dark"] {
+  --demo-background: #262a30;
+}
+[hidden] {
+  display: none !important;
+}
+.demo-viewport {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 24px 16px 48px;
+}
+#stage-frame {
+  position: relative;
+  width: 600px;
+  height: 656px;
+}
+/* Crop unused native-window margins only. Production portrait [150,328,600,656],
+   input [174,844,553,52], with the current vertical offset -26. */
+#pet-stage {
+  --portrait-x: 0px;
+  --portrait-y: 0px;
+  --portrait-width: 600px;
+  --portrait-height: 656px;
+  --input-x: 24px;
+  --input-y: 516px;
+  --input-width: 553px;
+  --input-height: 52px;
+  width: 600px;
+  height: 656px;
+  overflow: visible;
+}
+#portrait {
+  cursor: default;
+}
+/* The microphone adds one column to the existing 52px capsule. */
+#composer {
+  grid-template-columns: 40px minmax(0, 1fr) 40px 40px;
+}
+#composer #composer-send {
+  grid-column: 4;
+  grid-row: 1;
+}
+#voice-mic {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  align-self: end;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    transform 120ms ease;
+}
+#voice-mic {
+  grid-column: 3;
+  grid-row: 1;
+}
+#voice-mic .sakura-icon {
+  width: 22px;
+  height: 22px;
+}
+#voice-mic:hover:not(:disabled) {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+#voice-mic:active:not(:disabled) {
+  transform: scale(0.92);
+}
+#voice-mic:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+#composer[data-state="recording"] #voice-mic {
+  color: var(--text);
+  background: radial-gradient(
+    circle,
+    rgb(50 45 50 / 6%) 0 15px,
+    transparent 16px
+  );
+}
+#composer[data-state="recording"] #voice-mic:hover {
+  color: var(--text);
+  background: radial-gradient(
+    circle,
+    rgb(50 45 50 / 10%) 0 15px,
+    transparent 16px
+  );
+}
+.voice-stop {
+  display: block;
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  border-radius: 2px;
+}
+#voice-status {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: calc(100% - 212px);
+  color: color-mix(in srgb, var(--text) 52%, transparent);
+  font-size: 13px;
+  text-align: center;
+  pointer-events: none;
+}
+.voice-region {
+  grid-column: 2;
+  grid-row: 1;
+  height: 40px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--secondary-text);
+}
+#waveform {
+  height: 32px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+#waveform i {
+  display: block;
+  flex: 1 0 3px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--primary);
+  transition: height 150ms linear;
+}
+.voice-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid color-mix(in srgb, var(--primary) 22%, transparent);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: voice-spin 0.8s linear infinite;
+}
+@keyframes voice-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+#composer[data-input-expanded="true"] #voice-mic {
+  grid-column: 3;
+  grid-row: 2;
+}
+#composer[data-input-expanded="true"] #composer-send {
+  grid-column: 4;
+  grid-row: 2;
+}
+#composer-attachment .sakura-icon {
+  transition-duration: 160ms;
+}
+#composer-attachment[data-action="cancel"] .sakura-icon {
+  transform: rotate(225deg);
+}
+#composer[data-input-expanded="true"] #composer-attachments {
+  grid-column: 2;
+  grid-row: 2;
+}
+#voice-feedback {
+  position: absolute;
+  z-index: 6;
+  left: var(--input-x);
+  top: calc(var(--input-y) + var(--input-height) + 8px);
+  max-width: var(--input-width);
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--input-background) 86%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--secondary-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* Review controls are outside the product surface and start collapsed. */
+#demo-controls {
+  position: fixed;
+  right: 18px;
+  bottom: 14px;
+  z-index: 10;
+  color: #64646e;
+  font-size: 11px;
+}
+#demo-controls summary {
+  cursor: pointer;
+  list-style: none;
+  text-align: right;
+}
+#demo-controls summary::-webkit-details-marker {
+  display: none;
+}
+#demo-controls summary span {
+  margin-left: 12px;
+  opacity: 0.65;
+  font-size: 10px;
+}
+#demo-controls[open] {
+  padding: 15px;
+  border: 1px solid #dddddf;
+  border-radius: 12px;
+  background: #fafafb;
+  box-shadow: 0 6px 24px #0000000a;
+}
+.demo-options {
+  display: grid;
+  gap: 12px;
+  width: 232px;
+  margin-top: 18px;
+}
+.demo-options select,
+.demo-options button {
+  padding: 8px 10px;
+  font: inherit;
+  color: #45454f;
+  background: white;
+  border: 1px solid #dddddf;
+  border-radius: 6px;
+}
+.demo-options button {
+  cursor: pointer;
+}
+.demo-options p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.8;
+}
+.demo-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.demo-check input {
+  accent-color: var(--primary);
+}
+body[data-background="dark"] #demo-controls:not([open]) {
+  color: #c6c6ce;
+}

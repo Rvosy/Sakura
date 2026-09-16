@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: all
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-09-06
 ---
 
 # Sakura 文档
@@ -16,6 +16,7 @@ updated: 2026-08-26
 - [安装与首次配置](userdocs/SETUP.md)
 - [API 供应商与模型](userdocs/API_CONFIG.md)
 - [聊天、截图与屏幕感知](userdocs/CHAT_SCREEN_AND_CONTEXT.md)
+- [匿名统计与远程诊断](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
 - [macOS 使用说明](userdocs/MACOS_SETUP.md)
 - [窗口交互](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
 - [外观设置](userdocs/RUNTIME_V2_APPEARANCE.md)
@@ -28,6 +29,7 @@ updated: 2026-08-26
 - [开发者文档](devdocs/README.md)
 - [技术架构](devdocs/TECHNICAL_README.md)
 - [Plugin API v4 开发指南](devdocs/SAKURA_PLUGIN_SDK.md)
+- [插件开发 AI 提示词](devdocs/SAKURA_PLUGIN_AI_PROMPT.md)
 - [贡献指南](../.github/CONTRIBUTING.md)
 
 `specs/`、`adr/`、`plans/`、`records/` 和 `archive/` 保存维护者使用的契约、决策与工程记录，不是普通使用流程的一部分。

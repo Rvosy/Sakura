@@ -145,29 +145,6 @@ impl CoreHostGateway {
         })
     }
 
-    pub fn dispatch(
-        &self,
-        window_label: &str,
-        command: &str,
-        payload: Value,
-        cancel_handle: Option<&ChatCancelHandle>,
-    ) -> Result<Option<ChatSubmission>, String> {
-        match command {
-            "chat.send" => self.send(window_label, payload).map(Some),
-            "chat.cancel" => {
-                if !payload.as_object().is_some_and(|object| object.is_empty()) {
-                    return Err("INVALID_CHAT_CANCEL: cancel payload must be empty".to_string());
-                }
-                let handle = cancel_handle.ok_or_else(|| {
-                    "INVALID_CHAT_CANCEL: Rust-issued cancel handle required".to_string()
-                })?;
-                self.cancel(window_label, handle)?;
-                Ok(None)
-            }
-            _ => Err("GATEWAY_COMMAND_DENIED: command is not allowlisted".to_string()),
-        }
-    }
-
     pub fn send(&self, window_label: &str, payload: Value) -> Result<ChatSubmission, String> {
         authorize_window(window_label)?;
         validate_chat_payload(&payload)?;
@@ -326,6 +303,7 @@ impl CoreHostGateway {
         }
     }
 
+    #[cfg(test)]
     pub fn registry_len(&self) -> usize {
         self.state.lock().map_or(0, |state| state.entries.len())
     }
@@ -506,10 +484,16 @@ fn validate_chat_reply(reply: Option<&Value>) -> Result<(), String> {
         let segment = segment
             .as_object()
             .ok_or_else(|| "INVALID_CHAT_EVENT: completed segment is invalid".to_string())?;
-        if segment.len() != 5
-            || !["text", "translation", "tone", "portrait"]
-                .iter()
-                .all(|key| segment.get(*key).is_some_and(Value::is_string))
+        // Visual controls are optional opaque data. The renderer boundary drops
+        // invalid controls without rejecting an otherwise valid text reply.
+        if segment.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "text" | "translation" | "tone" | "portrait" | "suppressTts" | "control"
+            )
+        }) || !["text", "translation", "tone", "portrait"]
+            .iter()
+            .all(|key| segment.get(*key).is_some_and(Value::is_string))
             || !segment.get("suppressTts").is_some_and(Value::is_boolean)
         {
             return Err("INVALID_CHAT_EVENT: completed segment shape is invalid".to_string());
@@ -590,12 +574,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_window_command_and_transport_fields_are_denied() {
-        let (gateway, _) = gateway();
-        assert!(gateway
-            .dispatch("main", "future.command", json!({}), None)
-            .unwrap_err()
-            .starts_with("GATEWAY_COMMAND_DENIED:"));
+    fn unknown_window_and_transport_fields_are_denied() {
+        let (gateway, transport) = gateway();
         assert!(gateway.send("settings", json!({"message": "x"})).is_err());
         for field in [
             "protocolMajor",
@@ -609,11 +589,13 @@ mod tests {
             "model",
             "apiKey",
             "operationId",
+            "fixture",
         ] {
             let mut payload = json!({"message": "hello"});
             payload[field] = json!("forged");
             assert!(gateway.send("main", payload).is_err(), "{field}");
         }
+        assert!(transport.requests.lock().unwrap().is_empty());
     }
 
     #[test]

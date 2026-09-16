@@ -28,6 +28,8 @@ def build_config(
         raise ValueError("UPDATER_ARTIFACTS_REQUIRE_UPDATER")
     resources = {
         "release-staging/VERSION": "VERSION",
+        "release-staging/diagnostic-build.json": "diagnostic-build.json",
+        "release-staging/diagnostic-build-id.txt": "diagnostic-build-id.txt",
         "release-staging/runtime-manifest.json": "runtime-manifest.json",
         "release-staging/python": "python",
         "release-staging/core": "core",
@@ -48,6 +50,7 @@ def build_config(
             raise ValueError("WINDOWS_CERTIFICATE_TARGET_INVALID")
         config["bundle"]["windows"] = {
             "certificateThumbprint": windows_certificate_thumbprint.strip(),
+            # Tauri passes this to Windows Authenticode signing; the signature consumer requires it.
             "digestAlgorithm": "sha256",
             "timestampUrl": "http://timestamp.digicert.com",
         }

@@ -376,14 +376,75 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
             "displayName",
             "initialMessage",
             "themeTokens",
-            "defaultPortraitKey",
-            "portraitKeys",
-            "portraitResourceIds",
+            "visual",
+            "visualReasonCode",
         }
-        assert set(presentation["portraitKeys"]) == set(
-            presentation["portraitResourceIds"]
-        )
+        assert presentation["schemaVersion"] == 2
+        # This lifecycle fixture initializes the Assistant without binding a
+        # visual provider. Character information remains available to the UI.
+        assert presentation["visual"] is None
+        assert presentation["visualReasonCode"] == "VISUAL_NOT_BOUND"
         assert str(app_root) not in repr(presentation)
+        assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
+        assert process.wait(timeout=5) == 0
+    finally:
+        stop_host(process)
+
+
+def test_real_host_keeps_character_visible_while_provider_setup_is_required(
+    tmp_path: Path,
+) -> None:
+    app_root = isolated_app_root(tmp_path, ready=True)
+    (app_root / "config" / "api.yaml").unlink()
+    process = start_host(app_root)
+    try:
+        hello = exchange(
+            process,
+            request(
+                "hello",
+                "system.hello",
+                {
+                    "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
+                    "requiredCapabilities": CAPABILITIES,
+                    "optionalCapabilities": [
+                        "assistant.plugins-v1",
+                        "assistant.tts-v1",
+                    ],
+                },
+            ),
+        )
+        assert hello["ok"] is True
+        assert exchange(process, request("initialize", "core.initialize"))["ok"] is True
+
+        deadline = time.monotonic() + 2
+        while True:
+            snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
+            if snapshot["readiness"] == "setup_required":
+                break
+            assert time.monotonic() < deadline
+
+        assert snapshot["components"]["assistant"] == {
+            "state": "setup_required",
+            "code": "PROVIDER_SETUP_REQUIRED",
+            "retryable": False,
+        }
+        assert snapshot["currentCharacterSummary"] is None
+        assert snapshot["characterPresentation"]["characterId"] == "sakura"
+        voice = exchange(
+            process,
+            request("voice-settings", "tts.settings.get"),
+        )
+        assert voice["ok"] is True
+        assert voice["payload"]["character"] == {
+            "characterId": "sakura",
+            "displayName": "Sakura Fixture",
+        }
+        assert voice["payload"]["selection"] == {
+            "configured": False,
+            "enabled": False,
+            "providerId": None,
+            "available": False,
+        }
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0
     finally:

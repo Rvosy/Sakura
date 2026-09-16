@@ -252,12 +252,14 @@ mod native {
                 .map_err(|error| native_error("terminate_tree", error))
         }
 
+        #[cfg(test)]
         fn wait_tree_exited(&self, timeout: Duration) -> PlatformResult<bool> {
             self.inner
                 .verify_tree_exited(timeout)
                 .map_err(|error| native_error("wait_tree_exited", error))
         }
 
+        #[cfg(test)]
         fn release_exited(mut self: Box<Self>) -> PlatformResult<()> {
             self.inner
                 .release_exited_handles()
@@ -300,6 +302,7 @@ mod native {
             spec.current_dir(directory);
         }
         let (inner, pipes) = match request.stdio {
+            #[cfg(test)]
             ProcessStdio::Null => (
                 WindowsManagedProcessTree::spawn(&spec)
                     .map_err(|error| native_error("spawn", error))?,
@@ -441,6 +444,7 @@ mod native {
             Ok(())
         }
 
+        #[cfg(test)]
         fn wait_tree_exited(&self, timeout: Duration) -> PlatformResult<bool> {
             let mut state = lock_state(&self.state)?;
             let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
@@ -472,6 +476,7 @@ mod native {
             Ok(true)
         }
 
+        #[cfg(test)]
         fn release_exited(self: Box<Self>) -> PlatformResult<()> {
             let mut state = lock_state(&self.state)?;
             if state.released {
@@ -842,6 +847,7 @@ mod native {
             .env(
                 GUARDIAN_STDIO_ENV,
                 match request.stdio {
+                    #[cfg(test)]
                     ProcessStdio::Null => "null",
                     ProcessStdio::Piped => "piped",
                 },
@@ -857,6 +863,7 @@ mod native {
         }
         command.envs(request.environment_overrides.iter().cloned());
         match request.stdio {
+            #[cfg(test)]
             ProcessStdio::Null => {
                 command
                     .stdin(Stdio::null())
@@ -878,6 +885,7 @@ mod native {
         drop(status_write);
 
         let pipes = match request.stdio {
+            #[cfg(test)]
             ProcessStdio::Null => None,
             ProcessStdio::Piped => Some(ManagedProcessPipes {
                 stdin: child_stdin_file(
@@ -2531,18 +2539,6 @@ mod tests {
             assert!(
                 Instant::now() < deadline,
                 "guardian/PGID must be gone: {identity:?}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    #[cfg(unix)]
-    fn assert_posix_group_gone(process_group_id: libc::pid_t) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while native_process_exists(-process_group_id) {
-            assert!(
-                Instant::now() < deadline,
-                "expired finalization must still kill PGID {process_group_id}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }

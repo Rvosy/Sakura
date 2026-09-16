@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura 无法在 macOS 上打开？</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+          Arial, sans-serif;
+        background: Canvas;
+        color: CanvasText;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 280px;
+        line-height: 1.6;
+      }
+
+      main {
+        width: min(760px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 48px 0 64px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(28px, 6vw, 42px);
+        line-height: 1.2;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        margin: 36px 0 12px;
+        font-size: 21px;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 8px 0;
+      }
+
+      .lead {
+        max-width: 660px;
+        color: color-mix(in srgb, CanvasText 72%, transparent);
+        font-size: 17px;
+      }
+
+      .notice {
+        margin: 28px 0;
+        padding: 16px 18px;
+        border: 1px solid color-mix(in srgb, #d34630 52%, Canvas);
+        border-left: 4px solid #d34630;
+        border-radius: 6px;
+        background: color-mix(in srgb, #d34630 8%, Canvas);
+      }
+
+      .steps {
+        display: grid;
+        gap: 12px;
+        margin: 18px 0 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: launch-step;
+      }
+
+      .steps li {
+        display: grid;
+        grid-template-columns: 36px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        padding: 16px;
+        border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+        border-radius: 6px;
+        counter-increment: launch-step;
+      }
+
+      .steps li::before {
+        display: grid;
+        width: 32px;
+        height: 32px;
+        place-items: center;
+        border-radius: 50%;
+        background: #2463eb;
+        color: white;
+        content: counter(launch-step);
+        font-weight: 700;
+      }
+
+      .steps strong {
+        display: block;
+        margin-bottom: 2px;
+      }
+
+      .steps p {
+        color: color-mix(in srgb, CanvasText 72%, transparent);
+      }
+
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      a {
+        color: #2463eb;
+        text-underline-offset: 3px;
+      }
+
+      .links a {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        padding: 8px 13px;
+        border: 1px solid currentColor;
+        border-radius: 6px;
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      footer {
+        margin-top: 42px;
+        padding-top: 18px;
+        border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+        color: color-mix(in srgb, CanvasText 64%, transparent);
+        font-size: 14px;
+      }
+
+      @media (max-width: 520px) {
+        main {
+          width: min(100% - 24px, 760px);
+          padding-top: 30px;
+        }
+
+        .steps li {
+          grid-template-columns: 32px minmax(0, 1fr);
+          padding: 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sakura 无法在 macOS 上打开？</h1>
+      <p class="lead">
+        如果系统提示无法验证开发者，请按照 Apple 官方流程继续。该流程只为这份应用
+        保存本机例外，不会关闭 macOS 的全局安全检查。
+      </p>
+
+      <div class="notice" role="note">
+        <strong>先核对下载来源。</strong>
+        只有在 Sakura 来自
+        <a href="https://github.com/Rvosy/Sakura/releases">官方 GitHub Releases</a>
+        且文件符合发布说明时才继续。来源不明时请删除文件，不要绕过系统提示。
+      </div>
+
+      <h2>Apple 官方处理步骤</h2>
+      <ol class="steps">
+        <li>
+          <div>
+            <strong>先尝试打开一次 Sakura</strong>
+            <p>关闭系统拦截提示。尝试后，“仍要打开”按钮会保留约一小时。</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>打开“系统设置”</strong>
+            <p>选择“隐私与安全性”，然后向下找到“安全性”。</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>点击“仍要打开”</strong>
+            <p>先确认页面显示的应用是 Sakura，再继续。</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>完成身份验证</strong>
+            <p>输入 Mac 登录密码并再次确认。之后该应用会作为例外保存。</p>
+          </div>
+        </li>
+      </ol>
+
+      <p>
+        受组织管理的 Mac 可能需要管理员协助。如果页面中没有“仍要打开”，请重新尝试打开 Sakura，
+        然后在一小时内返回“隐私与安全性”。
+      </p>
+
+      <div class="links">
+        <a href="https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac">
+          查看 Apple 官方说明
+        </a>
+        <a href="https://github.com/Rvosy/Sakura/releases">核对 Sakura 官方 Release</a>
+      </div>
+
+      <footer>
+        本文不会要求关闭 Gatekeeper、运行未知终端命令或修改系统的全局安全策略。
+      </footer>
+    </main>
+  </body>
+</html>

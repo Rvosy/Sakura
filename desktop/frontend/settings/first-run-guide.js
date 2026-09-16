@@ -4,14 +4,14 @@ export const FIRST_RUN_GUIDE_STEPS = Object.freeze([
     page: "character",
     selector: "#characterImportButton",
     title: "导入角色",
-    description: "在这里导入 .char 角色包。角色包可以包含人设、立绘和语音。",
+    description: "",
   }),
   Object.freeze({
     id: "providers",
     page: "providers",
     selector: "#addProviderButton",
-    title: "添加供应商",
-    description: "在这里填写 API 地址和密钥。模型列表也从这里获取。",
+    title: "添加模型服务",
+    description: "填写 API 地址和密钥。",
   }),
   Object.freeze({
     id: "models",
@@ -39,8 +39,8 @@ export function nextGuideIndex(current, direction, count = FIRST_RUN_GUIDE_STEPS
 export function modelSlotFeatures(root) {
   if (!root?.querySelectorAll) return FALLBACK_MODEL_FEATURES;
   const features = Array.from(root.querySelectorAll(".model-slot-row")).map((row) => ({
-    label: row.querySelector?.(".setting-title")?.textContent?.trim() || "模型槽位",
-    description: row.querySelector?.(".setting-desc")?.textContent?.trim() || "可单独选择供应商和模型。",
+    label: row.querySelector?.(".setting-title")?.textContent?.trim() || "各项功能使用的模型",
+    description: row.querySelector?.(".setting-desc")?.textContent?.trim() || "可单独选择模型服务和模型。",
   })).filter(({ label }) => label).slice(0, 4);
   return features.length ? features : FALLBACK_MODEL_FEATURES;
 }
@@ -273,11 +273,14 @@ export function createFirstRunGuide({
     if (target) {
       target.scrollIntoView?.({ block: "center", inline: "nearest" });
       targetDescription = target.getAttribute("aria-describedby");
-      target.setAttribute("aria-describedby", "firstRunGuideDescription");
+      if (step.description) target.setAttribute("aria-describedby", "firstRunGuideDescription");
     }
     progress.textContent = `${index + 1} / ${FIRST_RUN_GUIDE_STEPS.length}`;
     title.textContent = step.title;
     description.textContent = step.description;
+    description.hidden = !step.description;
+    if (step.description) callout.setAttribute("aria-describedby", description.id);
+    else callout.removeAttribute("aria-describedby");
     unavailable.hidden = Boolean(target);
     backButton.disabled = index === 0;
     nextButton.textContent = index === FIRST_RUN_GUIDE_STEPS.length - 1 ? "完成" : "下一步";
@@ -302,7 +305,7 @@ export function createFirstRunGuide({
       if (firstRunGuideRequested(window.location.search)) {
         window.history.replaceState({}, "", window.location.pathname);
       }
-      notify("引导结束。配置好后再保存。", "success");
+      notify("引导已完成。", "success");
       previousFocus?.focus?.({ preventScroll: true });
     } catch (error) {
       notify(`无法保存引导状态：${String(error)}`, "error");

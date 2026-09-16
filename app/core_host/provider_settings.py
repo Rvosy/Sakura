@@ -13,8 +13,8 @@ from app.config.provider_model_settings import (
     ProviderModelSettingsRepository,
 )
 from app.core.cancellation import CancellationToken, OperationCancelled
-from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.llm.api_client import ApiConfigError, ApiRequestError, ApiSettings, OpenAICompatibleClient
+from app.llm.provider_errors import provider_http_status, public_provider_http_message
 
 from .protocol import error_payload, response
 
@@ -36,14 +36,14 @@ class ProviderSettingsBoundary:
         generation_credential: str,
         app_root: Path,
         *,
-        session_provider: Callable[[], object | None] = lambda: None,
+        app_version: str | None = None,
         plugin_application_provider: Callable[[], object | None] | None = None,
         runtime_apply: Callable[[], None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._repository = ProviderModelSettingsRepository(app_root)
-        self._session_provider = session_provider
+        self._app_version = app_version
         self._plugin_application_provider = plugin_application_provider
         self._runtime_apply = runtime_apply
         self._lock = threading.Lock()
@@ -57,6 +57,13 @@ class ProviderSettingsBoundary:
             self._enabled = True
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
+        from app.core.diagnostics import diagnostic_secret_scope, register_diagnostic_secret
+
+        with diagnostic_secret_scope():
+            register_diagnostic_secret(self._generation_credential)
+            return self._handle(request)
+
+    def _handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied_credential = request.get("generationCredential")
         if (
             request.get("generationId") != self._generation_id
@@ -109,29 +116,43 @@ class ProviderSettingsBoundary:
                 request,
                 error={
                     "code": "CREDENTIAL_REQUIRED",
-                    "message": "该供应商尚未配置凭据。",
+                    "message": "请填写 API Key。",
                     "feature": "providers.credentials",
                     "field": "credential",
                 },
             )
         except ApiRequestError as error:
             text = str(error).lower()
-            if any(marker in text for marker in ("401", "403", "unauthorized", "forbidden")):
-                code, message = "AUTHENTICATION_FAILED", "供应商认证失败。"
+            status = provider_http_status(error)
+            if status == 401:
+                code = "AUTHENTICATION_FAILED"
+            elif status == 403:
+                code = "PROVIDER_ACCESS_FORBIDDEN"
             elif any(marker in text for marker in ("timeout", "timed out", "超时")):
-                code, message = "PROVIDER_TIMEOUT", "供应商请求超时。"
+                code = "PROVIDER_TIMEOUT"
             else:
-                code, message = "PROVIDER_REQUEST_FAILED", "供应商请求失败。"
+                code = "PROVIDER_REQUEST_FAILED"
+            if status is not None:
+                message = public_provider_http_message(error, status)
+            elif code == "PROVIDER_TIMEOUT":
+                message = "请求超时。"
+            else:
+                message = "模型服务请求失败。"
+            feature = (
+                "providers.test_connection"
+                if name.endswith("test_connection")
+                else "providers.list_models"
+            )
             return self._response(
                 request,
-                error={"code": code, "message": message, "feature": "providers.test_connection", "field": ""},
+                error={"code": code, "message": message, "feature": feature, "field": ""},
             )
         except Exception:  # noqa: BLE001 - never cross the process boundary with private details
             return self._response(
                 request,
                 error={
                     "code": "PROVIDER_REQUEST_FAILED",
-                    "message": "供应商请求失败。",
+                    "message": "模型服务请求失败。",
                     "feature": "providers.test_connection",
                     "field": "",
                 },
@@ -140,8 +161,7 @@ class ProviderSettingsBoundary:
     def _application(self) -> object | None:
         if self._plugin_application_provider is not None:
             return self._plugin_application_provider()
-        session = self._session_provider()
-        return getattr(session, "plugin_application", None) if session is not None else None
+        return None
 
     def _plugin_slots(self) -> list[dict[str, Any]]:
         return self._plugin_slots_for_application(self._application())
@@ -324,19 +344,40 @@ class ProviderSettingsBoundary:
         }
         normalized: dict[str, dict[str, Any]] = {}
         for identity, value in raw_slots.items():
+            slot_field = str(identity)
             allowed_fields = {"profile_id", "model"}
             if identity == "core:chat":
                 allowed_fields.add("context_window_tokens")
             if not isinstance(value, Mapping) or set(value) - allowed_fields:
-                raise ProviderModelSettingsError("MODEL_SLOT_INVALID", "模型槽配置无效。")
+                raise ProviderModelSettingsError(
+                    "MODEL_SLOT_INVALID",
+                    "模型槽配置无效。",
+                    feature="model.slots",
+                    field=slot_field,
+                )
             profile_id = value.get("profile_id", "")
             model = value.get("model", "")
             if not isinstance(profile_id, str) or not isinstance(model, str) or bool(profile_id) != bool(model):
-                raise ProviderModelSettingsError("MODEL_SLOT_INCOMPLETE", "模型槽必须同时选择 Provider 和模型。")
+                raise ProviderModelSettingsError(
+                    "MODEL_SLOT_INCOMPLETE",
+                    "模型槽必须同时选择 Provider 和模型。",
+                    feature="model.slots",
+                    field=slot_field,
+                )
             if current[str(identity)].get("required") is True and not profile_id:
-                raise ProviderModelSettingsError("MODEL_SLOT_REQUIRED", "必选模型槽不能为空。")
+                raise ProviderModelSettingsError(
+                    "MODEL_SLOT_REQUIRED",
+                    "必选模型槽不能为空。",
+                    feature="model.slots",
+                    field=slot_field,
+                )
             if profile_id and (profile_id, model) not in allowed:
-                raise ProviderModelSettingsError("MODEL_REFERENCE_INVALID", "模型槽引用不存在的 Provider 或模型。")
+                raise ProviderModelSettingsError(
+                    "MODEL_REFERENCE_INVALID",
+                    "模型槽引用不存在的 Provider 或模型。",
+                    feature="model.slots",
+                    field=slot_field,
+                )
             selection: dict[str, Any] = {"profile_id": profile_id, "model": model}
             if identity == "core:chat":
                 context_window = value.get("context_window_tokens")
@@ -473,17 +514,19 @@ class ProviderSettingsBoundary:
                 raw["profile"],
                 require_model=require_model,
             )
-            # The shared client retries each HTTP request. Treat the setting as
-            # a total probe budget so the Rust-side 65 second deadline remains
-            # strictly larger than the worst-case three attempts plus backoff.
-            per_attempt_timeout = max(1, timeout // MAX_AUTO_RETRY_ATTEMPTS)
+            from app.core.diagnostics import register_diagnostic_secret
+
+            register_diagnostic_secret(secret)
+            # 探测只发送一次，给生成请求完整预算；避免短超时重复中断慢模型。
             client = OpenAICompatibleClient(
                 ApiSettings(
                     base_url=base_url,
                     api_key=secret,
                     model=model,
-                    timeout_seconds=per_attempt_timeout,
-                )
+                    timeout_seconds=timeout,
+                ),
+                app_version=self._app_version,
+                retry_requests=False,
             )
             # Core stdout is reserved for framed protocol bytes.  The shared
             # client emits normal runtime logs to stdout, so probe traffic must

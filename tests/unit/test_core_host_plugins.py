@@ -4,6 +4,9 @@ import shutil
 import time
 from pathlib import Path
 
+import pytest
+
+from app.config.character_loader import CharacterProfile
 from app.storage.runtime_roots import RuntimeRoots
 
 
@@ -42,7 +45,7 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
 
     unsupported = _preview_plugin(
         InstalledPluginRecord(
-            "pi_0123456789abcdef01234567", "bundled", "legacy", "legacy",
+            "pi_bundled_666978747572655f706c7567696e", "bundled", "legacy", "legacy",
             "Legacy", "", "", "1.0.0", 2, "plugin:Legacy", False, False,
             ("com.example.legacy",), ("sakura.host.settings",),
             "API_VERSION_UNSUPPORTED", False, False,
@@ -52,14 +55,14 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
     assert unsupported["supported"] is False
     assert unsupported["state"] == "failed"
     assert unsupported["reasonCode"] == "API_VERSION_UNSUPPORTED"
-    assert unsupported["installId"] == "pi_0123456789abcdef01234567"
+    assert unsupported["installId"] == "pi_bundled_666978747572655f706c7567696e"
     assert unsupported["provides"] == ["com.example.legacy"]
     assert unsupported["requires"] == ["sakura.host.settings"]
     assert unsupported["missingServices"] == []
 
     required = _preview_plugin(
         InstalledPluginRecord(
-            "pi_111111111111111111111111", "bundled", "required", "required",
+            "pi_user_6c6f63616c", "bundled", "required", "required",
             "Required", "", "", "1.0.0", 4, "plugin:Required", True, True,
             (), (), "READY", True, True,
         )
@@ -70,7 +73,7 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
 
     invalid_user_required = _preview_plugin(
         InstalledPluginRecord(
-            "pi_222222222222222222222222", "user", "broken", None,
+            "pi_user_62726f6b656e", "user", "broken", None,
             "Invalid plugin", "", "", "0.0.0", None, "", False, False,
             (), (), "PLUGIN_MANIFEST_INVALID", False, False,
         )
@@ -91,7 +94,7 @@ def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> No
     application = PluginApplicationHost(_assistant_root(tmp_path), "generation-a", registry)
     session = type("Session", (), {
         "runtime": runtime,
-        "character": type("Character", (), {"id": "fixture"})(),
+        "character": CharacterProfile("fixture", "Fixture", tmp_path, tmp_path / "card.md", ""),
     })()
     try:
         application.start()
@@ -135,7 +138,7 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
     root = _assistant_root(tmp_path)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(root, root), "generation-plugin-application", "a" * 32),
-        initializer_factory=lambda _root: FailingInitializer(),
+        initializer_factory=lambda _root, _tools, _mcp: FailingInitializer(),
     )
     controller.enable_plugins()
     try:
@@ -169,3 +172,51 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
         assert controller.published_session() is None
     finally:
         controller.close()
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_plugin_start_failure_closes_unpublished_application_resources(
+    tmp_path: Path, monkeypatch, cleanup_fails: bool,
+) -> None:
+    from app.agent.mcp import provider
+    from app.core_host import plugin_application
+    from app.core_host.server import HostConfig, ReadinessController
+
+    closed: list[str] = []
+
+    class MCP:
+        def close(self) -> None:
+            closed.append("mcp")
+
+    class PluginApplication:
+        def __init__(self, *_args) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("plugin start failed")
+
+        def close(self) -> None:
+            closed.append("plugins")
+            if cleanup_fails:
+                raise RuntimeError("plugin cleanup failed")
+
+    monkeypatch.setattr(provider, "start_mcp_tools_from_config", lambda *_args, **_kwargs: MCP())
+    monkeypatch.setattr(plugin_application, "PluginApplicationHost", PluginApplication)
+    controller = ReadinessController(
+        HostConfig(RuntimeRoots(tmp_path, tmp_path), "generation-failed-start", "a" * 32),
+    )
+    controller.enable_mcp()
+    controller.enable_plugins()
+    controller.begin({})
+    controller._worker.join(2)
+    assert not controller._worker.is_alive()
+    assert controller.readiness() == "failed"
+    assert controller.published_plugin_application() is None
+    assert closed == ["plugins", "mcp"]
+    if cleanup_fails:
+        with pytest.raises(RuntimeError, match="plugin cleanup failed"):
+            controller.close()
+    else:
+        controller.close()
+    controller.close()
+    assert closed == ["plugins", "mcp"]

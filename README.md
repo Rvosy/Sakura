@@ -14,7 +14,7 @@
 
 </div>
 
-> 当前正式版本为 `1.0.0`；安装包与发布说明见 [Releases](https://github.com/Rvosy/sakura/releases)，版本变化见 [更新日志](docs/CHANGELOG.md)。
+> 当前源码版本为 `1.1.0`，重点更新插件系统并加入语音输入插件；正式安装包与发布说明见 [Releases](https://github.com/Rvosy/sakura/releases)，版本变化见 [更新日志](docs/CHANGELOG.md)。
 
 最近推完水晶社的新作，~~推完自动变成学姐的狗~~，已经变成学姐的形状了，夜里辗转反侧怎么都睡不着。便以学姐的名字 **Sakura** 命名这个项目，开发了这个桌宠 Agent 框架。
 
@@ -55,7 +55,7 @@ Sakura 最大的特点：**她会主动来找你**。
 
 **角色与外观**
 - 角色包驱动 — `.char` 一键导入，角色卡、立绘、GPT-SoVITS 语音权重一体打包；UI 主题色跟随角色
-- 角色工作室 — Windows / macOS Release 包内置 Tauri 工坊，可从设置页新建、编辑并导出 `.char` 角色包
+- 角色工作室 — 主 Tauri 应用内的独立窗口，可从设置页新建、编辑、发布并导出 `.char` 角色包
 - 首次启动引导 — 先选择或导入角色，再配置 API 供应商和模型；已有配置不会重复触发
 - 外观效果 — 支持纯色 / 高斯模糊 / 亚克力 / macOS 原生毛玻璃（NSVisualEffectView），气泡与输入栏位置、大小可调
 
@@ -99,6 +99,7 @@ Sakura 最大的特点：**她会主动来找你**。
 | [安装与配置指南](docs/userdocs/SETUP.md) | 完整安装步骤、角色包获取、语音配置、版本更新 |
 | [API 配置教程](docs/userdocs/API_CONFIG.md) | Base URL、API Key、模型选择和中转站配置 |
 | [聊天、截图与屏幕感知](docs/userdocs/CHAT_SCREEN_AND_CONTEXT.md) | 普通聊天、手动截图、主动感知和上下文行为 |
+| [匿名统计与远程诊断](docs/userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md) | 默认状态、发送范围、关闭方式、诊断 ID 与数据删除 |
 | [macOS 安装指南](docs/userdocs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
 | [技术讲解 README](docs/devdocs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
 | [插件 SDK 文档](docs/devdocs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |

@@ -3,24 +3,18 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-12
 ---
 
 # WP-2-01：最小并发 request/response/event Router
 
-## 1. 状态与目标
+## 1. 职责
 
-当前状态只以 `docs/plans/runtime-v2/work-packages.md` 第 2 节为准。
+Router 在一个 Core generation 内分派 control、设置和聊天请求，保持 health、cancel 和 shutdown
+可响应。真实聊天的唯一终态、取消及数据提交由聊天边界负责，见 WP-2-02 和 WP-3-02。
 
-本 Work Package 把 WP-1C 已验证的单请求串行 stdio transport 收敛为一个 generation-scoped、资源有界、可并发的最小 Router，为 WP-2-02 和第一条真实聊天提供基础。它只验证“聊天形状”的阻塞 fixture，不接入真实 Assistant 聊天，也不建设通用任务平台。
-
-当前实现基线：
-
-- Rust `CoreHostRuntime::request*` 仍由调用线程执行 write → read → validate，同一 owner 不能安全承载多个 in-flight request。
-- Python `run_host` 由 reader 同步调用 `ControlDispatcher.dispatch`；已有 `ResponseWriter` 是单 writer 和有界队列，但 `send` 会等待本条写完成，尚不是独立 Router。
-- protocol 2.1 的 validator 只接受 `request`/`response`，因此 event 不能在不协商的情况下塞入现有 minor。
-- `system.hello`、readiness、generation credential、Snapshot、stderr 排水、Supervisor 和受控进程树均已验证，必须保留而不是重写。
+Python 的 response 和 event 共用 `ResponseWriter` 的有界队列与写入确认。Router 不再用第二个事件队列、
+转发线程或 `FixtureResult` 包装响应；领域边界通过 `publish_event` 发布事件，通过返回值提交响应。
 
 ## 2. 冻结边界
 
@@ -45,17 +39,19 @@ updated: 2026-07-31
 
 ### 2.3 Python Router
 
-- 一个常驻 reader 只负责读取/校验帧和投递；一个 dispatcher 负责 control 与任务分派；只有一个 stdout writer 可以调用 `write_frame`。
-- `system.hello`、`system.health`、`system.shutdown` 不等待阻塞 fixture。`system.shutdown` 必须能停止接收新任务并进入现有有界清理链。
-- 非 control fixture 使用有界执行槽；不得为未来 Tools/MCP/插件建立通用 worker process 或三级调度器。
-- 现有 `ResponseWriter` 可以演进或被窄 Router writer 替代，但不能形成两个 stdout owner。
-- writer/dispatcher/fixture task 的异常必须聚合到既有确定性 cleanup；关闭顺序必须避免满队列时 sentinel 无法入队、join 自锁或 transport reader 永久阻塞。
-- 生产 Host 不新增 `chat.send`、`chat.cancel` 或真实 Assistant 调用。阻塞 sleep/I/O 和 terminal-shaped event 由注入式测试 handler 或 `wp_2_01` 专用 fixture 提供。
+- 一个常驻 reader 读取和校验帧，一个 dispatcher 分派 control 和请求；只有 `ResponseWriter` 的线程调用 `write_frame`。
+- 同步设置请求由 4 个 worker 执行，最多另有 8 个请求排队；执行槽已满但队列有空位时应正常接收。聊天由边界启动可取消任务，不让长模型请求占住 control。
+- 排队时间计入 `deadlineMs`，开始执行前已超时的请求返回 `REQUEST_DEADLINE_EXCEEDED`，释放预留的领域状态，不执行过期保存或其他写入。关闭时放弃尚未执行的排队请求。
+- response 和 event 都直接进入 `ResponseWriter` 的 32 项队列。发布者等待本条写入完成；队列饱和、写入失败或确认超时会使 generation 失败，不丢弃终态或重放写入。
+- Router 先停止接收请求并取消领域任务，再等待执行槽和聊天事件生产者收尾。收尾期间仍允许发布终态；排空后拒绝新事件，随后由 Host 关闭唯一的协议 writer。
+- Python `queue.Queue` 已提供并发入队和背压，不再额外维护事件 ticket、转发队列或专用事件线程。
+- 领域 cleanup 与 transport failure 进入既有确定性清理链；Shell 保留最终的进程树停止权。
 
 ### 2.4 有界与过载
 
 - pending request 数、Rust writer/event 队列、Python dispatch/writer 队列和 fixture 并发槽均使用命名常量。
 - 达到上限时返回稳定、脱敏、可归因的过载错误，或安全关闭当前 generation；不得无限增长，也不得静默丢 response/terminal-shaped event。
+- 执行队列也已满时才返回 `ROUTER_QUEUE_FULL`，可重试。错误文案面向用户，不暴露旧测试夹具名称。
 - 可以丢弃的 progress 类事件不在本 WP 实现，因此不要为“以后可能需要”建设合并、采样或多等级配额。
 - 任何 queue-full/close/write failure 路径都必须有有界退出测试。
 
@@ -78,41 +74,27 @@ updated: 2026-07-31
 
 ### 3.3 继承回归
 
+`tests/unit/test_core_host_protocol.py` 覆盖事件写入确认、失败传播和关闭时终态排空；
+真实 Core 的聊天、取消、EOF 和 shutdown 链路由 `core-host` profile 验证。
+
 - frontend lifecycle 测试保持全绿，WP-1D 的 retry/exit/diagnostics 所有权不变。
 - Core Host protocol/readiness/Assistant lifecycle 定向 Python 测试全绿。
 - Rust `core_host_protocol`、`core_host_runtime`、`shell_lifecycle` 及完整 locked test 全绿。
 - Windows 窗口交互脚本只删除过时的“不得启动 Python”断言；仍登记受控 Core/Python 后代，并在退出后证明全部后代归零。
 
-## 4. 实施顺序
+## 4. 维护与验证
 
-1. 先以 test-only commit 修正继承的 Windows no-Python 断言，不混入 Router 生产代码。
-2. 先写 protocol 2.2/event/capability 的 Rust/Python RED，再实现共同 wire contract 和 `wp_2_01` golden。
-3. 先写 Rust 乱序、交错、失效、饱和和清理 RED，再实现单 writer/reader/pending Router。
-4. 先写 Python control 隔离、单 writer、阻塞 fixture、饱和和关闭 RED，再实现 reader/dispatcher/writer 分离。
-5. 使用真实 bundled Host 跑并发、阻塞 I/O、Core crash、Retry/Exit 和连续 generation 门禁；复用输入未变化的 WP-1C/1D 成功证据。
-6. 生产实现完成后把 WP-2-01 登记为 `stabilizing`；候选验收关闭退出条件后登记 `accepted`，然后停止，不开始 WP-2-02。
+协议、Rust Router 和 Python 调度修改依据受影响的行为选择回归，重点覆盖乱序、失效、饱和和清理。
+跨边界修改使用真实 bundled Host 验证阻塞 I/O、Core crash、Retry/Exit 与连续 generation；
+无需按早期工作包的 test-only、实现、稳定化、接受顺序拆分提交。
 
-建议单一目的提交：
+## 5. 失败边界
 
-- `test(runtime): 更新窗口交互验收的 Core 预期`
-- `feat(runtime): 扩展并发 Router 协议契约`
-- `feat(runtime): 建立 Rust 并发请求路由`
-- `feat(runtime): 建立 Python 并发调度与单写队列`
-- `test(runtime): 补齐 Router 故障与资源门禁`
-- `docs(runtime): 稳定化 WP-2-01 最小并发 Router`
-- `docs(runtime): 接受 WP-2-01 最小并发 Router`
+- control 不能依赖第二 Core、第二 stdout writer、隐藏 Qt、无限队列或延长既有 lifecycle deadline 才能响应。
+- 同一 generation 的 response/event 必须唯一归属；关闭不能遗留后台线程或任务。
+- 协议演进不能静默重定义 2.1、暴露 credential，或把平台 handle/fd 细节放进公共 envelope。
 
-## 5. 停止条件与非目标
-
-出现以下任一情况立即停止生产扩展并回到设计/稳定化：
-
-- 为通过 WP-2-01 必须接入真实 Assistant、聊天 UI、Gateway、cancel 或 Snapshot 扩展。
-- control 只能依赖第二 Core、第二 stdout writer、隐藏 Qt、无限队列或延长既有 lifecycle deadline 才能响应。
-- 同一 generation 出现不能唯一归属的 response/event，或关闭需要遗留后台线程/任务。
-- 协议实现要求静默重定义 2.1、暴露 credential，或把平台 handle/fd 细节放进公共 envelope。
-- 需要修改 manifest/lockfile、工作流、用户数据、Assistant Adapter、Memory、Tools、MCP、插件、TTS 或截图链。
-
-WP-2-02 的 `chat.send`/`chat.cancel`、唯一聊天终态、受控 Gateway 和最小聊天 Snapshot 明确不属于本 WP。
+真实聊天、Gateway 和取消的领域契约见 WP-2-02 及后续聊天 Spec；涉及这些模块不构成停止调查或修复的理由。
 
 ## 6. 回退
 

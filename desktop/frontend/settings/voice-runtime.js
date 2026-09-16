@@ -1,3 +1,4 @@
+import { createIcon } from "../core/icons.js";
 const IDENTIFIER = /^[A-Za-z0-9_.-]{1,200}$/;
 const APPLICATION_STATES = new Set(["applied", "restart_required", "error"]);
 
@@ -39,7 +40,7 @@ function exactField(value) {
       || !(value.enabledWhen === null
         || (value.enabledWhen && typeof value.enabledWhen === "object"
           && !Array.isArray(value.enabledWhen)
-          && Object.keys(value.enabledWhen).length === 2
+          && (Object.keys(value.enabledWhen).length === 2 || (Object.keys(value.enabledWhen).length === 3 && typeof value.enabledWhen.hide === "boolean"))
           && IDENTIFIER.test(value.enabledWhen.field)
           && typeof value.enabledWhen.equals === "string"
           && value.enabledWhen.equals.length <= 200
@@ -170,6 +171,7 @@ export function createVoiceController({
   refreshSelect = () => {},
   onDirty = () => {},
   onStatus = () => {},
+  onSectionsRendered = () => {},
 }) {
   const fields = {
     page: document.getElementById("page-voice"),
@@ -181,13 +183,15 @@ export function createVoiceController({
   };
   const characterNotice = document.createElement("p");
   characterNotice.className = "page-note";
-  characterNotice.textContent = "尚未选择角色。你仍可配置语音引擎；导入并选择角色后可启用角色语音。";
+  characterNotice.textContent = "选择角色后可启用语音输出。";
   characterNotice.hidden = true;
   fields.settings.append(characterNotice);
   let snapshot = null;
   let baseline = "";
   let disposed = false;
   const sectionInputs = new Map();
+  const sectionAvailability = new Map();
+  let sectionHost = null;
 
   enhanceSelect(fields.provider);
 
@@ -230,10 +234,14 @@ export function createVoiceController({
     }
   }
 
-  function renderSections() {
+  function renderSections(drafts = []) {
     sectionInputs.clear();
+    sectionAvailability.clear();
     fields.sections.textContent = "";
+    if (sectionHost) sectionHost.container.textContent = "";
     for (const section of snapshot.sections) {
+      const draftValues = drafts.find((item) => item.pluginId === section.pluginId
+        && item.sectionId === section.sectionId)?.values || {};
       const group = document.createElement("fieldset");
       group.className = "settings-group plugin-voice-section";
       group.voiceProviderId = section.pluginId;
@@ -296,7 +304,12 @@ export function createVoiceController({
           if (field.step !== null) input.step = String(field.step);
         }
         if (!field.readonly && !["readonly", "status", "resource"].includes(field.type)) {
-          setInputValue(field, input);
+          input.id = `voice-field-${section.pluginId}-${section.sectionId}-${field.key}`;
+          label.htmlFor = input.id;
+          input.setAttribute("aria-label", field.label);
+          input.required = Boolean(field.required);
+          setInputValue(Object.hasOwn(draftValues, field.key)
+            ? { ...field, value: draftValues[field.key] } : field, input);
           const handleInput = () => { syncFieldAvailability(); markDirty(); };
           input.addEventListener("input", handleInput);
           input.addEventListener("change", handleInput);
@@ -316,12 +329,14 @@ export function createVoiceController({
         for (const { field, input, row } of conditionalFields) {
           const controller = inputs.get(field.enabledWhen.field);
           const enabled = Boolean(controller) && String(controller.value) === field.enabledWhen.equals;
+          row.hidden = field.enabledWhen.hide === true && !enabled;
           input.disabled = !enabled;
           row.className = `setting-row${enabled ? "" : " is-disabled"}`;
           refreshSelect(input);
         }
       };
       syncFieldAvailability();
+      sectionAvailability.set(sectionKey(section.pluginId, section.sectionId), syncFieldAvailability);
       if (advancedFieldCount) group.append(advanced);
       for (const action of section.actions) {
         const button = document.createElement("button");
@@ -347,8 +362,43 @@ export function createVoiceController({
         group.append(button);
       }
       sectionInputs.set(sectionKey(section.pluginId, section.sectionId), inputs);
-      fields.sections.append(group);
+      if (sectionHost?.pluginId === section.pluginId) {
+        group.hidden = false;
+        sectionHost.container.append(group);
+      } else fields.sections.append(group);
     }
+  }
+
+  function pluginDraft(pluginId) {
+    return {
+      coreGenerationId: snapshot?.coreGenerationId,
+      characterId: snapshot?.character?.characterId || null,
+      sections: currentDraft()?.sections.filter((section) => section.pluginId === pluginId) || [],
+    };
+  }
+
+  function restorePluginDraft(draft) {
+    if (!snapshot || snapshot.coreGenerationId !== draft?.coreGenerationId
+        || (snapshot.character?.characterId || null) !== draft.characterId) return;
+    for (const section of draft.sections) {
+      const descriptor = snapshot.sections.find((item) => item.pluginId === section.pluginId && item.sectionId === section.sectionId);
+      const inputs = sectionInputs.get(sectionKey(section.pluginId, section.sectionId));
+      if (!descriptor || !inputs) continue;
+      for (const field of descriptor.fields) {
+        if (!Object.hasOwn(section.values, field.key)) continue;
+        setInputValue({ ...field, value: section.values[field.key] }, inputs.get(field.key));
+        refreshSelect(inputs.get(field.key));
+      }
+      sectionAvailability.get(sectionKey(section.pluginId, section.sectionId))?.();
+    }
+    markDirty();
+  }
+
+  function unmountPluginSections() {
+    if (!sectionHost) return;
+    for (const group of Array.from(sectionHost.container.children)) fields.sections.append(group);
+    sectionHost = null;
+    syncSectionVisibility();
   }
 
   function showSettings() {
@@ -369,7 +419,7 @@ export function createVoiceController({
     empty.className = "memory-surface-state memory-surface-unavailable";
     const mark = document.createElement("span");
     mark.className = "memory-empty-mark";
-    mark.textContent = "✦";
+    mark.append(createIcon(document, "audio-lines"));
     const heading = document.createElement("strong");
     heading.textContent = "语音管理暂不可用";
     const message = document.createElement("p");
@@ -402,6 +452,8 @@ export function createVoiceController({
     snapshot = null;
     baseline = "";
     sectionInputs.clear();
+    sectionAvailability.clear();
+    if (sectionHost) sectionHost.container.textContent = "";
     fields.enabled.checked = false;
     fields.enabled.disabled = true;
     fields.provider.textContent = "";
@@ -410,11 +462,17 @@ export function createVoiceController({
     refreshSelect(fields.provider);
     showUnavailable();
     onDirty();
+    onSectionsRendered();
   }
 
-  function initialize(value) {
+  function initialize(value, { preserveDraft = false } = {}) {
     const next = exactVoiceSnapshot(value);
+    const previousDraft = preserveDraft ? currentDraft() : null;
+    const previousBaseline = baseline ? JSON.parse(baseline) : null;
     if (!next.providers.length) {
+      if (previousDraft && draftSignature(previousDraft) !== baseline) {
+        throw new Error("语音引擎暂不可用，请稍后重试。");
+      }
       renderUnavailable();
       return;
     }
@@ -443,23 +501,50 @@ export function createVoiceController({
     refreshSelect(fields.provider);
     renderSections();
     baseline = draftSignature(currentDraft());
+    if (previousDraft && previousBaseline
+        && previousDraft.characterId === (snapshot.character?.characterId || null)) {
+      if (previousDraft.enabled !== previousBaseline.enabled) fields.enabled.checked = previousDraft.enabled;
+      if (previousDraft.providerId !== previousBaseline.providerId && previousDraft.providerId) {
+        if (!Array.from(fields.provider.children).some((item) => item.value === previousDraft.providerId)) {
+          const option = document.createElement("option");
+          option.value = previousDraft.providerId;
+          option.textContent = `${previousDraft.providerId}（未加载）`;
+          fields.provider.append(option);
+        }
+        fields.provider.value = previousDraft.providerId;
+      }
+      const edits = previousDraft.sections.map((section) => {
+        const oldValues = previousBaseline.sections.find((item) => item.pluginId === section.pluginId
+          && item.sectionId === section.sectionId)?.values || {};
+        return { ...section, values: Object.fromEntries(Object.entries(section.values)
+          .filter(([key, value]) => value !== oldValues[key])) };
+      });
+      renderSections(edits);
+      refreshSelect(fields.provider);
+    }
     onDirty();
+    onSectionsRendered();
   }
 
-  async function refresh() {
+  async function refresh(options = {}) {
     if (disposed) return null;
-    initialize(await invoke("settings_voice_get"));
+    const next = await invoke("settings_voice_get");
+    if (!disposed) initialize(next, options);
     return snapshot;
   }
 
-  async function refreshCurrent() {
+  async function refreshCurrent({ preserveDraft = false } = {}) {
     if (!isAvailable()) {
+      if (preserveDraft && snapshot && draftSignature(currentDraft()) !== baseline) {
+        throw new Error("语音设置暂不可用，请稍后重试。");
+      }
       if (!disposed) renderUnavailable();
       return null;
     }
     try {
-      return await refresh();
-    } catch {
+      return await refresh({ preserveDraft });
+    } catch (error) {
+      if (preserveDraft && snapshot) throw error;
       if (!disposed) renderUnavailable();
       return null;
     }
@@ -478,6 +563,19 @@ export function createVoiceController({
     initialize,
     refreshStatus: refresh,
     refreshCurrent,
+    hasPluginSections: (pluginId) => Boolean(snapshot?.sections.some((section) => section.pluginId === pluginId)),
+    pluginDraft,
+    restorePluginDraft,
+    mountPluginSections(pluginId, container) {
+      unmountPluginSections();
+      sectionHost = { pluginId, container };
+      for (const group of Array.from(fields.sections.children)) {
+        if (group.voiceProviderId !== pluginId) continue;
+        group.hidden = false;
+        container.append(group);
+      }
+    },
+    unmountPluginSections,
     isDirty: () => Boolean(snapshot) && draftSignature(currentDraft()) !== baseline,
     async save() {
       if (!snapshot || disposed) throw new Error("TTS_SETTINGS_NOT_READY");
@@ -503,16 +601,18 @@ export function createVoiceController({
       }
       if (refreshFailed) throw new Error("TTS_SETTINGS_REFRESH_FAILED");
       if (result.applicationState === "restart_required") {
-        onStatus("配置已保存；请在对应语音引擎区块重新加载插件。", "info");
+        onStatus("已保存，请重新加载语音插件。", "info");
       } else if (result.applicationState === "error") {
         onStatus("配置已保存，但语音引擎配置应用失败。", "error");
       }
       return result;
     },
     dispose() {
+      unmountPluginSections();
       disposed = true;
       snapshot = null;
       sectionInputs.clear();
+      sectionAvailability.clear();
     },
   });
 }

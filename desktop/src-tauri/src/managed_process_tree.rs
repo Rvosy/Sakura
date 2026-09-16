@@ -265,7 +265,7 @@ impl Drop for ManagedProcessTree {
 }
 
 impl ManagedProcessTree {
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub fn spawn(spec: &ManagedProcessSpec) -> ManagedProcessResult<Self> {
         Self::spawn_internal(spec, SpawnFailureInjection::None)
     }
@@ -294,7 +294,7 @@ impl ManagedProcessTree {
         Self::spawn_internal(spec, SpawnFailureInjection::Resume)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     fn spawn_internal(
         spec: &ManagedProcessSpec,
         failure_injection: SpawnFailureInjection,
@@ -467,7 +467,7 @@ impl ManagedProcessTree {
         Err(ManagedProcessError::UnsupportedPlatform)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub fn verify_tree_exited(&self, timeout: Duration) -> ManagedProcessResult<bool> {
         let job = self
             .job
@@ -481,12 +481,16 @@ impl ManagedProcessTree {
         Err(ManagedProcessError::UnsupportedPlatform)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub fn release_exited_handles(&mut self) -> ManagedProcessResult<()> {
         if self.process.is_none() && self.job.is_none() {
             return Ok(());
         }
-        if !self.verify_tree_exited(Duration::ZERO)? {
+        // The root process handle can become signaled before the Job accounting
+        // view decrements ActiveProcesses. Give that native bookkeeping the
+        // same short settle window used by finalization before rejecting the
+        // release as an active tree.
+        if !self.verify_tree_exited(JOB_ACCOUNTING_SETTLE_BUDGET)? {
             return Err(ManagedProcessError::InvalidState(
                 "cannot release handles while the job still has active processes",
             ));

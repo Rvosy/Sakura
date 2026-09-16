@@ -16,10 +16,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
-    core_host_protocol::{encode_frame, validate_envelope, FrameDecoder, EVENT_PROTOCOL_MINOR},
+    core_host_protocol::{encode_frame, validate_envelope, FrameDecoder},
     platform::{ManagedPipeReadOutcome, ManagedPipeReader},
 };
 
@@ -381,6 +381,7 @@ impl CoreHostRouterHandle {
         }
     }
 
+    #[cfg(test)]
     pub fn pending_len(&self) -> usize {
         self.shared
             .requests
@@ -684,11 +685,6 @@ fn invalidate_all(shared: &Arc<Shared>, error: impl Into<String>) {
     for waiter in waiters {
         let _ = waiter.send(Err(error.clone()));
     }
-}
-
-#[allow(dead_code)]
-fn _event_identity_example() -> Value {
-    json!({"kind": "event", "protocolMinor": EVENT_PROTOCOL_MINOR})
 }
 
 #[cfg(test)]

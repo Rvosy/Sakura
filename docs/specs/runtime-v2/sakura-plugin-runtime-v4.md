@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-28
+updated: 2026-09-11
 ---
 
 # Sakura Plugin Runtime v4
@@ -57,6 +57,9 @@ scope；旧 generation 或已退出插件的身份立即失效。
 Host Service、应用配置和撤销 scope。不得出现 `call_tts()`、`register_memory()`、Provider ID 白名单或其他
 领域分支。
 
+插件清单还可声明静态 `ttsResources`，供角色包导入和工坊查询兼容格式。它不进入服务启动依赖，
+不会改变引擎选择；字段与状态见[角色包插件需求](visual-plugin-boundary.md#角色包插件需求)。
+
 ## 3. 插件包、Python 与 dependency root
 
 v4 插件至少包含 `plugin.yaml` 和 Python entry，manifest 使用 `api: 4`。`provides/requires` 继续只表达
@@ -70,12 +73,40 @@ capability dependency；Python distribution dependency 单独通过 `pyproject.t
 - 只有用户发起安装、更新或重试时才允许解析和下载依赖。
 - 同一个分发包在目标 CPython ABI 或平台没有可用 wheel 时明确失败，不尝试污染主 Runtime 作为回退。
 - uv cache 可以共享下载文件并使用 hardlink/clone；每个插件的 import 可见集合仍然独立。
+- 未指定软件包源时，插件安装、源码依赖准备和本地发行 staging 默认使用阿里云 PyPI 镜像。
+  `UV_*` 源配置、uv 配置文件和插件 requirements 中的源声明优先；没有 uv 源配置时，沿用显式的
+  `PIP_INDEX_URL`。不改写锁文件、直接下载 URL 或 uv 的索引选择策略，也不混用多个默认镜像。
+  海外 GitHub Actions 打包任务显式使用官方 PyPI。镜像缺包或不可用时明确报错，用户可指定其他源后重试。
 
 标准 venv 与 `uv pip --target` 都可以作为 dependency root 的内部实现候选。实现选择不得改变插件包、SDK、
 进程启动和故障 DTO；PoC 必须覆盖 console scripts、native wheels、卸载和三平台路径后再冻结一种。
 
 官方预装插件可以随发行包携带已解析环境或 wheelhouse，保证首次启动离线可用。普通第三方包不强制为每个
 平台和 CPython ABI 携带完整 wheelhouse。
+
+### 3.1 展示分类与图标
+
+Manifest 可以声明 `presentation: {kind, category, icon}`。`kind` 为 `extension`（功能扩展）、`provider`（能力提供方）
+或 `infrastructure`（系统组件）；`category` 为 `model/voice/memory/tools/connectivity/other`。
+未声明、类型不符或未知的值逐字段回退为 `extension/other`，不影响插件的加载资格。
+
+Inventory 将归一化后的分类放入公开 Plugin Settings Snapshot。Rust 和 WebView 接受省略 `presentation` 的旧快照，
+并直接使用宿主投影的展示元信息。分类只用于分组、标签和筛选，不进入启动 IPC，也不参与依赖、服务选择、权限或业务判断。
+前端不得根据插件 ID、作者或依赖猜测分类；安装来源仍由安装记录决定。
+
+`icon` 从 Sakura 随包提供的 Lucide 图标中选择，例如 `brain`、`smartphone`、`audio-lines`。
+Manifest 名称须匹配 `[a-z][a-z0-9-]{0,63}`；缺失或格式不符时 Inventory 输出空字符串，不影响加载资格。
+快照中的图标允许为空；前端对空值及本地目录未收录的名称按领域回退，系统组件默认使用 `layers`。
+插件只提供名称，颜色、尺寸、线宽和动效由 Sakura 统一控制，不接收图标 URL、路径或 SVG 代码。
+本地目录与使用方式见 [Lucide 资源说明](../../../desktop/frontend/assets/lucide/README.md)。
+
+### 3.2 表现能力声明
+
+Manifest 可通过 `visuals` 声明资源类型、领域合同版本、Service 和渲染/编辑模块入口。
+它与展示用的 `presentation` 分开，参与资源匹配，并随 Inventory、RuntimePluginSpec 和 PluginSpec 保留。
+静态发现不执行插件代码；资源说明、专属解析、普通/主动回复、播放与工坊编辑均通过该合同接入。
+预构建 JavaScript 来自可信插件安装目录，角色包中的脚本不能作为模块执行；模块与回调随绑定/进程 scope 失效。
+字段、错误和实施边界见[表现插件合同](visual-plugin-boundary.md)。
 
 ## 4. Plugin SDK 边界
 
@@ -94,6 +125,11 @@ Python 标准库
 SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`。允许因跨进程而收紧参数、返回值和 cleanup
 合同，但不把 RPC client、PID、pipe、模块名或进程地址暴露给插件作者。
 
+SDK 提供不依赖 Core 的 `sakura_http.urlopen_direct_for_loopback` 和 `proxy_for_url`。内置插件的 HTTP API
+与资源下载使用前者；每次请求、重试和重定向读取当前代理，本地回环直连，已开始的传输不换连接。
+其他 HTTP 客户端可通过后者取得单次请求的代理。插件自带的外部程序不受 Python SDK 接管；宿主启动
+`uv` 依赖下载任务时将当时的系统代理传入该子进程，运行中的安装任务保留启动时的配置。
+
 插件不得从 `data_path()` 的物理位置反推 `user_root`。确需继续拥有现有共享用户数据的插件通过通用
 `sakura.host.storage` 取得有界的 data/cache 目录 descriptor；当前角色及角色卡正文通过
 `sakura.host.character.current()` 取得；Provider 目录、对话模型继承和调用凭据通过
@@ -101,7 +137,91 @@ SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`。允�
 Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件私有配置和其他普通持久数据仍只使用
 `config` 与 `data_path()`。
 
+### 4.1 统一宿主日志
+
+主程序、Core、WebView 和插件共用 Rust `RuntimeLogService`。日志服务在插件系统之前启动，
+在插件进程退出后刷新关闭；它不是可启停的插件。Python SDK 与 Core bridge 只负责提交，
+不得打开日志文件，也不得在断连时回退到 Python 文件 writer 或独立 GUI 缓冲。
+
+插件通过 `context.get("sakura.host.logging")` 获取 `PluginLogger`，manifest 可在 `requires` 中声明该宿主能力：
+
+```python
+logger = context.get("sakura.host.logging")
+logger.info("资源加载完成", fields={"elapsed_ms": 320})
+logger.error("连接失败", fields={"reason_code": "CONNECT_TIMEOUT"})
+```
+
+`debug/info/warning/error(message, *, fields=None)` 接受自定义文本与有界 JSON 字段，返回本地队列是否接收，
+不代表已落盘。SDK 队列上限 128 条，每批最多 8 条，后台使用现有 Service RPC 发送；队列满优先保留
+warning/error，传输失败不改变业务结果，后续批次报告丢弃数量。退出时在 effect 清理后最多等待 300 ms，
+来不及发送的记录可丢弃。初始化、业务调用和清理期间都可使用；过期进程和已失效 generation 的请求被拒绝。
+
+Core 从当前 RPC 调用上下文绑定插件身份，不信任插件传入的 ID；同一 generation 内重载也校验实际进程。
+插件消息与宿主自定义消息使用同一 `LogEvent` 和 `SAKURA_RUNTIME_LOG_V1` bridge，增加可选 `custom` 与
+`plugin_id`、`plugin_name` 字段，名称由宿主从 manifest 获取。自定义事件规范化为 `runtime.message`；已登记事件仍按固定目录投影。
+Core 补齐交互关联编号，Rust 注入本次运行、generation 与 Core PID。插件不能选择文件路径或目标来源。
+
+消息最多 1024 UTF-8 字节，字段字符串最多 256 字节；字段最多 3 层、嵌套集合最多 8 项。
+顶层字段不设 8 项限制，共享含根对象的 32 项总遍历预算；普通字段连同截断标记的编码预算为 1800 字节。
+`record_truncated` 不消耗字段遍历额度，避免 SDK、Core 和宿主重复清洗时继续挤掉诊断字段。
+原始错误使用独立预算：`diagnostic` 4096 字符，异常链和调用栈各 8192 字符。超限明确标记 `truncated`，桥接整行连同前缀和换行最多 32 KiB。
+凭据、敏感内容字段和绝对路径在传出插件进程前清洗，Rust 在文件与 UI 投影前再次清洗。
+自定义文本不是私密 Trace：插件作者不得主动记录对话正文、模型内容、环境变量或原始异常对象，
+文本清洗无法保证识别任意私密内容。UI 按纯文本显示，复制使用同一份清洗结果。
+
+Rust 依据可信来源分流：插件主动记录写入 `sakura-plugins.log`，宿主/Core/WebView 写入
+`sakura-runtime.log`；宿主记录单个插件的加载、停止、启动失败和异常退出时也附带可信插件身份，写入插件日志；应用级汇总仍写入运行日志。两者共用队列、序号、写入线程、
+文本格式化与轮转实现，仅文件状态独立；默认各 10 MiB、5 个备份。窗口以同一快照提供插件筛选。
+
+`sakura.host.diagnostics.emit()` 保留原调用格式，转交 `sakura.host.logging` 同一条日志链。
+插件自行提供事件名和业务字段，事件名保存在消息和 `fields.event` 中；宿主不维护 Provider 名称、事件或源文件白名单，也不重解释耗时等业务字段。
+调用方身份由宿主绑定，诊断采用通用日志的大小限制、凭据清洗和插件文件归属。
+宿主日志适配层按 manifest 的 `sakura.tts` / `sakura.tts.provider.*` 声明将语音插件自定义记录归入 TTS，
+插件名称用于筛选项和日志行展示，插件 ID 保留在详情和复制文本中。
+ASR Hub 和语音输入 Provider 的记录归入“插件”页，按各自插件名称筛选，同样写入 `sakura-plugins.log`。
+Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接入宿主日志。
+插件进程 stderr（包括 runner 重定向的 stdout）由 Core 持续、有界读取并清洗后记录，按 info 显示为“插件诊断输出”，不因输出通道而计入问题数。下载进度和第三方提示保留原文；明确的警告、调用失败与异常退出由 SDK 或宿主对应事件报告。不拦截标准 `logging` 配置。Agent Trace 的实现保持独立。
+SDK 的 warning/error 和兼容诊断入口在异常处理期间自动附加原文及调用栈。Service RPC error 通过可选 `diagnostics` 保留跨插件异常链，宿主再次清洗。Mem0 事件直接保留在插件日志中，不额外生成一条宿主业务记录。
+插件启动失败在转换为状态码前提取原始异常，启动失败日志保留依赖检查或初始化阶段的异常链与调用栈。事件回调、清理回调和宿主资源回收失败也记录诊断，后续回调及资源回收继续执行。关闭期间允许插件注销自己已登记的宿主资源，随后由宿主完成剩余资源回收。
+
+关闭 generation 时，正在清理的插件进程还可调用其 `requires` 中声明且仍存活的插件服务，以完成 Provider 向 Hub 注销等清理。调用方必须是当前登记的关闭进程，目标仍须 active 且绑定同一进程；外部调用、旧进程身份和已停止的依赖继续拒绝。嵌套服务调用受剩余的统一关闭期限约束，不延长 generation 的退出预算。
+
+插件 RPC 保留底层异常的 `cause_code` 和 `validation_field`，外层 `PLUGIN_CALL_FAILED` 协议码保持不变。只接受错误码和字段名，不序列化任意异常 details 或字段值；这些元数据沿用凭据清洗规则。
+
+
+### 4.2 内置及随附插件的日志分级
+
+默认记录有用的状态变化，不按定时器频率记录状态快照。`info` 用于启动、就绪、实际配置变化和有产出的后台操作；
+`warning` 用于可恢复失败、请求未受理及资源清理异常；`error` 用于初始化、业务请求或后台任务失败。
+正常取消不算错误。轮询成功、连接活动、缓存检查、缓存命中和重复进度使用 `debug`，或不记录。
+不通过全局限流隐藏真实错误；同一任务的终态只在实际消费时记录一次。
+
+| 插件 | 默认保留 | 默认不显示 |
+| --- | --- | --- |
+| TTS Hub | 提供方注册/移除、请求未受理、合成失败及请求编号 | 状态查询、运行中任务轮询、重复查询已消费终态 |
+| ASR Hub | 引擎登记/移除、选择变化、识别路由及终态 | 可用性查询、状态查询、重复轮询 |
+| SenseVoice | 模型安装/加载、识别开始及终态、取消、退出 | 音量帧、下载进度、状态查询和重复轮询 |
+| Genie | 服务启动/就绪、模型就绪、转换开始/完成/失败、预热失败、配置变化 | 模型检查、缓存命中/复用、转换进度 |
+| GPT-SoVITS | 服务及权重生命周期、预热失败、配置变化 | 状态查询和任务轮询 |
+| Mem0 | 初始化开始/就绪/失败、有实际变更的整理结果、整理失败、停止自动重试、资源清理异常 | 初始化阶段进度、整理开始、无变更的整理结果 |
+| Spine | 插件生命周期、资源加载失败、编辑器预览失败 | 成功的资源解析（debug）、逐帧渲染 |
+| 立绘 | 插件生命周期、资源加载失败 | 正常切换表情、逐帧更新 |
+| 联网工具 | 插件生命周期、网页工具执行失败及错误码 | 搜索词、URL、网页内容和成功的读取 |
+| 手机端 | 服务启动/停止、监听失败、请求拒绝/失败 | TCP 连接、正常请求、状态刷新、客户端断开 |
+| Playwright | 工具及页面就绪、配置变化、停止、操作失败、关闭超时/失败 | 成功的读取及页面操作 |
+
+插件错误记录保留操作名、稳定错误码、异常类型及脱敏后的错误原文与调用栈；不主动写入浏览器参数、请求头或聊天内容。
+手机端停止写入 `mobile-server.log`，已有文件保留。语音引擎与转换器原有外部进程输出文件继续保留，
+失败时从本次启动的输出中提取有界错误或 traceback 片段进入日志窗口，不转发完整输出；其启动、就绪和失败由插件主动报告。日志队列拥塞及传输中断由接入层汇总丢弃数量，
+Core 接收后的丢弃由 Core 汇总，SDK 不重复累计下游丢弃。
+
+
 ## 5. ServiceProxy 与跨进程数据
+
+收到跨进程 Service 调用时，`context.caller_id` 是 Core 根据调用进程注入的插件 ID，Core 消费者为
+`sakura.core`；调用结束恢复为空。它是当前调用的上下文，不从业务参数读取，也不自动传播到新线程。领域
+登记接口可以据此拒绝冒用其他插件身份，例如 ASR Hub 同时核对登记者和目标 Service 所有者。Runtime 只传递
+通用调用身份，不维护 ASR Provider 名单。
 
 `context.get("example.service")` 返回可调用已声明方法的对象。提供者在本进程时可以使用本地代理优化；提供者
 在其他插件进程或 Core 时返回 `ServiceProxy`。调用方仍使用：
@@ -182,11 +302,24 @@ Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`；Provid
 Hub 不保存 Python Provider 对象、Python Job 对象、callable、callback handle 或通用远端对象引用。
 Generic Runtime 只执行普通 `service.call`，不理解 `providerId`、`jobId`、warmup 或合成状态。
 
+失败任务和已接受取消的任务由 Provider 收尾：尚未执行的取消可以立即释放临时 artifact 和 Job Effect；
+正在执行的任务必须等生产者停止写入后再释放。资源回收不依赖 Core 继续 `poll`，终态仍保留到调用方读取，
+因此迟来的 `poll` 可以取得原来的 failed/cancelled 结果。已经成功的任务不接受取消，音频保留到 `poll`
+将其交给 Core；此后的 Job cleanup 不得删除已经转交的 artifact。
+
+本合同不自动淘汰无人读取的终态记录，也不丢弃未消费的成功音频；这些对象最终由插件或 generation 关闭
+回收。它们与失败、取消任务所占的临时 artifact 额度分开处理，不引入后台轮询、TTL 或自动重试。
+
 ### 6.3 可并存 Contribution
 
 Tools、Context contributors、Timeline observers、Settings sections 和模型槽等通过 Host Service 或 Host Event
 注册，可以由多个插件同时贡献。它们按现有 descriptor、Effect cleanup、数量和 payload 上限管理，不创建
 一个强制唯一的总 Service。
+
+工具 descriptor 可指定 `timeoutSeconds`（有限正数，最大 120 秒），省略时使用原有的 15 秒回调期限。
+该字段用于执行期限，不提供给模型作为工具参数。插件和 MCP 工具登记必须原子拒绝同名覆盖并报告
+`TOOL_NAME_CONFLICT`。插件返回含 `isError=true` 的对象时，ToolRegistry 将调用标记为失败，保留结果给模型，
+`reasonCode` 仅接受有界 ASCII 原因码后进入日志；正文与参数继续脱敏。
 
 Memory 默认采用 Contribution 组合。官方 Mem0 可同时提供 Timeline 消费、Context、Tools、Settings 和
 model slot；替代插件可以提供相同或部分贡献。用户既可以关闭 Mem0 完整替换，也可以启用多个不同 Memory
@@ -209,8 +342,9 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
 `bundled` 可以让安装器拥有插件文件并禁止卸载，但不能隐含 privileged API。默认领域插件必须允许停用，以便
 替代实现接管能力；插件关闭后保留文件用于恢复默认是允许的。
 
-当前迁移范围中的预装默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie` 和
-`sakura_gpt_sovits`。`playwright_browser` 改为可选插件，不进入主安装包。
+预装插件包括 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
+`sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天；已有用户的显式开关和沿用清单的
+隐式启用状态保持不变，初始化规则见[发行与存储](release-distribution-and-storage.md)。`playwright_browser` 改为可选插件，不进入主安装包。
 
 ## 8. 生命周期、失败与恢复
 
@@ -220,16 +354,28 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
   callback 和 Effect。
 - `PluginRuntimeManager` 不运行后台 reconcile、health loop、retry counter、自动重新激活或依赖恢复调度。
   插件状态只在 generation 启动，用户显式 install/update/enable/disable/reload/uninstall、显式设置保存，以及
-  插件进程退出时变化。
+  显式角色切换或资源更新，以及插件进程退出时变化。
 - manifest `requires` 是硬依赖。Provider 进程退出或被停止时，Runtime 只标记 Provider `failed`、失效它的
   ServiceProxy，并停止声明该硬依赖的 consumer；动态查找该 Service 的插件和无关插件继续运行。
-- 普通配置先在目标进程调用 `config.on_change()`：`applied` 保持进程；`restart_required` 只在本次用户操作
+- 普通配置的有效字段与本进程已应用配置相同时直接返回 `applied`，不调用更新回调或重载插件；显式覆盖默认值仍会保存。
+  上次应用失败或仍要求重载时，相同配置可以再次应用，不能用磁盘值相同吞掉重试。
+- 配置变化时在目标进程调用 `config.on_change()`：`applied` 保持进程；`restart_required` 只在本次用户操作
   内按硬依赖顺序停止 consumer、重启目标，再重启本次被停止且此前 active 的 consumer；`error` 明确失败。
   这是显式设置保存的同步步骤，不接收完整目标态 inventory，也不进入后台 reconcile。
 - 插件调用超时、依赖安装失败、Service 冲突和进程崩溃均不自动重放、探测、重启、恢复 consumer 或静默选择
   替代实现。恢复只能由用户 reload、重新安装/重试或新 Core generation 触发。
 - 正常停止先拒绝新调用并执行有界 LIFO cleanup；超时后只终止目标插件及其受控后代，不结束其他插件或
   扫描无关系统进程。
+
+角色切换保持 Core generation，重建 Assistant Session。依赖当前角色服务、且不属于明确按角色参数工作的
+表现/TTS Provider 的旧插件局部重载，详见[安全角色切换](WP-5-03-safe-character-switch.md)。
+
+TTS Provider 可同时导出 `prepareResourceUpdate()` 与 `finishResourceUpdate()`，两者成功返回 `true`。
+宿主按 Service 实际导出能力选择此路径，不按插件 ID 特判。prepare 拒绝新任务、取消并等待现有任务退出，
+完成后允许宿主替换角色文件；finish 在发布成功或回滚后恢复接收任务，并失效路径未变但内容已变的权重缓存。
+GPT-SoVITS 保留 Coordinator、Endpoint 和推理进程，下一次预热或合成复用 `set_gpt_weights`、
+`set_sovits_weights`。prepare 失败时不写入角色文件；finish 失败与文件保存结果分开报告。
+未实现完整接口的 Provider 使用局部插件生命周期回退，不重启整个 Core。
 
 公开状态继续保持简单的 `disabled/active/failed`；具体原因通过稳定 `reasonCode` 和有界详情表达，不新增
 waiting、self-healing 或复杂调和状态机。
@@ -250,10 +396,74 @@ waiting、self-healing 或复杂调和状态机。
 
 发行集合和两根存储所有权见[发行与存储合同](release-distribution-and-storage.md)。预装插件的已解析环境位于
 只读的 `distribution_root/plugins/dependencies/<plugin-id>/`；普通用户插件环境位于可写的
-`user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用同一声明 fingerprint 与 Python ABI marker，
+`user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用相同格式的已安装 marker，
 Runner 接收的仍只是当前插件自己的 dependency root。
 
-## 10. 迁移与验收门
+`.sakura-dependencies.json` 保持 `schemaVersion: 1`，新标记只写入版本、声明类型 `kind` 和 Python
+主次版本 `python`。启动检查标记可读、schema、声明类型及 Python ABI；不匹配返回
+`PLUGIN_DEPENDENCIES_STALE`，标记缺失或不可读返回 `PLUGIN_DEPENDENCIES_MISSING`。
+旧标记的 `fingerprint` 直接忽略，不重算或改写。依赖声明内容或换行变化不再使已安装环境失效；
+需要更新依赖时执行显式安装或更新，入口导入与运行错误仍按原有路径报告。
+
+## 10. 插件管理与设置窗口
+
+`installId` 为 `pi_<source>_<directory-encoding>`：来源为 `user` 或 `bundled`，目录名使用 UTF-8
+字节的可逆小写十六进制编码（保留文件系统代理字符），最多 1024 字节。不包含绝对路径，不使用内容摘要。
+同一来源和目录在不同 Inventory 实例、Core 重启后保持相同身份；目录重命名后身份改变。
+桌面端将其作为不透明字符串传回 Core，Core 只按清单记录匹配，不将请求 ID 解码成操作路径。
+旧摘要 ID 不持久化迁移；升级后重新读取清单，开关配置仍按 `pluginId` 保存。
+
+inventory `revision` 直接比较安装记录和结构化开关配置，状态改变时生成新的进程内随机 token。
+相同运行根的不同 Inventory 实例共享最新状态；无变化的扫描返回同一 token。token 保持 16 位小写
+十六进制格式，只用于相等比较；Core 重启后重新获取。配置注释、换行和等价 YAML 格式不产生新版本，
+可观察状态从 A 变成 B 再变回 A 时使用新的 token，旧请求仍判为版本冲突。
+
+插件页按功能扩展、功能引擎和系统组件分组。顶部分类切换与名称、作者、ID、简介搜索同排，空间不足时换行；不再提供领域、来源和运行状态筛选面板。
+三个分组在同一个列表中显示，以图标、浅色标签、数量和细分隔线区分；系统组件不再使用底部固定入口或折叠展开，异常数量仍显示在该组标题旁。
+每个插件保留独立卡片，选中时以边框和底色区分，不显示左侧色带。卡片标题行左侧显示名称，右侧显示运行状态，下方保留简介；领域、安装来源和插件角色集中在详情中。
+分类切换回到列表顶部。安装完成和依赖跳转清除阻挡目标的分类与搜索条件，并选中、滚动定位目标卡片；空结果同步清空详情。
+
+详情标题右侧仅显示紧凑的“插件设置”按钮，没有设置贡献时不占位。运行状态统一显示在左侧列表卡片中，详情继续保留具体异常原因和诊断信息。
+启用开关集中在详情，继续使用现有依赖确认、设置草稿和应用流程。状态来自真实快照，配置保存成功不代表运行就绪。
+前端接收到 `starting`、`waiting`、`stopping` 时分别呈现“正在启动”“等待启动”“正在停止”，
+具体过渡状态优先于通用的应用尚未就绪原因；此规则只约束展示，不新增 Runtime 状态或调和流程。
+记忆不可用时只在标题下补充实际原因，不追加“普通聊天仍可继续”等无关说明。所有贡献文案遵循
+[界面文案规范](../../devdocs/UI_COPY_GUIDELINES.md)。
+下拉、详情切换和弹窗使用主程序主题与动效 token，不受系统减少动态效果设置影响。
+
+设置窗口只渲染插件已有的 Settings Contribution，不根据展示分类增加字段或动作。字段名称、默认值、校验范围、
+只读属性、`enabledWhen` 与 `placement=advanced` 均沿用声明。`enabledWhen` 可添加布尔字段 `hide`：
+为 true 时，条件不满足的字段隐藏且禁用；默认仍显示为禁用。隐藏不清除已填写的值。长内容在窗口内部滚动，底部操作始终可达。
+
+Settings Contribution 的展示规则由 Python 宿主解析并投影，文案长度按 Unicode 字符计数。
+Rust 与前端只检查传输形状、总大小和操作身份，不重复解释字段枚举、文案长度或字段间约束；新增展示元信息不导致整份快照被拒绝。
+宿主忽略未知展示元信息，省略无效字段或动作，并在该区块标记 `SETTINGS_DESCRIPTOR_INVALID`。
+依赖缺失字段的控件改为只读。加载值与 Action 返回的展示值使用相同投影：未知或已省略控件的值被忽略，
+单个值无效时仅该控件回退到默认值并标记 `SETTINGS_VALUE_INVALID`；已有声明错误提示保留。
+Action 的展示值是局部更新，未返回的字段不补默认值。其他控件和插件继续使用。
+区块身份、Action ID、回调归属、保存和动作输入校验与文件访问边界保持有效；未知写入字段仍被拒绝。
+
+- 未注册 surface 或 `surface=plugin` 的区块放入插件设置窗口；普通字段、Action 和 Collection 保留原调用链。
+- `surface=voice` 仍由 Voice controller 管理；打开插件设置时移动同一组控件，关闭后移回语音页，不复制表单或建立另一套保存接口。
+- `surface=memory` 的内容管理保留在记忆页；历史 `surface=about` 资源的管理操作也放入插件设置窗口。
+- “完成”保留当前草稿，由设置页底栏“应用”或“保存并关闭”提交。“取消”、关闭或 Esc 只恢复本插件打开窗口时的可编辑字段，
+  不丢弃其他插件草稿，不回滚已经执行的 Action、Collection 操作或下载任务。底栏提交继续使用原有错误和部分成功结果。
+- 资源状态刷新不得覆盖正在编辑的字段；同一 generation、同一角色的语音草稿在普通插件刷新后保留。
+  插件设置贡献或 Core generation 失效时关闭窗口，不将旧草稿写回新实例。
+- 插件页面持有设置弹窗、集合草稿和释放逻辑；根入口只装配语音控件与关闭确认。页面释放时关闭弹窗、
+  归还借用的语音控件；尚未完成的退出动画不得在释放后重新渲染页面。
+
+GPT-SoVITS 与 Genie 的现有 `aboutBundle` 区块改为 `surface=plugin`，在各自设置窗口展示整合包资源。
+只迁移入口，保留 section ID、Resource 字段、load callback 和 Action；语音页不重复提供这两项下载。
+推荐包选择、下载、取消、续传、校验、安装和配置更新继续由原插件实例负责。
+
+“关于 → 组件”是只读总览，聚合已启用插件快照中的 `resource` 字段，不以 `surface=about` 作为筛选条件。
+总览显示组件名称、所属插件、安装状态、适用状态及真实下载进度；停用插件的组件不显示，未应用的启停草稿不改变总览。
+每项只提供“前往下载设置”，跳到对应插件、打开设置窗口并定位到该资源；总览不直接发起下载、重试或取消。
+Mem0 的 `memory_embedding_component` 保留原声明和动作，管理入口移入插件设置，总览继续展示其状态。
+下载进行时沿用已有快照刷新机制，安装状态与插件运行状态分别表达，不以“已安装”推断服务已经就绪。
+
+## 11. 迁移与验收门
 
 v4 至少通过以下门后才能替代 v3：
 

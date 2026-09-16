@@ -105,7 +105,6 @@ def _runtime_root(
             json.dumps({
                 "schemaVersion": 1,
                 "kind": declaration.kind,
-                "fingerprint": declaration.fingerprint,
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }),
             encoding="utf-8",
@@ -129,6 +128,12 @@ def _runtime_root(
         }),
         encoding="utf-8",
     )
+    selection_dir = user / "data/plugins/sakura.tts"
+    selection_dir.mkdir(parents=True)
+    (selection_dir / "config.json").write_text(json.dumps({"selections": {
+        "genie-character": {"enabled": True, "provider": "sakura.tts.genie"},
+        "gpt-character": {"enabled": True, "provider": "sakura.tts.gpt-sovits"},
+    }}), encoding="utf-8")
     _write_genie_character(user, "genie-character")
     _write_gpt_character(user, "gpt-character")
     return RuntimeRoots(distribution, user)
@@ -154,14 +159,12 @@ def _write_base_character(user: Path, character_id: str, extensions: dict[str, o
 
 def _write_genie_character(user: Path, character_id: str) -> None:
     _write_base_character(user, character_id, {
-        "sakura.tts": {"enabled": True, "provider": "sakura.tts.genie"},
         "sakura.tts.genie": {"remoteCharacterName": "remote-genie"},
     })
 
 
 def _write_gpt_character(user: Path, character_id: str) -> None:
     root = _write_base_character(user, character_id, {
-        "sakura.tts": {"enabled": True, "provider": "sakura.tts.gpt-sovits"},
         "sakura.tts.gpt-sovits": {
             "toneRefs": "voice/refs/ref.txt",
             "refLang": "ja",
@@ -514,7 +517,6 @@ class Plugin:
         call_timeout=1.0,
     )
     session = SimpleNamespace(
-        plugin_application=application,
         character=SimpleNamespace(id="genie-character"),
     )
     boundary = TTSBoundary(
@@ -522,6 +524,7 @@ class Plugin:
         _CREDENTIAL,
         roots.user_root,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: application,
     )
     try:
         application.start()
@@ -560,12 +563,16 @@ def test_genie_bundle_action_installs_and_updates_plugin_config(tmp_path: Path) 
     from plugins.builtin.sakura_genie import _bundle
 
     updates: list[dict[str, object]] = []
+    runtime_ready = threading.Event()
+    finish_install = threading.Event()
 
     def install(_entry, user_root, **_callbacks):  # type: ignore[no-untyped-def]
         work_dir = Path(user_root) / "tts" / "cpu"
         python = work_dir / "runtime" / "bin" / "python"
         python.parent.mkdir(parents=True)
         python.write_text("", encoding="utf-8")
+        runtime_ready.set()
+        assert finish_install.wait(2)
         return _bundle.TTSBundleInstallResult(work_dir)
 
     resource = _bundle.TTSBundleResource(
@@ -579,12 +586,17 @@ def test_genie_bundle_action_installs_and_updates_plugin_config(tmp_path: Path) 
     try:
         started = resource.start({})
         assert started["message"] == "已开始安装组件。"
+        assert runtime_ready.wait(2)
+        assert resource.load()["bundleResource"]["taskState"] in {"queued", "running"}
+        assert updates == []
+        finish_install.set()
         deadline = time.monotonic() + 2
         while resource.load()["bundleResource"]["taskState"] != "succeeded":
             assert time.monotonic() < deadline
             time.sleep(0.01)
         assert updates == [{"workDir": str(tmp_path / "tts" / "cpu")}]
     finally:
+        finish_install.set()
         resource.close()
 
 
@@ -698,7 +710,6 @@ def test_tts_bundle_error_taxonomy_covers_integrity_and_extractor_failures() -> 
 
     for bundle in (genie_bundle, gpt_bundle):
         assert bundle._failure_code(RuntimeError("TTS_BUNDLE_SIZE_MISMATCH"), "download") == "DOWNLOAD_SIZE_MISMATCH"
-        assert bundle._failure_code(RuntimeError("TTS_BUNDLE_SHA256_MISMATCH"), "download") == "DOWNLOAD_CHECKSUM_MISMATCH"
         assert bundle._failure_code(RuntimeError("TTS_BUNDLE_EXTRACTOR_MISSING"), "extract") == "EXTRACTOR_MISSING"
 
 
@@ -720,7 +731,6 @@ def test_tts_bundle_reuses_complete_part_without_out_of_range_request(
             filename=archive.name,
             download_url="https://must-not-be-opened.invalid/fixture.7z",
             size=len(payload),
-            sha256=bundle.hashlib.sha256(payload).hexdigest(),
         )
         bundle._download(
             entry,

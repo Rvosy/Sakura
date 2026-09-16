@@ -26,12 +26,12 @@ export function isChatReadyLifecycle(status) {
 
 export const LIFECYCLE_COPY = Object.freeze({
   startup: ["startup", "Sakura 正在启动"],
-  initializing: ["initializing", "Core 正在初始化"],
+  initializing: ["initializing", "正在准备 Sakura"],
   ready: ["ready", "Sakura 已就绪"],
   setup_required: ["setup_required", "需要完成基础设置"],
-  degraded: ["degraded", "Sakura 以受限状态运行"],
-  failed: ["failed", "Core 启动失败"],
-  rehydrating: ["rehydrating", "Core 已恢复，正在还原桌宠状态"],
+  degraded: ["degraded", "部分功能暂不可用"],
+  failed: ["failed", "Sakura 启动失败"],
+  rehydrating: ["rehydrating", "正在恢复桌宠"],
 });
 
 function readinessForCurrentGeneration(supervisor, snapshot) {

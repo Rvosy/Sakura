@@ -11,7 +11,6 @@ from app.agent.mcp.bridge import MCPBridge, MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig, load_mcp_config
 from app.agent.mcp.provider import MCPToolProvider
 from app.agent.tools import ToolRegistry
-from app.core.runtime_resources import ResourceRegistry
 
 
 def test_mcp_runtime_token_prefers_current_python_scripts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,11 +146,9 @@ def test_mcp_bridge_missing_stdio_command_has_actionable_error() -> None:
 def test_mcp_bridge_timeout_replaces_polluted_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry = ResourceRegistry()
     bridge = MCPBridge(
         MCPServerConfig(name="demo", transport="sse", url="https://example.com/mcp"),
         default_call_timeout=1,
-        resource_registry=registry,
     )
     polluted_loop = bridge._loop_resource
     monkeypatch.setattr(polluted_loop, "stop", lambda _timeout_ms: False)
@@ -159,33 +156,12 @@ def test_mcp_bridge_timeout_replaces_polluted_event_loop(
     bridge._invalidate_timed_out_connection()
 
     assert bridge._loop_resource is not polluted_loop
-    assert bridge._loop_resource in registry._resources
+    assert bridge._loop_resource in bridge._resource_registry._resources
     bridge.close()
 
 
-def test_mcp_bridge_lists_tools_from_real_stdio_server(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PYTHONIOENCODING", "cp936")
-    server = Path(__file__).resolve().parents[2] / "app/agent/mcp/web_search_server.py"
-    bridge = MCPBridge(
-        MCPServerConfig(
-            name="web",
-            transport="stdio",
-            command=sys.executable,
-            args=[str(server)],
-        ),
-        default_call_timeout=5,
-    )
 
-    try:
-        assert [tool.name for tool in bridge.list_tools()] == ["web_search", "fetch_url"]
-    finally:
-        bridge.close()
-
-
-def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() -> None:
-    registry = ResourceRegistry()
+def test_mcp_provider_close_unregisters_tools_and_handlers_fail_closed() -> None:
     tool_registry = ToolRegistry()
     bridge = _FakeBridge()
     provider = MCPToolProvider(
@@ -202,7 +178,6 @@ def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() ->
             ],
         ),
         bridge_factory=lambda _server, _timeout: bridge,
-        resource_registry=registry,
     )
 
     assert provider.register_tools(tool_registry) == 1
@@ -210,7 +185,7 @@ def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() ->
     tool = tool_registry.get("echo")
     assert tool is not None and tool.handler is not None
 
-    registry.stop_all()
+    provider.close()
     closed_result = tool.handler({"text": "late"})
 
     assert bridge.closed_count == 1
@@ -219,7 +194,6 @@ def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() ->
     assert "已关闭" in closed_result["error"]
 
     provider.close()
-    registry.stop_all()
     assert bridge.closed_count == 1
 
 

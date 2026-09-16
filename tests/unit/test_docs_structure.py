@@ -72,3 +72,36 @@ def test_docs_check_rejects_unindexed_documents_and_broken_links(tmp_path: Path)
         encoding="utf-8",
     )
     assert any("broken local link: missing.md" in error for error in check_docs(tmp_path))
+
+
+def test_docs_check_accepts_the_indexed_root_changelog(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "docs/README.md",
+        """---
+kind: index
+status: current
+audience: all
+source_of_truth: self
+updated: 2026-09-01
+---
+
+# Documentation
+
+- [Changelog](CHANGELOG.md)
+""",
+    )
+    _write(
+        tmp_path / "docs/CHANGELOG.md",
+        """---
+kind: userdoc
+status: current
+audience: user
+source_of_truth: self
+updated: 2026-09-01
+---
+
+# Changelog
+""",
+    )
+
+    assert check_docs(tmp_path) == []

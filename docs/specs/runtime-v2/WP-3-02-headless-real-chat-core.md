@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-3-02：无 UI 的真实聊天 Core 垂直链
@@ -96,11 +95,18 @@ Rust chat Gateway
   generation 所有的有界后台执行中等待 Provider 与最终终态；不得把图片上下文或慢 Provider 的完整耗时
   绑定到 `chat.send` request deadline。
 - `chat.completed.reply` 固定投影为 `segments` 数组；每段仅含 `text`、`translation`、`tone`、
-  `portrait`、`suppressTts`。禁止序列化 `_debug`、actions、tool continuation、prompt、endpoint、model、
+  `portrait`、`suppressTts`，以及按[表现插件合同](visual-plugin-boundary.md)校验的可选 `control`。
+  control 内的 state/actions 是插件私有数据；禁止序列化 `_debug`、Agent actions、tool continuation、prompt、endpoint、model、
   API key、generation credential 或 Python 对象。WP-3-02 的空 `ToolRegistry` 下出现 action 视为边界错误。
 - `chat.failed.error` 使用稳定 code、message、retryable、details 空对象。网络不可达、timeout、HTTP、
   Provider 响应格式错误均只终止本 operation；Core readiness 仍为 ready/degraded，health/control 可用。
   用户可修复的 Provider 网络类错误为 retryable，配置/协议/内部投影错误不自动重试。
+- 远程 Provider 在每次 HTTP 尝试前读取当前系统代理；同一 Core 运行期间开关系统代理不要求重启。
+  标准代理环境变量仍遵循进程环境语义，本地回环地址始终直连。
+  内置插件 API、模型与 TTS 资源下载、远程 MCP 的新 HTTP 请求及网页搜索遵循相同规则；重试和重定向
+  重新选择代理，关闭代理后不得残留前次请求的代理地址或认证头。已打开的下载响应和 MCP SSE 流继续使用
+  原连接，新请求独立读取配置。网页搜索经代理时仍校验并固定公共目标 IP，保留原域名的 Host 与 TLS 校验。
+  Windows/macOS 使用标准库支持的系统代理与绕过规则，Linux 使用进程代理环境变量；不解析 PAC 脚本。
 
 ## 历史写入契约
 
@@ -129,42 +135,19 @@ Provider/线程的最终收束仍由 Rust `ManagedProcessTree` 与共享 shutdow
 领域错误 -> `chat.failed`；仅在结果投影完成且 terminal arbitration 胜出后 -> `chat.completed`。
 History 失败只降级 `historyStatus`，不参与前三者仲裁。
 
-## 实施白名单与禁止范围
+Timeline 提交、插件完成通知和 Trace 收尾结束后，聊天边界在同一临界区发布终态并释放本轮执行槽。
+Shell 收到终态后立即续发时，Core 等待该次协议写入确认并完成释放，不得因旧槽尚未回收而拒绝新消息。
+本轮在协议写入确认前仍登记在 generation 中，关闭必须等它收尾；写入失败也要释放登记，并由 Router
+报告 transport failure。终态裁决不等于执行槽释放，发布前的插件通知和 Trace 收尾仍占用本轮执行槽。
 
-允许修改：
+## 启动与调用边界
 
-- Core 消费者：`app/core_host/assistant_adapter.py`、`app/core_host/server.py`、
-  `app/core_host/real_chat.py`（新增）；仅确有边界复用需要时修改 `app/core_host/router.py`、
-  `app/core_host/protocol.py`、`app/core_host/chat_fixture.py`。`real_chat` 的 operation/Gateway 控制面必须
-  能在仅含 `app/core_host` 的打包 Core 中导入和构造；Pipeline、Provider、history、runtime log 与取消
-  异常类型等业务依赖只允许在首个已接受的真实聊天执行时加载，禁止在 `system.hello` 前扩大启动图。
-- 既有业务与存储：`app/core/chat_pipeline.py`、`app/agent/runtime.py`、`app/core/cancellation.py`、
-  `app/agent/context_orchestrator.py`、
-  `app/core/http_client.py`、`app/core/runtime_log.py`、`app/llm/api_client.py`、`app/storage/chat_history.py`、
-  `app/storage/paths.py`；只允许取消贯穿、纯投影、history 绑定和已证明的 headless import/stdout
-  blocker，不重写工具循环或 Provider 协议。`runtime_log` 仅允许增加 operation-scoped sink suppression，
-  防止 legacy console/file sink 污染 Core stdout 或把消息写到错误的应用根；`http_client` 仅允许修正
-  cancel 时关闭活动响应的阻塞行为，不改变 Provider 请求协议。
-  `context_orchestrator` 仅允许把 `ContextProviderContribution` 收窄为 `TYPE_CHECKING` 类型依赖，
-  防止真实聊天执行阶段经 `app.plugins.__init__` 意外加载 PluginManager/PySide6；不得接入插件行为。
-- Rust Gateway/验收：`desktop/src-tauri/src/core_host_gateway.rs`、
-  `desktop/src-tauri/src/core_host_router.rs`、`desktop/src-tauri/src/core_host_runtime.rs`、
-  `desktop/src-tauri/src/shell_lifecycle.rs`、`desktop/tests/**`；只扩展真实 chat consumer
-  acceptance，不增加 UI command 或通用 Operation。
-- 测试与 fixture：`tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、
-  `tests/integration/test_chat_pipeline.py`、`tests/unit/test_agent_runtime.py`、
-  `tests/unit/test_hardening_regressions.py`、`tests/integration/test_wp_1p_05a_macos_corrective.py`
-  （仅校正全量回归中已漂移的平台等价断言与无权限 skip）、`tests/fixtures/runtime_v2/wp_3_02/**`、
-  `tests/unit/test_runtime_v2_platform_workflow.py`。
-- 文档与 CI：本文件、Work Package 总计划、ADR-0002、
-  `.github/workflows/runtime-v2-platform-foundation.yml`；workflow 仅可接入新增确定性门禁，不恢复功能
-  分支 push + pull_request 双运行。
+`real_chat` 的 operation/Gateway 控制面必须能在仅含 `app/core_host` 的打包 Core 中导入和构造。
+Pipeline、Provider、history、runtime log 与取消异常等业务依赖在首个已接受的真实聊天执行时加载，
+不在 `system.hello` 前扩大启动图。业务图不得意外导入 Qt 或启动未启用的插件。
 
-明确禁止 `desktop/frontend/**`、Tauri 聊天 UI command/表现层、`main.py`、`legacy_qt_main.py`、
-`app/core/bootstrap.py`、`app/core/app_context.py`、`app/core/mobile_chat_bridge.py`、`app/ui/**`、
-Memory/curator、非空 Tools/确认动作、MCP、插件、TTS/voice、截图/视觉、主动事件、scheduler、设置与角色
-切换、通用 Operation/priority/Snapshot component、resource token、streaming/progress/delta。禁止修改
-`characters/**`、`runtime/**`、`third_party/**`、`tools/mcp/**`、依赖 manifest/lockfile，禁止新增依赖。
+Core stdout 只承载协议；运行日志绑定正确的应用根，不能由旧 console/file sink 写入协议流或错误的数据目录。
+取消应贯穿活动 HTTP 请求，关闭响应不能阻塞 control 面。这些契约允许在实际拥有根因的模块中修正。
 
 ## 确定性验收矩阵
 
@@ -178,20 +161,14 @@ Memory/curator、非空 Tools/确认动作、MCP、插件、TTS/voice、截图/�
 | 生命周期 | shutdown/EOF/Core crash/Retry/外部 kill，Provider 协作与不合作 | control 有响应；operation/worker/pending/pipe/fd/handle/进程树/temp 在既有 deadline 内归零；锁可立即重获 |
 | 兼容回归 | legacy Qt pipeline/history、protocol 2.1 readiness、2.2 fixture、三平台真实 Core | legacy 行为不变；WP-2-01/02/3-01 门禁全绿；Windows/macOS/Linux 使用同一确定性 local Provider harness |
 
-自动门禁至少包含：新增 Python unit/integration、Core Host subprocess、locked Rust、真实 bundled Core
-lifecycle、frontend 既有回归、build/fmt/diff-check，以及同一 HEAD 的 Windows/macOS/Linux platform
-workflow。人工开发配置只能作为补充 smoke，不得取代确定性 local Provider；凭据和真实消息不得进入
-fixture、日志、CI artifact 或验收文档。
+按受影响契约选择 Python、Core Host subprocess、Rust 或 bundled Core lifecycle 测试；涉及跨边界行为时
+使用本地 Provider 纵向验证。CI 承担完整平台矩阵，不要求每次修改重复全部测试。人工开发配置只能作为补充，
+不能取代确定性 local Provider；凭据和真实消息不得进入 fixture、日志、CI artifact 或验收文档。
 
 ## 提交与回退
 
-建议提交顺序固定为：
-
-1. `test(runtime): 冻结 WP-3-02 真实聊天契约`
-2. `feat(runtime): 接入无 UI 真实聊天 Core`
-3. `test(runtime): 覆盖真实聊天故障与资源回收`
-4. `docs(runtime): 稳定化 WP-3-02 无 UI 真实聊天`
-5. `docs(runtime): 接受 WP-3-02 无 UI 真实聊天`
+提交按可理解、可验证的改动组织，不要求固定数量或先后顺序。以下回退路径记录早期迁移方案；
+当前回退须按现有依赖评估，不重新启用已退役的产品入口。
 
 回退前先停止当前 generation，确认 chat operations、Router 队列、writer、Provider 请求、Core 根及后代、
 pipe/fd/handle/thread/temp 均归零。随后按逆序 revert WP-3-02 实现/测试提交，并禁用真实 chat boundary，
@@ -200,7 +177,6 @@ pipe/fd/handle/thread/temp 均归零。随后按逆序 revert WP-3-02 实现/测
 
 ## 退出条件与非目标
 
-只有在正常回复、Provider 故障、格式故障、取消、history 降级、shutdown/restart 均证明唯一终态，
-control 不饥饿，资源归零，三平台同 SHA CI 通过后，才能从 active 转 stabilizing/accepted。WP-3-02
-不实现聊天 UI、打字机、TTS、Tools、Memory、MCP、插件、图片、主动事件、token streaming 或 Provider
-设置；这些能力不得借“真实聊天”扩大本 WP。
+正常回复、Provider 或格式故障、取消、history 降级和 shutdown/restart 都需保持唯一终态，
+control 不饥饿，关闭后资源归零。UI、TTS、工具、插件和设置的行为由各自 Spec 定义。
+自动验证与人工验收分别提供证据；工作包状态不限制相关缺陷的修复范围。

@@ -27,12 +27,12 @@ class MCPStatusBoundary:
         generation_credential: str,
         app_root: Path,
         *,
-        session_provider: Callable[[], object | None],
+        mcp_provider_getter: Callable[[], object | None],
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._mcp_path = StoragePaths(app_root).mcp_config()
-        self._session_provider = session_provider
+        self._mcp_provider_getter = mcp_provider_getter
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -65,8 +65,7 @@ class MCPStatusBoundary:
         )
 
     def snapshot(self) -> dict[str, object]:
-        session = self._session_provider()
-        provider = getattr(session, "mcp_provider", None) if session is not None else None
+        provider = self._mcp_provider_getter()
         status_snapshot = getattr(provider, "status_snapshot", None)
         if callable(status_snapshot):
             status = _project_status(status_snapshot())
@@ -87,14 +86,14 @@ def _preview_status(config: MCPConfig) -> dict[str, object]:
             "transport": server.transport,
             "enabled": bool(config.enabled and server.enabled),
             "state": "starting" if config.enabled and server.enabled else "disabled",
-            "reasonCode": "SESSION_NOT_READY" if config.enabled and server.enabled else "SERVER_DISABLED",
+            "reasonCode": "APPLICATION_NOT_READY" if config.enabled and server.enabled else "SERVER_DISABLED",
             "toolCount": 0,
         }
         for server in config.servers
     ]
     return {
         "configState": "valid",
-        "reasonCode": "SESSION_NOT_READY" if any(item["enabled"] for item in servers) else "CONFIG_DISABLED",
+        "reasonCode": "APPLICATION_NOT_READY" if any(item["enabled"] for item in servers) else "CONFIG_DISABLED",
         "servers": servers,
     }
 

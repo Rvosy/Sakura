@@ -8,19 +8,116 @@ surface made visible inside every plugin process.
 from __future__ import annotations
 
 import json
+import itertools
+import math
+import re
 import os
 import queue
 import struct
+import sys
 import threading
 import time
 import uuid
+from collections import deque
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
+
+
+_PRIVATE = re.compile(r"authorization|cookie|credential|api.?key|secret|password|token|body|content|prompt|messages|payload|arguments|environment", re.I)
+_SECRET = re.compile(r'''(?ix)
+    (\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
+    ["']?\s*[:=]\s*(?:bearer\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
+    |(\bbearer\s+)[^\s,;}&]+|\bsk-[\w.-]{6,}
+''')
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_DIAGNOSTIC_KEYS = frozenset({"diagnostic", "exception_chain", "exception_stack", "recovery_diagnostic"})
+
+
+def _diagnostic_text(value: str, maximum: int = 8192) -> str:
+    text = "\n".join(safe_text(line, maximum) for line in value.splitlines())
+    return text if len(text) <= maximum else text[:maximum - 14] + "\n[truncated]"
+
+
+def safe_text(value: str, maximum: int = 1024) -> str:
+    value = _ANSI.sub("", value)
+    value = _SECRET.sub(lambda m: (m[1] or m[2] or "") + "[REDACTED]", value)
+    value = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@", r"\1[REDACTED]@", value)
+    value = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", value).split())
+    raw = value.encode("utf-8")
+    return value if len(raw) <= maximum else raw[:maximum - 16].decode("utf-8", errors="ignore") + " [truncated]"
+
+
+def prepare_log_payload(message: object, fields: object = None) -> tuple[str, dict[str, object]]:
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError("LOG_MESSAGE_INVALID")
+    if fields is not None and not isinstance(fields, Mapping):
+        raise ValueError("LOG_FIELDS_INVALID")
+    budget = 32
+    truncated = (fields or {}).get("record_truncated") is True
+
+    def visit(value: object, depth: int) -> object:
+        nonlocal budget, truncated
+        budget -= 1
+        if budget < 0 or depth > 3:
+            truncated = True
+            return "[truncated]"
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            if isinstance(value, int) and value.bit_length() > 64 or isinstance(value, float) and not math.isfinite(value):
+                return "[invalid number]"
+            return value
+        if isinstance(value, str):
+            return safe_text(value, 256)
+        if isinstance(value, Mapping):
+            result = {}
+            # Flat diagnostic metadata shares the total budget; the eight-item
+            # limit applies to nested collections, not the whole event.
+            limit = 32 if depth == 0 else 8
+            for key, child in itertools.islice(value.items(), limit + 1):
+                if len(result) >= limit or budget <= 0:
+                    truncated = True
+                    break
+                if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", key):
+                    truncated = True
+                    continue
+                result[key] = visit("[REDACTED]" if _PRIVATE.search(key) else child, depth + 1)
+            return result
+        if isinstance(value, (list, tuple)):
+            if len(value) > 8:
+                truncated = True
+            return [visit(item, depth + 1) for item in value[:8]]
+        # Do not stringify arbitrary objects (exceptions can contain private data).
+        return "[unsupported]"
+
+    diagnostics = {key: _diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
+                   for key, value in (fields or {}).items()
+                   if key in _DIAGNOSTIC_KEYS and isinstance(value, str)}
+    result = visit({key: value for key, value in (fields or {}).items()
+                    if key not in _DIAGNOSTIC_KEYS and key != "record_truncated"}, 0)
+    assert isinstance(result, dict)
+    if truncated:
+        result["record_truncated"] = True
+    while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 1800:
+        result.pop("record_truncated", None)
+        result.pop(next(reversed(result)))
+        result["record_truncated"] = True
+    result.update(diagnostics)
+    return safe_text(message), result
 
 
 MAX_FRAME_BYTES = 1024 * 1024
 DEFAULT_CALL_TIMEOUT_SECONDS = 3.0
 MAX_PENDING_REQUESTS = 32
+
+
+def _diagnostic_token(value: object) -> str | None:
+    if (isinstance(value, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}", value)
+            and safe_text(value) == value):
+        return value
+    return None
 
 
 class PluginApiError(RuntimeError):
@@ -31,11 +128,76 @@ class PluginApiError(RuntimeError):
         *,
         plugin_id: str = "",
         service_key: str = "",
+        diagnostics: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(message or code)
         self.code = code
         self.plugin_id = plugin_id
         self.service_key = service_key
+        self.diagnostics = {
+            key: _diagnostic_text(value)
+            for key, value in (diagnostics or {}).items()
+            if key in {"diagnostic", "cause_type", "exception_chain", "exception_stack"} and isinstance(value, str)
+        }
+        for key in ("error_type", "cause_code", "validation_field"):
+            value = _diagnostic_token((diagnostics or {}).get(key))
+            if value is not None:
+                self.diagnostics[key] = value
+
+
+def _safe_exception_message(error: BaseException) -> str:
+    try:
+        return _diagnostic_text(str(error), 4096)
+    except Exception:
+        return f"{type(error).__name__}: exception message could not be formatted"
+
+
+def _exception_diagnostics(error: BaseException) -> dict[str, str]:
+    """Stdlib-only worker diagnostics; never serialize exception objects/locals."""
+    chain, stacks, seen = [], [], set()
+    current = error
+    rpc_wrappers_only = True
+    while id(current) not in seen and len(chain) < 16:
+        seen.add(id(current))
+        rpc_wrappers_only &= type(current).__name__ in {"PluginApiError", "PluginRuntimeError"}
+        text = _safe_exception_message(current)
+        chain.append(f"{type(current).__name__}: {text}")
+        frames = []
+        tb = current.__traceback__
+        while tb is not None:
+            module = str(tb.tb_frame.f_globals.get("__name__", "unknown"))
+            frames.append(safe_text(f"  at {module}:{tb.tb_frame.f_code.co_name}:{tb.tb_lineno} ({tb.tb_frame.f_code.co_filename})", 256))
+            tb = tb.tb_next
+        stacks.append(chain[-1] + "\n" + "\n".join(frames[-32:]))
+        cause = current.__cause__ if current.__cause__ is not None else (None if current.__suppress_context__ else current.__context__)
+        if cause is None:
+            break
+        current = cause
+    result = {"diagnostic": _safe_exception_message(current), "error_type": type(error).__name__, "cause_type": type(current).__name__,
+              "exception_chain": _diagnostic_text("\nCaused by: ".join(chain)), "exception_stack": _diagnostic_text("\n\n".join(stacks))}
+    for key, attribute in (("cause_code", "code"), ("validation_field", "field")):
+        try:
+            value = _diagnostic_token(getattr(current, attribute, None))
+        except Exception:
+            continue
+        if value is not None:
+            result[key] = value
+    remote = getattr(current, "diagnostics", None)
+    if isinstance(remote, Mapping):
+        remote_error_type = _diagnostic_token(remote.get("error_type"))
+        if rpc_wrappers_only and remote_error_type is not None:
+            result["error_type"] = remote_error_type
+        for key in ("cause_code", "validation_field"):
+            value = _diagnostic_token(remote.get(key))
+            if value is not None:
+                result[key] = value
+        for key in ("diagnostic", "cause_type"):
+            if isinstance(remote.get(key), str):
+                result[key] = _diagnostic_text(remote[key])
+        for key in ("exception_chain", "exception_stack"):
+            if isinstance(remote.get(key), str):
+                result[key] = _diagnostic_text(result[key] + "\nRemote:\n" + remote[key])
+    return result
 
 
 def json_value(value: object) -> object:
@@ -215,6 +377,7 @@ class RpcPeer:
                 "message": str(error),
                 "pluginId": error.plugin_id,
                 "serviceKey": error.service_key,
+                "diagnostics": error.diagnostics or _exception_diagnostics(error),
             }
         self._write(value)
 
@@ -292,6 +455,7 @@ class RpcPeer:
                         str(raw.get("message") or raw.get("code") or "PLUGIN_CALL_FAILED"),
                         plugin_id=str(raw.get("pluginId") or ""),
                         service_key=str(raw.get("serviceKey") or ""),
+                        diagnostics=raw.get("diagnostics") if isinstance(raw.get("diagnostics"), Mapping) else None,
                     )
             pending.done.set()
             return
@@ -331,8 +495,9 @@ class RpcPeer:
                     request_id,
                     error=PluginApiError(
                         "PLUGIN_CALL_FAILED",
-                        type(error).__name__,
+                        _safe_exception_message(error),
                         plugin_id=self._plugin_id,
+                        diagnostics=_exception_diagnostics(error),
                     ),
                 )
             except PluginApiError:
@@ -421,6 +586,7 @@ class PluginConfig:
         self._data_dir = data_dir
         self._effect = effect
         self._handlers: list[Callable[[dict[str, Any]], str]] = []
+        self._applied_config = self.get()
 
     def get(self) -> dict[str, Any]:
         merged = self._read(self._plugin_root / "config.json")
@@ -466,8 +632,12 @@ class PluginConfig:
         return value
 
     def _write(self, overrides: Mapping[str, Any]) -> str:
-        self._data_dir.mkdir(parents=True, exist_ok=True)
+        effective = self._read(self._plugin_root / "config.json")
+        effective.update(overrides)
         target = self._data_dir / "config.json"
+        if dict(overrides) == self._read(target) and effective == self._applied_config:
+            return "applied"
+        self._data_dir.mkdir(parents=True, exist_ok=True)
         temporary = self._data_dir / f".config-{uuid.uuid4().hex}.tmp"
         try:
             temporary.write_text(
@@ -480,7 +650,10 @@ class PluginConfig:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-        effective = self.get()
+        if effective == self._applied_config:
+            return "applied"
+        # A handler may partly apply before failing; neither old nor new is known active.
+        self._applied_config = None
         if not self._handlers:
             return "restart_required"
         results: list[str] = []
@@ -496,6 +669,7 @@ class PluginConfig:
             return "error"
         if "restart_required" in results:
             return "restart_required"
+        self._applied_config = effective
         return "applied"
 
 
@@ -714,6 +888,112 @@ class _StorageProxy:
                 plugin_id=self._context.plugin_id,
             )
         return Path(result["path"])
+
+
+class _LoggingProxy:
+    """Best-effort producer; the host owns every log destination."""
+
+    def __init__(self, context: "PluginContext") -> None:
+        self._context = context
+        self._condition = threading.Condition()
+        self._pending: deque[dict[str, object]] = deque()
+        self._dropped = 0
+        self._stopping = context._logging_closed
+        self._worker = threading.Thread(target=self._run, name="sakura-plugin-log", daemon=True)
+        if not self._stopping:
+            try:
+                self._worker.start()
+            except RuntimeError:
+                self._stopping = True
+
+    def debug(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
+        return self._emit("debug", message, fields)
+
+    def info(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
+        return self._emit("info", message, fields)
+
+    def warning(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
+        return self._emit("warning", message, fields)
+
+    def error(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
+        return self._emit("error", message, fields)
+
+    def _emit(self, severity: str, message: object, fields: object) -> bool:
+        try:
+            current_error = sys.exception()
+            if severity in {"warning", "error"} and current_error is not None:
+                fields = {**(fields or {}), **_exception_diagnostics(current_error)}
+            message, fields = prepare_log_payload(message, fields)
+            with self._condition:
+                if self._stopping:
+                    return False
+                if len(self._pending) >= 128:
+                    self._dropped += 1
+                    if severity not in {"warning", "error"}:
+                        return False
+                    victim = next((r for r in self._pending if r["severity"] in {"debug", "info"}), None)
+                    if victim is None:
+                        return False
+                    self._pending.remove(victim)
+                self._pending.append({"severity": severity, "message": message, "fields": fields})
+                self._condition.notify()
+            return True
+        except Exception:
+            return False
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: self._pending or self._stopping)
+                if not self._pending:
+                    return
+                batch = [self._pending.popleft() for _ in range(min(8, len(self._pending)))]
+                dropped = self._dropped
+                self._dropped = 0
+            try:
+                result = self._context._remote_call("sakura.host.logging", "emit", [batch, dropped])
+                if not isinstance(result, Mapping) or result.get("accepted") is not True:
+                    raise PluginApiError("LOG_NOT_ACCEPTED")
+            except Exception:
+                with self._condition:
+                    self._dropped += len(batch) + dropped
+
+    def close(self) -> None:
+        with self._condition:
+            self._stopping = True
+            self._condition.notify()
+        if self._worker.ident is not None:
+            self._worker.join(timeout=0.3)
+        with self._condition:
+            self._pending.clear()
+
+
+class _DiagnosticsProxy:
+    """Submit bounded diagnostics through the Core-owned Runtime log bridge."""
+
+    def __init__(self, context: "PluginContext") -> None:
+        self._context = context
+
+    def emit(self, descriptor: Mapping[str, Any]) -> bool:
+        if not isinstance(descriptor, Mapping):
+            raise PluginApiError(
+                "DIAGNOSTIC_DESCRIPTOR_INVALID",
+                plugin_id=self._context.plugin_id,
+            )
+        current_error = sys.exception()
+        if descriptor.get("severity") in {"warning", "error"} and current_error is not None:
+            descriptor = {**descriptor, "attributes": {**descriptor.get("attributes", {}), **_exception_diagnostics(current_error)}}
+        result = self._context._remote_call(
+            "sakura.host.diagnostics",
+            "emit",
+            [self._context.plugin_id, dict(descriptor)],
+        )
+        if not isinstance(result, Mapping) or set(result) != {"accepted"}:
+            raise PluginApiError(
+                "DIAGNOSTIC_RESULT_INVALID",
+                plugin_id=self._context.plugin_id,
+            )
+        return bool(result["accepted"])
 
 
 class _SettingsRegistrationProxy:
@@ -1019,6 +1299,7 @@ class PluginContext:
         remote_request: Callable[[str, Mapping[str, Any]], object],
     ) -> None:
         self.plugin_id = plugin_id
+        self._caller_id: ContextVar[str | None] = ContextVar("sakura_service_caller", default=None)
         self._plugin_root = plugin_root
         self._data_dir = data_dir
         self._remote_call = remote_call
@@ -1030,9 +1311,17 @@ class PluginContext:
         self._callbacks: dict[str, tuple[str, Callable[..., object]]] = {}
         self._closed = False
         self.config = PluginConfig(plugin_id, plugin_root, data_dir, self.effect)
+        self._logger: _LoggingProxy | None = None
+        self._logger_lock = threading.Lock()
+        self._logging_closed = False
 
     def get(self, service_key: str) -> object:
         key = _identifier(service_key, "SERVICE_KEY_INVALID")
+        if key == "sakura.host.logging":
+            with self._logger_lock:
+                if self._logger is None:
+                    self._logger = _LoggingProxy(self)
+                return self._logger
         local = self._services.get(key)
         if local is not None:
             return _LocalServiceProxy(service_key, local[0], local[1])
@@ -1050,6 +1339,8 @@ class PluginContext:
             return _ModelSlotsProxy(self)
         if key == "sakura.host.storage":
             return _StorageProxy(self)
+        if key == "sakura.host.diagnostics":
+            return _DiagnosticsProxy(self)
         callback_shape = {
             "sakura.host.tools": "tools.handler",
             "sakura.host.context": "context.contributor",
@@ -1186,7 +1477,12 @@ class PluginContext:
             for key, (_service, exports) in self._services.items()
         }
 
-    def call_local(self, service_key: str, method: str, args: Sequence[Any]) -> object:
+    @property
+    def caller_id(self) -> str | None:
+        """Core-authenticated caller during an incoming Service invocation."""
+        return self._caller_id.get()
+
+    def call_local(self, service_key: str, method: str, args: Sequence[Any], *, caller_id: str | None = None) -> object:
         binding = self._services.get(service_key)
         if binding is None:
             raise PluginApiError("SERVICE_MISSING", service_key=service_key)
@@ -1197,13 +1493,19 @@ class PluginContext:
                 plugin_id=self.plugin_id,
                 service_key=service_key,
             )
-        return getattr(service, method)(*args)
+        token = self._caller_id.set(caller_id)
+        try:
+            return getattr(service, method)(*args)
+        finally:
+            self._caller_id.reset(token)
 
     def emit(self, name: str, payload: object) -> None:
         for handler in list(self._events.get(name, ())):
             try:
                 handler(payload)
             except Exception:
+                self.get("sakura.host.logging").error("插件事件处理失败",
+                    fields={"event": "plugin.event.failed", "stage": "event", "event_name": name})
                 continue
 
     def close(self) -> None:
@@ -1215,7 +1517,11 @@ class PluginContext:
             try:
                 cleanup()
             except Exception:
-                pass
+                self.get("sakura.host.logging").warning("插件资源清理失败",
+                    fields={"event": "plugin.cleanup.failed", "stage": "cleanup"})
+        if self._logger is not None:
+            self._logger.close()
+        self._logging_closed = True
         self._services.clear()
         self._events.clear()
         self._callbacks.clear()

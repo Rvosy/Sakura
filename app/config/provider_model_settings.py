@@ -233,7 +233,7 @@ class ProviderModelSettingsRepository:
         else:
             secret = ""
         if not secret:
-            raise ProviderModelSettingsError("CREDENTIAL_REQUIRED", "该供应商尚未配置凭据。", feature="providers.credentials", field="credential")
+            raise ProviderModelSettingsError("CREDENTIAL_REQUIRED", "请填写 API Key。", feature="providers.credentials", field="credential")
         return base_url, secret, model, timeout
 
     @classmethod
@@ -473,14 +473,14 @@ def _validate_url(value: object, *, field: str) -> str:
         parsed = urlparse(text)
         parsed.port
     except ValueError as exc:
-        raise ProviderModelSettingsError("BASE_URL_INVALID", "Base URL 格式无效。", field=field) from exc
+        raise ProviderModelSettingsError("BASE_URL_INVALID", "API 地址格式无效。", field=field) from exc
     hostname = parsed.hostname
     if parsed.scheme.lower() not in {"http", "https"} or not hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ProviderModelSettingsError("BASE_URL_INVALID", "Base URL 格式无效。", field=field)
+        raise ProviderModelSettingsError("BASE_URL_INVALID", "API 地址格式无效。", field=field)
     try:
         ascii_hostname = hostname.encode("idna").decode("ascii").rstrip(".")
     except UnicodeError as exc:
-        raise ProviderModelSettingsError("BASE_URL_INVALID", "Base URL 格式无效。", field=field) from exc
+        raise ProviderModelSettingsError("BASE_URL_INVALID", "API 地址格式无效。", field=field) from exc
     if (
         not ascii_hostname
         or len(ascii_hostname) > 253
@@ -489,7 +489,7 @@ def _validate_url(value: object, *, field: str) -> str:
             and any(_HOST_LABEL.fullmatch(label) is None for label in ascii_hostname.split("."))
         )
     ):
-        raise ProviderModelSettingsError("BASE_URL_INVALID", "Base URL 格式无效。", field=field)
+        raise ProviderModelSettingsError("BASE_URL_INVALID", "API 地址格式无效。", field=field)
     return text
 
 

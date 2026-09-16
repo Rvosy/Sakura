@@ -1,8 +1,11 @@
 const CHARACTER_ERROR = "CHARACTER_SETTINGS_RESPONSE_INVALID";
+const CHARACTER_EXPORT_ERROR = "CHARACTER_EXPORT_RESPONSE_INVALID";
 const STORAGE_ERROR = "STORAGE_SETTINGS_RESPONSE_INVALID";
+const LEGACY_DATA_ERROR = "LEGACY_DATA_IMPORT_RESPONSE_INVALID";
 const UPDATE_ERROR = "UPDATE_SETTINGS_RESPONSE_INVALID";
 const UPDATE_PREFERENCES_ERROR = "UPDATE_PREFERENCES_RESPONSE_INVALID";
 const ABOUT_ERROR = "ABOUT_SETTINGS_RESPONSE_INVALID";
+const TELEMETRY_ERROR = "TELEMETRY_SETTINGS_RESPONSE_INVALID";
 const STORAGE_REASONS = Object.freeze({
   TTS_ROOT_MISSING: "目录不存在；请重新连接外置盘或选择其他目录。",
   TTS_ROOT_NOT_DIRECTORY: "当前路径不是目录。",
@@ -11,6 +14,14 @@ const STORAGE_REASONS = Object.freeze({
 
 function fail(code) {
   throw new Error(code);
+}
+
+export function formatSettingsError(value) {
+  const text = String(value ?? "").trim();
+  return text.replace(
+    /(^|[：:]\s*)[A-Z][A-Z0-9_]{2,63}\|[^\r\n|]{0,120}\|[^\r\n|]{0,120}\|([^\r\n]{1,512})$/,
+    (_match, separator, message) => `${separator}${message}`,
+  );
 }
 
 export function normalizeCharacterSettingsSnapshot(snapshot) {
@@ -35,14 +46,16 @@ export function normalizeCharacterSettingsSnapshot(snapshot) {
       || !character.displayName
       || character.displayName.length > 128
       || typeof character.hasVoice !== "boolean"
-      || Object.keys(character).length !== 3
+      || typeof character.hasExportableVoice !== "boolean"
+      || (character.hasExportableVoice && !character.hasVoice)
+      || Object.keys(character).length !== 4
     ) fail(CHARACTER_ERROR);
     ids.add(character.id);
     return Object.freeze({
       id: character.id,
       display_name: character.displayName,
       has_voice: character.hasVoice,
-      has_exportable_voice: false,
+      has_exportable_voice: character.hasExportableVoice,
     });
   });
   if (snapshot.currentCharacterId !== null && !ids.has(snapshot.currentCharacterId)) {
@@ -57,8 +70,25 @@ export function normalizeCharacterSettingsSnapshot(snapshot) {
   });
 }
 
-export function normalizeCharacterSwitchReceipt(receipt) {
+export function normalizeCharacterExportReceipt(receipt) {
   const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).sort() : [];
+  const expected = ["message", "outputPath", "schemaVersion"];
+  if (
+    receipt?.schemaVersion !== 1
+    || keys.length !== expected.length
+    || keys.some((key, index) => key !== expected[index])
+    || typeof receipt.outputPath !== "string"
+    || !receipt.outputPath
+    || receipt.outputPath.length > 4096
+    || typeof receipt.message !== "string"
+    || !receipt.message
+    || receipt.message.length > 4608
+  ) fail(CHARACTER_EXPORT_ERROR);
+  return Object.freeze({ ...receipt });
+}
+
+export function normalizeCharacterSwitchReceipt(receipt) {
+  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).filter(key => !["pluginRequirements", "characterChanged"].includes(key)).sort() : [];
   const expected = [
     "previousCoreGenerationId",
     "restartState",
@@ -73,8 +103,16 @@ export function normalizeCharacterSwitchReceipt(receipt) {
     || typeof receipt.previousCoreGenerationId !== "string"
     || !receipt.previousCoreGenerationId
     || !["not_required", "requested"].includes(receipt.restartState)
+    || (receipt.characterChanged !== undefined && typeof receipt.characterChanged !== "boolean")
     || (receipt.targetCharacterId !== null && typeof receipt.targetCharacterId !== "string")
   ) fail(CHARACTER_ERROR);
+  const requirements = receipt.pluginRequirements ?? [];
+  if (!Array.isArray(requirements) || requirements.length > 64 || requirements.some(item =>
+    !item || !["visual", "tts"].includes(item.kind) || typeof item.type !== "string"
+    || !["COMPATIBLE", "PLUGIN_DISABLED", "PLUGIN_INCOMPATIBLE", "PLUGIN_MISSING"].includes(item.reasonCode)
+    || !Array.isArray(item.plugins) || !Array.isArray(item.candidates)
+    || [...item.plugins, ...item.candidates].some(plugin => !plugin || typeof plugin.id !== "string")
+  )) fail(CHARACTER_ERROR);
   const normalized = normalizeCharacterSettingsSnapshot(receipt.snapshot);
   if ((receipt.targetCharacterId || "") !== normalized.character.current_character_id) {
     fail(CHARACTER_ERROR);
@@ -83,7 +121,9 @@ export function normalizeCharacterSwitchReceipt(receipt) {
     ...normalized,
     previousCoreGenerationId: receipt.previousCoreGenerationId,
     restartState: receipt.restartState,
+    characterChanged: receipt.characterChanged === true,
     targetCharacterId: receipt.targetCharacterId,
+    pluginRequirements: requirements,
   });
 }
 
@@ -121,6 +161,63 @@ export function normalizeStorageSettingsSnapshot(snapshot) {
     statusState: snapshot.ttsRootAvailable ? "ready" : "failed",
     canReset: snapshot.ttsRootSource === "custom",
   });
+}
+
+export function normalizeLegacyDataImportPlan(plan) {
+  if (
+    plan?.schemaVersion !== 1
+    || typeof plan.selectionId !== "string"
+    || !plan.selectionId
+    || typeof plan.planToken !== "string"
+    || !plan.planToken
+    || typeof plan.sourceLabel !== "string"
+    || !Array.isArray(plan.characters)
+    || plan.characters.length > 256
+    || typeof plan.charactersTruncated !== "boolean"
+    || !Array.isArray(plan.conflicts)
+    || plan.conflicts.length > 100
+    || typeof plan.requiresConflictConfirmation !== "boolean"
+    || typeof plan.blocked !== "boolean"
+    || !plan.totals
+  ) fail(LEGACY_DATA_ERROR);
+  const countKeys = [
+    "historyNew", "historyIdentical", "historyConflicts",
+    "memoryNew", "memoryIdentical", "memoryConflicts", "recoverableErrors",
+  ];
+  if (countKeys.some((key) => !Number.isSafeInteger(plan.totals[key]) || plan.totals[key] < 0)) {
+    fail(LEGACY_DATA_ERROR);
+  }
+  for (const character of plan.characters) {
+    if (
+      typeof character?.characterId !== "string"
+      || !character.characterId
+      || !character.history
+      || !character.memory
+      || ["new", "identical", "conflicts"].some((key) => (
+        !Number.isSafeInteger(character.history[key])
+        || character.history[key] < 0
+        || !Number.isSafeInteger(character.memory[key])
+        || character.memory[key] < 0
+      ))
+    ) fail(LEGACY_DATA_ERROR);
+  }
+  return Object.freeze({ ...plan });
+}
+
+export function legacyDataImportPlanHasWork(plan) {
+  const totals = plan?.totals;
+  return Boolean(
+    totals
+    && (
+      (plan.packagesNew || 0)
+      + (plan.reassociatedRecords || 0)
+      + totals.historyNew
+      + totals.memoryNew
+      + totals.historyConflicts
+      + totals.memoryConflicts
+      + totals.recoverableErrors
+    ) > 0
+  );
 }
 
 export function normalizeUpdateSettingsSnapshot(snapshot) {
@@ -187,6 +284,26 @@ export function normalizeAboutSettingsSnapshot(snapshot) {
   return Object.freeze({ ...snapshot });
 }
 
+export function normalizeTelemetrySettingsSnapshot(snapshot) {
+  const keys = snapshot && typeof snapshot === "object" ? Object.keys(snapshot).sort() : [];
+  const expected = ["enabled", "installationId", "schemaVersion"];
+  if (
+    snapshot?.schemaVersion !== 1
+    || keys.length !== expected.length
+    || keys.some((key, index) => key !== expected[index])
+    || typeof snapshot.enabled !== "boolean"
+    || (
+      snapshot.installationId !== null
+      && (
+        typeof snapshot.installationId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(snapshot.installationId)
+      )
+    )
+    || (snapshot.enabled && snapshot.installationId === null)
+  ) fail(TELEMETRY_ERROR);
+  return Object.freeze({ ...snapshot });
+}
+
 export function createRootSettingsClient({ invoke }) {
   if (typeof invoke !== "function") throw new TypeError("invoke is required");
   return Object.freeze({
@@ -196,9 +313,19 @@ export function createRootSettingsClient({ invoke }) {
     async characterImport(path) {
       return normalizeCharacterSwitchReceipt(await invoke("settings_character_import", { path }));
     },
-    async characterSelect(characterId) {
+    async characterVoiceImport(path, characterId) {
       return normalizeCharacterSwitchReceipt(
-        await invoke("settings_character_select", { characterId }),
+        await invoke("settings_character_import_voice", { path, characterId }),
+      );
+    },
+    async characterExport(path, characterId, kind) {
+      return normalizeCharacterExportReceipt(
+        await invoke("settings_character_export", { path, characterId, kind }),
+      );
+    },
+    async characterSelect(characterId, visualSelections) {
+      return normalizeCharacterSwitchReceipt(
+        await invoke("settings_character_select", { characterId, ...(visualSelections ? { visualSelections } : {}) }),
       );
     },
     async storageGet() {
@@ -213,6 +340,23 @@ export function createRootSettingsClient({ invoke }) {
     },
     async storageResetTtsRoot() {
       return normalizeStorageSettingsSnapshot(await invoke("settings_storage_reset_tts_root"));
+    },
+    async legacyRoleDataImportChoose(selectionId = null, roleMapping = {}) {
+      const plan = await invoke("settings_legacy_data_import_choose", { selectionId, roleMapping });
+      return plan === null ? null : normalizeLegacyDataImportPlan(plan);
+    },
+    async legacyRoleDataImportApply(selectionId, planToken, overwriteConflicts) {
+      const report = await invoke("settings_legacy_data_import_apply", {
+        selectionId,
+        planToken,
+        overwriteConflicts,
+      });
+      if (
+        report?.schemaVersion !== 1
+        || report.outcome !== "completed"
+        || typeof report.importId !== "string"
+      ) fail(LEGACY_DATA_ERROR);
+      return Object.freeze({ ...report });
     },
     async updateGet() {
       return normalizeUpdateSettingsSnapshot(await invoke("settings_update_get"));
@@ -249,6 +393,29 @@ export function createRootSettingsClient({ invoke }) {
     },
     async aboutOpenSponsor() {
       return invoke("settings_about_open_sponsor");
+    },
+    async telemetryGet() {
+      return normalizeTelemetrySettingsSnapshot(await invoke("settings_telemetry_get"));
+    },
+    async telemetrySetEnabled(enabled) {
+      if (typeof enabled !== "boolean") fail(TELEMETRY_ERROR);
+      return normalizeTelemetrySettingsSnapshot(
+        await invoke("settings_telemetry_set_enabled", { enabled }),
+      );
+    },
+    async telemetryRegenerateInstallationId() {
+      return normalizeTelemetrySettingsSnapshot(
+        await invoke("settings_telemetry_regenerate_installation_id"),
+      );
+    },
+    async telemetryOpenDocumentation() {
+      return invoke("settings_telemetry_open_documentation");
+    },
+    async macosOpenSystemSettings() {
+      return invoke("settings_macos_open_system_settings");
+    },
+    async macosOpenAppleSupport() {
+      return invoke("settings_macos_open_apple_support");
     },
   });
 }

@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-09-05
 ---
 
 # ADR-0002：Runtime v2 IPC
@@ -38,7 +38,8 @@ Runtime v2 第一版保留 stdin/stdout framed transport，避免本地端口、
 - stdin/stdout 长度前缀 JSON 帧。
 - Rust 独立 reader、writer、pending request router 和进程监管任务。
 - Python 常驻 reader 和 control dispatcher，只做帧处理、协议校验、控制命令和任务投递。
-- Python 只有一个 writer queue，业务任务不能直接写 stdout。
+- Python 的 response 和 event 共用 `ResponseWriter` 的单个有界队列及写入确认；业务任务不能直接写 stdout。
+  Router 不保留额外的事件转发队列或线程，关闭时先排空领域事件生产者，再关闭 writer。
 - transport 抽象保留未来替换 Named Pipe/Unix Domain Socket 的可能，但当前没有迁移承诺。
 - stdin/stdout/stderr 的创建、继承、关闭和强制回收由 ADR-0004/ADR-0001 的平台进程树 backend 承担；IPC 公共层不得调用 shell，也不得依赖 `.exe`、Win32 handle 或 POSIX fd 的具体表示。
 - Windows、macOS、Linux 必须共享字节级 framing、Envelope、generation、deadline 和错误语义；平台不能各自扩展业务字段。
@@ -85,7 +86,7 @@ Python 进程启动
 
 hello 前不得导入或初始化 Assistant、Memory、MCP、插件和 TTS 重型模块。
 
-初始 lifecycle deadline 统一采用 ADR-0001 的建议值：`system.hello` 3,000 ms、`core.initialize` 接受响应 5,000 ms、readiness watchdog 30,000 ms、`system.shutdown` 协议优雅期 3,000 ms，完整进程树停止从 shutdown 意图起不超过 5,000 ms。这些是待 Phase 1B/1C 验证的初值，不是已验证性能承诺。`core.initialize` 必须先快速返回接受/拒绝结果，不能把 30 秒 readiness watchdog 当成同步 request deadline。
+生命周期期限采用 ADR-0001 的当前值：`system.hello` 10,000 ms、`core.initialize` 接受响应 5,000 ms、readiness watchdog 30,000 ms、`system.shutdown` 协议优雅期 3,000 ms，完整进程树停止从 shutdown 意图起不超过 5,000 ms。hello 期限已根据 Windows 10 稳定版的冷启动报告调整；`core.initialize` 必须先快速返回接受或拒绝结果，不能把 30 秒 readiness watchdog 当成同步 request deadline。
 
 ### 协议版本与能力协商
 
@@ -402,7 +403,7 @@ deadline/priority 或 response ok/error；本 WP 不增加 sequence 或通用 op
 
 候选实现已把 Rust production Core generation 接到单 stdin writer、单 stdout reader、64 个 pending
 上限和 32 个 event 上限，并提供 capability 门控的并发 handle；Python Host 使用独立 reader role、
-dispatcher、单 writer、32 个 dispatch/writer/event 上限、8 个 fixture 排队上限和 4 个执行槽。Rust/Python
+dispatcher、单 writer、32 个 dispatch/writer 上限、8 个请求排队上限和 4 个执行槽。Rust/Python
 共享 2.1 request 与 2.2 event fixture，真实 Host 已验证两个并发 in-flight waiter 不串线；注入式 sleep/
 阻塞文件读取期间 health 先返回，shutdown 保留既有 3000ms/5000ms deadline。
 

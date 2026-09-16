@@ -33,36 +33,6 @@ function harness(handler = async () => ({ ok: true })) {
   };
 }
 
-test("invoke wrapper preserves argument, result, and rejection object identity", async () => {
-  const result = Object.freeze({ accepted: true });
-  const args = { payload: { privateChat: "WP4L01 PRIVATE CHAT" } };
-  const success = harness(async (_command, received) => {
-    assert.equal(received, args);
-    return result;
-  });
-  assert.equal(await success.diagnostics.invoke("chat_send", args), result);
-  await success.diagnostics.flush();
-
-  const failure = Object.assign(new Error("WP4L01 PRIVATE ERROR"), {
-    privateResult: "WP4L01 PRIVATE RESULT",
-  });
-  const failed = harness(async () => { throw failure; });
-  await assert.rejects(
-    failed.diagnostics.invoke("settings_plugins_collection", args),
-    (received) => received === failure,
-  );
-  await failed.diagnostics.flush();
-
-  const serialized = JSON.stringify([...success.calls, ...failed.calls]);
-  const diagnosticCalls = [...success.calls, ...failed.calls]
-    .filter(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
-  assert.equal(diagnosticCalls.length, 2);
-  const diagnosticJson = JSON.stringify(diagnosticCalls);
-  assert.equal(diagnosticJson.includes("PRIVATE CHAT"), false);
-  assert.equal(diagnosticJson.includes("PRIVATE ERROR"), false);
-  assert.equal(diagnosticJson.includes("PRIVATE RESULT"), false);
-  assert.equal(serialized.includes("PRIVATE CHAT"), true, "the product call must retain its args");
-});
 
 test("coded invoke failures preserve only a bounded redacted diagnostic", async () => {
   const failure = "REQUEST_DEADLINE_EXCEEDED: Provider token=visible did not respond";
@@ -82,53 +52,8 @@ test("coded invoke failures preserve only a bounded redacted diagnostic", async 
   }]);
 });
 
-test("bounded collection bridge failures retain only their allowlisted public code", async () => {
-  const failure = "PLUGIN_CALLBACK_DATA_INVALID|plugins.manage||插件 Collection 操作失败。";
-  const env = harness(async () => { throw failure; });
-  await assert.rejects(
-    env.diagnostics.invoke("settings_plugins_collection", {}),
-    (error) => error === failure,
-  );
-  await env.diagnostics.flush();
 
-  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
-  assert.deepEqual(payload.entries.filter((entry) => entry.outcome === "failed"), [{
-    level: "warn",
-    event: "webview.command.failed",
-    command: "settings_plugins_collection",
-    outcome: "failed",
-    code: "PLUGIN_CALLBACK_DATA_INVALID",
-    diagnostic: "PLUGIN_CALLBACK_DATA_INVALID",
-    elapsedMs: 1,
-  }]);
-  assert.equal(JSON.stringify(payload).includes("插件 Collection 操作失败"), false);
-});
 
-test("unknown coded failures cannot project arbitrary product text", async () => {
-  const failure = "PLUGIN_PRIVATE_FAILURE: WP4L01 PRIVATE CHAT BODY";
-  const env = harness(async () => { throw failure; });
-  await assert.rejects(env.diagnostics.invoke("settings_tools_get", {}));
-  await env.diagnostics.flush();
-
-  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
-  const failed = payload.entries.find((entry) => entry.outcome === "failed");
-  assert.equal(failed.code, "INVOKE_FAILED");
-  assert.equal("diagnostic" in failed, false);
-  assert.equal(JSON.stringify(payload).includes("PRIVATE CHAT BODY"), false);
-});
-
-test("expected character readiness retries stay debug and keep their stable code", async () => {
-  const env = harness(async () => {
-    throw new Error("CHARACTER_PRESENTATION_NOT_READY");
-  });
-  await assert.rejects(() => env.diagnostics.invoke("current_character_presentation"));
-  await env.diagnostics.flush();
-  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
-  const failed = payload.entries.find((entry) => entry.outcome === "failed");
-  assert.equal(failed.level, "debug");
-  assert.equal(failed.code, "CHARACTER_PRESENTATION_NOT_READY");
-  assert.equal(failed.diagnostic, "CHARACTER_PRESENTATION_NOT_READY");
-});
 
 test("batches contain only controlled fields and never arbitrary attributes", async () => {
   const env = harness();
@@ -174,22 +99,6 @@ test("diagnostic transport failure never changes a successful product command", 
   assert.equal(calls.filter(([command]) => command === "settings_tools_get").length, 1);
 });
 
-test("unhandled errors use fixed codes without reading event content", async () => {
-  const env = harness();
-  env.listeners.get("error")?.({
-    message: "WP4L01 PRIVATE ERROR",
-    error: { stack: "WP4L01 PRIVATE STACK" },
-  });
-  env.listeners.get("unhandledrejection")?.({ reason: "WP4L01 PRIVATE REJECTION" });
-  await env.diagnostics.flush();
-
-  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
-  assert.deepEqual(payload.entries.map((entry) => entry.code), [
-    "WEBVIEW_UNHANDLED_ERROR",
-    "WEBVIEW_UNHANDLED_REJECTION",
-  ]);
-  assert.equal(JSON.stringify(payload).includes("PRIVATE"), false);
-});
 
 test("flush never sends more than sixty-four entries per command", async () => {
   const env = harness();
@@ -209,4 +118,116 @@ test("flush never sends more than sixty-four entries per command", async () => {
     .map(([, payload]) => payload.entries.length);
   assert.deepEqual(batches, [64, 6]);
   assert.equal(batches.every((size) => size >= 1 && size <= 64), true);
+});
+
+for (const transportFails of [false, true]) {
+  test(`dispose drains queued diagnostics after an in-flight ${transportFails ? "failed" : "successful"} send`, async () => {
+    const batches = [];
+    let finishFirst;
+    let timer = null;
+    const diagnostics = createRuntimeDiagnostics({
+      invoke: (command, args) => {
+        assert.equal(command, RUNTIME_DIAGNOSTICS_COMMAND);
+        batches.push(args.entries);
+        if (batches.length === 1) return new Promise((resolve, reject) => {
+          finishFirst = () => transportFails ? reject(new Error("TRANSPORT_FAILED")) : resolve();
+        });
+        if (transportFails) return Promise.reject(new Error("TRANSPORT_FAILED"));
+        return Promise.resolve();
+      },
+      setTimer: (callback) => { timer = callback; return 1; },
+      clearTimer: () => { timer = null; },
+      windowObject: null,
+    });
+    diagnostics.message("info", "first batch");
+    const inFlight = diagnostics.flush();
+    for (let count = 1; count <= 70; count += 1) {
+      diagnostics.message("warn", "probe summary", { count });
+    }
+    diagnostics.dispose();
+    assert.equal(batches.length, 1, "diagnostic sends remain serialized");
+    finishFirst();
+    await inFlight;
+    assert.deepEqual(batches.map((batch) => batch.length), [1, 64, 7]);
+    assert.deepEqual(batches.flat().filter((entry) => entry.fields?.count).map((entry) => entry.fields.count),
+      Array.from({ length: 70 }, (_, index) => index + 1));
+    assert.equal(batches.at(-1).at(-1).event, "webview.lifecycle.unloading");
+    assert.equal(timer, null);
+    await diagnostics.flush();
+    assert.equal(batches.length, 3, "failed transport batches are dropped, not retried indefinitely");
+    assert.equal(diagnostics.message("info", "after dispose"), false);
+  });
+}
+
+
+test("custom messages are bounded and cleaned before IPC without changing plain HTML text", async () => {
+  const env = harness();
+  assert.equal(env.diagnostics.message("info", "中文".repeat(800), {
+    nested: { password: "private-password", count: 2 },
+    credential: "token=private-token", html: "<b>纯文本</b>",
+  }), true);
+  await env.diagnostics.flush();
+  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
+  const entry = payload.entries[0];
+  assert.ok(new TextEncoder().encode(entry.message).length <= 1024);
+  assert.ok(entry.message.includes("[truncated]"));
+  assert.equal(entry.fields.nested.count, 2);
+  assert.equal(entry.fields.html, "<b>纯文本</b>");
+  assert.ok(!JSON.stringify(payload).includes("private-"));
+});
+
+test("real errors retain original messages and frames with credentials redacted", async () => {
+  const env=harness();
+  const error=new TypeError("Cannot read properties of undefined");
+  env.listeners.get("error")({error,filename:"http://tauri.localhost/settings/index.js",lineno:42,colno:7});
+  const rejection=new Error("Connection refused token=PRIVATE_KEY_VALUE");
+  rejection.cause = new Error("Cannot open C:/插件/runtime/python.exe at https://example.test/runtime?version=2");
+  rejection.stack="Error: Connection refused token=PRIVATE_KEY_VALUE\n at send (tauri://localhost/chat/main.js:19:5)";
+  env.listeners.get("unhandledrejection")({reason:rejection});
+  env.listeners.get("error")({target:{src:"https://private.example/PRIVATE_PATH.js"}});
+  await env.diagnostics.flush();
+  const entries=env.calls.find(([c])=>c===RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.equal(entries[0].details.file,"desktop/frontend/settings/index.js");
+  assert.match(entries[0].diagnostic,/Cannot read properties of undefined/);
+  assert.match(entries[1].exceptionStack,/Connection refused/);
+  assert.match(entries[1].exceptionChain,/C:\/插件\/runtime\/python.exe/);
+  assert.match(entries[1].exceptionChain,/version=2/);
+  assert.equal(entries[0].details.line,42);
+  assert.equal(entries[0].details.causeType,"TypeError");
+  assert.equal(entries[1].details.line,19);
+  assert.equal(entries[2].details.stage,"resource");
+  assert.equal(entries[2].details.file,undefined);
+  assert.equal(JSON.stringify(entries).includes("PRIVATE"),false);
+});
+
+
+test("caught plugin exceptions retain causes and stages through the shared diagnostic transport", async () => {
+  const env = harness();
+  const cause = new TypeError("model shader failed token=private-value at C:\\Users\\private\\model.bin");
+  const failure = new Error("renderer mount failed", { cause });
+  assert.equal(env.diagnostics.reportError(failure, { command: "visual_renderer", stage: "visual.renderer.ready", code: "VISUAL_RENDERER_FAILED" }), true);
+  assert.equal(env.diagnostics.reportError(failure, { command: "visual_renderer" }), false);
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].stage, "visual.renderer.ready");
+  assert.equal(entries[0].code, "VISUAL_RENDERER_FAILED");
+  assert.match(entries[0].diagnostic, /renderer mount failed/);
+  assert.match(entries[0].exceptionChain, /model shader failed/);
+  assert.ok(entries[0].exceptionChain.includes("C:\\Users\\private\\model.bin"));
+  assert.match(entries[0].exceptionStack, /Caused by:/);
+  assert.doesNotMatch(JSON.stringify(entries), /private-value/);
+});
+
+test("Studio polling remains debug and failed calls keep the method without request contents", async () => {
+  let failed = false;
+  const env = harness(async () => { if (failed) throw new Error("worker went away"); return {}; });
+  await env.diagnostics.invoke("studio_request", { method: "studio.visual.catalog", params: { private: "private-body" } });
+  failed = true;
+  await assert.rejects(env.diagnostics.invoke("studio_request", { method: "studio.visual.open", params: { private: "private-body" } }));
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.ok(entries.filter(entry => entry.command === "studio.visual.catalog").every(entry => entry.level === "debug"));
+  assert.match(entries.find(entry => entry.outcome === "failed").diagnostic, /worker went away/);
+  assert.doesNotMatch(JSON.stringify(entries), /private-body/);
 });

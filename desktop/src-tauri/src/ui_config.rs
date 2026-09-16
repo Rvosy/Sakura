@@ -28,6 +28,10 @@ impl UiConfigRepository {
         }
     }
 
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn load(&self, namespace: &str) -> Result<Value, String> {
         let _guard = self
             .transaction

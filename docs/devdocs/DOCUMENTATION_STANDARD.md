@@ -3,13 +3,16 @@ kind: devdoc
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-15
+updated: 2026-09-05
 ---
 
 # 文档职责与维护规范
 
 Sakura 的长期工程知识以 Spec 和 ADR 为核心，Tests/Product Harness 提供可执行验证，Git 保存修改历史。
 Plan 与 Record 只在确有实施或历史价值时使用，不是每次开发的强制产物。
+
+开发协作规则集中在根目录 [AGENTS.md](../../AGENTS.md)。本文维护文档职责，各产品 Spec 不再复制智能体审批、
+模型选择或文件修改范围。
 
 ## 文档类型
 
@@ -31,6 +34,14 @@ Plan 与 Record 只在确有实施或历史价值时使用，不是每次开发�
 
 Spec 以当前产品真相为中心，优先包含 Purpose、Invariants、Compatibility、Verification 和 Related
 Decisions。不要写修改文件、开发步骤、Agent 流程或 Work Package 权限。
+
+用户要求改变产品行为时，随实现更新对应契约；已有 Spec 不是拒绝已授权改动的理由。尚未交付的设计应说明
+实现状态，不能把规划写成当前产品能力。文档和代码冲突时先核实调用链与测试，不凭日期或标题机械取舍。
+
+历史 WP 中的文件白名单、激活前置条件、固定提交顺序和任务级 required profiles 已由
+[ADR-0021](../adr/0021-product-harness-outcome-verification.md) 废止。维护现行 Spec 时删除这些流程限制；
+混在其中的协议、数据保护和资源回收要求保留在对应产品契约中。带日期的验收记录可以保留事实，但需明确历史身份，
+不把当时的审批和停止条件用于当前开发。自动测试结果与人工验收分别记录，不以工作包状态推断结果。
 
 ADR 记录 Context、Decision、Alternatives、Reasons 和 Consequences。已接受的 ADR 被新方向替代时，
 新增 ADR 并明确 supersedes 关系；旧 ADR 标为 `superseded` 后移入 archive，不直接改写历史理由。
@@ -76,12 +87,12 @@ Markdown 链接；不要保留旧路径兼容页或复制第二份“当前”�
 
 ## 检查
 
-文档变更至少运行：
+文档变更运行 `docs` profile，它已执行 `tools/check_docs.py`：
 
 ```text
-python tools/check_docs.py
 python -m harness run docs
 ```
 
 检查器验证目录职责、必需元数据、索引和本地链接，不校验开发范围、Work Package 状态或 Agent 行为。
-同时修改代码时，再运行受影响能力的 focused tests 和 Harness profile。
+使用当前平台的 bundled Python。排查检查器时也可直接运行 `python tools/check_docs.py`，无需重复执行两个入口。
+同时修改代码时，按实际风险选择受影响能力的测试或 Harness profile。

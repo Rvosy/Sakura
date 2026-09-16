@@ -1,18 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { validateComposerToolsSnapshot } from "../chat/composer-tool-dock.js";
-
-const frontendCss = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-
-test("composer tool items do not use a decorative left-edge accent rail", () => {
-  assert.doesNotMatch(frontendCss, /\.composer-tool-dock__item::before/);
-});
-
-test("the attachment add button does not duplicate the screenshot count", () => {
-  assert.doesNotMatch(frontendCss, /#composer-attachment\[data-attached="true"\]::after/);
-});
 
 function snapshot(tools = []) {
   return { schemaVersion: 1, coreGenerationId: "generation-a", tools };

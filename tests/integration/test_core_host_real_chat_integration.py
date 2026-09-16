@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import queue
@@ -40,11 +41,13 @@ class _ProviderHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
     outcome = "complete"
     release = threading.Event()
+    received = threading.Event()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length))
         type(self).requests.append(body)
+        type(self).received.set()
         if type(self).outcome == "compatibility" and len(type(self).requests) == 1:
             assert "response_format" in body
             response = b'{"error":{"message":"response_format unsupported"}}'
@@ -303,6 +306,7 @@ def _configure_app_root(tmp_path: Path, port: int) -> Path:
 
 def _start_provider(outcome: str) -> tuple[ThreadingHTTPServer, threading.Thread]:
     _ProviderHandler.requests = []
+    _ProviderHandler.received.clear()
     _ProviderHandler.outcome = outcome
     _ProviderHandler.release = threading.Event()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ProviderHandler)
@@ -375,7 +379,88 @@ def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path:
     boundary.close()
 
 
-def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failed_domain", ["provider", "tools"])
+def test_chat_boundary_preserves_pending_settings_after_hot_apply_failure(
+    tmp_path: Path,
+    failed_domain: str,
+) -> None:
+    from app.agent.runtime import AgentRuntime
+    from app.agent.runtime_limits import RuntimeLoopSettings
+    from app.core_host.tool_settings import ToolSettingsBoundary
+    from app.llm.api_client import ApiSettings, OpenAICompatibleClient
+
+    old_provider = ApiSettings("http://127.0.0.1", "fixture", "old")
+    new_provider = ApiSettings("http://127.0.0.1", "fixture", "new")
+    provider = OpenAICompatibleClient(old_provider)
+    runtime = AgentRuntime(provider, "fixture")
+    old_limits = runtime.runtime_loop_settings
+    new_limits = RuntimeLoopSettings(6, 2, 10)
+    observed = []
+    calls: list[str] = []
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            observed.append((provider.settings, runtime.runtime_loop_settings))
+            return SimpleNamespace(reply=ChatReply([]), actions=[])
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura"), runtime=runtime, pipeline=Pipeline()
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
+    )
+
+    def apply(domain: str, update) -> None:  # type: ignore[no-untyped-def]
+        calls.append(domain)
+        if domain == failed_domain and calls.count(domain) == 1:
+            raise RuntimeError("fixture hot apply failure")
+        update()
+
+    tools = ToolSettingsBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        runtime_apply=lambda limits: boundary.schedule_runtime_update(
+            "tools", lambda: apply("tools", lambda: runtime.set_runtime_loop_settings(limits))
+        ),
+    )
+    first = _request("first", "chat.send", {"message": "first", "operationId": "first"})
+    next_send = _request("next", "chat.send", {"message": "next", "operationId": "next"})
+    try:
+        boundary.reserve_send(first)
+        boundary.schedule_runtime_update("provider", lambda: pytest.fail("superseded update ran"))
+        boundary.schedule_runtime_update(
+            "provider", lambda: apply("provider", lambda: provider.update_settings(new_provider))
+        )
+        for steps in (5, new_limits.max_agent_steps_per_turn):
+            tools.save({"runtimeLimits": {
+                "maxAgentStepsPerTurn": steps,
+                "maxToolCallsPerStep": new_limits.max_tool_calls_per_step,
+                "maxToolCallsPerTurn": new_limits.max_tool_calls_per_turn,
+            }})
+        boundary.handle_send(first)
+        assert observed == [(old_provider, old_limits)]
+
+        with pytest.raises(RuntimeError, match="fixture hot apply failure"):
+            boundary.reserve_send(next_send)
+        boundary.reserve_send(next_send)
+        boundary.handle_send(next_send)
+
+        assert observed[-1] == (new_provider, new_limits)
+        assert calls.count(failed_domain) == 2
+        assert calls.count("tools" if failed_domain == "provider" else "provider") == 1
+    finally:
+        boundary.close()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancelled: bool) -> None:
+    terminal_logs = []
+    monkeypatch.setattr("app.core.runtime_log.log_event", lambda *args, **kwargs: terminal_logs.append((args, kwargs)))
     pipeline_started = threading.Event()
     release_pipeline = threading.Event()
     events: list[dict[str, object]] = []
@@ -416,12 +501,143 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -
     assert accepted["payload"] == {"accepted": True, "operationId": "slow-accepted"}
     assert pipeline_started.wait(1)
     assert [event["name"] for event in events] == ["chat.started"]
+    if cancelled:
+        assert boundary.handle_cancel(_request("cancel-slow", "chat.cancel", {"operationId": "slow-accepted"}))["payload"]["accepted"]
     release_pipeline.set()
     deadline = time.monotonic() + 2
     while len(events) < 2 and time.monotonic() < deadline:
         time.sleep(0.005)
-    assert [event["name"] for event in events] == ["chat.started", "chat.completed"]
+    assert [event["name"] for event in events] == ["chat.started", "chat.cancelled" if cancelled else "chat.completed"]
+    finished = [(args, kw) for args, kw in terminal_logs if kw.get("event") == "chat.finished"]
+    assert len(finished) == 1
+    assert finished[0][0][2]["outcome"] == ("cancelled" if cancelled else "success")
+    assert finished[0][0][2]["operation_id"] == "slow-accepted"
+    assert finished[0][0][2]["elapsed_ms"] >= 0
+    assert "reason_code" not in finished[0][0][2]
+    assert "stage" not in finished[0][0][2]
+    assert finished[0][1]["severity"] == "info"
     boundary.close()
+
+
+@pytest.mark.parametrize(
+    ("failure", "cancelled", "reason_code", "stage"),
+    [
+        ("provider", False, "PROVIDER_REQUEST_FAILED", "pipeline"),
+        ("reply", False, "INVALID_CHAT_REPLY", "reply_processing"),
+        ("provider", True, None, None),
+    ],
+)
+def test_chat_finished_bridge_records_only_the_resolved_terminal_failure(
+    tmp_path: Path, failure: str, cancelled: bool, reason_code: str | None, stage: str | None,
+) -> None:
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+    from app.llm.api_client import ApiRequestError
+
+    operation_id = "terminal-diagnostic"
+    events = []
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            if cancelled:
+                assert boundary.handle_cancel(
+                    _request("cancel", "chat.cancel", {"operationId": operation_id})
+                )["payload"]["accepted"]
+            if failure == "provider":
+                raise ApiRequestError("API HTTP 400: private provider response")
+            return SimpleNamespace(reply=SimpleNamespace(), actions=[])
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura"), pipeline=Pipeline(),
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID, GENERATION_CREDENTIAL, tmp_path, session_provider=lambda: session,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"), event_publisher=events.append,
+    )
+    request = _request(operation_id, "chat.send", {"message": "private user message", "operationId": operation_id})
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        boundary.reserve_send(request)
+        boundary.handle_send(request)
+    finally:
+        boundary.close()
+        bridge.close()
+
+    records = [
+        json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
+        for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)
+    ]
+    finished = [record for record in records if record["event"] == "chat.finished"]
+    assert len(finished) == 1
+    assert finished[0]["operation_id"] == operation_id
+    assert finished[0]["severity"] == "info"
+    attributes = finished[0]["attributes"]
+    assert attributes["elapsed_ms"] >= 0
+    assert attributes["outcome"] == ("cancelled" if cancelled else "failed")
+    assert events[-1]["name"] == ("chat.cancelled" if cancelled else "chat.failed")
+    if cancelled:
+        assert "reason_code" not in attributes
+        assert "stage" not in attributes
+        assert "error" not in events[-1]["payload"]
+    else:
+        assert attributes["reason_code"] == events[-1]["payload"]["error"]["code"] == reason_code
+        assert attributes["stage"] == stage
+    assert "private" not in json.dumps(finished)
+
+
+def test_started_worker_failure_logs_and_releases_chat_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_finished = threading.Event()
+    background_errors = []
+    logs = []
+    operation_id = "worker-failed"
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura"),
+        pipeline=SimpleNamespace(run_user_message=lambda *_args, **_kwargs: SimpleNamespace(
+            reply=ChatReply([ChatSegment("reply")]), actions=[],
+        )),
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID, GENERATION_CREDENTIAL, tmp_path, session_provider=lambda: session,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
+    )
+    drop_execution = boundary._drop_execution
+
+    def capture_log(_channel, _message, attributes, **kwargs):  # type: ignore[no-untyped-def]
+        if kwargs.get("event") == "chat.finished":
+            raise OSError("fixture terminal logging failure")
+        logs.append((attributes, kwargs))
+
+    def observe_release(identity):  # type: ignore[no-untyped-def]
+        drop_execution(identity)
+        worker_finished.set()
+
+    def capture_background_error(args):  # type: ignore[no-untyped-def]
+        background_errors.append(args.exc_value)
+        worker_finished.set()
+
+    monkeypatch.setattr("app.core.runtime_log.log_event", capture_log)
+    monkeypatch.setattr("app.core.runtime_log.external_runtime_sink_active", lambda: True)
+    monkeypatch.setattr(boundary, "_drop_execution", observe_release)
+    monkeypatch.setattr(threading, "excepthook", capture_background_error)
+    request = _request(operation_id, "chat.send", {"message": "hi", "operationId": operation_id})
+    next_request = _request("worker-next", "chat.send", {"message": "next", "operationId": "worker-next"})
+    try:
+        boundary.reserve_send(request)
+        assert boundary.start_send(request)["payload"]["accepted"]
+        assert worker_finished.wait(2)
+        assert background_errors == []
+        failures = [attributes for attributes, kwargs in logs if kwargs.get("event") == "chat.request.failed"]
+        assert len(failures) == 1
+        assert failures[0]["reason_code"] == "CHAT_EXECUTION_FAILED"
+        assert failures[0]["operation_id"] == operation_id
+        assert failures[0]["stage"] == "worker"
+        boundary.reserve_send(next_request)
+    finally:
+        drop_execution(operation_id)
+        boundary.abandon_send(next_request)
+        boundary.close()
 
 
 def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
@@ -454,15 +670,16 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         timeline_store=timeline,
     )
     request = _request(
@@ -519,15 +736,16 @@ def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         timeline_store=timeline,
         event_publisher=lambda frame: published.append(str(frame["name"])),
     )
@@ -540,11 +758,100 @@ def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
         _request("cancel-after-claim", "chat.cancel", {"operationId": "terminal-claim"})
     )
     assert cancelled["payload"]["accepted"] is False
+    with pytest.raises(RealChatRejection, match="CHAT_EXECUTION_LIMIT_EXCEEDED"):
+        boundary.reserve_send(
+            _request("before-delivery", "chat.send", {"message": "next", "operationId": "before-delivery"})
+        )
     release_delivery.set()
     thread.join(timeout=2)
     assert not thread.is_alive()
     assert published[-1] == "chat.completed"
     boundary.close()
+
+
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_next_chat_waits_for_terminal_publication_and_execution_release(
+    tmp_path: Path,
+    write_fails: bool,
+) -> None:
+    terminal_published = threading.Event()
+    acknowledge_terminal = threading.Event()
+    next_attempted = threading.Event()
+    next_finished = threading.Event()
+    send_errors: list[BaseException] = []
+    next_errors: list[BaseException] = []
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura"),
+        pipeline=SimpleNamespace(
+            run_user_message=lambda *_args, **_kwargs: SimpleNamespace(
+                reply=ChatReply([]), actions=[]
+            )
+        ),
+    )
+
+    def publish(frame):  # type: ignore[no-untyped-def]
+        if frame["name"] != "chat.completed":
+            return
+        # Synchronous observers may query the boundary while it publishes.
+        assert boundary.snapshot_fields("ready", None)["activeInteractionSummary"] is not None
+        assert boundary.handle_cancel(
+            _request("late-cancel", "chat.cancel", {"operationId": "first"})
+        )["payload"]["accepted"] is False
+        terminal_published.set()
+        assert acknowledge_terminal.wait(2)
+        if write_fails:
+            raise OSError("fixture terminal write failed")
+
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
+        event_publisher=publish,
+    )
+    first = _request("first", "chat.send", {"message": "first", "operationId": "first"})
+    next_send = _request("next", "chat.send", {"message": "next", "operationId": "next"})
+
+    def send_first() -> None:
+        try:
+            boundary.handle_send(first)
+        except BaseException as error:
+            send_errors.append(error)
+
+    def reserve_next() -> None:
+        next_attempted.set()
+        try:
+            boundary.reserve_send(next_send)
+        except BaseException as error:
+            next_errors.append(error)
+        finally:
+            next_finished.set()
+
+    boundary.reserve_send(first)
+    sender = threading.Thread(target=send_first, daemon=True)
+    successor = threading.Thread(target=reserve_next, daemon=True)
+    sender.start()
+    try:
+        assert terminal_published.wait(1)
+        successor.start()
+        assert next_attempted.wait(1)
+        assert not next_finished.wait(0.1)
+    finally:
+        acknowledge_terminal.set()
+        sender.join(2)
+        if successor.ident is not None:
+            successor.join(2)
+        if not sender.is_alive() and not successor.is_alive():
+            boundary.abandon_send(next_send)
+            boundary.close()
+
+    assert not sender.is_alive() and not successor.is_alive()
+    assert next_errors == []
+    assert [str(error) for error in send_errors] == (
+        ["fixture terminal write failed"] if write_fails else []
+    )
+    assert boundary.snapshot_fields("ready", None)["activeInteractionSummary"] is None
 
 
 def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: Path) -> None:
@@ -573,15 +880,16 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
     failing_timeline = FailingTimeline(tmp_path / "timeline.sqlite3")
     failing_timeline.initialize()
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         timeline_store=failing_timeline,
     )
     request = _request(
@@ -652,7 +960,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
         _request(
             "attach-screen",
             "screen.attach",
-            {
+            {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                 "resource": {
                     "generationId": GENERATION_ID,
                     "resourceToken": token,
@@ -676,7 +984,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
         _request(
             "attach-screen-2",
             "screen.attach",
-            {
+            {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                 "resource": {
                     "generationId": GENERATION_ID,
                     "resourceToken": second_token,
@@ -775,7 +1083,7 @@ def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
             _request(
                 f"attach-{index}",
                 "screen.attach",
-                {
+                {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -823,7 +1131,7 @@ def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
             _request(
                 "attach-over-limit",
                 "screen.attach",
-                {
+                {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -862,8 +1170,10 @@ def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
 
 
 def test_timeline_deleted_during_runtime_fails_without_recreating_or_writing_jsonl(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    terminal_logs = []
+    monkeypatch.setattr("app.core.runtime_log.log_event", lambda *args, **kwargs: terminal_logs.append((args, kwargs)))
     pipeline_calls = 0
     events: list[dict[str, object]] = []
 
@@ -899,6 +1209,12 @@ def test_timeline_deleted_during_runtime_fails_without_recreating_or_writing_jso
     boundary.handle_send(request)
 
     assert [event["name"] for event in events] == ["chat.started", "chat.failed"]
+    finished = [(args, kw) for args, kw in terminal_logs if kw.get("event") == "chat.finished"]
+    assert len(finished) == 1
+    assert finished[0][0][2]["outcome"] == "failed"
+    assert finished[0][0][2]["operation_id"] == "timeline-deleted"
+    assert finished[0][0][2]["reason_code"] == "TIMELINE_READ_FAILED"
+    assert finished[0][0][2]["stage"] == "timeline_read"
     assert events[-1]["payload"]["error"]["code"] == "TIMELINE_READ_FAILED"  # type: ignore[index]
     assert pipeline_calls == 0
     assert not timeline.path.exists()
@@ -923,15 +1239,16 @@ def test_plugin_completion_failure_does_not_block_committed_chat(tmp_path: Path)
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         timeline_store=timeline,
         event_publisher=lambda frame: published.append(str(frame["name"])),
     )
@@ -1021,7 +1338,7 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         timeline_store=timeline,
     )
     attach = boundary.handle_screen_attach_batch(
-        _request("attach-batch", "screen.attachBatch", {"resources": resources})
+        _request("attach-batch", "screen.attachBatch", {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"], "resources": resources})
     )
     assert attach["payload"]["count"] == 2
     assert not any(root.glob("*.jpg"))
@@ -1109,7 +1426,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
             _request(
                 "attach-real-screen",
                 "screen.attach",
-                {
+                {"sessionId": _exchange(process, _request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": token,
@@ -1130,7 +1447,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
             _request(
                 "attach-real-screen-2",
                 "screen.attach",
-                {
+                {"sessionId": _exchange(process, _request("screen-session", "screen.session", {}))["payload"]["sessionId"],
                     "resource": {
                         "generationId": GENERATION_ID,
                         "resourceToken": second_token,
@@ -1439,7 +1756,7 @@ def test_invalid_provider_json_fails_once_without_poisoning_core(tmp_path: Path)
             "operationId": "chat-invalid-json",
             "error": {
                 "code": "PROVIDER_RESPONSE_INVALID",
-                "message": "供应商响应格式无效：返回内容不是有效 JSON。",
+                "message": "模型服务响应格式无效：返回内容不是有效 JSON。",
                 "retryable": False,
                 "details": {},
             },
@@ -1585,7 +1902,7 @@ def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) 
         failure = next(frame["payload"] for frame in frames if frame.get("name") == "chat.failed")
         assert failure["error"] == {
             "code": "PROVIDER_RESPONSE_INVALID",
-            "message": "供应商响应格式无效：回复结构不符合协议。",
+            "message": "模型服务响应格式无效：回复结构不符合协议。",
             "retryable": False,
             "details": {},
         }
@@ -1776,6 +2093,124 @@ def test_eof_during_blocked_provider_read_drains_terminal_and_process(tmp_path: 
         ) == 1
         assert process.wait(timeout=5) == 0
         assert process.stdout is not None and process.stdout.read() == b""
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+@pytest.mark.parametrize("switch_role", [False, True])
+def test_studio_publish_updates_live_character_without_restarting_core_or_plugins(tmp_path, switch_role):
+    import psutil
+    server, provider_thread = _start_provider("complete")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    distribution = tmp_path / "distribution"
+    for plugin in ("sakura_portrait", "sakura_spine", "sakura_gpt_sovits", "sakura_tts_hub"):
+        shutil.copytree(REPO_ROOT / "plugins/builtin" / plugin, distribution / "plugins/builtin" / plugin)
+    dependencies = distribution / "plugins/dependencies/sakura.tts.gpt-sovits"
+    dependencies.mkdir(parents=True)
+    (dependencies / ".sakura-dependencies.json").write_text(json.dumps({
+        "schemaVersion": 1, "kind": "requirements.txt",
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+    }), encoding="utf-8")
+    package = app_root / "characters/sakura"
+    shutil.copyfile(REPO_ROOT / "desktop/frontend/prototypes/asr/assets/navi.png", package / "portraits/neutral.png")
+    manifest = json.loads((package / "character.json").read_text(encoding="utf-8"))
+    manifest["portrait"] = {"default": "portraits/neutral.png", "expressions": {"neutral": "portraits/neutral.png"}}
+    (package / "character.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if switch_role:
+        role_plugin = distribution / "plugins/builtin/fixture_role"
+        role_plugin.mkdir()
+        (role_plugin / "plugin.yaml").write_text(
+            "api: 4\nid: fixture.role\nname: Role fixture\nversion: 1.0.0\nentry: plugin:Plugin\nprovides: []\nrequires: [sakura.host.character]\n",
+            encoding="utf-8",
+        )
+        (role_plugin / "plugin.py").write_text(
+            'from pathlib import Path\nclass Plugin:\n    def setup(self, context):\n        role = context.get("sakura.host.character").current()["id"]\n        Path(context.data_path("current.txt")).write_text(role, encoding="utf-8")\n',
+            encoding="utf-8",
+        )
+        second = app_root / "characters/beta"
+        shutil.copytree(package, second)
+        second_manifest = {**manifest, "id": "beta", "display_name": "Beta"}
+        (second / "character.json").write_text(json.dumps(second_manifest), encoding="utf-8")
+        # The same card-relative path belongs to a separate character package.
+        from app.config.character_loader import CharacterRegistry
+        CharacterRegistry(app_root).get("beta").card_path.write_text("You are Beta with a golden book.", encoding="utf-8")
+    process = _start_host(app_root, distribution_root=distribution)
+    stderr = []
+    drain = threading.Thread(target=lambda: stderr.extend(iter(process.stderr.readline, b"")), daemon=True)
+    drain.start()
+    def plugin_process_ids():
+        return {child.pid for child in psutil.Process(process.pid).children()
+                if "--plugin-id" in child.cmdline() and "fixture.role" not in child.cmdline()}
+    try:
+        _wait_ready(process, ["transport.concurrent-router", "assistant.plugins-v1"])
+        deadline = time.monotonic() + 5
+        index = 0
+        while True:
+            response = _exchange(process, _request(f"plugins-ready-{index}", "plugins.settings.get", {}))
+            assert response["ok"], response
+            plugins = response["payload"]["plugins"]
+            before = _exchange(process, _request(f"presentation-ready-{index}", "core.snapshot", {}))["payload"]
+            if len(plugins) == 4 + int(switch_role) and all(item["state"] == "active" for item in plugins) and before["characterPresentation"]["visual"]:
+                break
+            assert time.monotonic() < deadline, [(item["pluginId"], item["state"], item["reasonCode"]) for item in plugins]
+            index += 1
+        plugin_pids = plugin_process_ids()
+        assert len(plugin_pids) == 4
+        opened = _exchange(process, _request("open-role", "studio.character.open", {"characterId": "sakura"}))["payload"]
+        doc = opened["doc"]
+        doc["displayName"] = "更新后的角色"
+        doc["cardText"] = "You are a character with a purple umbrella."
+        doc["theme"]["primaryColor"] = "#123456"
+        doc["visuals"]["resources"][0]["name"] = "新的形态名称"
+        published = _exchange(process, _request("publish-role", "studio.character.publish", {"workspaceId": opened["workspaceId"], "doc": doc}))
+        assert published["ok"], published
+        assert published["payload"]["changePlan"] == "character_refresh"
+        assert "applyError" not in published["payload"]
+        after = _exchange(process, _request("after-save", "core.snapshot", {}))["payload"]
+        assert after["generationId"] == before["generationId"]
+        assert after["currentCharacterSummary"]["displayName"] == "更新后的角色"
+        assert after["characterPresentation"]["themeTokens"]["primary"] == "#123456"
+        assert after["characterPresentation"]["visual"]["bindingId"] != before["characterPresentation"]["visual"]["bindingId"]
+        assert plugin_process_ids() == plugin_pids
+        _send(process, _request("chat-after-save", "chat.send", {"message": "hello", "operationId": "chat-after-save"}))
+        frames = [_read(process), _read(process), _read(process)]
+        assert any(frame.get("name") == "chat.completed" for frame in frames), frames
+        assert "purple umbrella" in json.dumps(_ProviderHandler.requests)
+        assert plugin_process_ids() == plugin_pids
+        if switch_role:
+            _ProviderHandler.outcome = "blocked-read"
+            _ProviderHandler.received.clear()
+            _send(process, _request("old-role-chat", "chat.send", {"message": "old role pending", "operationId": "old-role-chat"}))
+            assert _read(process)["name"] == "chat.started"
+            assert _ProviderHandler.received.wait(2)
+            for character_id, prompt in (("beta", "golden book"), ("sakura", "purple umbrella")):
+                switch_request = _request(f"switch-{character_id}", "characters.settings.select", {"characterId": character_id})
+                if character_id == "beta":
+                    _send(process, switch_request)
+                    frames = [_read(process), _read(process), _read(process)]
+                    assert any(frame.get("name") == "chat.cancelled" for frame in frames), frames
+                    switched = next(frame for frame in frames if frame.get("id") == "switch-beta")
+                    _ProviderHandler.release.set()
+                    _ProviderHandler.outcome = "complete"
+                else:
+                    switched = _exchange(process, switch_request)
+                assert switched["ok"], switched
+                assert switched["payload"]["changePlan"] == "character_switch"
+                snapshot = _exchange(process, _request(f"state-{character_id}", "core.snapshot", {}))["payload"]
+                assert snapshot["generationId"] == before["generationId"]
+                assert snapshot["currentCharacterSummary"]["id"] == character_id
+                assert snapshot["characterPresentation"]["characterId"] == character_id
+                assert (app_root / "data/plugins/fixture.role/current.txt").read_text(encoding="utf-8") == character_id
+                assert plugin_process_ids() == plugin_pids
+                _send(process, _request(f"chat-{character_id}", "chat.send", {"message": f"hello {character_id}", "operationId": f"chat-{character_id}"}))
+                reply = [_read(process), _read(process), _read(process)]
+                assert any(frame.get("name") == "chat.completed" for frame in reply), reply
+                assert prompt in json.dumps(_ProviderHandler.requests[-1])
+            assert "hello beta" not in json.dumps(_ProviderHandler.requests[-1])
+        _exchange(process, _request("shutdown-after-save", "system.shutdown", {}))
+        process.wait(timeout=5)
+        drain.join(2)
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)

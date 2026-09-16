@@ -6,6 +6,9 @@ on:
 permissions:
   contents: read
 
+env:
+  UV_DEFAULT_INDEX: https://pypi.org/simple
+
 jobs:
   metadata:
     runs-on: ubuntu-24.04
@@ -75,17 +78,19 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Enforce Windows Authenticode release credentials
+      - name: Import the optional Windows Authenticode certificate
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)) { throw 'WINDOWS_CERTIFICATE_BASE64 is required.' }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) { throw 'WINDOWS_CERTIFICATE_PASSWORD is required.' }
-
-      - name: Import the Windows Authenticode certificate
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)
+          if (-not $hasCertificate -and -not $hasPassword) {
+            Write-Warning 'Windows Authenticode credentials are not configured; building unsigned Windows artifacts.'
+            exit 0
+          }
+          if ($hasCertificate -ne $hasPassword) {
+            throw 'WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD must be configured together.'
+          }
           $pfx = Join-Path $env:RUNNER_TEMP 'sakura-signing.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
           $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
@@ -93,17 +98,31 @@ jobs:
           if (-not $certificate.Thumbprint) { throw 'Windows signing certificate import failed.' }
           "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
 
-      - name: Enforce Apple codesign and notarization release credentials
+      - name: Check the optional Apple signing and notarization credentials
+        id: apple_signing
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            test -n "${!name:-}" || { echo "$name is required." >&2; exit 1; }
+          names=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
+          configured=0
+          for name in "${names[@]}"; do
+            if [[ -n "${!name:-}" ]]; then
+              configured=$((configured + 1))
+            fi
           done
+          if (( configured == 0 )); then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apple signing credentials are not configured; building unsigned and unnotarized macOS artifacts."
+          elif (( configured != ${#names[@]} )); then
+            echo "All Apple signing and notarization credentials must be configured together." >&2
+            exit 1
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Import the Apple signing certificate
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.apple_signing.outputs.enabled == 'true'
         uses: apple-actions/import-codesign-certs@v5
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
@@ -157,12 +176,19 @@ jobs:
           --output desktop/src-tauri/tauri.release.json
           --updater
 
-      - name: Build, sign, and notarize the Runtime v2 platform bundle
+      - name: Build the Runtime v2 platform bundle
         working-directory: desktop/src-tauri
         shell: bash
-        run: npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
+        env:
+          SAKURA_REQUIRE_DIAGNOSTIC_MAPPING: "1"
+        run: |
+          if [[ "${{ steps.apple_signing.outputs.enabled }}" != "true" ]]; then
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
+            unset APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
 
-      - name: Collect signed Windows release artifacts
+      - name: Collect Windows release artifacts
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -172,37 +198,27 @@ jobs:
           $bundle = 'desktop/src-tauri/target/release/bundle/nsis'
           $installer = Get-ChildItem $bundle -Filter '*.exe' | Select-Object -First 1
           if (-not $installer -or -not (Test-Path -LiteralPath "$($installer.FullName).sig")) {
-            throw 'Signed NSIS or updater artifacts were not produced.'
+            throw 'NSIS installer or updater signature was not produced.'
           }
           $setupOut = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-setup.exe"
           Copy-Item $installer.FullName $setupOut
           Copy-Item "$($installer.FullName).sig" "$setupOut.sig"
-          cargo run --locked --release `
-            --manifest-path desktop/src-tauri/Cargo.toml `
-            --bin verify-updater-signature `
-            -- $setupOut "$setupOut.sig"
-          python tools/release/stage_distribution.py `
-            --target windows-x64 `
-            --python-root (Join-Path $env:RUNNER_TEMP 'python-runtime') `
-            --output desktop/src-tauri/portable-staging `
-            --portable `
-            --smoke
-          Copy-Item desktop/src-tauri/target/release/sakura.exe desktop/src-tauri/portable-staging/sakura.exe
-          Remove-Item desktop/src-tauri/portable-staging/release-inventory.json
-          $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
-          Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
-          python tools/release/artifact_report.py `
-            --inventory desktop/src-tauri/release-staging/release-inventory.json `
-            --output artifacts/windows-x64-size-report.json `
-            --installed-path desktop/src-tauri/portable-staging `
-            --artifact $setupOut `
-            --artifact $portable
-          Copy-Item desktop/src-tauri/release-staging/release-inventory.json artifacts/windows-x64-inventory.json
+          & (Join-Path $env:RUNNER_TEMP 'python-runtime/python.exe') `
+            tools/release/verify_updater_signature.py `
+            $setupOut "$setupOut.sig"
 
-      - name: Collect signed and notarized macOS release artifacts
+      - name: Stage the Windows shell for the deferred Portable package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path portable-shell -Force | Out-Null
+          Copy-Item desktop/src-tauri/target/release/sakura.exe portable-shell/sakura.exe
+
+      - name: Collect macOS release artifacts
         if: runner.os == 'macOS'
         shell: bash
         env:
+          APPLE_CODE_SIGNING_ENABLED: ${{ steps.apple_signing.outputs.enabled }}
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
@@ -214,33 +230,111 @@ jobs:
           app_zip="artifacts/Sakura-${VERSION}-macos-arm64.app.zip"
           dmg_out="artifacts/Sakura-${VERSION}-macos-arm64.dmg"
           update_out="artifacts/Sakura-${VERSION}-macos-arm64.app.tar.gz"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"
+          help_source="packaging/macos-open-help.html"
+          help_out="artifacts/Sakura-${VERSION}-macos-open-help.html"
+          app_zip_root="$RUNNER_TEMP/sakura-macos-app-zip"
+          mkdir -p "$app_zip_root"
+          ditto "$app" "$app_zip_root/$(basename "$app")"
+          cp "$help_source" "$app_zip_root/Sakura-macOS-open-help.html"
+          ditto -c -k --sequesterRsrc "$app_zip_root" "$app_zip"
+          cp "$help_source" "$help_out"
           cp "$dmg" "$dmg_out"
           cp "$update" "$update_out"
           cp "${update}.sig" "${update_out}.sig"
-          cargo run --locked --release \
-            --manifest-path desktop/src-tauri/Cargo.toml \
-            --bin verify-updater-signature \
-            -- "$update_out" "${update_out}.sig"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          xcrun stapler validate "$app"
-          xcrun stapler validate "$dmg"
-          python tools/release/artifact_report.py \
-            --inventory desktop/src-tauri/release-staging/release-inventory.json \
-            --output artifacts/macos-arm64-size-report.json \
-            --installed-path "$app" \
-            --artifact "$app_zip" \
-            --artifact "$dmg_out" \
-            --artifact "$update_out"
-          cp desktop/src-tauri/release-staging/release-inventory.json artifacts/macos-arm64-inventory.json
+          "$RUNNER_TEMP/python-runtime/bin/python3" \
+            tools/release/verify_updater_signature.py \
+            "$update_out" "${update_out}.sig"
+          if [[ "$APPLE_CODE_SIGNING_ENABLED" == "true" ]]; then
+            codesign --verify --deep --strict --verbose=2 "$app"
+            xcrun stapler validate "$app"
+            xcrun stapler validate "$dmg"
+          fi
           python tools/release/package_optional_plugin.py \
             --source plugins/optional/playwright_browser \
             --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
-      - name: Upload signed platform artifacts and evidence
+      - name: Retain diagnostic build mapping
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp desktop/src-tauri/release-staging/diagnostic-build.json "artifacts/diagnostic-build-${{ matrix.target }}.json"
+
+      - name: Upload platform artifacts
         uses: actions/upload-artifact@v7
         with:
           name: release-${{ needs.metadata.outputs.tag }}-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the Windows shell for deferred Portable packaging
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: portable-shell-${{ needs.metadata.outputs.tag }}-windows-x64
+          path: portable-shell/sakura.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  portable:
+    needs: [metadata, bundle]
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download and verify the frozen Python archive
+        shell: bash
+        run: >-
+          python scripts/runtime_v2_archive.py
+          --manifest desktop/src-tauri/runtime-layouts/windows-x64/runtime-manifest.json
+          --output "$RUNNER_TEMP/python-runtime.zip"
+      - name: Extract bundled Python
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'python-runtime'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Expand-Archive -LiteralPath (Join-Path $env:RUNNER_TEMP 'python-runtime.zip') -DestinationPath $root
+      - name: Install the hash-locked release dependencies
+        shell: bash
+        run: >-
+          python -m tools.release.prepare_python_runtime
+          --target windows-x64
+          --python-root "$RUNNER_TEMP/python-runtime"
+          --lock packaging/requirements-windows-x64.lock
+      - name: Assemble and smoke the Portable distribution
+        shell: pwsh
+        run: |
+          python tools/release/stage_distribution.py `
+            --target windows-x64 `
+            --python-root (Join-Path $env:RUNNER_TEMP 'python-runtime') `
+            --output desktop/src-tauri/portable-staging `
+            --portable `
+            --smoke
+      - name: Download the previously compiled Windows shell
+        uses: actions/download-artifact@v4
+        with:
+          name: portable-shell-${{ needs.metadata.outputs.tag }}-windows-x64
+          path: portable-shell
+      - name: Collect the Portable ZIP
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          Copy-Item portable-shell/sakura.exe desktop/src-tauri/portable-staging/sakura.exe
+          Remove-Item desktop/src-tauri/portable-staging/release-inventory.json
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $portable = "artifacts/Sakura-$env:VERSION-windows-x64-portable.zip"
+          Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
+      - name: Upload the deferred Portable artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: portable-${{ needs.metadata.outputs.tag }}-windows-x64
           path: artifacts/*
           if-no-files-found: error
           retention-days: 14
@@ -273,7 +367,6 @@ jobs:
             --version "$VERSION" \
             --base-url "https://github.com/${RELEASE_REPOSITORY}/releases/download/${TAG}" \
             --output release-assets/latest.json \
-            --portable "release-assets/Sakura-${VERSION}-windows-x64-portable.zip" \
             --release windows-x64 \
               "release-assets/Sakura-${VERSION}-windows-x64-setup.exe" \
               "release-assets/Sakura-${VERSION}-windows-x64-setup.exe.sig" \
@@ -289,3 +382,118 @@ jobs:
           prerelease: ${{ needs.metadata.outputs.prerelease == 'true' }}
           token: ${{ github.token }}
           files: release-assets/*
+
+  publish-portable:
+    needs: [metadata, publish, portable]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download the signed installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-${{ needs.metadata.outputs.tag }}-*
+          path: release-assets
+          merge-multiple: true
+      - name: Download the deferred Portable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: portable-${{ needs.metadata.outputs.tag }}-windows-x64
+          path: release-assets
+      - name: Regenerate the updater manifest with the Portable asset
+        shell: bash
+        env:
+          RELEASE_REPOSITORY: Rvosy/Sakura
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          python tools/release/updater_manifest.py \
+            --version "$VERSION" \
+            --base-url "https://github.com/${RELEASE_REPOSITORY}/releases/download/${TAG}" \
+            --output release-assets/latest.json \
+            --portable "release-assets/Sakura-${VERSION}-windows-x64-portable.zip" \
+            --release windows-x64 \
+              "release-assets/Sakura-${VERSION}-windows-x64-setup.exe" \
+              "release-assets/Sakura-${VERSION}-windows-x64-setup.exe.sig" \
+            --release macos-arm64 \
+              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz" \
+              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz.sig"
+      - name: Append the Portable ZIP to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          token: ${{ github.token }}
+          files: release-assets/Sakura-${{ needs.metadata.outputs.version }}-windows-x64-portable.zip
+      - name: Publish the final updater manifest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          token: ${{ github.token }}
+          files: release-assets/latest.json
+
+  publish-service-metadata:
+    needs: [metadata, publish-portable]
+    if: needs.metadata.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Generate the Sakura service release metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          published_at="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            --jq .published_at)"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg tag "$TAG" \
+            --arg publishedAt "$published_at" \
+            '{
+              schema: 1,
+              latest: $version,
+              minimumSupported: null,
+              releaseUrl: ("https://github.com/Rvosy/Sakura/releases/tag/" + $tag),
+              publishedAt: $publishedAt,
+              urgent: false,
+              downloads: {
+                windowsX64Setup: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-windows-x64-setup.exe"),
+                windowsX64Portable: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-windows-x64-portable.zip"),
+                macosArm64Dmg: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-macos-arm64.dmg")
+              },
+              updaterManifestUrl: "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
+            }' > service-releases.json
+
+      - name: Configure the restricted deployment identity
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.SAKURA_SERVICE_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SAKURA_SERVICE_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/sakura-service
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/sakura-service ~/.ssh/known_hosts
+
+      - name: Publish the release metadata to Sakura Service
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -T \
+            -i ~/.ssh/sakura-service \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            sakura-release@sakura.cialloo.cn \
+            < service-releases.json

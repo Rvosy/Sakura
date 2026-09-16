@@ -1,13 +1,69 @@
-use std::{ffi::OsStr, sync::Mutex};
+use std::{collections::HashSet, ffi::OsStr, sync::Mutex};
 
 use crate::character_appearance::{AppearanceValues, InputVisualEffectMode};
 use crate::input_visual_effect::InputVisualEffectStatus;
+use crate::runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity};
 
 pub const FORCE_FAILURE_ENV: &str = "SAKURA_WINDOWS_INPUT_GLASS_FORCE_FAILURE";
 pub const LIQUID_GLASS_POC_ENV: &str = "SAKURA_WINDOWS_LIQUID_GLASS_POC";
 
 const INPUT_CORNER_RADIUS: f64 = 28.0;
 const BASE_GAUSSIAN_STANDARD_DEVIATION: f32 = 8.0;
+const MINIMUM_HOST_BACKDROP_BUILD: u32 = 22_000;
+const LIQUID_GLASS_NOT_IMPLEMENTED: &str = "WINDOWS_LIQUID_GLASS_NOT_IMPLEMENTED";
+
+fn windows_glass_policy_failure(
+    os_build: u32,
+    advanced_effects_enabled: bool,
+    energy_saver_active: bool,
+) -> Option<&'static str> {
+    if os_build < MINIMUM_HOST_BACKDROP_BUILD {
+        Some("WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000")
+    } else if !advanced_effects_enabled {
+        Some("WINDOWS_ADVANCED_EFFECTS_DISABLED")
+    } else if energy_saver_active {
+        Some("WINDOWS_ENERGY_SAVER_ACTIVE")
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn validate_windows_glass_policy() -> Result<(), NativeGlassError> {
+    use windows::{System::Power::PowerManager, UI::ViewManagement::UISettings};
+
+    let os_build = windows_version::OsVersion::current().build;
+    let advanced_effects_enabled = UISettings::new()
+        .and_then(|settings| settings.AdvancedEffectsEnabled())
+        .map_err(|error| NativeGlassError::at("WINDOWS_ADVANCED_EFFECTS_QUERY_FAILED", error))?;
+    let energy_saver_active = PowerManager::EnergySaverStatus()
+        .map(|status| status == windows::System::Power::EnergySaverStatus::On)
+        .map_err(|error| NativeGlassError::at("WINDOWS_ENERGY_SAVER_QUERY_FAILED", error))?;
+    if let Some(code) =
+        windows_glass_policy_failure(os_build, advanced_effects_enabled, energy_saver_active)
+    {
+        return Err(NativeGlassError::at(
+            code,
+            format!(
+                "os_build={os_build}, advanced_effects_enabled={advanced_effects_enabled}, energy_saver_active={energy_saver_active}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_windows_requested_mode(
+    requested: InputVisualEffectMode,
+) -> (InputVisualEffectMode, Option<&'static str>) {
+    if requested == InputVisualEffectMode::LiquidGlass {
+        (
+            InputVisualEffectMode::Solid,
+            Some(LIQUID_GLASS_NOT_IMPLEMENTED),
+        )
+    } else {
+        (requested, None)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct NativeRegionGeometry {
@@ -42,7 +98,7 @@ fn native_layer_visibility(
     NativeLayerVisibility {
         container: mode != InputVisualEffectMode::Solid && has_geometry,
         gaussian: mode == InputVisualEffectMode::GaussianBlur && has_geometry,
-        liquid_requested: mode == InputVisualEffectMode::LiquidGlass,
+        liquid_requested: mode == InputVisualEffectMode::LiquidGlass && has_geometry,
     }
 }
 
@@ -97,10 +153,12 @@ pub struct WindowsInputGlassState {
     #[cfg(windows)]
     layer: Mutex<Option<NativeGlassLayer>>,
     force_failure: bool,
+    runtime_log: RuntimeLogService,
+    reported_codes: Mutex<HashSet<&'static str>>,
 }
 
 impl WindowsInputGlassState {
-    pub fn from_environment() -> Self {
+    pub fn from_environment(runtime_log: RuntimeLogService) -> Self {
         Self {
             status: Mutex::new(if cfg!(windows) {
                 InputVisualEffectStatus::pending()
@@ -110,7 +168,16 @@ impl WindowsInputGlassState {
             #[cfg(windows)]
             layer: Mutex::new(None),
             force_failure: enabled_value(std::env::var_os(FORCE_FAILURE_ENV).as_deref()),
+            runtime_log,
+            reported_codes: Mutex::new(HashSet::new()),
         }
+    }
+
+    pub fn support(&self) -> crate::input_visual_effect::InputVisualEffectSupport {
+        crate::input_visual_effect::InputVisualEffectSupport::new(
+            self.status().outcome != "degraded",
+            false,
+        )
     }
 
     pub fn status(&self) -> InputVisualEffectStatus {
@@ -131,6 +198,10 @@ impl WindowsInputGlassState {
 
         #[cfg(windows)]
         {
+            if let Err(error) = validate_windows_glass_policy() {
+                self.record_failure(error.code, &error.detail);
+                return;
+            }
             if enabled_value(std::env::var_os(LIQUID_GLASS_POC_ENV).as_deref()) {
                 eprintln!(
                     "[windows-input-glass] LIQUID_GLASS_UNSAFE_BACKEND_RETIRED: ignoring legacy PoC switch"
@@ -167,6 +238,10 @@ impl WindowsInputGlassState {
         }
         #[cfg(windows)]
         {
+            if let Err(error) = validate_windows_glass_policy() {
+                self.record_failure(error.code, &error.detail);
+                return Ok(self.status());
+            }
             let result = self
                 .layer
                 .lock()
@@ -180,6 +255,9 @@ impl WindowsInputGlassState {
                     return Ok(self.status());
                 }
                 Ok(Some(outcome)) => {
+                    if let Some(code) = outcome.error_code {
+                        self.record_limitation(code, "requested visual effect is unavailable");
+                    }
                     let mut status = if let Some(code) = outcome.error_code {
                         InputVisualEffectStatus::limited(outcome.effective_mode, code)
                     } else {
@@ -208,6 +286,10 @@ impl WindowsInputGlassState {
             if self.status().outcome == "degraded" {
                 return Ok(());
             }
+            if let Err(error) = validate_windows_glass_policy() {
+                self.record_failure(error.code, &error.detail);
+                return Ok(());
+            }
             let result = self
                 .layer
                 .lock()
@@ -226,6 +308,32 @@ impl WindowsInputGlassState {
         Ok(())
     }
 
+    pub fn set_control_surface_presented(
+        &self,
+        presented: bool,
+        duration_ms: u32,
+    ) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            if self.status().outcome == "degraded" {
+                return Ok(());
+            }
+            let result = self
+                .layer
+                .lock()
+                .map_err(|_| "native glass object store is unavailable".to_string())?
+                .as_ref()
+                .map(|layer| layer.set_control_surface_presented(presented, duration_ms))
+                .transpose();
+            if let Err(error) = result {
+                self.record_failure(error.code, &error.detail);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = (presented, duration_ms);
+        Ok(())
+    }
+
     fn set_status(&self, next: InputVisualEffectStatus) {
         if let Ok(mut status) = self.status.lock() {
             *status = next;
@@ -240,7 +348,57 @@ impl WindowsInputGlassState {
             }
         }
         self.set_status(InputVisualEffectStatus::failed(code));
+        self.record_runtime_outcome(
+            Severity::Warning,
+            "appearance.input_visual_effect.degraded",
+            "Windows 高斯模糊不可用，已回退为纯色",
+            code,
+            detail,
+            "degraded",
+        );
         eprintln!("[windows-input-glass] {code}: {detail}; continuing with solid input");
+    }
+
+    fn record_limitation(&self, code: &'static str, detail: &str) {
+        self.record_runtime_outcome(
+            Severity::Warning,
+            "appearance.input_visual_effect.limited",
+            "Windows 液态玻璃暂未实现，已回退为纯色",
+            code,
+            detail,
+            "limited",
+        );
+    }
+
+    fn record_runtime_outcome(
+        &self,
+        severity: Severity,
+        event: &'static str,
+        message: &'static str,
+        code: &'static str,
+        detail: &str,
+        outcome: &'static str,
+    ) {
+        let should_report = self
+            .reported_codes
+            .lock()
+            .map(|mut codes| codes.insert(code))
+            .unwrap_or(true);
+        if !should_report {
+            return;
+        }
+        let _ = self.runtime_log.submit(
+            RuntimeLogEvent::rust(severity, "appearance", event, message).attributes(
+                serde_json::json!({
+                    "code": code,
+                    "reason_code": code,
+                    "diagnostic": detail,
+                    "stage": "windows_input_glass",
+                    "outcome": outcome,
+                    "effective_mode": "solid",
+                }),
+            ),
+        );
     }
 }
 
@@ -268,7 +426,7 @@ struct NativeGlassLayer {
     _root: windows::UI::Composition::ContainerVisual,
     _backdrop_brush: windows::UI::Composition::CompositionBackdropBrush,
     _blur_factory: windows::UI::Composition::CompositionEffectFactory,
-    _blur_brush: windows::UI::Composition::CompositionEffectBrush,
+    blur_brush: windows::UI::Composition::CompositionEffectBrush,
     input_region: NativeGlassRegion,
     primary_overlay_brush: windows::UI::Composition::CompositionColorBrush,
     theme_tint_brush: windows::UI::Composition::CompositionColorBrush,
@@ -276,6 +434,7 @@ struct NativeGlassLayer {
     liquid_install_error: Option<&'static str>,
     latest_surface: Mutex<Option<(crate::window_geometry::ControlSurfaceLayout, [u32; 4], f64)>>,
     requested_mode: Mutex<InputVisualEffectMode>,
+    input_presented: Mutex<bool>,
 }
 
 #[cfg(windows)]
@@ -288,9 +447,10 @@ struct NativeAppearanceOutcome {
 struct NativeGlassRegion {
     container: windows::UI::Composition::ContainerVisual,
     blur_visual: windows::UI::Composition::SpriteVisual,
-    _primary_overlay_visual: windows::UI::Composition::SpriteVisual,
-    _theme_tint_visual: windows::UI::Composition::SpriteVisual,
+    primary_overlay_visual: windows::UI::Composition::SpriteVisual,
+    theme_tint_visual: windows::UI::Composition::SpriteVisual,
     clip: windows::UI::Composition::RectangleClip,
+    geometry: Mutex<Option<NativeRegionGeometry>>,
 }
 
 #[cfg(windows)]
@@ -306,11 +466,12 @@ impl NativeGlassRegion {
         let fill = Vector2 { X: 1.0, Y: 1.0 };
         let container = compositor.CreateContainerVisual()?;
         container.SetRelativeSizeAdjustment(fill)?;
-        container.SetIsVisible(false)?;
 
         let blur_visual = compositor.CreateSpriteVisual()?;
         blur_visual.SetRelativeSizeAdjustment(fill)?;
         blur_visual.SetBrush(blur_brush)?;
+        blur_visual.SetOpacity(0.0)?;
+        blur_visual.SetIsVisible(false)?;
         container.Children()?.InsertAtBottom(&blur_visual)?;
 
         let primary_overlay_visual = compositor.CreateSpriteVisual()?;
@@ -324,15 +485,35 @@ impl NativeGlassRegion {
         container.Children()?.InsertAtTop(&theme_tint_visual)?;
 
         let clip = compositor.CreateRectangleClip()?;
+        clip.SetRight(0.0)?;
+        clip.SetBottom(0.0)?;
         container.SetClip(&clip)?;
 
         Ok(Self {
             container,
             blur_visual,
-            _primary_overlay_visual: primary_overlay_visual,
-            _theme_tint_visual: theme_tint_visual,
+            primary_overlay_visual,
+            theme_tint_visual,
             clip,
+            geometry: Mutex::new(None),
         })
+    }
+
+    fn apply_clip_geometry(&self, geometry: NativeRegionGeometry) -> windows::core::Result<()> {
+        use windows_numerics::Vector2;
+
+        let radius = Vector2 {
+            X: geometry.corner_radius,
+            Y: geometry.corner_radius,
+        };
+        self.clip.SetLeft(geometry.offset[0])?;
+        self.clip.SetTop(geometry.offset[1])?;
+        self.clip.SetRight(geometry.offset[0] + geometry.size[0])?;
+        self.clip.SetBottom(geometry.offset[1] + geometry.size[1])?;
+        self.clip.SetTopLeftRadius(radius)?;
+        self.clip.SetTopRightRadius(radius)?;
+        self.clip.SetBottomRightRadius(radius)?;
+        self.clip.SetBottomLeftRadius(radius)
     }
 
     fn update(
@@ -350,19 +531,12 @@ impl NativeGlassRegion {
 
         let geometry = native_region_geometry(rect, scale, active_origin, logical_corner_radius)
             .map_err(|message| windows::core::Error::new(E_INVALIDARG_HRESULT, message))?;
-        let radius = Vector2 {
-            X: geometry.corner_radius,
-            Y: geometry.corner_radius,
-        };
-        self.clip.SetLeft(geometry.offset[0])?;
-        self.clip.SetTop(geometry.offset[1])?;
-        self.clip.SetRight(geometry.offset[0] + geometry.size[0])?;
-        self.clip.SetBottom(geometry.offset[1] + geometry.size[1])?;
-        self.clip.SetTopLeftRadius(radius)?;
-        self.clip.SetTopRightRadius(radius)?;
-        self.clip.SetBottomRightRadius(radius)?;
-        self.clip.SetBottomLeftRadius(radius)?;
+        self.clip.StopAnimation(&HSTRING::from("Right"))?;
         self.clip.StopAnimation(&HSTRING::from("Bottom"))?;
+        self.apply_clip_geometry(geometry)?;
+        *self.geometry.lock().map_err(|_| {
+            windows::core::Error::new(E_INVALIDARG_HRESULT, "glass region geometry lock")
+        })? = Some(geometry);
         if let (Some(previous_rect), Some(transition)) = (previous_rect, transition) {
             if transition.duration_ms > 0 {
                 let previous = native_region_geometry(
@@ -417,11 +591,98 @@ impl NativeGlassRegion {
                 }
             }
         }
-        self.container.SetIsVisible(true)
+        Ok(())
     }
 
     fn set_visible(&self, visible: bool) -> windows::core::Result<()> {
-        self.container.SetIsVisible(visible)
+        use windows::core::HSTRING;
+        use windows_numerics::Vector2;
+
+        self.clip.StopAnimation(&HSTRING::from("Right"))?;
+        self.clip.StopAnimation(&HSTRING::from("Bottom"))?;
+        if visible {
+            if let Some(geometry) = *self.geometry.lock().map_err(|_| {
+                windows::core::Error::new(E_INVALIDARG_HRESULT, "glass region geometry lock")
+            })? {
+                return self.apply_clip_geometry(geometry);
+            }
+        }
+        let radius = Vector2 { X: 0.0, Y: 0.0 };
+        self.clip.SetLeft(0.0)?;
+        self.clip.SetTop(0.0)?;
+        self.clip.SetRight(0.0)?;
+        self.clip.SetBottom(0.0)?;
+        self.clip.SetTopLeftRadius(radius)?;
+        self.clip.SetTopRightRadius(radius)?;
+        self.clip.SetBottomRightRadius(radius)?;
+        self.clip.SetBottomLeftRadius(radius)
+    }
+
+    fn animate_overlays_presented(
+        &self,
+        compositor: &windows::UI::Composition::Compositor,
+        previous: bool,
+        presented: bool,
+        duration_ms: u32,
+    ) -> windows::core::Result<()> {
+        use windows::{core::HSTRING, Foundation::TimeSpan};
+        use windows_numerics::Vector2;
+
+        let property = HSTRING::from("Opacity");
+        let start = if previous { 1.0 } else { 0.0 };
+        let target = if presented { 1.0 } else { 0.0 };
+        for visual in [&self.primary_overlay_visual, &self.theme_tint_visual] {
+            visual.StopAnimation(&property)?;
+            visual.SetOpacity(target)?;
+            if duration_ms == 0 || previous == presented {
+                continue;
+            }
+            let animation = compositor.CreateScalarKeyFrameAnimation()?;
+            let easing = compositor.CreateCubicBezierEasingFunction(
+                Vector2 { X: 0.25, Y: 0.1 },
+                Vector2 { X: 0.25, Y: 1.0 },
+            )?;
+            animation.SetDuration(TimeSpan {
+                Duration: i64::from(duration_ms) * 10_000,
+            })?;
+            animation.InsertKeyFrame(0.0, start)?;
+            animation.InsertKeyFrameWithEasingFunction(1.0, target, &easing)?;
+            visual.StartAnimation(&property, &animation)?;
+        }
+        Ok(())
+    }
+
+    fn animate_blur_presented(
+        &self,
+        compositor: &windows::UI::Composition::Compositor,
+        previous: bool,
+        presented: bool,
+        duration_ms: u32,
+    ) -> windows::core::Result<()> {
+        use windows::{core::HSTRING, Foundation::TimeSpan};
+        use windows_numerics::Vector2;
+
+        let property = HSTRING::from("Opacity");
+        let start = if previous { 1.0 } else { 0.0 };
+        let target = if presented { 1.0 } else { 0.0 };
+        self.blur_visual.StopAnimation(&property)?;
+        self.blur_visual.SetOpacity(target)?;
+        if duration_ms == 0 || previous == presented {
+            self.blur_visual.SetIsVisible(presented)?;
+            return Ok(());
+        }
+        self.blur_visual.SetIsVisible(true)?;
+        let animation = compositor.CreateScalarKeyFrameAnimation()?;
+        let easing = compositor.CreateCubicBezierEasingFunction(
+            Vector2 { X: 0.25, Y: 0.1 },
+            Vector2 { X: 0.25, Y: 1.0 },
+        )?;
+        animation.SetDuration(TimeSpan {
+            Duration: i64::from(duration_ms) * 10_000,
+        })?;
+        animation.InsertKeyFrame(0.0, start)?;
+        animation.InsertKeyFrameWithEasingFunction(1.0, target, &easing)?;
+        self.blur_visual.StartAnimation(&property, &animation)
     }
 }
 
@@ -477,6 +738,28 @@ impl NativeGlassLayer {
                 })?,
             )
         };
+        if let Ok(capabilities) =
+            windows::UI::Composition::CompositionCapabilities::GetForCurrentView()
+        {
+            let effects_supported = capabilities.AreEffectsSupported().map_err(|error| {
+                NativeGlassError::at("GLASS_EFFECT_SUPPORT_QUERY_FAILED", error)
+            })?;
+            let effects_fast = capabilities.AreEffectsFast().map_err(|error| {
+                NativeGlassError::at("GLASS_EFFECT_PERFORMANCE_QUERY_FAILED", error)
+            })?;
+            if !effects_supported {
+                return Err(NativeGlassError::at(
+                    "GLASS_EFFECTS_UNSUPPORTED",
+                    "composition effects are unavailable",
+                ));
+            }
+            if !effects_fast {
+                return Err(NativeGlassError::at(
+                    "GLASS_EFFECTS_NOT_FAST",
+                    "composition effects are disabled for this graphics environment",
+                ));
+            }
+        }
         let compositor = Compositor::new()
             .map_err(|error| NativeGlassError::at("GLASS_COMPOSITOR_CREATE_FAILED", error))?;
         let interop: ICompositorDesktopInterop = compositor
@@ -525,6 +808,19 @@ impl NativeGlassLayer {
         let blur_brush = blur_factory
             .CreateBrush()
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_BRUSH_CREATE_FAILED", error))?;
+        let blur_load_status = blur_factory
+            .LoadStatus()
+            .map_err(|error| NativeGlassError::at("GLASS_BLUR_LOAD_STATUS_FAILED", error))?;
+        if matches!(
+            blur_load_status,
+            windows::UI::Composition::CompositionEffectFactoryLoadStatus::EffectTooComplex
+                | windows::UI::Composition::CompositionEffectFactoryLoadStatus::Other
+        ) {
+            return Err(NativeGlassError::at(
+                "GLASS_BLUR_SHADER_LOAD_FAILED",
+                format!("load_status={}", blur_load_status.0),
+            ));
+        }
         blur_brush
             .SetSourceParameter(&HSTRING::from("backdrop"), &backdrop_brush)
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_SOURCE_BIND_FAILED", error))?;
@@ -562,24 +858,10 @@ impl NativeGlassLayer {
             &theme_tint_brush,
         )
         .map_err(|error| NativeGlassError::at("GLASS_INPUT_REGION_CREATE_FAILED", error))?;
-        // Installing the controller creates only one hidden composition visual.
-        // Capture/D3D resources remain lazy until the user selects Liquid Glass.
-        let (liquid, liquid_install_error) =
-            match crate::windows_liquid_glass_native::SinglePipelineController::install(
-                hwnd,
-                &compositor,
-                &input_region.container,
-                &input_region.blur_visual,
-            ) {
-                Ok(liquid) => (Some(liquid), None),
-                Err(error) => {
-                    eprintln!(
-                    "[windows-input-glass] {}: {}; liquid unavailable, no substitute effect enabled",
-                    error.code, error.detail
-                );
-                    (None, Some(error.code))
-                }
-            };
+        // The Windows liquid pipeline is intentionally not installed until the product
+        // implementation is complete. Existing liquid preferences resolve to solid below.
+        let liquid = None;
+        let liquid_install_error = Some(LIQUID_GLASS_NOT_IMPLEMENTED);
         root.Children()
             .and_then(|children| children.InsertAtTop(&input_region.container))
             .map_err(|error| NativeGlassError::at("GLASS_REGION_INSERT_FAILED", error))?;
@@ -595,7 +877,7 @@ impl NativeGlassLayer {
             _root: root,
             _backdrop_brush: backdrop_brush,
             _blur_factory: blur_factory,
-            _blur_brush: blur_brush,
+            blur_brush,
             input_region,
             primary_overlay_brush,
             theme_tint_brush,
@@ -603,7 +885,54 @@ impl NativeGlassLayer {
             liquid_install_error,
             latest_surface: Mutex::new(None),
             requested_mode: Mutex::new(InputVisualEffectMode::Solid),
+            input_presented: Mutex::new(true),
         })
+    }
+
+    fn set_control_surface_presented(
+        &self,
+        presented: bool,
+        duration_ms: u32,
+    ) -> Result<(), NativeGlassError> {
+        let previous = {
+            let mut current = self.input_presented.lock().map_err(|_| {
+                NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+            })?;
+            let previous = *current;
+            *current = presented;
+            previous
+        };
+        let has_geometry = self
+            .latest_surface
+            .lock()
+            .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
+            .as_ref()
+            .is_some_and(|(surface, _, _)| surface.input_visible);
+        let requested_mode = *self
+            .requested_mode
+            .lock()
+            .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
+        let visibility = native_layer_visibility(requested_mode, has_geometry);
+        if visibility.gaussian {
+            self.input_region
+                .animate_blur_presented(&self.compositor, previous, presented, duration_ms)
+                .map_err(|error| NativeGlassError::at("GLASS_BLUR_ANIMATION_FAILED", error))?;
+            self.input_region
+                .animate_overlays_presented(&self.compositor, previous, presented, duration_ms)
+                .map_err(|error| NativeGlassError::at("GLASS_TINT_ANIMATION_FAILED", error))?;
+        } else {
+            self.input_region
+                .animate_blur_presented(&self.compositor, previous, false, 0)
+                .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
+            self.input_region
+                .animate_overlays_presented(&self.compositor, previous, false, 0)
+                .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
+        }
+        self.compositor
+            .RequestCommitAsync()
+            .map(|_| ())
+            .map_err(|error| NativeGlassError::at("GLASS_PRESENTATION_COMMIT_FAILED", error))?;
+        Ok(())
     }
 
     fn update_appearance(
@@ -645,14 +974,18 @@ impl NativeGlassLayer {
                 );
             }
         }
-        let requested_mode = values.visual_effect_mode;
+        let (requested_mode, mut liquid_error) =
+            resolve_windows_requested_mode(values.visual_effect_mode);
         let has_geometry = self
             .latest_surface
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
-            .is_some();
+            .as_ref()
+            .is_some_and(|(surface, _, _)| surface.input_visible);
         let visibility = native_layer_visibility(requested_mode, has_geometry);
-        let mut liquid_error = None;
+        let presented = *self.input_presented.lock().map_err(|_| {
+            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+        })?;
         if let Some(liquid) = self.liquid.as_ref() {
             if let Err(error) = liquid.set_requested_visible(visibility.liquid_requested) {
                 eprintln!(
@@ -661,24 +994,29 @@ impl NativeGlassLayer {
                 );
                 liquid_error = Some(error.code);
             }
-        } else if visibility.liquid_requested {
+        } else if visibility.liquid_requested && liquid_error.is_none() {
             liquid_error = Some(
                 self.liquid_install_error
                     .unwrap_or("LIQUID_GLASS_BACKEND_UNAVAILABLE"),
             );
         }
-        self.input_region
-            .blur_visual
-            .SetIsVisible(visibility.gaussian)
-            .map_err(|error| NativeGlassError::at("GLASS_GAUSSIAN_VISIBILITY_FAILED", error))?;
         *self
             .requested_mode
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))? =
             requested_mode;
+        let material_presented = visibility.gaussian && presented;
         self.input_region
-            .set_visible(visibility.container)
-            .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))?;
+            .animate_blur_presented(&self.compositor, !material_presented, material_presented, 0)
+            .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
+        self.input_region
+            .animate_overlays_presented(
+                &self.compositor,
+                !material_presented,
+                material_presented,
+                0,
+            )
+            .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
         Ok(NativeAppearanceOutcome {
             effective_mode: requested_mode,
             error_code: liquid_error,
@@ -693,16 +1031,27 @@ impl NativeGlassLayer {
         transition: Option<crate::window_geometry::InputSurfaceTransition>,
     ) -> Result<(), NativeGlassError> {
         let scale = application.scale_factor * application.content_scale;
+        if !surface.input_visible {
+            if let Some(liquid) = self.liquid.as_ref() {
+                let _ = liquid.set_requested_visible(false);
+            }
+            self.input_region
+                .animate_blur_presented(&self.compositor, true, false, 0)
+                .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
+            self.input_region
+                .animate_overlays_presented(&self.compositor, true, false, 0)
+                .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
+            *self.latest_surface.lock().map_err(|_| {
+                NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock")
+            })? = Some((surface.clone(), application.active_bounds, scale));
+            return Ok(());
+        }
         let [active_x, active_y, _, _] = application.active_bounds;
-        let input_geometry = native_region_geometry(
-            surface.input_rect,
-            scale,
-            [active_x, active_y],
-            INPUT_CORNER_RADIUS,
-        )
-        .map_err(|error| NativeGlassError::at("GLASS_REGION_GEOMETRY_FAILED", error))?;
         let blur_standard_deviation = BASE_GAUSSIAN_STANDARD_DEVIATION * scale as f32;
-        self._blur_brush
+        let presented = *self.input_presented.lock().map_err(|_| {
+            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+        })?;
+        self.blur_brush
             .Properties()
             .and_then(|properties| {
                 properties.InsertScalar(
@@ -711,16 +1060,6 @@ impl NativeGlassLayer {
                 )
             })
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_STRENGTH_UPDATE_FAILED", error))?;
-        eprintln!(
-            "[windows-input-glass] region active={:?} input={:?} scale={scale:.6} blur={:.3} offset={:?} size={:?} placement={}x{}",
-            application.active_bounds,
-            surface.input_rect,
-            blur_standard_deviation,
-            input_geometry.offset,
-            input_geometry.size,
-            application.physical_placement.width,
-            application.physical_placement.height,
-        );
         self.input_region
             .update(
                 &self.compositor,
@@ -763,14 +1102,19 @@ impl NativeGlassLayer {
             .requested_mode
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
-        let visibility = native_layer_visibility(requested_mode, true);
+        let visibility = native_layer_visibility(requested_mode, surface.input_visible);
+        let material_presented = visibility.gaussian && presented;
         self.input_region
-            .blur_visual
-            .SetIsVisible(visibility.gaussian)
-            .map_err(|error| NativeGlassError::at("GLASS_GAUSSIAN_VISIBILITY_FAILED", error))?;
+            .animate_blur_presented(&self.compositor, !material_presented, material_presented, 0)
+            .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
         self.input_region
-            .set_visible(visibility.container)
-            .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))
+            .animate_overlays_presented(
+                &self.compositor,
+                !material_presented,
+                material_presented,
+                0,
+            )
+            .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))
     }
 }
 
@@ -1037,19 +1381,51 @@ mod tests {
     }
 
     #[test]
-    fn liquid_mode_never_enables_the_gaussian_layer_as_a_fallback() {
-        let liquid = native_layer_visibility(InputVisualEffectMode::LiquidGlass, true);
-        assert!(liquid.container);
-        assert!(liquid.liquid_requested);
-        assert!(!liquid.gaussian);
+    fn unfinished_windows_liquid_mode_resolves_to_solid() {
+        let (effective, error) = resolve_windows_requested_mode(InputVisualEffectMode::LiquidGlass);
+        assert_eq!(effective, InputVisualEffectMode::Solid);
+        assert_eq!(error, Some(LIQUID_GLASS_NOT_IMPLEMENTED));
+        assert!(!native_layer_visibility(effective, true).container);
 
+        let (effective, error) =
+            resolve_windows_requested_mode(InputVisualEffectMode::GaussianBlur);
+        assert_eq!(effective, InputVisualEffectMode::GaussianBlur);
+        assert_eq!(error, None);
         let gaussian = native_layer_visibility(InputVisualEffectMode::GaussianBlur, true);
         assert!(gaussian.container);
         assert!(gaussian.gaussian);
         assert!(!gaussian.liquid_requested);
+    }
 
-        assert!(!native_layer_visibility(InputVisualEffectMode::Solid, true).container);
-        assert!(!native_layer_visibility(InputVisualEffectMode::LiquidGlass, false).container);
+    #[test]
+    fn hidden_input_keeps_native_glass_layers_hidden_during_appearance_changes() {
+        for mode in [
+            InputVisualEffectMode::Solid,
+            InputVisualEffectMode::GaussianBlur,
+            InputVisualEffectMode::LiquidGlass,
+        ] {
+            let visibility = native_layer_visibility(mode, false);
+            assert!(!visibility.container, "{mode:?}");
+            assert!(!visibility.gaussian, "{mode:?}");
+            assert!(!visibility.liquid_requested, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn windows_glass_policy_rejects_unsupported_or_disabled_environments() {
+        assert_eq!(
+            windows_glass_policy_failure(21_999, true, false),
+            Some("WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000")
+        );
+        assert_eq!(
+            windows_glass_policy_failure(22_000, false, false),
+            Some("WINDOWS_ADVANCED_EFFECTS_DISABLED")
+        );
+        assert_eq!(
+            windows_glass_policy_failure(22_000, true, true),
+            Some("WINDOWS_ENERGY_SAVER_ACTIVE")
+        );
+        assert_eq!(windows_glass_policy_failure(22_000, true, false), None);
     }
 
     #[test]

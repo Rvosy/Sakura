@@ -8,11 +8,13 @@ import os
 import re
 import sys
 import threading
+import traceback
 from collections import Counter, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any, BinaryIO
+from app.core.diagnostics import DIAGNOSTIC_TEXT_KEYS, TRACE_LIMIT, exception_diagnostics, safe_diagnostic_text
 
 from app.core.runtime_log import (
     LogEvent,
@@ -23,9 +25,14 @@ from app.core.runtime_log import (
 
 
 CORE_BRIDGE_PREFIX = b"SAKURA_RUNTIME_LOG_V1\t"
+TELEMETRY_BRIDGE_PREFIX = b"SAKURA_TELEMETRY_V1\t"
 CORE_BRIDGE_QUEUE_CAPACITY = 256
-CORE_BRIDGE_MAX_LINE_BYTES = 4 * 1024
+CORE_BRIDGE_MAX_LINE_BYTES = 32 * 1024
+TELEMETRY_BRIDGE_MAX_LINE_BYTES = 128 * 1024 + len(TELEMETRY_BRIDGE_PREFIX) + 1
 CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS = 0.5
+
+_ACTIVE_BRIDGE_LOCK = threading.Lock()
+_ACTIVE_BRIDGE: RuntimeLoggingBridge | None = None
 
 _PRIORITY_SEVERITIES = frozenset({"warning", "error"})
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -56,17 +63,38 @@ _FORBIDDEN_KEY_MARKERS = (
 )
 _SAFE_ATTRIBUTE_KEYS = frozenset(
     {
+        "endpoint", "url", "path", "stderr",
+        "source_file",
+        "source_line",
+        "timeout_ms",
+        "exit_code",
+        "child_exited",
+        "probe_outcome",
+        "primary_code",
+        "recovery_code",
+        "recovery_outcome",
+        "source_exists",
+        "staged_exists",
+        "backup_exists",
+        "repair_reason",
+        "repair_outcome",
         "action",
         "attempt",
         "bytes",
         "candidates",
         "category",
+        "cause_type",
+        "cause_code",
+        "validation_field",
         "child_pid",
         "code",
         "command",
         "component",
         "count",
         "counts",
+        "context_window_source",
+        "context_window_tokens",
+        "current_required_tokens",
         "deadline_ms",
         "detail_stage",
         "dependency",
@@ -90,6 +118,7 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "generation",
         "history_messages",
         "host_state",
+        "input_target",
         "items",
         "listed",
         "lines",
@@ -101,6 +130,7 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "model_cached",
         "operation",
         "outcome",
+        "output_reserve",
         "parse_status",
         "prompt_tokens",
         "completion_tokens",
@@ -117,13 +147,17 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "provider_error_type",
         "purpose",
         "request_estimated_tokens",
+        "required_context_tokens",
+        "required_tokens",
         "retryable",
+        "safety_margin",
         "segment_count",
         "saved_sections",
         "selection_saved",
         "tool_call_count",
         "tool_count",
         "tool_schema_estimated_tokens",
+        "tool_schema_tokens",
         "estimated_tokens",
         "text_chars",
         "width",
@@ -145,7 +179,14 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "segments",
         "step_index",
         "stage",
+        "static_prompt_tokens",
         "status",
+        "exception_site",
+        "exception_chain",
+        "exception_stack",
+        "recovery_diagnostic",
+        "errno",
+        "winerror",
         "tool_name",
         "trigger_turns",
         "tree_empty",
@@ -186,19 +227,28 @@ _FORWARDED_VERBOSITY = {
 _BODY_FREE_METRIC_KEYS = frozenset(
     {
         "completion_tokens",
+        "context_window_tokens",
+        "current_required_tokens",
         "dynamic_context_estimated_tokens",
         "estimated_tokens",
         "history_messages",
+        "input_target",
         "memory_estimated_tokens",
+        "output_reserve",
         "prompt_tokens",
         "request_estimated_tokens",
+        "required_context_tokens",
+        "required_tokens",
+        "safety_margin",
+        "static_prompt_tokens",
         "tool_schema_estimated_tokens",
+        "tool_schema_tokens",
         "transport",
         "total_tokens",
     }
 )
 _SAFE_DIAGNOSTIC_KEYS = frozenset(
-    {"diagnostic", "error_type", "provider_error_code", "provider_error_type", "reason_code"}
+    {*DIAGNOSTIC_TEXT_KEYS, "error_type", "provider_error_code", "provider_error_type", "reason_code"}
 )
 _CORE_CHANNELS = frozenset(
     {
@@ -222,10 +272,12 @@ _CORE_CHANNELS = frozenset(
     }
 )
 _FIXED_MESSAGES = {
+    "reply.repair.finished": "Reply repair finished",
     "agent.turn.started": "Assistant turn started",
     "agent.turn.finished": "Assistant turn finished",
     "chat.request.received": "Chat request received",
     "chat.request.completed": "Chat request completed",
+    "chat.finished": "Chat finished",
     "chat.request.cancelled": "Chat request cancelled",
     "chat.request.failed": "Chat request failed",
     "memory.recall.started": "Memory recall started",
@@ -253,6 +305,7 @@ _FIXED_MESSAGES = {
     "screen.capture.cancelled": "Screen capture cancelled",
     "screen.capture.failed": "Screen capture failed",
     "tts.service.started": "TTS service started",
+    "tts.service.waiting_ready": "TTS service process is waiting for readiness",
     "tts.service.ready": "TTS service ready",
     "tts.service.failed": "TTS service failed",
     "tts.process.cleanup.started": "TTS stale process cleanup started",
@@ -286,7 +339,17 @@ _FIXED_MESSAGES = {
     "tts.service.warmup_skipped": "TTS service warmup skipped",
     "tts.service.warmup_failed": "TTS service warmup failed",
     "tts.endpoint.ready": "TTS endpoint ready",
+    "tts.weights.loading": "TTS weights loading",
     "tts.weights.ready": "TTS weights ready",
+    "tts.weights.failed": "TTS weights failed",
+    "tts.conversion.checking": "Genie ONNX model preparation started",
+    "tts.conversion.reused": "Genie packaged ONNX model reused",
+    "tts.conversion.cache_hit": "Genie ONNX conversion cache hit",
+    "tts.conversion.started": "Genie ONNX converter started",
+    "tts.conversion.running": "Genie ONNX conversion in progress",
+    "tts.conversion.finished": "Genie ONNX conversion completed",
+    "tts.conversion.failed": "Genie ONNX conversion failed",
+    "tts.conversion.cancelled": "Genie ONNX conversion cancelled",
     "mcp.server.ready": "MCP server ready",
     "mcp.ready": "MCP tools ready",
     "mcp.config.disabled": "MCP is disabled",
@@ -312,6 +375,7 @@ _FIXED_MESSAGES = {
     "memory.curation.finished": "Background memory curation finished",
     "memory.curation.failed": "Background memory curation failed and will retry",
     "memory.curation.triggered": "Background memory curation triggered",
+    "memory.curation.request_fuse_opened": "Background memory curation request fuse opened",
     "python.logging.info": "Python application log event",
     "python.logging.warning": "Python application warning",
     "python.logging.error": "Python application error",
@@ -341,6 +405,10 @@ class _AppLoggingHandler(logging.Handler):
         if record.exc_info and isinstance(record.exc_info[0], type):
             attributes["code"] = "PYTHON_EXCEPTION"
             attributes["category"] = _safe_category(record.exc_info[0].__name__)
+            if isinstance(record.exc_info[1], BaseException):
+                attributes.update(exception_diagnostics(record.exc_info[1], reason_code="PYTHON_EXCEPTION", stage=record.funcName))
+        elif severity in {"warning", "error"}:
+            attributes["diagnostic"] = safe_diagnostic_text(record.getMessage())
         self._bridge.emit_fixed(
             severity=severity,
             channel="python.logging",
@@ -391,6 +459,7 @@ class RuntimeLoggingBridge:
             return self._failed
 
     def install(self) -> None:
+        global _ACTIVE_BRIDGE
         register_external_sink(self._sink)
         logger = logging.getLogger("app")
         handler = _AppLoggingHandler(self)
@@ -404,6 +473,8 @@ class RuntimeLoggingBridge:
         logger.addHandler(handler)
         self._app_logger = logger
         self._handler = handler
+        with _ACTIVE_BRIDGE_LOCK:
+            _ACTIVE_BRIDGE = self
 
     def submit(self, record: LogEvent) -> bool:
         wire = _wire_record_from_log_event(record)
@@ -446,28 +517,49 @@ class RuntimeLoggingBridge:
     def emit_unhandled(self, code: str, error: BaseException) -> bool:
         declared = str(getattr(error, "code", ""))
         if not _CODE_RE.fullmatch(declared):
-            prefix = str(error).partition(":")[0].strip()
+            prefix = safe_diagnostic_text(error).partition(":")[0].strip()
             declared = prefix if _CODE_RE.fullmatch(prefix) else ""
-        stable_detail = declared if _CODE_RE.fullmatch(declared) else type(error).__name__
-        diagnostic = {
-            "TRANSPORT_WRITE_FAILED": "Core 协议写入通道意外关闭",
-            "WRITER_QUEUE_CLOSED": "Core 协议写入队列已关闭",
-            "GENERATION_CREDENTIAL_MISMATCH": "Core generation 凭据握手失败",
-            "SHUTDOWN_DURING_INITIALIZE": "Assistant 后台初始化未在退出期限内结束",
-        }.get(stable_detail, f"Core 进程边界异常：{_safe_category(type(error).__name__)}")
-        return self.emit_fixed(
+        evidence = exception_diagnostics(error, reason_code=code, stage="process_boundary")
+        logged = self.emit_fixed(
             severity="error",
             channel="core.process",
             event="core.error.unhandled",
             attributes={
                 "code": code if _CODE_RE.fullmatch(code) else "CORE_UNHANDLED_ERROR",
                 "category": _safe_category(type(error).__name__),
-                "error_type": stable_detail,
-                "diagnostic": diagnostic,
+                **evidence,
             },
         )
+        telemetry_code = code if _CODE_RE.fullmatch(code) else "CORE_UNHANDLED_ERROR"
+        self._enqueue_telemetry(
+            "error",
+            {
+                "schema": 3,
+                "evidence": evidence,
+                "details": {
+                    "severity": "error",
+                    "impact": "unavailable",
+                    "stage": "process_boundary",
+                    **({"reasonCode": declared} if declared else {}),
+                    **(
+                        {"causeType": _safe_token(type(error.__cause__).__name__, 128)}
+                        if error.__cause__
+                        else {}
+                    ),
+                },
+                "component": "core",
+                "event": "core.error.unhandled",
+                "code": telemetry_code,
+                "operationId": None,
+                "exceptionType": _safe_token(type(error).__name__, 128),
+                "stack": _safe_stack(error),
+            },
+            severity="error",
+        )
+        return logged
 
     def close(self, timeout: float = CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS) -> bool:
+        global _ACTIVE_BRIDGE
         timeout = min(max(0.0, float(timeout)), CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS)
         if self._app_logger is not None and self._handler is not None:
             self._app_logger.removeHandler(self._handler)
@@ -479,6 +571,9 @@ class RuntimeLoggingBridge:
             self._handler = None
             self._app_logger = None
         unregister_external_sink(self._sink)
+        with _ACTIVE_BRIDGE_LOCK:
+            if _ACTIVE_BRIDGE is self:
+                _ACTIVE_BRIDGE = None
         with self._condition:
             if not self._closed:
                 self._closed = True
@@ -497,6 +592,23 @@ class RuntimeLoggingBridge:
             with self._condition:
                 self._note_dropped(source, severity)
             return False
+        return self._enqueue_line(line, severity=severity, source=source)
+
+    def _enqueue_telemetry(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        severity: str = "info",
+    ) -> bool:
+        line = _encode_telemetry_record(kind, payload)
+        if line is None:
+            with self._condition:
+                self._note_dropped("telemetry", severity)
+            return False
+        return self._enqueue_line(line, severity=severity, source="telemetry")
+
+    def _enqueue_line(self, line: bytes, *, severity: str, source: str) -> bool:
         queued = _QueuedLine(line=line, severity=severity, source=source)
         with self._condition:
             if self._stopping or self._failed:
@@ -578,6 +690,16 @@ def install_runtime_logging(stream: BinaryIO | None = None) -> RuntimeLoggingBri
     bridge = RuntimeLoggingBridge(stream if stream is not None else _stderr_buffer())
     bridge.install()
     return bridge
+
+
+def submit_telemetry_model_call(candidate: Mapping[str, object]) -> bool:
+    """Submit one body-free, fixed-schema model metric to the active bridge."""
+
+    if not _valid_model_call_candidate(candidate):
+        return False
+    with _ACTIVE_BRIDGE_LOCK:
+        bridge = _ACTIVE_BRIDGE
+    return bridge._enqueue_telemetry("modelCall", candidate) if bridge is not None else False
 
 
 def forward_runtime_log_record(value: Mapping[str, object]) -> bool:
@@ -685,7 +807,7 @@ class _NullBinaryStream:
 def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     severity = _normalize_severity(record.severity)
     known_event = record.event in _FIXED_MESSAGES
-    if severity == "info":
+    if severity == "info" and not record.custom:
         if not known_event or record.verbosity >= 5:
             severity = "trace"
         elif record.verbosity >= 3:
@@ -710,7 +832,18 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
         if safe is not None:
             correlations[target_key] = safe
     wire.update(correlations)
-    safe_attributes = _safe_attributes(attributes)
+    if record.plugin_id is not None:
+        wire["plugin_id"] = _safe_token(record.plugin_id, 64)
+        if record.plugin_name:
+            from app.plugins.sakura_plugin_sdk import safe_text
+            wire["plugin_name"] = safe_text(record.plugin_name, 256)
+    if record.custom:
+        from app.plugins.sakura_plugin_sdk import prepare_log_payload
+        message, safe_attributes = prepare_log_payload(record.message, attributes)
+        safe_attributes.update(_safe_attributes({key: value for key, value in attributes.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "cause_code", "validation_field", "error_type", "exception_site", "errno", "winerror"}}))
+        wire.update(custom=True, message=message, event="runtime.message")
+    else:
+        safe_attributes = _safe_attributes(attributes)
     if safe_attributes:
         wire["attributes"] = safe_attributes
     return wire
@@ -726,7 +859,7 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
             key in _CORRELATION_KEYS
             or key not in _SAFE_ATTRIBUTE_KEYS
             or (
-                key not in {*_SAFE_DIAGNOSTIC_KEYS, *_BODY_FREE_METRIC_KEYS}
+                key not in {*_SAFE_DIAGNOSTIC_KEYS, *_BODY_FREE_METRIC_KEYS, "endpoint", "url", "path", "stderr"}
                 and any(marker in key for marker in _FORBIDDEN_KEY_MARKERS)
             )
         ):
@@ -738,8 +871,21 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
                 continue
             safe[key] = value
         elif isinstance(value, str):
-            if key == "diagnostic":
-                diagnostic = _safe_diagnostic(value)
+            if key == "source_file":
+                if (
+                    value.startswith(
+                        ("app/", "plugins/builtin/", "desktop/src-tauri/src/")
+                    )
+                    and all(
+                        re.fullmatch(r"[A-Za-z0-9_.-]+", part)
+                        and part not in {".", ".."}
+                        for part in value.split("/")
+                    )
+                    and len(value) <= 240
+                ):
+                    safe[key] = value
+            elif key in DIAGNOSTIC_TEXT_KEYS or key in {"endpoint", "url", "path", "stderr", "model", "provider"}:
+                diagnostic = safe_diagnostic_text(value, TRACE_LIMIT if key != "diagnostic" else 4096)
                 if diagnostic is not None:
                     safe[key] = diagnostic
             else:
@@ -758,7 +904,14 @@ def _encode_wire_record(wire: Mapping[str, object]) -> bytes | None:
     line = _json_line(candidate)
     if len(line) <= CORE_BRIDGE_MAX_LINE_BYTES:
         return line
-    candidate["attributes"] = {"record_truncated": True}
+    # Keep the actual failure when a producer filled the frame budget. Shrink
+    # each diagnostic independently instead of discarding all attributes.
+    candidate["attributes"] = {
+        key: safe_diagnostic_text(value, 1024) if isinstance(value, str) else value
+        for key, value in dict(candidate.get("attributes") or {}).items()
+        if key in DIAGNOSTIC_TEXT_KEYS or key in {"code", "reason_code", "error_type", "cause_type", "cause_code", "validation_field", "stage", "exception_site"}
+    }
+    candidate["attributes"]["record_truncated"] = True
     line = _json_line(candidate)
     if len(line) <= CORE_BRIDGE_MAX_LINE_BYTES:
         return line
@@ -766,6 +919,143 @@ def _encode_wire_record(wire: Mapping[str, object]) -> bytes | None:
         candidate.pop(key, None)
     line = _json_line(candidate)
     return line if len(line) <= CORE_BRIDGE_MAX_LINE_BYTES else None
+
+
+def _encode_telemetry_record(kind: str, payload: Mapping[str, object]) -> bytes | None:
+    key = "error" if kind == "error" else "modelCall" if kind == "modelCall" else ""
+    if not key:
+        return None
+    try:
+        encoded = json.dumps(
+            {"kind": kind, key: dict(payload)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    line = TELEMETRY_BRIDGE_PREFIX + encoded + b"\n"
+    return line if len(line) <= TELEMETRY_BRIDGE_MAX_LINE_BYTES else None
+
+
+def _safe_stack(error: BaseException) -> list[dict[str, object]]:
+    frames: list[dict[str, object]] = []
+    for frame in traceback.extract_tb(error.__traceback__)[-16:]:
+        module = frame.filename.replace("\\", "/")
+        if "/app/" in module:
+            relative = "app/" + module.rsplit("/app/", 1)[1]
+        else:
+            relative = ""
+        function = _safe_token(frame.name, 128)
+        item: dict[str, object] = {}
+        if function is not None:
+            item["function"] = function
+        if relative and ".." not in relative and len(relative) <= 240:
+            item["file"] = relative
+        if relative and isinstance(frame.lineno, int) and frame.lineno > 0:
+            item["line"] = frame.lineno
+        if item:
+            frames.append(item)
+    return frames
+
+
+def _valid_model_call_candidate(candidate: Mapping[str, object]) -> bool:
+    required = {
+        "schema", "operationId", "modelCall", "purpose", "modelFamily", "outcome",
+        "errorCode", "latencyMs", "contextWindowTokens", "contextWindowSource",
+        "usage", "estimate",
+    }
+    if not isinstance(candidate, Mapping) or set(candidate) not in (
+        required,
+        required | {"request"},
+    ):
+        return False
+    if candidate.get("schema") not in {1, 2}:
+        return False
+    request = candidate.get("request", {})
+    if not isinstance(request, Mapping) or set(request) - {
+        "faultDomain",
+        "reasonCode",
+        "httpStatus",
+        "stage",
+        "attemptCount",
+        "compatibilityFallback",
+    }:
+        return False
+    if request.get("reasonCode") is not None and not _CODE_RE.fullmatch(
+        str(request["reasonCode"])
+    ):
+        return False
+    for key, choices in {
+        "faultDomain": {
+            "authentication",
+            "rate_limit",
+            "provider",
+            "transport",
+            "protocol",
+            "context",
+            "compatibility",
+            "cancelled",
+            "unknown",
+        },
+        "stage": {"connect", "read", "decode", "request", "response", "unknown"},
+        "compatibilityFallback": {
+            "response_format",
+            "temperature",
+            "runtime_context_role",
+        },
+    }.items():
+        if request.get(key) is not None and request[key] not in choices:
+            return False
+    for key, low, high in (("httpStatus", 100, 599), ("attemptCount", 0, 1000000)):
+        value = request.get(key)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not low <= value <= high
+        ):
+            return False
+    operation_id = candidate.get("operationId")
+    if operation_id is not None and _safe_id(operation_id) is None:
+        return False
+    return (
+        isinstance(candidate.get("modelCall"), int)
+        and not isinstance(candidate.get("modelCall"), bool)
+        and candidate["modelCall"] >= 1
+        and candidate.get("purpose") in {
+            "agent_step", "final_reply", "reply_repair", "screen_observation",
+            "proactive_reply", "background_agent", "memory_curation", "memory_curation_repair",
+        }
+        and candidate.get("modelFamily") in {"openai", "anthropic", "gemini", "deepseek", "custom", "unknown"}
+        and candidate.get("outcome") in {"success", "failed", "cancelled"}
+        and candidate.get("contextWindowSource") in {"provider", "configured", "fallback", "unknown"}
+        and isinstance(candidate.get("latencyMs"), int)
+        and not isinstance(candidate.get("latencyMs"), bool)
+        and candidate["latencyMs"] >= 0
+        and isinstance(candidate.get("contextWindowTokens"), int)
+        and not isinstance(candidate.get("contextWindowTokens"), bool)
+        and candidate["contextWindowTokens"] >= 0
+        and (candidate.get("errorCode") is None or bool(_CODE_RE.fullmatch(str(candidate["errorCode"]))))
+        and (candidate.get("outcome") != "success" or candidate.get("errorCode") is None)
+        and (candidate.get("usage") is None or _valid_nonnegative_metrics(candidate["usage"], {
+            "promptTokens", "completionTokens", "totalTokens", "inputTokens", "outputTokens",
+            "cachedInputTokens", "reasoningTokens",
+        }))
+        and (candidate.get("estimate") is None or _valid_nonnegative_metrics(candidate["estimate"], {
+            "requestTokens", "historyTokens", "memoryTokens", "dynamicContextTokens",
+            "toolSchemaTokens", "historyMessages", "memories", "toolCount",
+        }, allow_none=False))
+    )
+
+
+def _valid_nonnegative_metrics(value: object, keys: set[str], *, allow_none: bool = True) -> bool:
+    if not isinstance(value, Mapping) or set(value) != keys:
+        return False
+    return all(
+        (item is None and allow_none)
+        or (isinstance(item, int) and not isinstance(item, bool) and item >= 0)
+        for item in value.values()
+    )
 
 
 def _json_line(wire: Mapping[str, object]) -> bytes:
@@ -806,26 +1096,6 @@ def _safe_token(value: object, maximum: int) -> str | None:
     ):
         return None
     return value if _TOKEN_RE.fullmatch(value) else None
-
-
-def _safe_diagnostic(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    text = re.sub(r"[\x00-\x1f\x7f]+", " ", value)
-    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [REDACTED]", text)
-    text = re.sub(
-        r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+",
-        r"\1=[REDACTED]",
-        text,
-    )
-    text = re.sub(r"(?i)\bsk-[A-Za-z0-9._-]{6,}", "[REDACTED]", text)
-    text = re.sub(
-        r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@",
-        r"\1[REDACTED]@",
-        text,
-    )
-    text = " ".join(text.split())[:320]
-    return text or None
 
 
 def _safe_core_channel(value: object) -> str:
@@ -875,8 +1145,11 @@ __all__ = [
     "CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS",
     "CORE_BRIDGE_MAX_LINE_BYTES",
     "CORE_BRIDGE_PREFIX",
+    "TELEMETRY_BRIDGE_PREFIX",
+    "TELEMETRY_BRIDGE_MAX_LINE_BYTES",
     "CORE_BRIDGE_QUEUE_CAPACITY",
     "RuntimeLoggingBridge",
     "forward_runtime_log_record",
     "install_runtime_logging",
+    "submit_telemetry_model_call",
 ]

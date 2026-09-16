@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-12
 ---
 
 # WP-1P-06：三平台最小 Shell + Core lifecycle 总门
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-24
 > 前置：WP-1P-05 accepted，提交 `63a4106`
 > 规范来源：ADR-0001、ADR-0003、ADR-0004、WP-1P-01/02/03/04/05
@@ -28,12 +27,10 @@ shared lock -> explicit RuntimeLocator -> controlled Core tree -> hello
 只验证当前最小 Core 已有的公共 lifecycle 接口；不伪造插件、MCP、TTS、浏览器或 Assistant
 后代已经完成产品级排水。
 
-## 2. 允许目录与非目标
+## 2. 验证边界
 
-允许修改：`desktop/src-tauri/src/core_host_runtime.rs`、`main.rs` 的最小 debug/acceptance
-接线、platform contracts/backend 测试、三平台 acceptance fixture、platform foundation
-workflow、本文、ADR-0004 和 Work Package 总计划。不得修改真实 `data/`、`runtime/`、
-角色、插件、`.superpowers/`、共享数据 schema、产品 Assistant/MCP/TTS 语义或发布 workflow。
+组合测试使用隔离夹具和平台正确的 Runtime，覆盖实际 lifecycle 调用链。保留用户配置、角色和历史数据，
+并验证进程、锁及临时资源清理；不能把最小 Core 的结果推定为 Assistant、MCP 或 TTS 的完整能力验收。
 
 ## 3. 故障矩阵
 
@@ -42,8 +39,10 @@ workflow、本文、ADR-0004 和 Work Package 总计划。不得修改真实 `da
 后代存活、旧 generation barrier、app shutdown during spawn/initialize、Tauri 强杀、锁释放
 后立即重新获取，以及 pipe/fd/handle/进程树/临时目录/隔离清单零残留。
 
-Linux 安装依赖、下载、构建和测试均使用分钟级 timeout 与有界重试；concurrency 必须取消旧
-run。diagnostics 记录 CI session/compositor 元数据，但不把 Xvfb 当真实设备验收。
+Linux 安装依赖、下载、构建和测试均设置有界 timeout；仅已确认的外部瞬时故障允许有界恢复重试并保留
+失败证据。编译错误、测试失败和原因未明的超时不得自动重试到成功，处理规则见
+[项目约束](../../../AGENTS.md#ci-偶发失败必须闭环)。concurrency 必须取消旧 run。
+diagnostics 记录 CI session/compositor 元数据，但不把 Xvfb 当真实设备验收。
 
 ## 4. 退出条件
 

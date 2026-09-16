@@ -7,7 +7,7 @@ import threading
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 try:
@@ -27,6 +27,7 @@ TTSBundleResource = _support.TTSBundleResource
 ToneReference = _support.ToneReference
 _TTSRequest = _support._TTSRequest
 find_usable_runtime_python = _support.find_usable_runtime_python
+installed_bundle_result = _support.installed_bundle_result
 recommend_gpt_sovits_bundle = _support.recommend_gpt_sovits_bundle
 terminate_process_tree = _support.terminate_process_tree
 user_facing_path = _support.user_facing_path
@@ -131,12 +132,16 @@ class _Job:
             else:
                 self._state = "succeeded"
             self._done.set()
+            cancelled = self._state == "cancelled"
+        if cancelled:
+            self._disposer()
 
     def fail(self, error_code: str) -> None:
         with self._lock:
             self._error_code = _stable_error_code(error_code)
             self._state = "cancelled" if self._cancelled.is_set() else "failed"
             self._done.set()
+        self._disposer()
 
     def cancel(self) -> bool:
         with self._lock:
@@ -144,10 +149,13 @@ class _Job:
             self._cancelled.set()
             if self._request is not None:
                 self._request.cancelled = True
-            if accepted and not self._started:
+            finished = accepted and not self._started
+            if finished:
                 self._state = "cancelled"
                 self._done.set()
-            return accepted
+        if finished:
+            self._disposer()
+        return accepted
 
     def attach_request(self, request: _TTSRequest) -> None:
         with self._lock:
@@ -170,10 +178,8 @@ class _Job:
                 try:
                     artifact = self._artifacts.commit(self._allocation["artifactId"])
                 except Exception:
-                    self._artifacts.release(self._allocation["artifactId"])
                     return {"state": "failed", "errorCode": "TTS_ARTIFACT_INVALID"}
                 return {"state": "succeeded", "artifact": artifact}
-            self._artifacts.release(self._allocation["artifactId"])
             if state == "cancelled":
                 return {"state": "cancelled"}
             return {"state": "failed", "errorCode": error_code}
@@ -182,11 +188,10 @@ class _Job:
 
     def close(self) -> None:
         self.cancel()
-        # Artifact cleanup is the next older root Effect. Do not let it remove
-        # the allocation while the coordinator can still write the payload.
-        # A truly stuck synthesis is intentionally escalated to the Core-owned
-        # Worker lifecycle deadline and full process-tree rebuild.
+        # The coordinator must stop writing before its artifact can be released.
+        # A stuck writer is bounded by the Core-owned plugin shutdown deadline.
         self._done.wait()
+        self._artifacts.release(self._allocation["artifactId"])
 
 
 class _Warmup:
@@ -238,12 +243,19 @@ class _JobSupervisor:
 
 
 class _EngineQueue:
-    def __init__(self, supervisor: _JobSupervisor, settings: GPTSoVITSTTSSettings, job: _Job) -> None:
+    def __init__(
+        self,
+        supervisor: _JobSupervisor,
+        settings: GPTSoVITSTTSSettings,
+        job: _Job,
+        diagnostic=None,
+    ) -> None:
         self._supervisor = supervisor
         self.settings = settings
         self._cache_dir = job.output_path.parent
         self._job = job
         self._tone_indices: dict[str, int] = {}
+        self._report = diagnostic
 
     def _select_reference(self, tone: str | None) -> ToneReference:
         tone_key = (tone or DEFAULT_TONE).strip() or DEFAULT_TONE
@@ -267,8 +279,13 @@ class _EngineQueue:
 
 
 class _Coordinator:
-    def __init__(self, config: _ProviderConfig) -> None:
+    def __init__(
+        self,
+        config: _ProviderConfig,
+        diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None,
+    ) -> None:
         self._config = config
+        self._diagnostic = diagnostic
         self._queue: queue.Queue[_Job | _Warmup | object] = queue.Queue(maxsize=16)
         self._closed = threading.Event()
         self._lock = threading.RLock()
@@ -277,6 +294,8 @@ class _Coordinator:
         self._supervisor: GptSovitsEndpointSupervisor | None = None
         self._loaded_weights: tuple[str, str] | None = None
         self._pending_config: _ProviderConfig | None = None
+        self._paused = False
+        self._idle = threading.Condition(self._lock)
         self._thread = threading.Thread(
             target=self._run,
             name="sakura-gpt-sovits-coordinator",
@@ -288,7 +307,7 @@ class _Coordinator:
         # Serialize submit with close so a job cannot be queued after close has
         # already drained the queue and stopped the coordinator.
         with self._lock:
-            if self._closed.is_set():
+            if self._closed.is_set() or self._paused:
                 raise RuntimeError("TTS_PROVIDER_CLOSED")
             try:
                 self._queue.put_nowait(job)
@@ -297,7 +316,7 @@ class _Coordinator:
 
     def warmup(self, voice: _CharacterVoice) -> None:
         with self._lock:
-            if self._closed.is_set():
+            if self._closed.is_set() or self._paused:
                 raise RuntimeError("TTS_PROVIDER_CLOSED")
             try:
                 self._queue.put_nowait(_Warmup(voice))
@@ -315,6 +334,8 @@ class _Coordinator:
                     continue
                 with self._lock:
                     self._active = item
+                    if self._paused:
+                        item.cancel()
                 if isinstance(item, _Warmup):
                     self._execute_warmup(item)
                 else:
@@ -327,7 +348,43 @@ class _Coordinator:
                     self._pending_config = None
                 if pending_config is not None:
                     self._apply_config(pending_config)
+                with self._idle:
+                    self._queue.task_done()
+                    self._idle.notify_all()
+
+    def prepare_resources(self) -> bool:
+        from time import monotonic
+        deadline = monotonic() + 2.0
+        with self._idle:
+            self._paused = True
+            if self._active is not None:
+                self._active.cancel()
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(item, _Job):
+                    item.cancel()
+                elif isinstance(item, _Warmup):
+                    item.cancel()
                 self._queue.task_done()
+            while self._queue.unfinished_tasks:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    self._paused = False
+                    raise RuntimeError("TTS_RESOURCE_UPDATE_BUSY")
+                self._idle.wait(remaining)
+        return True
+
+    def finish_resources(self) -> bool:
+        with self._idle:
+            self._loaded_weights = None
+            runtime = self._resolver.runtime if self._resolver is not None else None
+            if runtime is not None:
+                runtime._weights_ready = False
+            self._paused = False
+        return True
 
     def reconfigure(self, config: _ProviderConfig) -> None:
         with self._lock:
@@ -385,7 +442,12 @@ class _Coordinator:
                 errors.append("TTS_SYNTHESIS_CANCELLED" if job.cancelled else message)
 
             source = GPTSoVITSSynthesisEngine().synthesize(
-                _EngineQueue(_JobSupervisor(supervisor, job), settings, job),
+                _EngineQueue(
+                    _JobSupervisor(supervisor, job),
+                    settings,
+                    job,
+                    self._report_runtime_lifecycle,
+                ),
                 request,
                 fail=fail,
                 skip=skip,
@@ -404,6 +466,7 @@ class _Coordinator:
             job.cancel()
             job.fail("TTS_SYNTHESIS_CANCELLED")
         except Exception as error:
+            self._report("tts.synthesis.failed", "error", {"reason_code": _stable_error_code(error), "error_type": type(error).__name__})
             job.fail(getattr(error, "code", str(error)))
         finally:
             if source is not None:
@@ -412,26 +475,65 @@ class _Coordinator:
     def _execute_warmup(self, warmup: _Warmup) -> None:
         if self._config.custom_base_url is not None:
             return
+        stage = "configuration"
         try:
             warmup.check_cancelled()
             settings, supervisor = self._configure(warmup.voice)
             errors: list[str] = []
+            stage = "runtime_start"
             if not supervisor._ensure_service_available(errors.append):
-                raise RuntimeError(errors[-1] if errors else "TTS_RUNTIME_UNAVAILABLE")
+                return
             warmup.check_cancelled()
+            stage = "weights"
             if not supervisor._ensure_character_weights(
                 errors.append,
                 cancel_checker=warmup.check_cancelled,
             ):
-                raise RuntimeError(errors[-1] if errors else "TTS_WEIGHTS_UNAVAILABLE")
+                return
             runtime = self._resolver.runtime if self._resolver is not None else None
             if runtime is not None and getattr(runtime, "_weights_ready", False):
                 self._loaded_weights = _weight_key(settings)
         except OperationCancelled:
             return
-        except Exception:
+        except Exception as error:
             # Warmup is best effort. The first synthesis retries the same
             # preparation path and publishes the user-visible terminal state.
+            self._report_warmup_failure(
+                _stable_error_code(error),
+                stage,
+                type(error).__name__,
+            )
+            return
+
+    def _report_warmup_failure(
+        self,
+        reason_code: object,
+        stage: str,
+        error_type: str,
+    ) -> None:
+        self._report(
+            "tts.service.warmup_failed",
+            "warning",
+            {
+                "provider": PROVIDER_ID,
+                "reason_code": _stable_error_code(reason_code),
+                "stage": stage,
+                "error_type": error_type,
+            },
+        )
+
+    def _report(
+        self,
+        event: str,
+        severity: str,
+        attributes: Mapping[str, str],
+    ) -> None:
+        if self._diagnostic is None:
+            return
+        try:
+            self._diagnostic(event, severity, attributes)
+        except Exception:
+            # Diagnostics must never change Provider behavior.
             return
 
     def _configure(
@@ -447,6 +549,7 @@ class _Coordinator:
                 base_dir=base_dir,
                 resource_manager=None,
                 is_closed=self._operation_cancelled,
+                diagnostic=self._report_runtime_lifecycle,
             )
             self._supervisor = GptSovitsEndpointSupervisor(self._resolver)
         else:
@@ -462,6 +565,18 @@ class _Coordinator:
             settings = resolved
         assert self._supervisor is not None
         return settings, self._supervisor
+
+    def _report_runtime_lifecycle(
+        self,
+        event: str,
+        severity: str,
+        attributes: Mapping[str, str],
+    ) -> None:
+        self._report(
+            event,
+            severity,
+            {"provider": PROVIDER_ID, **dict(attributes)},
+        )
 
     def _operation_cancelled(self) -> bool:
         if self._closed.is_set():
@@ -505,43 +620,63 @@ class _Coordinator:
 
 
 class GPTSoVITSProvider:
-    def __init__(self, context: object, character: object, artifacts: object) -> None:
+    def __init__(
+        self,
+        context: object,
+        character: object,
+        artifacts: object,
+        diagnostics: object | None = None,
+        logger: Any = None,
+    ) -> None:
+        self._logger = logger
         self._context = context
         self._character = character
         self._artifacts = artifacts
+        self._diagnostics = diagnostics
         self._jobs: dict[str, _Job] = {}
         self._jobs_lock = threading.RLock()
         try:
             self._config = _parse_config(context.config.get())
-            self._coordinator: _Coordinator | None = _Coordinator(self._config)
+            self._coordinator: _Coordinator | None = _Coordinator(
+                self._config,
+                self._emit_diagnostic,
+            )
         except (TypeError, ValueError):
             self._config = None
             self._coordinator = None
 
     def status(self) -> dict[str, Any]:
+        available, reason_code, stage = _config_readiness(self._config)
         return {
             "label": "GPT-SoVITS",
-            "available": self._config is not None
-            and self._config.enabled
-            and _config_available(self._config),
+            "available": available,
+            "reasonCode": reason_code,
+            "stage": stage,
         }
 
-    def begin(self, request: Mapping[str, Any]) -> str:
+    def prepareResourceUpdate(self) -> bool:
+        return self._coordinator.prepare_resources() if self._coordinator else True
+
+    def finishResourceUpdate(self) -> bool:
+        return self._coordinator.finish_resources() if self._coordinator else True
+
+    def begin(self, request: Mapping[str, Any]) -> str | dict[str, str]:
         if self._config is None or not self._config.enabled or self._coordinator is None:
-            raise RuntimeError("TTS_PROVIDER_UNAVAILABLE")
+            return {"errorCode": "TTS_PROVIDER_UNAVAILABLE"}
         character_id = request.get("characterId")
         if not isinstance(character_id, str) or not character_id:
-            raise ValueError("TTS_REQUEST_INVALID")
-        extension = self._character.get(character_id)
-        voice = _parse_character_voice(self._character, character_id, extension)
+            return {"errorCode": "TTS_REQUEST_INVALID"}
+        try:
+            extension = self._character.get(character_id)
+            voice = _parse_character_voice(self._character, character_id, extension)
+        except Exception as error:
+            return {"errorCode": _stable_error_code(error)}
         job = _Job(self._context, self._artifacts, request, voice)
         try:
             self._coordinator.submit(job)
-        except Exception:
-            job.close()
-            self._artifacts.release(job._allocation["artifactId"])
+        except Exception as error:
             job._disposer()
-            raise
+            return {"errorCode": _stable_error_code(error)}
         job_id = f"job_{uuid.uuid4().hex}"
         with self._jobs_lock:
             self._jobs[job_id] = job
@@ -564,31 +699,54 @@ class GPTSoVITSProvider:
             job = self._jobs.get(job_id)
         return job.cancel() if job is not None else False
 
-    def warmup(self, character_id: str) -> bool:
+    def warmup(self, character_id: str) -> bool | dict[str, object]:
         config = self._config
         coordinator = self._coordinator
-        if (
-            config is None
-            or not config.enabled
-            or config.custom_base_url is not None
-            or coordinator is None
-            or not _config_available(config)
-        ):
+        available, reason_code, stage = _config_readiness(config)
+        if not available or coordinator is None:
+            return {
+                "accepted": False,
+                "reasonCode": reason_code,
+                "stage": stage,
+                "errorType": "RuntimeConfigurationError",
+            }
+        if config is None or config.custom_base_url is not None:
             return False
-        extension = self._character.get(character_id)
-        voice = _parse_character_voice(self._character, character_id, extension)
-        coordinator.warmup(voice)
+        try:
+            extension = self._character.get(character_id)
+            voice = _parse_character_voice(self._character, character_id, extension)
+        except Exception as error:
+            reason_code = _stable_error_code(error)
+            return {
+                "accepted": False,
+                "reasonCode": reason_code,
+                "stage": "character_configuration",
+                "errorType": type(error).__name__,
+            }
+        try:
+            coordinator.warmup(voice)
+        except Exception as error:
+            reason_code = _stable_error_code(error)
+            return {
+                "accepted": False,
+                "reasonCode": reason_code,
+                "stage": "queue",
+                "errorType": type(error).__name__,
+            }
         return True
 
     def reconfigure(self, values: Mapping[str, Any]) -> str:
         config = _parse_config(values)
         coordinator = self._coordinator
         if coordinator is None:
-            coordinator = _Coordinator(config)
+            coordinator = _Coordinator(config, self._emit_diagnostic)
             self._coordinator = coordinator
         else:
             coordinator.reconfigure(config)
+        changed = self._config != config
         self._config = config
+        if changed and self._logger is not None:
+            self._logger.info("语音提供方配置已更新", fields={"provider": PROVIDER_ID, "enabled": config.enabled})
         return "applied"
 
     def close(self) -> None:
@@ -604,20 +762,51 @@ class GPTSoVITSProvider:
         for job in jobs:
             job.close()
 
+    def _emit_diagnostic(
+        self,
+        event: str,
+        severity: str,
+        attributes: Mapping[str, str],
+    ) -> None:
+        if self._diagnostics is None:
+            return
+        try:
+            self._diagnostics.emit(
+                {
+                    "event": event,
+                    "severity": severity,
+                    "attributes": dict(attributes),
+                }
+            )
+        except Exception:
+            return
+
 
 class GPTSoVITSPlugin:
     def setup(self, context: object) -> None:
         hub = context.get("sakura.tts")
         character = context.get("sakura.host.character")
         artifacts = context.get("sakura.host.artifacts")
+        diagnostics = context.get("sakura.host.diagnostics")
         settings = context.get("sakura.host.settings")
         surface = context.get("sakura.host.settings.surface-v0")
-        provider = GPTSoVITSProvider(context, character, artifacts)
+        user_root = Path(context.data_path(".")).parents[2]
+        config_patch = _startup_config_patch(context.config.get(), user_root)
+        if config_patch:
+            context.config.update(config_patch)
+
+        def save_runtime_settings(values: Mapping[str, Any]) -> object:
+            patch = _settings_values(values)
+            merged = {**context.config.get(), **patch}
+            patch.update(_startup_config_patch(merged, user_root))
+            return context.config.update(patch)
+
+        provider = GPTSoVITSProvider(context, character, artifacts, diagnostics, context.get("sakura.host.logging"))
         context.effect(provider.close)
         context.provide(
             SERVICE_KEY,
             provider,
-            exports=("status", "warmup", "begin", "poll", "cancel"),
+            exports=("status", "warmup", "begin", "poll", "cancel", "prepareResourceUpdate", "finishResourceUpdate"),
         )
         hub.registerProvider(
             {
@@ -639,34 +828,30 @@ class GPTSoVITSPlugin:
                         "label": "服务来源",
                         "type": "select",
                         "default": "managed",
-                        "description": "内置服务由 Sakura 启动和停止；已有服务只负责连接。",
                         "options": [
-                            {"label": "Sakura 内置（推荐）", "value": "managed"},
+                            {"label": "Sakura 内置", "value": "managed"},
                             {"label": "连接已有服务", "value": "custom"},
                         ],
                     },
-                    {"key": "customBaseUrl", "label": "已有服务地址", "type": "string", "default": "", "description": "仅在连接已有服务时使用，例如 http://127.0.0.1:9880。", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
-                    {"key": "ttsPath", "label": "接口路径", "type": "string", "default": "/tts", "description": "已有服务的语音合成接口路径。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "customBaseUrl", "label": "已有服务地址", "type": "string", "default": "", "description": "例如 http://127.0.0.1:9880", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "ttsPath", "label": "接口路径", "type": "string", "default": "/tts", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
                     {"key": "remoteReferenceRoot", "label": "远程参考音频目录", "type": "string", "default": "", "description": "服务位于其他设备时，用于映射角色参考音频。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
-                    {"key": "workDir", "label": "内置服务工作目录", "type": "string", "default": "", "description": "Sakura 内置 GPT-SoVITS 的程序目录。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "workDir", "label": "内置服务工作目录", "type": "string", "default": "", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
                     {"key": "pythonPath", "label": "Python 解释器", "type": "string", "default": "", "description": "留空时从内置运行环境自动查找。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
-                    {"key": "ttsConfigPath", "label": "推理配置", "type": "string", "default": "", "description": "可选的 GPT-SoVITS 推理配置文件。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
-                    {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced"},
+                    {"key": "ttsConfigPath", "label": "推理配置文件（可选）", "type": "string", "default": "", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "timeoutSeconds", "label": "合成超时（秒）", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "placement": "advanced"},
                 ],
             },
             load=lambda: _settings_values(context.config.get()),
-            save=lambda values: context.config.update(_settings_values(values)),
+            save=save_runtime_settings,
         )
         surface.register("runtime", "voice")
         bundle = TTSBundleResource(
-            user_root=Path(context.data_path(".")).parents[2],
+            user_root=user_root,
             config_get=context.config.get,
             config_update=context.config.update,
             entry=recommend_gpt_sovits_bundle,
-            custom_endpoint=lambda values: (
-                str(values.get("endpointMode") or "").strip().lower() == "custom"
-                or bool(str(values.get("customBaseUrl") or "").strip())
-            ),
+            custom_endpoint=_uses_custom_endpoint,
         )
         context.effect(bundle.close)
         settings.register(
@@ -678,7 +863,7 @@ class GPTSoVITSPlugin:
                 "cancelBundle": bundle.cancel,
             },
         )
-        surface.register("aboutBundle", "about")
+        surface.register("aboutBundle", "plugin")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
@@ -730,14 +915,73 @@ def _settings_values(value: Mapping[str, Any]) -> dict[str, Any]:
     return values
 
 
+def _uses_custom_endpoint(value: Mapping[str, Any]) -> bool:
+    raw_mode = str(value.get("endpointMode") or "").strip().lower()
+    if raw_mode:
+        return raw_mode == "custom"
+    return bool(str(value.get("customBaseUrl") or "").strip())
+
+
+def _startup_config_patch(
+    value: Mapping[str, Any],
+    user_root: Path,
+) -> dict[str, object]:
+    """Normalize stored paths and bind an already installed managed bundle."""
+
+    patch: dict[str, object] = {}
+    custom = str(value.get("customBaseUrl") or "").strip()
+    raw_mode = str(value.get("endpointMode") or "").strip().lower()
+    mode = raw_mode or ("custom" if custom else "managed")
+    path_keys = ("workDir", "pythonPath", "ttsConfigPath")
+    if mode == "managed":
+        installed = installed_bundle_result(user_root)
+        if installed is not None:
+            expected = {
+                "workDir": user_facing_path(installed.work_dir),
+                "pythonPath": (
+                    user_facing_path(installed.python_path)
+                    if installed.python_path
+                    else ""
+                ),
+                "ttsConfigPath": (
+                    user_facing_path(installed.tts_config_path)
+                    if installed.tts_config_path
+                    else ""
+                ),
+            }
+            for key, normalized in expected.items():
+                if normalized != str(value.get(key) or "").strip():
+                    patch[key] = normalized
+            return patch
+    for key in path_keys:
+        raw = str(value.get(key) or "").strip()
+        if raw:
+            normalized = user_facing_path(raw)
+            if normalized != raw:
+                patch[key] = normalized
+    return patch
+
+
 def _config_available(config: _ProviderConfig) -> bool:
+    return _config_readiness(config)[0]
+
+
+def _config_readiness(
+    config: _ProviderConfig | None,
+) -> tuple[bool, str, str]:
+    if config is None or not config.enabled:
+        return False, "TTS_PROVIDER_UNAVAILABLE", "configuration"
     if config.custom_base_url is not None:
-        return True
+        return True, "READY", "custom_endpoint"
     work_dir = config.work_dir
-    if work_dir is None or not work_dir.is_dir() or not (work_dir / "api_v2.py").is_file():
-        return False
+    if work_dir is None or not work_dir.is_dir():
+        return False, "TTS_RUNTIME_DIRECTORY_INVALID", "work_dir"
+    if not (work_dir / "api_v2.py").is_file():
+        return False, "TTS_RUNTIME_ENTRY_MISSING", "entrypoint"
     python = config.python_path or find_usable_runtime_python(work_dir / "runtime")
-    return python is not None and python.is_file()
+    if python is None or not python.is_file():
+        return False, "TTS_RUNTIME_PYTHON_MISSING", "python"
+    return True, "READY", "runtime_configuration"
 
 
 def _parse_character_voice(

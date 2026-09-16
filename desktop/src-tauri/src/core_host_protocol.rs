@@ -1,7 +1,7 @@
-use std::{
-    fmt,
-    io::{Read, Write},
-};
+use std::{fmt, io::Write};
+
+#[cfg(test)]
+use std::io::Read;
 
 use serde_json::{Map, Value};
 
@@ -246,6 +246,7 @@ impl FrameDecoder {
     }
 }
 
+#[cfg(test)]
 pub fn decode_frame(frame: &[u8]) -> Result<Value, IpcError> {
     let mut decoder = FrameDecoder::default();
     let messages = decoder.feed(frame)?;
@@ -259,6 +260,7 @@ pub fn decode_frame(frame: &[u8]) -> Result<Value, IpcError> {
     Ok(messages.into_iter().next().expect("one message exists"))
 }
 
+#[cfg(test)]
 pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<Value>, IpcError> {
     let mut header = [0_u8; HEADER_SIZE];
     let mut read = 0;

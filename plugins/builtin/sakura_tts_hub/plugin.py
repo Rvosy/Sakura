@@ -35,12 +35,18 @@ class _Selection:
 class SakuraTTSHub:
     """Select one descriptor-backed Provider without engine-specific branches."""
 
-    def __init__(self, context: object, character: object) -> None:
+    def __init__(self, context: object, config: object, logger: Any = None) -> None:
+        self._logger = logger
         self._context = context
-        self._character = character
+        self._config = config
         self._providers: dict[str, _ProviderDescriptor] = {}
         self._jobs: dict[str, _JobBinding] = {}
         self._lock = threading.RLock()
+
+    def _log(self, level: str, message: str, **fields: Any) -> None:
+        callback = getattr(self._logger, level, None)
+        if callable(callback):
+            callback(message, fields=fields)
 
     def registerProvider(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         value = self._descriptor(descriptor)
@@ -55,6 +61,8 @@ class SakuraTTSHub:
             ):
                 raise ValueError("TTS_PROVIDER_CONFLICT")
             self._providers[value.provider_id] = value
+        if existing != value:
+            self._log("info", "语音提供方已注册", provider=value.provider_id)
         return {
             "registered": True,
             "providerId": value.provider_id,
@@ -72,6 +80,8 @@ class SakuraTTSHub:
                 for binding in self._jobs.values():
                     if binding.provider_id == provider_id and binding.service_key == service_key:
                         binding.terminal = {"state": "cancelled"}
+        if removed:
+            self._log("info", "语音提供方已移除", provider=provider_id)
         return {
             "removed": removed,
             "providerId": provider_id,
@@ -117,10 +127,10 @@ class SakuraTTSHub:
             raise ValueError("TTS_SELECTION_INVALID")
         if enabled and provider_id is None:
             raise ValueError("TTS_PROVIDER_NOT_SELECTED")
-        getattr(self._character, "update")(
-            character_id,
-            {"enabled": enabled, "provider": provider_id},
-        )
+        with self._lock:
+            selections = dict(self._config.get().get("selections", {}))
+            selections[character_id] = {"enabled": enabled, "provider": provider_id}
+            self._config.update({"selections": selections})
         return self.status(character_id)
 
     def warmup(self, character_id: str) -> dict[str, Any]:
@@ -136,16 +146,45 @@ class SakuraTTSHub:
             }
         with self._lock:
             descriptor = self._providers.get(provider_id)
-        if descriptor is None or not self._provider_available(descriptor):
+        readiness = self._provider_readiness(descriptor) if descriptor is not None else None
+        if descriptor is None or readiness is None or not readiness[0]:
+            reason_code = readiness[1] if readiness is not None else "TTS_PROVIDER_UNAVAILABLE"
+            stage = readiness[2] if readiness is not None else "provider_selection"
             return {
                 "accepted": False,
                 "providerId": provider_id,
-                "reasonCode": "TTS_PROVIDER_UNAVAILABLE",
+                "reasonCode": reason_code,
+                "stage": stage,
             }
         try:
-            accepted = bool(self._provider(descriptor).warmup(character_id))
-        except Exception:
-            accepted = False
+            result = self._provider(descriptor).warmup(character_id)
+        except Exception as error:
+            return {
+                "accepted": False,
+                "providerId": provider_id,
+                "reasonCode": _stable_error_code(error, "TTS_WARMUP_FAILED"),
+                "stage": "provider_warmup",
+                "errorType": type(error).__name__,
+            }
+        if isinstance(result, Mapping):
+            accepted = result.get("accepted") is True
+            reason_code = _stable_error_code(
+                result.get("reasonCode"),
+                "READY" if accepted else "TTS_WARMUP_SKIPPED",
+            )
+            response: dict[str, Any] = {
+                "accepted": accepted,
+                "providerId": provider_id,
+                "reasonCode": reason_code,
+            }
+            stage = result.get("stage")
+            error_type = result.get("errorType")
+            if isinstance(stage, str) and _IDENTIFIER.fullmatch(stage):
+                response["stage"] = stage
+            if isinstance(error_type, str) and _IDENTIFIER.fullmatch(error_type):
+                response["errorType"] = error_type
+            return response
+        accepted = bool(result)
         return {
             "accepted": accepted,
             "providerId": provider_id,
@@ -153,6 +192,12 @@ class SakuraTTSHub:
         }
 
     def begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._begin(request)
+        if result["state"] == "failed":
+            self._log("warning" if result["errorCode"] == "TTS_DISABLED" else "error", "语音请求未受理", reason_code=result["errorCode"], request_id=result["requestId"], provider=result["providerId"])
+        return result
+
+    def _begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(request, Mapping) or set(request) != {
             "requestId",
             "characterId",
@@ -187,8 +232,13 @@ class SakuraTTSHub:
             if request_id in self._jobs:
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
             descriptor = self._providers.get(provider_id)
-        if descriptor is None or not self._provider_available(descriptor):
-            return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
+        readiness = self._provider_readiness(descriptor) if descriptor is not None else None
+        if descriptor is None or readiness is None or not readiness[0]:
+            return self._failed(
+                request_id,
+                provider_id,
+                readiness[1] if readiness is not None else "TTS_PROVIDER_UNAVAILABLE",
+            )
         try:
             job_id = self._provider(descriptor).begin(
                 {
@@ -200,6 +250,15 @@ class SakuraTTSHub:
             )
         except Exception:
             return self._failed(request_id, provider_id, "TTS_SYNTHESIS_FAILED")
+        if isinstance(job_id, Mapping):
+            error_code = job_id.get("errorCode")
+            return self._failed(
+                request_id,
+                provider_id,
+                error_code
+                if isinstance(error_code, str) and _ERROR_CODE.fullmatch(error_code)
+                else "TTS_SYNTHESIS_FAILED",
+            )
         if not self._valid_identifier(job_id):
             return self._failed(request_id, provider_id, "TTS_JOB_INVALID")
         binding = _JobBinding(provider_id, descriptor.service_key, job_id)
@@ -227,10 +286,13 @@ class SakuraTTSHub:
             terminal = dict(binding.terminal) if binding and binding.terminal else None
         if binding is None:
             return self._failed(request_id, None, "TTS_JOB_NOT_FOUND")
+        failure_reported = False
         if terminal is None:
             try:
                 result = self._provider_by_key(binding.service_key).poll(binding.job_id)
             except Exception:
+                self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code="TTS_PROVIDER_UNAVAILABLE")
+                failure_reported = True
                 result = {"state": "failed", "errorCode": "TTS_PROVIDER_UNAVAILABLE"}
         else:
             result = terminal
@@ -239,6 +301,8 @@ class SakuraTTSHub:
             with self._lock:
                 if self._jobs.get(request_id) is binding:
                     del self._jobs[request_id]
+                    if normalized["state"] == "failed" and not failure_reported:
+                        self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code=normalized["errorCode"])
         return normalized
 
     def cancel(self, request_id: str) -> dict[str, Any]:
@@ -305,26 +369,44 @@ class SakuraTTSHub:
         }
 
     def _selection(self, character_id: str) -> _Selection:
-        extension = getattr(self._character, "get")(character_id)
-        enabled = extension.get("enabled") if isinstance(extension, Mapping) else None
-        provider_id = extension.get("provider") if isinstance(extension, Mapping) else None
+        with self._lock:
+            selection = self._config.get().get("selections", {}).get(character_id, {})
+        enabled = selection.get("enabled")
+        provider_id = selection.get("provider")
         return _Selection(
             enabled=enabled if isinstance(enabled, bool) else False,
             provider_id=provider_id if self._valid_identifier(provider_id) else None,
         )
 
     def _provider_status(self, descriptor: _ProviderDescriptor) -> dict[str, Any]:
-        try:
-            result = self._provider(descriptor).status()
-        except Exception:
-            available = False
-        else:
-            available = bool(result.get("available")) if isinstance(result, Mapping) else bool(result)
+        available, _reason_code, _stage = self._provider_readiness(descriptor)
         return {
             "providerId": descriptor.provider_id,
             "label": descriptor.label,
             "available": available,
         }
+
+    def _provider_readiness(
+        self,
+        descriptor: _ProviderDescriptor,
+    ) -> tuple[bool, str, str]:
+        try:
+            result = self._provider(descriptor).status()
+        except Exception:
+            return False, "TTS_PROVIDER_UNAVAILABLE", "provider_status"
+        if not isinstance(result, Mapping):
+            return bool(result), "READY" if result else "TTS_PROVIDER_UNAVAILABLE", "provider_status"
+        available = bool(result.get("available"))
+        reason_code = _stable_error_code(
+            result.get("reasonCode"),
+            "READY" if available else "TTS_PROVIDER_UNAVAILABLE",
+        )
+        stage = result.get("stage")
+        return (
+            available,
+            reason_code,
+            stage if isinstance(stage, str) and _IDENTIFIER.fullmatch(stage) else "provider_status",
+        )
 
     def _provider_available(self, descriptor: _ProviderDescriptor) -> bool:
         return bool(self._provider_status(descriptor)["available"])
@@ -363,10 +445,9 @@ class SakuraTTSHub:
 
 class SakuraTTSHubPlugin:
     def setup(self, context: object) -> None:
-        character = getattr(context, "get")("sakura.host.character")
         getattr(context, "provide")(
             "sakura.tts",
-            SakuraTTSHub(context, character),
+            SakuraTTSHub(context, context.config, getattr(context, "get")("sakura.host.logging")),
             exports=(
                 "registerProvider",
                 "unregisterProvider",
@@ -379,3 +460,9 @@ class SakuraTTSHubPlugin:
                 "cancel",
             ),
         )
+
+
+def _stable_error_code(value: object, fallback: str) -> str:
+    direct = str(getattr(value, "code", value) or "").strip()
+    prefix = direct.split(":", 1)[0].strip()
+    return prefix if _ERROR_CODE.fullmatch(prefix) else fallback

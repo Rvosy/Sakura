@@ -50,7 +50,6 @@ pub enum FailureReason {
     ConnectionLost,
     ProtocolMajorIncompatible,
     MissingRequiredCapability,
-    SetupRequired,
     DeterministicConfiguration,
     DeterministicRuntime,
     SecurityBoundary,
@@ -70,6 +69,7 @@ impl GenerationCancellation {
         }
     }
 
+    #[cfg(test)]
     pub fn generation_id(&self) -> GenerationId {
         self.generation_id
     }
@@ -178,6 +178,7 @@ impl CoreSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub fn accepts_generation_callback(&self, generation_id: GenerationId) -> bool {
         self.state == SupervisorState::Running
             && self.current.as_ref().is_some_and(|generation| {

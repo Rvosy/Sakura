@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from contextvars import ContextVar
 import os
 import shutil
 import tempfile
@@ -13,20 +14,41 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-def log_event(*_args: object, **_kwargs: object) -> None:
-    return None
+_logger: object | None = None
+_operation_id: ContextVar[str] = ContextVar("memory_log_operation", default="")
+
+
+def bind_logger(logger: object | None) -> None:
+    global _logger
+    _logger = logger
+
+
+def log_event(_channel: str, message: str, attributes: object = None, *, event: str = "", severity: str = "info", **_kwargs: object) -> None:
+    callback = getattr(_logger, severity, None)
+    if callable(callback):
+        fields = dict(attributes) if isinstance(attributes, dict) else {}
+        if _operation_id.get():
+            fields["operation_id"] = _operation_id.get()
+        if event:
+            fields["event"] = event
+        callback(message, fields=fields)
 
 
 def external_runtime_sink_active() -> bool:
-    return False
+    return _logger is not None
 
 
 def suppress_runtime_logs() -> contextlib.AbstractContextManager[None]:
     return contextlib.nullcontext()
 
 
-def interaction_context(_operation_id: str) -> contextlib.AbstractContextManager[None]:
-    return contextlib.nullcontext()
+@contextlib.contextmanager
+def interaction_context(operation_id: str):
+    token = _operation_id.set(operation_id)
+    try:
+        yield
+    finally:
+        _operation_id.reset(token)
 
 
 def atomic_write_text(

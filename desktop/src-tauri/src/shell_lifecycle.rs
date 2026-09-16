@@ -1,3 +1,4 @@
+use crate::core_supervisor::StopReason;
 use std::{
     collections::VecDeque,
     sync::{
@@ -11,9 +12,10 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, State};
 
 use crate::{
+    character_presentation,
     chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
@@ -26,7 +28,84 @@ use crate::{
     update_settings::UpdateCoordinator,
 };
 
-const HELLO_DEADLINE: Duration = Duration::from_secs(3);
+pub(crate) struct ShellLifecycleState {
+    pub(crate) handle: Option<ShellLifecycleHandle>,
+    pub(crate) runtime_log: RuntimeLogService,
+}
+
+pub(crate) fn settings_core_handle(
+    lifecycle: &State<'_, ShellLifecycleState>,
+) -> Result<ShellLifecycleHandle, String> {
+    lifecycle
+        .handle
+        .clone()
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())
+}
+
+pub(crate) fn settings_response_payload(response: Value) -> Result<Value, String> {
+    if response.get("ok").and_then(Value::as_bool) == Some(true) {
+        return response
+            .get("payload")
+            .cloned()
+            .filter(Value::is_object)
+            .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string());
+    }
+    let code = response
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .unwrap_or("SETTINGS_REQUEST_FAILED");
+    let message = response
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("设置请求失败。");
+    let feature = response
+        .pointer("/error/details/feature")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let field = response
+        .pointer("/error/details/field")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Err(format!("{code}|{feature}|{field}|{message}"))
+}
+
+pub(crate) async fn dispatch_settings_request(
+    handle: ShellLifecycleHandle,
+    request_id: Option<String>,
+    name: &'static str,
+    payload: Value,
+    deadline: std::time::Duration,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        handle.settings_request(request_id.as_deref(), name, payload, deadline)
+    })
+    .await
+    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
+}
+
+pub(crate) fn load_current_character_presentation(
+    lifecycle: &ShellLifecycleState,
+    resources: &character_presentation::CharacterPresentationState,
+) -> Result<character_presentation::FrontendCharacterPresentation, String> {
+    let handle = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+
+    let value = handle
+        .character_presentation()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+    let presentation =
+        character_presentation::CharacterPresentation::from_value(&value, &generation_id)?;
+    resources.activate(presentation, &generation_id)
+}
+
+const HELLO_DEADLINE: Duration = Duration::from_secs(10);
 const INITIALIZE_DEADLINE: Duration = Duration::from_secs(5);
 const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(3);
 const READINESS_DEADLINE: Duration = Duration::from_secs(30);
@@ -520,13 +599,16 @@ fn run_worker(
                         publish(&state, &publication);
                     }
                 }
-                LifecycleAction::StopGeneration { generation_id, .. } => {
+                LifecycleAction::StopGeneration {
+                    generation_id,
+                    reason,
+                } => {
                     log_lifecycle(
                         &state,
                         Severity::Info,
                         "core.stop.started",
                         "Core generation stop started",
-                        json!({"outcome": "started"}),
+                        json!({"outcome": "started", "stage":"stop_generation", "reason_code":match reason { StopReason::User=>"CORE_STOP_USER", StopReason::Restart=>"CORE_STOP_RESTART", StopReason::Failure=>"CORE_STOP_FAILURE", StopReason::AppShutdown=>"CORE_STOP_SHUTDOWN" }}),
                     );
                     publish(&state, &publication);
                     let cleaned = stop_generation(&mut state);
@@ -838,13 +920,24 @@ fn spawn_and_initialize(
     }
 }
 
+#[track_caller]
 fn log_lifecycle(
     state: &WorkerState,
     severity: Severity,
     event: &'static str,
     message: &'static str,
-    attributes: Value,
+    mut attributes: Value,
 ) {
+    if let Some(fields) = attributes.as_object_mut() {
+        fields.insert(
+            "source_file".into(),
+            json!("desktop/src-tauri/src/shell_lifecycle.rs"),
+        );
+        fields.insert(
+            "source_line".into(),
+            json!(std::panic::Location::caller().line()),
+        );
+    }
     let Some(runtime_log) = state.runtime_log.as_ref() else {
         return;
     };
@@ -871,7 +964,15 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
         .as_mut()
         .ok_or(())?
         .refresh_snapshot(&request_id, SNAPSHOT_DEADLINE)
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            log_lifecycle(
+                state,
+                Severity::Error,
+                "core.snapshot.failed",
+                "Core 快照读取或校验失败",
+                json!({"outcome": "failed", "diagnostic": error}),
+            );
+        })?;
     state.snapshot = Some(snapshot);
     Ok(())
 }
@@ -994,7 +1095,10 @@ fn ready_character_generation(
     let ready = publication.supervisor.generation_number > previous_generation_number
         && generation_id != previous_generation_id
         && snapshot.generation_id == generation_id
-        && matches!(snapshot.readiness.as_str(), "ready" | "degraded")
+        && matches!(
+            snapshot.readiness.as_str(),
+            "ready" | "setup_required" | "degraded"
+        )
         && presentation.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
         && presentation.get("characterId").and_then(Value::as_str) == Some(target_character_id);
     ready.then_some(generation_id)
@@ -1035,7 +1139,6 @@ fn failure_reason(reason: FailureReason) -> &'static str {
         FailureReason::ConnectionLost => "connection_lost",
         FailureReason::ProtocolMajorIncompatible => "protocol_major_incompatible",
         FailureReason::MissingRequiredCapability => "missing_required_capability",
-        FailureReason::SetupRequired => "setup_required",
         FailureReason::DeterministicConfiguration => "deterministic_configuration",
         FailureReason::DeterministicRuntime => "deterministic_runtime",
         FailureReason::SecurityBoundary => "security_boundary",
@@ -1051,7 +1154,6 @@ fn failure_message(reason: FailureReason) -> &'static str {
         FailureReason::ConnectionLost => "与 Core 的连接已中断。",
         FailureReason::ProtocolMajorIncompatible => "Core 协议版本不兼容。",
         FailureReason::MissingRequiredCapability => "Core 缺少必需能力。",
-        FailureReason::SetupRequired => "Core 需要先完成基础设置。",
         FailureReason::DeterministicConfiguration => "Core 配置无效，无法启动。",
         FailureReason::DeterministicRuntime => "找不到可用的 Core 运行环境。",
         FailureReason::SecurityBoundary => "Core 安全校验失败。",
@@ -1075,6 +1177,14 @@ fn is_safe_version(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hello_deadline_matches_the_validated_cold_start_budget() {
+        // A Windows 10 release report observed the Core process reaching its
+        // first fixed log event after 5.2 seconds. Keep enough headroom for
+        // Python startup and real-time antivirus scanning on a cold cache.
+        assert_eq!(HELLO_DEADLINE, Duration::from_secs(10));
+    }
 
     fn copy_fixture_tree(source: &std::path::Path, target: &std::path::Path) {
         std::fs::create_dir_all(target).expect("temporary fixture directory");
@@ -1364,27 +1474,36 @@ mod tests {
         );
         assert!(first.snapshot.is_none());
 
-        handle.retry().expect("first retry enters Supervisor");
-        handle
-            .retry()
-            .expect("duplicate retry enters the same channel");
-        let second = wait_for_failed(&handle, 2);
-        assert_eq!(second.supervisor.generation_number, 2);
-        thread::sleep(Duration::from_millis(50));
-        assert_eq!(
-            handle
-                .snapshot()
-                .expect("settled lifecycle publication")
-                .supervisor
-                .generation_number,
-            2
-        );
+        // Missing Runtime can fail before a second queued Retry is received.
+        // Observe each failure before requesting a new attempt; duplicate Retry
+        // during spawning is covered by manual_retry_only_starts_once_from_failed.
+        for generation in 2..=3 {
+            handle.retry().expect("manual retry enters Supervisor");
+            let failed = wait_for_failed(&handle, generation);
+            assert_eq!(
+                failed
+                    .supervisor
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.code),
+                Some("deterministic_runtime")
+            );
+            assert!(failed.snapshot.is_none());
+        }
 
         let shutdown_started = Instant::now();
         session
             .shutdown_and_join()
             .expect("missing Runtime lifecycle should exit cleanly");
         assert!(shutdown_started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            handle
+                .snapshot()
+                .expect("joined lifecycle publication")
+                .supervisor
+                .generation_number,
+            3
+        );
         std::fs::remove_dir(&root).expect("isolated missing Runtime root should be empty");
     }
 
@@ -1441,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_5_03_character_switch_restart_waits_for_cleanup_and_releases_old_generation() {
+    fn wp_5_03_character_switch_rebinds_session_in_the_same_core_generation() {
         let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
         let manifest_directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repository_root = manifest_directory
@@ -1474,6 +1593,7 @@ mod tests {
             first
                 .supervisor
                 .generation_id
+                .clone()
                 .expect("first Supervisor generation")
         );
         assert_eq!(
@@ -1497,13 +1617,80 @@ mod tests {
             select_beta
                 .pointer("/payload/changePlan")
                 .and_then(Value::as_str),
-            Some("core_restart_required")
+            Some("character_switch")
         );
-        handle
-            .restart()
-            .expect("beta restart enters Supervisor once");
-        let second = wait_for_stable_generation(&handle, 2);
-        assert_eq!(second.supervisor.generation_number, 2);
+        let wait_for_role = |role: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let publication = handle.snapshot().expect("character publication");
+                if publication
+                    .character_presentation
+                    .as_ref()
+                    .and_then(|value| value.get("characterId"))
+                    .and_then(Value::as_str)
+                    == Some(role)
+                {
+                    let bootstrap = handle
+                        .settings_request(
+                            None,
+                            "studio.bootstrap",
+                            json!({}),
+                            Duration::from_secs(5),
+                        )
+                        .expect("Studio remains available after switching");
+                    assert_eq!(
+                        bootstrap
+                            .pointer("/payload/selectedCharacterId")
+                            .and_then(Value::as_str),
+                        Some(role)
+                    );
+                    let opened = handle
+                        .settings_request(
+                            None,
+                            "studio.character.open",
+                            json!({"characterId": role}),
+                            Duration::from_secs(5),
+                        )
+                        .expect("open selected character in Studio");
+                    let workspace = opened
+                        .pointer("/payload/workspaceId")
+                        .and_then(Value::as_str)
+                        .expect("Studio workspace");
+                    let released = handle
+                        .settings_request(
+                            None,
+                            "studio.workspace.release",
+                            json!({"workspaceId": workspace}),
+                            Duration::from_secs(5),
+                        )
+                        .expect("close Studio workspace");
+                    assert!(released.get("error").is_none(), "{released}");
+                    let settings = handle
+                        .settings_request(
+                            None,
+                            "characters.settings.get",
+                            json!({}),
+                            Duration::from_secs(5),
+                        )
+                        .expect("Settings remains available after closing Studio");
+                    assert_eq!(
+                        settings
+                            .pointer("/payload/currentCharacterId")
+                            .and_then(Value::as_str),
+                        Some(role)
+                    );
+                    return publication;
+                }
+                assert!(Instant::now() < deadline, "new character did not publish");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let second = wait_for_role("beta");
+        assert_eq!(second.supervisor.generation_number, 1);
+        assert_eq!(
+            second.supervisor.generation_id,
+            first.supervisor.generation_id
+        );
         assert_eq!(
             second
                 .character_presentation
@@ -1525,12 +1712,14 @@ mod tests {
             select_sakura
                 .pointer("/payload/changePlan")
                 .and_then(Value::as_str),
-            Some("core_restart_required")
+            Some("character_switch")
         );
-        handle
-            .restart()
-            .expect("sakura restart enters Supervisor once");
-        let third = wait_for_stable_generation(&handle, 3);
+        let third = wait_for_role("sakura");
+        assert_eq!(third.supervisor.generation_number, 1);
+        assert_eq!(
+            third.supervisor.generation_id,
+            first.supervisor.generation_id
+        );
         assert_eq!(
             third
                 .character_presentation
@@ -1821,6 +2010,11 @@ mod tests {
                 log_location: "Sakura application logs",
             },
         };
+        assert_eq!(
+            ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
+            Some("generation-b")
+        );
+        publication.snapshot.as_mut().expect("snapshot").readiness = "setup_required".to_string();
         assert_eq!(
             ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
             Some("generation-b")

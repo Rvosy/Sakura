@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any
+from app.llm.visual_control import raw_visual_control
 
 
 DEFAULT_TONE = "中性"
@@ -18,6 +19,7 @@ class ChatSegment:
     translation: str = ""
     portrait: str = ""
     suppress_tts: bool = False
+    control: Any = None
 
     def __init__(
         self,
@@ -26,12 +28,14 @@ class ChatSegment:
         translation: str = "",
         portrait: str = "",
         suppress_tts: bool = False,
+        control: Any = None,
     ) -> None:
         object.__setattr__(self, "text", text)
         object.__setattr__(self, "tone", tone)
         object.__setattr__(self, "translation", translation)
         object.__setattr__(self, "portrait", portrait)
         object.__setattr__(self, "suppress_tts", suppress_tts)
+        object.__setattr__(self, "control", raw_visual_control(control))
 
     def display_text(self, subtitle_language: str) -> str:
         """按字幕语言返回气泡显示文本；缺少译文时回退日文原文。"""
@@ -151,6 +155,7 @@ def sanitize_reply_tones(reply: ChatReply, allowed_tones: list[str] | None) -> C
                     segment.translation,
                     segment.portrait,
                     suppress_tts=segment.suppress_tts,
+                    control=segment.control,
                 )
             )
             changed = True
@@ -171,7 +176,7 @@ def _parse_segments(data: dict[str, Any]) -> tuple[list[ChatSegment], bool]:
     if text:
         tone = data.get("tone")
         translation = _clean_first_text(data, "zh", "chinese", "translation")
-        segment, has_language_issue = _build_segment(text, tone, translation, data.get("portrait"))
+        segment, has_language_issue = _build_segment(text, tone, translation, data.get("portrait"), data.get("control"))
         return [segment], has_language_issue
 
     return [], False
@@ -188,16 +193,16 @@ def _parse_segment(item: Any) -> tuple[ChatSegment | None, bool]:
     if not text:
         return None, False
     translation = _clean_first_text(item, "zh", "chinese", "translation")
-    return _build_segment(text, item.get("tone"), translation, item.get("portrait"))
+    return _build_segment(text, item.get("tone"), translation, item.get("portrait"), item.get("control"))
 
 
-def _build_segment(text: str, tone: Any, translation: str, portrait: Any) -> tuple[ChatSegment, bool]:
+def _build_segment(text: str, tone: Any, translation: str, portrait: Any, control: Any = None) -> tuple[ChatSegment, bool]:
     text = text.strip()
     translation = translation.strip()
     # 只在 ja 明显是中文、zh 明显是日文时交换，避免误判“ 大丈夫 ”这类日语汉字句。
     if text and translation and _looks_chinese(text) and _looks_japanese(translation):
         text, translation = translation, text
-        return ChatSegment(text, _clean_tone(tone), translation, _clean_portrait(portrait)), False
+        return ChatSegment(text, _clean_tone(tone), translation, _clean_portrait(portrait), control=control), False
 
     if text and _has_obvious_chinese(text):
         fallback_translation = translation or text
@@ -208,11 +213,12 @@ def _build_segment(text: str, tone: Any, translation: str, portrait: Any) -> tup
                 fallback_translation,
                 _clean_portrait(portrait),
                 suppress_tts=True,
+                control=control,
             ),
             True,
         )
 
-    return ChatSegment(text, _clean_tone(tone), translation, _clean_portrait(portrait)), False
+    return ChatSegment(text, _clean_tone(tone), translation, _clean_portrait(portrait), control=control), False
 
 
 def _clean_tone(value: Any) -> str:
