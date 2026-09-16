@@ -34,8 +34,6 @@ if TYPE_CHECKING:
 
 MAX_VISUAL_SUMMARIES = 6
 MAX_VISUAL_SUMMARY_CHARS = 500
-DEFAULT_MAX_OPTIONAL_PROVIDER_FRAGMENTS = 16
-DEFAULT_MAX_OPTIONAL_FRAGMENT_CHARS = 8192
 
 
 class ContextContributionError(RuntimeError):
@@ -280,7 +278,6 @@ def _collect_provider_fragments(
             check_cancelled(cancel_checker)
             if not isinstance(provided, Sequence) or isinstance(provided, (str, bytes)):
                 raise ValueError("CONTEXT_RESULT_INVALID")
-            optional_count = 0
             for index, fragment in enumerate(provided):
                 if not isinstance(fragment, ContextFragment):
                     if provider.failure_policy == "abort":
@@ -293,13 +290,6 @@ def _collect_provider_fragments(
                     continue
                 if fragment.required and not fragment.content.strip():
                     raise ContextContributionError(provider.provider_id, provider.plugin_id)
-                if not fragment.required:
-                    optional_count += 1
-                    if optional_count > DEFAULT_MAX_OPTIONAL_PROVIDER_FRAGMENTS:
-                        continue
-                    fragment = replace(
-                        fragment, content=fragment.content[:DEFAULT_MAX_OPTIONAL_FRAGMENT_CHARS]
-                    )
                 local_id = fragment.fragment_id.strip() or str(index)
                 normalized.append(
                     replace(

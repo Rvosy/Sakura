@@ -918,7 +918,7 @@ context_host.register(
 `failurePolicy` 默认为 `skip`，回调失败记录后继续；`abort` 报告 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮。它处理“回调未能产生结果”；片段的 `required` 处理“结果必须完整装入上下文”。需要完整贡献时同时使用 `abort` 和 `required: true`。取消和接口版本不兼容始终传播，不按 `skip` 忽略；同步回调返回后再次检查取消。
 
 Host 在 IPC 总大小及 JSON 结构允许的范围内传递完整数量和文本，超过传输边界时明确报错。
-默认消费者保留旧可选内容的兼容处理：只采用前 16 条可选片段，每条最多 8192 字符；这些限制不在 Host 执行。
+默认消费者按逐片段 `budgetHint` 与模型全局预算处理可选内容，不再额外限制片段数量或字符数。
 `required: true` 的内容不受这两个旧可选额度限制，完整保留或因模型上下文预算不足明确失败。
 
 `priority` 范围为 0–100，`budgetHint` 范围为 1–4096；`sensitivity` 可为 `public`、`private` 或 `sensitive`。

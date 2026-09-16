@@ -7,6 +7,7 @@ import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +25,7 @@ from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_lo
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.llm.prompts.types import ContextRequest
 from app.storage.runtime_roots import RuntimeRoots
-from app.storage.timeline import TimelineKind, TimelineStore
+from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 
 
 GENERATION_ID = "context-plugin-chat"
@@ -120,16 +121,27 @@ class _ChatFixture:
 
 
 @pytest.fixture
-def chat(tmp_path: Path) -> Iterator[_ChatFixture]:
+def chat(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[_ChatFixture]:
     # Each test owns both the plugin distribution and all writable runtime data.
     distribution, user = tmp_path / "distribution", tmp_path / "user"
     user.mkdir()
     _write_plugin(distribution)
     requests: list[dict[str, Any]] = []
+    reject_noninitial_system = getattr(request, "param", False)
 
     class ProviderHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802 - HTTP handler contract
             requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            if reject_noninitial_system and any(
+                message["role"] == "system" for message in requests[-1]["messages"][1:]
+            ):
+                body = b'{"error":{"message":"System message must be at the beginning."}}'
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             content = json.dumps(
                 {"segments": [{"ja": "一緒に練習しましょう。", "zh": "一起练习吧。"}]},
                 ensure_ascii=False,
@@ -254,7 +266,7 @@ def test_real_plugin_content_reaches_provider_and_disabling_removes_it(
     assert len(chat.timeline.read_all("fixture")) == 4
 
 
-def test_real_plugin_transport_preserves_raw_content_and_default_consumer_applies_its_limits(
+def test_real_plugin_content_is_limited_by_token_budget_without_extra_count_or_char_caps(
     chat: _ChatFixture,
 ) -> None:
     provider = chat.runtime.context_providers[0]
@@ -278,9 +290,9 @@ def test_real_plugin_transport_preserves_raw_content_and_default_consumer_applie
             context, re.DOTALL,
         )
     }
-    assert fragments["optional-0"] == LARGE_OPTIONAL[:8192]
+    assert fragments["optional-0"] == LARGE_OPTIONAL
     assert {key for key in fragments if key.startswith("optional-")} == {
-        f"optional-{index}" for index in range(16)
+        f"optional-{index}" for index in range(20)
     }
     assert fragments["required-0"] == LARGE_REQUIRED
     assert {key for key in fragments if key.startswith("required-")} == {
@@ -312,3 +324,30 @@ def test_required_plugin_callback_failure_stops_before_provider_and_assistant_hi
     assert failure["attributes"]["reason_code"] == "CONTEXT_CONTRIBUTION_FAILED"
     assert failure["attributes"]["provider_id"] == "fixture.context.rules.contribution"
     assert failure["attributes"]["plugin_id"] == PLUGIN_ID
+
+
+@pytest.mark.parametrize("chat", [True], indirect=True)
+def test_plugin_context_and_proactive_history_survive_system_role_fallback(chat: _ChatFixture) -> None:
+    previous = "Previous proactive greeting"
+    chat.timeline.append_many([NewTimelineEntry(
+        entry_id="proactive-entry", turn_id="proactive-turn", character_id="fixture",
+        kind=TimelineKind.ASSISTANT, origin="proactive",
+        created_at=datetime.now().astimezone().isoformat(),
+        payload={"segments": [{"text": previous, "translation": "", "tone": "", "portrait": "", "suppressTts": True}]},
+    )])
+
+    terminal = chat.send("compatibility", "Let us practice Japanese.")
+
+    assert terminal["name"] == "chat.completed", terminal
+    assert len(chat.requests) == 2
+    for text in (RULE, REFERENCE, previous):
+        before = next(item for item in chat.requests[0]["messages"] if text in str(item["content"]))
+        after = next(item for item in chat.requests[1]["messages"] if text in str(item["content"]))
+        assert before["role"] == "system"
+        assert after["role"] == "user"
+        assert before["content"] in after["content"]
+    assert sum(item["role"] == "system" for item in chat.requests[1]["messages"]) == 1
+    assert chat.application.call_service(SERVICE_KEY, "inspect")["calls"] == 1
+    assert [entry.kind for entry in chat.timeline.read_all("fixture")] == [
+        TimelineKind.ASSISTANT, TimelineKind.HUMAN, TimelineKind.ASSISTANT,
+    ]

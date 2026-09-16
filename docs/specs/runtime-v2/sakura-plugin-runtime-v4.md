@@ -380,8 +380,8 @@ Host 保留以下边界：
   未完成回调可能因插件退出而失败，按失败策略处理。
 - `failurePolicy: skip` 为默认值，回调失败时记录并跳过；`abort` 产生 `CONTEXT_CONTRIBUTION_FAILED` 并终止本轮，
   错误与日志保留实际插件和 Provider，失败不生成助手历史。取消及 `CONTEXT_SCHEMA_INCOMPATIBLE` 不受 `skip` 影响。
-- `required` 内容完整保留，不受旧 16 项和 8192 字符的可选兼容额度限制；模型预算不足时产生
-  `CONTEXT_WINDOW_EXCEEDED`。默认消费者保留前 16 条可选内容及每条前 8192 字符，再按每片段的 `budgetHint` 和全局预算选择或裁剪。
+- `required` 内容完整保留，模型预算不足时产生 `CONTEXT_WINDOW_EXCEEDED`。可选内容按每片段的
+  `budgetHint` 和全局预算选择或裁剪，不再额外限制片段数量或字符数。
   `budgetHint` 只约束该片段正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 分配共享额度。
   `abort` 控制回调失败，`required` 控制完整性，需要完整贡献时同时声明。
 
