@@ -375,7 +375,7 @@ class CharacterSettingsBoundary:
         character_id = raw_character_id.strip()
         if visual_selections is None:
             visual_selections = {}
-        if not isinstance(visual_selections, dict) or len(visual_selections) > 256 or any(
+        if not isinstance(visual_selections, dict) or any(
             not isinstance(key, str) or (value is not None and not isinstance(value, str))
             for key, value in visual_selections.items()
         ):

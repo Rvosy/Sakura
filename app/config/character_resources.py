@@ -22,7 +22,7 @@ class CharacterVisualResource:
 
     @classmethod
     def from_mapping(cls, value: object) -> "CharacterVisualResource":
-        if not isinstance(value, Mapping) or not {"id", "type", "root", "entry"} <= set(value) or set(value) - {"id", "type", "root", "entry", "name", "pluginRequirements"}:
+        if not isinstance(value, Mapping) or not {"id", "type", "root", "entry"} <= set(value):
             raise ValueError("VISUAL_RESOURCE_INVALID")
         resource_id, resource_type = value.get("id"), value.get("type")
         if (
@@ -31,7 +31,6 @@ class CharacterVisualResource:
             or not isinstance(resource_type, str)
             or not RESOURCE_TYPE_PATTERN.fullmatch(resource_type)
             or not isinstance(value.get("name", ""), str)
-            or len(value.get("name", "")) > 80
         ):
             raise ValueError("VISUAL_RESOURCE_INVALID")
         requirements = parse_requirements(value.get("pluginRequirements", []))
@@ -85,7 +84,7 @@ def character_visual_resources(
         resource = legacy_portrait_resource()
         return (resource,), resource.id
     raw = manifest["visuals"]
-    if not isinstance(raw, Mapping) or not isinstance(raw.get("resources"), list) or len(raw["resources"]) > 32:
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("resources"), list):
         raise ValueError("VISUAL_RESOURCE_INVALID")
     resources = tuple(CharacterVisualResource.from_mapping(item) for item in raw["resources"])
     ids = {item.id for item in resources}

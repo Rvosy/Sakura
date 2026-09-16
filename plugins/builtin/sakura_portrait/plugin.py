@@ -34,11 +34,11 @@ def portrait_configuration(value, *, legacy=False):
     path_value = _legacy_path if legacy else _relative
     default = path_value(value.get("default"))
     expressions = value.get("expressions") or {}
-    if not isinstance(expressions, dict) or len(expressions) > 63:
+    if not isinstance(expressions, dict):
         raise ValueError("VISUAL_RESOURCE_INVALID")
     assets = {DEFAULT_KEY: default}
     for label, path in expressions.items():
-        if not isinstance(label, str) or not label.strip() or len(label) > 256 or label == DEFAULT_KEY:
+        if not isinstance(label, str) or not label.strip() or label == DEFAULT_KEY:
             raise ValueError("VISUAL_RESOURCE_INVALID")
         if any(ord(char) < 32 for char in label) or label.strip() in assets:
             raise ValueError("VISUAL_RESOURCE_INVALID")
@@ -48,15 +48,11 @@ def portrait_configuration(value, *, legacy=False):
 
 def inspect_png(path):
     size = path.stat().st_size
-    if not 33 <= size <= 16 * 1024 * 1024:
-        raise ValueError("VISUAL_RESOURCE_INVALID")
     with path.open("rb") as stream:
         header = stream.read(33)
     if header[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR':
         raise ValueError("VISUAL_RESOURCE_INVALID")
     width, height = int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
-    if not 0 < width <= 8192 or not 0 < height <= 8192 or width * height > 40_000_000:
-        raise ValueError("VISUAL_RESOURCE_INVALID")
     return {"width": width, "height": height, "byteLength": size}
 
 
@@ -68,20 +64,15 @@ class PortraitService:
     def describe(self, request):
         try:
             return self._describe(request)
-        except (ValueError, OSError, RuntimeError):
+        except (ValueError, OSError, RuntimeError) as error:
             self.logger.warning("立绘资源无法加载", fields={"reason_code": "VISUAL_RESOURCE_INVALID", "stage": "visual.describe"})
-            return {"error": "VISUAL_RESOURCE_INVALID"}
+            return {"error": "VISUAL_RESOURCE_INVALID", "message": str(error)}
 
     def _describe(self, request):
         resource = request["resource"]
         prefix = "" if resource["root"] == "." else resource["root"] + "/"
         entry = Path(self.character.resolve_resource(request["characterId"], prefix + resource["entry"]))
-        if entry.stat().st_size > 256 * 1024:
-            raise ValueError("VISUAL_RESOURCE_INVALID")
-        try:
-            config = json.loads(entry.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            raise ValueError("VISUAL_RESOURCE_INVALID") from error
+        config = json.loads(entry.read_text(encoding="utf-8-sig"))
         # Old character.json is interpreted here, without rewriting the package.
         legacy = resource["root"] == "." and resource["entry"] == "character.json"
         if legacy:

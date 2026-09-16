@@ -201,20 +201,42 @@ def test_portrait_decode_error_uses_plugin_logging_with_original_cause(tmp_path)
     assert "_describe" in record["attributes"]["exception_stack"]
 
 
-@pytest.mark.parametrize("byte_length", [8 * 1024 * 1024 + 1, 16 * 1024 * 1024, 16 * 1024 * 1024 + 1])
-def test_portrait_encoded_size_limit(tmp_path: Path, byte_length: int) -> None:
+def test_portrait_encoded_size_does_not_limit_small_decoded_image(tmp_path: Path) -> None:
     import importlib.util
-
     source = Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_portrait/plugin.py"
     spec = importlib.util.spec_from_file_location("portrait_size_test", source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     image = tmp_path / "portrait.png"
+    byte_length = 16 * 1024 * 1024 + 1
     with image.open("wb") as stream:
         stream.write(PNG)
         stream.truncate(byte_length)
-    if byte_length <= 16 * 1024 * 1024:
-        assert module.inspect_png(image) == {"width": 1, "height": 1, "byteLength": byte_length}
-    else:
-        with pytest.raises(ValueError, match="VISUAL_RESOURCE_INVALID"):
-            module.inspect_png(image)
+    assert module.inspect_png(image) == {"width": 1, "height": 1, "byteLength": byte_length}
+
+
+def test_large_portrait_collection_publishes_and_binds_without_truncation(tmp_path):
+    from app.core_host.character_studio import CharacterStudioBoundary
+    distribution, user = tmp_path / "distribution", tmp_path / "user"
+    shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_portrait", distribution / "plugins/builtin/sakura_portrait")
+    package = user / "characters/demo"
+    package.mkdir(parents=True)
+    (package / "card.md").write_text("demo")
+    (package / "default.png").write_bytes(PNG)
+    expressions = {f"表情{i}-" + "长标签" * 30: "default.png" for i in range(300)}
+    (package / "character.json").write_text(json.dumps({"id": "demo", "display_name": "Demo", "card": "card.md", "portrait": {"default": "default.png", "expressions": expressions}}, ensure_ascii=False))
+    application = PluginApplicationHost(RuntimeRoots(distribution, user), "large-portraits", ToolRegistry())
+    application.start()
+    try:
+        boundary = CharacterStudioBoundary("g", "c", user, plugin_application_provider=lambda: application)
+        opened = boundary._dispatch("studio.character.open", {"characterId": "demo"})
+        boundary._dispatch("studio.character.publish", {"workspaceId": "demo", "doc": opened["doc"]})
+        profile = CharacterRegistry(user).get("demo")
+        binding = application.application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
+        assert set(binding.description["assets"]) == {"__default__", *expressions}
+        assert len(json.dumps(binding.description, ensure_ascii=False).encode()) > 65536
+        key = next(reversed(expressions))
+        result = binding.parse_control({"version": 1, "resourceId": profile.current_visual_resource.id, "payload": {"key": key}})
+        assert result.control["state"] == {"key": key}
+    finally:
+        application.close()

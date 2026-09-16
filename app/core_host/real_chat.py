@@ -26,7 +26,6 @@ if TYPE_CHECKING:
 
 
 REAL_CHAT_EXECUTION_LIMIT = 1
-CHAT_MESSAGE_LIMIT = 64 * 1024
 CHAT_CLOSE_TIMEOUT_SECONDS = 3.0
 MANUAL_SCREEN_ATTACHMENT_LIMIT = 6
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
@@ -1231,7 +1230,6 @@ class RealChatBoundary:
         if (
             not isinstance(message, str)
             or not message.strip()
-            or len(message.encode("utf-8")) > CHAT_MESSAGE_LIMIT
         ):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat message is invalid")
         attachment_id = payload.get("attachmentId")

@@ -428,7 +428,6 @@ def test_invalid_envelopes_are_isolated_and_old_bindings_expire_on_switch_reload
         {"version": 1, "resourceId": "other", "payload": {}},
         {"version": 1, "resourceId": resource.id, "payload": {}, "pluginId": "other"},
         _control(resource, {"angle": float("nan")}),
-        _control(resource, {"angle": "x" * 65536}),
     ]:
         result = binding.parse_control(envelope)
         assert result.control is None

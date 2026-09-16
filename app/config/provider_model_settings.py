@@ -16,8 +16,6 @@ from app.storage.paths import StoragePaths
 
 
 SUPPORTED_CONFIG_VERSION = 1
-MAX_PROVIDERS = 32
-MAX_MODELS_PER_PROVIDER = 512
 _PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _MODEL_NAME = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
 _HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -212,9 +210,9 @@ class ProviderModelSettingsRepository:
         self._assert_current_schema()
         if not isinstance(raw, Mapping):
             raise ProviderModelSettingsError("INVALID_REQUEST", "请求格式无效。", feature="providers.test_connection")
-        profile_id = _required_text(raw.get("profile_id"), "profile_id", 64)
+        profile_id = _required_text(raw.get("profile_id"), "profile_id")
         base_url = _validate_url(raw.get("base_url"), field="base_url")
-        model = _text(raw.get("model"), "model", 256)
+        model = _text(raw.get("model"), "model")
         if require_model and not model:
             raise ProviderModelSettingsError("FIELD_REQUIRED", "请选择模型。", feature="providers.test_connection", field="model")
         timeout = _bounded_int(raw.get("timeout_seconds"), 15, 1, 60, strict=True)
@@ -262,14 +260,14 @@ class ProviderModelSettingsRepository:
         for item in raw:
             if not isinstance(item, Mapping):
                 raise ProviderModelSettingsError("CONFIG_DATA_INVALID", "Provider 配置格式无效。")
-            profile_id = _required_text(item.get("id"), "id", 64)
+            profile_id = _required_text(item.get("id"), "id")
             if not _PROFILE_ID.fullmatch(profile_id):
                 raise ProviderModelSettingsError("CONFIG_DATA_INVALID", "Provider ID 格式无效。")
             if profile_id in seen:
                 raise ProviderModelSettingsError("CONFIG_DATA_INVALID", "Provider ID 不能重复。")
             seen.add(profile_id)
-            alias = _text(item.get("alias"), "alias", 120) or profile_id
-            base_url = _text(item.get("base_url"), "base_url", 2048)
+            alias = _text(item.get("alias"), "alias") or profile_id
+            base_url = _text(item.get("base_url"), "base_url")
             if base_url:
                 base_url = _validate_url(base_url, field="base_url")
             secret = item.get("api_key", "")
@@ -302,8 +300,8 @@ class ProviderModelSettingsRepository:
             if not isinstance(value, Mapping):
                 raise ProviderModelSettingsError("CONFIG_DATA_INVALID", "模型槽配置格式无效。", feature=f"model.{slot}_slot")
             selection: dict[str, Any] = {
-                "profile_id": _text(value.get("profile_id"), "profile_id", 64),
-                "model": _text(value.get("model"), "model", 256),
+                "profile_id": _text(value.get("profile_id"), "profile_id"),
+                "model": _text(value.get("model"), "model"),
             }
             if slot == "chat":
                 selection["context_window_tokens"] = _optional_int(
@@ -327,14 +325,14 @@ def parse_draft(raw: object) -> ProviderModelDraft:
     if not isinstance(raw, Mapping) or set(raw) - {"providers", "model_slots", "settings"}:
         raise ProviderModelSettingsError("INVALID_REQUEST", "设置请求格式无效。")
     raw_providers = raw.get("providers")
-    if not isinstance(raw_providers, list) or len(raw_providers) > MAX_PROVIDERS:
+    if not isinstance(raw_providers, list):
         raise ProviderModelSettingsError("PROVIDERS_INVALID", "Provider 列表无效。")
     providers: list[ProviderDraft] = []
     seen: set[str] = set()
     for index, item in enumerate(raw_providers):
         if not isinstance(item, Mapping):
             raise ProviderModelSettingsError("PROVIDER_INVALID", "Provider 配置无效。", field=str(index))
-        profile_id = _required_text(item.get("id"), "id", 64)
+        profile_id = _required_text(item.get("id"), "id")
         if not _PROFILE_ID.fullmatch(profile_id):
             raise ProviderModelSettingsError("FIELD_INVALID", "Provider ID 格式无效。", field="id")
         if profile_id in seen:
@@ -342,7 +340,7 @@ def parse_draft(raw: object) -> ProviderModelDraft:
         seen.add(profile_id)
         providers.append(ProviderDraft(
             id=profile_id,
-            alias=_required_text(item.get("alias"), "alias", 120),
+            alias=_required_text(item.get("alias"), "alias"),
             base_url=_validate_url(item.get("base_url"), field="base_url"),
             models=_parse_models(item.get("models"), strict=True),
             credential=_parse_credential(item.get("credential")),
@@ -399,7 +397,7 @@ def _parse_credential(value: object, *, feature: str = "providers.credentials") 
     if action not in {"keep", "replace", "clear"}:
         raise ProviderModelSettingsError("CREDENTIAL_ACTION_INVALID", "凭据动作无效。", feature=feature, field="credential")
     raw_secret = value.get("value", "")
-    if not isinstance(raw_secret, str) or len(raw_secret) > 16_384 or "\x00" in raw_secret:
+    if not isinstance(raw_secret, str) or "\x00" in raw_secret:
         raise ProviderModelSettingsError("CREDENTIAL_INVALID", "凭据格式无效。", feature=feature, field="credential")
     secret = raw_secret.strip()
     if action == "replace" and not secret:
@@ -410,7 +408,7 @@ def _parse_credential(value: object, *, feature: str = "providers.credentials") 
 
 
 def _parse_models(value: object, *, strict: bool) -> tuple[str, ...]:
-    if not isinstance(value, list) or len(value) > MAX_MODELS_PER_PROVIDER:
+    if not isinstance(value, list):
         raise ProviderModelSettingsError("MODELS_INVALID", "模型列表无效。", field="models")
     result: list[str] = []
     for item in value:
@@ -442,8 +440,8 @@ def _parse_slot(
     if not isinstance(value, Mapping) or set(value) - allowed:
         raise ProviderModelSettingsError("MODEL_SLOT_INVALID", "模型槽配置无效。", feature=f"model.{name}_slot", field=name)
     slot = ModelSlotDraft(
-        profile_id=_text(value.get("profile_id"), "profile_id", 64),
-        model=_text(value.get("model"), "model", 256),
+        profile_id=_text(value.get("profile_id"), "profile_id"),
+        model=_text(value.get("model"), "model"),
         context_window_tokens=(
             _optional_int(
                 value.get("context_window_tokens"),
@@ -468,7 +466,7 @@ def _parse_slot(
 
 
 def _validate_url(value: object, *, field: str) -> str:
-    text = _required_text(value, field, 2048).rstrip("/")
+    text = _required_text(value, field).rstrip("/")
     try:
         parsed = urlparse(text)
         parsed.port
@@ -493,17 +491,17 @@ def _validate_url(value: object, *, field: str) -> str:
     return text
 
 
-def _required_text(value: object, field: str, maximum: int) -> str:
-    text = _text(value, field, maximum)
+def _required_text(value: object, field: str) -> str:
+    text = _text(value, field)
     if not text:
         raise ProviderModelSettingsError("FIELD_REQUIRED", f"{field} 不能为空。", field=field)
     return text
 
 
-def _text(value: object, field: str, maximum: int) -> str:
+def _text(value: object, field: str) -> str:
     if value is None:
         return ""
-    if not isinstance(value, str) or len(value) > maximum or "\x00" in value:
+    if not isinstance(value, str) or "\x00" in value:
         raise ProviderModelSettingsError("FIELD_INVALID", f"{field} 格式无效。", field=field)
     return value.strip()
 

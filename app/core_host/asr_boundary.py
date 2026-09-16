@@ -276,7 +276,7 @@ class ASRBoundary:
                 state = result.get("state")
                 if state == "succeeded":
                     text = result.get("text")
-                    if not isinstance(text, str) or not text.strip() or len(text) > 32000:
+                    if not isinstance(text, str) or not text.strip():
                         raise AudioInputError("ASR_NO_SPEECH")
                     with self._lock:
                         self._require_context(task)

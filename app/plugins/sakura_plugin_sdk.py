@@ -200,21 +200,19 @@ def _exception_diagnostics(error: BaseException) -> dict[str, str]:
     return result
 
 
-def json_value(value: object) -> object:
-    """Return a detached JSON value or fail at the process boundary."""
-
+def _encode_json(value: object) -> bytes:
     try:
-        encoded = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        payload = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
     except (TypeError, ValueError, OverflowError) as error:
         raise PluginApiError("SERVICE_PAYLOAD_INVALID") from error
-    if len(encoded) > MAX_FRAME_BYTES:
+    if len(payload) > MAX_FRAME_BYTES:
         raise PluginApiError("PLUGIN_FRAME_TOO_LARGE")
-    return json.loads(encoded.decode("utf-8"))
+    return payload
+
+
+def json_value(value: object) -> object:
+    """Detach values for local consumers using the transport's JSON contract."""
+    return json.loads(_encode_json(value))
 
 
 def read_frame(stream: BinaryIO) -> dict[str, Any]:
@@ -233,14 +231,7 @@ def read_frame(stream: BinaryIO) -> dict[str, Any]:
 
 
 def write_frame(stream: BinaryIO, value: Mapping[str, Any]) -> None:
-    detached = json_value(dict(value))
-    assert isinstance(detached, dict)
-    payload = json.dumps(
-        detached,
-        ensure_ascii=False,
-        allow_nan=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    payload = _encode_json(value)
     stream.write(struct.pack(">I", len(payload)))
     stream.write(payload)
     stream.flush()
@@ -288,7 +279,7 @@ class RpcPeer:
         self._pending: dict[str, _Pending] = {}
         self._outgoing_slots = threading.BoundedSemaphore(MAX_PENDING_REQUESTS)
         self._incoming_slots = threading.BoundedSemaphore(MAX_PENDING_REQUESTS)
-        self._outgoing: queue.Queue[Mapping[str, Any] | None] = queue.Queue(
+        self._outgoing: queue.Queue[bytes | None] = queue.Queue(
             maxsize=MAX_PENDING_REQUESTS * 2
         )
         self._closed = threading.Event()
@@ -402,7 +393,7 @@ class RpcPeer:
         if self.closed:
             raise PluginApiError("PLUGIN_PROCESS_UNAVAILABLE")
         try:
-            self._outgoing.put(dict(value), timeout=max(0.0, timeout))
+            self._outgoing.put(_encode_json(value), timeout=max(0.0, timeout))
         except queue.Full as error:
             raise PluginApiError("PLUGIN_QUEUE_FULL") from error
 
@@ -412,7 +403,9 @@ class RpcPeer:
                 value = self._outgoing.get()
                 if value is None:
                     return
-                write_frame(self._output, value)
+                self._output.write(struct.pack(">I", len(value)))
+                self._output.write(value)
+                self._output.flush()
         except (BrokenPipeError, OSError, ValueError, PluginApiError):
             self.close()
 
@@ -444,7 +437,7 @@ class RpcPeer:
             if pending is None:
                 return
             if message.get("ok") is True:
-                pending.result = json_value(message.get("result"))
+                pending.result = message.get("result")
             else:
                 raw = message.get("error")
                 if not isinstance(raw, Mapping):
@@ -483,7 +476,7 @@ class RpcPeer:
     ) -> None:
         try:
             result = self._request_handler(name, payload)
-            result = json_value(result)
+            self.respond(request_id, result=result)
         except PluginApiError as error:
             try:
                 self.respond(request_id, error=error)
@@ -500,11 +493,6 @@ class RpcPeer:
                         diagnostics=_exception_diagnostics(error),
                     ),
                 )
-            except PluginApiError:
-                pass
-        else:
-            try:
-                self.respond(request_id, result=result)
             except PluginApiError:
                 pass
         finally:
@@ -738,18 +726,6 @@ class _CharacterProxy:
             "current",
             [self._context.plugin_id],
         )
-        if (
-            not isinstance(result, Mapping)
-            or set(result) != {"id", "systemPrompt"}
-            or not isinstance(result.get("id"), str)
-            or not result.get("id")
-            or not isinstance(result.get("systemPrompt"), str)
-            or not result.get("systemPrompt")
-        ):
-            raise PluginApiError(
-                "CHARACTER_RESPONSE_INVALID",
-                plugin_id=self._context.plugin_id,
-            )
         return {"id": result["id"], "systemPrompt": result["systemPrompt"]}
 
     def get(self, character_id: str) -> dict[str, Any]:
@@ -1202,15 +1178,7 @@ class _ModelSlotsProxy:
             "catalog",
             [],
         )
-        detached = json_value(result)
-        if not isinstance(detached, list) or any(
-            not isinstance(item, dict) for item in detached
-        ):
-            raise PluginApiError(
-                "MODEL_CATALOG_INVALID",
-                plugin_id=self._context.plugin_id,
-            )
-        return detached
+        return result
 
     def resolve(self, selection: Mapping[str, Any]) -> dict[str, object]:
         if not isinstance(selection, Mapping):
@@ -1223,13 +1191,7 @@ class _ModelSlotsProxy:
             "resolve",
             [dict(selection)],
         )
-        detached = json_value(result)
-        if not isinstance(detached, dict):
-            raise PluginApiError(
-                "MODEL_CATALOG_INVALID",
-                plugin_id=self._context.plugin_id,
-            )
-        return detached
+        return result
 
     def register(
         self,
