@@ -1,0 +1,1224 @@
+/* =============================================================
+   Sakura Desktop Pet — 站点主题
+   1. 设计 token
+   2. 基底与背景
+   3. 全局排版
+   4. 文档组件（表格 / 代码 / 图片 / 卡片 / Asides / 侧栏 / TOC / 分页）
+   5. 首页 splash（sakura-*）
+   6. 响应式
+   7. 动效降级
+   ============================================================= */
+
+/* ============ 1. 设计 token ============ */
+:root {
+	--sl-font: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+	--sl-font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+
+	/* 主题色 */
+	--sl-color-accent-low: #ffe1e9;
+	--sl-color-accent: #d83d68;
+	--sl-color-accent-high: #861a39;
+
+	/* 中性灰阶（去粉污染，提升正文可读性） */
+	--sl-color-white: #1c1418;
+	--sl-color-gray-1: #382c31;
+	--sl-color-gray-2: #574a50;
+	--sl-color-gray-3: #82737a;
+	--sl-color-gray-4: #c2b4bb;
+	--sl-color-gray-5: #e8dee2;
+	--sl-color-gray-6: #f6f0f2;
+	--sl-color-black: #fff8fa;
+
+	/* 副色 */
+	--sakura-teal: #0f7f78;
+	--sakura-amber: #8f6700;
+
+	/* 语义淡底 */
+	--sakura-pink-soft: rgba(216, 61, 104, 0.08);
+	--sakura-teal-soft: rgba(15, 127, 120, 0.10);
+	--sakura-amber-soft: rgba(143, 103, 0, 0.12);
+	--sakura-hairline: rgba(140, 90, 105, 0.16);
+	--sakura-panel: rgba(255, 255, 255, 0.72);
+	--sakura-panel-strong: rgba(255, 255, 255, 0.88);
+
+	/* 光晕 */
+	--sakura-glow-pink: rgba(216, 61, 104, 0.16);
+	--sakura-glow-teal: rgba(49, 184, 123, 0.16);
+	--sakura-dot: rgba(150, 95, 110, 0.05);
+
+	/* 圆角 */
+	--sakura-radius-sm: 10px;
+	--sakura-radius-control: 12px;
+	--sakura-radius-card: 18px;
+	--sakura-radius-pill: 999px;
+
+	/* 阴影 */
+	--sakura-shadow-sm: 0 1px 2px rgba(33, 20, 24, 0.04), 0 2px 6px rgba(33, 20, 24, 0.05);
+	--sakura-shadow-md: 0 8px 22px rgba(33, 20, 24, 0.08), 0 2px 6px rgba(33, 20, 24, 0.05);
+	--sakura-shadow-lg: 0 22px 48px rgba(33, 20, 24, 0.14);
+	--sakura-shadow-accent: 0 16px 34px rgba(216, 61, 104, 0.22);
+
+	/* 边缘过渡（首页区块衔接） */
+	--sakura-hero-edge: #fff8fa;
+	--sakura-green-edge: #e5f7ee;
+	--sakura-gold-edge: #f3ead2;
+	--sakura-rose-edge: #f9dfe9;
+	--sakura-slate-edge: #e2e7f1;
+
+	/* 后三页：发色=主色调、瞳色=强调色（柔和） */
+	--sakura-leaf: #4f9b53;                          /* Sophia 瞳绿 */
+	--sakura-leaf-soft: rgba(79, 155, 83, 0.12);
+	--sakura-glow-gold: rgba(214, 168, 40, 0.16);    /* Sophia 发金光晕 */
+	--sakura-glow-rose: rgba(224, 64, 120, 0.16);    /* 链锯娘 发玫红光晕 */
+	--sakura-gold-accent: #b8881a;                   /* ZUK 瞳金 */
+	--sakura-gold-soft: rgba(184, 136, 26, 0.14);
+	--sakura-glow-violet: rgba(112, 92, 200, 0.12);  /* ZUK 飘带靛紫（次色） */
+
+	/* 代码块 */
+	--sakura-code-bg: #fdf6f9;
+	--sakura-code-tabbar: #f4e7ec;
+}
+
+:root[data-theme="dark"] {
+	--sl-color-accent-low: #4a1625;
+	--sl-color-accent: #ff7ca1;
+	--sl-color-accent-high: #ffd5df;
+
+	--sl-color-white: #fff6f8;
+	--sl-color-gray-1: #f1dce4;
+	--sl-color-gray-2: #d3b6c1;
+	--sl-color-gray-3: #a8818f;
+	--sl-color-gray-4: #72505c;
+	--sl-color-gray-5: #3b2730;
+	--sl-color-gray-6: #221820;
+	--sl-color-black: #140f12;
+
+	--sakura-teal: #69d8cd;
+	--sakura-amber: #e6ad33;
+
+	--sakura-pink-soft: rgba(255, 124, 161, 0.10);
+	--sakura-teal-soft: rgba(105, 216, 205, 0.12);
+	--sakura-amber-soft: rgba(230, 173, 51, 0.14);
+	--sakura-hairline: rgba(255, 200, 215, 0.12);
+	--sakura-panel: rgba(255, 255, 255, 0.05);
+	--sakura-panel-strong: rgba(255, 255, 255, 0.09);
+
+	--sakura-glow-pink: rgba(255, 124, 161, 0.13);
+	--sakura-glow-teal: rgba(105, 216, 205, 0.11);
+	--sakura-dot: rgba(255, 200, 215, 0.045);
+
+	--sakura-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+	--sakura-shadow-md: 0 8px 22px rgba(0, 0, 0, 0.34);
+	--sakura-shadow-lg: 0 22px 48px rgba(0, 0, 0, 0.46);
+	--sakura-shadow-accent: 0 16px 34px rgba(0, 0, 0, 0.42);
+
+	--sakura-hero-edge: #140f12;
+	--sakura-green-edge: #0d3428;
+	--sakura-gold-edge: #2a2110;
+	--sakura-rose-edge: #311420;
+	--sakura-slate-edge: #1b2130;
+
+	--sakura-leaf: #7cc47f;
+	--sakura-leaf-soft: rgba(124, 196, 127, 0.14);
+	--sakura-glow-gold: rgba(230, 186, 70, 0.14);
+	--sakura-glow-rose: rgba(255, 124, 161, 0.13);
+	--sakura-gold-accent: #e6c050;
+	--sakura-gold-soft: rgba(230, 192, 80, 0.16);
+	--sakura-glow-violet: rgba(140, 120, 230, 0.12);
+
+	--sakura-code-bg: #181016;
+	--sakura-code-tabbar: #20141d;
+}
+
+/* ============ 2. 基底与背景 ============ */
+body {
+	background-color: var(--sl-color-black);
+	background-image:
+		radial-gradient(circle at 1px 1px, var(--sakura-dot) 1px, transparent 1.5px),
+		radial-gradient(680px 440px at 6% -8%, var(--sakura-glow-pink), transparent 72%),
+		radial-gradient(760px 480px at 100% -6%, var(--sakura-glow-teal), transparent 72%);
+	background-size: 23px 23px, 100% 100%, 100% 100%;
+	background-attachment: fixed;
+}
+
+/* 首页：光晕略偏薄荷，呼应 feature stage */
+body:has(.sakura-hero) {
+	background-image:
+		radial-gradient(circle at 1px 1px, var(--sakura-dot) 1px, transparent 1.5px),
+		radial-gradient(720px 460px at 6% -8%, var(--sakura-glow-pink), transparent 72%),
+		radial-gradient(820px 520px at 100% 4%, var(--sakura-glow-teal), transparent 70%);
+	background-size: 23px 23px, 100% 100%, 100% 100%;
+	background-attachment: fixed;
+}
+
+/* 首页隐藏 Starlight 默认空白内容面板 */
+main:has(.sakura-hero) > .content-panel:first-child {
+	display: none;
+}
+
+/* ============ 3. 全局排版 ============ */
+.site-title {
+	font-weight: 800;
+	letter-spacing: -0.01em;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4) {
+	letter-spacing: -0.01em;
+}
+
+.sl-markdown-content :is(h2, h3, h4) {
+	font-weight: 700;
+}
+
+.sl-markdown-content h2 {
+	margin-top: 2.75rem;
+	padding-bottom: 0.4rem;
+	border-bottom: 1px solid var(--sakura-hairline);
+}
+
+/* 正文链接：精致下划线（排除带 class 的布局链接/按钮） */
+.sl-markdown-content a:not([class]) {
+	color: var(--sl-color-accent-high);
+	text-decoration-line: underline;
+	text-decoration-thickness: 1px;
+	text-decoration-color: color-mix(in srgb, currentColor 38%, transparent);
+	text-underline-offset: 0.22em;
+	transition: color 150ms ease, text-decoration-color 150ms ease;
+}
+
+.sl-markdown-content a:not([class]):hover {
+	color: var(--sl-color-accent);
+	text-decoration-color: currentColor;
+}
+
+/* ============ 4. 文档组件 ============ */
+
+/* 行内代码 */
+.sl-markdown-content :not(pre) > code {
+	padding: 0.15em 0.42em;
+	border: 1px solid var(--sakura-hairline);
+	border-radius: 7px;
+	background: var(--sakura-pink-soft);
+	color: var(--sl-color-accent-high);
+	font-size: 0.88em;
+}
+
+/* 表格：圆角容器 + 表头淡底 + 斑马行 + hairline
+   注：Starlight 默认把表格设为 display:block;overflow:auto（横向滚动），
+   与 width:100% 叠加会在右侧留出空白边框，这里改回 display:table 并填满列宽。
+   选择器与 Starlight 完全一致以保证覆盖（同特异性、靠后生效）。 */
+.sl-markdown-content table:not(:where(.not-content *)) {
+	display: table;
+	width: 100%;
+	margin: 1.5rem 0;
+	border-collapse: separate;
+	border-spacing: 0;
+	border: 1px solid var(--sakura-hairline);
+	border-radius: var(--sakura-radius-card);
+	overflow: hidden;
+	font-size: 0.94rem;
+	box-shadow: var(--sakura-shadow-sm);
+}
+
+.sl-markdown-content thead th {
+	background: var(--sakura-pink-soft);
+	color: var(--sl-color-white);
+	font-weight: 700;
+	text-align: start;
+}
+
+.sl-markdown-content :is(th, td) {
+	padding: 0.7rem 1rem;
+	border: 0;
+	border-bottom: 1px solid var(--sakura-hairline);
+}
+
+.sl-markdown-content tbody tr:nth-child(even) {
+	background: color-mix(in srgb, var(--sakura-pink-soft) 45%, transparent);
+}
+
+.sl-markdown-content tbody tr:hover {
+	background: var(--sakura-pink-soft);
+}
+
+.sl-markdown-content tbody tr:last-child :is(td, th) {
+	border-bottom: 0;
+}
+
+/* 文档截图：圆角 + hairline + 柔和阴影 */
+.sl-markdown-content img {
+	border-radius: var(--sakura-radius-card);
+	border: 1px solid var(--sakura-hairline);
+	box-shadow: var(--sakura-shadow-md);
+}
+
+/* 代码块外框阴影（Expressive Code 由 astro.config 配色） */
+.sl-markdown-content .expressive-code {
+	margin: 1.4rem 0;
+}
+
+.sl-markdown-content .expressive-code .frame {
+	box-shadow: var(--sakura-shadow-sm);
+}
+
+/* Asides / 提示框 */
+.sl-markdown-content .starlight-aside {
+	border-radius: var(--sakura-radius-card);
+	border: 1px solid var(--sakura-hairline);
+	border-inline-start-width: 4px;
+}
+
+.sl-markdown-content .starlight-aside--note {
+	border-inline-start-color: var(--sakura-teal);
+	background: var(--sakura-teal-soft);
+}
+
+.sl-markdown-content .starlight-aside--tip {
+	border-inline-start-color: var(--sl-color-accent);
+	background: var(--sakura-pink-soft);
+}
+
+.sl-markdown-content .starlight-aside--caution {
+	border-inline-start-color: var(--sakura-amber);
+	background: var(--sakura-amber-soft);
+}
+
+.sl-markdown-content .starlight-aside--danger {
+	border-inline-start-color: #e0445f;
+	background: rgba(224, 68, 95, 0.1);
+}
+
+.starlight-aside--note .starlight-aside__title { color: var(--sakura-teal); }
+.starlight-aside--tip .starlight-aside__title { color: var(--sl-color-accent); }
+.starlight-aside--caution .starlight-aside__title { color: var(--sakura-amber); }
+.starlight-aside--danger .starlight-aside__title { color: #e0445f; }
+
+/* 顶栏：磨砂 + hairline 分隔 */
+header.header {
+	border-bottom: 1px solid var(--sakura-hairline);
+	background: color-mix(in srgb, var(--sl-color-black) 78%, transparent);
+	-webkit-backdrop-filter: saturate(1.4) blur(12px);
+	backdrop-filter: saturate(1.4) blur(12px);
+}
+
+/* 侧栏当前页：强调色药丸 */
+.sidebar a[aria-current="page"],
+.sidebar a[aria-current="page"]:hover,
+.sidebar a[aria-current="page"]:focus {
+	border-radius: var(--sakura-radius-sm);
+	background: var(--sakura-pink-soft);
+	color: var(--sl-color-accent-high);
+	font-weight: 700;
+}
+
+.sidebar .top-level > li > a,
+.sidebar .top-level > li > details > summary {
+	border-radius: var(--sakura-radius-sm);
+}
+
+/* 右侧 TOC 当前项 */
+starlight-toc a[aria-current="true"] {
+	border-radius: var(--sakura-radius-sm);
+	background: var(--sakura-pink-soft);
+	color: var(--sl-color-accent-high);
+	font-weight: 700;
+}
+
+/* 上一页 / 下一页：卡片化 */
+.pagination-links a {
+	border-radius: var(--sakura-radius-card);
+	border-color: var(--sakura-hairline);
+	box-shadow: var(--sakura-shadow-sm);
+	transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.pagination-links a:hover {
+	transform: translateY(-2px);
+	border-color: var(--sl-color-accent);
+	box-shadow: var(--sakura-shadow-md);
+}
+
+/* ============ 5. 首页 splash ============ */
+.sakura-hero {
+	position: relative;
+	display: grid;
+	align-items: center;
+	min-height: 70vh;
+	margin: -2rem calc(50% - 50vw) 0;
+	padding: 6rem max(2rem, calc((100vw - 1180px) / 2)) 4.5rem;
+	overflow: hidden;
+	background:
+		linear-gradient(90deg, rgba(255, 248, 250, 0.98) 0%, rgba(255, 248, 250, 0.86) 32%, rgba(255, 248, 250, 0.16) 58%, rgba(255, 248, 250, 0.04) 100%),
+		url("/images/Sakura-promo.webp") right 4% bottom -5rem / auto 90% no-repeat,
+		radial-gradient(900px 540px at 18% 26%, var(--sakura-glow-pink), transparent 66%),
+		linear-gradient(180deg, #fff8fa 0%, #fcf1f5 100%);
+}
+
+:root[data-theme="dark"] .sakura-hero {
+	background:
+		linear-gradient(90deg, rgba(20, 15, 18, 0.98) 0%, rgba(20, 15, 18, 0.84) 32%, rgba(20, 15, 18, 0.18) 58%, rgba(20, 15, 18, 0.04) 100%),
+		url("/images/Sakura-promo.webp") right 4% bottom -5rem / auto 90% no-repeat,
+		radial-gradient(900px 540px at 18% 26%, var(--sakura-glow-pink), transparent 66%),
+		linear-gradient(180deg, #140f12 0%, #1b1419 100%);
+}
+
+.sakura-hero::after {
+	content: "";
+	position: absolute;
+	inset: auto 0 0 auto;
+	width: 100%;
+	height: 8.5rem;
+	pointer-events: none;
+	background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--sakura-hero-edge) 78%, transparent) 48%, var(--sakura-hero-edge) 78%, var(--sakura-hero-edge));
+	-webkit-backdrop-filter: blur(12px);
+	backdrop-filter: blur(12px);
+	-webkit-mask-image: linear-gradient(180deg, transparent, #000 28%, #000);
+	mask-image: linear-gradient(180deg, transparent, #000 28%, #000);
+}
+
+.sakura-hero__inner {
+	position: relative;
+	z-index: 1;
+	max-width: 640px;
+}
+
+.sakura-eyebrow {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin: 0 0 1.1rem;
+	padding: 0.34rem 0.8rem;
+	border: 1px solid color-mix(in srgb, var(--sakura-teal) 32%, transparent);
+	border-radius: var(--sakura-radius-pill);
+	background: var(--sakura-teal-soft);
+	color: var(--sakura-teal);
+	font-size: 0.78rem;
+	font-weight: 800;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.sakura-eyebrow::before {
+	content: "";
+	width: 0.5rem;
+	height: 0.5rem;
+	border-radius: 50%;
+	background: var(--sakura-teal);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--sakura-teal) 24%, transparent);
+}
+
+.sakura-hero h1 {
+	margin: 0;
+	color: var(--sl-color-white);
+	font-size: clamp(2.9rem, 5.4vw, 4.8rem);
+	line-height: 0.98;
+	letter-spacing: -0.02em;
+}
+
+.sakura-lead {
+	max-width: 560px;
+	margin: 1.25rem 0 0;
+	color: var(--sl-color-gray-2);
+	font-size: 1.2rem;
+	line-height: 1.8;
+}
+
+.sakura-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.8rem;
+	margin-top: 2rem;
+}
+
+.sakura-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.4rem;
+	min-height: 2.85rem;
+	padding: 0.75rem 1.25rem;
+	border: 1px solid rgba(216, 61, 104, 0.28);
+	border-radius: var(--sakura-radius-control);
+	font-weight: 800;
+	text-decoration: none;
+	transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.sakura-button:hover {
+	transform: translateY(-2px);
+}
+
+.sakura-button:active {
+	transform: translateY(0);
+}
+
+.sakura-button:focus-visible {
+	outline: 2px solid var(--sl-color-accent);
+	outline-offset: 3px;
+}
+
+.sakura-button[aria-disabled="true"],
+.sakura-button:disabled {
+	opacity: 0.5;
+	pointer-events: none;
+}
+
+.sakura-button--primary {
+	background: var(--sl-color-accent);
+	color: #fff;
+	box-shadow: var(--sakura-shadow-accent);
+}
+
+.sakura-button--primary::after {
+	content: "→";
+	font-weight: 700;
+	transition: transform 160ms ease;
+}
+
+.sakura-button--primary:hover {
+	box-shadow: 0 20px 40px rgba(216, 61, 104, 0.32);
+}
+
+.sakura-button--primary:hover::after {
+	transform: translateX(3px);
+}
+
+:root[data-theme="dark"] .sakura-button--primary {
+	color: #2a0b16;
+}
+
+.sakura-button--ghost {
+	background: var(--sakura-panel-strong);
+	color: var(--sl-color-white);
+}
+
+.sakura-button--ghost:hover {
+	border-color: rgba(216, 61, 104, 0.55);
+	background: var(--sakura-panel-strong);
+}
+
+:root[data-theme="dark"] .sakura-button--ghost:hover {
+	border-color: rgba(255, 124, 161, 0.6);
+}
+
+.sakura-signal {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 0.75rem;
+	max-width: 620px;
+	margin: 2.25rem 0 0;
+	align-items: stretch;
+}
+
+.sakura-signal div {
+	display: flex;
+	box-sizing: border-box;
+	flex-direction: column;
+	justify-content: center;
+	padding: 0.9rem 1rem;
+	border: 1px solid var(--sakura-hairline);
+	border-radius: var(--sakura-radius-card);
+	background: var(--sakura-panel);
+	box-shadow: var(--sakura-shadow-sm);
+	transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.sakura-signal div:hover {
+	transform: translateY(-2px);
+	border-color: color-mix(in srgb, var(--sakura-teal) 40%, transparent);
+}
+
+.sakura-signal dt {
+	color: var(--sakura-teal);
+	font-size: 0.76rem;
+	font-weight: 800;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+}
+
+.sakura-signal dd {
+	margin: 0.3rem 0 0;
+	color: var(--sl-color-white);
+	font-weight: 700;
+}
+
+.sakura-feature-stage {
+	position: relative;
+	isolation: isolate;
+	display: grid;
+	grid-template-columns: minmax(640px, 1.08fr) minmax(440px, 0.92fr);
+	gap: clamp(2rem, 3vw, 4rem);
+	align-items: start;
+	margin: -1px calc(50% - 50vw) 0;
+	padding: clamp(3.5rem, 5vw, 5.5rem) 2rem 0 max(2rem, calc((100vw - 1180px) / 2));
+	background:
+		linear-gradient(180deg, var(--sakura-hero-edge) 0%, color-mix(in srgb, var(--sakura-hero-edge) 98%, transparent) 5%, transparent 18%),
+		linear-gradient(180deg, transparent 84%, color-mix(in srgb, var(--sakura-green-edge) 96%, transparent) 94%, var(--sakura-green-edge) 100%),
+		radial-gradient(circle at 84% 30%, var(--sakura-glow-teal), transparent 36%),
+		linear-gradient(180deg, #fff8fa 0%, #f4fbf7 14%, #eaf9f1 42%, #e5f7ee 100%);
+}
+
+:root[data-theme="dark"] .sakura-feature-stage {
+	background:
+		linear-gradient(180deg, var(--sakura-hero-edge) 0%, color-mix(in srgb, var(--sakura-hero-edge) 98%, transparent) 5%, transparent 18%),
+		linear-gradient(180deg, transparent 84%, color-mix(in srgb, var(--sakura-green-edge) 96%, transparent) 94%, var(--sakura-green-edge) 100%),
+		radial-gradient(circle at 84% 30%, var(--sakura-glow-teal), transparent 36%),
+		linear-gradient(180deg, #140f12 0%, #12221d 16%, #102e25 44%, #0d3428 100%);
+}
+
+.sakura-feature-stage__content {
+	position: relative;
+	z-index: 2;
+	min-width: 0;
+}
+
+.sakura-feature-stage__visual {
+	position: sticky;
+	z-index: 1;
+	top: 4.5rem;
+	display: grid;
+	place-items: center end;
+	height: calc(100svh - 6rem);
+	min-width: 0;
+	pointer-events: none;
+}
+
+.sakura-feature-stage__visual img {
+	position: absolute;
+	top: 50%;
+	right: -1rem;
+	display: block;
+	width: min(44vw, 820px);
+	max-width: none;
+	height: auto;
+	max-height: calc(100svh - 6rem);
+	margin: 0;
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+	object-fit: contain;
+	transform: translateY(-50%);
+	filter: drop-shadow(0 28px 48px rgba(18, 87, 67, 0.18));
+}
+
+/* 立绘柔光底衬 */
+.sakura-feature-stage__visual::before {
+	content: "";
+	position: absolute;
+	top: 50%;
+	right: 2%;
+	width: min(36vw, 560px);
+	aspect-ratio: 1;
+	border-radius: 50%;
+	background: radial-gradient(circle, var(--sakura-glow-teal), transparent 68%);
+	transform: translateY(-50%);
+	z-index: -1;
+}
+
+:root[data-theme="dark"] .sakura-feature-stage__visual img {
+	filter: drop-shadow(0 32px 56px rgba(0, 0, 0, 0.4));
+}
+
+/* feature stage 内的卡片统一到绿色调 token */
+.sakura-feature-stage__content .card-grid {
+	gap: 0.8rem;
+}
+
+:is(.sakura-feature-stage__content, .sakura-band) .card {
+	padding: 1.1rem 1.2rem;
+	border-color: color-mix(in srgb, var(--sakura-teal) 26%, transparent);
+	background: var(--sakura-panel);
+	box-shadow: var(--sakura-shadow-sm);
+	/* 覆盖 Starlight 按卡片循环的图标描边/底色，统一为青绿 */
+	--sl-card-border: color-mix(in srgb, var(--sakura-teal) 32%, transparent);
+	--sl-card-bg: var(--sakura-teal-soft);
+}
+
+:is(.sakura-feature-stage__content, .sakura-band) .card .icon {
+	color: var(--sakura-teal);
+	border-radius: var(--sakura-radius-sm);
+}
+
+.sakura-feature-stage__content .sakura-journey,
+.sakura-feature-stage__content .sakura-audience {
+	gap: 0.75rem;
+}
+
+.sakura-feature-stage__content .sakura-journey a,
+.sakura-feature-stage__content .sakura-audience > div {
+	padding: 0.95rem;
+	border-color: color-mix(in srgb, var(--sakura-teal) 22%, transparent);
+	background: var(--sakura-panel);
+	box-shadow: var(--sakura-shadow-sm);
+}
+
+.sakura-feature-stage__content .sakura-journey span {
+	color: #167c55;
+	background: rgba(22, 124, 85, 0.1);
+}
+
+:root[data-theme="dark"] .sakura-feature-stage__content .sakura-journey span {
+	color: var(--sakura-amber);
+	background: var(--sakura-amber-soft);
+}
+
+.sakura-next-stage {
+	box-sizing: border-box;
+	min-height: 46svh;
+	margin: -1px calc(50% - 50vw) -4rem;
+	padding: clamp(4rem, 7vw, 7rem) max(2rem, calc((100vw - 1180px) / 2)) 8rem;
+	background:
+		linear-gradient(180deg, var(--sakura-slate-edge) 0%, color-mix(in srgb, var(--sakura-slate-edge) 60%, transparent) 10%, transparent 28%),
+		radial-gradient(circle at 84% 20%, var(--sakura-glow-gold), transparent 40%),
+		linear-gradient(180deg, #e6eaf3 0%, #e2e7f1 100%);
+}
+
+:root[data-theme="dark"] .sakura-next-stage {
+	background:
+		linear-gradient(180deg, var(--sakura-slate-edge) 0%, color-mix(in srgb, var(--sakura-slate-edge) 60%, transparent) 10%, transparent 28%),
+		radial-gradient(circle at 84% 20%, var(--sakura-glow-gold), transparent 40%),
+		linear-gradient(180deg, #1a2030 0%, #1b2130 100%);
+}
+
+.sakura-next-stage h2 {
+	margin-top: 0;
+	border-bottom: 0;
+}
+
+/* journey / audience 网格 */
+.sakura-journey,
+.sakura-audience {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 0.9rem;
+	margin: 1rem 0 2rem;
+}
+
+.sakura-audience {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Starlight 正文会给相邻块加 margin，这里重置自定义网格子项，避免错位 */
+.sl-markdown-content .sakura-signal > div,
+.sl-markdown-content .sakura-feature-stage__visual > img,
+.sl-markdown-content .sakura-journey > a,
+.sl-markdown-content .sakura-audience > div,
+.sl-markdown-content .sakura-pillars > div,
+.sl-markdown-content .sakura-steps > div {
+	margin-top: 0 !important;
+}
+
+/* 首页落地区块的 h2 不需要文档式底边线 */
+main:has(.sakura-hero) .sl-markdown-content h2 {
+	padding-bottom: 0;
+	border-bottom: 0;
+}
+
+.sakura-journey a,
+.sakura-audience div {
+	display: block;
+	min-height: 100%;
+	padding: 1.1rem;
+	border: 1px solid var(--sakura-hairline);
+	border-radius: var(--sakura-radius-card);
+	background: var(--sakura-panel);
+	color: var(--sl-color-white);
+	text-decoration: none;
+	box-shadow: var(--sakura-shadow-sm);
+}
+
+/* 覆盖正文链接下划线规则（其特异性高于 .sakura-journey a）：
+   卡片整体作为链接，不应有下划线、文字保持常规色。 */
+.sl-markdown-content .sakura-journey a {
+	color: var(--sl-color-white);
+	text-decoration: none;
+}
+
+.sakura-journey a {
+	transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.sakura-journey a:hover {
+	transform: translateY(-3px);
+	border-color: var(--sl-color-accent);
+	box-shadow: var(--sakura-shadow-lg);
+}
+
+.sakura-journey a:focus-visible {
+	outline: 2px solid var(--sl-color-accent);
+	outline-offset: 3px;
+}
+
+.sakura-journey span {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 2rem;
+	height: 2rem;
+	margin-bottom: 1rem;
+	padding: 0 0.55rem;
+	border-radius: var(--sakura-radius-pill);
+	background: var(--sakura-amber-soft);
+	color: var(--sakura-amber);
+	font-size: 0.82rem;
+	font-weight: 900;
+}
+
+.sakura-journey strong,
+.sakura-audience h3 {
+	display: block;
+	margin: 0 0 0.45rem;
+	color: var(--sl-color-white);
+	font-size: 1.02rem;
+}
+
+.sakura-audience p {
+	margin: 0;
+	color: var(--sl-color-gray-2);
+}
+
+/* 通用卡片 */
+.card-grid {
+	gap: 1rem;
+}
+
+.card {
+	border-radius: var(--sakura-radius-card);
+	box-shadow: var(--sakura-shadow-sm);
+	transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.card:hover {
+	transform: translateY(-2px);
+	border-color: var(--sl-color-accent);
+	box-shadow: var(--sakura-shadow-md);
+}
+
+/* ---- 首页扩展区块：全幅色带 / 三大核心 / 对比 / 向导步骤 ---- */
+
+/* 全幅色带：衔接 feature stage 之后的薄荷区，明暗各一套 */
+.sakura-band {
+	box-sizing: border-box;
+	margin: -1px calc(50% - 50vw) 0;
+	padding: clamp(3.5rem, 6vw, 6rem) max(2rem, calc((100vw - 1180px) / 2));
+	background:
+		radial-gradient(circle at 82% 16%, var(--sakura-glow-teal), transparent 40%),
+		linear-gradient(180deg, #e8f8f1 0%, #e5f7ee 100%);
+}
+
+:root[data-theme="dark"] .sakura-band {
+	background:
+		radial-gradient(circle at 82% 16%, var(--sakura-glow-teal), transparent 40%),
+		linear-gradient(180deg, #0e362a 0%, #0d3428 100%);
+}
+
+/* 后三页配色：每区块一位主人公，发色=主色调、瞳色=强调色。
+   每段背景四层叠放：① 顶部 edge 从「上一页色」侵入再淡出（消除割裂线）
+   ② 底部 edge 沉到「本页色」，供下一页顶部承接 ③ 角色光晕 ④ 主色柔和渐变。
+   衔接链：青绿(feature) → 金(Sophia) → 玫红(链锯娘) → 板岩(ZUK)。 */
+
+/* —— 能力全景 · Sophia：发金主调 / 瞳绿强调 —— */
+.sakura-band--gold {
+	background:
+		linear-gradient(180deg, var(--sakura-green-edge) 0%, color-mix(in srgb, var(--sakura-green-edge) 55%, transparent) 9%, transparent 26%),
+		linear-gradient(180deg, transparent 76%, color-mix(in srgb, var(--sakura-gold-edge) 70%, transparent) 92%, var(--sakura-gold-edge) 100%),
+		radial-gradient(circle at 82% 20%, var(--sakura-glow-gold), transparent 44%),
+		linear-gradient(180deg, #fbf6e8 0%, #f6efd6 100%);
+}
+
+:root[data-theme="dark"] .sakura-band--gold {
+	background:
+		linear-gradient(180deg, var(--sakura-green-edge) 0%, color-mix(in srgb, var(--sakura-green-edge) 55%, transparent) 9%, transparent 26%),
+		linear-gradient(180deg, transparent 76%, color-mix(in srgb, var(--sakura-gold-edge) 70%, transparent) 92%, var(--sakura-gold-edge) 100%),
+		radial-gradient(circle at 82% 20%, var(--sakura-glow-gold), transparent 44%),
+		linear-gradient(180deg, #221b0e 0%, #2a2110 100%);
+}
+
+/* —— 角色由你定义 · 链锯娘：发玫红主调 / 瞳粉强调 —— */
+.sakura-band--rose {
+	background:
+		linear-gradient(180deg, var(--sakura-gold-edge) 0%, color-mix(in srgb, var(--sakura-gold-edge) 55%, transparent) 9%, transparent 26%),
+		linear-gradient(180deg, transparent 76%, color-mix(in srgb, var(--sakura-rose-edge) 70%, transparent) 92%, var(--sakura-rose-edge) 100%),
+		radial-gradient(circle at 18% 22%, var(--sakura-glow-rose), transparent 44%),
+		linear-gradient(180deg, #fdeef4 0%, #f9dfe9 100%);
+}
+
+:root[data-theme="dark"] .sakura-band--rose {
+	background:
+		linear-gradient(180deg, var(--sakura-gold-edge) 0%, color-mix(in srgb, var(--sakura-gold-edge) 55%, transparent) 9%, transparent 26%),
+		linear-gradient(180deg, transparent 76%, color-mix(in srgb, var(--sakura-rose-edge) 70%, transparent) 92%, var(--sakura-rose-edge) 100%),
+		radial-gradient(circle at 18% 22%, var(--sakura-glow-rose), transparent 44%),
+		linear-gradient(180deg, #2a1018 0%, #311420 100%);
+}
+
+/* —— 收尾页 · ZUK：发深蓝灰主调 / 瞳金强调 / 飘带靛紫次色 —— */
+.sakura-band--slate {
+	background:
+		linear-gradient(180deg, var(--sakura-rose-edge) 0%, color-mix(in srgb, var(--sakura-rose-edge) 55%, transparent) 9%, transparent 26%),
+		linear-gradient(180deg, transparent 78%, color-mix(in srgb, var(--sakura-slate-edge) 70%, transparent) 92%, var(--sakura-slate-edge) 100%),
+		radial-gradient(circle at 84% 20%, var(--sakura-glow-gold), transparent 42%),
+		radial-gradient(circle at 12% 72%, var(--sakura-glow-violet), transparent 40%),
+		linear-gradient(180deg, #eef1f8 0%, #e2e7f1 100%);
+}
+
+:root[data-theme="dark"] .sakura-band--slate {
+	background:
+		linear-gradient(180deg, var(--sakura-rose-edge) 0%, color-mix(in srgb, var(--sakura-rose-edge) 55%, transparent) 9%, transparent 26%),
+		linear-gradient(180deg, transparent 78%, color-mix(in srgb, var(--sakura-slate-edge) 70%, transparent) 92%, var(--sakura-slate-edge) 100%),
+		radial-gradient(circle at 84% 20%, var(--sakura-glow-gold), transparent 42%),
+		radial-gradient(circle at 12% 72%, var(--sakura-glow-violet), transparent 40%),
+		linear-gradient(180deg, #161b27 0%, #1b2130 100%);
+}
+
+.sakura-band > :first-child {
+	margin-top: 0;
+}
+
+/* 三大核心：加重卡片 */
+.sakura-pillars {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 1rem;
+	margin: 1.5rem 0 2.5rem;
+}
+
+.sakura-pillars > div {
+	display: flex;
+	flex-direction: column;
+	padding: 1.5rem 1.4rem;
+	border: 1px solid var(--sakura-hairline);
+	border-radius: var(--sakura-radius-card);
+	background: var(--sakura-panel-strong);
+	box-shadow: var(--sakura-shadow-md);
+}
+
+.sakura-pillars .sakura-pillar__icon {
+	margin-bottom: 0.9rem;
+	color: var(--sakura-teal);
+}
+
+.sakura-pillars h3 {
+	margin: 0 0 0.5rem;
+	color: var(--sl-color-white);
+	font-size: 1.2rem;
+}
+
+.sakura-pillars p {
+	margin: 0;
+	color: var(--sl-color-gray-2);
+	line-height: 1.75;
+}
+
+.sakura-pillars .sakura-pillar__tag {
+	margin-top: auto;
+	padding-top: 0.9rem;
+	color: var(--sakura-teal);
+	font-weight: 700;
+}
+
+/* 对比表：复用全局表格样式，关闭斑马并高亮 Sakura 列 */
+
+/* 圆角裁切交给包裹层：table 自身的 overflow:hidden 在 Chromium 下不会裁切
+   border-collapse:separate 的单元格背景，圆角处会露出直角。包一层 div 统一裁切。
+   这层同时也是整表的「白玻璃卡」：让对比表在绿色区块上成为一个统一的面，
+   只保留青绿作为唯一强调色，去掉原先 gray-6 带来的割裂粉灰。 */
+.sakura-compare-wrap {
+	margin: 1.5rem 0 0;
+	border: 1px solid color-mix(in srgb, var(--sakura-teal) 22%, transparent);
+	border-radius: var(--sakura-radius-card);
+	overflow: hidden;
+	background: var(--sakura-panel-strong);
+	-webkit-backdrop-filter: blur(8px) saturate(1.2);
+	backdrop-filter: blur(8px) saturate(1.2);
+	box-shadow: var(--sakura-shadow-md);
+}
+
+/* 内层 table 交出边框 / 圆角 / 阴影 / 外边距 / 背景，由包裹层负责 */
+.sl-markdown-content .sakura-compare-wrap table.sakura-compare {
+	margin: 0;
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+	background: transparent;
+}
+
+/* 单元格：更松的间距 + 舒服的行高；内部分隔线统一为极淡青绿 */
+.sakura-compare :is(th, td) {
+	padding: 0.85rem 1.15rem;
+	line-height: 1.6;
+	border-bottom: 1px solid color-mix(in srgb, var(--sakura-teal) 12%, transparent);
+}
+
+/* 关闭斑马行；hover 用极淡青绿，保持克制 */
+.sakura-compare tbody tr:nth-child(even) {
+	background: transparent;
+}
+
+.sakura-compare tbody tr:hover :is(th, td) {
+	background: color-mix(in srgb, var(--sakura-teal) 5%, transparent);
+}
+
+/* 表头：透明坐在白卡上，与表体之间用稍重的青绿分隔线 */
+.sakura-compare thead th {
+	background: transparent;
+	border-bottom: 1px solid color-mix(in srgb, var(--sakura-teal) 18%, transparent);
+}
+
+/* 角落「维度」：小号弱标签 */
+.sakura-compare thead th:first-child {
+	color: var(--sl-color-gray-3);
+	font-size: 0.8rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+}
+
+/* 中列「普通聊天机器人」表头：弱化 */
+.sakura-compare thead th:nth-child(2) {
+	color: var(--sl-color-gray-3);
+	font-weight: 600;
+}
+
+/* 行标题列（互动 / 上下文…）：极淡青绿条勾边 + 墨色加粗 */
+.sakura-compare tbody th {
+	background: color-mix(in srgb, var(--sakura-teal) 6%, transparent);
+	border-inline-end: 1px solid color-mix(in srgb, var(--sakura-teal) 12%, transparent);
+	color: var(--sl-color-white);
+	font-weight: 700;
+	text-align: start;
+	white-space: nowrap;
+}
+
+/* 普通机器人列：弱化的灰字（背景透出白卡） */
+.sakura-compare tbody td:not(:last-child) {
+	color: var(--sl-color-gray-3);
+}
+
+/* Sakura 列：全表唯一的色块强调 —— 淡青绿底 + 左缘青绿线 */
+.sakura-compare :is(th, td):last-child {
+	background: var(--sakura-teal-soft);
+	border-inline-start: 1px solid color-mix(in srgb, var(--sakura-teal) 30%, transparent);
+	color: var(--sl-color-white);
+}
+
+/* hover 时让 Sakura 列再明显一点 */
+.sakura-compare tbody tr:hover :is(th, td):last-child {
+	background: color-mix(in srgb, var(--sakura-teal) 16%, transparent);
+}
+
+/* Sakura 表头：青绿加重 */
+.sakura-compare thead th:last-child {
+	color: var(--sakura-teal);
+	font-weight: 800;
+	font-size: 1.05rem;
+}
+
+/* Characters Studio 向导步骤：药丸链 */
+.sakura-steps {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.55rem;
+	margin: 1.5rem 0;
+}
+
+.sakura-steps > div {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.45rem 0.95rem 0.45rem 0.45rem;
+	border: 1px solid var(--sakura-hairline);
+	border-radius: var(--sakura-radius-pill);
+	background: var(--sakura-panel-strong);
+	color: var(--sl-color-white);
+	font-size: 0.92rem;
+	font-weight: 600;
+	box-shadow: var(--sakura-shadow-sm);
+}
+
+.sakura-steps > div span {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.6rem;
+	height: 1.6rem;
+	border-radius: 50%;
+	background: var(--sakura-teal-soft);
+	color: var(--sakura-teal);
+	font-size: 0.82rem;
+	font-weight: 800;
+}
+
+/* ---- 后三页：区块内部强调色随角色切换（覆盖默认青绿） ---- */
+
+/* 能力全景 · Sophia：卡片 / 三大核心 → 瞳绿 */
+.sakura-band--gold .card {
+	border-color: color-mix(in srgb, var(--sakura-leaf) 28%, transparent);
+	--sl-card-border: color-mix(in srgb, var(--sakura-leaf) 34%, transparent);
+	--sl-card-bg: var(--sakura-leaf-soft);
+}
+
+.sakura-band--gold .card .icon {
+	color: var(--sakura-leaf);
+}
+
+.sakura-band--gold .card:hover {
+	border-color: var(--sakura-leaf);
+}
+
+.sakura-band--gold .sakura-pillars .sakura-pillar__icon,
+.sakura-band--gold .sakura-pillars .sakura-pillar__tag {
+	color: var(--sakura-leaf);
+}
+
+/* 角色由你定义 · 链锯娘：向导步骤药丸 → 玫红/瞳粉 */
+.sakura-band--rose .sakura-steps > div span {
+	background: var(--sakura-pink-soft);
+	color: var(--sl-color-accent);
+}
+
+/* 收尾页 · ZUK：路径序号 / 卡片 hover → 瞳金 */
+.sakura-band--slate .sakura-journey span {
+	color: var(--sakura-gold-accent);
+	background: var(--sakura-gold-soft);
+}
+
+.sakura-band--slate .sakura-journey a:hover {
+	border-color: var(--sakura-gold-accent);
+}
+
+/* ============ 6. 响应式 ============ */
+@media (max-width: 820px) {
+	.sakura-hero {
+		min-height: 700px;
+		padding-top: 3.5rem;
+		padding-bottom: 2rem;
+		background:
+			linear-gradient(180deg, rgba(255, 248, 250, 0.96) 0%, rgba(255, 248, 250, 0.82) 42%, rgba(255, 248, 250, 0.3) 100%),
+			url("/images/Sakura-promo.webp") center bottom -3.5rem / auto 62% no-repeat,
+			radial-gradient(900px 540px at 30% 20%, var(--sakura-glow-pink), transparent 66%),
+			linear-gradient(180deg, #fff8fa 0%, #fcf1f5 100%);
+	}
+
+	:root[data-theme="dark"] .sakura-hero {
+		background:
+			linear-gradient(180deg, rgba(20, 15, 18, 0.96) 0%, rgba(20, 15, 18, 0.82) 42%, rgba(20, 15, 18, 0.32) 100%),
+			url("/images/Sakura-promo.webp") center bottom -3.5rem / auto 62% no-repeat,
+			radial-gradient(900px 540px at 30% 20%, var(--sakura-glow-pink), transparent 66%),
+			linear-gradient(180deg, #140f12 0%, #1b1419 100%);
+	}
+
+	.sakura-hero::after {
+		width: 100%;
+		height: 7rem;
+	}
+
+	.sakura-hero h1 {
+		font-size: 3.1rem;
+	}
+
+	.sakura-lead {
+		font-size: 1rem;
+	}
+
+	.sakura-journey,
+	.sakura-audience {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.sakura-pillars {
+		grid-template-columns: 1fr;
+	}
+
+	.sakura-signal {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0.45rem;
+		margin-top: 1.25rem;
+	}
+
+	.sakura-signal div {
+		padding: 0.65rem 0.5rem;
+	}
+
+	.sakura-signal dt {
+		font-size: 0.68rem;
+	}
+
+	.sakura-signal dd {
+		font-size: 0.82rem;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+	}
+}
+
+@media (max-width: 520px) {
+	.sakura-actions {
+		flex-direction: column;
+	}
+
+	.sakura-button {
+		width: 100%;
+	}
+
+	.sakura-journey,
+	.sakura-audience {
+		grid-template-columns: 1fr;
+	}
+}
+
+@media (max-width: 1180px) {
+	.sakura-feature-stage {
+		grid-template-columns: 1fr;
+		margin-inline: calc(50% - 50vw);
+		padding: 3rem max(1rem, calc((100vw - 760px) / 2)) 0;
+	}
+
+	.sakura-feature-stage__visual {
+		position: static;
+		order: -1;
+		height: min(70svh, 640px);
+	}
+
+	.sakura-feature-stage__visual img {
+		position: static;
+		width: min(94vw, 820px);
+		max-height: 100%;
+		justify-self: center;
+		transform: none;
+	}
+
+	.sakura-feature-stage__visual::before {
+		right: 50%;
+		transform: translate(50%, -50%);
+	}
+
+	.sakura-next-stage {
+		margin-inline: calc(50% - 50vw);
+		padding: 4rem max(1rem, calc((100vw - 760px) / 2)) 6rem;
+	}
+
+	.sakura-band {
+		padding-inline: max(1rem, calc((100vw - 760px) / 2));
+	}
+}
+
+/* ============ 7. 动效降级 ============ */
+@media (prefers-reduced-motion: reduce) {
+	.sakura-button,
+	.sakura-journey a,
+	.sakura-signal div,
+	.pagination-links a,
+	.card {
+		transition: none;
+	}
+
+	.sakura-button:hover,
+	.sakura-journey a:hover,
+	.sakura-signal div:hover,
+	.pagination-links a:hover,
+	.card:hover {
+		transform: none;
+	}
+
+	.sakura-button--primary:hover::after {
+		transform: none;
+	}
+}

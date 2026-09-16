@@ -63,7 +63,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       PYTHONUTF8: "1"
-      SAKURA_UPDATER_ENDPOINT: https://github.com/Rvosy/Sakura/releases/latest/download/latest.json
+      SAKURA_UPDATER_ENDPOINT: https://api.sakura.cialloo.cn/service/v1/latest.json
       SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -436,14 +436,19 @@ jobs:
           token: ${{ github.token }}
           files: release-assets/latest.json
 
-  publish-service-metadata:
+  import-console-draft:
+    name: Import release into private console
     needs: [metadata, publish-portable]
     if: needs.metadata.outputs.prerelease == 'false'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
-      - name: Generate the Sakura service release metadata
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Prepare the console draft metadata
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -451,9 +456,8 @@ jobs:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          published_at="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
-            --jq .published_at)"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" > service-github.json
+          published_at="$(jq -r .published_at service-github.json)"
           jq -n \
             --arg version "$VERSION" \
             --arg tag "$TAG" \
@@ -473,7 +477,23 @@ jobs:
               updaterManifestUrl: "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
             }' > service-releases.json
 
-      - name: Configure the restricted deployment identity
+      - name: Prepare the complete release draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json --dir service-updater
+          jq --slurpfile release service-github.json \
+            '.notes = ($release[0].body // "")' service-updater/latest.json > service-updater/preview.json
+          python services/sakura/releases.py build \
+            --release service-releases.json \
+            --updater service-updater/preview.json \
+            --output service-publication.json
+
+      - name: Configure the restricted draft import identity
         shell: bash
         env:
           DEPLOY_KEY: ${{ secrets.SAKURA_SERVICE_DEPLOY_KEY }}
@@ -487,7 +507,7 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/sakura-service ~/.ssh/known_hosts
 
-      - name: Publish the release metadata to Sakura Service
+      - name: Import draft without publishing the public manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -496,4 +516,11 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             sakura-release@sakura.cialloo.cn \
-            < service-releases.json
+            < service-publication.json > console-draft.json
+          jq -e '.id and .version and .state and .consoleUrl' console-draft.json >/dev/null
+          {
+            printf '### 版本草稿已导入\n\n'
+            printf '版本：%s · 状态：%s\n\n' "$(jq -r .version console-draft.json)" "$(jq -r .state console-draft.json)"
+            printf '[打开 Sakura 版本发布](https://adm.sakura.cialloo.cn/admin/#releases)\n\n'
+            printf '请登录后台核对草稿并发布。本步骤未修改公开更新清单。\n'
+          } >> "$GITHUB_STEP_SUMMARY"

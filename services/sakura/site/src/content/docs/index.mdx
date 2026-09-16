@@ -1,0 +1,201 @@
+---
+title: Sakura Desktop Pet
+description: 一个能主动感知屏幕、调用工具、管理记忆的桌面角色 Agent 框架。
+template: splash
+---
+
+import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
+
+<section class="sakura-hero">
+		<div class="sakura-hero__inner">
+			<p class="sakura-eyebrow">Desktop Companion Agent</p>
+			<h1>Sakura Desktop Pet</h1>
+			<p class="sakura-lead">一个会主动感知屏幕、用原生 tool_calls 调用工具、把记忆交给你管理的桌面角色 Agent。不是聊天框的外壳，是能陪你工作、提醒你、帮你处理任务的桌面伙伴。</p>
+			<div class="sakura-actions">
+				<a class="sakura-button sakura-button--primary" href="/start/setup/">立即开始</a>
+				<a class="sakura-button sakura-button--ghost" href="https://github.com/Rvosy/sakura/releases">下载 Release</a>
+			</div>
+			<dl class="sakura-signal">
+				<div>
+					<dt>角色包</dt>
+					<dd>.char 一键导入</dd>
+				</div>
+				<div>
+					<dt>Agent</dt>
+					<dd>原生 tool_calls</dd>
+				</div>
+				<div>
+					<dt>扩展</dt>
+					<dd>插件 + MCP</dd>
+				</div>
+			</dl>
+		</div>
+	</section>
+
+<section class="sakura-feature-stage">
+		<div class="sakura-feature-stage__content">
+
+	## 为什么做 Sakura
+
+	传统聊天机器人是一扇门，你不敲，它永远不会开。Sakura 想做的是另一种东西——一个窝在你屏幕角落的角色：你不必一直陪她说话，但她会留意你在做什么，觉得该开口时自己凑过来。
+
+	比如你在打游戏连续失败，她瞥一眼屏幕，小声提醒「已经第三次了喔……要不我帮你查查攻略？」。你点点头，她就真的打开浏览器搜一圈，再把重点贴进备忘录。
+
+	这背后是**角色卡**驱动她的语气、表情和声音，**内置 Agent 引擎**给了她真正的工具能力。她不是聊天框的外壳，是一个会主动找你的桌面伙伴。
+
+	### 和普通聊天机器人的区别
+
+	同样接一个大模型，Sakura 不是聊天框的外壳：
+
+	<div class="sakura-compare-wrap">
+		<table class="sakura-compare">
+			<thead>
+				<tr>
+					<th>维度</th>
+					<th>普通聊天机器人</th>
+					<th>Sakura</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr><th>互动</th><td>你先开口才回应</td><td>主动感知，按需凑过来</td></tr>
+				<tr><th>上下文</th><td>仅文字</td><td>屏幕视觉摘要纳入对话</td></tr>
+				<tr><th>工具</th><td>多为纯文本，少有工具</td><td>原生 tool_calls：网页 / 文件 / 提醒 / 搜索，高风险确认</td></tr>
+				<tr><th>记忆</th><td>会话结束即忘</td><td>按轮次自动总结，本地向量离线，可查可改</td></tr>
+				<tr><th>形象</th><td>一个文本框</td><td>角色卡驱动立绘 / 表情 / 双语字幕 / 语音</td></tr>
+				<tr><th>定制</th><td>改改提示词</td><td>.char 角色包 + Characters Studio + 插件 / MCP</td></tr>
+			</tbody>
+		</table>
+	</div>
+
+		</div>
+		<div class="sakura-feature-stage__visual">
+			<img
+				src="/images/N.A.V.I-promo.webp"
+				alt="N.A.V.I. 桌宠角色与任务支持界面"
+				width="2321"
+				height="2018"
+				loading="lazy"
+			/>
+		</div>
+	</section>
+
+<section class="sakura-band sakura-band--gold">
+
+	## 能力全景
+
+	感知、工具、记忆和角色表达串在同一条运行链路里，不止一个会说话的立绘。
+
+	<div class="sakura-pillars">
+		<div>
+			<Icon name="magnifier" class="sakura-pillar__icon" size="1.7rem" />
+			<h3>主动感知</h3>
+			<p>定期截图生成视觉摘要并纳入上下文，也可以随时按需观察屏幕；她会周期性评估此刻是否该开口，间隔与冷却时间都能配置。</p>
+			<p class="sakura-pillar__tag">不用你先开口，她自己凑过来。</p>
+		</div>
+		<div>
+			<Icon name="database" class="sakura-pillar__icon" size="1.7rem" />
+			<h3>长期记忆</h3>
+			<p>每隔设定的对话轮次，她在后台自动从聊天记录里总结、更新和删除记忆，不打断对话；本地向量模型离线检索，无需联网。</p>
+			<p class="sakura-pillar__tag">她记住的一切，你都能在记忆设置里查看和修改。</p>
+		</div>
+		<div>
+			<Icon name="puzzle" class="sakura-pillar__icon" size="1.7rem" />
+			<h3>插件与 MCP 扩展</h3>
+			<p>本地插件自动发现加载，可注册工具、动态上下文、设置页、输入区控件、提示词补丁和渲染后端；任意 MCP Server 即插即用，内置 Web 搜索。</p>
+			<p class="sakura-pillar__tag">能力边界由你扩展。</p>
+		</div>
+	</div>
+
+	<CardGrid>
+		<Card title="原生工具循环" icon="approve-check-circle">
+			基于 OpenAI 兼容接口的 tool_calls：截图、打开网页、待办、提醒、笔记、搜索同轮调度，高风险操作执行前先弹出确认。
+		</Card>
+		<Card title="分段双语表达" icon="translate">
+			模型输出日文原文、中文字幕、语气标签和立绘指令，字幕、表情与语音同步驱动，配逐字打字机动效。
+		</Card>
+		<Card title="语音 TTS" icon="comment-alt">
+			集成 GPT-SoVITS，一键下载整合包（RTX 50 系 / 通用 N 卡 / CPU），也可接入自部署的外置服务。
+		</Card>
+		<Card title="外观可调" icon="window">
+			纯色、高斯模糊、亚克力与 macOS 原生毛玻璃；气泡和输入栏的位置、大小都能调。
+		</Card>
+	</CardGrid>
+
+	</section>
+
+<section class="sakura-band sakura-band--rose">
+
+	## 角色由你定义
+
+	角色以 `.char` 包为单位分发：人格卡、立绘与表情映射、主题色、语气和 GPT-SoVITS 语音权重打包在一起。导入一个 `.char`，整套对话风格、外观和声音随之切换。
+
+	想做自己的角色？Sakura 自带 **Characters Studio**，向导式制作可分发的角色包：
+
+	<div class="sakura-steps">
+		<div><span>1</span>新建 / 导入</div>
+		<div><span>2</span>基础信息</div>
+		<div><span>3</span>人格卡</div>
+		<div><span>4</span>立绘绑定</div>
+		<div><span>5</span>语音模型</div>
+		<div><span>6</span>参考音频</div>
+		<div><span>7</span>主题配色</div>
+		<div><span>8</span>校验导出 .char</div>
+	</div>
+
+	编辑全程在隔离工作区进行，不会动到正在使用的角色目录，编辑器也与桌宠共用同一套视觉。详细字段说明见[角色包制作指南](/developers/character-pack/)。
+
+	</section>
+
+<section class="sakura-band sakura-band--slate">
+
+	## 一条清晰的使用路径
+
+	<div class="sakura-journey">
+		<a href="/start/setup/">
+			<span>01</span>
+			<strong>安装 Sakura</strong>
+			下载完整包、导入角色包并完成首次启动。
+		</a>
+		<a href="/start/api-config/">
+			<span>02</span>
+			<strong>配置模型</strong>
+			填写 OpenAI 兼容接口、API Key 和支持视觉输入的模型。
+		</a>
+		<a href="/product/features/">
+			<span>03</span>
+			<strong>开启能力</strong>
+			按需启用主动关怀、TTS、记忆、工具与插件。
+		</a>
+		<a href="/developers/plugin-sdk/">
+			<span>04</span>
+			<strong>扩展插件</strong>
+			用 Python 插件贡献工具、上下文、UI 控件或渲染后端。
+		</a>
+	</div>
+
+	## 面向谁
+
+	<div class="sakura-audience">
+		<div>
+			<h3>想直接用桌宠的人</h3>
+			<p>下载 Release 完整包，导入角色包，配置模型后即可运行。Windows 主要测试平台，macOS 和 Linux 可按源码路径运行。</p>
+		</div>
+		<div>
+			<h3>想做角色包的人</h3>
+			<p>用自带的 Characters Studio 向导式制作，或手写角色目录——角色卡、立绘、主题色、语音参考一包打包，适合做可分发的桌面角色。参见 <a href="/developers/character-pack/">角色包制作指南</a>。</p>
+		</div>
+		<div>
+			<h3>想扩展 Agent 的开发者</h3>
+			<p>插件可以注册工具、注入动态上下文、监听宿主事件、扩展设置页和聊天输入区，也能接入新的角色渲染后端。</p>
+		</div>
+	</div>
+
+	</section>
+
+<section class="sakura-next-stage">
+
+	## 下一步
+
+	从[安装与配置](/start/setup/)开始。已经装好 Sakura 的话，直接看 [API 配置](/start/api-config/) 和 [功能概览](/product/features/)。
+
+	</section>

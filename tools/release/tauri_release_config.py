@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 DEFAULT_UPDATER_ENDPOINT = (
-    "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
+    "https://api.sakura.cialloo.cn/service/v1/latest.json"
 )
 
 

@@ -1,0 +1,1 @@
+sakura-release ALL=(sakura-console) NOPASSWD: /usr/local/sbin/sakura-ci-import ""
