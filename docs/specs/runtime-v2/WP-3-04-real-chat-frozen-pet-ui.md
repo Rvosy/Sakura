@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-15
+updated: 2026-09-16
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
@@ -15,6 +15,9 @@ CharacterPresentation 使用 schemaVersion 2 的可空 visual；公共 Profile �
 解码和过渡归入内置插件，宿主在实际分段播放时派发 control；历史浏览只读文字。以下旧 WP 实施与验收记录保留历史语境。
 
 气泡底部的警告提示（`presentation-error`）统一显示 5 秒后清除，语音识别错误附带的重试和设置按钮同时移除。不同的新提示从出现时重新计时；同一条可见提示重复上报不延长显示时间。恢复成功或窗口退出时提前清除提示及计时器。
+
+输入框使用现有 Assistant 与 ChatPipeline，通过唯一终态交付完整回复。取消、历史、表现和 TTS 继续使用现有调用链；
+没有产品消费者的执行器进度支线已移除。协议见[聊天边界](WP-2-02-minimal-chat-boundary.md)。
 
 ## 目标与依赖
 

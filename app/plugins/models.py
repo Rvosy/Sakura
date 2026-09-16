@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence
 
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.visuals import VisualCapability
@@ -31,6 +31,9 @@ class ContextProviderContribution:
     build_context: Callable[[ContextRequest], Sequence[ContextFragment]]
     order: float = 100.0
     enabled: bool = True
+    scope: Literal["step", "turn"] = "step"
+    failure_policy: Literal["skip", "abort"] = "skip"
+    plugin_id: str = ""
 
 
 @dataclass(frozen=True)

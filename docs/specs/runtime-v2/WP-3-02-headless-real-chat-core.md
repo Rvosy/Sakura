@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-16
 ---
 
 # WP-3-02：无 UI 的真实聊天 Core 垂直链
@@ -11,6 +11,16 @@ updated: 2026-09-05
 > 当前状态唯一真相源见
 > `docs/plans/runtime-v2/work-packages.md`。本 WP 已于 2026-07-26
 > 完成正式验收；以下 active/stabilizing 内容保留为历史实施记录。
+
+## 当前执行入口
+
+正常聊天使用默认 Assistant，直接调用既有 ChatPipeline/Agent/Provider。未使用的执行器实验已清理，
+历史 `chat_executor` 字段被忽略；启用插件服务不会接管聊天，缺少模型配置时仍需完成配置。
+当前边界见 [Plugin Runtime](sakura-plugin-runtime-v4.md#65-正常对话与插件服务的边界)。
+
+当前历史使用 [Timeline 契约](WP-4-07R-typed-timeline-adaptive-context.md)。输入保存失败时不启动本轮执行；
+助手结果经身份与取消校验后提交，提交失败明确报告 `TIMELINE_WRITE_FAILED`，不会伪造完成或播放。
+旧 WP 的 JSONL 和 best-effort 写入说明保留为历史记录。
 
 ## 激活记录（2026-07-26）
 

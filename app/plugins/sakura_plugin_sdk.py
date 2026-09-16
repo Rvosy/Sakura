@@ -684,6 +684,12 @@ class _HostRegistrationProxy:
         self._service_key = service_key
         self._callback_shape = callback_shape
 
+    def describe(self) -> dict[str, Any]:
+        result = self._context._remote_call(self._service_key, "describe", [])
+        if not isinstance(result, Mapping):
+            raise PluginApiError("HOST_DESCRIPTOR_INVALID", plugin_id=self._context.plugin_id)
+        return dict(result)
+
     def register(
         self,
         descriptor: Mapping[str, Any],
@@ -1348,6 +1354,26 @@ class PluginContext:
         if callback_shape is not None:
             return _HostRegistrationProxy(self, key, callback_shape)
         return ServiceProxy(service_key, self._remote_call)
+
+    def bind(self, service_key: str) -> ServiceProxy:
+        """Hold one active plugin process; never adopt a replacement instance."""
+        key = _identifier(service_key, "SERVICE_KEY_INVALID")
+        binding = self._remote_request("service.bind", {"serviceKey": key})
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding) != {"providerId", "scopeId"}
+            or any(not isinstance(value, str) or not value for value in binding.values())
+        ):
+            raise PluginApiError("PLUGIN_RESPONSE_INVALID", service_key=key)
+        identity = dict(binding)
+
+        def call(service: str, method: str, args: Sequence[Any]) -> object:
+            return self._remote_request("service.call", {
+                "serviceKey": service, "method": method, "args": list(args),
+                "binding": identity,
+            })
+
+        return ServiceProxy(key, call)
 
     def provide(
         self,

@@ -136,6 +136,8 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "completion_tokens",
         "total_tokens",
         "provider",
+        "provider_id",
+        "plugin_id",
         "recording_id",
         "playback_id",
         "port",
@@ -864,7 +866,13 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
             )
         ):
             continue
-        if value is None or isinstance(value, bool):
+        if key in {"provider_id", "plugin_id"}:
+            # Preserve the full public Context/manifest identity, never a
+            # container count or arbitrary diagnostic text in an ID field.
+            token = _safe_token(value, 200 if key == "provider_id" else 64)
+            if token is not None:
+                safe[key] = token
+        elif value is None or isinstance(value, bool):
             safe[key] = value
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
@@ -909,7 +917,7 @@ def _encode_wire_record(wire: Mapping[str, object]) -> bytes | None:
     candidate["attributes"] = {
         key: safe_diagnostic_text(value, 1024) if isinstance(value, str) else value
         for key, value in dict(candidate.get("attributes") or {}).items()
-        if key in DIAGNOSTIC_TEXT_KEYS or key in {"code", "reason_code", "error_type", "cause_type", "cause_code", "validation_field", "stage", "exception_site"}
+        if key in DIAGNOSTIC_TEXT_KEYS or key in {"code", "reason_code", "error_type", "cause_type", "cause_code", "validation_field", "stage", "exception_site", "provider_id", "plugin_id"}
     }
     candidate["attributes"]["record_truncated"] = True
     line = _json_line(candidate)

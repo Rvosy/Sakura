@@ -179,7 +179,20 @@ def test_hub_keeps_preparation_selection_and_rejects_restarted_scope():
     calls = []
     engines = {name: SimpleNamespace(status=lambda: {"available": True, "state": "ready", "configVersion": "v1"}, warmup=lambda: None, begin=lambda request: (calls.append(request) or "job"), poll=lambda _: {"state": "succeeded", "text": "result", "language": None}, cancel=lambda _: True) for name in scopes}
     audio = SimpleNamespace(verifyProvider=lambda provider, _: {"scopeId": scopes[provider]}, authorize=lambda audio, _: audio, revoke=lambda _: True)
-    context = SimpleNamespace(config=SimpleNamespace(get=lambda: dict(config), update=config.update), get=lambda key: audio if key == "sakura.host.audio_input" else engines[key])
+
+    class BoundEngine:
+        def __init__(self, key):
+            self.key, self.scope = key, scopes[key]
+
+        def __getattr__(self, method):
+            def call(*args):
+                if scopes[self.key] != self.scope:
+                    raise RuntimeError("SERVICE_BINDING_EXPIRED")
+                return getattr(engines[self.key], method)(*args)
+            return call
+
+    context = SimpleNamespace(config=SimpleNamespace(get=lambda: dict(config), update=config.update),
+        get=lambda key: audio if key == "sakura.host.audio_input" else engines[key], bind=BoundEngine)
     hub = SakuraASRHub(context)
     for name in engines:
         context.caller_id = name
@@ -223,7 +236,8 @@ def test_cancelled_jobs_do_not_require_a_later_consumer_poll_to_reclaim_capacity
     config = {"selectedProviderId": "engine", "language": "auto"}
     engine = SimpleNamespace(status=lambda: {"available": True, "configVersion": "v1"}, begin=lambda _: "job", cancel=lambda _: True)
     audio = SimpleNamespace(verifyProvider=lambda *_: {"scopeId": "scope"}, authorize=lambda audio, _: audio, revoke=lambda _: True)
-    hub = SakuraASRHub(SimpleNamespace(caller_id="engine", config=SimpleNamespace(get=lambda: config), get=lambda key: audio if key == "sakura.host.audio_input" else engine))
+    hub = SakuraASRHub(SimpleNamespace(caller_id="engine", config=SimpleNamespace(get=lambda: config),
+        get=lambda key: audio if key == "sakura.host.audio_input" else engine, bind=lambda _key: engine))
     hub.registerProvider({"providerId": "engine", "serviceKey": "engine", "label": "Fixture", "processingLocation": "local"})
     for i in range(80):
         request = {"requestId": f"request-{i}", "providerId": "engine", "configVersion": "v1", "audio": {"resourceId": f"audio-{i}"}}

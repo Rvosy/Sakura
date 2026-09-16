@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-16
 ---
 
 # Runtime v2 路线图
@@ -11,7 +11,12 @@ updated: 2026-09-05
 本表记录计划和已知验收进度，不是开发许可清单。当前用户任务可以涉及任一相关能力，无需先“激活”工作包；
 开始实现也不等于通过验收。状态更新必须依据实际证据，自动检查和人工结果分别说明。
 
-Runtime v2 的目标是完成可发布的 Tauri 桌宠，而不是建设一套自动治理平台。当前只保留三个能力边界：
+Runtime v2 的目标是完成可发布的 Tauri 桌宠，并由薄宿主与可替换的默认插件提供日常能力。
+插件生态方向见[开放插件生态总计划](open-plugin-ecosystem.md)：Context、服务绑定及 TTS/ASR 实例隔离已具备实际消费者。
+本次移除没有产品入口的执行器实验，Collection 按真实修改和声明的 scope 管理草稿。复杂功能优先使用现有插件设置容器。
+默认模型和对话策略尚未迁入插件；下一项围绕正常聊天与已有辅助模型调用收口公开边界。
+该计划不改变下表尚未核对的历史验收状态。
+当前运行拓扑如下；部署位置不等于所有业务策略都应永久归 Core：
 
 ```text
 Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
@@ -39,8 +44,8 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
 - WP-4-09 Plugin Runtime v4 已通过实现、独立 Review 和验收门，状态为 `accepted`。
   WP-4-07R 与 WP-4-08 在本表仍记为 `planned`。WP-4-07R 已有 Spec/ADR；这些状态和设计文档本身
   不能证明 Timeline、预算或数据切换的实现情况，相关任务需核对当前调用链和测试。
-- WP-5-03 安全角色切换纵向链已实现并通过隔离 Harness：角色变更只跨完整 Core generation，Memory、
-  Timeline、TTS/资源和前端迟到状态按 generation/角色隔离。当前为 `stabilizing`，等待真实设置窗口
+- WP-5-03 安全角色切换在同 Core 内重建 Session，Memory、Timeline、TTS/资源与前端迟到状态按角色会话隔离，
+  保留可复用引擎；真正 Core 重启仍按 generation 隔离。当前为 `stabilizing`，等待真实设置窗口
   A→B→A 交互验收后再转 `accepted`。
 - WP-6-01–05 已接入主 Tauri 应用：工坊窗口、schema v1 Core 边界、旧草稿、资源导入、试听 URL、事务发布、
   `.char` 导出、大文件取消和当前角色重载已有自动覆盖。当前为 `stabilizing`；Windows x64 与 macOS arm64
@@ -49,6 +54,10 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
   不保留后台 reconcile、自愈或调用重放。
 - Plugin Runtime v4 已完成 v4-only 切换和完整验收：官方默认实现可替换，每插件独立进程和 dependency
   root，跨进程 ServiceProxy，官方插件依赖与实现不进入 Core Runtime。
+  这里的默认实现指已迁入插件的能力；正常聊天当前使用默认 Assistant，模型客户端、Agent 和管线尚未完成插件迁移。
+- 开放插件生态已移除未使用执行器实验及专注样例，保留现有默认聊天、Context 与公共进程绑定。
+  Collection 仅在字段实际变化时算草稿，角色集合阻止换角色，全局集合在“应用”后保留草稿；旧包缺省仍按角色保护。
+  历史节点与旧验证见[里程碑记录](../../records/audits/PLUGIN_ECOSYSTEM_MILESTONES.md)，当前调用与兼容合同见总计划和 Spec。
 - Legacy Qt 已按 ADR-0034 退役；旧行为通过 Git 历史查看，当前运行时不保留旧 schema parser 或 migration。
 
 ## 未完成 Work Package

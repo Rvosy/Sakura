@@ -332,12 +332,12 @@ class ReadinessController:
         if initializer is None:
             raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
         result = getattr(initializer, "initialize")(self._cancel)
+        result = self._bind_initialized_result(initializer, plugin_application, result)
         summary = self._project_summary(result.current_character_summary)
         presentation = self._project_presentation(
             result.current_character_presentation
         )
         if plugin_application is not None and result.session is not None:
-            getattr(plugin_application, "bind_session")(result.session)
             project = getattr(plugin_application, "visual_presentation", None)
             if callable(project):
                 presentation = self._project_presentation(project())
@@ -357,6 +357,38 @@ class ReadinessController:
             callback = self._session_published_callback if result.session is not None else None
         if callback is not None:
             callback()
+
+    def _bind_initialized_result(self, initializer: object, application: object | None, result: Any) -> Any:
+        """Publish a Session only after its application binding succeeds."""
+        if result.session is None:
+            return result
+        try:
+            if application is not None:
+                getattr(application, "bind_session")(result.session)
+            if self._cancel.is_set():
+                raise OperationCancelled()
+            return result
+        except Exception as error:
+            if application is not None:
+                try:
+                    getattr(application, "unbind_session")()
+                except Exception as cleanup_error:
+                    error.add_note(f"Session unbind failed: {type(cleanup_error).__name__}")
+            retire = getattr(initializer, "retire_session", None)
+            if callable(retire):
+                retire()
+            if isinstance(error, OperationCancelled):
+                raise
+            from .assistant_adapter import ReadinessResult
+
+            return ReadinessResult(
+                state="failed",
+                code="SESSION_BIND_FAILED",
+                message="Assistant 会话未能完成绑定。",
+                retryable=False,
+                current_character_summary=None,
+                current_character_presentation=result.current_character_presentation,
+            )
 
     def switch_character_session(self) -> None:
         from app.config.character_loader import CharacterRegistry
@@ -561,7 +593,6 @@ class ReadinessController:
     def _initialize(self) -> None:
         initializer: object | None = None
         session_callback: Callable[[], None] | None = None
-        application_to_bind: object | None = None
         unpublished_resources: list[object | None] = []
         try:
             with self._lock:
@@ -628,6 +659,7 @@ class ReadinessController:
 
             initialize = getattr(initializer, "initialize")
             result = initialize(self._cancel)
+            result = self._bind_initialized_result(initializer, plugin_application, result)
             summary = self._project_summary(result.current_character_summary)
             presentation = self._project_presentation(
                 result.current_character_presentation
@@ -652,19 +684,9 @@ class ReadinessController:
                         if self._session is not None and self._readiness in {"ready", "degraded"}
                         else None
                     )
-                    application_to_bind = (
-                        self._plugin_application
-                        if self._session is not None and self._readiness in {"ready", "degraded"}
-                        else None
-                    )
             if claimed is not None:
                 self._start_initializer_close(claimed)
-            elif application_to_bind is not None:
-                try:
-                    getattr(application_to_bind, "bind_session")(result.session)
-                except Exception:
-                    pass
-            elif claimed is None and plugin_application is not None and presentation is not None:
+            elif result.session is None and plugin_application is not None and presentation is not None:
                 bind_presentation = getattr(plugin_application, "bind_character_presentation", None)
                 if callable(bind_presentation):
                     bind_presentation(str(presentation["characterId"]))
@@ -1010,11 +1032,10 @@ class ControlDispatcher:
         if self._readiness.readiness() == "initializing":
             raise ValueError("角色正在初始化，请稍后再切换。")
         chat_scope = self._chat_boundary.suspend_for_character_change() if self._chat_boundary else nullcontext()
-        with chat_scope:
+        asr_scope = self._asr_boundary.suspend_for_character_change() if self._asr_boundary else nullcontext()
+        with chat_scope, asr_scope:
             if self._tts_boundary is not None:
                 self._tts_boundary.reset_character()
-            if self._asr_boundary is not None:
-                self._asr_boundary.cancel_all()
             application = self.published_plugin_application()
             scope = application.application.prepare_character_switch() if application else nullcontext()
             with scope as errors:

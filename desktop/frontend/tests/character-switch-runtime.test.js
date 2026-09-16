@@ -6,7 +6,6 @@ import {
   applyCharacterCatalogChange,
   applyCharacterSwitch,
   commitCharacterSelection,
-  countCharacterScopedCollectionDrafts,
   hasCharacterScopedDrafts,
   pendingCharacterSelection,
   syncCharacterEditorControl,
@@ -54,13 +53,11 @@ test("local character switch clears role state and accepts the same Core generat
   assert.deepEqual(calls, ["snapshot", true, "clear", "rebind", false]);
 });
 
-test("character-specific appearance, voice, and Memory drafts block switching", () => {
+test("appearance, voice, and character collection drafts block switching", () => {
   assert.equal(hasCharacterScopedDrafts(), false);
   assert.equal(hasCharacterScopedDrafts({ appearanceDirty: true }), true);
   assert.equal(hasCharacterScopedDrafts({ voiceDirty: true }), true);
-  assert.equal(hasCharacterScopedDrafts({ memorySettingsDirty: true }), true);
-  assert.equal(hasCharacterScopedDrafts({ memoryDraft: { content: "draft" } }), true);
-  assert.equal(hasCharacterScopedDrafts({ memoryEditorDraftCount: 1 }), true);
+  assert.equal(hasCharacterScopedDrafts({ collectionDraftCount: 1 }), true);
 });
 
 test("available character editor clears the stale Runtime v2 placeholder state", () => {
@@ -78,15 +75,6 @@ test("available character editor clears the stale Runtime v2 placeholder state",
   assert.equal(control.disabled, false);
   assert.equal(attributes.has("title"), false);
   assert.equal(attributes.has("aria-disabled"), false);
-});
-
-test("only Memory collection editors count as character-scoped drafts", () => {
-  const states = [
-    { surface: "memory", editor: { values: { content: "draft" } } },
-    { surface: "memory", editor: null },
-    { surface: "plugins", editor: { values: { name: "global draft" } } },
-  ];
-  assert.equal(countCharacterScopedCollectionDrafts(states), 1);
 });
 
 test("character choices remain local drafts until apply commits only the final target", async () => {

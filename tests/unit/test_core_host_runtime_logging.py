@@ -407,6 +407,36 @@ def test_bridge_records_are_bounded_and_unknown_attributes_are_removed() -> None
     assert record["attributes"] == {"record_bytes": 10_000}
 
 
+def test_bridge_context_source_ids_preserve_contract_limits_and_reject_non_ids() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    valid = {"provider_id": "p" * 200, "plugin_id": "p" * 64}
+    invalid = [
+        {"provider_id": "p" * 201, "plugin_id": "p" * 65},
+        {"provider_id": PRIVATE_SECRET, "plugin_id": "bearer-private"},
+        {"provider_id": "C:/private/rules", "plugin_id": "plugin with spaces"},
+        {"provider_id": {"name": "fixture.rules"}, "plugin_id": ["fixture.plugin"]},
+        {"provider_id": 10, "plugin_id": True},
+        {"provider_id": None, "plugin_id": ""},
+    ]
+    try:
+        for attributes in [valid, *invalid]:
+            bridge.emit_fixed(
+                severity="error",
+                channel="chat",
+                event="chat.request.failed",
+                attributes={"code": "CONTEXT_CONTRIBUTION_FAILED", **attributes},
+            )
+    finally:
+        bridge.close()
+    records = _records(stream)
+    assert records[0]["attributes"] == {"code": "CONTEXT_CONTRIBUTION_FAILED", **valid}
+    assert [record["attributes"] for record in records[1:]] == [
+        {"code": "CONTEXT_CONTRIBUTION_FAILED"} for _ in invalid
+    ]
+    assert PRIVATE_SECRET.encode() not in stream.getvalue()
+
+
 class _BrokenStream:
     def write(self, _data: bytes) -> int:
         raise BrokenPipeError

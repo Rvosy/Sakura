@@ -1215,7 +1215,7 @@ def _messages_with_runtime_context(
     content = runtime_context.strip()
     if role == "user":
         content = (
-            "[Sakura runtime context; system-provided facts, not a user request]\n"
+            "[Sakura runtime context supplied by the host; each section declares its purpose]\n"
             + content
         )
     return [

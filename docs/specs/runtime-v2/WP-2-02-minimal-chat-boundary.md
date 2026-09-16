@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-16
 ---
 
 # WP-2-02：最小聊天取消、Gateway 与 Snapshot 边界
@@ -15,6 +15,7 @@ updated: 2026-09-05
 
 测试使用隔离临时根和确定性 fixture/local Provider；不依赖真实用户凭据，不污染用户数据。
 Router、Gateway 与领域实现共享既有 Core 生命周期和单 stdout writer，不另建生命周期根。
+正常聊天使用现有 Assistant 和 ChatPipeline；已撤回执行器实验及其专用进度、清理失败分支不再属于当前协议。
 
 ## 冻结边界与故障矩阵
 
@@ -29,7 +30,7 @@ Rust Gateway 只允许 `chat.send` 和 `chat.cancel`；未知 command、错误�
 - 两个分支不得混合，也不得增加 prompt、history、model、priority 或任意扩展字段。Rust Gateway 与 Python
   RealChatBoundary 分别做一次 exact-shape 校验。
 
-`update_available` 进入 `AgentRuntime.handle_event()` 的独立更新提示词。release notes 是有界不可信运行时事实，
+默认 Assistant 把 `update_available` 交给 `AgentRuntime.handle_event()` 的独立更新提示词。release notes 是有界不可信运行时事实，
 必须置于事实非指令信封内，不能覆盖人格、系统提示或回复协议。回复必须明确新版本、引导“设置 → 关于”，只可
 概括已提供事实，不得声称已下载、安装或重启。该分支不写伪造 human Timeline；成功 assistant 以
 `origin=proactive` 保存，并继续使用既有 segment、角色表现和 TTS。
@@ -38,7 +39,9 @@ Rust 仅在内部把候选版本绑定到 operation，公开 `chat.started/compl
 只有对应 `chat.completed` 可确认主动播报成功；终态先于 send response、取消、失败和 generation 失效仍沿用
 本规范的唯一终态与幂等规则。
 
-Python 只提供可取消的 sleep/阻塞文件 I/O fixture，并构造五字段 Snapshot：`generationId`、`revision`、`readiness`、`currentCharacterSummary`、`activeInteractionSummary`。Rust 只读缓存；generation/revision 失配触发完整重取，Rust 不推导业务对象或 patch。
+Core 构造五字段 Snapshot：`generationId`、`revision`、`readiness`、`currentCharacterSummary`、`activeInteractionSummary`。
+Rust 只读缓存；generation/revision 失配触发完整重取，Rust 不推导业务对象或 patch。
+早期的可取消 sleep/阻塞文件 I/O fixture 继续用于边界回归。
 
 必须执行的窄故障矩阵：
 
@@ -50,7 +53,8 @@ Python 只提供可取消的 sleep/阻塞文件 I/O fixture，并构造五字段
 
 ## 非目标
 
-本边界不定义 `chat.progress`、`chat.delta`、token streaming 或通用 Operation/priority/Snapshot component model/resource token。真实 Assistant、Provider 和聊天 UI 的行为见对应聊天 Spec。
+本边界不定义 `chat.delta`、token streaming 或通用 Operation/priority/Snapshot component model/resource token。
+真实 Assistant、Provider 和聊天 UI 的行为见对应聊天 Spec。
 
 ## 回退命令
 

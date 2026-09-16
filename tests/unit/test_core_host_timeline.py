@@ -69,12 +69,15 @@ def _boundary(
     reply: ChatReply,
     *,
     authorizer=None,
+    actions=(),
 ) -> tuple[RealChatBoundary, TimelineStore, list[dict[str, object]]]:
     events: list[dict[str, object]] = []
 
     class Pipeline:
         def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
-            return SimpleNamespace(reply=reply, actions=[])
+            return SimpleNamespace(reply=reply, actions=actions)
+
+        run_event = run_user_message
 
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
@@ -124,6 +127,51 @@ def test_generation_is_one_assistant_entry_and_all_segments_share_authorization_
     assert len(authorized) == 2
     assert {item["history_entry_id"] for item in authorized} == {entries[1].entry_id}
     boundary.close()
+
+
+@pytest.mark.parametrize("update_event", [False, True])
+def test_unsupported_action_fails_without_reply_history_or_playback(tmp_path: Path, update_event: bool) -> None:
+    authorized = []
+    boundary, store, events = _boundary(
+        tmp_path,
+        ChatReply([ChatSegment("must not be delivered")]),
+        actions=[SimpleNamespace(type="unsupported")],
+        authorizer=lambda **values: authorized.append(values),
+    )
+    request = _update_request("invalid-action") if update_event else _request("invalid-action")
+    try:
+        boundary.reserve_send(request)
+        boundary.handle_send(request)
+        assert events[-1]["name"] == "chat.failed"
+        assert events[-1]["payload"]["error"]["code"] == "UNEXPECTED_CHAT_ACTION"
+        assert [entry.kind for entry in store.read_all("sakura")] == ([] if update_event else [TimelineKind.HUMAN])
+        assert authorized == []
+        assert boundary.snapshot_fields("ready", {"id": "sakura"})["activeInteractionSummary"] is None
+    finally:
+        boundary.close()
+
+
+def test_invalid_optional_control_preserves_text_history_and_playback(tmp_path: Path) -> None:
+    authorized = []
+    boundary, store, events = _boundary(
+        tmp_path,
+        ChatReply([ChatSegment("reply survives", control={"invalid": True})]),
+        authorizer=lambda **values: authorized.append(values),
+    )
+    try:
+        request = _request("invalid-control")
+        boundary.reserve_send(request)
+        boundary.handle_send(request)
+        assert events[-1]["name"] == "chat.completed"
+        segments = events[-1]["payload"]["reply"]["segments"]
+        assert segments[0]["text"] == "reply survives"
+        assert "control" not in segments[0]
+        assert store.read_all("sakura")[-1].payload["segments"] == segments
+        assert len(authorized) == 1
+        assert authorized[0]["text"] == "reply survives"
+        assert boundary.snapshot_fields("ready", {"id": "sakura"})["activeInteractionSummary"] is None
+    finally:
+        boundary.close()
 
 
 def test_update_event_creates_only_one_proactive_assistant_entry(tmp_path: Path) -> None:
