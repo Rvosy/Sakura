@@ -490,8 +490,8 @@ class _PluginProcess:
                     process.wait(timeout=max(0.0, close_deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
                     pass
-            if process.poll() is None:
-                self._terminate_owned_descendants(process, deadline=close_deadline)
+            # A cooperative runner can exit while its children still own resources.
+            self._terminate_owned_descendants(process, deadline=close_deadline)
         self._close_windows_job()
         if self._stderr_reader is not None:
             self._stderr_reader.join(timeout=0.3)

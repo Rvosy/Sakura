@@ -155,7 +155,8 @@ def test_manager_close_finishes_other_plugins_before_reporting_cleanup_failure(
         assert healthy._cleanup_complete.is_set()
         assert healthy._process.poll() is not None
         child.wait(timeout=3)
-        assert manager._draining_processes == {failed_id: failed}
+        assert set(manager._draining_processes) == {failed_id}
+        assert manager._draining_processes[failed_id].process is failed
         with pytest.raises(PluginRuntimeError, match="PLUGIN_CLEANUP_FAILED") as repeated:
             manager.close()
         assert repeated.value.__cause__ is failure
@@ -416,14 +417,14 @@ def test_cleanup_failure_wakes_waiters_and_blocks_same_id_restart(
         assert waiter.value.__cause__ is failure
         with pytest.raises(PluginRuntimeError, match="PLUGIN_CLEANUP_FAILED"):
             process.close()
-        assert manager._draining_processes[PLUGIN] is process
+        assert manager._draining_processes[PLUGIN].process is process
         state = manager.set_enabled(PLUGIN, True)["plugins"][0]
         assert state["state"] == "failed"
         assert state["reasonCode"] == "PLUGIN_CLEANUP_FAILED"
         assert manager._records[PLUGIN].process is None
         with pytest.raises(PluginRuntimeError, match="PLUGIN_CLEANUP_FAILED"):
             manager.reload_plugin(PLUGIN)
-        assert manager._draining_processes[PLUGIN] is process
+        assert manager._draining_processes[PLUGIN].process is process
     finally:
         if original_close_job is not None:
             original_close_job()
