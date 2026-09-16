@@ -884,7 +884,7 @@ const rendererHost = createRendererHost({
       return true;
     },
     async setSurface({ assetKey = null, width, height }, { signal, operationSignal, visual }) {
-      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192) throw new Error("SURFACE_SIZE_INVALID");
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) throw new Error("SURFACE_SIZE_INVALID");
       const url = assetKey ? visual.assets[assetKey] : null;
       if (assetKey && !url) throw new Error("VISUAL_ASSET_UNKNOWN");
       const surface = { width, height, assetKey, assetId: url ? url.split("/").at(-1) : null };

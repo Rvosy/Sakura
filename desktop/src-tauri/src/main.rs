@@ -4490,144 +4490,18 @@ fn sync_settings_window_appearance_background(
     product_shell::set_settings_window_theme_background(window, background)
 }
 
-fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
-    let expected = [
-        "schemaVersion",
-        "revision",
-        "currentCharacterId",
-        "characters",
-    ];
-    if object.len() != expected.len()
-        || expected.iter().any(|key| !object.contains_key(*key))
-        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || object.get("revision").and_then(Value::as_u64).is_none()
-    {
-        return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    let current = object.get("currentCharacterId").expect("validated field");
-    if !current.is_null() && current.as_str().is_none() {
-        return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    let characters = object
-        .get("characters")
-        .and_then(Value::as_array)
-        .filter(|items| items.len() <= 256)
-        .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
-    let mut ids = std::collections::BTreeSet::new();
-    for character in characters {
-        let item = character
-            .as_object()
-            .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
-        if item.len() != 4
-            || !["id", "displayName", "hasVoice", "hasExportableVoice"]
-                .iter()
-                .all(|key| item.contains_key(*key))
-        {
-            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-        }
-        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
-        let display_name = item
-            .get("displayName")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let has_voice = item.get("hasVoice").and_then(Value::as_bool);
-        let has_exportable_voice = item.get("hasExportableVoice").and_then(Value::as_bool);
-        if id.is_empty()
-            || id.len() > 128
-            || display_name.is_empty()
-            || display_name.len() > 128
-            || has_voice.is_none()
-            || has_exportable_voice.is_none()
-            || (has_exportable_voice == Some(true) && has_voice != Some(true))
-            || !ids.insert(id)
-        {
-            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-        }
-    }
-    if let Some(current) = current.as_str() {
-        if !ids.contains(current) {
-            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-        }
-    }
-    Ok(())
-}
-
-fn validate_character_export_receipt(value: &Value) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "CHARACTER_EXPORT_RESPONSE_INVALID".to_string())?;
-    let expected = ["schemaVersion", "outputPath", "message"];
-    let output_path = object
-        .get("outputPath")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let message = object
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if object.len() != expected.len()
-        || expected.iter().any(|key| !object.contains_key(*key))
-        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || output_path.is_empty()
-        || output_path.len() > 4096
-        || message.is_empty()
-        || message.len() > 4608
-    {
-        return Err("CHARACTER_EXPORT_RESPONSE_INVALID".to_string());
-    }
-    Ok(())
-}
-
 fn validate_character_settings_change(value: Value) -> Result<(Value, String, Value), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
-    let expected = ["schemaVersion", "snapshot", "changePlan"];
     let requirements = object
         .get("pluginRequirements")
         .cloned()
         .unwrap_or(json!([]));
-    if !requirements.as_array().is_some_and(|items| {
-        items.len() <= 64
-            && items.iter().all(|item| {
-                matches!(
-                    item.get("kind").and_then(Value::as_str),
-                    Some("visual" | "tts")
-                ) && item
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.is_empty())
-                    && matches!(
-                        item.get("reasonCode").and_then(Value::as_str),
-                        Some(
-                            "COMPATIBLE"
-                                | "PLUGIN_DISABLED"
-                                | "PLUGIN_INCOMPATIBLE"
-                                | "PLUGIN_MISSING"
-                        )
-                    )
-                    && item.get("plugins").is_some_and(Value::is_array)
-                    && item.get("candidates").is_some_and(Value::is_array)
-            })
-    }) {
-        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
-    }
-    if object
-        .keys()
-        .any(|key| !expected.contains(&key.as_str()) && key != "pluginRequirements")
-        || expected.iter().any(|key| !object.contains_key(*key))
-        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-    {
-        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
-    }
     let snapshot = object
         .get("snapshot")
         .cloned()
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
-    validate_character_settings_snapshot(&snapshot)?;
     let change_plan = object
         .get("changePlan")
         .and_then(Value::as_str)
@@ -4778,7 +4652,6 @@ async fn character_settings_request(
     let (snapshot, handle) =
         character_settings_payload_request(window, shell, lifecycle, name, payload, deadline)
             .await?;
-    validate_character_settings_snapshot(&snapshot)?;
     Ok((snapshot, handle))
 }
 
@@ -4908,50 +4781,8 @@ async fn settings_character_visuals_get(
 }
 
 fn validate_character_visuals_snapshot(value: &Value, character_id: &str) -> Result<(), String> {
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct Choice {
-        id: String,
-        name: String,
-        provider_id: Option<String>,
-        install_id: Option<String>,
-        reason_code: String,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct Snapshot {
-        schema_version: u32,
-        character_id: String,
-        default_resource_id: Option<String>,
-        preference_resource_id: Option<String>,
-        resources: Vec<Choice>,
-    }
-    let invalid = || "CHARACTER_VISUAL_SETTINGS_INVALID".to_string();
-    let parsed: Snapshot = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
-    let bounded = |text: &str, limit| !text.is_empty() && text.len() <= limit;
-    let mut ids = std::collections::HashSet::new();
-    if parsed.schema_version != 1
-        || parsed.character_id != character_id
-        || parsed.resources.len() > 32
-        || parsed.resources.iter().any(|item| {
-            !bounded(&item.id, 128)
-                || !ids.insert(item.id.clone())
-                || !bounded(&item.name, 768)
-                || !bounded(&item.reason_code, 128)
-                || item
-                    .provider_id
-                    .as_ref()
-                    .is_some_and(|id| !bounded(id, 128))
-                || item
-                    .install_id
-                    .as_ref()
-                    .is_some_and(|id| !bounded(id, 1024))
-        })
-        || [&parsed.default_resource_id, &parsed.preference_resource_id]
-            .iter()
-            .any(|id| id.as_ref().is_some_and(|id| !ids.contains(id)))
-    {
-        return Err(invalid());
+    if value["characterId"].as_str() != Some(character_id) {
+        return Err("CHARACTER_VISUAL_SETTINGS_INVALID".into());
     }
     Ok(())
 }
@@ -5135,7 +4966,6 @@ async fn settings_character_export(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    validate_character_export_receipt(&receipt)?;
     Ok(receipt)
 }
 
@@ -5213,57 +5043,6 @@ async fn settings_character_select(
     Ok(receipt)
 }
 
-fn validate_storage_settings_snapshot(value: &Value) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "STORAGE_SETTINGS_RESPONSE_INVALID".to_string())?;
-    let expected = [
-        "schemaVersion",
-        "userRoot",
-        "ttsRoot",
-        "ttsRootSource",
-        "ttsRootAvailable",
-        "reasonCode",
-    ];
-    if object.len() != expected.len()
-        || expected.iter().any(|key| !object.contains_key(*key))
-        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || !matches!(
-            object.get("ttsRootSource").and_then(Value::as_str),
-            Some("default" | "custom")
-        )
-        || object
-            .get("ttsRootAvailable")
-            .and_then(Value::as_bool)
-            .is_none()
-    {
-        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    for key in ["userRoot", "ttsRoot"] {
-        let path = object.get(key).and_then(Value::as_str).unwrap_or_default();
-        if path.is_empty() || !std::path::Path::new(path).is_absolute() {
-            return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
-        }
-    }
-    let reason = object.get("reasonCode").expect("validated field");
-    if !reason.is_null()
-        && !matches!(
-            reason.as_str(),
-            Some("TTS_ROOT_MISSING" | "TTS_ROOT_NOT_DIRECTORY" | "TTS_ROOT_NOT_WRITABLE")
-        )
-    {
-        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    let available = object
-        .get("ttsRootAvailable")
-        .and_then(Value::as_bool)
-        .expect("validated field");
-    if (available && !reason.is_null()) || (!available && reason.is_null()) {
-        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    Ok(())
-}
-
 async fn storage_settings_request(
     window: &WebviewWindow,
     shell: &product_shell::ProductShellState,
@@ -5291,7 +5070,6 @@ async fn storage_settings_request(
     .await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
     let snapshot = settings_response_payload(response)?;
-    validate_storage_settings_snapshot(&snapshot)?;
     Ok(snapshot)
 }
 
@@ -6386,18 +6164,14 @@ fn activate_portrait_hit_test(
             drop(geometry);
             let mask_started = std::time::Instant::now();
             let alpha_mask = if let Some([width, height]) = surface_size {
-                if width == 0
-                    || height == 0
-                    || width > 8192
-                    || height > 8192
-                    || u64::from(width) * u64::from(height) > 40_000_000
-                {
+                let pixels = u64::from(width) * u64::from(height);
+                if pixels == 0 || pixels > 192 * 1024 * 1024 {
                     return Err("SURFACE_SIZE_INVALID".into());
                 }
                 character_presentation::PortraitAlphaMask::new(
                     width,
                     height,
-                    vec![255; (width * height) as usize],
+                    vec![255; pixels as usize],
                 )
             } else {
                 resources.portrait_alpha_mask(
@@ -8533,7 +8307,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn character_visuals_snapshot_enforces_resource_membership_and_public_fields() {
+    fn character_visuals_snapshot_binds_requested_character() {
         let snapshot = json!({
             "schemaVersion": 1, "characterId": "navi", "defaultResourceId": "portrait",
             "preferenceResourceId": null,
@@ -8542,21 +8316,6 @@ mod tests {
         });
         assert!(validate_character_visuals_snapshot(&snapshot, "navi").is_ok());
         assert!(validate_character_visuals_snapshot(&snapshot, "another").is_err());
-        let mut private = snapshot.clone();
-        private["resources"][0]["path"] = json!("private/path");
-        let mut missing = snapshot.clone();
-        missing["preferenceResourceId"] = json!("missing");
-        let mut duplicate = snapshot.clone();
-        duplicate["resources"]
-            .as_array_mut()
-            .unwrap()
-            .push(snapshot["resources"][0].clone());
-        for invalid in [private, missing, duplicate] {
-            assert_eq!(
-                validate_character_visuals_snapshot(&invalid, "navi"),
-                Err("CHARACTER_VISUAL_SETTINGS_INVALID".into())
-            );
-        }
         assert!(validate_character_visuals_snapshot(
             &json!({
                 "schemaVersion": 1, "characterId": "navi", "defaultResourceId": null,
@@ -8595,58 +8354,6 @@ mod tests {
     }
 
     #[test]
-    fn character_settings_snapshot_accepts_empty_state_and_requires_selected_membership() {
-        assert!(validate_character_settings_snapshot(&json!({
-            "schemaVersion": 1,
-            "revision": 0,
-            "currentCharacterId": null,
-            "characters": [],
-        }))
-        .is_ok());
-        assert!(validate_character_settings_snapshot(&json!({
-            "schemaVersion": 1,
-            "revision": 2,
-            "currentCharacterId": "navi",
-            "characters": [{
-                "id": "navi",
-                "displayName": "N.A.V.I.",
-                "hasVoice": false,
-                "hasExportableVoice": false,
-            }],
-        }))
-        .is_ok());
-        assert_eq!(
-            validate_character_settings_snapshot(&json!({
-                "schemaVersion": 1,
-                "revision": 2,
-                "currentCharacterId": "missing",
-                "characters": [{
-                    "id": "navi",
-                    "displayName": "N.A.V.I.",
-                    "hasVoice": false,
-                    "hasExportableVoice": false,
-                }],
-            }))
-            .unwrap_err(),
-            "CHARACTER_SETTINGS_RESPONSE_INVALID"
-        );
-        assert_eq!(
-            validate_character_settings_snapshot(&json!({
-                "schemaVersion": 1,
-                "revision": 2,
-                "currentCharacterId": "navi",
-                "characters": [{
-                    "id": "navi",
-                    "displayName": "N.A.V.I.",
-                    "hasVoice": false,
-                    "hasExportableVoice": true,
-                }],
-            })),
-            Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())
-        );
-    }
-
-    #[test]
     fn wp_5_03_character_settings_change_requires_exact_restart_plan_and_snapshot() {
         let snapshot = json!({
             "schemaVersion": 1,
@@ -8678,10 +8385,12 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(imported_requirements, declared);
-        assert!(validate_character_settings_change(json!({
-            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
-            "pluginRequirements": [{"kind": "tts", "type": "gpt-sovits.models@1", "reasonCode": "READY"}],
-        })).is_err());
+        let (_, _, expanded) = validate_character_settings_change(json!({
+            "snapshot": snapshot.clone(), "changePlan": "unchanged", "future": true,
+            "pluginRequirements": vec![declared[0].clone(); 100],
+        }))
+        .unwrap();
+        assert_eq!(expanded.as_array().unwrap().len(), 100);
         for plan in ["visual_rebind", "character_refresh", "character_switch"] {
             let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
                 "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": plan,
@@ -8715,81 +8424,6 @@ mod tests {
         assert_eq!(
             character_restart_target(&empty_snapshot, "unchanged"),
             Ok(None)
-        );
-    }
-
-    #[test]
-    fn character_export_receipt_requires_only_public_output_fields() {
-        assert!(validate_character_export_receipt(&json!({
-            "schemaVersion": 1,
-            "outputPath": "C:\\Users\\test\\navi.char",
-            "message": "角色包已导出。",
-        }))
-        .is_ok());
-        assert_eq!(
-            validate_character_export_receipt(&json!({
-                "schemaVersion": 1,
-                "outputPath": "C:\\Users\\test\\navi.char",
-                "message": "角色包已导出。",
-                "characterCard": "private",
-            })),
-            Err("CHARACTER_EXPORT_RESPONSE_INVALID".to_string())
-        );
-    }
-
-    #[test]
-    fn storage_settings_snapshot_accepts_consistent_default_and_custom_states() {
-        let default_root = if cfg!(windows) {
-            "C:\\Sakura"
-        } else {
-            "/tmp/Sakura"
-        };
-        let default_tts = if cfg!(windows) {
-            "C:\\Sakura\\tts"
-        } else {
-            "/tmp/Sakura/tts"
-        };
-        assert!(validate_storage_settings_snapshot(&json!({
-            "schemaVersion": 1,
-            "userRoot": default_root,
-            "ttsRoot": default_tts,
-            "ttsRootSource": "default",
-            "ttsRootAvailable": true,
-            "reasonCode": null,
-        }))
-        .is_ok());
-        assert!(validate_storage_settings_snapshot(&json!({
-            "schemaVersion": 1,
-            "userRoot": default_root,
-            "ttsRoot": if cfg!(windows) { "D:\\Voice" } else { "/Volumes/Voice" },
-            "ttsRootSource": "custom",
-            "ttsRootAvailable": false,
-            "reasonCode": "TTS_ROOT_MISSING",
-        }))
-        .is_ok());
-    }
-
-    #[test]
-    fn storage_settings_snapshot_rejects_reason_availability_contradictions() {
-        let base = json!({
-            "schemaVersion": 1,
-            "userRoot": if cfg!(windows) { "C:\\Sakura" } else { "/tmp/Sakura" },
-            "ttsRoot": if cfg!(windows) { "D:\\Voice" } else { "/Volumes/Voice" },
-            "ttsRootSource": "custom",
-            "ttsRootAvailable": true,
-            "reasonCode": null,
-        });
-        let mut unavailable_without_reason = base.clone();
-        unavailable_without_reason["ttsRootAvailable"] = json!(false);
-        assert_eq!(
-            validate_storage_settings_snapshot(&unavailable_without_reason).unwrap_err(),
-            "STORAGE_SETTINGS_RESPONSE_INVALID"
-        );
-        let mut available_with_reason = base;
-        available_with_reason["reasonCode"] = json!("TTS_ROOT_NOT_WRITABLE");
-        assert_eq!(
-            validate_storage_settings_snapshot(&available_with_reason).unwrap_err(),
-            "STORAGE_SETTINGS_RESPONSE_INVALID"
         );
     }
 
@@ -9560,7 +9194,28 @@ mod tests {
                 .iter()
                 .chain(candidate.drag.iter().skip(1))
             {
-                assert!(first_guard.iter().any(|guard| contains(guard, rect)));
+                // Native guards cover only the portion inside the actual window.
+                let left = i64::from(rect.x).max(0);
+                let top = i64::from(rect.y).max(0);
+                let right =
+                    (i64::from(rect.x) + i64::from(rect.width)).min(i64::from(precise.envelope[0]));
+                let bottom = (i64::from(rect.y) + i64::from(rect.height))
+                    .min(i64::from(precise.envelope[1]));
+                if right <= left || bottom <= top {
+                    continue;
+                }
+                let visible = window_interaction::PhysicalHitRect {
+                    x: left as i32,
+                    y: top as i32,
+                    width: (right - left) as u32,
+                    height: (bottom - top) as u32,
+                    ..rect.clone()
+                };
+                assert!(
+                    first_guard.iter().any(|guard| contains(guard, &visible)),
+                    "guard={first_guard:?}, visible={visible:?}, envelope={:?}",
+                    precise.envelope
+                );
             }
         }
     }

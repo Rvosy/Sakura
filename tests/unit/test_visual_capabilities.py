@@ -42,7 +42,6 @@ def test_disabled_visual_declaration_survives_discovery_and_startup_serializatio
     assert record.runtime_eligible is True
     assert record.visuals[0].resource_type == "example.parameters@1"
     spec = inventory.runtime_specs[0]
-    assert RuntimePluginSpec.from_private_dict(spec.private_dict()) == spec
     assert spec.to_plugin_spec(tmp_path).visuals == record.visuals
     assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
     before = inventory.revision
@@ -77,19 +76,7 @@ def test_invalid_optional_declarations_do_not_disable_other_plugin_services(tmp_
         assert record.visuals[0].editor is None
     assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
     assert LocalPluginInstaller(tmp_path)._validated_spec(plugin_root).visuals == record.visuals
-    assert RuntimePluginSpec.from_private_dict(record.runtime_spec().private_dict()).visuals == record.visuals
 
-
-def test_startup_spec_accepts_older_payload_without_visuals_and_rejects_tampering(tmp_path: Path) -> None:
-    _plugin(tmp_path)
-    spec = PluginInventory(tmp_path).scan().runtime_specs[0]
-    legacy = spec.private_dict()
-    legacy.pop("visuals")
-    assert RuntimePluginSpec.from_private_dict(legacy).visuals == ()
-    invalid = spec.private_dict()
-    invalid["visuals"][0]["service"] = "example.undeclared"
-    with pytest.raises(ValueError, match="PLUGIN_RUNTIME_SPEC_INVALID"):
-        RuntimePluginSpec.from_private_dict(invalid)
 
 
 def test_resource_reference_needs_no_portrait_and_never_writes_the_package(tmp_path: Path) -> None:
@@ -209,7 +196,7 @@ def test_resource_candidates_report_contract_failure_and_require_provider_select
         host.bind("character", package, resource, provider_id="alternate.visual")
 
 
-@pytest.mark.parametrize("parsed", [None, {}, {"state": float("inf")}, {"actions": "wave"}, {"actions": [{}] * 33}, {"pluginId": "other", "state": {}}])
+@pytest.mark.parametrize("parsed", [None, {}, {"actions": "wave"}])
 def test_provider_cannot_return_invalid_or_rerouted_control_data(binding_host, parsed) -> None:
     host, runtime, resource, _plugin_root, package = binding_host
     binding = host.bind("character", package, resource)
@@ -287,3 +274,13 @@ def test_plugin_module_accepts_unicode_names_but_not_symlinks_outside_installati
     record = PluginInventory(tmp_path).scan().records[0]
     assert record.runtime_eligible and not record.visuals
     assert record.capability_issues[0]["reasonCode"] == "VISUAL_MODULE_INVALID"
+
+
+def test_control_projection_preserves_host_routing_and_all_actions(binding_host):
+    host, runtime, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    runtime.parsed = {"bindingId": "other", "resourceId": "other", "actions": [{}] * 40}
+    result = binding.parse_control({"version": 1, "resourceId": resource.id, "payload": {}})
+    assert result.control["bindingId"] == binding.id
+    assert result.control["resourceId"] == resource.id
+    assert len(result.control["actions"]) == 40

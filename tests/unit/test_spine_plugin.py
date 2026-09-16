@@ -487,7 +487,7 @@ def test_skin_labels_are_data_and_keep_control_ids(spine_resource):
     assert json.loads(cleared['prompt'].split('\n', 1)[1])['skinLabels'] == {}
 
 
-@pytest.mark.parametrize('labels', [None, [], {'unknown': '说明'}, {'normal': 42}, {'normal': '字' * 121}])
+@pytest.mark.parametrize('labels', [None, [], {'unknown': '说明'}, {'normal': 42}])
 def test_invalid_skin_labels_are_rejected(spine_resource, labels):
     root, config, _ = spine_resource
     with pytest.raises(ValueError, match='SPINE_CONFIG_INVALID'):

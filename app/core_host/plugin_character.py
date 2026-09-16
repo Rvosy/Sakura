@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import threading
 from pathlib import Path
@@ -10,10 +11,6 @@ from typing import Any, Mapping
 from app.config.character_loader import CharacterConfigError, CharacterRegistry
 from app.config.settings_service import AppSettingsService
 from app.storage.atomic import atomic_write_text
-
-
-MAX_CHARACTER_EXTENSIONS_BYTES = 256 * 1024
-MAX_CHARACTER_EXTENSION_BYTES = 64 * 1024
 
 
 class PluginCharacterError(RuntimeError):
@@ -42,8 +39,6 @@ class PluginCharacterStore:
             value = extensions.get(plugin_id, {})
             if not isinstance(value, Mapping):
                 raise PluginCharacterError("CHARACTER_EXTENSION_INVALID")
-            if _encoded_size(value) > MAX_CHARACTER_EXTENSION_BYTES:
-                raise PluginCharacterError("CHARACTER_EXTENSION_TOO_LARGE")
             return _clone_object(value)
 
     def current(self, plugin_id: str) -> dict[str, str]:
@@ -79,8 +74,6 @@ class PluginCharacterStore:
         if not isinstance(values, Mapping):
             raise PluginCharacterError("CHARACTER_EXTENSION_INVALID")
         patch = _clone_object(values)
-        if _encoded_size(patch) > MAX_CHARACTER_EXTENSION_BYTES:
-            raise PluginCharacterError("CHARACTER_EXTENSION_TOO_LARGE")
         with self._lock:
             path, manifest = self._manifest(character_id)
             extensions = self._extensions(manifest)
@@ -89,16 +82,13 @@ class PluginCharacterStore:
                 raise PluginCharacterError("CHARACTER_EXTENSION_INVALID")
             updated = _clone_object(current)
             updated.update(patch)
-            if _encoded_size(updated) > MAX_CHARACTER_EXTENSION_BYTES:
-                raise PluginCharacterError("CHARACTER_EXTENSION_TOO_LARGE")
             extensions[plugin_id] = updated
-            if _encoded_size(extensions) > MAX_CHARACTER_EXTENSIONS_BYTES:
-                raise PluginCharacterError("CHARACTER_EXTENSIONS_TOO_LARGE")
             manifest["extensions"] = extensions
-            atomic_write_text(
-                path,
-                json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False),
-            )
+            try:
+                encoded = json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False)
+            except (TypeError, ValueError) as error:
+                raise PluginCharacterError("CHARACTER_EXTENSION_INVALID") from error
+            atomic_write_text(path, encoded)
             return _clone_object(updated)
 
     def resolve_resource(self, character_id: str, relative_path: str) -> str:
@@ -164,25 +154,7 @@ class PluginCharacterStore:
 
 
 def _clone_object(value: Mapping[str, Any]) -> dict[str, Any]:
-    try:
-        encoded = json.dumps(dict(value), ensure_ascii=False, allow_nan=False)
-        cloned = json.loads(encoded)
-    except (TypeError, ValueError) as error:
-        raise PluginCharacterError("CHARACTER_EXTENSION_INVALID") from error
-    if not isinstance(cloned, dict):
-        raise PluginCharacterError("CHARACTER_EXTENSION_INVALID")
-    return cloned
-
-
-def _encoded_size(value: Mapping[str, Any]) -> int:
-    try:
-        return len(
-            json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode(
-                "utf-8"
-            )
-        )
-    except (TypeError, ValueError) as error:
-        raise PluginCharacterError("CHARACTER_EXTENSION_INVALID") from error
+    return deepcopy(dict(value))
 
 
 __all__ = ["PluginCharacterError", "PluginCharacterStore"]

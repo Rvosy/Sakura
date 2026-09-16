@@ -53,7 +53,7 @@ def prepare(source: Path, output: Path, *, premultiplied_alpha=False, exclude_sk
         raise ValueError('输出目录不能与原始资源目录重叠')
     found, skipped = [], []
     for skeleton in sorted(source.rglob('*.json')):
-        data = _read_json(skeleton, 16 * 1024 * 1024)
+        data = _read_json(skeleton)
         if not data.get('bones') or not data.get('animations'):
             skipped.append({'file': skeleton.relative_to(source).as_posix(), 'reason': '无完整骨骼或动画'})
             continue
@@ -112,7 +112,7 @@ def export_components(root: Path, output: Path):
     from app.config.visual_archive import export_visual_archive
 
     root = root.resolve(strict=True)
-    catalog = _read_json(root / 'catalog.json', 65536)
+    catalog = _read_json(root / 'catalog.json')
     if output.exists():
         raise ValueError('输出目录已存在，请使用新目录')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -120,7 +120,7 @@ def export_components(root: Path, output: Path):
         for index, model in enumerate(catalog['models'], 1):
             resource = CharacterVisualResource.from_mapping({**model['resource'], 'name': model['name']})
             model_root = resolve_inside(root, resource.root)
-            config = _read_json(resolve_inside(model_root, resource.entry), 65536)
+            config = _read_json(resolve_inside(model_root, resource.entry))
             description = describe_resource(config, lambda rel: resolve_inside(model_root, rel))
             data = description['rendererData']
             files = {config['skeleton'], config['atlas'], *data['textures'].values()}
@@ -134,17 +134,17 @@ def export_components(root: Path, output: Path):
 
 def create_preview_server(root: Path, port: int):
     root = root.resolve(strict=True)
-    catalog = _read_json(root / 'catalog.json', 65536)
+    catalog = _read_json(root / 'catalog.json')
     models = {item['resource']['id']: item for item in catalog['models']}
 
     def describe(model_id):
         resource = models[model_id]['resource']
         model_root = resolve_inside(root, resource['root'])
-        config = _read_json(resolve_inside(model_root, resource['entry']), 65536)
+        config = _read_json(resolve_inside(model_root, resource['entry']))
         description = describe_resource(config, lambda rel: resolve_inside(model_root, rel))
         draft_path = model_root / 'spine-draft.json'
         if draft_path.is_file():
-            draft = _read_json(draft_path, 65536)
+            draft = _read_json(draft_path)
             if draft['skeleton'] != config['skeleton'] or draft['atlas'] != config['atlas']:
                 raise ValueError('草稿资源路径不匹配')
             description = describe_resource(draft, lambda rel: resolve_inside(model_root, rel))

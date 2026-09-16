@@ -159,11 +159,9 @@ test("a failed Studio refresh retains voice drafts for the next successful refre
   assert.equal(controller.isDirty(), true);
 });
 
-test("voice settings accept unknown Provider IDs and reject private fields", () => {
-  const value = snapshot();
+test("voice settings accept additive Core fields", () => {
+  const value = { ...snapshot(), futureField: true };
   assert.deepEqual(exactVoiceSnapshot(value), value);
-  assert.throws(() => exactVoiceSnapshot({ ...value, privatePath: "D:/secret" }), /INVALID/);
-  assert.throws(() => exactVoiceSnapshot({ ...value, character: null }), /INVALID/);
 });
 
 

@@ -361,3 +361,26 @@ def test_delete_all_providers_is_a_valid_setup_required_state(tmp_path: Path) ->
     assert result["setup_complete"] is False
     assert saved["api_profiles"] == []
     assert saved["model_slots"]["memory_curation"]["model"] == "chat-model"
+
+
+def test_large_provider_catalog_survives_repository_reopen(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    _write_current(root)
+    draft = _draft()
+    draft["providers"][0]["alias"] = "服务" * 600
+    draft["providers"][0]["models"] += [f"model-{i}" for i in range(600)]
+    draft["providers"] += [
+        {"id": f"provider-{i}", "alias": f"Provider {i}",
+         "base_url": "https://fixture.invalid/v1", "models": ["chat-model"],
+         "credential": {"action": "clear", "value": ""}}
+        for i in range(40)
+    ]
+    ProviderModelSettingsRepository(root).save(draft)
+    snapshot = ProviderModelSettingsRepository(root).snapshot()
+    assert len(snapshot["providers"]) == 41
+    assert snapshot["providers"][0]["alias"] == draft["providers"][0]["alias"]
+    assert snapshot["providers"][0]["models"] == draft["providers"][0]["models"]
+    assert snapshot["model_slots"]["chat"]["profile_id"] == "fixture"
+    assert snapshot["model_slots"]["chat"]["model"] == "chat-model"
+    assert snapshot["model_slots"]["vision_chat"] == draft["model_slots"]["vision_chat"]
+    assert SECRET not in repr(snapshot)

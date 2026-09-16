@@ -284,7 +284,6 @@ def test_install_id_encoding_separates_sources_and_roundtrips_long_unicode_dto(t
     assert len({record.install_id for record in first.records}) == 2
     for spec in first.runtime_specs:
         assert _install_identifier(spec.install_id) == spec.install_id
-        assert RuntimePluginSpec.from_private_dict(spec.private_dict()) == spec
     assert [record.install_id for record in PluginInventory(tmp_path).scan().records] == [record.install_id for record in first.records]
     old_user_id = next(record.install_id for record in first.records if record.source == "user")
     user.rename(user.with_name("renamed"))

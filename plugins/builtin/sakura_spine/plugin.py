@@ -13,7 +13,7 @@ _CONTROL_FIELDS = ('skin', 'animation', 'speed', 'action')
 
 def relative_path(value):
     if (
-        not isinstance(value, str) or not value or len(value) > 1024
+        not isinstance(value, str) or not value
         or any(char in value for char in '\\:%?#\x00')
         or any(ord(char) < 32 for char in value)
         or value.startswith('/')
@@ -36,14 +36,12 @@ def atlas_pages(text):
         if len(lines) < 2 or not lines[1].strip().startswith(('size:', 'format:')):
             raise ValueError('SPINE_ATLAS_INVALID')
         pages.append(page)
-    if not pages or len(pages) > 32 or len(set(pages)) != len(pages):
+    if not pages or len(set(pages)) != len(pages):
         raise ValueError('SPINE_ATLAS_INVALID')
     return pages
 
 
-def _read_json(path, maximum):
-    if not path.is_file() or path.stat().st_size > maximum:
-        raise ValueError('SPINE_RESOURCE_INVALID')
+def _read_json(path):
     try:
         value = json.loads(path.read_text(encoding='utf-8-sig'))
     except (UnicodeError, json.JSONDecodeError) as error:
@@ -55,8 +53,8 @@ def _read_json(path, maximum):
 
 def _names(values, code):
     if (
-        not isinstance(values, dict) or not 1 <= len(values) <= 256
-        or any(not isinstance(k, str) or not 1 <= len(k) <= 120
+        not isinstance(values, dict) or not values
+        or any(not isinstance(k, str) or not k
                or any(ord(c) < 32 for c in k) for k in values)
     ):
         raise ValueError(code)
@@ -81,7 +79,7 @@ def validate_config(config, animations, skins):
         result['selectableSkins'] = list(selectable)
     labels = result.get('skinLabels', {})
     if (not isinstance(labels, dict)
-        or any(name not in skins or not isinstance(text, str) or len(text) > 120
+        or any(name not in skins or not isinstance(text, str)
                for name, text in labels.items())):
         raise ValueError('SPINE_CONFIG_INVALID')
     if 'skinLabels' in result:
@@ -112,7 +110,7 @@ def describe_resource(config, resolve):
     atlas_path = relative_path(config.get('atlas'))
     if PurePosixPath(skeleton_path).suffix.lower() != '.json':
         raise ValueError('SPINE_FORMAT_UNSUPPORTED')
-    skeleton = _read_json(resolve(skeleton_path), 16 * 1024 * 1024)
+    skeleton = _read_json(resolve(skeleton_path))
     metadata = skeleton.get('skeleton')
     if not isinstance(metadata, dict) or not re.fullmatch(r'3\.6\.\d+', str(metadata.get('spine', ''))):
         raise ValueError('SPINE_VERSION_UNSUPPORTED')
@@ -123,14 +121,12 @@ def describe_resource(config, resolve):
     config = validate_config(config, animations, skins)
     skins = config.get('selectableSkins', skins)
     atlas_file = resolve(atlas_path)
-    if not atlas_file.is_file() or atlas_file.stat().st_size > 2 * 1024 * 1024:
-        raise ValueError('SPINE_ATLAS_INVALID')
     pages = atlas_pages(atlas_file.read_text(encoding='utf-8-sig'))
     textures = {}
     for page in pages:
         relative = str(PurePosixPath(atlas_path).parent / page)
         path = resolve(relative)
-        if not path.is_file() or not 0 < path.stat().st_size <= 64 * 1024 * 1024:
+        if not path.is_file():
             raise ValueError('SPINE_TEXTURE_INVALID')
         textures[page] = relative
     fields = {
@@ -231,7 +227,7 @@ class SpineService:
         def resolve(relative):
             return Path(self.character.resolve_resource(request['characterId'], root + relative_path(relative)))
 
-        config = _read_json(resolve(resource['entry']), 64 * 1024)
+        config = _read_json(resolve(resource['entry']))
         description = describe_resource(config, resolve)
         data = description['rendererData']
         files = {config['skeleton'], config['atlas'], *data['textures'].values()}

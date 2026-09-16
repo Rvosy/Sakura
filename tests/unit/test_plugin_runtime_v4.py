@@ -2059,3 +2059,30 @@ def test_v3_install_is_rejected_without_resolving_dependency_declaration(tmp_pat
     paths = StoragePaths(roots.user_root)
     assert not (paths.user_plugins_dir / "fixture.v3-dependencies").exists()
     assert not paths.plugin_dependency_root_for("fixture.v3-dependencies").exists()
+
+
+def test_transport_rejects_invalid_payload_without_losing_plugin(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.payload", "fixture.payload", body="""
+class Service:
+    def echo(self, value): return value
+    def large(self): return "x" * (1024 * 1024)
+    def nonfinite(self): return float("nan")
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.payload", Service(), exports=("echo", "large", "nonfinite"))
+""")
+    manager = PluginRuntimeManager(roots, "payload-regression", PluginInventory(roots).scan().runtime_specs)
+    try:
+        manager.start()
+        for method, args, code in (
+            ("large", (), "PLUGIN_FRAME_TOO_LARGE"),
+            ("nonfinite", (), "SERVICE_PAYLOAD_INVALID"),
+            ("echo", ("x" * (1024 * 1024),), "PLUGIN_FRAME_TOO_LARGE"),
+        ):
+            with pytest.raises((PluginRuntimeError, PluginApiError)) as rejected:
+                manager.call_service("fixture.payload", method, *args)
+            assert rejected.value.code == code
+            assert manager.call_service("fixture.payload", "echo", "alive") == "alive"
+    finally:
+        manager.close()

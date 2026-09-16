@@ -819,7 +819,6 @@ class TTSBoundary:
             or not isinstance(enabled, bool)
             or (provider_id is not None and (not isinstance(provider_id, str) or not provider_id))
             or not isinstance(raw_sections, list)
-            or len(raw_sections) > 32
             or (character_id is None and (enabled or provider_id is not None))
         ):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")

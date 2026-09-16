@@ -197,8 +197,6 @@ class PluginSettingsBoundary:
         plugin_id = _identifier(payload.get("pluginId"))
         section_id = _identifier(payload.get("sectionId"))
         values = dict(_object(payload.get("values")))
-        if len(json.dumps(values, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
-            raise PluginSettingsError("INVALID_REQUEST", "插件设置内容过大。")
         with self._save_lock:
             application = self._application()
             if application is None:
@@ -403,8 +401,6 @@ class PluginSettingsBoundary:
             for key, value in payload.items()
             if key not in {"pluginId", "sectionId", "collectionId"}
         }
-        if len(json.dumps(arguments, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
-            raise PluginSettingsError("INVALID_REQUEST", "插件 Collection 请求内容过大。")
         try:
             result = getattr(application, "settings_collection")(
                 operation,
@@ -416,10 +412,7 @@ class PluginSettingsBoundary:
         except Exception as error:
             code = str(getattr(error, "code", "SETTINGS_COLLECTION_FAILED"))
             raise PluginSettingsError(code, "插件 Collection 操作失败。") from error
-        if (
-            not isinstance(result, Mapping)
-            or len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 256 * 1024
-        ):
+        if not isinstance(result, Mapping):
             raise PluginSettingsError(
                 "SETTINGS_COLLECTION_RESULT_INVALID",
                 "插件 Collection 响应无效。",
@@ -523,8 +516,6 @@ def _object(value: object) -> Mapping[str, Any]:
 
 def _boolean_mapping(value: object) -> dict[str, bool]:
     raw = _object(value)
-    if len(raw) > 64:
-        raise PluginSettingsError("INVALID_REQUEST", "插件启停项过多。")
     result: dict[str, bool] = {}
     for key, item in raw.items():
         if not isinstance(key, str) or not isinstance(item, bool):
@@ -535,19 +526,13 @@ def _boolean_mapping(value: object) -> dict[str, bool]:
 
 def _settings_mapping(value: object) -> dict[str, dict[str, dict[str, Any]]]:
     raw = _object(value)
-    if len(raw) > 64:
-        raise PluginSettingsError("INVALID_REQUEST", "插件设置项过多。")
     result: dict[str, dict[str, dict[str, Any]]] = {}
     for plugin_id, sections in raw.items():
         section_map = _object(sections)
-        if len(section_map) > 16:
-            raise PluginSettingsError("INVALID_REQUEST", "插件设置区块过多。")
         result[_identifier(plugin_id)] = {
             _identifier(section_id): dict(_object(values))
             for section_id, values in section_map.items()
         }
-    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
-        raise PluginSettingsError("INVALID_REQUEST", "插件设置内容过大。")
     return result
 
 
@@ -569,7 +554,7 @@ def _install_identifier(value: object) -> str:
 
 
 def _identifier_list(value: object) -> list[str]:
-    if not isinstance(value, list) or len(value) > 64:
+    if not isinstance(value, list):
         return []
     result: list[str] = []
     for item in value:

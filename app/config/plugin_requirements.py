@@ -16,7 +16,7 @@ GENIE_ONNX = "genie.onnx@1"
 
 
 def parse_requirements(value):
-    if not isinstance(value, list) or len(value) > 64:
+    if not isinstance(value, list):
         raise ValueError("CHARACTER_PLUGIN_REQUIREMENTS_INVALID")
     result = []
     for item in value:
@@ -25,13 +25,13 @@ def parse_requirements(value):
             or not isinstance(item.get("type"), str) or not RESOURCE_TYPE_PATTERN.fullmatch(item["type"])):
             raise ValueError("CHARACTER_PLUGIN_REQUIREMENTS_INVALID")
         hints = item.get("plugins", [])
-        if not isinstance(hints, list) or len(hints) > 16:
+        if not isinstance(hints, list):
             raise ValueError("CHARACTER_PLUGIN_REQUIREMENTS_INVALID")
         plugins = []
         for hint in hints:
             if (not isinstance(hint, Mapping) or set(hint) - {"id", "name"}
                 or not isinstance(hint.get("id"), str) or not _PLUGIN_ID.fullmatch(hint["id"])
-                or not isinstance(hint.get("name", ""), str) or len(hint.get("name", "")) > 120
+                or not isinstance(hint.get("name", ""), str)
                 or any(ord(char) < 32 for char in hint.get("name", ""))):
                 raise ValueError("CHARACTER_PLUGIN_REQUIREMENTS_INVALID")
             plugins.append({"id": hint["id"], **({"name": hint["name"]} if hint.get("name") else {})})
@@ -45,7 +45,7 @@ def tts_resource_types(value, *, issues=None):
             raise ValueError("TTS_RESOURCE_MANIFEST_INVALID")
         issues.append({"kind": "tts", "type": "", "part": "manifest", "reasonCode": "TTS_RESOURCE_MANIFEST_INVALID"})
 
-    if not isinstance(value, list) or len(value) > 32:
+    if not isinstance(value, list):
         invalid()
         return ()
     result = []

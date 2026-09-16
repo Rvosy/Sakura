@@ -6,7 +6,7 @@ Renderer mounting and chat/playback wiring are separate consumers of this bounda
 
 from __future__ import annotations
 
-import json
+from copy import deepcopy
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -27,8 +27,8 @@ class VisualRuntime(Protocol):
 
 
 class VisualHostError(ValueError):
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
+    def __init__(self, code: str, message: str | None = None) -> None:
+        super().__init__(message or code)
         self.code = code
 
 
@@ -39,16 +39,6 @@ VISUAL_INACTIVE_REASONS = frozenset({
     "VISUAL_SERVICE_UNAVAILABLE", "VISUAL_CONTRACT_UNSUPPORTED", "API_VERSION_UNSUPPORTED",
     "VISUAL_MANIFEST_INVALID", "VISUAL_MODULE_INVALID",
 })
-
-
-def _json_copy(value: object, *, code: str = "VISUAL_CONTROL_INVALID") -> Any:
-    try:
-        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
-        if len(encoded.encode("utf-8")) > 65536:
-            raise ValueError("control contribution too large")
-        return json.loads(encoded)
-    except (TypeError, ValueError, OverflowError, RecursionError) as error:
-        raise VisualHostError(code) from error
 
 
 @dataclass(frozen=True)
@@ -72,8 +62,8 @@ class VisualBinding:
         self.capability = capability
         self._runtime = runtime
         self._identity = dict(identity)
-        self._request = _json_copy(request)
-        self._description = _json_copy(description)
+        self._request = deepcopy(request)
+        self._description = deepcopy(description)
         self._closed = threading.Event()
         self.install_id = install_id
 
@@ -87,14 +77,14 @@ class VisualBinding:
             "installId": self.install_id,
             "renderer": self.capability.renderer,
             "editor": self.capability.editor,
-            "data": _json_copy(self._description["rendererData"]),
-            "assets": _json_copy(self._description.get("assets", {})),
+            "data": deepcopy(self._description["rendererData"]),
+            "assets": deepcopy(self._description.get("assets", {})),
         }
 
     @property
     def description(self) -> dict[str, Any]:
         self._check_active()
-        return _json_copy(self._description)
+        return deepcopy(self._description)
 
     @property
     def resource_id(self) -> str:
@@ -141,25 +131,23 @@ class VisualBinding:
                 ):
                     raise VisualHostError("VISUAL_CONTROL_INVALID")
                 payload = control["payload"]
-            request = _json_copy(self._request)
-            request["segment"] = _json_copy(segment or {})
+            request = deepcopy(self._request)
+            request["segment"] = deepcopy(segment or {})
             parsed = self._runtime.call_service(
                 self.capability.service,
                 "parseControl",
                 request,
-                _json_copy(self._description["parserData"]),
-                _json_copy(payload),
-                _json_copy(legacy) if control is None else None,
+                deepcopy(self._description["parserData"]),
+                deepcopy(payload),
+                deepcopy(legacy) if control is None else None,
             )
             # A stopped/replaced process must not publish an in-flight result.
             self._check_active()
-            parsed = _json_copy(parsed)
+            parsed = deepcopy(parsed)
             if (
                 not isinstance(parsed, dict)
-                or set(parsed) - {"state", "actions"}
-                or not parsed
+                or not ({"state", "actions"} & parsed.keys())
                 or not isinstance(parsed.get("actions", []), list)
-                or len(parsed.get("actions", [])) > 32
             ):
                 raise VisualHostError("VISUAL_CONTROL_INVALID")
             self._check_active()
@@ -167,12 +155,12 @@ class VisualBinding:
                 "version": VISUAL_CONTRACT_VERSION,
                 "bindingId": self.id,
                 "resourceId": self._request["resource"]["id"],
-                **parsed,
+                **{key: parsed[key] for key in ("state", "actions") if key in parsed},
             })
         except VisualHostError as error:
             return VisualControlResult(None, error.code, error)
         except PluginRuntimeError as error:
-            return VisualControlResult(None, "VISUAL_CONTROL_REJECTED", error)
+            return VisualControlResult(None, "VISUAL_CONTROL_INVALID" if error.code == "SERVICE_PAYLOAD_INVALID" else "VISUAL_CONTROL_REJECTED", error)
 
 
 class VisualHost:
@@ -355,7 +343,7 @@ class VisualHost:
         if capability.editor is None:
             raise VisualHostError(self._editor_issue(record, capability) or "VISUAL_EDITOR_MISSING")
         identity = self._runtime.service_identity(capability.service)
-        data = _json_copy(self._runtime.call_service(capability.service, "editorData", resource.to_mapping(), _json_copy(raw)))
+        data = deepcopy(self._runtime.call_service(capability.service, "editorData", resource.to_mapping(), deepcopy(raw)))
         binding = VisualBinding(self._runtime, capability, identity, {"resource": resource.to_mapping()}, {"rendererData": {}, "assets": {}}, record.install_id)
         binding._check_active()
         return {"visual": binding.presentation(), "data": data, "providerScopeId": identity["scopeId"]}
@@ -364,7 +352,7 @@ class VisualHost:
         """Ask for a static cover without describing or mounting a renderer."""
         _record, capability = self._select(resource.type, provider_id)
         try:
-            path = self._runtime.call_service(capability.service, "previewImage", resource.to_mapping(), _json_copy(raw))
+            path = self._runtime.call_service(capability.service, "previewImage", resource.to_mapping(), deepcopy(raw))
         except PluginRuntimeError as error:
             if error.code == "SERVICE_METHOD_NOT_EXPORTED":
                 return None
@@ -375,27 +363,24 @@ class VisualHost:
         identity = self._runtime.service_identity(capability.service)
         if identity.get("providerId") != record.plugin_id:
             raise VisualHostError("VISUAL_PROVIDER_MISMATCH")
-        description = _json_copy(
+        description = deepcopy(
             self._runtime.call_service(capability.service, "describe", request),
-            code="VISUAL_DESCRIPTION_INVALID",
         )
-        if description == {"error": "VISUAL_RESOURCE_INVALID"}:
-            raise VisualHostError("VISUAL_RESOURCE_INVALID")
+        if isinstance(description, dict) and description.get("error") == "VISUAL_RESOURCE_INVALID":
+            raise VisualHostError("VISUAL_RESOURCE_INVALID", description.get("message"))
         if (
             not isinstance(description, dict)
             or not {"prompt", "outputSchema", "rendererData", "parserData"} <= set(description)
-            or set(description) - {"prompt", "outputSchema", "rendererData", "parserData", "assets"}
             or not isinstance(description["prompt"], str)
-            or len(description["prompt"]) > 16384
             or not isinstance(description["outputSchema"], dict)
         ):
             raise VisualHostError("VISUAL_DESCRIPTION_INVALID")
         assets = description.get("assets", {})
-        if not isinstance(assets, dict) or len(assets) > 256:
+        if not isinstance(assets, dict):
             raise VisualHostError("VISUAL_DESCRIPTION_INVALID")
         try:
             for key, path in assets.items():
-                if not isinstance(key, str) or not key or len(key) > 256 or any(ord(c) < 32 for c in key):
+                if not isinstance(key, str) or not key or any(ord(c) < 32 for c in key):
                     raise ValueError("invalid asset key")
                 if not resolve_resource_path(package_dir, relative_resource_path(path)).is_file():
                     raise ValueError("invalid asset")

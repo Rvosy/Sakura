@@ -81,95 +81,6 @@ class RuntimePluginSpec:
             visuals=self.visuals,
         )
 
-    def private_dict(self) -> dict[str, Any]:
-        return {
-            "installId": self.install_id,
-            "pluginId": self.plugin_id,
-            "name": self.name,
-            "author": self.author,
-            "description": self.description,
-            "version": self.version,
-            "apiVersion": self.api_version,
-            "entry": self.entry,
-            "enabled": self.enabled,
-            "required": self.required,
-            "provides": list(self.provides),
-            "requires": list(self.requires),
-            "source": self.source,
-            "directoryName": self.directory_name,
-            "visuals": [item.to_mapping() for item in self.visuals],
-        }
-
-    @classmethod
-    def from_private_dict(cls, value: Mapping[str, Any]) -> "RuntimePluginSpec":
-        expected = {
-            "installId", "pluginId", "name", "author", "description", "version", "apiVersion",
-            "entry", "enabled", "required", "provides", "requires",
-            "source", "directoryName",
-        }
-        if set(value) not in (expected, expected | {"visuals"}):
-            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
-        plugin_id = value.get("pluginId")
-        source = value.get("source")
-        directory_name = value.get("directoryName")
-        if (
-            not isinstance(plugin_id, str)
-            or not PLUGIN_ID_PATTERN.fullmatch(plugin_id)
-            or source not in {"bundled", "user"}
-            or not isinstance(directory_name, str)
-            or not directory_name
-            or Path(directory_name).name != directory_name
-        ):
-            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
-        services: dict[str, tuple[str, ...]] = {}
-        for key in ("provides", "requires"):
-            raw = value.get(key)
-            if (
-                not isinstance(raw, list)
-                or any(not isinstance(item, str) or not SERVICE_KEY_PATTERN.fullmatch(item) for item in raw)
-            ):
-                raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
-            services[key] = tuple(dict.fromkeys(raw))
-        try:
-            visuals = visual_capabilities_from_manifest(value.get("visuals", []), services["provides"])
-        except ValueError as error:
-            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID") from error
-        strings = {}
-        for key, maximum in (
-            ("installId", 2059), ("name", 120), ("author", 120),
-            ("description", 500), ("version", 64), ("entry", 200),
-        ):
-            raw = value.get(key)
-            if not isinstance(raw, str) or len(raw) > maximum:
-                raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
-            strings[key] = raw
-        if strings["installId"] != _install_id(source, directory_name):
-            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
-        if (
-            value.get("apiVersion") != PLUGIN_API_V4_VERSION
-            or not isinstance(value.get("enabled"), bool)
-            or not isinstance(value.get("required"), bool)
-        ):
-            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
-        if source == "user" and value["required"]:
-            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
-        return cls(
-            install_id=strings["installId"],
-            plugin_id=plugin_id,
-            name=strings["name"],
-            author=strings["author"],
-            description=strings["description"],
-            version=strings["version"],
-            api_version=int(value["apiVersion"]),
-            entry=strings["entry"],
-            enabled=value["enabled"],
-            required=value["required"],
-            provides=services["provides"],
-            requires=services["requires"],
-            source=source,
-            directory_name=directory_name,
-            visuals=visuals,
-        )
 
 
 @dataclass(frozen=True)
@@ -406,9 +317,6 @@ class PluginInventory:
             or isinstance(api_version, bool)
             or not isinstance(api_version, int)
             or any(not isinstance(value, str) for value in metadata.values())
-            or len(metadata["name"]) > 120
-            or len(metadata["author"]) > 120
-            or len(metadata["description"]) > 500
             or not 1 <= len(metadata["version"]) <= 64
         ):
             return replace(
