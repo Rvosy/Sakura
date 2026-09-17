@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-14
+updated: 2026-09-18
 ---
 
 # Runtime v2 角色工坊
@@ -24,6 +24,10 @@ GPT-SoVITS 模型、参考语音试听、发布、放弃草稿和 `.char` 导出
 窗口、文件选择、受控请求、临时试听资源、取色覆盖层和发布后的 Core 重建。不得恢复旧 Qt Studio、
 `sakura-studio` 子进程或 JSONL stdout marker 协议。这个宿主决定见
 [ADR-0044](../../adr/0044-character-studio-same-app-window.md)。
+
+`CharacterStudioService` 负责读取工作区文档、合并角色清单、适配旧立绘草稿并准备导出文件。Core 边界只通过
+这些公开操作获取数据，不读取草稿状态文件的内部字段；运行时应用负责验证插件资源和应用已发布角色。
+导出前物化的编辑只写入草稿，不能隐式发布已安装角色。
 
 ## 窗口与设置
 

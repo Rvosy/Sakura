@@ -140,7 +140,7 @@ class CharacterStudioBoundary:
     def _validate_visuals(self, character):
         application = self._plugin_application_provider()
         if application is not None:
-            application.application.validate_visual_draft(character)
+            application.validate_visual_draft(character)
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -206,14 +206,11 @@ class CharacterStudioBoundary:
     def _dispatch(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         current = self._current_character_id()
         if name == "studio.plugin.requirements":
-            from app.config.character_studio import CharacterStudioDoc, _merge_character_manifest
             from app.config.plugin_requirements import requirements_for_manifest, check_requirements
             self._keys(payload, required={"workspaceId"})
             workspace = self._text(payload["workspaceId"])
             with self._mutation_lock:
-                state = self._service._require_state(workspace)
-                doc = CharacterStudioDoc.from_payload(state["doc"])
-                manifest = _merge_character_manifest(self._service._workspace_package(workspace), doc)
+                manifest = self._service.workspace_manifest(workspace)
             application = self._plugin_application_provider()
             if application is None:
                 raise CharacterStudioError("STUDIO_CORE_UNAVAILABLE", "插件状态暂不可用。")
@@ -392,22 +389,19 @@ class CharacterStudioBoundary:
     def _visual_request_impl(self, name, payload, operation):
         import uuid
         from app.config.character_resources import CharacterVisualResource, character_visual_resources
-        from app.config.character_studio import CharacterStudioDoc
         from app.core_host.character_presentation import project_character_presentation
         from app.plugins.visuals import resolve_resource_path
         application = self._plugin_application_provider()
         if application is None:
             raise CharacterStudioError("STUDIO_CORE_UNAVAILABLE", "表现插件暂不可用。")
-        host = application.application.visuals
+        host = application.visuals
         if name == "studio.visual.catalog":
             self._keys(payload)
             return {"schemaVersion": 1, "items": host.catalog()}
         self._keys(payload, required={"workspaceId"}, optional={"resourceId", "type", "providerId", "path", "operationId", "relativePath", "name"})
         workspace = self._text(payload["workspaceId"])
         with self._mutation_lock:
-            state = self._service._require_state(workspace)
-            doc = CharacterStudioDoc.from_payload(state["doc"])
-            package = self._service._workspace_package(workspace)
+            package, doc = self._service.workspace_document(workspace)
             resources, selected = character_visual_resources(doc.to_manifest(), package)
             if name == "studio.visual.previews":
                 from app.core_host.visual_host import VisualHostError
@@ -416,7 +410,7 @@ class CharacterStudioBoundary:
                 for resource in resources:
                     item = {"resourceId": resource.id, "relativePath": None}
                     try:
-                        editor_resource, raw = self._visual_editor_input(package, doc, resource)
+                        editor_resource, raw = self._service.visual_editor_input(package, doc, resource)
                         relative = host.preview_image(editor_resource, raw, (doc.visuals or {}).get("providers", {}).get(resource.id))
                         if relative:
                             path = resolve_resource_path(resolve_resource_path(package, resource.root), relative)
@@ -454,8 +448,8 @@ class CharacterStudioBoundary:
                 resource = CharacterVisualResource.from_mapping({"id": resource_id, "type": self._text(payload.get("type")), "root": f"visuals/{resource_id}", "entry": "resource.json", "name": payload.get("name", "")})
                 initial = host.editor(resource, {}, payload.get("providerId"))
                 resources = (*resources, resource)
-                from app.config.character_studio import _resolve_workspace_path
-                target = _resolve_workspace_path(package, resource.root, "表现资源")
+                from app.config.character_studio import resolve_workspace_path
+                target = resolve_workspace_path(package, resource.root, "表现资源")
                 target.mkdir(parents=True, exist_ok=False)
                 try:
                     (target / resource.entry).write_text("{}", encoding="utf-8")
@@ -475,62 +469,18 @@ class CharacterStudioBoundary:
             if resource is None:
                 raise CharacterStudioError("VISUAL_RESOURCE_MISSING", "没有找到所选表现资源。")
             if name == "studio.visual.export":
-                from dataclasses import replace
-                from app.config.character_loader import _load_profile
-                from app.config.character_studio import _write_visual_draft
                 from app.config.visual_archive import export_visual_archive
-                if resource.type == "sakura.visual.portrait@1" and resource.root == "." and resource.entry == "character.json" and resource.id not in doc.visual_data:
-                    import json
-                    from app.storage.atomic import atomic_write_text
-                    # Export describes files in the draft package; materialize its
-                    # pending inline portrait without publishing the installed role.
-                    _, raw = self._visual_editor_input(package, doc, resource)
-                    atomic_write_text(package / "character.json", json.dumps(raw, ensure_ascii=False, indent=2))
-                _write_visual_draft(package, doc)
-                resources, selected = character_visual_resources(doc.to_manifest(), package)
-                character = replace(_load_profile(package / "character.json"), visual_resources=resources, default_visual_id=selected, visual_providers=(doc.visuals or {}).get("providers", {}))
-                resource = next(item for item in character.visual_resources if item.id == resource_id)
-                projection = application.application.export_visual_resource(character, resource)
+                character, resource = self._service.prepare_visual_export(workspace, resource_id)
+                projection = application.export_visual_resource(character, resource)
                 path = export_visual_archive(package, resource, projection, Path(self._text(payload.get("path"))), cancel_check=self._cancel_check(operation), commit_started=self._commit_started(operation))
                 return {"schemaVersion": 1, "outputPath": str(path)}
-            editor_resource, raw = self._visual_editor_input(package, doc, resource)
+            editor_resource, raw = self._service.visual_editor_input(package, doc, resource)
             result = host.editor(editor_resource, raw, payload.get("providerId") or (doc.visuals or {}).get("providers", {}).get(resource_id))
             from types import SimpleNamespace
             character = SimpleNamespace(id=doc.id, display_name=doc.display_name, initial_message=doc.initial_message or "你好", theme_settings=doc.theme)
             presentation = project_character_presentation(character, result["visual"], reason_code="READY")
             return {"schemaVersion": 1, "presentation": {**presentation, "generationId": self._generation_id}, "providerScopeId": result["providerScopeId"], "data": result["data"], "resource": resource.to_mapping(),
                 "assetRootPath": str(resolve_resource_path(package, resource.root))}
-
-    @staticmethod
-    def _visual_editor_input(package, doc, resource):
-        import json
-        from app.config.character_resources import CharacterVisualResource
-        from app.config.character_studio import _resolve_workspace_path
-        if resource.id in doc.visual_data:
-            editor_resource = resource
-            # The saved draft already contains the plugin's private projection.
-            if resource.root == "." and resource.entry == "character.json":
-                editor_resource = CharacterVisualResource(resource.id, resource.type, ".", f"visuals/{resource.id}.json")
-            return editor_resource, doc.visual_data[resource.id]
-        relative = resource.entry if resource.root == "." else f"{resource.root}/{resource.entry}"
-        path = _resolve_workspace_path(package, relative, "表现入口")
-        raw = None
-        if path.is_file() and path.stat().st_size <= 256 * 1024:
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except (UnicodeError, ValueError):
-                pass
-        if resource.type == "sakura.visual.portrait@1" and resource.root == "." and resource.entry == "character.json":
-            # v1.1.0 autosave kept edits in the document, not the copied manifest.
-            # Preserve opaque fields while presenting those pending edits to the adapter.
-            raw = dict(raw) if isinstance(raw, dict) else {}
-            portrait = raw.get("portrait")
-            raw["portrait"] = {
-                **(portrait if isinstance(portrait, dict) else {}),
-                "default": doc.default_portrait,
-                "expressions": dict(doc.expressions),
-            }
-        return resource, raw
 
     def _import_asset(self, payload: dict[str, Any], current: str) -> dict[str, Any]:
         self._keys(
