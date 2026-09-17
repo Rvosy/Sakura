@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 
+from tests.integration import test_core_host_real_chat_integration as real_chat_fixture
 from tests.integration.test_core_host_real_chat_integration import (
     CAPABILITIES,
     GENERATION_CREDENTIAL,
@@ -14,10 +15,10 @@ from tests.integration.test_core_host_real_chat_integration import (
     _ProviderHandler,
     _configure_app_root,
     _exchange,
+    _isolated_assistant_distribution,
     _request,
     _read,
     _send,
-    _start_host,
     _start_provider,
     _stop,
     _stop_provider,
@@ -136,7 +137,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
     protected_before = _file_contents(protected)
     isolated_cache = tmp_path / "isolated-fastembed-cache"
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(isolated_cache))
-    process = _start_host(app_root, distribution_root=distribution_root)
+    process = real_chat_fixture._start_host(app_root, distribution_root=distribution_root)
     try:
         _negotiate_mem0_plugin(process)
         settings = _exchange(
@@ -319,7 +320,7 @@ def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
     distribution_root = tmp_path / "distribution"
     _install_official_mem0(distribution_root)
-    process = _start_host(app_root, distribution_root=distribution_root)
+    process = real_chat_fixture._start_host(app_root, distribution_root=distribution_root)
     try:
         hello = _request(
             "plain-hello",

@@ -179,6 +179,7 @@ class ReadinessController:
         self._plugins_enabled = initializer_factory is _default_initializer_factory
         self._session_published_callback: Callable[[], None] | None = None
         self._application_tools: ToolRegistry | None = None
+        self._starting_plugin_application: object | None = None
         self._plugin_application: object | None = None
         self._chat_boundary: object | None = None
 
@@ -515,15 +516,19 @@ class ReadinessController:
             initializer = self._claim_initializer_close_locked()
             plugin_application = self._plugin_application
             self._plugin_application = None
+            starting_application = self._starting_plugin_application
+            self._starting_plugin_application = None
         if initializer is not None:
             self._start_initializer_close(initializer)
+        # Plugin startup can be waiting on its process. Stop that owned process
+        # before joining the initializer which is waiting for startup to finish.
+        self._close_application_resources([plugin_application, starting_application])
         if worker is not None:
             worker.join(timeout=max(0.0, deadline - monotonic()))
         with self._lock:
             close_thread = self._initializer_close_thread
         if close_thread is not None:
             close_thread.join(timeout=max(0.0, deadline - monotonic()))
-        self._close_application_resources([plugin_application])
         with self._lock:
             background_error = self._background_close_error
             self._background_close_error = None
@@ -590,12 +595,25 @@ class ReadinessController:
                     chat_boundary = self._chat_boundary
                 if chat_boundary is not None:
                     plugin_application.bind_chat_boundary(chat_boundary)
-                plugin_application.start()
+                with self._lock:
+                    if self._closed:
+                        return
+                    self._starting_plugin_application = plugin_application
+                    unpublished_resources.clear()
+                try:
+                    plugin_application.start()
+                except BaseException:
+                    with self._lock:
+                        if self._starting_plugin_application is plugin_application:
+                            self._starting_plugin_application = None
+                            unpublished_resources.append(plugin_application)
+                    raise
             with self._lock:
                 application_closed = self._closed
                 if not application_closed:
                     self._application_tools = application_tools
                     self._plugin_application = plugin_application
+                    self._starting_plugin_application = None
                     unpublished_resources.clear()
             if application_closed:
                 return
@@ -677,7 +695,8 @@ class ReadinessController:
                 self._start_initializer_close(claimed)
 
         finally:
-            # Ownership transfers only when all Application resources are published.
+            # The controller owns starting/published applications; only resources
+            # never claimed by it or returned after failed startup remain here.
             self._close_application_resources(unpublished_resources)
 
     def _claim_initializer_close_locked(self) -> object | None:

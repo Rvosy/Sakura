@@ -294,3 +294,46 @@ def test_plugin_start_failure_closes_unpublished_application_resources(
         controller.close()
     controller.close()
     assert closed == ["plugins"]
+
+
+def test_shutdown_stops_starting_plugin_application_before_joining_initializer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core_host import plugin_application
+    from app.core_host.server import HostConfig, ReadinessController
+
+    started = threading.Event()
+    stopped = threading.Event()
+    calls: list[str] = []
+
+    class Application:
+        def start(self) -> None:
+            calls.append("start")
+            started.set()
+            assert stopped.wait(3)
+            calls.append("start_returned")
+
+        def close(self) -> None:
+            calls.append("close")
+            stopped.set()
+
+    application = Application()
+    monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_: application)
+    controller = ReadinessController(
+        HostConfig(RuntimeRoots(tmp_path, tmp_path), "shutdown-starting-plugin", "a" * 32),
+        initializer_factory=lambda *_: pytest.fail("shutdown must not initialize Assistant"),
+    )
+    controller.enable_plugins()
+    try:
+        controller.begin({})
+        assert started.wait(2)
+        assert controller.published_plugin_application() is None
+        controller.close()
+        assert not controller._worker.is_alive()
+        assert controller.published_plugin_application() is None
+        controller.close()
+        assert calls == ["start", "close", "start_returned"]
+    finally:
+        stopped.set()
+        controller._worker.join(3)
+        controller.close()
