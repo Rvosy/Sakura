@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import sys
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Literal
@@ -55,7 +57,17 @@ class BoundAssistant:
         return self.application.call_bound_service("sakura.assistant", self.identity, method, *args)
 
     def prepare(self, descriptor):
-        return self.call("prepare", descriptor)
+        result = self.call("prepare", descriptor)
+        if (not isinstance(result, Mapping)
+                or not isinstance(result.get("state"), str)
+                or result["state"] not in {"ready", "degraded", "setup_required", "failed"}
+                or not isinstance(result.get("code"), str)
+                or re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", result["code"]) is None
+                or not isinstance(result.get("message"), str)
+                or len(result["message"]) > 2000
+                or type(result.get("retryable")) is not bool):
+            raise ValueError("ASSISTANT_PREPARE_INVALID")
+        return {key: result[key] for key in ("state", "code", "message", "retryable")}
 
     def commit_result(self, commit):
         from app.plugins.runtime_v4 import PluginRuntimeError

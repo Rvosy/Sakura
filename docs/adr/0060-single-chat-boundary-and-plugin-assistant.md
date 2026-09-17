@@ -24,6 +24,10 @@ Mobile 在返回 job 前完成同步受理，避免取消早于 worker 启动时
 默认 Assistant 提供普通 `sakura.assistant` Service，使用现有插件进程和依赖隔离。模型循环、上下文选择、Prompt、回复协议和 Trace 归插件；
 宿主暴露中性的会话、完整轮次历史页、工具和 Context 合同。Core 不保留备用 Agent 或失败后回退实现。
 
+启动由同一个 Core 初始化 worker 分阶段完成：先启动当前角色表现所需的服务和硬依赖并发布角色，再准备 Assistant 并发布聊天状态，
+最后启动其余已启用插件。尚未准备好聊天时可以显示角色，但不能受理聊天。各阶段仍按完整插件图检查冲突与依赖，
+失败的插件不自动重试；可选插件失败不覆盖已经发布的角色或聊天状态。关闭先回收正在启动或已发布的 Application，再等待 worker 结束。
+
 跨进程任务采用短调用 `begin/poll/result/cancel/release`，始终关联同一 `operationId` 和固定的 `providerId + scopeId`。
 大输入、工具图片、历史页与结果使用 Host Artifact，保留既有帧上限。最终结果提交与服务失效共用实例绑定锁；
 取消与完成也在 Core 中仲裁。启动确认丢失时不重放，无法确认 worker 已停止时由现有 Manager 回收精确实例。

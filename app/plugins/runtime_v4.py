@@ -696,16 +696,15 @@ class PluginRuntimeManager:
                 host_service=service,
             )
 
-    def start(self) -> dict[str, Any]:
+    def start(self, *, services: Sequence[str] | None = None) -> dict[str, Any]:
+        """Start an unattempted dependency slice, or finish the remaining graph."""
         with self._start_lock:
             with self._lock:
                 if self._closed:
                     raise PluginRuntimeError("GENERATION_INVALIDATED")
-                if self._activation_order:
-                    return self.snapshot()
             # Plugin setup may synchronously call an already-active Service.
             # Never hold the routing lock while waiting for initialize/setup.
-            self._start_graph()
+            self._start_graph(services)
             return self.snapshot()
 
     def call_service(
@@ -1172,67 +1171,97 @@ class PluginRuntimeManager:
             )
         return True
 
-    def _start_graph(self) -> None:
-        enabled = {
-            plugin_id: record
-            for plugin_id, record in self._records.items()
-            if record.spec.enabled
-        }
-        for record in self._records.values():
-            if not record.spec.enabled:
-                record.state = "disabled"
-                record.reason_code = "PLUGIN_DISABLED"
-            elif record.spec.api_version != PLUGIN_API_V4_VERSION:
-                record.state = "failed"
-                record.reason_code = "API_VERSION_UNSUPPORTED"
-        candidates = {
-            plugin_id
-            for plugin_id, record in enabled.items()
-            if record.spec.api_version == PLUGIN_API_V4_VERSION
-        }
-        providers: dict[str, list[str]] = {}
-        for plugin_id in candidates:
-            for service_key in enabled[plugin_id].spec.provides:
-                providers.setdefault(service_key, []).append(plugin_id)
-        for service_key, plugin_ids in providers.items():
-            if len(plugin_ids) > 1 or service_key in self._services:
-                for plugin_id in plugin_ids:
-                    record = self._records[plugin_id]
+    def _start_graph(self, services: Sequence[str] | None = None) -> None:
+        with self._lock:
+            unstarted = {plugin_id for plugin_id, record in self._records.items()
+                         if record.reason_code == "NOT_STARTED"}
+            enabled = {
+                plugin_id: record
+                for plugin_id, record in self._records.items()
+                if record.spec.enabled
+            }
+            for record in self._records.values():
+                if record.reason_code != "NOT_STARTED":
+                    continue
+                if not record.spec.enabled:
+                    record.state = "disabled"
+                    record.reason_code = "PLUGIN_DISABLED"
+                elif record.spec.api_version != PLUGIN_API_V4_VERSION:
                     record.state = "failed"
-                    record.reason_code = "SERVICE_CONFLICT"
-                    candidates.discard(plugin_id)
-
-        unique_provider = {
-            service_key: plugin_ids[0]
-            for service_key, plugin_ids in providers.items()
-            if len(plugin_ids) == 1
-        }
-        remaining = set(candidates)
-        while remaining:
-            ready = sorted(
+                    record.reason_code = "API_VERSION_UNSUPPORTED"
+            candidates = {
                 plugin_id
-                for plugin_id in remaining
-                if all(
-                    required in self._services
-                    or unique_provider.get(required) not in remaining
-                    for required in self._records[plugin_id].spec.requires
+                for plugin_id, record in enabled.items()
+                if record.spec.api_version == PLUGIN_API_V4_VERSION
+            }
+            providers: dict[str, list[str]] = {}
+            for plugin_id in candidates:
+                for service_key in enabled[plugin_id].spec.provides:
+                    providers.setdefault(service_key, []).append(plugin_id)
+            for service_key, plugin_ids in providers.items():
+                binding = self._services.get(service_key)
+                if len(plugin_ids) > 1 or (binding is not None and binding.provider_id != plugin_ids[0]):
+                    for plugin_id in plugin_ids:
+                        record = enabled[plugin_id]
+                        if record.reason_code == "NOT_STARTED":
+                            record.state = "failed"
+                            record.reason_code = "SERVICE_CONFLICT"
+                        candidates.discard(plugin_id)
+
+            unique_provider = {
+                service_key: plugin_ids[0]
+                for service_key, plugin_ids in providers.items()
+                if len(plugin_ids) == 1
+            }
+            # Every slice resolves against the full enabled inventory so a later
+            # optional provider cannot silently replace an earlier selected one.
+            # Failed/disabled processes are retried only by explicit management.
+            candidates = {plugin_id for plugin_id in candidates
+                          if enabled[plugin_id].reason_code == "NOT_STARTED"}
+            remaining = set(candidates)
+            if services is not None:
+                remaining = set()
+                pending = list(services)
+                while pending:
+                    provider = unique_provider.get(pending.pop())
+                    if provider in candidates and provider not in remaining:
+                        remaining.add(provider)
+                        pending.extend(enabled[provider].spec.requires)
+        while remaining:
+            with self._lock:
+                if self._closed:
+                    return
+                remaining = {plugin_id for plugin_id in remaining
+                             if self._records.get(plugin_id) is enabled[plugin_id]
+                             and enabled[plugin_id].reason_code == "NOT_STARTED"}
+                ready = sorted(
+                    plugin_id
+                    for plugin_id in remaining
+                    if all(
+                        required in self._services
+                        or unique_provider.get(required) not in remaining
+                        for required in enabled[plugin_id].spec.requires
+                    )
                 )
-            )
-            if not ready:
-                for plugin_id in sorted(remaining):
-                    record = self._records[plugin_id]
-                    record.state = "failed"
-                    record.reason_code = "DEPENDENCY_CYCLE"
-                break
+                if not ready:
+                    for plugin_id in sorted(remaining):
+                        record = enabled[plugin_id]
+                        record.state = "failed"
+                        record.reason_code = "DEPENDENCY_CYCLE"
+                    break
             for plugin_id in ready:
                 remaining.remove(plugin_id)
-                record = self._records[plugin_id]
-                if any(required not in self._services for required in record.spec.requires):
-                    record.state = "failed"
-                    record.reason_code = "MISSING_SERVICE"
-                    continue
-                self._start_one(record)
-        for record in enabled.values():
+                record = enabled[plugin_id]
+                with self._lock:
+                    if self._records.get(plugin_id) is not record or record.reason_code != "NOT_STARTED":
+                        continue
+                    if any(required not in self._services for required in record.spec.requires):
+                        record.state = "failed"
+                        record.reason_code = "MISSING_SERVICE"
+                        continue
+                self._start_one(record, only_unstarted=True)
+        for plugin_id in unstarted & enabled.keys():
+            record = enabled[plugin_id]
             if record.reason_code in {"API_VERSION_UNSUPPORTED", "SERVICE_CONFLICT", "DEPENDENCY_CYCLE", "MISSING_SERVICE"}:
                 self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
 
@@ -1243,19 +1272,24 @@ class PluginRuntimeManager:
             plugin_id=record.spec.plugin_id, plugin_name=record.spec.name,
             fields={**(diagnostics or {}), "event": event, "state": record.state, "reason_code": record.reason_code})
 
-    def _start_one(self, record: _RuntimeRecord) -> bool:
+    def _start_one(self, record: _RuntimeRecord, *, only_unstarted: bool = False) -> bool:
         diagnostics: dict[str, object] = {}
-        started = self._start_one_impl(record, diagnostics)
-        if not started and record.reason_code != "GENERATION_INVALIDATED":
+        started = self._start_one_impl(record, diagnostics, only_unstarted=only_unstarted)
+        if started is False and record.reason_code != "GENERATION_INVALIDATED":
             self._log_lifecycle(record, "plugin.start.failed", "插件启动失败", failed=True, diagnostics=diagnostics)
-        return started
+        return bool(started)
 
-    def _start_one_impl(self, record: _RuntimeRecord, diagnostics: dict[str, object]) -> bool:
+    def _start_one_impl(self, record: _RuntimeRecord, diagnostics: dict[str, object], *, only_unstarted: bool = False) -> bool | None:
         from app.core.diagnostics import exception_diagnostics
 
         spec = record.spec
         assert spec.plugin_root is not None
         with self._lock:
+            if (self._records.get(spec.plugin_id) is not record or not record.spec.enabled
+                    or record.spec is not spec or (only_unstarted and record.reason_code != "NOT_STARTED")):
+                return None
+            if record.process is not None:
+                return True if record.state == "active" else None
             if self._closed:
                 record.state = "failed"
                 record.reason_code = "GENERATION_INVALIDATED"
@@ -1269,6 +1303,10 @@ class PluginRuntimeManager:
                 record.state = "failed"
                 record.reason_code = "SERVICE_CONFLICT"
                 return False
+            if any(required not in self._services for required in spec.requires):
+                record.state = "failed"
+                record.reason_code = "MISSING_SERVICE"
+                return False
         try:
             dependency_root = self._dependencies.verified_root(
                 spec.plugin_id,
@@ -1277,8 +1315,12 @@ class PluginRuntimeManager:
             )
         except PluginDependencyError as error:
             diagnostics.update(exception_diagnostics(error, reason_code=error.code, stage="dependencies"))
-            record.state = "failed"
-            record.reason_code = error.code
+            with self._lock:
+                if (self._records.get(spec.plugin_id) is not record or record.spec is not spec
+                        or (only_unstarted and record.reason_code != "NOT_STARTED")):
+                    return None
+                record.state = "failed"
+                record.reason_code = error.code
             return False
         process = _PluginProcess(
             roots=self._roots,
@@ -1299,6 +1341,16 @@ class PluginRuntimeManager:
                 record.state = "failed"
                 record.reason_code = "GENERATION_INVALIDATED"
                 return
+            if (self._records.get(spec.plugin_id) is not record or not record.spec.enabled
+                    or record.spec is not spec or (only_unstarted and record.reason_code != "NOT_STARTED")
+                    or spec.plugin_id in self._draining_processes):
+                return None
+            if record.process is not None:
+                return True if record.state == "active" else None
+            if self._service_conflict_participants_locked(spec.plugin_id):
+                record.state = "failed"
+                record.reason_code = "SERVICE_CONFLICT"
+                return False
             record.process = process
             record.pid = None
             record.state = "failed"
@@ -1328,6 +1380,8 @@ class PluginRuntimeManager:
             diagnostics.update(exception_diagnostics(error, reason_code=error.code, stage="initialize"))
             process.close()
             with self._lock:
+                if record.process is not process:
+                    return None
                 if record.process is process:
                     missing_dependency = any(
                         required not in self._services
@@ -1342,26 +1396,28 @@ class PluginRuntimeManager:
             return False
         should_close = False
         with self._lock:
+            superseded = self._records.get(spec.plugin_id) is not record or record.process is not process
             missing_dependency = any(
                 required not in self._services for required in record.spec.requires
             )
             if (
                 self._closed
-                or record.process is not process
+                or superseded
                 or process.pid is None
                 or missing_dependency
             ):
                 if record.process is process:
                     record.process = None
                     record.pid = None
-                record.state = "failed"
-                record.reason_code = (
-                    "GENERATION_INVALIDATED"
-                    if self._closed
-                    else "DEPENDENCY_FAILED"
-                    if missing_dependency
-                    else "PLUGIN_PROCESS_EXITED"
-                )
+                if not superseded:
+                    record.state = "failed"
+                    record.reason_code = (
+                        "GENERATION_INVALIDATED"
+                        if self._closed
+                        else "DEPENDENCY_FAILED"
+                        if missing_dependency
+                        else "PLUGIN_PROCESS_EXITED"
+                    )
                 should_close = True
             else:
                 record.pid = process.pid
@@ -1371,7 +1427,7 @@ class PluginRuntimeManager:
                 self._activation_order.append(spec.plugin_id)
         if should_close:
             process.close()
-            return False
+            return None if superseded else False
         from app.core.runtime_log import log_event
 
         log_event(

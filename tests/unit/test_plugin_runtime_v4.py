@@ -1223,8 +1223,9 @@ class Plugin:
         manager.close()
 
 
+@pytest.mark.parametrize("services", [None, ("fixture.shared",)])
 def test_service_conflict_fails_all_participants_without_starting_them(
-    tmp_path: Path,
+    tmp_path: Path, services,
 ) -> None:
     roots = _roots(tmp_path)
     bundled = roots.distribution_root / "plugins" / "builtin"
@@ -1236,10 +1237,92 @@ def test_service_conflict_fails_all_participants_without_starting_them(
         PluginInventory(roots).scan().runtime_specs,
     )
     try:
-        snapshot = manager.start()
+        snapshot = manager.start(services=services)
         assert {item["reasonCode"] for item in snapshot["plugins"]} == {"SERVICE_CONFLICT"}
         assert all(item["pid"] is None for item in snapshot["plugins"])
     finally:
+        manager.close()
+
+
+def test_selected_dependency_cycle_fails_locally_without_restarting_healthy_service(tmp_path):
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins/builtin"
+    _plugin_source(bundled, "fixture.cycle-a", "fixture.cycle.a", requires=("fixture.cycle.b",))
+    _plugin_source(bundled, "fixture.cycle-b", "fixture.cycle.b", requires=("fixture.cycle.a",))
+    _plugin_source(bundled, "fixture.healthy", "fixture.healthy", body='''
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.healthy", object(), exports=())
+''')
+    manager = PluginRuntimeManager(roots, "sliced-cycle", PluginInventory(roots).scan().runtime_specs)
+    try:
+        manager.start(services=("fixture.cycle.a", "fixture.healthy"))
+        healthy = manager.service_identity("fixture.healthy")
+        snapshot = manager.start()
+        cycles = [item for item in snapshot["plugins"] if item["pluginId"].startswith("fixture.cycle-")]
+        assert {item["reasonCode"] for item in cycles} == {"DEPENDENCY_CYCLE"}
+        assert all(item["pid"] is None for item in cycles)
+        assert manager.service_identity("fixture.healthy") == healthy
+    finally:
+        manager.close()
+
+
+@pytest.mark.parametrize("action", ["disable", "uninstall", "reload"])
+def test_management_during_startup_cannot_publish_or_overwrite_a_replaced_process(tmp_path, monkeypatch, action):
+    import app.plugins.runtime_v4 as runtime_v4
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.start-race", "fixture.start-race", body='''
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.start-race", object(), exports=())
+''')
+    manager = PluginRuntimeManager(roots, "start-management-race", PluginInventory(roots).scan().runtime_specs)
+    entered, release = threading.Event(), threading.Event()
+    original_start = runtime_v4._PluginProcess.start
+    starts, errors, logs = [], [], []
+    def held_start(process):
+        result = original_start(process)
+        starts.append(process.scope_id)
+        if len(starts) == 1:
+            entered.set()
+            assert release.wait(5)
+        return result
+    monkeypatch.setattr(runtime_v4._PluginProcess, "start", held_start)
+    monkeypatch.setattr(manager, "_log_lifecycle", lambda _record, event, *_args, **_kwargs: logs.append(event))
+    def start():
+        try:
+            manager.start()
+        except BaseException as error:
+            errors.append(error)
+    worker = threading.Thread(target=start)
+    worker.start()
+    try:
+        assert entered.wait(3)
+        if action == "disable":
+            manager.set_enabled("fixture.start-race", False)
+        elif action == "uninstall":
+            manager.uninstall_plugin("fixture.start-race")
+        else:
+            manager.reload_plugin("fixture.start-race")
+            replacement = manager.service_identity("fixture.start-race")
+            assert replacement["scopeId"] != starts[0]
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive()
+        assert not errors
+        assert "plugin.start.failed" not in logs
+        records = manager.snapshot()["plugins"]
+        if action == "uninstall":
+            assert records == []
+        elif action == "disable":
+            assert records[0]["state"] == "disabled"
+            assert records[0]["pid"] is None
+        else:
+            assert records[0]["state"] == "active"
+            assert manager.service_identity("fixture.start-race") == replacement
+    finally:
+        release.set()
+        worker.join(5)
         manager.close()
 
 

@@ -1094,10 +1094,6 @@ fn ready_character_generation(
     let ready = publication.supervisor.generation_number > previous_generation_number
         && generation_id != previous_generation_id
         && snapshot.generation_id == generation_id
-        && matches!(
-            snapshot.readiness.as_str(),
-            "ready" | "setup_required" | "degraded"
-        )
         && presentation.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
         && presentation.get("characterId").and_then(Value::as_str) == Some(target_character_id);
     ready.then_some(generation_id)
@@ -2013,12 +2009,15 @@ mod tests {
             ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
             Some("generation-b")
         );
-        publication.snapshot.as_mut().expect("snapshot").readiness = "setup_required".to_string();
-        assert_eq!(
-            ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
-            Some("generation-b")
-        );
-        publication.snapshot.as_mut().expect("snapshot").readiness = "failed".to_string();
+        for readiness in ["initializing", "setup_required", "failed"] {
+            publication.snapshot.as_mut().expect("snapshot").readiness = readiness.to_string();
+            assert_eq!(
+                ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
+                Some("generation-b"),
+                "an available character does not depend on Assistant readiness"
+            );
+        }
+        publication.character_presentation = None;
         assert!(ready_character_generation(&publication, "generation-a", 1, "beta").is_none());
     }
 

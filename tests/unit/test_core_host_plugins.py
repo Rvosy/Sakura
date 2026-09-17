@@ -208,6 +208,12 @@ def test_session_is_published_only_after_application_binding(
     class Application:
         unbound = 0
 
+        def start_character_presentation(self):
+            return None
+
+        def start_assistant(self):
+            pass
+
         def start(self):
             pass
 
@@ -268,7 +274,7 @@ def test_plugin_start_failure_closes_unpublished_application_resources(
         def __init__(self, *_args) -> None:
             pass
 
-        def start(self) -> None:
+        def start_character_presentation(self):
             raise RuntimeError("plugin start failed")
 
         def close(self) -> None:
@@ -296,10 +302,12 @@ def test_plugin_start_failure_closes_unpublished_application_resources(
     assert closed == ["plugins"]
 
 
+@pytest.mark.parametrize("phase", ["visual", "assistant", "optional"])
 def test_shutdown_stops_starting_plugin_application_before_joining_initializer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
 ) -> None:
     from app.core_host import plugin_application
+    from app.core_host.assistant_adapter import ReadinessResult
     from app.core_host.server import HostConfig, ReadinessController
 
     started = threading.Event()
@@ -307,32 +315,49 @@ def test_shutdown_stops_starting_plugin_application_before_joining_initializer(
     calls: list[str] = []
 
     class Application:
-        def start(self) -> None:
-            calls.append("start")
-            started.set()
-            assert stopped.wait(3)
-            calls.append("start_returned")
+        def enter(self, stage):
+            calls.append(stage)
+            if phase == stage:
+                started.set()
+                assert stopped.wait(3)
+                calls.append("start_returned")
+
+        def start_character_presentation(self):
+            self.enter("visual")
+
+        def start_assistant(self):
+            self.enter("assistant")
+
+        def start(self):
+            self.enter("optional")
 
         def close(self) -> None:
             calls.append("close")
             stopped.set()
 
     application = Application()
+    def create_initializer(*_):
+        assert phase == "optional", "shutdown must not initialize Assistant"
+        return SimpleNamespace(
+            initialize=lambda _: ReadinessResult("setup_required", "CHARACTER_REQUIRED", "", False, None),
+            close=lambda: None,
+        )
     monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_: application)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), "shutdown-starting-plugin", "a" * 32),
-        initializer_factory=lambda *_: pytest.fail("shutdown must not initialize Assistant"),
+        initializer_factory=create_initializer,
     )
     controller.enable_plugins()
     try:
         controller.begin({})
         assert started.wait(2)
-        assert controller.published_plugin_application() is None
+        assert controller.published_plugin_application() is (None if phase == "visual" else application)
         controller.close()
         assert not controller._worker.is_alive()
         assert controller.published_plugin_application() is None
         controller.close()
-        assert calls == ["start", "close", "start_returned"]
+        expected = ["visual", "assistant", "optional"][:["visual", "assistant", "optional"].index(phase) + 1]
+        assert calls == [*expected, "close", "start_returned"]
     finally:
         stopped.set()
         controller._worker.join(3)

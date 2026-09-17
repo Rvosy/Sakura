@@ -37,6 +37,12 @@ Provider 在 setup 中公开以下六个方法。所有参数与返回值走有�
 | `cancel(operationId)` | 返回 `{cancelled: true}` | 请求取消并唤醒等待者；不等同于 worker 已停止 |
 | `release(operationId, terminalStatus)` | 返回 `{released: bool}` | terminalStatus 为 `completed/cancelled/failed`；释放 Trace、输出和执行槽 |
 
+`prepare.state` 只接受 `ready/degraded/setup_required/failed`；`code` 是 1–80 字符的公开标识符，
+字符集为 `[A-Za-z0-9_.:-]`，允许第三方使用 `vendor.account_required` 等命名，不限于内置错误枚举。
+`message` 必须是至多 2000 字符的脱敏字符串，`retryable` 必须是 JSON boolean；它只描述是否可由用户重试，
+不触发 Core 重启、重新 prepare 或自动恢复。Core 投影这四项，忽略未知附加字段；形状无效时报
+`ASSISTANT_PREPARE_INVALID` 并保留初始化诊断。`ready/degraded` 才建立可用 Session，其他状态不阻止已加载的角色显示。
+
 `poll.state` 为 `running/completed/failed/cancelled`。其中 completed 只表示插件结果可读；是否写入历史并
 发布 `chat.completed` 由 Core 最终裁决。`failure` 包含稳定 `code/message/retryable` 和可选诊断 `attributes`，
 不包含消息正文或凭据。找不到操作报 `ASSISTANT_OPERATION_NOT_FOUND`。

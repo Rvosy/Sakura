@@ -3,6 +3,15 @@ import { isChatReadyLifecycle, projectLifecycle } from "../lifecycle.js";
 const TERMINALS = new Set(["chat.completed", "chat.failed", "chat.cancelled"]);
 const STABLE_LIFECYCLE = new Set(["ready", "setup_required", "degraded", "failed"]);
 
+function canPrepareGeneration(publication, status) {
+  if (STABLE_LIFECYCLE.has(status)) return true;
+  const presentation = publication.characterPresentation;
+  return status === "initializing"
+    && presentation?.generationId === publication.supervisor.generationId
+    && typeof presentation.characterId === "string"
+    && presentation.characterId.length > 0;
+}
+
 function validateChatEvent(value) {
   if (
     !value
@@ -139,7 +148,7 @@ export function createRealChatClient({
       const characterId = publication.characterPresentation?.characterId || null;
       const characterChanged = characterId !== preparedCharacterId;
       if (
-        STABLE_LIFECYCLE.has(view.status)
+        canPrepareGeneration(publication, view.status)
         && snapshotMatches
         && (preparedGenerationId !== supervisor.generationId || characterChanged)
       ) {
@@ -179,7 +188,7 @@ export function createRealChatClient({
           || (publication.characterPresentation?.characterId || null) !== characterId
         ) return;
         view = projectLifecycle(publication);
-        if (!STABLE_LIFECYCLE.has(view.status)) return;
+        if (!canPrepareGeneration(publication, view.status)) return;
         preparedGenerationId = supervisor.generationId;
         preparedCharacterId = characterId;
       }

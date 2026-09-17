@@ -182,8 +182,36 @@ class PluginRuntimeApplication:
                 "sakura.host.app.started",
                 {"generationId": self._generation_id},
             )
+        except BaseException as error:
+            if not self._closed:
+                log_event("Plugin", "插件启动未完成", exception_diagnostics(
+                    error, reason_code="PLUGIN_START_FAILED", stage="plugin.start",
+                ), event="plugin.start.failed", severity="error")
+            raise
         finally:
             self._loaded.set()
+
+    def start_character_presentation(self) -> dict[str, object] | None:
+        """Start only the selected visual provider and its hard dependencies."""
+        from app.config.character_loader import CharacterRegistry
+        from app.config.core_config_reader import CoreConfigReader
+
+        config = CoreConfigReader().read(self._roots.user_root)
+        if config.current_character_id is None:
+            return None
+        registry = CharacterRegistry(self._roots.user_root)
+        character = registry.profiles.get(config.current_character_id)
+        if character is None:
+            return None
+        settings = AppSettingsService(self._roots.user_root)
+        resource = settings.selected_visual_resource(character)
+        service = self.visuals.startup_service(resource.type, character.visual_providers.get(resource.id)) if resource is not None else None
+        self._manager.start(services=(service,) if service is not None else ())
+        self.bind_visual_character(character)
+        return self.visual_presentation()
+
+    def start_assistant(self) -> None:
+        self._manager.start(services=("sakura.assistant",))
 
     def wait_until_loaded(self, *, timeout: float = 8.0) -> bool:
         return self._loaded.wait(max(0.0, timeout)) and not self._closed

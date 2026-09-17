@@ -54,6 +54,31 @@ def assistant(application):
     return BoundAssistant(application, {"providerId": "assistant", "scopeId": "old"})
 
 
+@pytest.mark.parametrize("state", ["ready", "degraded", "setup_required", "failed"])
+def test_prepare_accepts_third_party_status_codes_without_requesting_recovery(state):
+    from types import SimpleNamespace
+    calls = []
+    result = {"state": state, "code": "vendor.account_required", "message": "请登录。", "retryable": True, "extra": "ignored"}
+    application = SimpleNamespace(call_bound_service=lambda *args: calls.append(args) or result)
+    assert assistant(application).prepare({}) == {key: result[key] for key in ("state", "code", "message", "retryable")}
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("invalid", [None, {}, {"state": "initializing"}, {"state": []},
+    {"code": ""}, {"code": "x" * 81}, {"code": "has space"},
+    {"message": None}, {"message": "文" * 2001}, {"retryable": "false"}])
+def test_prepare_rejects_invalid_public_status(invalid):
+    from types import SimpleNamespace
+    result = {"state": "ready", "code": "READY", "message": "", "retryable": False}
+    if isinstance(invalid, dict) and invalid:
+        result.update(invalid)
+    else:
+        result = invalid
+    application = SimpleNamespace(call_bound_service=lambda *args: result)
+    with pytest.raises(ValueError, match="ASSISTANT_PREPARE_INVALID"):
+        assistant(application).prepare({})
+
+
 @pytest.mark.parametrize("abort_fails", [False, True])
 def test_lost_begin_ack_never_replays_and_preserves_input_until_process_exit(abort_fails):
     application = Application(fail_at="begin", abort_fails=abort_fails)

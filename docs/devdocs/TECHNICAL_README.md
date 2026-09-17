@@ -49,6 +49,8 @@ TTS Hub 与 TTS Provider 等实现属于普通插件。主要入口在 `app/core
 `plugins/builtin/sakura_assistant/sakura_assistant/`，Core 不再构造 AgentRuntime 或 ChatPipeline。
 
 Core 初始化会发布 readiness 和 Snapshot。确定性配置错误会返回稳定原因码，等待用户修正；网络或单次模型错误只结束当前请求。
+同一个初始化 worker 先启动当前角色表现及其硬依赖并发布 `characterPresentation`，再准备 Assistant 会话，最后完成其余已启用插件。
+角色显示和聊天是否可用各自依据对应状态；慢的可选插件不阻塞前两阶段。关闭时先回收正在启动或已经发布的插件应用，再等待该 worker 结束。
 
 ## Plugin Runtime v4
 

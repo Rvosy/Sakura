@@ -425,21 +425,22 @@ fn validate_assistant_readiness(
         .get("code")
         .and_then(Value::as_str)
         .ok_or_else(|| "Core Snapshot Assistant code is invalid".to_string())?;
-    if state != readiness || assistant.get("retryable").and_then(Value::as_bool) != Some(false) {
-        return Err("Core Snapshot Assistant readiness is retryable or inconsistent".to_string());
+    let retryable = assistant.get("retryable").and_then(Value::as_bool);
+    if state != readiness || retryable.is_none() {
+        return Err("Core Snapshot Assistant readiness is inconsistent".to_string());
     }
-    let valid = matches!(
-        (state, code),
-        ("initializing", "INITIALIZING")
-            | ("ready", "READY")
-            | ("setup_required", "CORE_CONFIG_SETUP_REQUIRED")
-            | ("failed", "CONFIG_DATA_INVALID")
-            | ("failed", "CONFIG_VERSION_UNSUPPORTED")
-            | ("setup_required", "PROVIDER_SETUP_REQUIRED")
-            | ("setup_required", "CHARACTER_REQUIRED")
-            | ("failed", "ASSISTANT_INITIALIZATION_FAILED")
-            | ("degraded", "OPTIONAL_CHARACTER_SKIPPED")
-    );
+    // Providers own their public reason codes. The shell validates the contract
+    // without turning provider retryability metadata into an automatic restart.
+    let valid_code = !code.is_empty()
+        && code.len() <= 80
+        && code.bytes().all(|value| {
+            value.is_ascii_alphanumeric() || matches!(value, b'_' | b'.' | b':' | b'-')
+        });
+    let valid = match state {
+        "initializing" => code == "INITIALIZING" && retryable == Some(false),
+        "ready" | "setup_required" | "degraded" | "failed" => valid_code,
+        _ => false,
+    };
     if !valid {
         return Err("Core Snapshot Assistant readiness is unsupported".to_string());
     }
@@ -3693,7 +3694,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_wp_3_01_assistant_states_are_all_non_retryable() {
+    fn assistant_states_preserve_validated_retryability_metadata() {
         for (state, code, has_summary) in [
             ("ready", "READY", true),
             ("setup_required", "CORE_CONFIG_SETUP_REQUIRED", false),
@@ -3720,23 +3721,56 @@ mod tests {
 
             let mut retryable = snapshot.clone();
             retryable["components"]["assistant"]["retryable"] = json!(true);
+            cache
+                .store_python_snapshot(&retryable)
+                .expect("retryability metadata does not trigger shell restart");
+            retryable["components"]["assistant"]["retryable"] = json!("true");
             assert!(
                 cache.store_python_snapshot(&retryable).is_err(),
-                "{state}/{code} must never become automatically retryable"
+                "{state}/{code} retryability must be a boolean"
             );
         }
     }
 
     #[test]
-    fn provider_setup_snapshot_can_keep_character_presentation() {
-        let mut snapshot =
-            valid_assistant_snapshot("PROVIDER_SETUP_REQUIRED", "setup_required", Value::Null);
-        snapshot["characterPresentation"] = valid_character_presentation();
-        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+    fn initializing_and_provider_readiness_keep_character_presentation() {
+        for (state, code) in [
+            ("initializing", "INITIALIZING"),
+            ("setup_required", "vendor.account_required"),
+            ("failed", "THIRD_PARTY_SESSION_UNAVAILABLE"),
+        ] {
+            let mut snapshot = valid_assistant_snapshot(code, state, Value::Null);
+            snapshot["characterPresentation"] = valid_character_presentation();
+            let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+            cache
+                .store_python_snapshot(&snapshot)
+                .expect("Assistant readiness does not hide the selected character");
+            assert_eq!(
+                cache.current().expect("stored snapshot")["characterPresentation"],
+                snapshot["characterPresentation"]
+            );
+        }
+    }
 
-        cache
-            .store_python_snapshot(&snapshot)
-            .expect("provider setup keeps the selected character visible");
+    #[test]
+    fn assistant_provider_reason_codes_are_bounded_public_identifiers() {
+        let mut snapshot =
+            valid_assistant_snapshot("PROVIDER_CUSTOM_SETUP", "setup_required", Value::Null);
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+        for invalid in [
+            json!(""),
+            json!("A".repeat(81)),
+            json!("private path/name"),
+            json!("PRIVATE\nDETAIL"),
+            json!("非公开详情"),
+            json!(7),
+        ] {
+            snapshot["components"]["assistant"]["code"] = invalid;
+            assert!(cache.store_python_snapshot(&snapshot).is_err());
+        }
+        snapshot["components"]["assistant"]["code"] = json!("PROVIDER_CUSTOM_SETUP");
+        snapshot["currentCharacterSummary"] = valid_character_summary();
+        assert!(cache.store_python_snapshot(&snapshot).is_err());
     }
 
     #[test]

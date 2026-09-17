@@ -456,6 +456,12 @@ prepare/begin/poll/result/cancel/release、输入与结果 artifact、历史分�
 
 - Manager 按 capability dependency 拓扑启动插件；Python distribution dependency 只在安装阶段解析，两者
   不得混为一个全局求解器。
+- Core 可按所需 Service 启动其硬依赖闭包：先加载当前角色的表现服务并发布角色，再加载 Assistant 并发布
+  聊天状态，最后在同一个初始化 worker 中完成其他可选插件。每个阶段始终按完整启用清单检查服务冲突，
+  不因先启动某个 Provider 而选出冲突赢家；已失败插件不会在下一阶段自动重试，已运行实例不会重新创建。
+  启动切片只串行化启动 worker，不占用显式插件管理和精确实例回收的操作锁。创建进程前在状态锁内重核
+  记录身份、开关、启动状态和服务冲突；停用、卸载或替换后的旧启动请求不能创建进程或发布结果。
+  慢可选插件不拖延 Assistant 的未知调用回收；关闭也可直接停止正在初始化的进程，不等待启动结束。
 - `setup()` 完成并兑现 `provides` 后插件才进入 `active`。失败时撤销该插件全部 Service、Host Contribution
   callback 和 Effect。
 - `PluginRuntimeManager` 不运行后台 reconcile、health loop、retry counter、自动重新激活或依赖恢复调度。

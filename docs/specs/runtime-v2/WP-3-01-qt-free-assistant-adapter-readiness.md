@@ -19,12 +19,17 @@ AssistantAdapter 将 Core 配置、当前角色和普通 `sakura.assistant` 服�
 不等待模型或其他领域工作。生产 payload 不能指定模拟 ready、failed 或 hang 状态。
 
 ```text
-Core initialize → 后台 AssistantAdapter
-  → CoreConfigReader / CharacterRegistry
-  → 固定 sakura.assistant 的 providerId + scopeId
-  → AssistantSession.descriptor() → 插件 prepare()
-  → readiness owner 原子发布 Snapshot
+Core initialize → 既有初始化 worker
+  → CoreConfigReader / CharacterRegistry → 当前 visual 服务及硬依赖
+  → 发布 CharacterPresentation，Assistant 仍 initializing
+  → sakura.assistant 服务及硬依赖 → 固定 providerId + scopeId
+  → AssistantSession.descriptor() → 插件 prepare() → 发布聊天 readiness
+  → 完成其余可选插件启动，发布各插件局部结果
 ```
+
+早期 CharacterPresentation 不携带 CurrentCharacterSummary，不使聊天提前就绪。可选插件启动失败不覆盖
+已发布的角色或聊天状态；角色可在 Assistant 仍 initializing、需要设置或失败时显示。所有阶段共用同一个
+受管 worker，关闭先停止 Application 拥有的启动中或已启动进程，再按原有期限等待 worker 退出。
 
 AssistantSession 保存 CharacterProfile、BoundAssistant、loopSettings、model_slots、appVersion 和可空 visual binding。
 `descriptor()` 只输出本轮需要的角色说明、回复语气、循环设置、模型快照、版本与表现合同；插件进程由
@@ -47,7 +52,9 @@ PluginRuntimeApplication 拥有，退休 readiness session 不关闭无关插件
 ## Readiness 合同
 
 结果包含 `state/code/message/retryable/currentCharacterSummary` 与可空 CharacterPresentation。
-`ready/degraded` 才携带可用 session；message 是公共脱敏文案。初始化结果不触发自动 Core 重启。
+`ready/degraded` 才携带可用 session；message 是公共脱敏文案。Provider 的四种终态与公开 code 遵循
+[Assistant 插件合同](assistant-plugin-boundary.md)，下表列出内置结果，并非第三方 code 白名单。
+retryable 是 boolean 元数据，初始化结果不触发自动 Core 重启或隐式重试。
 
 | 情况 | state | code |
 |---|---|---|
@@ -56,7 +63,7 @@ PluginRuntimeApplication 拥有，退休 readiness session 不关闭无关插件
 | 当前角色未选或不存在 | setup_required | CHARACTER_REQUIRED |
 | sakura.assistant 未启用、服务冲突或不可用 | setup_required | ASSISTANT_PROVIDER_REQUIRED |
 | 默认 Assistant 缺少可用 chat 配置 | setup_required | PROVIDER_SETUP_REQUIRED |
-| Provider 准备成功 | ready | READY |
+| Provider 准备成功 | ready | Provider 的稳定 code，默认 READY |
 | Provider 返回可用但降级的结果 | degraded | Provider 的稳定 code |
 | 读取、绑定或 prepare 出现未分类故障 | failed | ASSISTANT_INITIALIZATION_FAILED |
 

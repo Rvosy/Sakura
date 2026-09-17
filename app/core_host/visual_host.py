@@ -340,6 +340,16 @@ class VisualHost:
             raise VisualHostError(reason)
         return record, capability
 
+    def startup_service(self, resource_type: str, provider_id: str | None = None) -> str | None:
+        """Find the selected declaration before its process has started."""
+        candidates = self._matching_candidates(resource_type, provider_id)
+        if len(candidates) != 1:
+            return None
+        record, capability = candidates[0]
+        if not record.runtime_eligible or not record.desired_enabled or capability.contract != VISUAL_CONTRACT_VERSION:
+            return None
+        return capability.service
+
     def catalog(self):
         result = []
         for record in self._inventory().records:

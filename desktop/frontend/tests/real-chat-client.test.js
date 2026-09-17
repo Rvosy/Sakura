@@ -250,6 +250,59 @@ test("new generation stays rehydrating until its complete Snapshot resources are
   client.dispose();
 });
 
+test("a new character binds while Assistant initializes and stays visible when chat needs setup or fails", async () => {
+  const env = harness();
+  const binding = deferred();
+  const entered = deferred();
+  const events = [];
+  const prepared = [];
+  let visibleCharacter = "alpha";
+  const client = env.create(event => events.push(event), {
+    prepareGeneration: async value => {
+      prepared.push(value);
+      entered.resolve();
+      await binding.promise;
+      visibleCharacter = value.characterId;
+      return true;
+    },
+  });
+  try {
+    await client.start();
+    env.setPublication(lifecyclePublication(2, "running", "initializing"));
+    await env.tick();
+    assert.equal(prepared.length, 0);
+    env.setPublication({ ...lifecyclePublication(2, "running", "initializing"),
+      characterPresentation: { generationId: "generation-1", characterId: "alpha" } });
+    await env.tick();
+    assert.equal(prepared.length, 0);
+
+    const characterPresentation = { generationId: "generation-2", characterId: "beta" };
+    env.setPublication({ ...lifecyclePublication(2, "running", "initializing"), characterPresentation });
+    const poll = env.tick();
+    await entered.promise;
+    assert.equal(events.at(-1).status, "rehydrating");
+    await assert.rejects(client.send({ message: "wait for Assistant" }), /CHAT_NOT_READY/);
+    binding.resolve();
+    await poll;
+    assert.equal(visibleCharacter, "beta");
+    assert.equal(events.at(-1).status, "initializing");
+
+    for (const state of ["initializing", "setup_required", "failed"]) {
+      env.setPublication({ ...lifecyclePublication(2, "running", state), characterPresentation });
+      await env.tick();
+      assert.equal(visibleCharacter, "beta");
+      assert.equal(prepared.length, 1);
+      assert.equal(events.at(-1).status, state);
+      assert.equal(events.at(-1).canRetry, false);
+      await assert.rejects(client.send({ message: "wait for Assistant" }), /CHAT_NOT_READY/);
+    }
+    assert.equal(env.calls.some(([name]) => name === "chat_send"), false);
+  } finally {
+    binding.resolve();
+    client.dispose();
+  }
+});
+
 test("failed readiness stays non-retryable while Core is still running", async () => {
   const events = [];
   const env = harness();

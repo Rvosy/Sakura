@@ -257,11 +257,7 @@ class ReadinessController:
 
         self._refresh_visual_presentation()
         with self._lock:
-            if self._closed or self._readiness not in {
-                "ready",
-                "setup_required",
-                "degraded",
-            }:
+            if self._closed:
                 return None
             return self._copy_presentation(self._current_character_presentation)
 
@@ -566,8 +562,10 @@ class ReadinessController:
 
     def _initialize(self) -> None:
         initializer: object | None = None
+        plugin_application: object | None = None
         session_callback: Callable[[], None] | None = None
         unpublished_resources: list[object | None] = []
+        presentation = None
         stage = "plugin_application"
         try:
             with self._lock:
@@ -581,7 +579,6 @@ class ReadinessController:
                 from app.plugin_sdk.sakura_tools import ToolRegistry
 
                 application_tools = ToolRegistry([])
-            plugin_application: object | None = None
             if plugins_enabled:
                 from app.core_host.plugin_application import PluginApplicationHost
 
@@ -601,7 +598,9 @@ class ReadinessController:
                     self._starting_plugin_application = plugin_application
                     unpublished_resources.clear()
                 try:
-                    plugin_application.start()
+                    presentation = self._project_presentation(
+                        plugin_application.start_character_presentation()
+                    )
                 except BaseException:
                     with self._lock:
                         if self._starting_plugin_application is plugin_application:
@@ -614,9 +613,18 @@ class ReadinessController:
                     self._application_tools = application_tools
                     self._plugin_application = plugin_application
                     self._starting_plugin_application = None
+                    self._current_character_presentation = presentation
+                    self._revision += 1
                     unpublished_resources.clear()
             if application_closed:
                 return
+
+            stage = "assistant_plugin"
+            if plugin_application is not None:
+                plugin_application.start_assistant()
+            with self._lock:
+                if self._closed:
+                    return
 
             stage = "assistant_initializer"
             initializer = self._initializer_factory(
@@ -637,9 +645,10 @@ class ReadinessController:
             result = initialize(self._cancel)
             result = self._bind_initialized_result(initializer, plugin_application, result)
             summary = self._project_summary(result.current_character_summary)
-            presentation = self._project_presentation(
-                result.current_character_presentation
-            )
+            presentation = self._project_presentation(result.current_character_presentation) or presentation
+            project = getattr(plugin_application, "visual_presentation", None)
+            if callable(project):
+                presentation = self._project_presentation(project()) or presentation
             with self._lock:
                 if self._closed:
                     claimed = self._claim_initializer_close_locked()
@@ -653,7 +662,7 @@ class ReadinessController:
                     self._current_character_summary = summary
                     self._current_character_presentation = presentation
                     self._session = result.session
-                    self._revision = 2
+                    self._revision += 1
                     claimed = None
                     session_callback = (
                         self._session_published_callback
@@ -687,14 +696,24 @@ class ReadinessController:
                         "retryable": False,
                     }
                     self._current_character_summary = None
-                    self._current_character_presentation = None
                     self._session = None
-                    self._revision = 2
+                    self._revision += 1
                     claimed = None
             if claimed is not None:
                 self._start_initializer_close(claimed)
 
         finally:
+            # Finish optional startup on the same owned worker, after publishing
+            # visual and chat readiness. Its failures cannot revoke either.
+            with self._lock:
+                finish_plugins = not self._closed and self._plugin_application is plugin_application and plugin_application is not None
+            if finish_plugins:
+                try:
+                    plugin_application.start()
+                except BaseException:
+                    # The application records its original startup failure.
+                    # Already-published Assistant/visual state remains usable.
+                    pass
             # The controller owns starting/published applications; only resources
             # never claimed by it or returned after failed startup remain here.
             self._close_application_resources(unpublished_resources)
