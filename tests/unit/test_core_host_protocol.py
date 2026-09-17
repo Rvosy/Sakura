@@ -92,7 +92,9 @@ def test_router_queues_settings_bursts_without_blocking_control_or_executing_exp
     def wait_for(predicate):
         with changed: assert changed.wait_for(predicate, timeout=3)
 
-    router = ConcurrentHostRouter(None, Writer(), Dispatcher(), fixture_handler=Boundary().handle,
+    boundary = Boundary()
+    router = ConcurrentHostRouter(None, Writer(), Dispatcher(), fixture_handler=boundary.handle,
+        fixture_reserve=boundary.reserve_send, fixture_abandon=boundary.abandon_send,
         fixture_names=frozenset({"characters.visuals.get", "characters.settings.select"}),
         read_frame_fn=lambda _: incoming.get())
     thread = threading.Thread(target=router.run)
@@ -306,6 +308,46 @@ def test_attaching_tts_boundary_registers_startup_warmup_callback() -> None:
     dispatcher.attach_tts_boundary(boundary)
 
     assert callbacks == [boundary.warmup_current_selection]
+
+
+def test_failed_business_request_does_not_close_router_or_block_next_request() -> None:
+    incoming = queue.Queue()
+    changed = threading.Condition()
+    messages = {}
+
+    class Writer:
+        def send(self, message):
+            with changed:
+                messages[message["id"]] = message
+                changed.notify_all()
+
+    def handle(request):
+        if request["id"] == "broken":
+            raise OSError("fixture disk unavailable")
+        return response(request, generation_id=GENERATION_ID,
+                        generation_credential=GENERATION_CREDENTIAL, payload={"ready": True})
+
+    router = ConcurrentHostRouter(
+        None, Writer(), object(), fixture_handler=handle,
+        read_frame_fn=lambda _: incoming.get(),
+    )
+    thread = threading.Thread(target=router.run)
+    thread.start()
+    try:
+        incoming.put(request("broken", "fixture.save"))
+        with changed:
+            assert changed.wait_for(lambda: "broken" in messages, timeout=3)
+        assert messages["broken"]["ok"] is False
+        assert messages["broken"]["error"]["code"] == "REQUEST_FAILED"
+        incoming.put(request("next", "fixture.read"))
+        with changed:
+            assert changed.wait_for(lambda: "next" in messages, timeout=3)
+        assert messages["next"]["payload"] == {"ready": True}
+        assert router.fatal_error is None
+    finally:
+        incoming.put(None)
+        thread.join(3)
+    assert not thread.is_alive()
 
 
 def test_voice_update_pauses_only_active_voice_providers(monkeypatch):

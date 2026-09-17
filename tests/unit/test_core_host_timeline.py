@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core_host.real_chat import (
+    ChatTurnInput,
     RealChatBoundary,
     assemble_recent_turns,
 )
@@ -127,6 +128,19 @@ def test_generation_is_one_assistant_entry_and_all_segments_share_authorization_
     assert len(authorized) == 2
     assert {item["history_entry_id"] for item in authorized} == {entries[1].entry_id}
     boundary.close()
+
+
+def test_headless_turn_uses_same_commit_without_ipc_events(tmp_path: Path) -> None:
+    boundary, store, events = _boundary(tmp_path, ChatReply([ChatSegment("shared reply")]))
+    try:
+        outcome = boundary.run_turn(ChatTurnInput("headless-turn", "hello"))
+        assert outcome.terminal == "chat.completed"
+        assert outcome.payload["reply"]["segments"][0]["text"] == "shared reply"
+        assert [entry.kind for entry in store.read_all("sakura")] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
+        assert events == []
+        assert boundary.snapshot_fields("ready", {"id": "sakura"})["activeInteractionSummary"] is None
+    finally:
+        boundary.close()
 
 
 @pytest.mark.parametrize("update_event", [False, True])

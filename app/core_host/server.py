@@ -1650,6 +1650,8 @@ def run_host(
             writer,
             dispatcher,
             fixture_handler=request_boundary.handle,
+            fixture_reserve=request_boundary.reserve_send,
+            fixture_abandon=request_boundary.abandon_send,
             fixture_names=frozenset(
                 {
                     "chat.send",

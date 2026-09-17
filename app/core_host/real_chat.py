@@ -49,9 +49,24 @@ def _new_cancellation_token() -> CancellationToken:
     return CancellationToken()
 
 
+@dataclass(frozen=True)
+class ChatTurnInput:
+    """Decoded input shared by desktop, Mobile and host-initiated turns."""
+
+    operation_id: str
+    message: str = ""
+    event: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ChatOutcome:
+    terminal: str
+    payload: Mapping[str, Any]
+
+
 @dataclass
 class _Execution:
-    operation_id: str
+    turn: ChatTurnInput
     session: object = field(repr=False)
     cancel: CancellationToken = field(default_factory=_new_cancellation_token)
     started: bool = False
@@ -59,6 +74,10 @@ class _Execution:
     terminal: str | None = None
     completion_claimed: bool = False
     screen_attachment: _ScreenAttachment | None = None
+
+    @property
+    def operation_id(self) -> str:
+        return self.turn.operation_id
 
 
 @dataclass(frozen=True)
@@ -121,7 +140,19 @@ class RealChatBoundary:
 
     def reserve_send(self, request: Mapping[str, Any]) -> None:
         payload = self._validate_send(request)
-        operation_id = str(request["id"])
+        self._reserve_turn(
+            ChatTurnInput(str(request["id"]), payload.get("message", ""), payload.get("event")),
+            attachment_id=payload.get("attachmentId"),
+        )
+
+    def _reserve_turn(
+        self,
+        turn: ChatTurnInput,
+        *,
+        attachment_id: str | None = None,
+        screen_attachment: _ScreenAttachment | None = None,
+    ) -> None:
+        operation_id = turn.operation_id
         with self._changed:
             if self._switching_character:
                 raise RealChatRejection("CHARACTER_SWITCH_IN_PROGRESS", "角色正在切换", retryable=True)
@@ -142,8 +173,6 @@ class RealChatBoundary:
             session = self._session_provider()
             if session is None:
                 raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
-            attachment_id = payload.get("attachmentId")
-            screen_attachment = None
             if attachment_id is not None:
                 pending = self._pending_screen_attachment
                 if pending is None or pending.attachment_id != attachment_id:
@@ -154,7 +183,7 @@ class RealChatBoundary:
                 screen_attachment = pending
                 self._pending_screen_attachment = None
             self._executions[operation_id] = _Execution(
-                operation_id,
+                turn,
                 session=session,
                 screen_attachment=screen_attachment,
             )
@@ -246,12 +275,36 @@ class RealChatBoundary:
         request: dict[str, Any],
         *,
         _on_started: Callable[[], None] | None = None,
-        _terminal_sink: Callable[[str, Mapping[str, Any]], None] | None = None,
-        _publish_events: bool = True,
     ) -> dict[str, Any]:
-        started_at = monotonic()
-        payload = self._validate_send(request)
+        """IPC adapter for an input already accepted by reserve_send."""
+
         operation_id = str(request["id"])
+        self._run_turn(
+            operation_id,
+            emit=lambda name, value: self._publish(request, name, value),
+            on_started=_on_started,
+        )
+        return self._accepted_send_response(request, operation_id)
+
+    def run_turn(
+        self, turn: ChatTurnInput, *, screen_attachment: _ScreenAttachment | None = None,
+    ) -> ChatOutcome:
+        """Run the same business operation without an IPC envelope or GUI."""
+
+        from app.core.interaction import interaction_context
+
+        self._reserve_turn(turn, screen_attachment=screen_attachment)
+        with interaction_context(turn.operation_id):
+            return self._run_turn(turn.operation_id)
+
+    def _run_turn(
+        self,
+        operation_id: str,
+        *,
+        emit: Callable[[str, Mapping[str, Any]], None] | None = None,
+        on_started: Callable[[], None] | None = None,
+    ) -> ChatOutcome:
+        started_at = monotonic()
         with self._changed:
             execution = self._executions.get(operation_id)
             if execution is None:
@@ -262,14 +315,14 @@ class RealChatBoundary:
             screen_attachment = execution.screen_attachment
             self._changed.notify_all()
 
-        if _publish_events:
+        if emit is not None:
             try:
-                self._publish(request, "chat.started", {"operationId": operation_id})
+                emit("chat.started", {"operationId": operation_id})
             except BaseException:  # noqa: BLE001 - transport owner will terminate the generation
                 self._drop_execution(operation_id)
                 raise
-        if _on_started is not None:
-            _on_started()
+        if on_started is not None:
+            on_started()
         history_status = "saved"
         assistant_committed = False
         terminal = "chat.failed"
@@ -315,9 +368,9 @@ class RealChatBoundary:
                     False,
                 ) from self._timeline_error
             stage = "input_prepare"
-            proactive_event = payload.get("event")
-            is_update_event = isinstance(proactive_event, Mapping)
-            message = "" if is_update_event else str(payload["message"])
+            proactive_event = execution.turn.event
+            is_update_event = proactive_event is not None
+            message = execution.turn.message
             plugin_application = (
                 self._plugin_application_provider()
                 if self._plugin_application_provider is not None
@@ -716,11 +769,9 @@ class RealChatBoundary:
                             "operationId": operation_id,
                             "historyStatus": history_status,
                         }
-                    if _terminal_sink is not None:
-                        _terminal_sink(resolved_terminal, terminal_payload)
-                    if _publish_events:
-                        self._publish(request, resolved_terminal, terminal_payload)
-                return self._accepted_send_response(request, operation_id)
+                    if emit is not None:
+                        emit(resolved_terminal, terminal_payload)
+                return ChatOutcome(resolved_terminal or terminal, terminal_payload)
             finally:
                 self._drop_execution(operation_id)
 
@@ -742,10 +793,7 @@ class RealChatBoundary:
         operation_id = operation_id or f"mobile-{uuid.uuid4().hex}"
         if re.fullmatch(r"mobile-[0-9a-f]{32}", operation_id) is None:
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat operation is invalid")
-        payload: dict[str, Any] = {
-            "message": clean_message or "请看这张图片。",
-            "operationId": operation_id,
-        }
+        attachment = None
         if clean_image:
             from app.agent.screen_observation import ScreenObservation
             from app.storage.visual_observation import generate_visual_observation_id
@@ -765,49 +813,12 @@ class RealChatBoundary:
                 source="manual",
                 visual_id=generate_visual_observation_id(),
             )
-            with self._lock:
-                if self._closed or self._pending_screen_attachment is not None:
-                    raise RealChatRejection(
-                        "CHAT_EXECUTION_LIMIT_EXCEEDED",
-                        "another chat interaction is active",
-                        retryable=True,
-                    )
-                self._pending_screen_attachment = attachment
-            payload["attachmentId"] = attachment.attachment_id
-        request = {
-            "protocolMajor": 2,
-            "protocolMinor": 2,
-            "kind": "request",
-            "generationId": self._generation_id,
-            "generationCredential": self._generation_credential,
-            "id": operation_id,
-            "name": "chat.send",
-            "payload": payload,
-        }
-        terminal: list[tuple[str, Mapping[str, Any]]] = []
-        try:
-            self.reserve_send(request)
-            self.handle_send(
-                request,
-                _terminal_sink=lambda name, value: terminal.append((name, dict(value))),
-                _publish_events=False,
-            )
-        except Exception:
-            self.abandon_send(request)
-            attachment_id = payload.get("attachmentId")
-            if isinstance(attachment_id, str):
-                with self._lock:
-                    if (
-                        self._pending_screen_attachment is not None
-                        and self._pending_screen_attachment.attachment_id == attachment_id
-                    ):
-                        self._pending_screen_attachment = None
-                        self._revision += 1
-            raise
-        if not terminal:
-            raise RealChatRejection("CHAT_TERMINAL_MISSING", "chat did not complete")
-        name, result = terminal[0]
-        if name != "chat.completed":
+        outcome = self.run_turn(
+            ChatTurnInput(operation_id, clean_message or "请看这张图片。"),
+            screen_attachment=attachment,
+        )
+        result = outcome.payload
+        if outcome.terminal != "chat.completed":
             error = result.get("error")
             code = str(error.get("code")) if isinstance(error, Mapping) else "CHAT_FAILED"
             message_text = (

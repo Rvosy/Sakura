@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-16
+updated: 2026-09-18
 ---
 
 # WP-3-02：无 UI 的真实聊天 Core 垂直链
@@ -17,6 +17,18 @@ updated: 2026-09-16
 正常聊天使用默认 Assistant，直接调用既有 ChatPipeline/Agent/Provider。未使用的执行器实验已清理，
 历史 `chat_executor` 字段被忽略；启用插件服务不会接管聊天，缺少模型配置时仍需完成配置。
 当前边界见 [Plugin Runtime](sakura-plugin-runtime-v4.md#65-正常对话与插件服务的边界)。
+
+桌面 IPC 受理后与 Mobile、无界面调试共用 `RealChatBoundary` 的对话操作实现。
+同进程调用传入 `ChatTurnInput` 并得到 `ChatOutcome`，不构造 generation credential、协议 envelope，
+也不通过临时终态监听器还原业务结果。IPC 适配器负责将 started/终态编码为传输事件；
+同一个操作仍由 Python 决定取消与 Timeline 提交。Mobile 图片直接归本轮所有，不占用桌面待发送附件槽。
+
+Router 的受理与放弃回调由装配点显式传入，不从 bound method 反射推导。
+普通请求的异常返回该请求的失败响应，之后仍可继续处理请求；传输写失败、坏帧与 EOF 由连接拥有者收尾。
+这不代表请求失败后可以自动重放写入或有副作用的操作。
+
+验证：`tests/unit/test_core_host_protocol.py`、`tests/unit/test_core_host_timeline.py`、
+`tests/unit/test_mobile_runtime_v4.py`。
 
 当前历史使用 [Timeline 契约](WP-4-07R-typed-timeline-adaptive-context.md)。输入保存失败时不启动本轮执行；
 助手结果经身份与取消校验后提交，提交失败明确报告 `TIMELINE_WRITE_FAILED`，不会伪造完成或播放。
