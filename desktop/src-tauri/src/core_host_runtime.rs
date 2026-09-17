@@ -4673,7 +4673,9 @@ mod tests {
             }
             if Instant::now() >= ready_deadline {
                 let exit = host.shutdown();
-                panic!("Assistant readiness timed out; Snapshot: {snapshot}; Core shutdown: {exit:?}");
+                panic!(
+                    "Assistant readiness timed out; Snapshot: {snapshot}; Core shutdown: {exit:?}"
+                );
             }
             thread::sleep(Duration::from_millis(10));
         }

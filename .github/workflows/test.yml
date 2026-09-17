@@ -255,20 +255,55 @@ jobs:
           mkdir -p -- "$runtime_dir"
           tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$runtime_dir" --strip-components=1
 
-      - name: Populate the bundled Windows site-packages contract
+      - name: Configure the bundled Windows site-packages path
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $runtime = Join-Path $env:GITHUB_WORKSPACE 'runtime'
           @('python312.zip', '.', 'Lib/site-packages', 'import site') | Set-Content -LiteralPath (Join-Path $runtime 'python312._pth') -Encoding ascii
-          python -m pip --python (Join-Path $runtime 'python.exe') install --only-binary=:all: --no-deps 'PyYAML==6.0.2'
 
-      - name: Populate the bundled POSIX site-packages contract
-        if: runner.os != 'Windows'
+      - name: Install Core and default Assistant dependencies into the bundled Runtime
         shell: bash
-        run: >-
-          python -m pip --python "$GITHUB_WORKSPACE/runtime/bin/python3"
-          install --only-binary=:all: --no-deps 'PyYAML==6.0.2'
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          repo = Path(os.environ["GITHUB_WORKSPACE"])
+          runtime = repo / "runtime" / ("python.exe" if os.name == "nt" else "bin/python3")
+          pip = [sys.executable, "-m", "pip", "--python", str(runtime), "install", "--only-binary=:all:"]
+          subprocess.run([*pip, "--requirement", str(repo / "requirements.txt")], check=True)
+
+          plugin_root = repo / "plugins/builtin/sakura_assistant"
+          dependency_root = repo / "plugins/dependencies/sakura.assistant.default"
+          subprocess.run([
+              *pip, "--target", str(dependency_root),
+              "--requirement", str(plugin_root / "requirements.txt"),
+          ], check=True)
+          version = subprocess.check_output([
+              str(runtime), "-I", "-c",
+              "import sys, yaml, py7zz, openai, httpx, socksio; "
+              "print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+          ], text=True).strip()
+          (dependency_root / ".sakura-dependencies.json").write_text(
+              json.dumps({"schemaVersion": 1, "kind": "requirements.txt", "python": version}),
+              encoding="utf-8",
+          )
+          with tempfile.TemporaryDirectory(prefix="sakura-native-assistant-") as data_dir:
+              subprocess.run([
+                  str(runtime), "-I", "-B", "-S", str(repo / "app/plugins/plugin_runner_v4.py"),
+                  "--plugin-id", "sakura.assistant.default",
+                  "--generation-id", "native-ci",
+                  "--plugin-root", str(plugin_root),
+                  "--dependency-root", str(dependency_root),
+                  "--data-dir", data_dir,
+                  "--entry", "plugin:AssistantPlugin", "--validate-entry",
+              ], check=True, timeout=30)
+          PY
 
       - name: Run the complete Rust test suite (Windows)
         if: runner.os == 'Windows'
