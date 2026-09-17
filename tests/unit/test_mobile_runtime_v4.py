@@ -120,14 +120,24 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
     calls: list[tuple[str, str]] = []
 
     class ChatBoundary:
-        def run_host_message(
+        def __init__(self):
+            self.accepted = {}
+
+        def reserve_host_message(
             self,
             text: str,
             image: str,
             *,
             operation_id: str,
-        ) -> dict[str, object]:
+            expected_character_id: str,
+        ) -> str:
+            assert expected_character_id == "sakura"
             assert operation_id.startswith("mobile-")
+            self.accepted[operation_id] = (text, image)
+            return operation_id
+
+        def run_reserved_host_message(self, operation_id: str) -> dict[str, object]:
+            text, image = self.accepted.pop(operation_id)
             calls.append((text, image))
             return {
                 "reply": "手机回答",
@@ -352,7 +362,10 @@ def test_mobile_worker_preserves_failure_cause_after_completion(tmp_path: Path, 
     host = MobileHostService(
         tmp_path,
         session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
-        chat_boundary_provider=lambda: SimpleNamespace(run_host_message=fail),
+        chat_boundary_provider=lambda: SimpleNamespace(
+            reserve_host_message=lambda *_args, **kwargs: kwargs["operation_id"],
+            run_reserved_host_message=fail,
+        ),
         artifact_resolver=lambda _id: None,
         artifact_releaser=lambda _id: True,
     )

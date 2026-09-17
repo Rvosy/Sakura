@@ -150,6 +150,7 @@ class RealChatBoundary:
         *,
         attachment_id: str | None = None,
         screen_attachment: _ScreenAttachment | None = None,
+        expected_character_id: str | None = None,
     ) -> None:
         operation_id = turn.operation_id
         with self._changed:
@@ -160,6 +161,8 @@ class RealChatBoundary:
             session = self._session_provider()
             if session is None:
                 raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
+            if expected_character_id is not None and str(session.character.id) != expected_character_id:
+                raise RealChatRejection("MOBILE_CHARACTER_NOT_CURRENT", "角色已切换，请重新选择角色。")
             if operation_id in self._executions:
                 raise RealChatRejection("DUPLICATE_CHAT_IDENTITY", "chat identity is already in use")
             if len(self._executions) >= REAL_CHAT_EXECUTION_LIMIT:
@@ -760,14 +763,15 @@ class RealChatBoundary:
             finally:
                 self._drop_execution(operation_id)
 
-    def run_host_message(
+    def reserve_host_message(
         self,
         message: str,
         image_data_url: str = "",
         *,
         operation_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Run one synchronous Core-owned chat lane without publishing Shell events."""
+        expected_character_id: str | None = None,
+    ) -> str:
+        """Accept the host turn before returning its asynchronous job identity."""
 
         clean_message = str(message).strip()
         clean_image = str(image_data_url).strip()
@@ -798,14 +802,23 @@ class RealChatBoundary:
                 source="manual",
                 visual_id=generate_visual_observation_id(),
             )
-        outcome = self.run_turn(
+        self._reserve_turn(
             ChatTurnInput(operation_id, clean_message or "请看这张图片。"),
             screen_attachment=attachment,
+            expected_character_id=expected_character_id,
         )
+        return operation_id
+
+    def run_reserved_host_message(self, operation_id: str) -> dict[str, Any]:
+        from app.core.interaction import interaction_context
+
+        with interaction_context(operation_id):
+            outcome = self._run_turn(operation_id)
         result = outcome.payload
         if outcome.terminal != "chat.completed":
             error = result.get("error")
-            code = str(error.get("code")) if isinstance(error, Mapping) else "CHAT_FAILED"
+            code = ("OPERATION_CANCELLED" if outcome.terminal == "chat.cancelled" else
+                    str(error.get("code")) if isinstance(error, Mapping) else "CHAT_FAILED")
             message_text = (
                 str(error.get("message"))
                 if isinstance(error, Mapping)
@@ -833,6 +846,23 @@ class RealChatBoundary:
             "segments": segments,
             "actions": [],
         }
+
+    def run_host_message(
+        self, message: str, image_data_url: str = "", *,
+        operation_id: str | None = None, expected_character_id: str | None = None,
+    ) -> dict[str, Any]:
+        operation_id = self.reserve_host_message(
+            message, image_data_url, operation_id=operation_id,
+            expected_character_id=expected_character_id,
+        )
+        return self.run_reserved_host_message(operation_id)
+
+    def abandon_host_message(self, operation_id: str) -> None:
+        """Release a reservation when its host worker could not be started."""
+        with self._changed:
+            execution = self._executions.get(operation_id)
+            if execution is not None and not execution.started:
+                self._drop_execution(operation_id)
 
     def cancel_host_message(self, operation_id: str) -> bool:
         """Cancel one Core-owned Host lane operation without constructing transport DTOs."""

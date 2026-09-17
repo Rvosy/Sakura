@@ -22,6 +22,9 @@ updated: 2026-09-18
 同进程调用传入 `ChatTurnInput` 并得到 `ChatOutcome`，不构造 generation credential、协议 envelope，
 也不通过临时终态监听器还原业务结果。IPC 适配器负责将 started/终态编码为传输事件；
 同一个操作仍由 Python 决定取消与 Timeline 提交。Mobile 图片直接归本轮所有，不占用桌面待发送附件槽。
+Mobile `begin` 在返回 job ID 前同步受理对话并固定当前角色；后台 worker 只执行已受理轮次。
+取消和 scope 撤销即使早于 worker 开始，也能取消该轮；角色预检查之后发生切换时，受理边界拒绝旧角色请求。
+worker 启动失败释放尚未执行的受理槽位，不阻塞下一轮。
 
 Router 的受理与放弃回调由装配点显式传入，不从 bound method 反射推导。
 普通请求的异常返回该请求的失败响应，之后仍可继续处理请求；传输写失败、坏帧与 EOF 由连接拥有者收尾。
