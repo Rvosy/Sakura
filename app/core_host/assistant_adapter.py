@@ -18,7 +18,9 @@ from app.config.character_loader import (
 )
 from app.config.core_config_reader import CoreConfigReader
 from app.core.cancellation import OperationCancelled
+from app.core.diagnostics import diagnostic_secret_scope, register_diagnostic_secret
 from app.core.chat_pipeline import ChatPipeline
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.core_host.character_presentation import project_character_presentation
 from app.llm.api_client import OpenAICompatibleClient
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
@@ -64,11 +66,23 @@ def _safe_character_issue_sink(
         pass
 
 
-def _safe_close_issue() -> None:
+def _report_failure(error: Exception, *, stage: str, code: str) -> None:
+    """Record the original failure where it still has its traceback and cause."""
     try:
-        print("An Assistant resource failed to close cleanly.", file=sys.stderr)
+        log_event(
+            "Assistant",
+            "Assistant 初始化失败" if stage != "close" else "Assistant 资源关闭失败",
+            diagnostic_attributes(error, reason_code=code, stage=stage),
+            event="assistant.initialization.failed" if stage != "close" else "assistant.resource.close_failed",
+            severity="error",
+            verbosity=0,
+        )
     except Exception:
-        pass
+        # A broken diagnostic sink must not replace the operation's failure.
+        try:
+            print(f"Assistant {stage} failed: {type(error).__name__}", file=sys.stderr)
+        except Exception:
+            pass
 
 
 def _close_owned(values: list[object]) -> None:
@@ -78,8 +92,8 @@ def _close_owned(values: list[object]) -> None:
             continue
         try:
             close()
-        except Exception:
-            _safe_close_issue()
+        except Exception as error:
+            _report_failure(error, stage="close", code="ASSISTANT_RESOURCE_CLOSE_FAILED")
 
 
 class AssistantAdapter:
@@ -99,11 +113,15 @@ class AssistantAdapter:
         # Borrow Application resources; only Provider/Runtime/Pipeline belong to this Session.
         self._application_tools = tool_registry
 
+    @diagnostic_secret_scope()
     def initialize(self, cancel: Event) -> ReadinessResult:
         owned: list[object] = []
+        stage = "configuration"
         try:
             self._check_active(cancel)
             config = self._config_reader.read(self._user_root)
+            if config.provider_selection is not None:
+                register_diagnostic_secret(config.provider_selection.api_settings.api_key)
             self._check_active(cancel)
             if config.config_problem is not None:
                 problem = config.config_problem
@@ -128,6 +146,7 @@ class AssistantAdapter:
                     current_character_presentation=presentation,
                 )
 
+            stage = "character_registry"
             registry = CharacterRegistry(
                 self._user_root,
                 issue_sink=_safe_character_issue_sink,
@@ -149,6 +168,7 @@ class AssistantAdapter:
                     current_character_summary=None,
                 )
 
+            stage = "model_client"
             trace_recorder = AgentTraceRecorder(self._user_root)
             provider = OpenAICompatibleClient(
                 config.provider_selection.api_settings,
@@ -158,12 +178,15 @@ class AssistantAdapter:
             owned.append(provider)
             self._check_active(cancel)
 
+            stage = "character_prompt"
             system_prompt = load_character_system_prompt(profile)
             self._check_active(cancel)
             from app.core_host.tool_settings import load_tool_runtime_configuration
 
+            stage = "runtime_settings"
             runtime_loop_settings = load_tool_runtime_configuration(self._user_root)
             self._check_active(cancel)
+            stage = "agent_runtime"
             runtime = AgentRuntime(
                 provider,
                 system_prompt,
@@ -178,6 +201,7 @@ class AssistantAdapter:
             owned.append(runtime)
             self._check_active(cancel)
 
+            stage = "chat_pipeline"
             pipeline = ChatPipeline(runtime, finalize_trace_operations=False)
             owned.append(pipeline)
             self._check_active(cancel)
@@ -216,7 +240,8 @@ class AssistantAdapter:
         except OperationCancelled:
             _close_owned(owned)
             raise
-        except CharacterConfigError:
+        except CharacterConfigError as error:
+            _report_failure(error, stage=stage, code="CHARACTER_REQUIRED")
             _close_owned(owned)
             return ReadinessResult(
                 state="setup_required",
@@ -225,7 +250,8 @@ class AssistantAdapter:
                 retryable=False,
                 current_character_summary=None,
             )
-        except Exception:
+        except Exception as error:
+            _report_failure(error, stage=stage, code="ASSISTANT_INITIALIZATION_FAILED")
             _close_owned(owned)
             return ReadinessResult(
                 state="failed",

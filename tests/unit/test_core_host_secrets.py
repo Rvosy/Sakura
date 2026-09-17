@@ -143,3 +143,49 @@ def test_protocol_keeps_generation_credential_out_of_public_payload() -> None:
     )
     assert envelope["generationCredential"] == PLANTED_CREDENTIAL
     assert PLANTED_CREDENTIAL not in json.dumps(envelope["payload"])
+
+
+def test_initialization_keeps_original_failure_and_cleanup_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core_host import assistant_adapter
+
+    root = _fresh_secret_root(tmp_path)
+    recorded = []
+    closed = []
+
+    class Provider:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def close(self):
+            closed.append(True)
+            raise OSError("fixture cleanup failure")
+
+    def fail_runtime(*_args, **_kwargs):
+        try:
+            raise OSError(f"fixture model configuration failed: {PLANTED_API_KEY}")
+        except OSError as cause:
+            raise RuntimeError("runtime construction failed") from cause
+
+    monkeypatch.setattr(assistant_adapter, "OpenAICompatibleClient", Provider)
+    monkeypatch.setattr(assistant_adapter, "AgentRuntime", fail_runtime)
+    monkeypatch.setattr(assistant_adapter, "log_event", lambda *args, **kwargs: recorded.append((args, kwargs)))
+    adapter = AssistantAdapter(root, tool_registry=ToolRegistry())
+    result = adapter.initialize(Event())
+    adapter.close()
+
+    assert result.state == "failed"
+    assert result.code == "ASSISTANT_INITIALIZATION_FAILED"
+    assert closed == [True]
+    failure, cleanup = [args[2] for args, _kwargs in recorded]
+    assert failure["stage"] == "agent_runtime"
+    assert failure["error_type"] == "RuntimeError"
+    assert failure["cause_type"] == "OSError"
+    assert "fixture model configuration failed" in failure["diagnostic"]
+    assert "fail_runtime" in failure["exception_stack"]
+    assert cleanup["stage"] == "close"
+    assert cleanup["error_type"] == "OSError"
+    assert "fixture cleanup failure" in cleanup["exception_chain"]
+    assert PLANTED_API_KEY not in repr(recorded)
+    assert "fixture" not in result.message
