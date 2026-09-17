@@ -40,9 +40,16 @@ def test_legacy_portrait_business_is_owned_by_replaceable_plugin(tmp_path: Path,
         host = application.application.visuals
         binding = host.bind(profile.id, profile.package_dir, profile.current_visual_resource)
         assert binding.description["assets"] == {"__default__": "default.png", "开心": "happy.png", "不满": "angry.png"}
-        for portrait, tone, expected in [("开心", "不满", "开心"), ("unknown", "不满", "不满"), ("", "unknown", "__default__")]:
+        for portrait, tone, expected in [("开心", "不满", "开心"), ("", "不满", "不满"), ("", "unknown", "__default__")]:
             assert binding.parse_control(None, legacy={"portrait": portrait, "tone": tone}).control["state"] == {"key": expected}
-        assert binding.parse_control({"version": 1, "resourceId": "portrait-default", "payload": {"key": "unknown"}}, segment={"tone": "不满"}).control["state"] == {"key": "不满"}
+        assert binding.parse_control({"version": 1, "resourceId": "portrait-default", "payload": {"key": "开心"}}, segment={"tone": "不满"}).control["state"] == {"key": "开心"}
+        rejected = binding.parse_control(None, legacy={"portrait": "unknown", "tone": "不满"})
+        assert rejected.control is None
+        assert rejected.reason_code == "VISUAL_CONTROL_REJECTED"
+        for payload in (None, {}, {"key": 123}, {"key": "unknown"}, {"key": "开心", "extra": True}):
+            rejected = binding.parse_control({"version": 1, "resourceId": "portrait-default", "payload": payload}, segment={"tone": "不满"})
+            assert rejected.control is None, payload
+            assert rejected.reason_code == "VISUAL_CONTROL_REJECTED", payload
         application.set_enabled(host.candidates(profile.current_visual_resource.type)[0]["installId"], False)
         assert CharacterRegistry(user).get("demo").id == "demo"
         with pytest.raises(VisualHostError, match="PLUGIN_DISABLED"):

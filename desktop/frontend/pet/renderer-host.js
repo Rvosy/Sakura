@@ -163,12 +163,18 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     }
   }
   async function play(control, operationId, segmentIndex, historyKey) {
-    const value = normalizeVisualControl(control);
     const current = operation;
     const target = binding;
-    if ((control != null && !value) || !target || !current || current.id !== operationId || !Number.isSafeInteger(segmentIndex) || segmentIndex < 0
-      || (value && (value.bindingId !== target.bindingId || value.resourceId !== target.resourceId)) || !current.seen || current.seen.has(segmentIndex)) return false;
+    if (!target || !current || current.id !== operationId || current.abort.signal.aborted || current.seen.has(segmentIndex)) return false;
+    const value = normalizeVisualControl(control);
+    // A late result for a retired target is normal.
+    if (value && value.bindingId !== target.bindingId) return false;
     current.seen.add(segmentIndex);
+    if (!Number.isSafeInteger(segmentIndex) || segmentIndex < 0 || (control != null && !value)
+      || (value && value.resourceId !== target.resourceId)) {
+      onError("VISUAL_CONTROL_INVALID", new Error("Invalid control for the current visual segment"), "visual.control.validate");
+      return false;
+    }
     if (!await current.restored || current !== operation || current.abort.signal.aborted || target !== binding) return false;
     const context = { operationId, segmentIndex, signal: current.abort.signal };
     try {

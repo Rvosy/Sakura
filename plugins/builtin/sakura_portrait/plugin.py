@@ -123,16 +123,20 @@ class PortraitService:
 
     def parseControl(self, request, parserData, payload, legacy):
         keys = parserData["keys"]
-        if payload is not None:
-            if not isinstance(payload, dict) or set(payload) - {"key"}:
-                raise ValueError("VISUAL_CONTROL_INVALID")
-            explicit = payload.get("key")
+        if payload is not None or legacy is None:
+            if not isinstance(payload, dict) or set(payload) != {"key"}:
+                raise ValueError("VISUAL_CONTROL_INVALID: 立绘控制必须且只能包含 key")
+            key = payload["key"]
+            if not isinstance(key, str) or key not in keys:
+                raise ValueError(f"VISUAL_CONTROL_INVALID: 未知立绘标签 {key!r}")
         else:
-            explicit = (legacy or {}).get("portrait")
-        tone = request.get("segment", {}).get("tone") or (legacy or {}).get("tone")
-        explicit = explicit.strip() if isinstance(explicit, str) else ""
-        tone = tone.strip() if isinstance(tone, str) else ""
-        key = explicit if explicit in keys else tone if tone in keys else DEFAULT_KEY
+            explicit = legacy.get("portrait")
+            explicit = explicit.strip() if isinstance(explicit, str) else ""
+            if explicit and explicit not in keys:
+                raise ValueError(f"VISUAL_CONTROL_INVALID: 未知立绘标签 {explicit!r}")
+            tone = request.get("segment", {}).get("tone") or legacy.get("tone")
+            tone = tone.strip() if isinstance(tone, str) else ""
+            key = explicit or (tone if tone in keys else DEFAULT_KEY)
         return {"state": {"key": key}, "actions": []}
 
 

@@ -115,7 +115,7 @@ test("late mounts are destroyed and cannot invoke host services after replacemen
   assert.equal(destroyed, 1);
 });
 
-test("history reducer preserves segment identities and controls for visual review", () => {
+test("invalid controls survive presentation and are reported once at execution without losing text", async () => {
   const reducer = createChatPresentationReducer({ initialMessage: "你好" });
   const identity = { generationId: "g", generationNumber: 1, operationId: "op" };
   reducer.reduce({ ...identity, type: "lifecycle", status: "ready", revision: 1 });
@@ -124,8 +124,27 @@ test("history reducer preserves segment identities and controls for visual revie
   reducer.finishTyping();
   reducer.reviewReplyAt(0, "one");
   assert.deepEqual(reducer.current().replyHistorySegments[0].control, control());
-  assert.equal(Object.hasOwn(reducer.current().replyHistorySegments[1], "control"), false);
+  const invalid = reducer.current().replyHistorySegments[1];
+  assert.equal(invalid.text, "two");
+  assert.deepEqual(invalid.control, { broken: true });
   assert.equal(reducer.current().bubbleText, "one");
+  const errors = [], applied = [];
+  const host = createRendererHost({ container: container(), onError: (...args) => errors.push(args),
+    loadModule: async () => ({ mount: () => ({ applyState: state => applied.push(state), destroy() {} }) }),
+  });
+  await host.bind(binding());
+  host.begin("op");
+  assert.equal(await host.play(control(), "op", 0), true);
+  assert.equal(await host.play(invalid.control, "op", 1), false);
+  assert.equal(await host.play(invalid.control, "op", 1), false);
+  assert.deepEqual(applied, [{ angle: 12 }]);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0][0], "VISUAL_CONTROL_INVALID");
+  assert.equal(errors[0][2], "visual.control.validate");
+  host.cancel();
+  assert.equal(await host.play(invalid.control, "op", 2), false);
+  assert.equal(errors.length, 1);
+  host.destroy();
 });
 
 test("a rejected control preserves the renderer and reports a recoverable diagnostic", async () => {

@@ -1587,12 +1587,13 @@ def _prepare_runtime_timeline(app_root: Path) -> TimelineStore:
 
 
 def _project_reply(reply: object) -> list[dict[str, object]]:
+    from app.core.runtime_log import log_event
     from app.llm.visual_control import validate_visual_control
     raw_segments = getattr(reply, "segments", None)
     if not isinstance(raw_segments, list):
         raise _BoundaryFailure("INVALID_CHAT_REPLY", "Assistant reply was invalid", False)
     projected: list[dict[str, object]] = []
-    for segment in raw_segments:
+    for segment_index, segment in enumerate(raw_segments):
         values = (
             getattr(segment, "text", None),
             getattr(segment, "translation", None),
@@ -1616,14 +1617,23 @@ def _project_reply(reply: object) -> list[dict[str, object]]:
             try:
                 projected[-1]["control"] = validate_visual_control(control)
             except ValueError:
-                pass
+                log_event("Visual", "表现控制无效，保留文字回复", {
+                    "reason_code": "VISUAL_CONTROL_INVALID", "stage": "visual.reply.project",
+                    "segment_index": segment_index,
+                }, event="visual.control.failed", severity="warning")
     # Optional controls must not make a valid text reply exceed Timeline's
     # record limit. Prefer dropping visual data to losing the completed turn.
     import json
     from app.storage.timeline import MAX_PAYLOAD_BYTES
     if len(json.dumps({"segments": projected}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_PAYLOAD_BYTES:
+        removed = sum("control" in segment for segment in projected)
         for segment in projected:
             segment.pop("control", None)
+        if removed:
+            log_event("Visual", "表现控制超过回复大小限制，保留文字回复", {
+                "reason_code": "VISUAL_CONTROL_TOO_LARGE", "stage": "visual.reply.project",
+                "segment_count": removed, "limit_bytes": MAX_PAYLOAD_BYTES,
+            }, event="visual.control.failed", severity="warning")
     return projected
 
 
