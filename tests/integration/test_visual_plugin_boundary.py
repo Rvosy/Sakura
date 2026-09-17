@@ -415,7 +415,13 @@ def test_real_plugin_contributes_numeric_schema_and_parses_state_and_one_shot_ac
         "state": {"angle": 12.5}, "actions": [{"wave": True}],
     }
     description["rendererData"]["maxAngle"] = 100
+    presentation = binding.presentation()
+    presentation["data"]["maxAngle"] = 100
+    prompt = binding.reply_visual
+    prompt["outputSchema"]["properties"]["angle"]["maximum"] = 100
     assert binding.description["rendererData"]["maxAngle"] == 20
+    assert binding.presentation()["data"]["maxAngle"] == 20
+    assert binding.reply_visual["outputSchema"]["properties"]["angle"]["maximum"] == 20
     assert binding.parse_control(_control(resource, {"angle": 21})).reason_code == "VISUAL_CONTROL_REJECTED"
     assert binding.parse_control(None, legacy={"portrait": "happy"}).reason_code == "VISUAL_CONTROL_REJECTED"
     assert binding.parse_control(_control(resource, {"angle": 0})).control["state"] == {"angle": 0}

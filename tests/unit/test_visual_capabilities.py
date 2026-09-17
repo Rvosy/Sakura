@@ -231,6 +231,46 @@ def test_revocation_during_identity_read_cannot_publish_control(binding_host) ->
     assert binding.parse_control({"version": 1, "resourceId": resource.id, "payload": {}}).reason_code == "VISUAL_BINDING_EXPIRED"
 
 
+@pytest.mark.parametrize("error", [
+    ValueError("invalid service state"),
+    VisualHostError("VISUAL_DESCRIPTION_INVALID"),
+    PluginRuntimeError("SERVICE_INTERNAL_ERROR", "service lookup failed"),
+])
+def test_visual_prompt_errors_are_not_mistaken_for_absent_capabilities(binding_host, monkeypatch, error):
+    from app.agent.runtime import AgentRuntime
+
+    host, provider, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    runtime = AgentRuntime(None, "test character")
+    runtime.set_visual_binding(binding)
+
+    def fail(_service):
+        raise error
+
+    monkeypatch.setattr(provider, "service_identity", fail)
+    with pytest.raises(type(error)) as caught:
+        runtime._build_tool_system_prompt()
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("invalidate", ["close", "missing", "replaced"])
+def test_retired_visual_prompt_is_omitted_without_hiding_other_errors(binding_host, invalidate):
+    from app.agent.runtime import AgentRuntime
+
+    host, provider, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    runtime = AgentRuntime(None, "test character")
+    runtime.set_visual_binding(binding)
+    assert runtime.reply_visual["resourceId"] == resource.id
+    if invalidate == "close":
+        binding.close()
+    elif invalidate == "missing":
+        provider.identity = None
+    else:
+        provider.identity = {"providerId": "example.visual", "scopeId": "replacement"}
+    assert runtime.reply_visual is None
+
+
 def test_conflicting_user_install_does_not_hide_inventory_bundled_winner(binding_host) -> None:
     host, runtime, resource, plugin, package = binding_host
     bundled = package / "plugins/builtin/visual"
@@ -272,10 +312,10 @@ def test_bad_renderer_preserves_other_capabilities_and_reports_the_failed_type(b
 def test_plugin_module_accepts_unicode_names_but_not_symlinks_outside_installation(tmp_path):
     plugin = _plugin(tmp_path)
     manifest = plugin / "plugin.yaml"
-    raw = yaml.safe_load(manifest.read_text())
-    (plugin / "角色 渲染.js").write_text("export function mount() {}")
+    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    (plugin / "角色 渲染.js").write_text("export function mount() {}", encoding="utf-8")
     raw["visuals"][0]["renderer"] = "角色 渲染.js"
-    manifest.write_text(yaml.safe_dump(raw, allow_unicode=True))
+    manifest.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     assert PluginInventory(tmp_path).scan().records[0].visuals[0].renderer == "角色 渲染.js"
     outside = tmp_path / "outside.js"
     outside.write_text("export function mount() {}")

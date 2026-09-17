@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -73,7 +74,8 @@ class VisualBinding:
         self._runtime = runtime
         self._identity = dict(identity)
         self._request = _json_copy(request)
-        self._description = _json_copy(description)
+        # describe() already validated this JSON at the plugin boundary.
+        self._description = deepcopy(description)
         self._closed = threading.Event()
         self.install_id = install_id
 
@@ -87,14 +89,28 @@ class VisualBinding:
             "installId": self.install_id,
             "renderer": self.capability.renderer,
             "editor": self.capability.editor,
-            "data": _json_copy(self._description["rendererData"]),
-            "assets": _json_copy(self._description.get("assets", {})),
+            "data": deepcopy(self._description["rendererData"]),
+            "assets": deepcopy(self._description.get("assets", {})),
         }
 
     @property
     def description(self) -> dict[str, Any]:
         self._check_active()
-        return _json_copy(self._description)
+        return deepcopy(self._description)
+
+    @property
+    def reply_visual(self) -> dict[str, Any] | None:
+        try:
+            self._check_active()
+        except VisualHostError as error:
+            if error.code != "VISUAL_BINDING_EXPIRED":
+                raise
+            return None
+        return {
+            "resourceId": self.resource_id,
+            "prompt": self._description["prompt"],
+            "outputSchema": deepcopy(self._description["outputSchema"]),
+        }
 
     @property
     def resource_id(self) -> str:
@@ -113,6 +129,8 @@ class VisualBinding:
         try:
             current = self._runtime.service_identity(self.capability.service)
         except PluginRuntimeError as error:
+            if error.code != "SERVICE_MISSING":
+                raise
             raise VisualHostError("VISUAL_BINDING_EXPIRED") from error
         if self._closed.is_set() or current != self._identity:
             raise VisualHostError("VISUAL_BINDING_EXPIRED")
@@ -141,13 +159,13 @@ class VisualBinding:
                 ):
                     raise VisualHostError("VISUAL_CONTROL_INVALID")
                 payload = control["payload"]
-            request = _json_copy(self._request)
+            request = deepcopy(self._request)
             request["segment"] = _json_copy(segment or {})
             parsed = self._runtime.call_service(
                 self.capability.service,
                 "parseControl",
                 request,
-                _json_copy(self._description["parserData"]),
+                deepcopy(self._description["parserData"]),
                 _json_copy(payload),
                 _json_copy(legacy) if control is None else None,
             )

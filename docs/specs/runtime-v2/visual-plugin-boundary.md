@@ -121,6 +121,9 @@ payload 的必填字段和可省略内容由当前插件的格式定义。
 
 绑定保存描述的独立副本，提示词与解析使用同一份 `parserData` 快照；重新绑定才更新。解析时 `request.segment`
 提供本段公共信息，例如 TTS `tone`。`describe` 与 `parseControl` 不执行动作；进程级资源仍使用 v4 effect 回收。
+插件返回的描述在入口检查大小和 JSON 格式；后续读取内部快照只做独立复制，不重复序列化校验。
+生成提示词只读取 prompt 与 outputSchema，不复制渲染数据和资源列表。仅明确的绑定过期可省略表现协议，
+其他读取错误保留原始异常，交给现有请求错误边界处理，不能当作未配置资源。
 Service 调用前后检查 provider 与进程 scope，清理或重启后的在途结果返回 `VISUAL_BINDING_EXPIRED`。
 
 ## 回复、历史与执行时机
