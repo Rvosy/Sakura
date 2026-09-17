@@ -1279,23 +1279,14 @@ const typewriter = createTypewriter({
   onSegment: (segment, index) => {
     const state = presentation.current();
     if (state.phase === "typing" && state.segments[index] === segment) {
-      const subtitleReady = ttsController.beforeSegment(segment, index, {
-        onStarted: () => {
-          if (presentation.current().operationId !== state.operationId) return;
-          const result = presentation.setTypingSegment(segment, index);
-          if (result.applied) {
-            void rendererHost.play(segment.control, state.operationId, index, segment);
-            void render(result.state);
-          }
-        },
-      });
-      return index === 0
-        ? waitingIndicator.stopWhenSettled(subtitleReady)
-        : subtitleReady;
+      const result = presentation.setTypingSegment(segment, index);
+      if (result.applied) {
+        void rendererHost.play(segment.control, state.operationId, index, segment);
+        void render(result.state);
+      }
     }
     return undefined;
   },
-  onSegmentComplete: (_segment, index) => ttsController.afterSegment(index),
   onComplete: () => {
     const result = presentation.finishTyping();
     if (result.applied) render(result.state);
@@ -1370,8 +1361,7 @@ function handleCoreEvent(event) {
   if (!result.applied) return;
   if (event.type === "chat.started") rendererHost.begin(event.operationId);
   if (["chat.failed", "chat.cancelled"].includes(event.type) || (event.type === "lifecycle" && !isChatReadyLifecycle(event.status))) rendererHost.cancel("interrupted");
-  const waitingForFirstSegment = event.type === "chat.completed" && result.state.phase === "typing";
-  if (before.phase === "thinking" && result.state.phase !== "thinking" && !waitingForFirstSegment) {
+  if (before.phase === "thinking" && result.state.phase !== "thinking") {
     waitingIndicator.stop();
   }
   if (before.phase === "typing" && result.state.phase !== "typing") {

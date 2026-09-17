@@ -194,8 +194,8 @@ class SakuraTTSHub:
 
     def begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
         result = self._begin(request)
-        if result["state"] == "failed":
-            self._log("warning" if result["errorCode"] == "TTS_DISABLED" else "error", "语音请求未受理", reason_code=result["errorCode"], request_id=result["requestId"], provider=result["providerId"])
+        if result["state"] == "failed" and result["errorCode"] != "TTS_DISABLED":
+            self._log("error", "语音请求未受理", reason_code=result["errorCode"], request_id=result["requestId"], provider=result["providerId"])
         return result
 
     def _begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -225,10 +225,10 @@ class SakuraTTSHub:
             )
         selection = self._selection(character_id)
         provider_id = selection.provider_id
-        if provider_id is None:
-            return self._failed(request_id, None, "TTS_PROVIDER_NOT_SELECTED")
         if not selection.enabled:
             return self._failed(request_id, provider_id, "TTS_DISABLED")
+        if provider_id is None:
+            return self._failed(request_id, None, "TTS_PROVIDER_NOT_SELECTED")
         with self._lock:
             if request_id in self._jobs:
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
@@ -239,13 +239,6 @@ class SakuraTTSHub:
             provider = getattr(self._context, "bind")(descriptor.service_key)
         except Exception:
             return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
-        readiness = self._provider_readiness(descriptor, provider=provider)
-        if not readiness[0]:
-            return self._failed(
-                request_id,
-                provider_id,
-                readiness[1],
-            )
         try:
             job_id = provider.begin(
                 {
@@ -255,8 +248,10 @@ class SakuraTTSHub:
                     "options": dict(request["options"]),
                 }
             )
-        except Exception:
-            return self._failed(request_id, provider_id, "TTS_SYNTHESIS_FAILED")
+        except Exception as error:
+            return self._failed(
+                request_id, provider_id, _stable_error_code(error, "TTS_SYNTHESIS_FAILED")
+            )
         if isinstance(job_id, Mapping):
             error_code = job_id.get("errorCode")
             return self._failed(
@@ -396,11 +391,9 @@ class SakuraTTSHub:
     def _provider_readiness(
         self,
         descriptor: _ProviderDescriptor,
-        *,
-        provider: object | None = None,
     ) -> tuple[bool, str, str]:
         try:
-            result = (provider if provider is not None else self._provider(descriptor)).status()
+            result = self._provider(descriptor).status()
         except Exception:
             return False, "TTS_PROVIDER_UNAVAILABLE", "provider_status"
         if not isinstance(result, Mapping):

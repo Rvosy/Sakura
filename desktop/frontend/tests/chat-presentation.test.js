@@ -84,7 +84,7 @@ test("ready, thinking, complete reply typing, and settled form one deterministic
   assert.equal(reducer.current().bubbleText, "完整回复");
 });
 
-test("completed replies keep the waiting frame visible until the first subtitle gate opens", () => {
+test("completed replies preserve the waiting frame until their first text segment starts", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-tts" });
   reducer.setWaitingText("....");
