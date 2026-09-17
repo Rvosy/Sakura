@@ -33,7 +33,8 @@ function lifecyclePublication(generationNumber = 1, state = "running", readiness
 }
 
 function harness(sendResponses = []) {
-  let nativeListener = null;
+  const channels = [];
+  const cancelResponses = [];
   const calls = [];
   const intervals = new Map();
   let nextInterval = 0;
@@ -43,15 +44,18 @@ function harness(sendResponses = []) {
     clearInterval(id) { intervals.delete(id); },
   };
   const invoke = async (name, payload) => {
-    calls.push([name, payload]);
+    const { onEvent, ...args } = payload || {};
+    calls.push([name, Object.keys(args).length ? args : undefined]);
     if (name === "runtime_lifecycle_snapshot") return publication;
     if (["chat_send", "chat_update_announce"].includes(name)) return sendResponses.shift();
-    if (name === "chat_cancel") return { accepted: true, operationId: payload.payload.operationId };
+    if (name === "chat_cancel") return cancelResponses.length ? cancelResponses.shift() : { accepted: true, operationId: payload.payload.operationId };
     throw new Error(name);
   };
   return {
     calls,
-    emit(payload) { nativeListener({ payload }); },
+    channels,
+    cancelResponses,
+    emit(payload, index = channels.length - 1) { channels[index]?.onmessage(payload); },
     setPublication(next) { publication = next; },
     async tick() {
       await Promise.all([...intervals.values()].map((callback) => callback()));
@@ -59,7 +63,7 @@ function harness(sendResponses = []) {
     create(onEvent, options = {}) {
       return createRealChatClient({
         invoke,
-        listen: async (_name, listener) => { nativeListener = listener; return () => { nativeListener = null; }; },
+        createChannel: () => { const channel = { onmessage: () => {} }; channels.push(channel); return channel; },
         onEvent,
         initialPreparedGenerationId: "generation-1",
         ...options,
@@ -397,5 +401,70 @@ test("update announcements use the restricted native command with silent present
     ["chat.completed", "silent"],
   ]);
   assert.equal(client.isBusy(), false);
+  client.dispose();
+});
+
+test("old operation channels cannot complete a newer send or accumulate early terminals", async () => {
+  const events = [];
+  const response = (id) => ({ accepted: true, operationId: id, cancelHandle: `cancel-${id}`, generationId: "generation-1", generationNumber: 1 });
+  const env = harness([response("first"), response("second")]);
+  const client = env.create((event) => events.push(event));
+  await client.start();
+  await client.send({ message: "first" });
+  env.emit({ ...response("first"), type: "chat.started" }, 0);
+  env.emit({ ...response("first"), type: "chat.completed", reply: { segments: [] } }, 0);
+  await client.send({ message: "second", presentation: "silent" });
+  const before = events.length;
+  env.emit({ ...response("first"), type: "chat.failed" }, 0);
+  assert.equal(events.length, before);
+  assert.equal(client.isBusy(), true);
+  env.emit({ ...response("second"), type: "chat.started" }, 1);
+  assert.equal(events.at(-1).presentation, "silent");
+  client.dispose();
+  env.emit({ ...response("second"), type: "chat.completed" }, 1);
+  assert.equal(events.at(-1).type, "chat.started");
+});
+
+test("send rejection releases its channel and a failed cancellation can be requested again", async () => {
+  const rejection = deferred();
+  const env = harness([rejection.promise, {
+    accepted: true, operationId: "accepted", cancelHandle: "cancel", generationId: "generation-1", generationNumber: 1,
+  }]);
+  const events = [];
+  const client = env.create((event) => events.push(event));
+  await client.start();
+  const first = client.send({ message: "rejected" });
+  rejection.reject(new Error("CHAT_BUSY"));
+  await assert.rejects(first, /CHAT_BUSY/);
+  assert.equal(client.isBusy(), false);
+  await client.send({ message: "accepted" });
+  env.emit({ type: "chat.started", operationId: "accepted", generationId: "generation-1", generationNumber: 1 });
+  const failedCancel = deferred();
+  env.cancelResponses.push(failedCancel.promise);
+  const cancel = client.cancel("accepted");
+  failedCancel.reject(new Error("TRANSPORT_WRITE_FAILED"));
+  await assert.rejects(cancel, /TRANSPORT_WRITE_FAILED/);
+  assert.equal(client.isBusy(), true);
+  assert.equal(await client.cancel("accepted"), true);
+  client.dispose();
+});
+
+test("queued cancellation failure does not reject an already accepted send", async () => {
+  const accepted = deferred();
+  const cancelled = deferred();
+  const cancelErrors = [];
+  const env = harness([accepted.promise]);
+  const client = env.create(() => {}, { onCancelError: (error) => cancelErrors.push(error.message) });
+  await client.start();
+  const send = client.send({ message: "accepted first" });
+  env.emit({ type: "chat.started", operationId: "op", generationId: "generation-1", generationNumber: 1 });
+  assert.equal(await client.cancel("op"), true);
+  env.cancelResponses.push(cancelled.promise);
+  accepted.resolve({ accepted: true, operationId: "op", cancelHandle: "cancel", generationId: "generation-1", generationNumber: 1 });
+  assert.equal((await send).accepted, true);
+  cancelled.reject(new Error("cancel unavailable"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(cancelErrors, ["cancel unavailable"]);
+  assert.equal(await client.cancel("op"), true);
   client.dispose();
 });

@@ -12,11 +12,11 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 use crate::{
     character_presentation,
-    chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
+    chat_bridge::{ChatBridge, ChatEventPublication},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
     core_supervisor::{
@@ -469,7 +469,6 @@ impl ShellLifecycleSession {
         self.chat_projector = Some(thread::spawn(move || {
             while let Ok(event) = events.recv() {
                 let _ = update_coordinator.observe_chat_event(&event);
-                let _ = app.emit_to("main", CHAT_EVENT, event);
             }
         }));
         Ok(())
@@ -840,10 +839,10 @@ fn spawn_and_initialize(
     state.chat_bridge = state
         .host
         .as_ref()
-        .and_then(|host| host.chat_gateway().ok())
-        .and_then(|gateway| {
+        .and_then(|host| host.concurrent_request_handle().ok())
+        .and_then(|transport| {
             ChatBridge::new(
-                gateway,
+                Arc::new(transport),
                 generation_text.clone(),
                 state.identity.map_or(0, |(_, number)| number),
             )

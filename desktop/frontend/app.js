@@ -1402,7 +1402,8 @@ function handleCoreEvent(event) {
 
 const chatClient = createRealChatClient({
   invoke,
-  listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
+  createChannel: () => new window.__TAURI__.core.Channel(),
+  onCancelError: () => showRecoverableError("取消失败，请重试。"),
   onEvent: handleCoreEvent,
   initialPreparedGenerationId: characterPresentation.generationId,
   prepareGeneration: ({ generationId, refresh }) => rebindCoreGeneration(generationId, { refresh }),
@@ -2143,7 +2144,7 @@ composer.addEventListener("submit", (event) => {
   event.preventDefault();
   if (asrController?.active()) return;
   const state = presentation.current();
-  if (state.canCancel) void chatClient.cancel(state.operationId);
+  if (state.canCancel) void chatClient.cancel(state.operationId).catch(() => showRecoverableError("取消失败，请重试。"));
   else if (state.canRetry) {
     invoke("retry_core").catch(() => showRecoverableError("重连失败，请稍后重试。"));
   }

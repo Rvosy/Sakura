@@ -10,7 +10,6 @@ mod character_studio_window;
 mod chat_bridge;
 mod chat_settings;
 mod color_picker;
-mod core_host_gateway;
 mod core_host_protocol;
 mod core_host_router;
 mod core_host_runtime;
@@ -3397,6 +3396,7 @@ fn runtime_lifecycle_snapshot(
 async fn chat_send(
     window: WebviewWindow,
     payload: chat_bridge::ChatSendRequest,
+    on_event: tauri::ipc::Channel<chat_bridge::ChatEventPublication>,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<chat_bridge::ChatSendPublication, String> {
     let handle = lifecycle
@@ -3407,6 +3407,7 @@ async fn chat_send(
         window.label(),
         payload.message,
         payload.attachment_id,
+        on_event,
     )?;
     tauri::async_runtime::spawn_blocking(move || pending.wait())
         .await
@@ -7944,6 +7945,14 @@ fn main() {
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 match event {
+                    tauri::WindowEvent::Destroyed => {
+                        if let Some(handle) = window.state::<ShellLifecycleState>().handle.as_ref()
+                        {
+                            if let Ok(bridge) = handle.chat_bridge() {
+                                bridge.invalidate();
+                            }
+                        }
+                    }
                     tauri::WindowEvent::Moved(position) => {
                         let session = window.state::<Mutex<WindowGeometrySession>>();
                         if let Err(error) = try_observe_deferred_window_position(

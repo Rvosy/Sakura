@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-16
+updated: 2026-09-18
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
@@ -34,11 +34,11 @@ Envelope 语义。
 ```text
 main WebView composer
 -> Tauri main-window-only chat command
--> generation-scoped CoreHostGateway
+-> generation-scoped ChatBridge
 -> WP-3-02 RealChatBoundary / AssistantSession / Provider
 -> chat.started
 -> exactly one chat.completed | chat.failed | chat.cancelled
--> Tauri validates identity and generation, then emits to main WebView
+-> Tauri validates identity and generation, then sends to the operation Channel
 -> frozen chat presentation reducer / typewriter / portrait controller
 ```
 
@@ -48,21 +48,30 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 ## Tauri chat bridge 契约
 
 - 只有 `main` WebView 可以发送或取消聊天；settings、未来窗口和未知 label 必须在 Core 写入前拒绝。
-- send payload 只能包含非空 `message`。Tauri 生成 operation/cancel identity，调用既有
-  `CoreHostGateway`，向 WebView 返回 opaque `operationId`、`cancelHandle` 和当前 generation identity；
+- 普通 send payload 包含非空 `message` 和可选的截图 `attachmentId`。Tauri 生成 operation/cancel identity，
+  由 `ChatBridge` 提交到 IPC，向 WebView 返回 opaque `operationId`、`cancelHandle` 和当前 generation identity；
   不返回 credential、Provider、history、路径或 Core 私有字段。
 - 同一主窗口同时只允许一个 active interaction。等待终态时用户可以编辑下一条草稿，但不能排队或发送
-  第二个请求。send 在提交失败时保留输入；被 Gateway 接受后才清除本次输入。
-- lifecycle worker 不再静默丢弃已由 Gateway 验证的 chat event。它必须把 allowlisted 事件投影给当前
-  main WebView，同时保持 control、Snapshot 和 shutdown 不被 UI 订阅阻塞。
-- send response 与 `chat.started` 可以竞态到达；bridge 必须在 Core dispatch 前登记 UI identity，WebView
-  也必须按 operation/generation 安全接收，不得依赖“response 总先到”。
+  第二个请求。send 在提交失败时保留输入；收到受理 ACK 或 `chat.started` 后才清除本次输入。
+- `ChatBridge` 是 Rust 聊天业务投影的唯一所有者，保存一个当前操作；原 `CoreHostGateway` 的
+  entries/handles/order 登记已删除。受理前失败直接释放该操作，终态释放取消身份及 Channel。
+  IPC Router 保留请求应答匹配和 ACK 后的事件路由身份，不承担 UI 受理或取消决定。
+- WebView 发起每轮操作前创建 Tauri `Channel`，通过 `onEvent` 参数传入普通聊天和更新主动播报命令。
+  ChatBridge 将公开投影交给该 Channel；原 `sakura://chat-event` 全局广播和前端按 ID 的
+  earlyTerminals、presentation map 已删除。每轮闭包携带静默/交互呈现方式，早到事件无需等待 ACK 登记。
+- send response 与 `chat.started` 可以竞态到达；bridge 在 Core dispatch 前登记操作，两者共用一个
+  受理完成通知。`chat.started` 已确认受理时，迟到应答失败不能撤回受理或清除后续操作。仍未收到终态时，
+  以 `CHAT_DELIVERY_UNCONFIRMED` 释放本轮投影，明确结果无法确认；这不表示 Core 未提交或已取消，
+  自动更新播报也不得因此重发。Channel 只保证本通道事件顺序，不保证事件、命令应答和生命周期发布之间的全局顺序。
 - generation 变化、Core 关闭、窗口销毁或 app 退出会立即使旧 cancel handle 和旧事件失效。晚到旧
   generation、未知 operation、重复 started 或第二终态不得改变 UI。
-- 取消调用既有 `chat.cancel` 并保持幂等 UI。取消已胜出的 completed/failed 不得伪造 cancelled；关闭与
-  restart 继续由既有有界 lifecycle 负责，不在 WebView 建第二个进程所有者。
+- 取消调用既有 `chat.cancel`，等待应答时不持有操作锁。取消请求失败后释放在途标记，允许再次取消；
+  取消 ACK 不代替 `chat.cancelled`。受理 ACK 前点击取消时，前端等取消身份返回后提交；这次取消失败
+  不能把已经受理的 send 改成失败或导致草稿被重复发送。取消已胜出的 completed/failed 不伪造 cancelled。
+  关闭与 restart 继续由既有有界 lifecycle 负责，不在 WebView 建第二个进程所有者。
 - Rust 只做窗口授权、identity、generation、事件投影和设置协调，不解析业务 reply 含义，也不保存
-  history。CoreHostGateway 的 exact payload 验证与唯一终态仲裁继续是信任边界。
+  history。入站 envelope/credential 由 IPC 边界验证，ChatBridge 检查本轮身份并投影事件；唯一业务终态
+  仲裁仍属于 Core。关闭或 generation 失效会释放等待受理的调用和 Channel，旧回调不能改变新交互。
 
 ## 冻结 UI 映射
 

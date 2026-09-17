@@ -32,14 +32,14 @@ function validateSend(value) {
 
 export function createRealChatClient({
   invoke,
-  listen,
+  createChannel,
+  onCancelError = () => {},
   onEvent,
   prepareGeneration = async () => true,
   initialPreparedGenerationId = null,
   pollIntervalMs = 120,
 }) {
   let disposed = false;
-  let unlisten = null;
   let lifecycleTimer = null;
   let lifecycleBusy = false;
   let lifecycleSignature = "";
@@ -49,11 +49,7 @@ export function createRealChatClient({
   let interactionEpoch = 0;
   let preparedGenerationId = null;
   let preparedCharacterId = null;
-  let pendingSend = null;
-  let active = null;
-  let pendingCancel = null;
-  const earlyTerminals = new Set();
-  const operationPresentations = new Map();
+  let interaction = null;
 
   const sameIdentity = (generationId, generationNumber) => Boolean(
     currentIdentity
@@ -61,17 +57,10 @@ export function createRealChatClient({
     && currentIdentity.generationNumber === generationNumber
   );
 
-  function operationKey(generationId, generationNumber, operationId) {
-    return `${generationNumber}:${generationId}:${operationId}`;
-  }
-
   function sealInteraction() {
     interactionEpoch += 1;
-    active = null;
-    pendingSend = null;
-    pendingCancel = null;
-    earlyTerminals.clear();
-    operationPresentations.clear();
+    if (interaction) interaction.channel.onmessage = () => {};
+    interaction = null;
   }
 
   function acceptIdentity(supervisor) {
@@ -201,84 +190,90 @@ export function createRealChatClient({
   }
 
   async function cancelActive(current) {
-    if (!current || disposed || active !== current || !isChatReadyLifecycle(lifecycleStatus)) return false;
-    const epoch = interactionEpoch;
+    if (disposed || interaction !== current || !current.response || !isChatReadyLifecycle(lifecycleStatus)) return false;
     const result = await invoke("chat_cancel", { payload: {
-      operationId: current.operationId,
-      cancelHandle: current.cancelHandle,
+      operationId: current.response.operationId,
+      cancelHandle: current.response.cancelHandle,
     } });
-    return interactionEpoch === epoch
-      && active === current
+    return interaction === current
       && isChatReadyLifecycle(lifecycleStatus)
       && result?.operationId === current.operationId
       && Boolean(result.accepted);
   }
 
-  function receive(nativeEvent) {
-    if (disposed) return;
+  function receive(current, value) {
+    if (disposed || interaction !== current || current.terminal) return;
     let event;
     try {
-      event = validateChatEvent(nativeEvent?.payload);
+      event = validateChatEvent(value);
     } catch {
       return;
     }
     if (
       !isChatReadyLifecycle(lifecycleStatus)
       || !sameIdentity(event.generationId, event.generationNumber)
+      || (current.operationId && current.operationId !== event.operationId)
     ) return;
-    const key = operationKey(event.generationId, event.generationNumber, event.operationId);
+    current.operationId = event.operationId;
     if (event.type === "chat.started") {
-      operationPresentations.set(
-        key,
-        pendingSend?.presentation || active?.presentation || "interactive",
-      );
+      if (current.started) return;
+      current.started = true;
     }
-    const presentation = operationPresentations.get(key)
-      || (active?.operationId === event.operationId ? active.presentation : null)
-      || "interactive";
     if (TERMINALS.has(event.type)) {
-      if (active?.operationId === event.operationId) active = null;
-      else earlyTerminals.add(key);
-      pendingCancel = null;
-      operationPresentations.delete(key);
+      current.terminal = true;
+      current.channel.onmessage = () => {};
+      if (current.response) interaction = null;
     }
-    onEvent(Object.freeze({ ...event, presentation }));
+    onEvent(Object.freeze({ ...event, presentation: current.presentation }));
   }
 
   async function sendCommand(command, args, presentation) {
     if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
-    if (pendingSend || active) throw new Error("CHAT_INTERACTION_ACTIVE");
+    if (interaction) throw new Error("CHAT_INTERACTION_ACTIVE");
     if (!currentIdentity || !isChatReadyLifecycle(lifecycleStatus)) throw new Error("CHAT_NOT_READY");
-    if (!["interactive", "silent"].includes(presentation)) {
-      throw new Error("CHAT_PRESENTATION_INVALID");
-    }
-    const token = Object.freeze({ identity: currentIdentity, epoch: interactionEpoch, presentation });
-    pendingSend = token;
+    if (!["interactive", "silent"].includes(presentation)) throw new Error("CHAT_PRESENTATION_INVALID");
+    const current = {
+      identity: currentIdentity,
+      epoch: interactionEpoch,
+      presentation,
+      operationId: null,
+      response: null,
+      started: false,
+      terminal: false,
+      cancelRequested: false,
+      channel: createChannel(),
+    };
+    interaction = current;
+    current.channel.onmessage = (event) => receive(current, event);
     try {
-      const response = validateSend(await invoke(command, args));
+      const response = validateSend(await invoke(command, { ...args, onEvent: current.channel }));
       if (
-        token.identity !== currentIdentity
-        || token.epoch !== interactionEpoch
+        disposed
+        || current.identity !== currentIdentity
+        || current.epoch !== interactionEpoch
         || !isChatReadyLifecycle(lifecycleStatus)
         || !sameIdentity(response.generationId, response.generationNumber)
       ) throw new Error("CHAT_GENERATION_INVALIDATED");
-      const key = operationKey(response.generationId, response.generationNumber, response.operationId);
-      if (!earlyTerminals.delete(key)) active = Object.freeze({ ...response, presentation });
-      if (
-        pendingCancel?.epoch === interactionEpoch
-        && pendingCancel.operationId === response.operationId
-        && active
-      ) await cancelActive(active);
+      if (current.operationId && current.operationId !== response.operationId) throw new Error("CHAT_SEND_RESPONSE_INVALID");
+      current.operationId = response.operationId;
+      current.response = response;
+      if (current.terminal) interaction = null;
+      else if (current.cancelRequested) {
+        // Cancellation has its own result; its failure cannot turn an accepted send
+        // into a submission failure or cause the draft to be sent a second time.
+        void cancelActive(current).catch(onCancelError);
+      }
       return response;
-    } finally {
-      if (pendingSend === token) pendingSend = null;
+    } catch (error) {
+      current.channel.onmessage = () => {};
+      if (interaction === current) interaction = null;
+      throw error;
     }
   }
 
   return Object.freeze({
     async start() {
       if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
-      unlisten = await listen("sakura://chat-event", receive);
       await pollLifecycle();
       lifecycleTimer = window.setInterval(() => pollLifecycle().catch(() => {}), pollIntervalMs);
     },
@@ -290,30 +285,22 @@ export function createRealChatClient({
       return sendCommand("chat_update_announce", undefined, "silent");
     },
     async cancel(operationId) {
-      if (disposed) return false;
-      if (!active) {
-        if (pendingSend && typeof operationId === "string" && operationId) {
-          pendingCancel = Object.freeze({ operationId, epoch: interactionEpoch });
-          return true;
-        }
-        return false;
+      const current = interaction;
+      if (disposed || !current || current.terminal || current.operationId !== operationId) return false;
+      if (!current.response) {
+        current.cancelRequested = true;
+        return true;
       }
-      if (active.operationId !== operationId) return false;
-      return cancelActive(active);
+      return cancelActive(current);
     },
     isBusy() {
-      return Boolean(pendingSend || active);
+      return Boolean(interaction);
     },
     dispose() {
       disposed = true;
       window.clearInterval(lifecycleTimer);
       lifecycleTimer = null;
       sealInteraction();
-      try {
-        Promise.resolve(unlisten?.()).catch(() => {});
-      } catch {
-        // The native event host may already be gone.
-      }
     },
   });
 }

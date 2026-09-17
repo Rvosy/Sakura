@@ -10,7 +10,7 @@ use std::{
     ffi::OsStr,
     mem::size_of,
     os::windows::{ffi::OsStrExt, io::FromRawHandle},
-    path::Path,
+    path::{Component, Path, Prefix},
     thread,
     time::Instant,
 };
@@ -328,7 +328,7 @@ impl ManagedProcessTree {
         let current_directory = spec
             .current_directory
             .as_ref()
-            .map(|directory| wide_null(directory.as_os_str()));
+            .map(|directory| wide_null(process_working_directory(directory).as_os_str()));
         let mut process_info = PROCESS_INFORMATION::default();
         unsafe {
             CreateProcessW(
@@ -652,6 +652,29 @@ fn wait_for_job_empty_until(
             }
         }
     }
+}
+
+#[cfg(windows)]
+fn process_working_directory(directory: &Path) -> PathBuf {
+    let mut components = directory.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return directory.to_path_buf();
+    };
+    // Canonical paths use the verbatim namespace. Inheriting that namespace as
+    // cwd breaks Python's root-relative POSIX path probes (including distro's
+    // /etc/os-release lookup). Keep executable and argument paths unchanged.
+    let mut ordinary = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+        Prefix::VerbatimUNC(server, share) => {
+            let mut unc = PathBuf::from(r"\\");
+            unc.push(server);
+            unc.push(share);
+            unc
+        }
+        _ => return directory.to_path_buf(),
+    };
+    ordinary.extend(components);
+    ordinary
 }
 
 #[cfg(windows)]
@@ -1094,6 +1117,21 @@ mod tests {
 
         let nul_program = ManagedProcessSpec::new(std::path::PathBuf::from("bad\0program.exe"));
         assert!(super::validate_spec(&nul_program).is_err());
+    }
+
+    #[test]
+    fn working_directory_uses_drive_and_unc_paths_outside_the_verbatim_namespace() {
+        for (input, expected) in [
+            (r"\\?\C:\Sakura 角色\runtime", r"C:\Sakura 角色\runtime"),
+            (r"\\?\UNC\server\share\Sakura", r"\\server\share\Sakura"),
+            (r"C:\Sakura", r"C:\Sakura"),
+            (r"\\server\share\Sakura", r"\\server\share\Sakura"),
+        ] {
+            assert_eq!(
+                super::process_working_directory(std::path::Path::new(input)),
+                std::path::PathBuf::from(expected)
+            );
+        }
     }
 
     #[test]

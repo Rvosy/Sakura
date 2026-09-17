@@ -1210,6 +1210,7 @@ pub(crate) async fn startup_update_check(
 #[tauri::command]
 pub(crate) async fn chat_update_announce(
     window: WebviewWindow,
+    on_event: tauri::ipc::Channel<chat_bridge::ChatEventPublication>,
     lifecycle: State<'_, ShellLifecycleState>,
     coordinator: State<'_, UpdateCoordinator>,
 ) -> Result<chat_bridge::ChatSendPublication, String> {
@@ -1221,9 +1222,10 @@ pub(crate) async fn chat_update_announce(
         .handle
         .as_ref()
         .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
-    let pending = handle
-        .chat_bridge()?
-        .send_update_available(window.label(), event, version)?;
+    let pending =
+        handle
+            .chat_bridge()?
+            .send_update_available(window.label(), event, version, on_event)?;
     tauri::async_runtime::spawn_blocking(move || pending.wait())
         .await
         .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?

@@ -20,7 +20,6 @@ use serde_json::{json, Value};
 
 use crate::{
     character_presentation::CharacterPresentation,
-    core_host_gateway::CoreHostGateway,
     core_host_protocol::{write_frame, FrameDecoder, PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_router::{CoreHostRouter, CoreHostRouterHandle},
     platform::{
@@ -1916,11 +1915,6 @@ impl CoreHostRuntime {
         })
     }
 
-    pub fn chat_gateway(&self) -> Result<CoreHostGateway, String> {
-        let handle = self.concurrent_request_handle()?;
-        CoreHostGateway::new(self.generation_id.clone(), Arc::new(handle))
-    }
-
     pub fn recv_event_timeout(&self, timeout: Duration) -> Result<Option<Value>, String> {
         let router = self
             .router
@@ -2692,11 +2686,14 @@ mod tests {
         }
     }
 
-    fn wp_3_02_local_provider() -> (String, thread::JoinHandle<()>) {
+    fn wp_3_02_local_provider() -> (String, thread::JoinHandle<()>, Arc<Mutex<&'static str>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("local Provider should bind");
         let address = listener.local_addr().expect("local Provider address");
+        let progress = Arc::new(Mutex::new("waiting for connection"));
+        let worker_progress = progress.clone();
         let worker = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("local Provider request");
+            *worker_progress.lock().unwrap() = "reading request";
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("Provider read timeout");
@@ -2731,6 +2728,7 @@ mod tests {
                 request.extend_from_slice(&chunk[..read]);
             }
             let request_text = String::from_utf8_lossy(&request);
+            *worker_progress.lock().unwrap() = "request received";
             assert!(request_text.contains("chat/completions"));
             assert!(!request_text.contains("generationCredential"));
             let content = serde_json::to_string(&json!({
@@ -2752,8 +2750,9 @@ mod tests {
             .expect("Provider response headers");
             stream.write_all(&body).expect("Provider response body");
             stream.flush().expect("Provider response flush");
+            *worker_progress.lock().unwrap() = "response sent";
         });
-        (format!("http://{address}/v1"), worker)
+        (format!("http://{address}/v1"), worker, progress)
     }
 
     fn stderr_state() -> Arc<Mutex<StderrDrainState>> {
@@ -4636,7 +4635,7 @@ mod tests {
             std::env::temp_dir().join(format!("sakura-wp-3-02-{}-{unique}", std::process::id()));
         let source = repo_root().join("tests/fixtures/runtime_v2/wp_3_01/ready");
         copy_fixture_tree(&source, &app_root);
-        let (provider_url, provider) = wp_3_02_local_provider();
+        let (provider_url, provider, provider_progress) = wp_3_02_local_provider();
         fs::write(
             app_root.join("config/api.yaml"),
             format!(
@@ -4651,8 +4650,12 @@ mod tests {
         let generation = "00000000-0000-4000-8000-000000003002";
         let mut host =
             CoreHostRuntime::launch(&layout, generation).expect("real Core should launch");
-        request_predecessor_hello(&mut host, "real-chat-hello", Duration::from_secs(3))
-            .expect("real chat hello");
+        if let Err(error) =
+            request_predecessor_hello(&mut host, "real-chat-hello", Duration::from_secs(3))
+        {
+            let exit = host.shutdown();
+            panic!("real chat hello failed: {error}; Core shutdown: {exit:?}");
+        }
         host.request_with_payload(
             "real-chat-initialize",
             "core.initialize",
@@ -4675,23 +4678,40 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
 
-        let gateway = host.chat_gateway().expect("real chat Gateway");
+        let gateway = crate::chat_bridge::ChatBridge::new(
+            Arc::new(host.concurrent_request_handle().unwrap()),
+            generation.to_string(),
+            1,
+        )
+        .unwrap();
         let submission = gateway
-            .send("main", json!({"message": "ただいま"}))
+            .send_with_attachment(
+                "main",
+                "ただいま".to_string(),
+                None,
+                tauri::ipc::Channel::new(|_| Ok(())),
+            )
             .expect("real chat should submit");
         let started = host
             .recv_event_timeout(Duration::from_secs(3))
             .expect("real chat started read")
             .expect("real chat started event");
         assert_eq!(started["name"], "chat.started");
-        assert_eq!(
-            gateway.observe_event(&started).expect("started validation"),
-            crate::core_host_gateway::EventDisposition::Accepted
-        );
+        assert!(gateway
+            .observe_event(&started)
+            .expect("started validation")
+            .is_some());
         let terminal = host
             .recv_event_timeout(Duration::from_secs(10))
-            .expect("real chat terminal read")
-            .expect("real chat terminal event");
+            .expect("real chat terminal read");
+        let terminal = match terminal {
+            Some(terminal) => terminal,
+            None => {
+                let progress = *provider_progress.lock().unwrap();
+                let exit = host.shutdown();
+                panic!("real chat terminal missing; Provider: {progress}; Core shutdown: {exit:?}");
+            }
+        };
         assert_eq!(
             terminal["name"], "chat.completed",
             "unexpected real chat terminal: {terminal}"
@@ -4701,18 +4721,11 @@ mod tests {
             terminal["payload"]["reply"]["segments"][0]["text"],
             "おかえり。"
         );
-        assert_eq!(
-            gateway
-                .observe_event(&terminal)
-                .expect("terminal validation"),
-            crate::core_host_gateway::EventDisposition::Accepted
-        );
-        let accepted = submission
-            .completion
-            .recv_timeout(Duration::from_secs(3))
-            .expect("real chat response channel")
-            .expect("real chat response");
-        assert_eq!(accepted["payload"]["accepted"], true);
+        assert!(gateway
+            .observe_event(&terminal)
+            .expect("terminal validation")
+            .is_some());
+        assert!(submission.wait().expect("real chat response").accepted);
         let history = String::from_utf8_lossy(
             &fs::read(app_root.join("data/chat_history/timeline.sqlite3"))
                 .expect("real chat timeline should exist"),
