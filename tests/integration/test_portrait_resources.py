@@ -245,7 +245,7 @@ def test_large_portrait_collection_publishes_and_binds_without_truncation(tmp_pa
     (package / "card.md").write_text("demo")
     (package / "default.png").write_bytes(PNG)
     expressions = {f"表情{i}-" + "长标签" * 30: "default.png" for i in range(300)}
-    (package / "character.json").write_text(json.dumps({"id": "demo", "display_name": "Demo", "card": "card.md", "portrait": {"default": "default.png", "expressions": expressions}}, ensure_ascii=False))
+    (package / "character.json").write_text(json.dumps({"id": "demo", "display_name": "Demo", "card": "card.md", "portrait": {"default": "default.png", "expressions": expressions}}, ensure_ascii=False), encoding="utf-8")
     application = PluginApplicationHost(RuntimeRoots(distribution, user), "large-portraits", ToolRegistry())
     application.start()
     try:

@@ -37,7 +37,8 @@ def test_sdk_transports_and_operations(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_component_in_real_plugin_host(tmp_path):
+@pytest.mark.parametrize("service_access", ["get", "bind"])
+def test_component_in_real_plugin_host(tmp_path, service_access):
     dist = tmp_path / "distribution"
     shutil.copytree(REPO / "plugins/builtin/sakura_mcp", dist / "plugins/builtin/sakura_mcp")
     shutil.copytree(DEPENDENCIES, dist / "plugins/dependencies/sakura.mcp")
@@ -51,7 +52,7 @@ class Consumer:
         context.provide("test.consumer", self, exports=["call"])
     def call(self, method, args):
         return getattr(self.service, method)(*args)
-''', encoding="utf-8")
+'''.replace('context.get("sakura.mcp")', f'context.{service_access}("sakura.mcp")'), encoding="utf-8")
     user = tmp_path / "user"
     user.mkdir()
     registry = ToolRegistry()

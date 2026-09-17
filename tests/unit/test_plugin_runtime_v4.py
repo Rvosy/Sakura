@@ -1785,6 +1785,7 @@ class Plugin:
 def test_draining_dependency_calls_keep_identity_scope_and_deadline(
     tmp_path: Path, condition: str,
 ) -> None:
+    from types import SimpleNamespace
     from app.plugins.runtime_v4 import _DrainingProcess, _ServiceBinding
 
     roots = _roots(tmp_path)
@@ -1804,7 +1805,7 @@ def test_draining_dependency_calls_keep_identity_scope_and_deadline(
             calls.append((service_key, method, args, kwargs))
             return {"removed": True}
 
-    caller, dependency = object(), Dependency()
+    caller, dependency = SimpleNamespace(scope_id="caller-process-scope"), Dependency()
     target_record = manager._records["fixture.dependency"]
     target_record.process = object() if condition == "stale_target" else dependency
     target_record.state = "disabled" if condition == "inactive_target" else "active"
@@ -1831,6 +1832,7 @@ def test_draining_dependency_calls_keep_identity_scope_and_deadline(
         assert len(calls) == 1
         assert 0 < calls[0][3]["timeout"] <= 0.5
         assert calls[0][3]["caller_id"] == "fixture.caller"
+        assert calls[0][3]["caller_scope"] == "caller-process-scope"
     else:
         with pytest.raises((PluginApiError, PluginRuntimeError)) as rejected:
             invoke()

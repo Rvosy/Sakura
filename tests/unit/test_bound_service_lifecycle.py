@@ -196,9 +196,9 @@ def test_repeated_stop_waits_for_removed_process_cleanup(
         child = psutil.Process(manager.call_service(SERVICE, "child"))
         original_clear = manager._clear_plugin_scope
 
-        def clear_scope(plugin_id):
+        def clear_scope(plugin_id, scope_id=None):
             scopes_cleared.append(plugin_id)
-            original_clear(plugin_id)
+            original_clear(plugin_id, scope_id)
 
         monkeypatch.setattr(manager, "_clear_plugin_scope", clear_scope)
         method = "_terminate_failed_process" if source == "process_exit" else "_close_owned_process"

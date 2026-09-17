@@ -180,7 +180,6 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
 def test_session_is_published_only_after_application_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binding_fails: bool,
 ) -> None:
-    from app.config import web_plugin_migration
     from app.core_host import plugin_application
     from app.core_host.assistant_adapter import ReadinessResult
     from app.core_host.server import HostConfig, ReadinessController
@@ -225,7 +224,6 @@ def test_session_is_published_only_after_application_binding(
 
     application = Application()
     monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_: application)
-    monkeypatch.setattr(web_plugin_migration, "prepare_bundled_web_plugin", lambda *_: None)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), "session-binding-test", "a" * 32),
         initializer_factory=lambda *_: Initializer(),
