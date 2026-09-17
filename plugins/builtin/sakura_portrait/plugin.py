@@ -15,33 +15,33 @@ def _relative(value):
         or PurePosixPath(value).is_absolute() or PureWindowsPath(value).drive
         or any(part in {"", ".", ".."} for part in value.split("/"))
         or any(char in value for char in ':\x00')):
-        raise ValueError("VISUAL_RESOURCE_INVALID")
+        raise ValueError("VISUAL_RESOURCE_INVALID: 图片路径必须是资源目录内的相对路径")
     return value
 
 
 def _legacy_path(value):
     if not isinstance(value, str):
-        raise ValueError("VISUAL_RESOURCE_INVALID")
+        raise ValueError("VISUAL_RESOURCE_INVALID: 图片路径必须是字符串")
     raw = value.strip().strip('"').strip("'").replace("\\", "/")
     if PurePosixPath(raw).is_absolute() or PureWindowsPath(raw).drive:
-        raise ValueError("VISUAL_RESOURCE_INVALID")
+        raise ValueError("VISUAL_RESOURCE_INVALID: 图片路径不能是绝对路径")
     return _relative(posixpath.normpath(raw))
 
 
 def portrait_configuration(value, *, legacy=False):
     if not isinstance(value, dict) or "expressionRows" in value:
-        raise ValueError("VISUAL_RESOURCE_INVALID")
+        raise ValueError("VISUAL_RESOURCE_INVALID: 立绘配置必须是对象，且不能使用 expressionRows")
     path_value = _legacy_path if legacy else _relative
     default = path_value(value.get("default"))
     expressions = value.get("expressions") or {}
     if not isinstance(expressions, dict) or len(expressions) > 63:
-        raise ValueError("VISUAL_RESOURCE_INVALID")
+        raise ValueError("VISUAL_RESOURCE_INVALID: expressions 必须是对象且不能超过 63 项")
     assets = {DEFAULT_KEY: default}
     for label, path in expressions.items():
         if not isinstance(label, str) or not label.strip() or len(label) > 256 or label == DEFAULT_KEY:
-            raise ValueError("VISUAL_RESOURCE_INVALID")
+            raise ValueError(f"VISUAL_RESOURCE_INVALID: 立绘标签无效：{label!r}")
         if any(ord(char) < 32 for char in label) or label.strip() in assets:
-            raise ValueError("VISUAL_RESOURCE_INVALID")
+            raise ValueError(f"VISUAL_RESOURCE_INVALID: 立绘标签重复或含控制字符：{label!r}")
         assets[label.strip()] = path_value(path)
     return assets
 
@@ -49,14 +49,14 @@ def portrait_configuration(value, *, legacy=False):
 def inspect_png(path):
     size = path.stat().st_size
     if not 33 <= size <= 16 * 1024 * 1024:
-        raise ValueError("VISUAL_RESOURCE_INVALID")
+        raise ValueError(f"VISUAL_RESOURCE_INVALID: PNG 文件大小 {size} 字节超出允许范围（33 至 16777216 字节）")
     with path.open("rb") as stream:
         header = stream.read(33)
     if header[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR':
-        raise ValueError("VISUAL_RESOURCE_INVALID")
+        raise ValueError("VISUAL_RESOURCE_INVALID: 缺少有效的 PNG/IHDR 文件头")
     width, height = int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
     if not 0 < width <= 8192 or not 0 < height <= 8192 or width * height > 40_000_000:
-        raise ValueError("VISUAL_RESOURCE_INVALID")
+        raise ValueError(f"VISUAL_RESOURCE_INVALID: 图片尺寸 {width}×{height} 超出允许范围（每边 1 至 8192 像素，总计不超过 40000000 像素）")
     return {"width": width, "height": height, "byteLength": size}
 
 
@@ -66,33 +66,32 @@ class PortraitService:
         self.logger = logger
 
     def describe(self, request):
-        try:
-            return self._describe(request)
-        except (ValueError, OSError, RuntimeError):
-            self.logger.warning("立绘资源无法加载", fields={"reason_code": "VISUAL_RESOURCE_INVALID", "stage": "visual.describe"})
-            return {"error": "VISUAL_RESOURCE_INVALID"}
-
-    def _describe(self, request):
         resource = request["resource"]
         prefix = "" if resource["root"] == "." else resource["root"] + "/"
-        entry = Path(self.character.resolve_resource(request["characterId"], prefix + resource["entry"]))
-        if entry.stat().st_size > 256 * 1024:
-            raise ValueError("VISUAL_RESOURCE_INVALID")
+        relative = prefix + resource["entry"]
+        key = None
         try:
+            entry = Path(self.character.resolve_resource(request["characterId"], relative))
+            if entry.stat().st_size > 256 * 1024:
+                raise ValueError("VISUAL_RESOURCE_INVALID: 立绘配置超过 256 KiB")
             config = json.loads(entry.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            raise ValueError("VISUAL_RESOURCE_INVALID") from error
-        # Old character.json is interpreted here, without rewriting the package.
-        legacy = resource["root"] == "." and resource["entry"] == "character.json"
-        if legacy:
-            config = config.get("portrait") if isinstance(config, dict) else None
-        paths = portrait_configuration(config, legacy=legacy)
-        assets, metadata = {}, {}
-        for key, relative in paths.items():
-            relative = prefix + relative
-            path = Path(self.character.resolve_resource(request["characterId"], relative))
-            metadata[key] = inspect_png(path)
-            assets[key] = relative
+            # Old character.json is interpreted here, without rewriting the package.
+            legacy = resource["root"] == "." and resource["entry"] == "character.json"
+            if legacy:
+                config = config.get("portrait") if isinstance(config, dict) else None
+            paths = portrait_configuration(config, legacy=legacy)
+            assets, metadata = {}, {}
+            for key, relative in paths.items():
+                relative = prefix + relative
+                path = Path(self.character.resolve_resource(request["characterId"], relative))
+                metadata[key] = inspect_png(path)
+                assets[key] = relative
+        except (ValueError, OSError, RuntimeError):
+            target = f"立绘 {key!r}" if key is not None else "立绘配置"
+            self.logger.warning(f"{target} 无法加载（{relative}）", fields={
+                "reason_code": "VISUAL_RESOURCE_INVALID", "stage": "visual.describe", "path": relative,
+            })
+            return {"error": "VISUAL_RESOURCE_INVALID"}
         choices = list(paths)[1:]
         return {
             "prompt": "立绘控制：在 control.payload.key 中填写图片标签。可选标签："

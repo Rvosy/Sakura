@@ -181,7 +181,8 @@ def test_v110_unpublished_portrait_draft_survives_editor_and_save(tmp_path, auto
         application.close()
 
 
-def test_portrait_decode_error_uses_plugin_logging_with_original_cause(tmp_path):
+@pytest.mark.parametrize("failure", ["json", "png", "missing"])
+def test_portrait_resource_error_logs_target_and_original_cause(tmp_path, failure):
     import io
     from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
     distribution, user = tmp_path / "distribution", tmp_path / "user"
@@ -190,7 +191,11 @@ def test_portrait_decode_error_uses_plugin_logging_with_original_cause(tmp_path)
     (package / "visual").mkdir(parents=True)
     (package / "card.md").write_text("demo", encoding="utf-8")
     (package / "character.json").write_text(json.dumps({"id": "demo", "display_name": "Demo", "card": "card.md", "visuals": {"resources": [{"id": "portrait", "type": "sakura.visual.portrait@1", "root": "visual", "entry": "resource.json"}], "default": "portrait"}}), encoding="utf-8")
-    (package / "visual/resource.json").write_text("{broken json", encoding="utf-8")
+    config = "{broken json" if failure == "json" else json.dumps({"default": "default.png", "expressions": {"开心": "happy.png"}}, ensure_ascii=False)
+    (package / "visual/resource.json").write_text(config, encoding="utf-8")
+    (package / "visual/default.png").write_bytes(PNG)
+    if failure == "png":
+        (package / "visual/happy.png").write_bytes(b"broken PNG" * 5)
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     application = PluginApplicationHost(RuntimeRoots(distribution, user), "g", ToolRegistry())
@@ -203,9 +208,18 @@ def test_portrait_decode_error_uses_plugin_logging_with_original_cause(tmp_path)
         bridge.close()
     records = [json.loads(line[len(CORE_BRIDGE_PREFIX):]) for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
     record = next(record for record in records if record.get("plugin_id") == "sakura.portrait" and record.get("attributes", {}).get("stage") == "visual.describe")
-    assert "JSONDecodeError" in record["attributes"]["exception_chain"]
-    assert "Expecting property name" in record["attributes"]["diagnostic"]
-    assert "_describe" in record["attributes"]["exception_stack"]
+    if failure == "json":
+        assert record["attributes"]["error_type"] == "JSONDecodeError"
+        assert "Expecting property name" in record["attributes"]["diagnostic"]
+        assert record["attributes"]["path"] == "visual/resource.json"
+    else:
+        assert "开心" in record["message"]
+        assert record["attributes"]["path"] == "visual/happy.png"
+        if failure == "png":
+            assert "PNG/IHDR" in record["attributes"]["diagnostic"]
+        else:
+            assert "FileNotFoundError" in record["attributes"]["exception_chain"]
+    assert "describe" in record["attributes"]["exception_stack"]
 
 
 @pytest.mark.parametrize("byte_length", [8 * 1024 * 1024 + 1, 16 * 1024 * 1024, 16 * 1024 * 1024 + 1])
