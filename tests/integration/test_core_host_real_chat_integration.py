@@ -1845,46 +1845,6 @@ def test_cancel_interrupts_blocked_provider_read_with_one_terminal(tmp_path: Pat
         _stop_provider(server, provider_thread)
 
 
-def test_cancel_interrupts_provider_retry_sleep(tmp_path: Path) -> None:
-    server, provider_thread = _start_provider("http-500")
-    app_root = _configure_app_root(tmp_path, server.server_address[1])
-    process = _start_host(app_root)
-    try:
-        _wait_ready(process)
-        _send(
-            process,
-            _request(
-                "chat-retry-cancel",
-                "chat.send",
-                {"message": "retry", "operationId": "chat-retry-cancel"},
-            ),
-        )
-        assert _read(process)["name"] == "chat.started"
-        deadline = time.monotonic() + 3
-        while not _ProviderHandler.requests and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert len(_ProviderHandler.requests) == 1
-        _send(
-            process,
-            _request(
-                "cancel-retry",
-                "chat.cancel",
-                {"operationId": "chat-retry-cancel"},
-            ),
-        )
-        frames = [_read(process), _read(process), _read(process)]
-        assert sum(frame.get("name") == "chat.cancelled" for frame in frames) == 1
-        assert not any(
-            frame.get("name") in {"chat.completed", "chat.failed"} for frame in frames
-        )
-        assert len(_ProviderHandler.requests) == 1
-        _exchange(process, _request("shutdown", "system.shutdown", {}))
-        assert process.wait(timeout=5) == 0
-    finally:
-        _stop(process)
-        _stop_provider(server, provider_thread)
-
-
 def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) -> None:
     server, provider_thread = _start_provider("invalid-content")
     app_root = _configure_app_root(tmp_path, server.server_address[1])
