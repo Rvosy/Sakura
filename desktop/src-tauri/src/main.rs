@@ -739,9 +739,15 @@ fn schedule_control_contraction_region_commit(
         .map_err(|error| format!("failed to start input contraction region timer: {error}"))
 }
 
-fn layout_contract() -> Result<LayoutContract, String> {
-    serde_json::from_str(LAYOUT_CONTRACT_JSON)
-        .map_err(|error| format!("invalid embedded pet layout contract: {error}"))
+fn layout_contract() -> Result<&'static LayoutContract, String> {
+    // Embedded data is immutable. Parse and validate it once; subsequent surface
+    // updates still validate their dynamic rectangles, DPI and native bounds.
+    static CONTRACT: std::sync::OnceLock<Result<LayoutContract, String>> =
+        std::sync::OnceLock::new();
+    CONTRACT
+        .get_or_init(|| LayoutContract::from_json(LAYOUT_CONTRACT_JSON))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 fn monitor_descriptor(monitor: &tauri::Monitor) -> MonitorDescriptor {
@@ -1980,7 +1986,7 @@ fn precommit_webview_surface(
             .map_err(|error| format!("MACOS_SURFACE_AUTORESIZE_FAILED:{error}"))?;
         return macos_surface_viewport::prepare(
             application,
-            composer_resident_viewport(&layout_contract()?),
+            composer_resident_viewport(layout_contract()?),
         );
     }
     #[cfg(not(target_os = "macos"))]
@@ -2621,7 +2627,7 @@ fn start_pet_drag_blocking(
             }
             let state = session.state.expect("checked above");
             let regions = window_interaction::logical_hit_regions_with_control_surface(
-                &layout_contract()?,
+                layout_contract()?,
                 state,
                 session
                     .portrait_alpha_mask
@@ -2769,7 +2775,7 @@ fn open_pet_context_menu(
         .state
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
     let regions = window_interaction::logical_hit_regions_with_control_surface(
-        &layout_contract()?,
+        layout_contract()?,
         state,
         geometry
             .portrait_alpha_mask
@@ -3152,7 +3158,7 @@ fn pet_surface_hovered(
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
     surface_hover_contains(
-        &layout_contract()?,
+        layout_contract()?,
         &geometry,
         [cursor.x, cursor.y],
         [origin.x, origin.y],
@@ -3279,7 +3285,7 @@ fn set_pet_tool_dock_surface(
             .relax_hit_regions(&window)
             .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
     }
-    geometry.apply_tool_dock_surface(&layout_contract()?, rect, |next| {
+    geometry.apply_tool_dock_surface(layout_contract()?, rect, |next| {
         apply_precise_hit_regions(&window, next)
     })
 }
@@ -5410,7 +5416,7 @@ fn begin_control_surface_preview(
                 .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
             let guard_started = std::time::Instant::now();
             let guard_rectangles = build_control_surface_gesture_guard_rectangles(
-                &layout_contract()?,
+                layout_contract()?,
                 application,
                 control_surface,
                 geometry.portrait_scale_percent,
@@ -5557,7 +5563,7 @@ fn preview_pet_control_surface(
     #[cfg(target_os = "macos")]
     {
         let regions = build_native_interaction_regions(
-            &layout_contract()?,
+            layout_contract()?,
             &application,
             Some(&control_surface),
             geometry.portrait_alpha_mask.as_ref(),
@@ -5655,7 +5661,7 @@ fn end_control_surface_preview(
             .clone()
             .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
         let hit_regions = build_native_interaction_regions(
-            &layout_contract()?,
+            layout_contract()?,
             &application,
             geometry.control_surface.as_ref(),
             geometry.portrait_alpha_mask.as_ref(),
