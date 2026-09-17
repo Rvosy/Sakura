@@ -1570,10 +1570,14 @@ def test_real_core_routes_screen_awareness_settings_and_preserves_yaml(tmp_path:
         _stop_provider(server, provider_thread)
 
 
-def test_real_core_local_provider_completed_projection_and_history(tmp_path: Path) -> None:
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_real_core_local_provider_completed_projection_and_history(tmp_path: Path, authenticated: bool) -> None:
     server, provider_thread = _start_provider("complete")
     port = server.server_address[1]
     app_root = _configure_app_root(tmp_path, port)
+    if not authenticated:
+        api_path = app_root / "config/api.yaml"
+        api_path.write_text(api_path.read_text(encoding="utf-8").replace("api_key: LOCAL_TEST_KEY", "api_key: ''"), encoding="utf-8")
     process = _start_host(app_root)
     try:
         _wait_ready(process)
@@ -1916,7 +1920,7 @@ def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) 
 
 @pytest.mark.parametrize(
     ("status", "retryable", "request_count"),
-    [(400, False, 1), (401, False, 1), (429, True, 3), (500, True, 3)],
+    [(400, False, 1), (401, False, 1), (429, True, 1), (500, True, 1)],
 )
 def test_provider_http_status_is_sanitized_and_scoped_to_one_operation(
     tmp_path: Path,

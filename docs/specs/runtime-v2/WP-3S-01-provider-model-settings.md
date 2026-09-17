@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-11
+updated: 2026-09-18
 ---
 
 # WP-3S-01：供应商与模型设置纵向链
@@ -39,8 +39,21 @@ Runtime v2 canonical 设置页完成 Provider 公开读取、
 - 连接测试请求列表中的第一个模型，成功反馈包含该模型名称，不以获取目录或端点可达代替模型测试。
   已知验证失败、拒绝访问和超时使用简短提示，清洗后的 HTTP 信息和稳定错误码放在可展开的“错误详情”中。
   新一次探测清除旧详情，失效请求不能向已切换的模型服务填入错误详情。
-- 模型探测使用完整的 `timeout_seconds` 作为单次 HTTP 超时，不自动重试网络请求；普通聊天保留原重试策略。
+- 模型探测与普通聊天使用完整的 `timeout_seconds` 作为单次 HTTP I/O 超时，不自动重试网络请求。
   连接测试只发送模型与最小用户消息，不指定温度或输出 token 上限，避免与推理模型参数限制冲突。
+- 模型网络只使用官方 OpenAI Python SDK 的普通请求接口，SDK 的 `max_retries=0`；429、5xx、连接中断和
+  超时直接返回错误。`retryable` 表示用户可重新发起操作，不授权任何一层自动重放请求。
+  供应商明确拒绝 `response_format`、`temperature` 或尾部 system 消息时，可按已知规则调整参数后发送新请求；
+  每项兼容调整至多发生一次。回复格式修复由 Assistant 单独决定，不能伪装成网络重试。
+- 同一轮 `request_scope()` 固定模型、凭据、生成参数与连接使用的代理；工具循环中的模型调用复用同一连接池。
+  退出时关闭客户端和当前线程事件循环；取消会等待异步请求结束，不留下后台网络读取线程。配置保存影响下一轮。
+  实际网络尝试按轮递增计数，HTTP 状态、兼容回退原因与原始 SDK cause 均可检查。
+- 回环地址允许空 API Key，空值时不发送 Authorization。远端仍要求配置凭据。
+  设置保存、模型目录/连接探测和 Core 就绪判断共用此规则；`configured` 仍只表示已保存凭据，不能单独判断本地服务是否就绪。
+  应用版本缺失时发送 `Sakura/dev` User-Agent，不阻止正常模型请求。
+  当前接口交付完整回复；无流式消费者时拒绝 `stream=true`，不得把已交付的输出重放。
+- SDK 在实际模型请求时加载，不进入 Core 的启动握手路径。模型地址必须指向最终 API 端点；3xx 响应直接报错，
+  不隐式重定向并重发 POST。TLS 使用系统默认信任配置，也支持 `SSL_CERT_FILE`/`SSL_CERT_DIR` 指定的证书。
 - Google 官方域名的根地址、`/v1`、`/v1beta` 和 `/v1/openai` 统一使用 `/v1beta/openai`；
   模型发现和聊天均使用 Bearer API Key，模型 ID 原样传递。其他域名及自定义路径不改写。
   接口依据：[Google OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)。

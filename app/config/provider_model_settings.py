@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from app.plugin_sdk.sakura_http import is_loopback_url
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -116,7 +117,7 @@ class ProviderModelSettingsRepository:
         configured = {
             item["id"]
             for item in providers
-            if item["configured"] and item["base_url"] and item["models"]
+            if (item["configured"] or is_loopback_url(item["base_url"])) and item["base_url"] and item["models"]
         }
         chat = slots["chat"]
         setup_complete = bool(chat["profile_id"] in configured and chat["model"])
@@ -230,7 +231,7 @@ class ProviderModelSettingsRepository:
             secret = credential.value
         else:
             secret = ""
-        if not secret:
+        if not secret and not is_loopback_url(base_url):
             raise ProviderModelSettingsError("CREDENTIAL_REQUIRED", "请填写 API Key。", feature="providers.credentials", field="credential")
         return base_url, secret, model, timeout
 
@@ -318,7 +319,10 @@ class ProviderModelSettingsRepository:
         if draft.chat.empty:
             return False
         provider = next((item for item in draft.providers if item.id == draft.chat.profile_id), None)
-        return bool(provider and secrets.get(provider.id) and draft.chat.model in provider.models)
+        return bool(
+            provider and (secrets.get(provider.id) or is_loopback_url(provider.base_url))
+            and draft.chat.model in provider.models
+        )
 
 
 def parse_draft(raw: object) -> ProviderModelDraft:

@@ -526,7 +526,6 @@ class ProviderSettingsBoundary:
                     timeout_seconds=timeout,
                 ),
                 app_version=self._app_version,
-                retry_requests=False,
             )
             # Core stdout is reserved for framed protocol bytes.  The shared
             # client emits normal runtime logs to stdout, so probe traffic must

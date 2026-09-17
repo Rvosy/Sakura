@@ -265,6 +265,34 @@ def test_credential_replace_and_explicit_clear(
     assert saved["llm"]["api_key"] == expected
 
 
+@pytest.mark.parametrize("url,ready", [
+    ("http://localhost:11434/v1", True),
+    ("http://127.0.0.1:11434/v1", True),
+    ("http://127.4.5.6/v1", True),
+    ("http://[::1]:11434/v1", True),
+    ("https://fixture.invalid/v1", False),
+])
+def test_empty_key_readiness_and_probes_follow_endpoint_authentication(tmp_path, url, ready):
+    root = _root(tmp_path)
+    repository = ProviderModelSettingsRepository(root)
+    draft = _draft(action="clear")
+    draft["providers"][0]["base_url"] = url
+    saved = repository.save(draft)
+    assert saved["setup_complete"] is ready
+    snapshot = repository.snapshot()
+    assert snapshot["setup_complete"] is ready
+    assert snapshot["providers"][0]["configured"] is False
+    selected = CoreConfigReader().read(root)
+    assert (selected.provider_selection is not None) is ready
+    probe = {"profile_id": "fixture", "base_url": url, "model": "chat-model", "timeout_seconds": 15, "credential": {"action": "keep"}}
+    if ready:
+        assert repository.resolve_probe(probe, require_model=True) == (url, "", "chat-model", 15)
+    else:
+        with pytest.raises(ProviderModelSettingsError) as caught:
+            repository.resolve_probe(probe, require_model=True)
+        assert caught.value.code == "CREDENTIAL_REQUIRED"
+
+
 def test_invalid_domain_or_atomic_failure_never_changes_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -6,7 +6,6 @@ import shutil
 import sys
 import threading
 import time
-import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -503,12 +502,12 @@ def test_probe_http_errors_keep_status_and_provider_details_after_redaction(
                 }
             }
         )
-        http_error = urllib.error.HTTPError(
-            "https://fixture.invalid/v1/models",
-            status,
-            "failed",
-            {},
-            io.BytesIO(body.encode("utf-8")),
+        import httpx
+        from openai import APIStatusError
+
+        http_error = APIStatusError(
+            "failed", body=json.loads(body),
+            response=httpx.Response(status, content=body, request=httpx.Request("GET", "https://fixture.invalid/v1/models")),
         )
         raise ApiRequestError(f"API HTTP {status}: {body}") from http_error
 
@@ -894,22 +893,28 @@ def test_google_probe_uses_full_timeout_without_restarting_request(
     boundary.enable()
     calls = []
 
-    def read_response(_opener, request, *, timeout, cancel_checker):
-        calls.append(request)
-        cancel_checker()
-        # 用虚拟供应商耗时复现：8 秒生成应落在 15 秒预算内，不应被缩成 5 秒。
-        if latency > timeout:
-            raise TimeoutError()
-        assert request.get_header("Authorization") == f"Bearer {SECRET}"
-        if kind == "list_models":
-            assert request.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/models"
-            return b'{"data":[{"id":"gemini-2.5-flash"}]}', 200
-        assert request.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-        payload = json.loads(request.data)
-        assert payload == {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Reply with only OK."}]}
-        return b'{"choices":[{"message":{"content":"OK"}}]}', 200
+    import httpx
 
-    monkeypatch.setattr("app.llm.api_client.read_url_cancellable", read_response)
+    def read_response(request):
+        calls.append(request)
+        # 虚拟供应商耗时：8 秒落在 15 秒预算内，16 秒返回真实传输层超时类型。
+        if latency > request.extensions["timeout"]["read"]:
+            raise httpx.ReadTimeout("provider timed out", request=request)
+        assert request.headers["Authorization"] == f"Bearer {SECRET}"
+        if kind == "list_models":
+            assert str(request.url) == "https://generativelanguage.googleapis.com/v1beta/openai/models"
+            return httpx.Response(200, json={"data": [{"id": "gemini-2.5-flash"}]})
+        assert str(request.url) == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        payload = json.loads(request.content)
+        assert payload == {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "Reply with only OK."}]}
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    class MockClient(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            kwargs.pop("proxy", None)
+            super().__init__(**kwargs, transport=httpx.MockTransport(read_response))
+
+    monkeypatch.setattr("httpx.AsyncClient", MockClient)
     profile = _profile("google-probe")
     profile["profile"].update(base_url="https://generativelanguage.googleapis.com/v1", model="gemini-2.5-flash", timeout_seconds=15)
     result = boundary.handle(_request("google-probe", f"settings.provider_model.{kind}", profile))

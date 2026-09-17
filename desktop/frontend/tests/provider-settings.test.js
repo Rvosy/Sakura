@@ -406,6 +406,35 @@ test("Google preset discovers and probes the selected model with the official en
   assert.deepEqual(draft.providers[1].models, ["gemini-fixture"]);
 });
 
+test("local model discovery and connection probes accept empty credentials", async (t) => {
+  for (const baseUrl of ["http://localhost:11434/v1", "http://127.0.0.1:11434/v1", "http://127.4.5.6/v1", "http://[::1]:11434/v1"]) {
+    await t.test(baseUrl, async () => {
+      const current = snapshot();
+      current.providers[0].base_url = baseUrl;
+      current.providers[0].configured = false;
+      const ui = featureFixture(current, (command, args) => command === "settings_provider_model_probe"
+        ? (args.kind === "list_models" ? { models: ["fixture-model"] } : { message: "OK" }) : undefined);
+      await ui.feature.initialize();
+      await ui.button("获取模型列表").fire("click");
+      await ui.button("添加", ui.document.querySelector(".model-picker-dialog")).fire("click");
+      await ui.button("测试连接").fire("click");
+      const probes = ui.calls.filter(([command]) => command === "settings_provider_model_probe");
+      assert.deepEqual(probes.map(([, args]) => args.kind), ["list_models", "test_connection"]);
+      assert.ok(probes.every(([, args]) => args.profile.credential.action === "clear"));
+    });
+  }
+});
+
+test("remote endpoints still require credentials before probing", async () => {
+  const current = snapshot();
+  current.providers[0].configured = false;
+  const ui = featureFixture(current);
+  await ui.feature.initialize();
+  await ui.button("获取模型列表").fire("click");
+  await ui.button("测试连接").fire("click");
+  assert.equal(ui.calls.filter(([command]) => command === "settings_provider_model_probe").length, 0);
+});
+
 test("model discovery adds only selected new models and connection testing reports the actual probe result", async () => {
   let failure = false;
   const ui = featureFixture(snapshot(), (command, args) => {

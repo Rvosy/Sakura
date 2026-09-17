@@ -207,7 +207,7 @@ def test_legacy_chat_executor_does_not_override_default_assistant(
     system_path = root / "config" / "system_config.yaml"
     saved = f"config_version: 1\nchat_executor: {legacy_selection}\nother: keep\n"
     system_path.write_text(saved, encoding="utf-8")
-    adapter = AssistantAdapter(root, tool_registry=ToolRegistry(), mcp_provider=None)
+    adapter = AssistantAdapter(root, tool_registry=ToolRegistry())
     try:
         result = adapter.initialize(Event())
         assert result.state == "ready"

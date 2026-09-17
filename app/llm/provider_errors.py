@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
 from collections.abc import Mapping
 from typing import Any
 
@@ -27,13 +26,14 @@ _PROVIDER_SENSITIVE_PATTERNS = (
 
 def provider_http_status(error: BaseException) -> int | None:
     """Return a real HTTP status, or an explicitly formatted API HTTP status."""
+    from openai import APIStatusError
 
     cause: BaseException | None = error
     seen: set[int] = set()
     while cause is not None and id(cause) not in seen:
         seen.add(id(cause))
-        if isinstance(cause, urllib.error.HTTPError):
-            return int(cause.code)
+        if isinstance(cause, APIStatusError):
+            return cause.status_code
         cause = cause.__cause__
     matched = _PROVIDER_HTTP_PREFIX.search(str(error))
     return int(matched.group("status")) if matched is not None else None

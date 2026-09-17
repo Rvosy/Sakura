@@ -264,7 +264,8 @@ def test_plugin_source_and_deadline_survive_host_and_core_bridge():
 
 
 def test_model_failures_classify_http_timeout_and_wrapped_causes():
-    import urllib.error
+    import httpx
+    from openai import APIStatusError
 
     for status, domain in [
         (401, "authentication"),
@@ -272,16 +273,15 @@ def test_model_failures_classify_http_timeout_and_wrapped_causes():
         (503, "provider"),
     ]:
         error = ApiRequestError("PRIVATE_EXCEPTION_MESSAGE")
-        error.__cause__ = urllib.error.HTTPError(
-            "https://PRIVATE_URL", status, "PRIVATE_BODY", {}, None
+        error.__cause__ = APIStatusError(
+            "PRIVATE_BODY", response=httpx.Response(status, request=httpx.Request("POST", "https://PRIVATE_URL")), body=None,
         )
         result = api_client._request_failure(error)
         assert result["faultDomain"] == domain and result["httpStatus"] == status
         assert "PRIVATE" not in json.dumps(result)
-    timeout = TimeoutError("PRIVATE_EXCEPTION_MESSAGE")
-    assert api_client._request_failure(timeout)["stage"] == "unknown"
-    timeout.sakura_request_stage = "read"
+    timeout = httpx.ReadTimeout("PRIVATE_EXCEPTION_MESSAGE")
     assert api_client._request_failure(timeout)["reasonCode"] == "MODEL_READ_TIMEOUT"
+    assert api_client._request_failure(httpx.ConnectTimeout("PRIVATE"))["reasonCode"] == "MODEL_CONNECTION_TIMEOUT"
 
 
 def test_mem0_logs_once_through_the_same_plugin_pipeline():

@@ -17,6 +17,7 @@ from app.config.models import (
     ModelSlotSelection,
 )
 from app.llm.api_client import ApiSettings as ClientApiSettings
+from app.plugin_sdk.sakura_http import is_loopback_url
 from app.storage.paths import StoragePaths
 
 
@@ -389,7 +390,11 @@ class CoreConfigReader:
         if resolved is None:
             return _problem_result_with_character(config_dir, "PROVIDER_SETUP_REQUIRED")
         settings = resolved.settings
-        if not settings.base_url.strip() or not settings.api_key.strip() or not settings.model.strip():
+        if (
+            not settings.base_url.strip()
+            or not settings.model.strip()
+            or (not settings.api_key.strip() and not is_loopback_url(settings.base_url))
+        ):
             return _problem_result_with_character(config_dir, "PROVIDER_SETUP_REQUIRED")
         problem = _validate_provider_url(settings.base_url)
         if problem is not None:

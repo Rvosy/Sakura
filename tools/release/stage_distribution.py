@@ -44,13 +44,13 @@ BUNDLED_DEPENDENCY_DIRECTORIES = {
 CORE_IMPORTS = (
     "yaml",
     "py7zz",
+    "openai",
 )
 PLUGIN_ONLY_IMPORTS = (
     "mcp",
     "sherpa_onnx",
     "sherpa_onnx_core",
     "playwright",
-    "openai",
     "qdrant_client",
     "sqlalchemy",
     "posthog",

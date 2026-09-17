@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime
 from dataclasses import replace
 from threading import Lock
@@ -636,10 +637,23 @@ class AgentRuntime:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
-        with self.context_orchestrator.turn(
-            self.context_providers, cancel_checker=cancel_checker
-        ):
+        with self._turn(cancel_checker):
             return self._handle_user_message(messages, progress_callback, cancel_checker)
+
+    @contextmanager
+    def _turn(self, cancel_checker: CancelChecker | None):
+        """Keep model configuration, connections and context within one turn."""
+
+        with ExitStack() as resources:
+            clients = [self.api_client]
+            if self.vision_api_client is not None and self.vision_api_client is not self.api_client:
+                clients.append(self.vision_api_client)
+            for client in clients:
+                resources.enter_context(getattr(client, "request_scope", nullcontext)())
+            resources.enter_context(self.context_orchestrator.turn(
+                self.context_providers, cancel_checker=cancel_checker,
+            ))
+            yield
 
     def _handle_user_message(
         self,
@@ -1378,9 +1392,7 @@ class AgentRuntime:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
-        with self.context_orchestrator.turn(
-            self.context_providers, cancel_checker=cancel_checker
-        ):
+        with self._turn(cancel_checker):
             return self._handle_event(event, progress_callback, cancel_checker)
 
     def _handle_event(

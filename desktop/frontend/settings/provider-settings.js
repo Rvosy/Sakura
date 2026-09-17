@@ -4,6 +4,21 @@ import {
   findProviderModelSelectionIssue,
 } from "./provider-model-runtime.js";
 
+function isLoopbackProviderUrl(value) {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol)) return false;
+    const host = url.hostname.toLowerCase().replace(/\.+$/, "");
+    if (host === "localhost" || host === "[::1]") return true;
+    // 使用输入中的 IPv4，避免 URL 将 127.1 等缩写扩成另一种地址格式。
+    const rawHost = String(value).trim().match(/^https?:\/\/([^/:?#]+)/i)?.[1]?.replace(/\.+$/, "") || "";
+    return /^127(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(rawHost)
+      && rawHost.split(".").every((part) => Number(part) <= 255);
+  } catch {
+    return false;
+  }
+}
+
 export function createProviderSettingsFeature({
   document,
   window,
@@ -166,7 +181,8 @@ export function createProviderSettingsFeature({
     const items = providerState.profiles;
     const configured = items.filter(
       (profile) => (profile.base_url || "").trim()
-        && ((profile.api_key || "").trim() || (profile.configured && profile.credential_action !== "clear")),
+        && (isLoopbackProviderUrl(profile.base_url) || (profile.api_key || "").trim()
+          || (profile.configured && profile.credential_action !== "clear")),
     ).length;
     const totalModels = items.reduce((sum, profile) => sum + (profile.models || []).length, 0);
     renderStrip(fields.providerStatusStrip, [
@@ -482,7 +498,7 @@ export function createProviderSettingsFeature({
       setError("请先填写 API 地址。");
       return;
     }
-    if (!apiKey && !(profile.configured && profile.credential_action === "keep")) {
+    if (!apiKey && !isLoopbackProviderUrl(baseUrl) && !(profile.configured && profile.credential_action === "keep")) {
       markInvalid(providerDetailInput("api_key"), true);
       setError("请先填写 API Key。");
       return;
@@ -523,7 +539,7 @@ export function createProviderSettingsFeature({
     const baseUrl = (profile.base_url || "").trim();
     const apiKey = (profile.api_key || "").trim();
     const model = (profile.models || [])[0];
-    if (!baseUrl || (!apiKey && !(profile.configured && profile.credential_action === "keep"))) {
+    if (!baseUrl || (!apiKey && !isLoopbackProviderUrl(baseUrl) && !(profile.configured && profile.credential_action === "keep"))) {
       markInvalid(providerDetailInput("base_url"), !baseUrl);
       markInvalid(providerDetailInput("api_key"), !apiKey);
       setError("请先填写 API 地址和 API Key。");

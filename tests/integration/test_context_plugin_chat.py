@@ -171,7 +171,6 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[_ChatFixtur
             "fixture-model",
             timeout_seconds=5,
         ),
-        retry_requests=False,
     )
     runtime = AgentRuntime(
         client,

@@ -1,31 +1,30 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
+from functools import wraps
 
-import http.client
+import asyncio
 import json
 import re
 import ssl
 import threading
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from app.config.app_version import read_app_version
-from app.core.cancellation import CancelChecker, OperationCancelled, cancellable_sleep, check_cancelled
+from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
 from app.core_host.runtime_logging import submit_telemetry_model_call
-from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
+from app.plugin_sdk.sakura_http import is_loopback_url, proxy_for_url
 from app.llm.chat_reply import (
     ChatReply,
     parse_chat_reply,
     parse_chat_reply_result,
     sanitize_reply_tones,
 )
-from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.core.runtime_log import diagnostic_attributes, log_event
 from app.llm.prompt_templates import build_segmented_reply_instruction
 from app.agent.trace import (
@@ -41,7 +40,7 @@ from app.agent.trace import (
 )
 
 
-API_RETRY_DELAY_SECONDS = 0.8
+MAX_COMPATIBILITY_ATTEMPTS = 3
 STRUCTURED_JSON_RESPONSE_FORMAT = {"type": "json_object"}
 ChatMessage = dict[str, Any]
 SUPPORTED_CHAT_COMPLETION_PARAMS = {
@@ -107,6 +106,21 @@ class ChatCompletionTurn:
     trace_call: TraceCall | None = None
 
 
+@dataclass
+class _ClientConfiguration:
+    settings: ApiSettings
+    unsupported_chat_params: set[str] = field(default_factory=set)
+    runtime_context_role: str = "system"
+
+
+def _scoped_request(method):
+    @wraps(method)
+    def invoke(self, *args, **kwargs):
+        with self.request_scope():
+            return method(self, *args, **kwargs)
+    return invoke
+
+
 class OpenAICompatibleClient:
     def __init__(
         self,
@@ -114,20 +128,58 @@ class OpenAICompatibleClient:
         *,
         agent_trace_recorder: AgentTraceRecorder | None = None,
         app_version: str | None = None,
-        retry_requests: bool = True,
     ) -> None:
-        self.settings = settings
-        self._request_attempts = MAX_AUTO_RETRY_ATTEMPTS if retry_requests else 1
+        self._configuration = _ClientConfiguration(settings)
         resolved_version = app_version or read_app_version(Path(__file__).resolve().parents[2])
-        self._app_version = resolved_version.strip().removeprefix("v")
-        self._unsupported_chat_params: set[str] = set()
-        self._runtime_context_role = "system"
+        self._app_version = resolved_version.strip().removeprefix("v") or "dev"
         # 可选事件发射器（由宿主注入），用于派发 llm.request.* 插件事件。
         self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
         self._agent_trace_recorder = agent_trace_recorder
         self._trace_local = threading.local()
         if agent_trace_recorder is not None:
             agent_trace_recorder.add_secret(settings.api_key)
+
+    @property
+    def _active_configuration(self) -> _ClientConfiguration:
+        return getattr(self._trace_local, "configuration", self._configuration)
+
+    @property
+    def settings(self) -> ApiSettings:
+        return self._active_configuration.settings
+
+    @property
+    def _unsupported_chat_params(self) -> set[str]:
+        return self._active_configuration.unsupported_chat_params
+
+    @property
+    def _runtime_context_role(self) -> str:
+        return self._active_configuration.runtime_context_role
+
+    @_runtime_context_role.setter
+    def _runtime_context_role(self, value: str) -> None:
+        self._active_configuration.runtime_context_role = value
+
+    @contextmanager
+    def request_scope(self):
+        """固定本轮配置，在当前线程复用连接；退出时回收所有异步 I/O。"""
+        if getattr(self._trace_local, "configuration", None) is not None:
+            yield self
+            return
+        self._trace_local.configuration = self._configuration
+        self._trace_local.sdk = None
+        self._trace_local.attempt = 0
+        try:
+            with asyncio.Runner() as runner:
+                self._trace_local.runner = runner
+                try:
+                    yield self
+                finally:
+                    if self._trace_local.sdk is not None:
+                        runner.run(self._trace_local.sdk.close())
+        finally:
+            del self._trace_local.configuration
+            del self._trace_local.runner
+            del self._trace_local.sdk
 
     def set_agent_trace_recorder(self, recorder: AgentTraceRecorder | None) -> None:
         self._agent_trace_recorder = recorder
@@ -162,9 +214,7 @@ class OpenAICompatibleClient:
 
     def update_settings(self, settings: ApiSettings) -> None:
         """运行时更新 API 配置，供设置界面保存后立即生效。"""
-        self.settings = settings
-        self._unsupported_chat_params.clear()
-        self._runtime_context_role = "system"
+        self._configuration = _ClientConfiguration(settings)
         if self._agent_trace_recorder is not None:
             self._agent_trace_recorder.add_secret(settings.api_key)
     @property
@@ -187,6 +237,7 @@ class OpenAICompatibleClient:
             extra["max_tokens"] = self.settings.max_tokens
         return temperature, extra
 
+    @_scoped_request
     def test_connection(self, *, cancel_checker: CancelChecker | None = None) -> str:
         """发送一次最小聊天请求，验证 Base URL、API Key 和模型是否可用。"""
         self._ensure_chat_config("缺少 API_KEY。请在设置中填写 API Key。")
@@ -215,16 +266,12 @@ class OpenAICompatibleClient:
 
         return str(content).strip() or "OK"
 
+    @_scoped_request
     def list_models(self, *, cancel_checker: CancelChecker | None = None) -> list[str]:
         """读取 OpenAI 兼容 /models 接口，返回可选择的模型 id 列表。"""
         self._ensure_model_list_config()
         base_url = _normalize_openai_base_url(self.settings.base_url)
         url = f"{base_url}/models"
-        request = urllib.request.Request(
-            url=url,
-            method="GET",
-            headers=self._request_headers(),
-        )
         log_event(
             "API",
             "准备检测模型列表",
@@ -234,17 +281,8 @@ class OpenAICompatibleClient:
                 "timeout_seconds": self.settings.timeout_seconds,
             },
         )
-        response_body = (
-            self._send_with_retries(request)
-            if cancel_checker is None
-            else self._send_with_retries(request, cancel_checker=cancel_checker)
-        )
+        data = self._send_request(None, cancel_checker=cancel_checker)
         check_cancelled(cancel_checker)
-
-        try:
-            data: dict[str, Any] = json.loads(response_body)
-        except json.JSONDecodeError as exc:
-            raise ApiRequestError(f"API 返回格式无法解析：{response_body}") from exc
 
         model_ids = _parse_model_ids(data)
         log_event(
@@ -257,6 +295,7 @@ class OpenAICompatibleClient:
         )
         return model_ids
 
+    @_scoped_request
     def chat(
         self,
         system_prompt: str,
@@ -312,6 +351,7 @@ class OpenAICompatibleClient:
         )
         return reply
 
+    @_scoped_request
     def complete_raw(
         self,
         system_prompt: str,
@@ -440,6 +480,7 @@ class OpenAICompatibleClient:
         )
         return result
 
+    @_scoped_request
     def complete_with_tools(
         self,
         system_prompt: str,
@@ -618,7 +659,7 @@ class OpenAICompatibleClient:
             fallback_payload.pop(param, None)
         fallback_kind = getattr(self._trace_local, "pending_fallback", None)
         self._trace_local.pending_fallback = None
-        for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
+        for attempt in range(1, MAX_COMPATIBILITY_ATTEMPTS + 1):
             self._trace_local.request_diagnostic = (
                 {"compatibilityFallback": fallback_kind} if fallback_kind else {}
             )
@@ -706,7 +747,7 @@ class OpenAICompatibleClient:
                         "结构化 response_format 不受支持，已回退普通请求",
                         {
                             "attempt": attempt,
-                            "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                            "max_attempts": MAX_COMPATIBILITY_ATTEMPTS,
                             **diagnostic_attributes(
                                 exc,
                                 reason_code="MODEL_REQUEST_RETRYABLE",
@@ -724,7 +765,7 @@ class OpenAICompatibleClient:
                         "模型不支持自定义 temperature，已回退默认温度",
                         {
                             "attempt": attempt,
-                            "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                            "max_attempts": MAX_COMPATIBILITY_ATTEMPTS,
                             **diagnostic_attributes(
                                 exc,
                                 reason_code="MODEL_REQUEST_FAILED",
@@ -766,7 +807,7 @@ class OpenAICompatibleClient:
         raise ApiRequestError("API 兼容性自动回退已达到最大次数。")
 
     def _ensure_chat_config(self, api_key_message: str) -> None:
-        if not self.settings.api_key:
+        if not self.settings.api_key and not is_loopback_url(self.settings.base_url):
             raise ApiConfigError(api_key_message)
         if not self.settings.base_url:
             raise ApiConfigError("缺少 BASE_URL。")
@@ -774,21 +815,10 @@ class OpenAICompatibleClient:
             raise ApiConfigError("缺少 MODEL。")
 
     def _ensure_model_list_config(self) -> None:
-        if not self.settings.api_key:
+        if not self.settings.api_key and not is_loopback_url(self.settings.base_url):
             raise ApiConfigError("缺少 API_KEY。请在设置中填写 API Key。")
         if not self.settings.base_url:
             raise ApiConfigError("缺少 BASE_URL。")
-
-    def _request_headers(self, *, json_content: bool = False) -> dict[str, str]:
-        if not self._app_version:
-            raise ApiConfigError("无法读取 Sakura 版本号。")
-        headers = {
-            "Authorization": f"Bearer {self.settings.api_key}",
-            "User-Agent": f"Sakura/{self._app_version}",
-        }
-        if json_content:
-            headers["Content-Type"] = "application/json"
-        return headers
 
     def _post_chat_completions(
         self,
@@ -798,25 +828,11 @@ class OpenAICompatibleClient:
     ) -> dict[str, Any]:
         """调用 OpenAI 兼容的 chat/completions 接口并返回 JSON 数据。"""
         check_cancelled(cancel_checker)
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        base_url = _normalize_openai_base_url(self.settings.base_url)
-        url = f"{base_url}/chat/completions"
-        request = urllib.request.Request(
-            url=url,
-            data=body,
-            method="POST",
-            headers=self._request_headers(json_content=True),
-        )
-
         model_name = payload.get("model")
         self._emit_llm_event("llm.request.started", {"model": model_name})
         try:
-            response_body = self._send_with_retries(request, cancel_checker=cancel_checker)
+            data = self._send_request(payload, cancel_checker=cancel_checker)
             check_cancelled(cancel_checker)
-            try:
-                data: dict[str, Any] = json.loads(response_body)
-            except json.JSONDecodeError as exc:
-                raise ApiRequestError(f"API 返回格式无法解析：{response_body}") from exc
             if (
                 not isinstance(data, dict)
                 or not isinstance(data.get("choices"), list)
@@ -847,171 +863,142 @@ class OpenAICompatibleClient:
         self._emit_llm_event("llm.request.finished", {"model": model_name})
         return data
 
-    def _send_with_retries(
+    def _send_request(
         self,
-        request: urllib.request.Request,
+        payload: dict[str, Any] | None,
         *,
         cancel_checker: CancelChecker | None = None,
-    ) -> str:
-        last_error: BaseException | None = None
-        for attempt in range(1, self._request_attempts + 1):
-            check_cancelled(cancel_checker)
-            self._trace_local.request_diagnostic = {
-                **getattr(self._trace_local, "request_diagnostic", {}),
-                "attemptCount": attempt,
-            }
-            started_at = time.perf_counter()
-            try:
-                response_bytes, response_status = read_url_cancellable(
-                    urlopen_direct_for_loopback,
-                    request,
-                    timeout=self.settings.timeout_seconds,
-                    cancel_checker=cancel_checker,
-                )
-                self._trace_local.request_diagnostic["httpStatus"] = response_status
-                response_body = response_bytes.decode("utf-8")
-                log_event(
-                    "API",
-                    "HTTP 请求成功",
-                    {
-                        **_model_call_log_attributes(self.last_trace_call),
-                        "attempt": attempt,
-                        "endpoint_host": urlparse(request.full_url).netloc,
-                        "endpoint": request.full_url,
-                        "model": self.last_trace_call.model if self.last_trace_call is not None else self.settings.model,
-                        "status": response_status,
-                        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "response_body": response_body,
-                    },
-                    event="api.request.finished",
-                    verbosity=1,
-                )
-                return response_body
-            except urllib.error.HTTPError as exc:
-                self._trace_local.request_diagnostic["httpStatus"] = exc.code
-                error_body = exc.read().decode("utf-8", errors="replace")
-                lower = error_body.lower()
-                if any(
-                    marker in lower
-                    for marker in (
-                        "context_length_exceeded",
-                        "maximum context length",
-                        "context window",
-                    )
-                ):
-                    self._trace_local.request_diagnostic.update(
-                        faultDomain="context",
-                        reasonCode="MODEL_CONTEXT_REJECTED",
-                        stage="request",
-                    )
-                diagnostic = _provider_error_diagnostic(error_body, self.settings.api_key)
-                log_event(
-                    "API",
-                    "HTTP 请求失败",
-                    {
-                        **_model_call_log_attributes(self.last_trace_call),
-                        "attempt": attempt,
-                        "endpoint_host": urlparse(request.full_url).netloc,
-                        "status": exc.code,
-                        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "error_body": error_body,
-                        "retryable": exc.code in {429, 500, 502, 503, 504},
-                        **diagnostic,
-                    },
-                    event="api.request.failed",
-                    severity="warning",
-                    verbosity=0,
-                )
-                if exc.code not in {429, 500, 502, 503, 504} or attempt == self._request_attempts:
-                    raise ApiRequestError(
-                        _format_api_http_error(
-                            exc.code,
-                            error_body,
-                            request.full_url,
-                            self.settings.api_key,
-                        )
-                    ) from exc
-                last_error = exc
-            except urllib.error.URLError as exc:
-                diagnostic = _safe_diagnostic_text(str(exc.reason), self.settings.api_key)
-                log_event(
-                    "API",
-                    "URL 请求失败",
-                    {
-                        **_model_call_log_attributes(self.last_trace_call),
-                        "attempt": attempt,
-                        "endpoint_host": urlparse(request.full_url).netloc,
-                        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < self._request_attempts,
-                        "error_type": type(exc.reason).__name__,
-                        "reason_code": "NETWORK_UNAVAILABLE",
-                        "stage": "provider_request",
-                        **({"diagnostic": diagnostic} if diagnostic else {}),
-                    },
-                    event="api.request.failed",
-                    severity="warning",
-                    verbosity=0,
-                )
-                if attempt == self._request_attempts:
-                    raise ApiRequestError(f"API 请求失败：{exc.reason}") from exc
-                last_error = exc
-            except TimeoutError as exc:
-                log_event(
-                    "API",
-                    "请求超时",
-                    {
-                        **_model_call_log_attributes(self.last_trace_call),
-                        "attempt": attempt,
-                        "endpoint_host": urlparse(request.full_url).netloc,
-                        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < self._request_attempts,
-                        "error_type": type(exc).__name__,
-                        "diagnostic": f"Provider 在 {self.settings.timeout_seconds}s 内未返回响应",
-                    },
-                    event="api.request.failed",
-                    severity="warning",
-                    verbosity=0,
-                )
-                if attempt == self._request_attempts:
-                    raise ApiRequestError("API 请求超时。") from exc
-                last_error = exc
-            except (ssl.SSLError, ConnectionError, http.client.RemoteDisconnected) as exc:
-                diagnostic = _safe_diagnostic_text(str(exc), self.settings.api_key)
-                log_event(
-                    "API",
-                    "连接中断",
-                    {
-                        **_model_call_log_attributes(self.last_trace_call),
-                        "attempt": attempt,
-                        "endpoint_host": urlparse(request.full_url).netloc,
-                        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "retryable": attempt < self._request_attempts,
-                        "error_type": type(exc).__name__,
-                        "reason_code": "CONNECTION_INTERRUPTED",
-                        "stage": "provider_request",
-                        **({"diagnostic": diagnostic} if diagnostic else {}),
-                    },
-                    event="api.request.failed",
-                    severity="warning",
-                    verbosity=0,
-                )
-                if attempt == self._request_attempts:
-                    raise ApiRequestError(f"API 连接中断：{exc}") from exc
-                last_error = exc
+    ) -> dict[str, Any]:
+        """发送一次请求；网络错误直接交给调用者，不隐式重放生成。"""
+        check_cancelled(cancel_checker)
+        if payload is not None and payload.get("stream"):
+            raise ApiConfigError("当前模型接口仅支持完整回复。")
+        import httpx
+        from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
-            log_event(
-                "API",
-                "准备重试请求",
-                {
-                    "attempt": attempt,
-                    "max_attempts": self._request_attempts,
-                    "delay_seconds": API_RETRY_DELAY_SECONDS * attempt,
-                    "last_error": str(last_error),
+        check_cancelled(cancel_checker)
+        settings = self.settings
+        base_url = _normalize_openai_base_url(settings.base_url)
+        endpoint = f"{base_url}/{'models' if payload is None else 'chat/completions'}"
+        if self._trace_local.sdk is None:
+            self._trace_local.sdk = AsyncOpenAI(
+                api_key=settings.api_key or "local-endpoint",
+                base_url=base_url,
+                # 配置由 Sakura 管理，不从环境变量继承账号或项目。
+                organization="",
+                project="",
+                timeout=settings.timeout_seconds,
+                max_retries=0,
+                default_headers={
+                    "User-Agent": f"Sakura/{self._app_version}",
                 },
+                http_client=httpx.AsyncClient(
+                    proxy=proxy_for_url(base_url),
+                    verify=ssl.create_default_context(),
+                    trust_env=False,
+                    timeout=settings.timeout_seconds,
+                    follow_redirects=False,
+                ),
             )
-            cancellable_sleep(API_RETRY_DELAY_SECONDS * attempt, cancel_checker)
+        self._trace_local.attempt += 1
+        attempt = self._trace_local.attempt
+        self._trace_local.request_diagnostic = {
+            **getattr(self._trace_local, "request_diagnostic", {}),
+            "attemptCount": attempt,
+        }
+        started_at = time.perf_counter()
+        attributes = {
+            **_model_call_log_attributes(self.last_trace_call),
+            "attempt": attempt,
+            "endpoint_host": urlparse(endpoint).netloc,
+            "model": settings.model,
+        }
+        try:
+            response = self._trace_local.runner.run(
+                self._request_async(self._trace_local.sdk, payload, cancel_checker)
+            )
+            self._trace_local.request_diagnostic["httpStatus"] = response.status_code
+            log_event(
+                "API", "HTTP 请求成功",
+                {
+                    **attributes,
+                    "status": response.status_code,
+                    "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                    "response_body": response.text,
+                },
+                event="api.request.finished", verbosity=1,
+            )
+            try:
+                data = response.json()
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise ApiRequestError("API 返回格式无法解析。") from exc
+            if not isinstance(data, dict):
+                self._trace_local.request_diagnostic.update(
+                    faultDomain="protocol", reasonCode="MODEL_RESPONSE_INVALID", stage="decode",
+                )
+                raise ApiRequestError("API 返回的消息结构无效。")
+            return data
+        except (APIStatusError, APIConnectionError) as exc:
+            self._trace_local.request_diagnostic.update(_request_failure(exc))
+            if isinstance(exc, APIStatusError):
+                error_body = exc.response.text
+                if any(marker in error_body.lower() for marker in (
+                    "context_length_exceeded", "maximum context length", "context window",
+                )):
+                    self._trace_local.request_diagnostic.update(
+                        faultDomain="context", reasonCode="MODEL_CONTEXT_REJECTED", stage="request",
+                    )
+                message = _format_api_http_error(
+                    exc.status_code, error_body, endpoint, settings.api_key,
+                )
+            elif isinstance(exc, APITimeoutError):
+                message = "API 请求超时。"
+            else:
+                message = "API 请求失败：" + _safe_diagnostic_text(
+                    str(exc.__cause__ or exc), settings.api_key,
+                )
+            log_event(
+                "API", "HTTP 请求失败",
+                {
+                    **attributes,
+                    "status": getattr(exc, "status_code", None),
+                    "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                    "retryable": False,
+                    "error_type": type(exc).__name__,
+                    "diagnostic": message,
+                },
+                event="api.request.failed", severity="warning", verbosity=0,
+            )
+            raise ApiRequestError(message) from exc
 
-        raise ApiRequestError("API 请求失败。")
+    async def _request_async(self, sdk, payload, cancel_checker):
+        from openai import Omit
+
+        headers = {"Authorization": Omit()} if not self.settings.api_key else {}
+        async def send():
+            check_cancelled(cancel_checker)
+            if payload is None:
+                response = await sdk.models.with_raw_response.list(extra_headers=headers)
+            else:
+                response = await sdk.chat.completions.with_raw_response.create(
+                    model=payload["model"],
+                    messages=payload["messages"],
+                    extra_headers=headers,
+                    extra_body={key: value for key, value in payload.items() if key not in {"model", "messages"}},
+                )
+            return response.http_response
+
+        task = asyncio.create_task(send(), name="sakura-model-request")
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=0.05)
+                check_cancelled(cancel_checker)
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
 
 
 def _build_segmented_reply_instruction(
@@ -1293,9 +1280,14 @@ def _summarize_token_usage(usage: Any) -> dict[str, Any]:
 
 def _request_failure(error: BaseException) -> dict[str, Any]:
     """Classify types/status only; never project provider text or URLs."""
+    import httpx
+    from openai import APIConnectionError, APIStatusError, APITimeoutError
+
     chain = error
     seen: set[int] = set()
     while chain.__cause__ is not None and id(chain) not in seen:
+        if isinstance(chain, (APIStatusError, httpx.TimeoutException, httpx.RequestError)):
+            break
         seen.add(id(chain))
         chain = chain.__cause__
     if isinstance(error, OperationCancelled):
@@ -1304,8 +1296,8 @@ def _request_failure(error: BaseException) -> dict[str, Any]:
             "reasonCode": "REQUEST_CANCELLED",
             "stage": "request",
         }
-    if isinstance(chain, urllib.error.HTTPError):
-        status = chain.code
+    if isinstance(chain, APIStatusError):
+        status = chain.status_code
         domain = (
             "authentication"
             if status in {401, 403}
@@ -1332,25 +1324,19 @@ def _request_failure(error: BaseException) -> dict[str, Any]:
             "reasonCode": "MODEL_RESPONSE_INVALID",
             "stage": "decode",
         }
-    if isinstance(chain, TimeoutError):
-        stage = getattr(chain, "sakura_request_stage", "unknown")
+    if isinstance(chain, (TimeoutError, httpx.TimeoutException, APITimeoutError)):
+        stage = "read" if isinstance(chain, httpx.ReadTimeout) else "connect" if isinstance(chain, httpx.ConnectTimeout) else "request"
         return {
             "faultDomain": "transport",
             "reasonCode": "MODEL_READ_TIMEOUT"
             if stage == "read"
+            else "MODEL_CONNECTION_TIMEOUT"
+            if stage == "connect"
             else "MODEL_REQUEST_TIMEOUT",
             "stage": stage,
         }
-    if isinstance(chain, urllib.error.URLError) and isinstance(
-        chain.reason, TimeoutError
-    ):
-        return {
-            "faultDomain": "transport",
-            "reasonCode": "MODEL_CONNECTION_TIMEOUT",
-            "stage": "connect",
-        }
     if isinstance(
-        chain, (urllib.error.URLError, ssl.SSLError, ConnectionError, OSError)
+        chain, (APIConnectionError, httpx.RequestError, OSError)
     ):
         return {
             "faultDomain": "transport",
