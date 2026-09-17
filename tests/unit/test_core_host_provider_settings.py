@@ -89,6 +89,36 @@ def test_get_never_returns_saved_secret(tmp_path: Path) -> None:
     assert SECRET not in repr(result)
 
 
+def test_save_reports_persisted_configuration_when_runtime_apply_fails(tmp_path: Path) -> None:
+    calls = []
+
+    def fail_apply():
+        calls.append("apply")
+        raise OSError("fixture runtime publication failed")
+
+    boundary = ProviderSettingsBoundary(
+        GENERATION, CREDENTIAL, _root(tmp_path), runtime_apply=fail_apply,
+    )
+    boundary.enable()
+    current = boundary.handle(_request("get", "settings.provider_model.get", {}))["payload"]
+    draft = {
+        "providers": [{**current["providers"][0], "alias": "Saved alias",
+                       "credential": {"action": "keep", "value": ""}}],
+        "model_slots": {slot["identity"]: dict(slot["selection"]) for slot in current["model_slots"]},
+        "settings": dict(current["settings"]),
+    }
+    result = boundary.handle(_request("save", "settings.provider_model.save", {"draft": draft}))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "CONFIG_APPLY_FAILED"
+    assert "已保存" in result["error"]["message"]
+    diagnostic = repr(result["error"]["details"]["diagnostics"])
+    assert "fixture runtime publication failed" in diagnostic
+    assert "OSError" in diagnostic
+    actual = boundary.handle(_request("after", "settings.provider_model.get", {}))["payload"]
+    assert actual["providers"][0]["alias"] == "Saved alias"
+    assert calls == ["apply"]
+
+
 def test_snapshot_without_plugin_application_has_only_two_core_model_slots(
     tmp_path: Path,
 ) -> None:

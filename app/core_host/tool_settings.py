@@ -31,7 +31,7 @@ class ToolSettingsError(ValueError):
         return {
             "code": self.code,
             "message": self.message,
-            "retryable": self.code == "CONFIG_SAVE_FAILED",
+            "retryable": self.code in {"CONFIG_SAVE_FAILED", "CONFIG_APPLY_FAILED"},
             "details": {"feature": "tools.runtime_limits", "field": self.field},
         }
 
@@ -121,7 +121,18 @@ class ToolSettingsBoundary:
                     "CONFIG_SAVE_FAILED", "Tools 设置保存失败，原文件保持不变。"
                 ) from error
             if self._runtime_apply is not None:
-                self._runtime_apply(limits)
+                try:
+                    self._runtime_apply(limits)
+                except Exception as error:
+                    action = (
+                        "请在当前对话结束后重新保存。"
+                        if getattr(error, "code", "") == "RUNTIME_UPDATE_BUSY"
+                        else "请重新保存或重启应用。"
+                    )
+                    raise ToolSettingsError(
+                        "CONFIG_APPLY_FAILED",
+                        f"工具设置已保存，但尚未应用；{action}",
+                    ) from error
         return {**_snapshot(limits), "saved": True, "changePlan": "applied"}
 
     def _read_document(self) -> dict[str, Any]:

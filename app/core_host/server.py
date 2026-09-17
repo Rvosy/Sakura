@@ -1032,14 +1032,16 @@ class ControlDispatcher:
         from app.config.settings_service import AppSettingsService
         registry = CharacterRegistry(self._config.user_root)
         character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
-        application = self.published_plugin_application()
-        if application is not None and character_id:
-            application.bind_character_presentation(character_id)
-        schedule = getattr(self._chat_boundary, "schedule_runtime_update", None)
-        if callable(schedule):
-            schedule("character", self._readiness.apply_character_configuration)
-        else:
+        def apply() -> None:
+            application = self.published_plugin_application()
+            if application is not None and character_id:
+                application.bind_character_presentation(character_id)
             self._readiness.apply_character_configuration()
+
+        if self._chat_boundary is not None:
+            self._chat_boundary.apply_runtime_update(apply)
+        else:
+            apply()
 
     def drain_generation_work(self) -> None:
         """Wait for detached event producers before the Router closes its writer."""
@@ -1475,8 +1477,7 @@ def run_host(
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
-            runtime_apply=lambda: chat_boundary.schedule_runtime_update(
-                "provider",
+            runtime_apply=lambda: chat_boundary.apply_runtime_update(
                 getattr(dispatcher, "apply_provider_configuration", lambda: None),
             ),
         )
@@ -1484,8 +1485,7 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            runtime_apply=lambda settings: chat_boundary.schedule_runtime_update(
-                "tools",
+            runtime_apply=lambda settings: chat_boundary.apply_runtime_update(
                 lambda: getattr(
                     dispatcher, "apply_tool_runtime_settings", lambda _settings: None
                 )(settings),

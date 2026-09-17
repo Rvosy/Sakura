@@ -90,7 +90,19 @@ class ProviderSettingsBoundary:
                 with self._save_lock:
                     payload = self._save(raw["draft"])
                     if self._runtime_apply is not None:
-                        self._runtime_apply()
+                        try:
+                            self._runtime_apply()
+                        except Exception as error:
+                            action = (
+                                "请在当前对话结束后重新保存。"
+                                if getattr(error, "code", "") == "RUNTIME_UPDATE_BUSY"
+                                else "请重新保存或重启应用。"
+                            )
+                            raise ProviderModelSettingsError(
+                                "CONFIG_APPLY_FAILED",
+                                f"模型设置已保存，但尚未应用；{action}",
+                                feature="providers.apply",
+                            ) from error
             elif name in {
                 "settings.provider_model.list_models",
                 "settings.provider_model.test_connection",

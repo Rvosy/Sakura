@@ -59,7 +59,9 @@ Runtime v2 canonical 设置页完成 Provider 公开读取、
   接口依据：[Google OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)。
 - capability schema v1 以 section + feature 表达 `available/read_only/unavailable`；其他 schema 直接拒绝。
 - Provider DTO 包含 `id/alias/baseUrl/configured/models`；credential action 仅为 `keep/replace/clear`。
-- `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；任一错误不修改文件或运行态。
+- `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；校验和写盘失败不修改原文件。
+  写盘后的运行态应用有独立结果：当前对话未结束或应用失败时返回 `CONFIG_APPLY_FAILED`，明确提示配置
+  已保存但尚未应用，并保留原异常诊断。用户重新保存或重启应用可再次应用；聊天不排队或重试设置回调。
 - ADR-0032 生效后保存成功返回 `applied`；同 generation 热更新 Session client 或只替换/退休 Assistant
   Session，设置页按相同 Core identity 回读。
 - 冷启动和热应用必须将已保存的 `temperature`、`top_p`、`max_tokens` 传给聊天请求。

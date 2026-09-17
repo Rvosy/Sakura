@@ -127,7 +127,6 @@ class RealChatBoundary:
         self._executions: dict[str, _Execution] = {}
         self._pending_screen_attachment: _ScreenAttachment | None = None
         self._screen_session_id = secrets.token_hex(16)
-        self._pending_runtime_updates: dict[str, Callable[[], None]] = {}
         self._revision = 0
         self._closed = False
         self._switching_character = False
@@ -169,10 +168,6 @@ class RealChatBoundary:
                     "another chat interaction is active",
                     retryable=True,
                 )
-            self._apply_pending_runtime_updates_locked()
-            session = self._session_provider()
-            if session is None:
-                raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
             if attachment_id is not None:
                 pending = self._pending_screen_attachment
                 if pending is None or pending.attachment_id != attachment_id:
@@ -190,26 +185,17 @@ class RealChatBoundary:
             self._revision += 1
             self._changed.notify_all()
 
-    def schedule_runtime_update(self, key: str, update: Callable[[], None]) -> None:
-        """Apply now when idle, otherwise keep only the latest boundary update."""
+    def apply_runtime_update(self, update: Callable[[], None]) -> None:
+        """Apply at the settings operation; a later chat never repairs a save."""
 
-        if not key or not callable(update):
-            raise ValueError("runtime update is invalid")
         with self._changed:
             if self._closed:
                 raise RealChatRejection(
                     "GENERATION_INVALIDATED", "chat generation is closing"
                 )
-            self._pending_runtime_updates[key] = update
-            if not self._executions and not self._switching_character:
-                self._apply_pending_runtime_updates_locked()
-
-    def _apply_pending_runtime_updates_locked(self) -> None:
-        for key in sorted(self._pending_runtime_updates):
-            # Failed and not-yet-applied domains remain pending for the next
-            # operation boundary; successful domains must not be replayed.
-            self._pending_runtime_updates[key]()
-            del self._pending_runtime_updates[key]
+            if self._executions or self._switching_character:
+                raise RealChatRejection("RUNTIME_UPDATE_BUSY", "当前对话尚未结束，设置尚未应用。", retryable=True)
+            update()
 
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))
@@ -228,7 +214,6 @@ class RealChatBoundary:
     def start_send(self, request: dict[str, Any]) -> dict[str, Any]:
         """Acknowledge an accepted chat without waiting for Provider completion."""
 
-        self._validate_send(request)
         operation_id = str(request["id"])
         started = threading.Event()
         kickoff_errors: list[BaseException] = []

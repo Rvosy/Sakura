@@ -12,9 +12,10 @@ updated: 2026-09-18
 
 - 普通配置保存不得改变 Core generation、目标插件 PID 或无关插件 PID/scope。
 - 聊天、Agent 轮次和 TTS 合成在开始时取得配置快照；进行中的操作不得混用新旧配置。
-- 保存发生在操作进行中时只保留该域最新待应用值，并在下一次操作被接受前应用。
-- 某域应用失败时，本次操作不被接受；保留失败域和尚未应用域的最新值，供下一次操作边界应用。
-  已成功应用的域从待办中移除。再次保存同一域时替换旧待办，不重放已经成功的更新。
+- Provider/Tools 保存时完成写盘与同步应用。当前对话或角色切换尚未结束时，应用明确返回失败；
+  响应说明设置已保存但尚未应用，用户可在空闲时重新保存或重启应用。已经发布的配置继续服务后续聊天。
+- 不存储设置应用回调，不在聊天受理时执行、修复或重试上次保存。普通应用异常保留原始原因；
+  保存成功与运行态应用成功是两个事实，不能把后者失败描述为磁盘保存失败。
 - `setup_required/ready/degraded` 可在同 generation 内转换；状态转换递增 Core snapshot revision，不重载桌宠
   WebView。
 - Core 整体替换只用于 Core crash 或协议损坏。插件调用、cleanup 或进程失败只影响目标插件及硬依赖
@@ -28,7 +29,8 @@ updated: 2026-09-18
 - 正常聊天固定使用默认 Assistant。`f9fde091` 中的互动方式设置已撤回，`settings.executor.get/save` 不再提供，
   历史 `chat_executor` 字段被忽略，不作为隐藏选择。插件开关只管理插件生命周期，不切换聊天实现。
   未使用的执行器实验已清理；当前边界见 [Plugin Runtime](sakura-plugin-runtime-v4.md#65-正常对话与插件服务的边界)。
-- Tools：保存后更新 `AgentRuntime` 的 loop settings；当前 Agent 轮使用其既有快照。
+- Tools：空闲时保存并更新 `AgentRuntime` 的 loop settings；进行中的轮次继续使用既有快照，
+  此时保存返回 `CONFIG_APPLY_FAILED`，不会在下一次聊天自动发布设置。
 - MCP：`sakura.mcp` 只提供 Service，服务器配置与变更由消费插件处理；不读取旧 `mcp.yaml`。
 - Agent Trace：新开关只控制新 trace operation；已开始 operation 必须继续记录并完成 staging commit。
   同一设置通过 Host Event 同步给 Memory 插件 recorder。
@@ -51,4 +53,5 @@ updated: 2026-09-18
 
 自动测试至少固定同 generation、无关插件 PID/scope、活动操作配置隔离、Snapshot revision、Session 重建时
 插件硬依赖 consumer reload、局部失败不影响无关插件、故障不自动恢复，以及 Memory/TTS 重资源在
-无关保存后持续可用。聊天边界还需覆盖跨域应用失败后的待办保留，以及同域重复保存只应用最新值。
+无关保存后持续可用。聊天边界需覆盖已保存但未应用的配置不会被下一次聊天隐式发布，
+以及应用异常不被聊天重试、用户显式重新保存后才发布新配置。
