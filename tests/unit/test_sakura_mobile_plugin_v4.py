@@ -132,6 +132,7 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
     bundled = [spec for spec in specs if spec.source == "bundled"]
     assert bundled
     assert {spec.plugin_id for spec in bundled} == {
+        "sakura.assistant.default",
         "sakura.asr",
         "sakura.asr.sensevoice",
         "sakura.mcp",

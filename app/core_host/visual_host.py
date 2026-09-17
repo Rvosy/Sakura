@@ -11,13 +11,12 @@ import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from app.config.character_resources import CharacterVisualResource
-from app.plugins.inventory import InstalledPluginRecord, PluginInventory
+from app.plugins.inventory import InstalledPluginRecord, PluginInventorySnapshot
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.plugins.visuals import VISUAL_CONTRACT_VERSION, VisualCapability, relative_resource_path, resolve_resource_path
-from app.storage.runtime_roots import RuntimeRoots
 
 
 class VisualRuntime(Protocol):
@@ -180,8 +179,11 @@ class VisualBinding:
 
 
 class VisualHost:
-    def __init__(self, roots: RuntimeRoots, runtime: VisualRuntime) -> None:
-        self._inventory = PluginInventory(roots)
+    def __init__(
+        self, runtime: VisualRuntime,
+        *, inventory: Callable[[], PluginInventorySnapshot],
+    ) -> None:
+        self._inventory = inventory
         self._runtime = runtime
         self._lock = threading.Lock()
         self._revision = 0
@@ -210,14 +212,14 @@ class VisualHost:
     def _candidates(self, resource_type: str) -> list[tuple[InstalledPluginRecord, VisualCapability]]:
         return [
             (record, capability)
-            for record in self._inventory.scan().records
+            for record in self._inventory().records
             for capability in record.visuals
             if capability.resource_type == resource_type
         ]
 
     def _unavailable_candidates(self, resource_type, provider_id=None):
         result = []
-        for record in self._inventory.scan().records:
+        for record in self._inventory().records:
             if provider_id is not None and record.plugin_id != provider_id:
                 continue
             if any(cap.resource_type == resource_type for cap in record.visuals):
@@ -340,7 +342,7 @@ class VisualHost:
 
     def catalog(self):
         result = []
-        for record in self._inventory.scan().records:
+        for record in self._inventory().records:
             for capability in record.visuals:
                 editor_issue = self._editor_issue(record, capability)
                 if capability.editor is not None or editor_issue:

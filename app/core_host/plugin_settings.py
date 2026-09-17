@@ -145,7 +145,7 @@ class PluginSettingsBoundary:
 
     def snapshot(self) -> dict[str, object]:
         application = self._application()
-        inventory = PluginInventory(self._roots).scan()
+        inventory = self._refresh_inventory(application)
         if application is None:
             plugins = [_preview_plugin(record) for record in inventory.records[:64]]
             state = "starting"
@@ -303,6 +303,7 @@ class PluginSettingsBoundary:
                     installer.remove_installed_code(installed)
                 except PluginInstallError as error:
                     rollback_error = error
+                application.refresh_inventory()
                 code = (
                     rollback_error.code
                     if rollback_error is not None
@@ -352,6 +353,7 @@ class PluginSettingsBoundary:
                     installer.rollback_uninstall(pending)
                 except PluginInstallError as error:
                     rollback_error = error
+                application.refresh_inventory()
                 code = (
                     rollback_error.code
                     if rollback_error is not None
@@ -425,7 +427,14 @@ class PluginSettingsBoundary:
         return None
 
     def _revision(self) -> str:
-        return PluginInventory(self._roots).scan().revision
+        return self._refresh_inventory(self._application()).revision
+
+    def _refresh_inventory(self, application):
+        return (
+            application.refresh_inventory()
+            if application is not None
+            else PluginInventory(self._roots).scan()
+        )
 
 def _preview_plugin(spec: Any) -> dict[str, object]:
     supported = bool(spec.supported)

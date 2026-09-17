@@ -416,7 +416,7 @@ Skill 根据场景按需激活，不能全部常驻 Prompt。可执行扩展继�
 
 Sakura 当前实现：
 
-- [`app/agent/runtime.py`](../../../app/agent/runtime.py)
+- [`默认助手 Runtime`](../../../plugins/builtin/sakura_assistant/sakura_assistant/agent/runtime.py)
 - [`app/llm/prompts/`](../../../app/llm/prompts/)
 - `app/agent/memory.py`（已退役，通过 Git 历史查看）
 - [`app/storage/chat_history.py`](../../../app/storage/chat_history.py)

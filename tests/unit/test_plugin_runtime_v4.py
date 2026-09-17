@@ -13,7 +13,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.config.character_loader import CharacterProfile
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host import plugin_host_services
@@ -24,6 +24,28 @@ from app.plugins.runtime_v4 import PluginRuntimeError, PluginRuntimeManager
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows verbatim process cwd")
+def test_plugin_with_verbatim_user_root_can_probe_root_relative_paths(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    roots = RuntimeRoots(roots.distribution_root, Path("\\\\?\\" + str(roots.user_root.resolve())))
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.cwd", "fixture.cwd.service", body='''
+import os
+class Plugin:
+    def setup(self, context):
+        assert not os.getcwd().startswith("\\\\\\\\?\\\\")
+        # The upstream distro import used by the model SDK probes this path.
+        # With a verbatim cwd Windows treats the probe as a network lookup.
+        os.path.isfile("/etc/os-release")
+        context.provide("fixture.cwd.service", object(), exports=())
+''')
+    host = PluginApplicationHost(roots, "verbatim-cwd", ToolRegistry())
+    try:
+        host.start()
+        assert host.service_identity("fixture.cwd.service")["providerId"] == "fixture.cwd"
+    finally:
+        host.close()
 
 
 @pytest.mark.parametrize("retry_port", [8000, 8001])
@@ -92,11 +114,11 @@ class Plugin:
     host = PluginApplicationHost(roots, "generation-logging", ToolRegistry())
     try:
         host.start()
-        assert host.application.wait_until_loaded(timeout=3)
-        current = host.application.public_snapshot()
+        assert host.wait_until_loaded(timeout=3)
+        current = host._manager.snapshot()
         assert all(item["state"] == "active" for item in current["plugins"]), current
         for name in ("one", "two"):
-            assert host.application.call_service(services[name], "emit") is True
+            assert host.call_service(services[name], "emit") is True
     finally:
         host.close()
         bridge.close()
@@ -129,7 +151,7 @@ def test_plugin_start_failures_reach_log_bridge_with_identity(tmp_path: Path):
     host = PluginApplicationHost(roots, "failure-log-test", ToolRegistry())
     try:
         host.start()
-        assert host.application.wait_until_loaded(timeout=3)
+        assert host.wait_until_loaded(timeout=3)
     finally:
         host.close()
         bridge.close()
@@ -162,7 +184,7 @@ def test_plugin_stderr_is_forwarded_before_process_exit(tmp_path: Path, monkeypa
     host = PluginApplicationHost(roots, "stderr-test", ToolRegistry())
     try:
         host.start()
-        assert host.application.wait_until_loaded(timeout=3)
+        assert host.wait_until_loaded(timeout=3)
         assert received.wait(3), "short stderr output must arrive while the plugin is alive"
         row = next(row for row in captured if row.get("fields", {}).get("event") == "plugin.process.stderr")
         assert row["plugin_id"] == "fixture.stderr"
@@ -506,12 +528,12 @@ def test_voice_resource_update_restores_dependents_and_preserves_unrelated_proce
     application.start()
     try:
         def records():
-            return {item["pluginId"]: item for item in application.application.public_snapshot()["plugins"]}
+            return {item["pluginId"]: item for item in application._manager.snapshot()["plugins"]}
         before = records()
         assert all(item["state"] == "active" for item in before.values())
         desired = PluginDesiredStateStore(roots.user_root).read()
         try:
-            with application.application.prepare_voice_resources() as errors:
+            with application.prepare_voice_resources() as errors:
                 paused = records()
                 assert paused["fixture.voice"]["pid"] is None
                 assert paused["fixture.consumer"]["pid"] is None
@@ -568,7 +590,7 @@ def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stab
         assert before["com.example.stable"]["state"] == "active"
         stable_pid = next(
             item["pid"]
-            for item in application.application.public_snapshot()["plugins"]
+            for item in application._manager.snapshot()["plugins"]
             if item["pluginId"] == "com.example.stable"
         )
 
@@ -583,7 +605,7 @@ def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stab
         assert after_install["com.example.installed"]["state"] == "disabled"
         assert next(
             item["pid"]
-            for item in application.application.public_snapshot()["plugins"]
+            for item in application._manager.snapshot()["plugins"]
             if item["pluginId"] == "com.example.stable"
         ) == stable_pid
 
@@ -598,7 +620,7 @@ def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stab
         assert enabled_records["com.example.installed"]["state"] == "active"
         assert next(
             item["pid"]
-            for item in application.application.public_snapshot()["plugins"]
+            for item in application._manager.snapshot()["plugins"]
             if item["pluginId"] == "com.example.stable"
         ) == stable_pid
         assert application.call_service("com.example.installed", "ping") == "installed"
@@ -613,7 +635,7 @@ def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stab
         assert set(remaining) == {"com.example.stable"}
         assert next(
             item["pid"]
-            for item in application.application.public_snapshot()["plugins"]
+            for item in application._manager.snapshot()["plugins"]
             if item["pluginId"] == "com.example.stable"
         ) == stable_pid
         assert not (
@@ -738,9 +760,9 @@ def test_bundled_v4_plugin_uses_distribution_dependency_root_offline(
 def test_v4_application_host_projects_contributions_config_and_explicit_lifecycle(
     tmp_path: Path,
 ) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
-    from app.llm.prompts.types import ContextRequest
+    from app.plugin_sdk.sakura_context import ContextRequest
 
     roots = _roots(tmp_path)
     bundled = roots.distribution_root / "plugins" / "builtin"
@@ -846,15 +868,16 @@ class Plugin:
         "Session",
         (),
         {
-            "runtime": runtime,
+            "assistant": object(),
+            "visual_binding": None,
             "character": CharacterProfile("fixture", "Fixture", tmp_path, tmp_path / "card.md", ""),
         },
     )()
     try:
         application.start()
         application.bind_session(session)
-        assert application.application.wait_until_loaded(timeout=2.0)
-        assert application.application.wait_until_bound(timeout=2.0)
+        assert application.wait_until_loaded(timeout=2.0)
+        assert application.wait_until_bound(timeout=2.0)
         snapshot = application.settings_snapshot()
         records = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert records["fixture.application"]["state"] == "active"
@@ -863,16 +886,16 @@ class Plugin:
         tool_result = registry.execute("fixture_v4_echo", {"value": "hello"})
         assert tool_result.success is True
         assert tool_result.content == {"echo": "hello"}
-        assert len(runtime.context_providers) == 1
-        fragments = runtime.context_providers[0].build_context(
-            ContextRequest(current_input="hello")
-        )
-        assert [fragment.content for fragment in fragments] == ["input=hello"]
+        from dataclasses import asdict
+        catalog = application.call_service("sakura.host.context", "catalog")
+        assert len(catalog) == 1
+        fragments = application.call_service("sakura.host.context", "collect", catalog[0]["registrationId"], asdict(ContextRequest(current_input="hello")))
+        assert [fragment["content"] for fragment in fragments] == ["input=hello"]
 
         first = application.call_service("fixture.application.service", "info")
         unrelated = application.call_service("fixture.unrelated.service", "info")
         consumer = application.call_service("fixture.application-consumer.service", "info")
-        applied = application.application.apply_config(
+        applied = application.apply_config(
             "fixture.application",
             {"label": "updated"},
         )
@@ -882,7 +905,7 @@ class Plugin:
             "label": "updated",
         }
 
-        restarted = application.application.apply_config(
+        restarted = application.apply_config(
             "fixture.application",
             {"label": "restarted", "restart": True},
         )
@@ -900,7 +923,7 @@ class Plugin:
         assert after_config_consumer["pid"] != consumer["pid"]
         assert application.call_service("fixture.unrelated.service", "info") == unrelated
 
-        application.application.reload_plugin("fixture.application")
+        application.reload_plugin("fixture.application")
         reloaded = application.call_service("fixture.application.service", "info")
         reloaded_consumer = application.call_service(
             "fixture.application-consumer.service",
@@ -920,7 +943,7 @@ class Plugin:
         )
         assert disabled_record["state"] == "disabled"
         assert registry.get("fixture_v4_echo") is None
-        assert runtime.context_providers == []
+        assert application.call_service("sakura.host.context", "catalog") == []
         assert application.call_service("fixture.unrelated.service", "info") == unrelated
         consumer_record = next(
             item
@@ -1064,7 +1087,7 @@ class Plugin:
 
 
 def test_v4_host_contributions_are_revoked_when_plugin_crashes(tmp_path: Path) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
 
     roots = _roots(tmp_path)
@@ -1356,7 +1379,7 @@ class Plugin:
 def test_host_event_handler_timeout_does_not_fail_application_or_other_plugins(
     tmp_path: Path,
 ) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
 
     roots = _roots(tmp_path)
@@ -1379,9 +1402,10 @@ class Plugin:
         "fixture.event-b-ready",
         "fixture.event-b-ready.service",
         body="""
+import threading
 class Service:
-    def __init__(self): self.started = False
-    def state(self): return {"started": self.started}
+    def __init__(self): self.started = threading.Event()
+    def state(self): return {"started": self.started.wait(1)}
 def fail(_payload): raise RuntimeError("event fixture failure")
 class Plugin:
     def setup(self, context):
@@ -1390,7 +1414,7 @@ class Plugin:
         context.on("sakura.host.app.started", fail)
         context.on(
             "sakura.host.app.started",
-            lambda _payload: setattr(service, "started", True),
+            lambda _payload: service.started.set(),
         )
 """.strip(),
     )
@@ -1491,7 +1515,7 @@ class Plugin:
     host = PluginApplicationHost(roots, "generation-legacy-projection", object())
     try:
         host.start()
-        host.application.wait_until_loaded()
+        host.wait_until_loaded()
         records = {
             item["pluginId"]: item for item in host.settings_snapshot()["plugins"]
         }
@@ -1760,8 +1784,8 @@ class Plugin:
     host = PluginApplicationHost(roots, "generation-hub-cleanup", ToolRegistry())
     try:
         host.start()
-        assert host.application.wait_until_loaded(timeout=3)
-        snapshot = host.application.public_snapshot()
+        assert host.wait_until_loaded(timeout=3)
+        snapshot = host._manager.snapshot()
         assert all(item["state"] == "active" for item in snapshot["plugins"]), snapshot
         pids = [item["pid"] for item in snapshot["plugins"]]
     finally:

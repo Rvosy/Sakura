@@ -14,13 +14,13 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
-from app.core.cancellation import OperationCancelled
+from app.plugin_sdk.sakura_cancellation import OperationCancelled
 from app.storage.runtime_roots import RuntimeRoots
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
 
 if TYPE_CHECKING:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
 
 
 CORE_VERSION = "0.1.0"
@@ -133,7 +133,7 @@ def _default_initializer_factory(
 ) -> object:
     from .assistant_adapter import AssistantAdapter
 
-    return AssistantAdapter(roots, tool_registry=tool_registry)
+    return AssistantAdapter(roots)
 
 
 @dataclass
@@ -173,7 +173,10 @@ class ReadinessController:
         self._initializer_close_thread: threading.Thread | None = None
         self._background_close_error: BaseException | None = None
         self._tools_enabled = False
-        self._plugins_enabled = False
+        # The production Assistant is a plugin even when a client does not
+        # negotiate the optional plugin-management UI capability. Injected
+        # initializers may remain self-contained for boundary tests.
+        self._plugins_enabled = initializer_factory is _default_initializer_factory
         self._session_published_callback: Callable[[], None] | None = None
         self._application_tools: ToolRegistry | None = None
         self._plugin_application: object | None = None
@@ -270,12 +273,29 @@ class ReadinessController:
             return self._plugin_application
 
 
+    def refresh_assistant_binding(self) -> None:
+        """Publish a replacement at the plugin operation, never inside a send."""
+        from app.plugins.runtime_v4 import PluginRuntimeError
+
+        with self._lock:
+            if self._closed or self._readiness == "initializing":
+                return
+            application = self._plugin_application
+            session = self._session
+        if application is None:
+            return
+        try:
+            current = application.service_identity("sakura.assistant")
+        except PluginRuntimeError as error:
+            if error.code != "SERVICE_MISSING":
+                raise
+            current = None
+        previous = session.assistant.identity if session is not None else None
+        if current != previous:
+            self.apply_provider_configuration()
+
     def apply_provider_configuration(self) -> None:
         """Apply Provider settings or replace/retire only the Assistant Session."""
-
-        from app.config.core_config_reader import CoreConfigReader
-
-        config = CoreConfigReader().read(self._config.user_root)
         with self._lock:
             if self._closed:
                 raise OperationCancelled()
@@ -286,39 +306,11 @@ class ReadinessController:
             session = self._session
             initializer = self._initializer
             plugin_application = self._plugin_application
-        if config.config_problem is not None:
-            if plugin_application is not None and session is not None:
-                getattr(plugin_application, "unbind_session")()
-            retire = getattr(initializer, "retire_session", None)
-            if callable(retire):
-                retire()
-            problem = config.config_problem
-            with self._lock:
-                self._session = None
-                self._readiness = problem.state
-                self._component = {
-                    "state": problem.state,
-                    "code": problem.code,
-                    "retryable": problem.retryable,
-                }
-                self._current_character_summary = None
-                if problem.code != "PROVIDER_SETUP_REQUIRED":
-                    self._current_character_presentation = None
-                self._revision += 1
-            return
-
-        assert config.provider_selection is not None
-        if session is not None:
-            provider = getattr(session, "provider", None)
-            update = getattr(provider, "update_settings", None)
-            if not callable(update):
-                raise RuntimeError("PROVIDER_HOT_APPLY_UNAVAILABLE")
-            update(config.provider_selection.api_settings)
-            return
-
         if initializer is None:
             raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
         result = getattr(initializer, "initialize")(self._cancel)
+        if result.session is None and session is not None and plugin_application is not None:
+            plugin_application.unbind_session()
         result = self._bind_initialized_result(initializer, plugin_application, result)
         summary = self._project_summary(result.current_character_summary)
         presentation = self._project_presentation(
@@ -366,7 +358,9 @@ class ReadinessController:
                 retire()
             if isinstance(error, OperationCancelled):
                 raise
-            from .assistant_adapter import ReadinessResult
+            from .assistant_adapter import ReadinessResult, report_assistant_failure
+
+            report_assistant_failure(error, stage="session_bind", code="SESSION_BIND_FAILED")
 
             return ReadinessResult(
                 state="failed",
@@ -392,7 +386,7 @@ class ReadinessController:
         try:
             if application is not None:
                 application.unbind_session()
-                application.application.set_current_character(character_id)
+                application.set_current_character(character_id)
             if initializer is not None:
                 initializer.retire_session()
             self.apply_provider_configuration()
@@ -434,14 +428,6 @@ class ReadinessController:
         if session is not None:
             if session.character.id != character_id:
                 raise ValueError("CHARACTER_SESSION_MISMATCH")
-            visual_binding = session.runtime.visual_binding
-            session.runtime.update_character(
-                load_character_system_prompt(character),
-                reply_tones=character.reply_tones,
-                character_id=character.id,
-                character_name=character.display_name,
-            )
-            session.runtime.set_visual_binding(visual_binding)
             session.character = character
         summary = project_current_character_summary(character) if session is not None else None
         project = getattr(application, "visual_presentation", None)
@@ -463,10 +449,8 @@ class ReadinessController:
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
             session = self._session
-        runtime = getattr(session, "runtime", None) if session is not None else None
-        update = getattr(runtime, "set_runtime_loop_settings", None)
-        if callable(update):
-            update(settings)
+        if session is not None:
+            session.loop_settings = settings
 
     def snapshot(self) -> dict[str, Any]:
         self._refresh_visual_presentation()
@@ -579,6 +563,7 @@ class ReadinessController:
         initializer: object | None = None
         session_callback: Callable[[], None] | None = None
         unpublished_resources: list[object | None] = []
+        stage = "plugin_application"
         try:
             with self._lock:
                 tools_enabled = self._tools_enabled
@@ -588,7 +573,7 @@ class ReadinessController:
 
                 application_tools = create_runtime_v2_tool_registry()
             else:
-                from app.agent.tools import ToolRegistry
+                from app.plugin_sdk.sakura_tools import ToolRegistry
 
                 application_tools = ToolRegistry([])
             plugin_application: object | None = None
@@ -615,6 +600,7 @@ class ReadinessController:
             if application_closed:
                 return
 
+            stage = "assistant_initializer"
             initializer = self._initializer_factory(
                 self._config.roots, application_tools,
             )
@@ -626,6 +612,9 @@ class ReadinessController:
                 self._start_initializer_close(claimed)
                 return
 
+            bind_application = getattr(initializer, "bind_application", None)
+            if callable(bind_application):
+                bind_application(plugin_application)
             initialize = getattr(initializer, "initialize")
             result = initialize(self._cancel)
             result = self._bind_initialized_result(initializer, plugin_application, result)
@@ -665,7 +654,10 @@ class ReadinessController:
                 except Exception:
                     # TTS warmup is optional and must not alter Core readiness.
                     pass
-        except BaseException:  # noqa: BLE001 - publish a stable, sanitized readiness
+        except BaseException as error:  # noqa: BLE001 - publish a stable, sanitized readiness
+            from .assistant_adapter import report_assistant_failure
+
+            report_assistant_failure(error, stage=stage, code="ASSISTANT_INITIALIZATION_FAILED")
             with self._lock:
                 if self._closed:
                     claimed = self._claim_initializer_close_locked()
@@ -993,7 +985,7 @@ class ControlDispatcher:
         if application is None:
             yield []
         else:
-            with application.application.prepare_voice_resources() as errors:
+            with application.prepare_voice_resources() as errors:
                 yield errors
 
     @contextmanager
@@ -1006,7 +998,7 @@ class ControlDispatcher:
             if self._tts_boundary is not None:
                 self._tts_boundary.reset_character()
             application = self.published_plugin_application()
-            scope = application.application.prepare_character_switch() if application else nullcontext()
+            scope = application.prepare_character_switch() if application else nullcontext()
             with scope as errors:
                 yield
             if errors:
@@ -1066,6 +1058,9 @@ class ControlDispatcher:
 
     def apply_provider_configuration(self) -> None:
         self._readiness.apply_provider_configuration()
+
+    def refresh_assistant_binding(self) -> None:
+        self._readiness.refresh_assistant_binding()
 
     def apply_tool_runtime_settings(self, settings: object) -> None:
         self._readiness.apply_tool_runtime_settings(settings)
@@ -1582,7 +1577,13 @@ def run_host(
                                 "Plugin settings capability was not negotiated",
                             ),
                         )
-                    return plugin_settings.handle(request)
+                    result = plugin_settings.handle(request)
+                    if request.get("name") in {
+                        "plugins.settings.save", "plugins.enabled.set", "plugins.settings.action",
+                        "plugins.install", "plugins.uninstall",
+                    }:
+                        dispatcher.refresh_assistant_binding()
+                    return result
                 if request.get("name") in COMPOSER_TOOL_REQUEST_NAMES:
                     if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
                         return response(

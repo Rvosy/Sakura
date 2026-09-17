@@ -12,7 +12,7 @@ from app.config.provider_model_settings import (
     ProviderModelSettingsError,
     ProviderModelSettingsRepository,
 )
-from app.llm.api_client import OpenAICompatibleClient
+from sakura_assistant.llm.api_client import OpenAICompatibleClient
 
 
 SECRET = "KEEP_THIS_SECRET_BYTE_FOR_BYTE"

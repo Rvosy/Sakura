@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.config.character_resources import CharacterVisualResource
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.visual_host import VisualHostError
@@ -75,7 +75,7 @@ def test_static_model_cover_needs_no_renderer_or_editor(tmp_path, cover):
         boundary = CharacterStudioBoundary("g", "c", package.parents[1], plugin_application_provider=lambda: application)
         boundary._dispatch("studio.character.open", {"characterId": "character"})
         calls = []
-        runtime = application.application.visuals._runtime
+        runtime = application.visuals._runtime
         original = runtime.call_service
         def call(service, method, *args, **kwargs):
             calls.append(method)
@@ -127,12 +127,12 @@ def test_settings_visual_selection_is_personal_and_rebinds_control(visual_applic
     settings = CharacterSettingsBoundary("g", "c", package.parents[1], plugin_application_provider=lambda: application)
     settings.select("character")
     application.bind_character_presentation("character")
-    old_binding = application.application._visual_binding
-    service_identity = application.application.service_identity(old_binding.capability.service)
+    old_binding = application._visual_binding
+    service_identity = application.service_identity(old_binding.capability.service)
     assert settings.visual_snapshot("character")["preferenceResourceId"] is None
     receipt = settings.select("character", {"character": "numeric-2"})
     assert receipt["changePlan"] == "visual_rebind"
-    assert application.application.service_identity(old_binding.capability.service) == service_identity
+    assert application.service_identity(old_binding.capability.service) == service_identity
     assert application.visual_presentation()["visual"]["resourceId"] == "numeric-2"
     assert old_binding.parse_control(_control(resource, {"angle": 1})).control is None
     reopened = CharacterSettingsBoundary("g", "c", package.parents[1], plugin_application_provider=lambda: application)
@@ -211,13 +211,13 @@ def test_incompatible_plugin_preserves_resources_when_saving_public_fields(visua
 
 def test_editor_scope_changes_on_reload_and_is_unavailable_when_disabled(visual_application):
     application, package, resource = visual_application
-    host = application.application.visuals
+    host = application.visuals
     editor = host.editor(resource, {"maxAngle": 20})
     scope = editor["providerScopeId"]
     assert host.catalog()[0]["scopeId"] == scope
-    application.application.reload_plugin("fixture.numeric")
+    application.reload_plugin("fixture.numeric")
     assert host.catalog()[0]["scopeId"] != scope
-    application.application.set_plugin_enabled("fixture.numeric", False)
+    application.set_plugin_enabled("fixture.numeric", False)
     assert host.catalog()[0]["scopeId"] is None
 
 
@@ -242,7 +242,7 @@ def test_numeric_studio_private_draft_publish_full_archive_and_component_roundtr
     assert reopened["doc"]["visualData"] == doc["visualData"]
     request("studio.character.publish", {"workspaceId": opened["workspaceId"], "doc": doc})
     profile = CharacterRegistry(root).get("character")
-    binding = application.application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
+    binding = application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
     assert binding.description["rendererData"]["maxAngle"] == 28
     assert binding.parse_control(_control(profile.current_visual_resource, {"angle": 27})).control["state"]["angle"] == 27
     archive = tmp_path / "model.char"
@@ -288,8 +288,8 @@ def test_missing_plugin_visual_import_survives_publish_and_later_install(visual_
     doc = result["doc"]
     imported = CharacterVisualResource.from_mapping(doc["visuals"]["resources"][-1])
     assert doc["visuals"]["default"] == "numeric-1"
-    assert application.application.visuals.resource_choice(imported)["reasonCode"] == "VISUAL_PROVIDER_MISSING"
-    assert not application.application.visuals.candidates(imported.type)
+    assert application.visuals.resource_choice(imported)["reasonCode"] == "VISUAL_PROVIDER_MISSING"
+    assert not application.visuals.candidates(imported.type)
     with pytest.raises(VisualHostError, match="VISUAL_PROVIDER_MISSING"):
         boundary._dispatch("studio.visual.open", {"workspaceId": "character", "resourceId": imported.id})
     # The user explicitly selects the unavailable form before publishing.
@@ -312,7 +312,7 @@ def test_missing_plugin_visual_import_survives_publish_and_later_install(visual_
     application.install_plugin(installed.install_id)
     application.set_enabled(installed.install_id, True)
     profile = CharacterRegistry(root).get("character")
-    binding = application.application.visuals.bind(profile.id, package, profile.current_visual_resource)
+    binding = application.visuals.bind(profile.id, package, profile.current_visual_resource)
     assert binding.description["rendererData"]["maxAngle"] == 35
     assert binding.parse_control(_control(imported, {"angle": 30})).control["state"] == {"angle": 30}
     assert json.loads((package / imported.root / imported.entry).read_text(encoding="utf-8")) == data
@@ -322,7 +322,7 @@ def test_unbinding_chat_keeps_a_fresh_independent_visual_presentation(visual_app
     application, _, _ = visual_application
     application.bind_character_presentation("character")
     before = application.visual_presentation()["visual"]["bindingId"]
-    runtime = application.application
+    runtime = application
     runtime.unbind_session()
     after = application.visual_presentation()
     assert after["visualReasonCode"] == "READY"
@@ -334,7 +334,7 @@ def test_unbinding_chat_keeps_a_fresh_independent_visual_presentation(visual_app
 @pytest.mark.parametrize("invalid", [False, True])
 def test_rejected_optional_controls_preserve_text_history_and_report_why(tmp_path, monkeypatch, invalid):
     from app.core_host.real_chat import _project_reply
-    from app.llm.chat_reply import ChatReply, ChatSegment
+    from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
     from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
     diagnostics = []
     monkeypatch.setattr("app.core.runtime_log.log_event", lambda channel, message, attributes, **kwargs: diagnostics.append(attributes))
@@ -356,18 +356,18 @@ def test_rejected_optional_controls_preserve_text_history_and_report_why(tmp_pat
 
 @pytest.mark.parametrize("event", [False, True])
 @pytest.mark.parametrize("payload,expected", [({"angle": 10, "wave": True}, True), ({"angle": 100}, False)])
-def test_numeric_controls_follow_real_chat_and_event_pipeline_into_history(visual_application, tmp_path, event, payload, expected):
+def test_numeric_controls_follow_assistant_result_and_core_projection_into_history(visual_application, tmp_path, event, payload, expected):
     from unittest.mock import MagicMock
-    from app.agent.runtime import AgentRuntime
-    from app.agent.actions import AgentEvent
-    from app.core.chat_pipeline import ChatPipeline
+    from sakura_assistant.agent.runtime import AgentRuntime
+    from sakura_assistant.agent.actions import AgentEvent
+    from app.core_host.assistant_adapter import apply_visual_reply
     from app.core_host.real_chat import _project_reply
-    from app.llm.api_client import OpenAICompatibleClient, ChatCompletionTurn
-    from app.llm.chat_reply import parse_chat_reply
+    from sakura_assistant.llm.api_client import OpenAICompatibleClient, ChatCompletionTurn
+    from sakura_assistant.llm.chat_reply import parse_chat_reply
     from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 
     application, package, resource = visual_application
-    binding = application.application.visuals.bind("character", package, resource)
+    binding = application.visuals.bind("character", package, resource)
     raw = json.dumps({"segments": [{"ja": "こんにちは", "zh": "你好", "tone": "中性", "control": _control(resource, payload)}]})
     client = MagicMock(spec=OpenAICompatibleClient)
     client.complete_with_tools.return_value = ChatCompletionTurn(content=raw, tool_calls=[], message={"role": "assistant", "content": raw})
@@ -378,9 +378,8 @@ def test_numeric_controls_follow_real_chat_and_event_pipeline_into_history(visua
     assert 'numeric-1' in runtime._build_tool_system_prompt()
     assert 'maxAngle' not in runtime._build_tool_system_prompt()  # no private parser snapshot
     assert '"payload": {}' not in runtime._build_tool_system_prompt()  # not a valid sample for every plugin
-    pipeline = ChatPipeline(runtime)
-    result = pipeline.run_event(AgentEvent("reminder_due", {"message": "你好"})) if event else pipeline.run_user_message([{"role": "user", "content": "你好"}])
-    projected = _project_reply(result.reply)
+    result = runtime.handle_event(AgentEvent("reminder_due", {"message": "你好"})) if event else runtime.handle_user_message([{"role": "user", "content": "你好"}])
+    projected = _project_reply(apply_visual_reply(result.reply, binding))
     assert projected[0]["text"] == "こんにちは"
     assert projected[0]["translation"] == "你好"
     assert projected[0]["suppressTts"] is False
@@ -391,7 +390,7 @@ def test_numeric_controls_follow_real_chat_and_event_pipeline_into_history(visua
     store = TimelineStore(tmp_path / "timeline.sqlite3")
     store.initialize()
     store.append(NewTimelineEntry(entry_id="assistant-1", turn_id="turn-1", character_id="character", kind=TimelineKind.ASSISTANT, origin="chat", created_at="2026-09-11T12:00:00+08:00", payload={"segments": projected}))
-    application.application.visuals.clear()
+    application.visuals.clear()
     assert store.read_all("character")[0].payload["segments"] == projected
     assert runtime.reply_visual is None
     # A retained response can still be read, but its target can no longer parse.
@@ -400,7 +399,7 @@ def test_numeric_controls_follow_real_chat_and_event_pipeline_into_history(visua
 
 def test_real_plugin_contributes_numeric_schema_and_parses_state_and_one_shot_action(visual_application) -> None:
     application, package, resource = visual_application
-    host = application.application.visuals
+    host = application.visuals
     assert host.candidates(resource.type)[0]["reasonCode"] == "READY"
     binding = host.bind("character", package, resource)
     description = binding.description
@@ -435,7 +434,7 @@ def test_real_plugin_contributes_numeric_schema_and_parses_state_and_one_shot_ac
 
 def test_invalid_envelopes_are_isolated_and_old_bindings_expire_on_switch_reload_and_disable(visual_application) -> None:
     application, package, resource = visual_application
-    runtime = application.application
+    runtime = application
     host = runtime.visuals
     binding = host.bind("character", package, resource)
     for envelope in [
@@ -465,7 +464,7 @@ def test_invalid_envelopes_are_isolated_and_old_bindings_expire_on_switch_reload
 
 def test_missing_provider_and_unknown_resource_keep_files_and_never_activate_fallback(visual_application) -> None:
     application, package, resource = visual_application
-    host = application.application.visuals
+    host = application.visuals
     original = (package / "character.json").read_text(encoding="utf-8")
     with pytest.raises(VisualHostError, match="VISUAL_PROVIDER_MISSING"):
         host.bind("character", package, resource, provider_id="missing.plugin")
@@ -490,10 +489,10 @@ def test_missing_provider_and_unknown_resource_keep_files_and_never_activate_fal
 def test_visual_plugin_failures_retain_remote_diagnostics(tmp_path, method, signature, stage):
     import io
     from app.config.character_loader import CharacterRegistry
-    from app.core.chat_pipeline import _visual_reply
+    from app.core_host.assistant_adapter import apply_visual_reply as _visual_reply
     from app.core_host.character_studio import CharacterStudioBoundary
     from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
-    from app.llm.chat_reply import ChatReply, ChatSegment
+    from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
 
     code = _PLUGIN
     if method == "previewImage":
@@ -509,11 +508,11 @@ def test_visual_plugin_failures_retain_remote_diagnostics(tmp_path, method, sign
             profile = CharacterRegistry(package.parents[1]).get("character")
             boundary = CharacterStudioBoundary("g", "0123456789abcdef0123456789abcdef", package.parents[1], plugin_application_provider=lambda: application)
             if method == "describe":
-                application.application.bind_visual_character(profile)
+                application.bind_visual_character(profile)
                 for _ in range(3):
-                    assert application.application.visual_presentation()["visual"] is None
+                    assert application.visual_presentation()["visual"] is None
             elif method == "parseControl":
-                binding = application.application.visuals.bind(profile.id, package, resource)
+                binding = application.visuals.bind(profile.id, package, resource)
                 reply = _visual_reply(ChatReply([ChatSegment(text="still chatting", translation="", tone="", control=_control(resource, {"angle": 1}))]), binding)
                 assert reply.segments[0].text == "still chatting"
                 assert reply.segments[0].control is None
@@ -549,7 +548,7 @@ def test_bad_optional_declarations_keep_real_plugin_services_and_renderer_runnin
         "visuals": [declaration, {**declaration, "type": "fixture.other@1", "renderer": "../outside.js"}],
         "ttsResources": ["fixture.voice@1", "unversioned"],
     }) as (application, package, resource):
-        host = application.application.visuals
+        host = application.visuals
         assert host._runtime.service_identity("fixture.numeric.control")["providerId"] == "fixture.numeric"
         binding = host.bind("character", package, resource)
         assert binding.presentation()["renderer"] == "renderer.js"
@@ -557,6 +556,6 @@ def test_bad_optional_declarations_keep_real_plugin_services_and_renderer_runnin
         with pytest.raises(VisualHostError, match="VISUAL_MODULE_INVALID"):
             host.editor(resource, {})
         assert host.resource_choice(resource)["reasonCode"] == "READY"
-        record = host._inventory.scan().records[0]
+        record = application.inventory().records[0]
         assert record.tts_resources == ("fixture.voice@1",)
         assert len(record.capability_issues) == 3

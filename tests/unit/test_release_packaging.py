@@ -446,6 +446,7 @@ def _minimal_stage(root: Path, target: str) -> Path:
     (stage / "plugins/builtin").mkdir(parents=True)
     (stage / "plugins/builtin/__init__.py").write_text("", encoding="utf-8")
     plugin_ids = {
+        "sakura_assistant": "sakura.assistant.default",
         "sakura_mcp": "sakura.mcp",
         "sakura_portrait": "sakura.portrait",
         "sakura_spine": "sakura.visual.spine",
@@ -458,7 +459,7 @@ def _minimal_stage(root: Path, target: str) -> Path:
         "sakura_genie": "sakura.tts.genie",
         "sakura_gpt_sovits": "sakura.tts.gpt-sovits",
     }
-    dependency_plugins = {"sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice", "sakura_web", "sakura_mcp"}
+    dependency_plugins = {"sakura_assistant", "sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice", "sakura_web", "sakura_mcp"}
     for plugin, plugin_id in plugin_ids.items():
         directory = stage / "plugins/builtin" / plugin
         directory.mkdir()

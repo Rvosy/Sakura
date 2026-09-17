@@ -284,6 +284,9 @@ export function createRealChatClient({
     async announceUpdate() {
       return sendCommand("chat_update_announce", undefined, "silent");
     },
+    async observeScreen({ attachmentId }) {
+      return sendCommand("chat_screen_observation", { attachmentId }, "silent");
+    },
     async cancel(operationId) {
       const current = interaction;
       if (disposed || !current || current.terminal || current.operationId !== operationId) return false;

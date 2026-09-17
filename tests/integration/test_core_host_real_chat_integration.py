@@ -21,7 +21,7 @@ from app.core_host.protocol import encode_frame, read_frame
 from app.legacy_import.history import import_history
 from app.storage.timeline import TimelineKind, TimelineStore
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
-from app.llm.chat_reply import ChatReply, ChatSegment
+from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +35,21 @@ CAPABILITIES = [
     "core.initialize",
     "core.snapshot",
 ]
+
+
+class _AssistantDouble:
+    def commit_result(self, commit):
+        return commit()
+
+    def release(self, _operation_id, *, status):
+        pass
+
+
+class _SessionDouble(SimpleNamespace):
+    visual_binding = None
+
+    def descriptor(self):
+        return {"character": {"id": self.character.id}, "loopSettings": {}}
 
 
 class _ProviderHandler(BaseHTTPRequestHandler):
@@ -162,6 +177,50 @@ def _hello(optional_capabilities: list[str] | None = None) -> dict[str, object]:
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_assistant_distribution(tmp_path, assistant_dependencies, monkeypatch):
+    """Run real Core processes with the same private Assistant layout as releases."""
+    start_host = _start_host
+
+    def start(app_root, *, distribution_root=None):
+        distribution = distribution_root or tmp_path / "host-distribution"
+        for name in ("sakura_assistant", "sakura_portrait"):
+            destination = distribution / "plugins/builtin" / name
+            if not destination.exists():
+                shutil.copytree(
+                    REPO_ROOT / "plugins/builtin" / name,
+                    destination,
+                    ignore=shutil.ignore_patterns("__pycache__"),
+                )
+        dependencies = distribution / "plugins/dependencies/sakura.assistant.default"
+        if not dependencies.exists():
+            shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
+            (dependencies / ".sakura-dependencies.json").write_text(
+                json.dumps({"schemaVersion": 1, "kind": "requirements.txt",
+                            "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
+                encoding="utf-8",
+            )
+        return start_host(app_root, distribution_root=distribution)
+
+    monkeypatch.setattr(sys.modules[__name__], "_start_host", start)
+
+
+@pytest.fixture(autouse=True)
+def _provider_cleanup_on_fixture_failure(monkeypatch):
+    """A failed distribution setup must not leave its HTTP server thread alive."""
+    start_provider = _start_provider
+    providers = []
+    def start(outcome):
+        provider = start_provider(outcome)
+        providers.append(provider)
+        return provider
+    monkeypatch.setattr(sys.modules[__name__], "_start_provider", start)
+    yield
+    for server, worker in providers:
+        if worker.is_alive():
+            _stop_provider(server, worker)
+
+
 def _start_host(
     app_root: Path,
     *,
@@ -189,10 +248,23 @@ def _start_host(
         stderr=subprocess.PIPE,
         creationflags=flags,
     )
+    process._stderr_lines = []
+    process._stderr_thread = threading.Thread(
+        target=lambda: process._stderr_lines.extend(iter(process.stderr.readline, b"")),
+        name="real-chat-integration-diagnostics", daemon=True,
+    )
+    process._stderr_thread.start()
     assert process.stdin is not None
     process.stdin.write(bytes.fromhex(GENERATION_CREDENTIAL))
     process.stdin.flush()
     return process
+
+
+def _stderr_text(process):
+    if process.poll() is not None:
+        process._stderr_thread.join(2)
+        assert not process._stderr_thread.is_alive()
+    return b"".join(process._stderr_lines).decode("utf-8", errors="replace")
 
 
 def _send(process: subprocess.Popen[bytes], message: dict[str, object]) -> None:
@@ -230,7 +302,7 @@ def _read(process: subprocess.Popen[bytes], timeout: float = 10) -> dict[str, ob
         if process.poll() is not None and process.stderr is not None:
             raise AssertionError(
                 f"Core Host exited {process.returncode}: "
-                + process.stderr.read().decode("utf-8", errors="replace")
+                + _stderr_text(process)
             )
     assert isinstance(value, dict)
     return value
@@ -260,7 +332,7 @@ def _wait_ready(
             return
         index += 1
         time.sleep(0.01)
-    raise TimeoutError("Assistant did not become ready")
+    raise TimeoutError(f"Assistant did not become ready: {snapshot!r}\n{_stderr_text(process)}")
 
 
 def _stop(process: subprocess.Popen[bytes]) -> None:
@@ -273,6 +345,8 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=5)
         raise AssertionError("real chat Core Host required forced cleanup")
     finally:
+        process._stderr_thread.join(2)
+        assert not process._stderr_thread.is_alive()
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
@@ -327,80 +401,29 @@ def _stop_provider(server: ThreadingHTTPServer, thread: threading.Thread) -> Non
     assert not thread.is_alive()
 
 
-def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path: Path) -> None:
-    order: list[str] = []
-
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
-            order.append("pipeline")
-            return SimpleNamespace(
-                reply=ChatReply(
-                    [
-                        ChatSegment(
-                            text="ok",
-                            translation="好",
-                            tone="中性",
-                            portrait="neutral",
-                        )
-                    ]
-                ),
-                actions=[],
-            )
-
-    def wait_prompt_dependencies(*, cancel_checker):  # type: ignore[no-untyped-def]
-        cancel_checker()
-        order.append("dependencies")
-        return []
-
-    runtime = SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True)
-    session = SimpleNamespace(
-        character=SimpleNamespace(id="sakura", display_name="Sakura"),
-        runtime=runtime,
-        pipeline=Pipeline(),
-        tool_actions=None,
-        memory_boundary=None,
-        wait_prompt_dependencies=wait_prompt_dependencies,
-    )
-    boundary = RealChatBoundary(
-        GENERATION_ID,
-        GENERATION_CREDENTIAL,
-        tmp_path,
-        session_provider=lambda: session,
-        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
-    )
-    request = _request(
-        "dependency-order",
-        "chat.send",
-        {"message": "hello", "operationId": "dependency-order"},
-    )
-    boundary.reserve_send(request)
-    boundary.handle_send(request)
-    assert order == ["dependencies", "pipeline"]
-    boundary.close()
-
-
 def test_chat_never_applies_or_retries_a_previous_settings_save(tmp_path: Path) -> None:
-    from app.agent.runtime import AgentRuntime
-    from app.agent.runtime_limits import RuntimeLoopSettings
+    from sakura_assistant.agent.runtime import AgentRuntime
+    from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings
     from app.core_host.tool_settings import ToolSettingsBoundary, ToolSettingsError
-    from app.llm.api_client import ApiSettings, OpenAICompatibleClient
+    from sakura_assistant.llm.api_client import ApiSettings, OpenAICompatibleClient
 
     old_provider = ApiSettings("http://127.0.0.1", "fixture", "old")
     new_provider = ApiSettings("http://127.0.0.1", "fixture", "new")
-    provider = OpenAICompatibleClient(old_provider)
-    runtime = AgentRuntime(provider, "fixture")
+    provider = SimpleNamespace(settings=old_provider)
+    provider.update_settings = lambda value: setattr(provider, "settings", value)
+    runtime = SimpleNamespace(runtime_loop_settings=RuntimeLoopSettings())
     old_limits = runtime.runtime_loop_settings
     new_limits = RuntimeLoopSettings(6, 2, 10)
     observed = []
     calls: list[str] = []
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             observed.append((provider.settings, runtime.runtime_loop_settings))
             return SimpleNamespace(reply=ChatReply([]), actions=[])
 
-    session = SimpleNamespace(
-        character=SimpleNamespace(id="sakura"), runtime=runtime, pipeline=Pipeline()
+    session = _SessionDouble(
+        character=SimpleNamespace(id="sakura"), runtime=runtime, assistant=Assistant()
     )
     boundary = RealChatBoundary(
         GENERATION_ID,
@@ -412,7 +435,7 @@ def test_chat_never_applies_or_retries_a_previous_settings_save(tmp_path: Path) 
 
     def apply_tools(limits) -> None:
         calls.append("tools")
-        runtime.set_runtime_loop_settings(limits)
+        runtime.runtime_loop_settings = limits
 
     tools = ToolSettingsBoundary(
         GENERATION_ID,
@@ -472,8 +495,8 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path, m
     release_pipeline = threading.Event()
     events: list[dict[str, object]] = []
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             pipeline_started.set()
             assert release_pipeline.wait(2)
             return SimpleNamespace(
@@ -481,10 +504,10 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path, m
                 actions=[],
             )
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -529,7 +552,7 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path, m
 @pytest.mark.parametrize(
     ("failure", "cancelled", "reason_code", "stage"),
     [
-        ("provider", False, "PROVIDER_REQUEST_FAILED", "pipeline"),
+        ("provider", False, "PROVIDER_REQUEST_FAILED", "assistant"),
         ("reply", False, "INVALID_CHAT_REPLY", "reply_processing"),
         ("provider", True, None, None),
     ],
@@ -538,13 +561,13 @@ def test_chat_finished_bridge_records_only_the_resolved_terminal_failure(
     tmp_path: Path, failure: str, cancelled: bool, reason_code: str | None, stage: str | None,
 ) -> None:
     from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
-    from app.llm.api_client import ApiRequestError
+    from app.plugin_sdk.sakura_model import ApiRequestError
 
     operation_id = "terminal-diagnostic"
     events = []
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             if cancelled:
                 assert boundary.handle_cancel(
                     _request("cancel", "chat.cancel", {"operationId": operation_id})
@@ -553,8 +576,8 @@ def test_chat_finished_bridge_records_only_the_resolved_terminal_failure(
                 raise ApiRequestError("API HTTP 400: private provider response")
             return SimpleNamespace(reply=SimpleNamespace(), actions=[])
 
-    session = SimpleNamespace(
-        character=SimpleNamespace(id="sakura"), pipeline=Pipeline(),
+    session = _SessionDouble(
+        character=SimpleNamespace(id="sakura"), assistant=Assistant(),
     )
     boundary = RealChatBoundary(
         GENERATION_ID, GENERATION_CREDENTIAL, tmp_path, session_provider=lambda: session,
@@ -599,11 +622,11 @@ def test_started_worker_failure_logs_and_releases_chat_execution(
     background_errors = []
     logs = []
     operation_id = "worker-failed"
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura"),
-        pipeline=SimpleNamespace(run_user_message=lambda *_args, **_kwargs: SimpleNamespace(
+        assistant=SimpleNamespace(run_turn=lambda *_args, **_kwargs: SimpleNamespace(
             reply=ChatReply([ChatSegment("reply")]), actions=[],
-        )),
+        ), commit_result=lambda commit: commit()),
     )
     boundary = RealChatBoundary(
         GENERATION_ID, GENERATION_CREDENTIAL, tmp_path, session_provider=lambda: session,
@@ -654,8 +677,8 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
         def emit_event(self, name, payload):  # type: ignore[no-untyped-def]
             plugin_events.append((name, payload))
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(
                 reply=ChatReply(
                     [
@@ -671,10 +694,10 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
             )
 
     runtime = SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True)
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=runtime,
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -730,17 +753,17 @@ def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
                 delivery_started.set()
                 assert release_delivery.wait(2)
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(
                 reply=ChatReply([ChatSegment("reply", "回复", "中性", "neutral")]),
                 actions=[],
             )
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -787,10 +810,11 @@ def test_next_chat_waits_for_terminal_publication_and_execution_release(
     next_finished = threading.Event()
     send_errors: list[BaseException] = []
     next_errors: list[BaseException] = []
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura"),
-        pipeline=SimpleNamespace(
-            run_user_message=lambda *_args, **_kwargs: SimpleNamespace(
+        assistant=SimpleNamespace(
+            commit_result=lambda commit: commit(),
+            run_turn=lambda *_args, **_kwargs: SimpleNamespace(
                 reply=ChatReply([]), actions=[]
             )
         ),
@@ -868,8 +892,8 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
         def emit_event(self, name, _payload):  # type: ignore[no-untyped-def]
             plugin_events.append(name)
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(
                 reply=ChatReply([ChatSegment("reply", "回复", "中性", "neutral")]),
                 actions=[],
@@ -881,10 +905,10 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
                 raise OSError("disk full")
             return super().append(entry)
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -931,8 +955,8 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
 
     pipeline_calls: list[tuple[list[dict[str, object]], dict[str, object]]] = []
 
-    class Pipeline:
-        def run_user_message(self, messages, **kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, messages, **kwargs):  # type: ignore[no-untyped-def]
             pipeline_calls.append((messages, kwargs))
             return SimpleNamespace(
                 reply=ChatReply(
@@ -949,10 +973,10 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
             )
 
     runtime = SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True)
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=runtime,
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -1022,18 +1046,14 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     boundary.reserve_send(send)
     boundary.handle_send(send)
 
-    messages, kwargs = pipeline_calls[0]
-    content = messages[-1]["content"]
-    assert isinstance(content, list)
-    assert content[1]["type"] == "image_url"
-    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
-    assert content[2]["type"] == "image_url"
-    assert content[1]["image_url"]["url"] != content[2]["image_url"]["url"]
-    jobs = kwargs["visual_observation_jobs"]
-    assert len(jobs) == 1
-    assert jobs[0].source == "manual_screenshot"
-    assert jobs[0].observation is None
-    assert len(jobs[0].screen_contexts) == 2
+    descriptor, _kwargs = pipeline_calls[0]
+    attachment = descriptor["attachment"]
+    assert attachment["source"] == "manual"
+    observations = attachment["observations"]
+    assert len(observations) == 2
+    assert all(item["data_url"].startswith("data:image/jpeg;base64,") for item in observations)
+    assert observations[0]["data_url"] != observations[1]["data_url"]
+    assert descriptor["message"] == send["payload"]["message"]
     stored = TimelineStore(tmp_path / "timeline.sqlite3").read_all("sakura")
     assert [entry.kind for entry in stored] == [
         TimelineKind.HUMAN,
@@ -1184,16 +1204,16 @@ def test_timeline_deleted_during_runtime_fails_without_recreating_or_writing_jso
     pipeline_calls = 0
     events: list[dict[str, object]] = []
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             nonlocal pipeline_calls
             pipeline_calls += 1
             return SimpleNamespace(reply=ChatReply([ChatSegment("reply")]), actions=[])
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -1236,14 +1256,14 @@ def test_plugin_completion_failure_does_not_block_committed_chat(tmp_path: Path)
         def emit_event(self, _name, _payload):  # type: ignore[no-untyped-def]
             raise RuntimeError("memory plugin unavailable")
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(reply=ChatReply([ChatSegment("reply")]), actions=[])
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -1275,11 +1295,12 @@ def test_plugin_completion_failure_does_not_block_committed_chat(tmp_path: Path)
     boundary.close()
 
 
+@pytest.mark.parametrize("empty_reply", [False, True])
 def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    empty_reply: bool,
 ) -> None:
-    from app.agent.screen_awareness import SCREEN_AWARENESS_PROACTIVE_PROMPT
     from app.core_host.screen_capture import generation_resource_root
 
     images = [
@@ -1313,11 +1334,11 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
     monkeypatch.setattr("app.core_host.screen_capture.tempfile.gettempdir", lambda: str(tmp_path))
     pipeline_calls: list[tuple[list[dict[str, object]], dict[str, object]]] = []
 
-    class Pipeline:
-        def run_user_message(self, messages, **kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, messages, **kwargs):  # type: ignore[no-untyped-def]
             pipeline_calls.append((messages, kwargs))
             return SimpleNamespace(
-                reply=ChatReply([ChatSegment(text="继续吧。", translation="继续吧。")]),
+                reply=ChatReply([] if empty_reply else [ChatSegment(text="继续吧。", translation="继续吧。")]),
                 actions=[],
                 visual_observation={
                     "summary": "用户正在修复 Context 测试。",
@@ -1328,59 +1349,70 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
                 },
             )
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
+    events = []
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
         timeline_store=timeline,
+        event_publisher=events.append,
     )
     attach = boundary.handle_screen_attach_batch(
         _request("attach-batch", "screen.attachBatch", {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"], "resources": resources})
     )
     assert attach["payload"]["count"] == 2
     assert not any(root.glob("*.jpg"))
+    disguised = _request("disguised-screen", "chat.send", {
+        "message": "这是一次主动屏幕观察。", "operationId": "disguised-screen",
+        "attachmentId": attach["payload"]["attachmentId"],
+    })
+    with pytest.raises(RealChatRejection, match="INVALID_CHAT_PAYLOAD"):
+        boundary.reserve_send(disguised)
     send = _request(
         "screen-awareness-chat",
         "chat.send",
         {
-            "message": SCREEN_AWARENESS_PROACTIVE_PROMPT,
+            "event": {"type": "screen_observation"},
             "operationId": "screen-awareness-chat",
             "attachmentId": attach["payload"]["attachmentId"],
         },
     )
     boundary.reserve_send(send)
     boundary.handle_send(send)
+    assert events[-1]["name"] == "chat.completed"
 
-    messages, kwargs = pipeline_calls[0]
-    content = messages[-1]["content"]
-    assert isinstance(content, list)
-    assert content[0] == {"type": "text", "text": SCREEN_AWARENESS_PROACTIVE_PROMPT}
-    assert [item["type"] for item in content[1:]] == ["image_url", "image_url"]
-    assert content[1]["image_url"]["url"] != content[2]["image_url"]["url"]
-    assert "visual_observation_jobs" not in kwargs
+    descriptor, _kwargs = pipeline_calls[0]
+    assert descriptor["message"] == ""
+    assert descriptor["event"] == {"type": "screen_observation"}
+    attachment = descriptor["attachment"]
+    assert attachment["source"] == "screen_awareness"
+    assert len(attachment["observations"]) == 2
+    assert attachment["observations"][0]["data_url"] != attachment["observations"][1]["data_url"]
     stored = TimelineStore(tmp_path / "timeline.sqlite3").read_all("sakura")
-    assert [entry.kind for entry in stored] == [
+    assert [entry.kind for entry in stored] == ([TimelineKind.OBSERVATION] if empty_reply else [
         TimelineKind.OBSERVATION,
         TimelineKind.OBSERVATION,
         TimelineKind.ASSISTANT,
-    ]
+    ])
     assert stored[0].origin == "scheduled_screen"
     assert stored[0].payload["text"] == "刚才留意了一下屏幕状态。"
-    assert stored[1].payload["visual"]["analysisStatus"] == "succeeded"
-    assert "用户正在修复 Context 测试" in stored[1].payload["text"]
+    if not empty_reply:
+        assert stored[1].payload["visual"]["analysisStatus"] == "succeeded"
+        assert "用户正在修复 Context 测试" in stored[1].payload["text"]
     serialized = json.dumps(stored[0].payload, ensure_ascii=False)
     assert all(term not in serialized for term in ("base64", "resourceToken", str(root)))
 
+    history_cursor = timeline.latest_cursor("sakura")
     follow_up = _request(
         "screen-awareness-follow-up",
         "chat.send",
@@ -1392,15 +1424,10 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
     boundary.reserve_send(follow_up)
     boundary.handle_send(follow_up)
 
-    follow_up_messages, _follow_up_kwargs = pipeline_calls[1]
-    assert [message["role"] for message in follow_up_messages] == [
-        "system",
-        "assistant",
-        "user",
-    ]
-    assert "最近两小时内由定时截图形成" in follow_up_messages[0]["content"]
-    assert "用户正在修复 Context 测试" in follow_up_messages[0]["content"]
-    assert follow_up_messages[1]["content"] == "继续吧。"
+    follow_up_descriptor, _follow_up_kwargs = pipeline_calls[1]
+    assert follow_up_descriptor["attachment"] is None
+    assert follow_up_descriptor["message"] == "刚才进展怎么样？"
+    assert follow_up_descriptor["historyCursor"] == history_cursor
     boundary.close()
 
 
@@ -1571,6 +1598,12 @@ def test_real_core_routes_screen_awareness_settings_and_preserves_yaml(tmp_path:
         assert "preserve_screen_setting: true" in document
         assert "check_interval_minutes: 12" in document
         assert "screen_context_enabled" not in document
+        session = _exchange(process, _request("policy-session", "screen.session", {}))["payload"]["sessionId"]
+        facts = {"sessionId": session, "idle": True, "activity": False, "reset": False}
+        first = _exchange(process, _request("policy-start", "screen_awareness.step", facts))
+        assert first["payload"]["action"] == "clear"
+        idle = _exchange(process, _request("policy-idle", "screen_awareness.step", facts))
+        assert idle["payload"]["action"] == "none"
         _exchange(process, _request("shutdown-screen-settings", "system.shutdown", {}))
     finally:
         _stop(process)
@@ -1601,7 +1634,7 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
             _exchange(process, _request("debug-shutdown", "system.shutdown", {}))
             process.wait(timeout=5)
             assert process.stderr is not None
-            raise AssertionError(process.stderr.read().decode("utf-8", errors="replace"))
+            raise AssertionError(_stderr_text(process))
         names = [frame.get("name", "response") for frame in frames]
         assert names[0] == "chat.started"
         assert set(names[1:]) == {"chat.send", "chat.completed"}
@@ -1681,7 +1714,7 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         assert shutdown["payload"] == {"accepted": True}
         assert process.wait(timeout=5) == 0
         assert process.stderr is not None
-        stderr = process.stderr.read().decode("utf-8", errors="replace")
+        stderr = _stderr_text(process)
         assert "LOCAL_TEST_KEY" not in stderr
     finally:
         _stop(process)
@@ -1767,7 +1800,7 @@ def test_invalid_provider_json_fails_once_without_poisoning_core(tmp_path: Path)
             "operationId": "chat-invalid-json",
             "error": {
                 "code": "PROVIDER_RESPONSE_INVALID",
-                "message": "模型服务响应格式无效：返回内容不是有效 JSON。",
+                "message": "模型服务响应格式无效：回复结构不符合协议。",
                 "retryable": False,
                 "details": {},
             },
@@ -1804,10 +1837,7 @@ def test_cancel_interrupts_blocked_provider_read_with_one_terminal(tmp_path: Pat
         )
         started = _read(process)
         assert started["name"] == "chat.started"
-        deadline = time.monotonic() + 3
-        while not _ProviderHandler.requests and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert _ProviderHandler.requests
+        assert _ProviderHandler.received.wait(3), _stderr_text(process)
 
         _send(
             process,
@@ -1978,7 +2008,7 @@ def test_connection_refused_is_retryable_and_does_not_change_readiness(tmp_path:
         terminal = next(frame for frame in frames if frame.get("name") == "chat.failed")
         assert terminal["payload"]["error"] == {
             "code": "PROVIDER_REQUEST_FAILED",
-            "message": "Provider request failed",
+            "message": "模型请求失败。",
             "retryable": True,
             "details": {},
         }
@@ -2007,10 +2037,7 @@ def test_shutdown_during_blocked_provider_read_drains_terminal_and_process(tmp_p
             ),
         )
         assert _read(process)["name"] == "chat.started"
-        deadline = time.monotonic() + 3
-        while not _ProviderHandler.requests and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert _ProviderHandler.requests
+        assert _ProviderHandler.received.wait(3), _stderr_text(process)
 
         _send(process, _request("shutdown-active", "system.shutdown", {}))
         frames = [_read(process), _read(process), _read(process)]
@@ -2026,7 +2053,7 @@ def test_shutdown_during_blocked_provider_read_drains_terminal_and_process(tmp_p
         assert process.wait(timeout=5) == 0
         assert process.stdout is not None and process.stdout.read() == b""
         assert process.stderr is not None
-        stderr = process.stderr.read().decode("utf-8", errors="replace")
+        stderr = _stderr_text(process)
         assert "LOCAL_TEST_KEY" not in stderr
         assert "PRIVATE_PROVIDER" not in stderr
     finally:
@@ -2049,10 +2076,7 @@ def test_eof_during_blocked_provider_read_drains_terminal_and_process(tmp_path: 
             ),
         )
         assert _read(process)["name"] == "chat.started"
-        deadline = time.monotonic() + 3
-        while not _ProviderHandler.requests and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert _ProviderHandler.requests
+        assert _ProviderHandler.received.wait(3), _stderr_text(process)
         assert process.stdin is not None
         process.stdin.close()
 
@@ -2107,14 +2131,16 @@ def test_studio_publish_updates_live_character_without_restarting_core_or_plugin
         from app.config.character_loader import CharacterRegistry
         CharacterRegistry(app_root).get("beta").card_path.write_text("You are Beta with a golden book.", encoding="utf-8")
     process = _start_host(app_root, distribution_root=distribution)
-    stderr = []
-    drain = threading.Thread(target=lambda: stderr.extend(iter(process.stderr.readline, b"")), daemon=True)
-    drain.start()
+    stderr = process._stderr_lines
+    drain = process._stderr_thread
     def plugin_process_ids():
         return {child.pid for child in psutil.Process(process.pid).children()
                 if "--plugin-id" in child.cmdline() and "fixture.role" not in child.cmdline()}
     try:
         _wait_ready(process, ["transport.concurrent-router", "assistant.plugins-v1"])
+        expected_plugins = {"sakura.assistant.default", "sakura.portrait", "sakura.visual.spine", "sakura.tts.gpt-sovits", "sakura.tts"}
+        if switch_role:
+            expected_plugins.add("fixture.role")
         deadline = time.monotonic() + 5
         index = 0
         while True:
@@ -2122,12 +2148,12 @@ def test_studio_publish_updates_live_character_without_restarting_core_or_plugin
             assert response["ok"], response
             plugins = response["payload"]["plugins"]
             before = _exchange(process, _request(f"presentation-ready-{index}", "core.snapshot", {}))["payload"]
-            if len(plugins) == 4 + int(switch_role) and all(item["state"] == "active" for item in plugins) and before["characterPresentation"]["visual"]:
+            if {item["pluginId"] for item in plugins} == expected_plugins and all(item["state"] == "active" for item in plugins) and before["characterPresentation"]["visual"]:
                 break
             assert time.monotonic() < deadline, [(item["pluginId"], item["state"], item["reasonCode"]) for item in plugins]
             index += 1
         plugin_pids = plugin_process_ids()
-        assert len(plugin_pids) == 4
+        assert len(plugin_pids) == len(expected_plugins - {"fixture.role"})
         opened = _exchange(process, _request("open-role", "studio.character.open", {"characterId": "sakura"}))["payload"]
         doc = opened["doc"]
         doc["displayName"] = "更新后的角色"

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.runtime_limits import RuntimeLoopSettings
+from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings
 from app.config.settings_service import (
     AppSettingsService,
     BubbleSettings,
@@ -19,7 +19,7 @@ from app.config.models import (
     ThemeSettings,
 )
 from app.config.yaml_config import load_yaml_mapping
-from app.llm.api_client import ApiSettings
+from app.plugin_sdk.sakura_model import ApiSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
 
 

@@ -9,8 +9,8 @@ import time
 import pytest
 import yaml
 
-from app.agent.context_orchestrator import ContextOrchestrator
-from app.llm.prompts.types import ContextFragment, ContextMessage, ContextRequest
+from sakura_assistant.agent.context_orchestrator import ContextOrchestrator
+from sakura_context import ContextFragment, ContextMessage, ContextRequest
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.models import ContextProviderContribution
 from plugins.builtin.sakura_mem0.plugin import (
@@ -432,7 +432,7 @@ def test_plugin_setup_does_not_wait_for_initial_timeline_catch_up(tmp_path: Path
 
 
 def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_host_services import (
         _ModelSlotsHostService,
         _SettingsHostService,

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Sequence
 
-from app.llm.prompts.types import ContextFragment, ContextRequest
+from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
 from app.plugins.visuals import VisualCapability
 
 

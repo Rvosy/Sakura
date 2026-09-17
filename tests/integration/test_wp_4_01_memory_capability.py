@@ -225,7 +225,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
 def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
     tmp_path: Path,
 ) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
     from app.core_host.provider_settings import ProviderSettingsBoundary
     from app.storage.runtime_roots import RuntimeRoots
@@ -269,7 +269,7 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
             "profile_id": "fixture",
             "model": "fixture-model",
         }
-        before = first_application.application.public_snapshot()
+        before = first_application._manager.snapshot()
         plugin_pid = next(
             item["pid"]
             for item in before["plugins"]
@@ -291,7 +291,7 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
             "core:vision_chat",
             "plugin:sakura.memory.mem0:curation"
         ]
-        after = first_application.application.public_snapshot()
+        after = first_application._manager.snapshot()
         assert next(
             item["pid"]
             for item in after["plugins"]

@@ -9,8 +9,9 @@ import threading
 import pytest
 from openai import APIStatusError
 
-from app.core.cancellation import CancellationToken, OperationCancelled
-from app.llm.api_client import ApiRequestError, ApiSettings, OpenAICompatibleClient
+from sakura_cancellation import CancellationToken, OperationCancelled
+from sakura_assistant.llm.api_client import ApiRequestError, ApiSettings, OpenAICompatibleClient
+from sakura_model import ModelProbe
 
 
 @contextmanager
@@ -60,7 +61,6 @@ def reply(handler, data=None, status=200):
 
 def test_local_unauthenticated_tools_images_and_compatibility_share_one_connection(monkeypatch):
     monkeypatch.setattr("urllib.request.getproxies", lambda: {"http": "http://127.0.0.1:1"})
-    monkeypatch.setattr("app.llm.api_client.read_app_version", lambda _root: "")
     calls = []
     tool_call = {
         "id": "call-1", "type": "function",
@@ -98,10 +98,11 @@ def test_local_unauthenticated_tools_images_and_compatibility_share_one_connecti
         assert requests[2]["body"]["messages"][-1] == messages[-1]
 
 
+@pytest.mark.parametrize("client_type", [OpenAICompatibleClient, ModelProbe])
 @pytest.mark.parametrize("status", [429, 503])
-def test_real_http_failure_is_sent_once(status):
+def test_real_http_failure_is_sent_once(status, client_type):
     with provider(lambda handler, _request: reply(handler, {"error": {"message": "busy"}}, status)) as (url, requests):
-        client = OpenAICompatibleClient(ApiSettings(url, "", "local"))
+        client = client_type(ApiSettings(url, "", "local"))
         with pytest.raises(ApiRequestError) as caught:
             client.test_connection()
         assert len(requests) == 1
@@ -109,8 +110,9 @@ def test_real_http_failure_is_sent_once(status):
         assert caught.value.__cause__.status_code == status
 
 
+@pytest.mark.parametrize("client_type", [OpenAICompatibleClient, ModelProbe])
 @pytest.mark.parametrize("phase", ["headers", "body"])
-def test_cancellation_closes_actual_socket_before_returning(phase):
+def test_cancellation_closes_actual_socket_before_returning(phase, client_type):
     entered = threading.Event()
     disconnected = threading.Event()
     outcome = []
@@ -130,7 +132,7 @@ def test_cancellation_closes_actual_socket_before_returning(phase):
         handler.close_connection = True
 
     with provider(respond) as (url, requests):
-        client = OpenAICompatibleClient(ApiSettings(url, "", "local", timeout_seconds=30))
+        client = client_type(ApiSettings(url, "", "local", timeout_seconds=30))
 
         def run():
             try:
@@ -210,7 +212,8 @@ def test_remote_proxy_is_fixed_within_scope_and_refreshed_next_scope(monkeypatch
             assert all(request["path"] == "http://sakura-model.invalid/v1/chat/completions" for request in requests_a + requests_b)
 
 
-def test_custom_certificate_trust_works_for_local_https(monkeypatch, tmp_path):
+@pytest.mark.parametrize("client_type", [OpenAICompatibleClient, ModelProbe])
+def test_custom_certificate_trust_works_for_local_https(monkeypatch, tmp_path, client_type):
     from datetime import datetime, timedelta, timezone
     import ipaddress
     import ssl
@@ -237,11 +240,12 @@ def test_custom_certificate_trust_works_for_local_https(monkeypatch, tmp_path):
     context.load_cert_chain(cert_path, key_path)
     monkeypatch.setenv("SSL_CERT_FILE", str(cert_path))
     with provider(lambda handler, _request: reply(handler), tls=context) as (url, requests):
-        assert OpenAICompatibleClient(ApiSettings(url, "", "local")).test_connection() == "OK"
+        assert client_type(ApiSettings(url, "", "local")).test_connection() == "OK"
         assert len(requests) == 1
 
 
-def test_redirect_is_reported_without_replaying_post():
+@pytest.mark.parametrize("client_type", [OpenAICompatibleClient, ModelProbe])
+def test_redirect_is_reported_without_replaying_post(client_type):
     def respond(handler, _request):
         handler.send_response(307)
         handler.send_header("Location", "/v1/other/chat/completions")
@@ -250,7 +254,7 @@ def test_redirect_is_reported_without_replaying_post():
 
     with provider(respond) as (url, requests):
         with pytest.raises(ApiRequestError) as caught:
-            OpenAICompatibleClient(ApiSettings(url, "", "local")).test_connection()
+            client_type(ApiSettings(url, "", "local")).test_connection()
         assert isinstance(caught.value.__cause__, APIStatusError)
         assert caught.value.__cause__.status_code == 307
         assert len(requests) == 1

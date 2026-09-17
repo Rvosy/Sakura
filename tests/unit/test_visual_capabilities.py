@@ -141,7 +141,8 @@ def binding_host(tmp_path: Path):
     (tmp_path / "resource.json").write_text("{}", encoding="utf-8")
     resource = CharacterVisualResource("model", "example.parameters@1", ".", "resource.json")
     runtime = _Runtime()
-    return VisualHost(RuntimeRoots(tmp_path, tmp_path), runtime), runtime, resource, plugin, tmp_path
+    inventory = PluginInventory(RuntimeRoots(tmp_path, tmp_path))
+    return VisualHost(runtime, inventory=inventory.scan), runtime, resource, plugin, tmp_path
 
 
 def test_in_flight_describe_and_parse_are_discarded_after_invalidation(binding_host) -> None:
@@ -224,7 +225,7 @@ def test_revocation_during_identity_read_cannot_publish_control(binding_host) ->
     PluginRuntimeError("SERVICE_INTERNAL_ERROR", "service lookup failed"),
 ])
 def test_visual_prompt_errors_are_not_mistaken_for_absent_capabilities(binding_host, monkeypatch, error):
-    from app.agent.runtime import AgentRuntime
+    from sakura_assistant.agent.runtime import AgentRuntime
 
     host, provider, resource, _plugin_root, package = binding_host
     binding = host.bind("character", package, resource)
@@ -242,7 +243,7 @@ def test_visual_prompt_errors_are_not_mistaken_for_absent_capabilities(binding_h
 
 @pytest.mark.parametrize("invalidate", ["close", "missing", "replaced"])
 def test_retired_visual_prompt_is_omitted_without_hiding_other_errors(binding_host, invalidate):
-    from app.agent.runtime import AgentRuntime
+    from sakura_assistant.agent.runtime import AgentRuntime
 
     host, provider, resource, _plugin_root, package = binding_host
     binding = host.bind("character", package, resource)

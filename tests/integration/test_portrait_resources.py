@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.config.character_loader import CharacterRegistry
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.visual_host import VisualHostError
@@ -36,8 +36,8 @@ def test_legacy_portrait_business_is_owned_by_replaceable_plugin(tmp_path: Path,
     application = PluginApplicationHost(RuntimeRoots(distribution, user), "portraits", ToolRegistry())
     application.start()
     try:
-        assert application.application.public_snapshot()["plugins"][0]["state"] == "active", application.application.public_snapshot()
-        host = application.application.visuals
+        assert application._manager.snapshot()["plugins"][0]["state"] == "active", application._manager.snapshot()
+        host = application.visuals
         binding = host.bind(profile.id, profile.package_dir, profile.current_visual_resource)
         assert binding.description["assets"] == {"__default__": "default.png", "开心": "happy.png", "不满": "angry.png"}
         for portrait, tone, expected in [("开心", "不满", "开心"), ("", "不满", "不满"), ("", "unknown", "__default__")]:
@@ -175,7 +175,7 @@ def test_v110_unpublished_portrait_draft_survives_editor_and_save(tmp_path, auto
             return
         request("studio.character.publish", {"workspaceId": "demo", "doc": doc})
         profile = CharacterRegistry(user).get("demo")
-        binding = application.application.visuals.bind(profile.id, package, profile.current_visual_resource)
+        binding = application.visuals.bind(profile.id, package, profile.current_visual_resource)
         assert binding.description["assets"] == {"__default__": "new.png", "新标签": "new.png"}
     finally:
         application.close()
@@ -201,8 +201,8 @@ def test_portrait_resource_error_logs_target_and_original_cause(tmp_path, failur
     application = PluginApplicationHost(RuntimeRoots(distribution, user), "g", ToolRegistry())
     try:
         application.start()
-        application.application.bind_visual_character(CharacterRegistry(user).get("demo"))
-        assert application.application.visual_presentation()["visualReasonCode"] == "VISUAL_RESOURCE_INVALID"
+        application.bind_visual_character(CharacterRegistry(user).get("demo"))
+        assert application.visual_presentation()["visualReasonCode"] == "VISUAL_RESOURCE_INVALID"
     finally:
         application.close()
         bridge.close()
@@ -253,7 +253,7 @@ def test_large_portrait_collection_publishes_and_binds_without_truncation(tmp_pa
         opened = boundary._dispatch("studio.character.open", {"characterId": "demo"})
         boundary._dispatch("studio.character.publish", {"workspaceId": "demo", "doc": opened["doc"]})
         profile = CharacterRegistry(user).get("demo")
-        binding = application.application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
+        binding = application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
         assert set(binding.description["assets"]) == {"__default__", *expressions}
         assert len(json.dumps(binding.description, ensure_ascii=False).encode()) > 65536
         key = next(reversed(expressions))

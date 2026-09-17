@@ -8,200 +8,110 @@ updated: 2026-09-18
 
 # WP-3-02：无 UI 的真实聊天 Core 垂直链
 
-> 当前状态唯一真相源见
-> `docs/plans/runtime-v2/work-packages.md`。本 WP 已于 2026-07-26
-> 完成正式验收；以下 active/stabilizing 内容保留为历史实施记录。
-
 ## 当前执行入口
 
-正常聊天使用默认 Assistant，直接调用既有 ChatPipeline/Agent/Provider。未使用的执行器实验已清理，
-历史 `chat_executor` 字段被忽略；启用插件服务不会接管聊天，缺少模型配置时仍需完成配置。
-当前边界见 [Plugin Runtime](sakura-plugin-runtime-v4.md#65-正常对话与插件服务的边界)。
-
-桌面 IPC 受理后与 Mobile、无界面调试共用 `RealChatBoundary` 的对话操作实现。
-同进程调用传入 `ChatTurnInput` 并得到 `ChatOutcome`，不构造 generation credential、协议 envelope，
-也不通过临时终态监听器还原业务结果。IPC 适配器负责将 started/终态编码为传输事件；
-同一个操作仍由 Python 决定取消与 Timeline 提交。Mobile 图片直接归本轮所有，不占用桌面待发送附件槽。
-Mobile `begin` 在返回 job ID 前同步受理对话并固定当前角色；后台 worker 只执行已受理轮次。
-取消和 scope 撤销即使早于 worker 开始，也能取消该轮；角色预检查之后发生切换时，受理边界拒绝旧角色请求。
-worker 启动失败释放尚未执行的受理槽位，不阻塞下一轮。
-
-Router 的受理与放弃回调由装配点显式传入，不从 bound method 反射推导。
-普通请求的异常返回该请求的失败响应，之后仍可继续处理请求；传输写失败、坏帧与 EOF 由连接拥有者收尾。
-这不代表请求失败后可以自动重放写入或有副作用的操作。
-
-验证：`tests/unit/test_core_host_protocol.py`、`tests/unit/test_core_host_timeline.py`、
-`tests/unit/test_mobile_runtime_v4.py`。
-
-当前历史使用 [Timeline 契约](WP-4-07R-typed-timeline-adaptive-context.md)。输入保存失败时不启动本轮执行；
-助手结果经身份与取消校验后提交，提交失败明确报告 `TIMELINE_WRITE_FAILED`，不会伪造完成或播放。
-旧 WP 的 JSONL 和 best-effort 写入说明保留为历史记录。
-
-## 激活记录（2026-07-26）
+桌面 IPC、Mobile 与无界面调用共用 RealChatBoundary。Core 固定当前角色、会话、取消和数据所有权，
+再调用普通 `sakura.assistant` 服务；模型策略运行于插件进程。Core 不导入默认 Agent、Prompt 或 ChatPipeline，
+服务停用后不回落到本地实现。服务与生命周期见 [Assistant 插件边界](assistant-plugin-boundary.md)。
+旧 chat_executor 字段被忽略，不建立执行器登记表或隐藏路由。
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
-开始日期：2026-07-26
-前置条件：WP-3-01 accepted；WP-2-02 accepted
-目标：让 WP-3-01 AssistantSession 成为 WP-2-02 Gateway/Router/取消/Snapshot 的首个真实消费者，并以无 UI Rust acceptance harness 验证完整聊天链
-验收环境：当前 Windows 开发机、三平台 Runtime v2 platform CI；自动测试仅使用确定性 fake/local Provider 和隔离临时 app root，不访问公网或真实用户 Provider
-关联 ADR：ADR-0002 已冻结的 protocol 2.2 request/response/event、generation credential、聊天 Gateway、唯一终态、取消与五字段 Snapshot
-计划提交：先测试/fixture，再真实 Python chat boundary 与 history 接线，再 Rust/真实 Core acceptance，最后独立稳定化与验收文档；每个提交均可单独回退
+桌面 Rust Gateway / Mobile / 无界面入口
+  → RealChatBoundary 受理、取消与 operation registry
+  → 固定角色并写入 Timeline 输入
+  → BoundAssistant.begin / poll / result
+  → Assistant 插件的模型、上下文和工具策略
+  → Core 验证结果、固定实例与取消，提交 Timeline
+  → release 插件操作，发布唯一终态并释放受理槽
 ```
 
-## 稳定化候选记录（2026-07-26）
+## 受理与所有权
 
-```text
-状态：stabilizing 候选；正式 accepted 仍以本候选提交的 Windows/macOS/Linux 同 SHA CI 全绿为准
-自动测试：完整 Python 1717 passed、15 skipped；前端 22 passed；locked Rust 179 passed、23 ignored；Rust debug build、fmt、diff-check 全绿
-故障测试：Provider 400/401/429/500、连接失败、坏 JSON/坏结构、兼容回退、queued/running/retry-sleep/HTTP-read cancel、shutdown/EOF、history rotate 全覆盖
-真实应用验收：Windows debug Shell + bundled Python Core lifecycle harness 通过；受保护 characters/data/runtime 内容摘要前后不变
-已知问题：本机 npm 启动器缺少 npm-cli.js，已执行 package.json 中完全等价的 node --test；Windows 无 symlink privilege 项明确 skip，三平台 CI 仍实际执行平台门禁
-回退步骤：先停止并确认 operation、Router、Provider、Core/后代和 IPC 资源归零，再按 7c691962、116e64f7、452343e9 逆序 revert；history 不删除、不截断
-关联提交：452343e9、116e64f7、7402b9d7、7c691962
-```
+同进程调用传入 ChatTurnInput 并返回 ChatOutcome，不构造 generation credential 或协议 envelope，
+也不用临时终态监听器还原业务结果。IPC 适配器只编码 started 和终态事件。Router 的受理与放弃回调
+由装配点显式传入，不从 bound method 反射推导。
 
-## 最终 accepted 记录（2026-07-26）
+Core 保持一个活动对话槽。Mobile begin 返回 job ID 前同步受理并固定角色，后台 worker 只执行已受理轮次。
+角色预检查之后发生切换时拒绝旧角色请求；取消与 scope 撤销即使早于 worker 开始也能取消该轮。
+worker 启动失败必须释放未执行槽位。Mobile 图片归本轮所有，不占桌面待发送附件槽。
 
-```text
-状态：accepted
-实现候选：b835ef2ca66a33f98eb0b4339c1ccb51abcd5e91
-自动测试：完整 Python 1718 passed、15 skipped；CI 同款 Core Host/故障门禁 220 passed；前端 22 passed；locked Rust 179 passed、23 ignored；py_compile、Rust fmt、diff-check 全绿
-故障测试：Provider 400/401/429/500、连接/timeout/坏 JSON/坏结构、兼容回退、queued/running/retry/HTTP-read cancel、shutdown/EOF、history rotate/降级、Router terminal 排空、打包启动图与执行期 Qt/plugin 泄漏门禁全绿
-真实应用验收：纯净 Windows embedded Python 返回 chat.completed/historyStatus=saved；隔离打包 Runtime lifecycle/fault matrix 通过且资源树摘要不变；Windows/macOS/Linux 原生 Shell + bundled Core、进程树/pipe/lock/RuntimeLocator 门禁全部通过
-CI：Runtime v2 platform foundation run 30200669759 在同一 SHA 上成功，Windows x64、macOS arm64、Linux x64 三个 job 全绿；Test run 30200669763 同 SHA 成功
-缺陷关闭：run 30194387837 捕获真实聊天执行期 app.plugins→PySide6 泄漏；55913158 修复后 run 30200020224 又捕获打包 Core hello 前 app.core 启动图泄漏；b835ef2c 延迟业务图后两类缺陷均由最终三平台运行关闭
-P0/P1：零；没有剩余可复现退出条件缺陷、数据污染或范围扩张
-已知限制：本机 npm 启动器缺少 npm-cli.js，使用 package.json 完全等价的 node --test；Windows 无 symlink privilege 场景明确 skip，正式三平台 CI 已在各原生平台执行对应门禁；UI、TTS、Tools、Memory、MCP、插件与 streaming 仍为后续 WP 非目标
-回退步骤：先停止并确认 generation、chat operation、Provider、Router、writer、Core/后代、pipe/fd/handle/thread/temp 和共享锁资源归零；按 b835ef2c、55913158、7c691962、116e64f7、452343e9 逆序 revert；history 只允许旧版本忽略，不删除、截断、恢复或改写
-关联提交：452343e9、116e64f7、7402b9d7、7c691962、793d3ea9、c1387d44、55913158、b835ef2c
-```
+chat.started 发布后必须恰有一个终态。chat.send 的 accepted 响应不等待模型、截图上下文或插件整个轮次；
+实际执行在 generation 拥有的后台任务中进行，不能占用请求响应 deadline。普通业务异常只使该次请求失败；
+传输写失败、坏帧和 EOF 由连接 owner 收尾，不自动重放请求或有副作用的工具调用。
 
-- 生产 `run_host` 已从隐式 WP-2-02 fixture 切换为 `RealChatBoundary`；fixture 仅能由测试显式注入。
-- readiness 发布的单一 `AssistantSession`、角色级 recent history、严格 Provider/结构错误、exact reply
-  projector、operation cancel/close 和唯一终态仲裁已经接通。
-- Windows 本地确定性 Provider subprocess 与 Rust Gateway → 真实 Python Core → local Provider → history
-  落盘纵向验收均已通过；Gateway 在写前拒绝 fixture/transport/history/private 字段，并校验
-  `segments`/`historyStatus` exact terminal shape。
-- HTTP response close-lock 取消阻塞和 Router shutdown/EOF 终态排空竞态已修复；故障矩阵与本地资源
-  回收门禁全绿。候选 `b835ef2c` 已通过同一 SHA 的正式三平台 platform workflow，WP-3-02
-  已迁移为 `accepted`。
+ControlDispatcher/ReadinessController 暴露当前 session，不拥有模型客户端或上下文预算。
+Session 只绑定一次 Assistant scope；Provider reload、disable、exit 或替换都使旧绑定失效。
+后续显式重新准备可以使用新实例，旧 operation 不会被新实例继承。
 
-本 WP 不创建第二套 Assistant application、worker pool、stdout writer 或生命周期根。旧迁移提交
-`190dfafd24f5c5226bff8b4347837b6e45d9a331` 仅允许逐文件取证；禁止 cherry-pick、整包复制或恢复
-`brain_host` 架构。当前实现的唯一数据流如下：
+## 输入、历史与结果
 
-```text
-Rust chat Gateway
-  -> Python ConcurrentHostRouter（既有有界 worker / 单 writer）
-  -> RealChatBoundary（generation、operation、取消、唯一终态）
-  -> AssistantSession.pipeline.run_user_message(..., cancel_checker=...)
-  -> AgentRuntime -> OpenAICompatibleClient
-  -> chat.completed | chat.failed | chat.cancelled
-  -> 角色级 ChatHistoryStore（允许失败、不可反向决定聊天终态）
-```
+公开聊天请求仅接受已定义的消息、来源和附件字段。调用方不能提供 system/tool role、任意历史数组、
+模型凭据或内部会话。Core 从当前角色和 Timeline 构造输入，将 artifact 与快照授权交给固定 Assistant。
+插件通过完整轮分页获取历史，选择与预算由插件负责；Core 不扫描并投影全部历史。
 
-## 冻结消费者与所有权
+[Timeline 合同](WP-4-07R-typed-timeline-adaptive-context.md) 是历史与上下文来源的现行规范。
+输入持久化失败时不启动 Assistant。成功结果在最终身份与取消仲裁内提交；写入失败报告
+TIMELINE_WRITE_FAILED，不伪造完成、播放或助手历史。取消和失败不生成假的助手回复。
+历史旧 JSONL 兼容由存储层负责，聊天执行不建立第二份历史真相源。
 
-- `AssistantAdapter` 继续是 `AssistantSession` 的唯一构造和关闭所有者；初始化成功前
-  `chat.send` fail closed，setup-required/degraded 的既有 readiness 语义不被聊天请求改写。
-- 新增一个窄 `RealChatBoundary`（候选路径 `app/core_host/real_chat.py`）承担 operation registry、
-  cancellation token、pipeline 调用、事件投影和 history best-effort 写入。它复用 WP-2-02 已冻结的
-  并发上限、reserve/abandon、cancel-all、close deadline、revision 和唯一终态规则；不再复制 fixture
-  的 sleep/file 业务。
-- `ControlDispatcher`/`ReadinessController` 只暴露当前已发布的 session 给真实边界，不持有 Provider、
-  Runtime 或 History。Router 仍不 import Assistant 领域对象，不新增线程池和 writer。
-- 一代 Core 同时最多执行 WP-2-02 已允许的有界聊天数；本 WP 的产品入口先固定为单个 active
-  interaction。operation identity 仍由 Rust 分配，请求 payload 只允许 `message`；图片、附件、
-  system/tool role、调用方 transport 字段和任意历史数组均拒绝。
-- `chat.started` 成功发布后必须恰有一个终态。`OperationCancelled` 映射为 `chat.cancelled`；Provider/
-  解析/领域异常映射为脱敏 `chat.failed`；成功 `AgentResult.reply` 映射为 `chat.completed`。响应仍只表示
-  accepted，不替代 terminal event。Core 必须在 `chat.started` 发布成功后立即返回 accepted，并在
-  generation 所有的有界后台执行中等待 Provider 与最终终态；不得把图片上下文或慢 Provider 的完整耗时
-  绑定到 `chat.send` request deadline。
-- `chat.completed.reply` 固定投影为 `segments` 数组；每段仅含 `text`、`translation`、`tone`、
-  `portrait`、`suppressTts`，以及按[表现插件合同](visual-plugin-boundary.md)校验的可选 `control`。
-  control 内的 state/actions 是插件私有数据；禁止序列化 `_debug`、Agent actions、tool continuation、prompt、endpoint、model、
-  API key、generation credential 或 Python 对象。WP-3-02 的空 `ToolRegistry` 下出现 action 视为边界错误。
-- `chat.failed.error` 使用稳定 code、message、retryable、details 空对象。网络不可达、timeout、HTTP、
-  Provider 响应格式错误均只终止本 operation；Core readiness 仍为 ready/degraded，health/control 可用。
-  用户可修复的 Provider 网络类错误为 retryable，配置/协议/内部投影错误不自动重试。
-- 远程 Provider 在每次 HTTP 尝试前读取当前系统代理；同一 Core 运行期间开关系统代理不要求重启。
-  标准代理环境变量仍遵循进程环境语义，本地回环地址始终直连。
-  内置插件 API、模型与 TTS 资源下载、远程 MCP 的新 HTTP 请求及网页搜索遵循相同规则；重试和重定向
-  重新选择代理，关闭代理后不得残留前次请求的代理地址或认证头。已打开的下载响应和 MCP SSE 流继续使用
-  原连接，新请求独立读取配置。网页搜索经代理时仍校验并固定公共目标 IP，保留原域名的 Host 与 TLS 校验。
-  Windows/macOS 使用标准库支持的系统代理与绕过规则，Linux 使用进程代理环境变量；不解析 PAC 脚本。
+Assistant 返回的 reply/actions/visual_observation 先经 Core 验证。表现 control 按当前 visual binding
+解析；桌面 reply 只投影 segments，每段公开 text、translation、tone、portrait、suppressTts 与可选 control。
+control 的 state/actions 是表现插件数据，不公开 Python 对象、工具 continuation、Prompt、模型设置或凭据。
+本轮可见更新、表现派发和 TTS 必须使用最终提交的有效结果。
 
-## 历史写入契约
+## 终态、取消与释放
 
-- 复用 `StoragePaths(app_root).chat_history_for(character.id)` 与 `ChatHistoryStore`，不发明新 schema、
-  DB 或迁移。History 是本 WP 明确授权的产品写入，不设置 `data/` 全目录只读门禁。
-- 为保持 legacy 聊天语义，接受请求后先 best-effort 写入一条 user 记录；成功时按非空 reply segment
-  顺序 best-effort 写入 assistant 记录。失败或取消不伪造 assistant 记录。
-- History 读写失败不能把已生成回复改成 `chat.failed`，也不能改变 Core readiness。终态 payload 以
-  最小 `historyStatus: saved|degraded` 状态表达“本轮可能未完整保存”；诊断仅记录脱敏错误
-  分类，不记录消息正文、路径、Provider 配置或凭据。
-- 真实边界构造发送给 Pipeline 的消息来自角色级 history 的有界 recent window 加当前消息；读取失败
-  时退化为仅当前 user 消息。禁止接受 WebView/调用方提交的 history，以免绕过角色和 generation
-  所有权。精确窗口上限在首个测试提交中冻结，并与 legacy `trim_messages_for_model` 行为对拍。
-- 正常产品写入遵守既有目录所有权、JSONL、rotate/repair 和共享锁契约。破坏性 history fault、截断、
-  权限和满盘模拟必须使用隔离临时根；不得清理、恢复、截断或改写仓库真实用户数据。
+显式取消或 generation 失效先于尚未提交的结果；确定的 Provider/领域错误映射为 chat.failed；只有结果形状
+有效、固定 Assistant scope 仍存在、Timeline 写入成功且终态仲裁胜出后才能发布 chat.completed。
+取消胜出后晚到结果不得产生第二终态。重复 chat.cancel 返回 accepted=false，未知或旧 operation
+不得影响当前请求。
 
-## 取消、关闭与故障顺序
+取消 checker 贯穿默认插件的 AgentRuntime、上下文读取、Provider retry/sleep/HTTP 读取与工具步骤。
+Core 接受取消不意味着后台已退出；确认 worker 终态或精确实例停止之前保留输入和历史授权。
+begin ACK 丢失不重放 begin；cancel、poll 或 release 传输失败按 Assistant 合同回收原 scope，
+不杀死同 ID 的新实例。工具已经产生的外部副作用不保证可撤销，也不自动执行第二次。
 
-取消 checker 必须贯穿 `ChatPipeline`、`AgentRuntime`、Provider retry/sleep/HTTP 读取边界。取消胜出后，
-晚到 Provider 结果、history 回调或 terminal publish 均不得产生第二终态。`chat.cancel` 重复调用返回
-`accepted=false`；未知/旧 operation 不影响当前请求。generation invalidate、Core shutdown、EOF、
-窗口关闭和 Retry 先 signal 全部 operation，再按 WP-2-01/02 已接受的有界顺序 join/close；不合作
-Provider/线程的最终收束仍由 Rust `ManagedProcessTree` 与共享 shutdown deadline 负责。
+插件 completed 不是 Core completed。RPC 结果返回后还要在 commit_bound_service 临界区检查服务身份，
+与 disable/reload/exit 的失效进行仲裁；失效结果报告 ASSISTANT_BINDING_EXPIRED，不写历史或播放。
 
-必须按以下优先顺序分类终态：generation invalidated/显式取消 -> `chat.cancelled`；确定的 Provider 或
-领域错误 -> `chat.failed`；仅在结果投影完成且 terminal arbitration 胜出后 -> `chat.completed`。
-History 失败只降级 `historyStatus`，不参与前三者仲裁。
+Timeline 提交、插件通知与 release/Trace 收尾结束后，Core 在同一临界区发布终态并释放受理槽。
+Shell 收到终态后立即续发，必须等待协议写入确认与该槽释放，不因旧轮清理间隙错误拒绝下一条消息。
+写入失败也要释放登记，并由 Router 报告 transport failure。终态裁决与执行槽释放是两个不同阶段。
 
-Timeline 提交、插件完成通知和 Trace 收尾结束后，聊天边界在同一临界区发布终态并释放本轮执行槽。
-Shell 收到终态后立即续发时，Core 等待该次协议写入确认并完成释放，不得因旧槽尚未回收而拒绝新消息。
-本轮在协议写入确认前仍登记在 generation 中，关闭必须等它收尾；写入失败也要释放登记，并由 Router
-报告 transport failure。终态裁决不等于执行槽释放，发布前的插件通知和 Trace 收尾仍占用本轮执行槽。
+## 故障与诊断
 
-## 启动与调用边界
+chat.failed.error 使用稳定 code、公共 message、retryable 和有界 details。Provider 网络、timeout、HTTP
+或格式错误只终止本 operation，不能伪装为 Core crash。默认插件保留原始异常链作为脱敏运行诊断；
+配置与协议错误不自动重试，429/5xx 等是否可由用户重试按错误分类呈现。
 
-`real_chat` 的 operation/Gateway 控制面必须能在仅含 `app/core_host` 的打包 Core 中导入和构造。
-Pipeline、Provider、history、runtime log 与取消异常等业务依赖在首个已接受的真实聊天执行时加载，
-不在 `system.hello` 前扩大启动图。业务图不得意外导入 Qt 或启动未启用的插件。
+Core stdout 只承载协议。普通运行日志经统一 Host 日志链路；Agent Trace 在默认插件中写入 Host 授权目录，
+失败不改变聊天结果。Trace、输入 artifact 或日志收尾错误不覆盖最初的执行/取消错误。
 
-Core stdout 只承载协议；运行日志绑定正确的应用根，不能由旧 console/file sink 写入协议流或错误的数据目录。
-取消应贯穿活动 HTTP 请求，关闭响应不能阻塞 control 面。这些契约允许在实际拥有根因的模块中修正。
+默认插件模型请求继续使用公开 HTTP SDK 的系统代理规则：每次新尝试重新读取当前代理，回环地址直连，
+远端连接和重定向遵守相应网络边界。已打开的流继续使用原连接，不因后续设置变化混用认证信息。
 
-## 确定性验收矩阵
+shutdown、EOF、Core generation 失效先 signal 全部 operation，再按现有有界 deadline 收尾。
+不合作插件由 Generic Runtime 局部回收；Core 整树最终停止仍由 Rust ManagedProcessTree 负责。
+health、cancel 与 shutdown 不等待模型锁；无关插件不得因一次 Assistant 操作失败自动重载。
 
-| 门类 | 必测情形 | 核心断言 |
-|---|---|---|
-| 正常回复 | 单段、多段、空白段、日文/译文/tone/portrait | exact reply projector；started 后唯一 completed；无 `_debug`/secret/action 泄漏；history 顺序正确 |
-| Provider | DNS/连接失败、timeout、HTTP 4xx/5xx、坏 JSON、空/坏结构化回复、兼容参数回退、accepted 后慢返回 | accepted 不等待 Provider；稳定脱敏 code/retryable；每次仅一个 failed；readiness/health 不降级为启动失败；无自动公网访问 |
-| 取消竞态 | queued/running/retry sleep/HTTP read/解析前后取消、完成/失败同时取消、重复取消 | checker 贯穿；唯一 cancelled 或已胜出的单一终态；晚结果丢弃；cancel/health 不被聊天阻塞 |
-| History | 无文件、既有多轮、坏尾修复、read fail、user append fail、assistant append fail、rotate | 有界 recent window；失败仍可聊天；`historyStatus=degraded`；真实数据不被故障注入污染 |
-| generation/安全 | 未 ready、旧 credential/generation、重复 identity、超限消息、调用方 transport/history 字段 | Rust 写前和 Python 边界双重 fail closed；旧事件不进入当前代；Snapshot 保持已冻结的五字段 exact shape，history 状态仅存在于本轮终态 |
-| 生命周期 | shutdown/EOF/Core crash/Retry/外部 kill，Provider 协作与不合作 | control 有响应；operation/worker/pending/pipe/fd/handle/进程树/temp 在既有 deadline 内归零；锁可立即重获 |
-| 兼容回归 | legacy Qt pipeline/history、protocol 2.1 readiness、2.2 fixture、三平台真实 Core | legacy 行为不变；WP-2-01/02/3-01 门禁全绿；Windows/macOS/Linux 使用同一确定性 local Provider harness |
+## 验证
 
-按受影响契约选择 Python、Core Host subprocess、Rust 或 bundled Core lifecycle 测试；涉及跨边界行为时
-使用本地 Provider 纵向验证。CI 承担完整平台矩阵，不要求每次修改重复全部测试。人工开发配置只能作为补充，
-不能取代确定性 local Provider；凭据和真实消息不得进入 fixture、日志、CI artifact 或验收文档。
+| 风险 | 主要证据 |
+|---|---|
+| 真实聊天链 | 本地 Provider + 默认 Assistant 子进程 + Core 受理/Timeline/唯一终态 |
+| 可替换性 | 第三方普通 sakura.assistant fixture，默认插件停用后无 Core fallback |
+| 取消与未知 ACK | 事件控制 worker 退出、begin/cancel/poll/release 故障、原异常保留 |
+| 实例失效 | result 返回后重载、旧 scope 不影响新进程、最终提交拒绝旧结果 |
+| 历史与大输入 | 完整轮分页、固定快照、artifact 尺寸与接收授权、输入或结果写入失败 |
+| 控制面与资源 | 慢模型下 accepted/health/cancel、shutdown/EOF、进程树和输入 owner 清理 |
+| 用户可见兼容 | 分段回复、视觉解析、TTS、更新提示、Mobile 与主动输入走同一边界 |
 
-## 提交与回退
+验证使用隔离临时根，不读取真实用户历史或凭据。按受影响风险选择 Core、插件与原生平台测试，
+本地通过不冒充跨平台或真实窗口结果。
 
-提交按可理解、可验证的改动组织，不要求固定数量或先后顺序。以下回退路径记录早期迁移方案；
-当前回退须按现有依赖评估，不重新启用已退役的产品入口。
+## 历史依据
 
-回退前先停止当前 generation，确认 chat operations、Router 队列、writer、Provider 请求、Core 根及后代、
-pipe/fd/handle/thread/temp 均归零。随后按逆序 revert WP-3-02 实现/测试提交，并禁用真实 chat boundary，
-恢复 WP-2-02 fixture-only Gateway 与 WP-3-01 readiness。History 是 append-only 产品数据：回退代码不得
-删除、截断、恢复或重写任何用户 history；最多让旧版本忽略新终态中的 `historyStatus`。
-
-## 退出条件与非目标
-
-正常回复、Provider 或格式故障、取消、history 降级和 shutdown/restart 都需保持唯一终态，
-control 不饥饿，关闭后资源归零。UI、TTS、工具、插件和设置的行为由各自 Spec 定义。
-自动验证与人工验收分别提供证据；工作包状态不限制相关缺陷的修复范围。
+本 WP 于 2026-07-26 首次验收，当时在 Core 内直接调用 Pipeline，并以 JSONL best-effort 写入历史。
+该构造图与写入策略已分别由 Assistant 插件边界和 Timeline 合同取代。早期验收的实现提交
+b835ef2ca66a33f98eb0b4339c1ccb51abcd5e91、平台 run 30200669759 与 Test run 30200669763
+只记录当时证据，不证明当前分支已完成相同平台验证，也不授权恢复 fixture-only 产品入口。

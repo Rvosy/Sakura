@@ -81,6 +81,9 @@ class _BoundaryWorker:
     def install_plugin(self, _install_id: str) -> dict[str, object]:
         return self._apply_lifecycle()
 
+    def refresh_inventory(self):
+        return PluginInventory(self.app_root).scan()
+
     def uninstall_plugin(self, _plugin_id: str) -> dict[str, object]:
         return self._apply_lifecycle()
 

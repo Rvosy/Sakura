@@ -4671,10 +4671,10 @@ mod tests {
             if matches!(snapshot["readiness"].as_str(), Some("ready" | "degraded")) {
                 break;
             }
-            assert!(
-                Instant::now() < ready_deadline,
-                "Assistant readiness timed out"
-            );
+            if Instant::now() >= ready_deadline {
+                let exit = host.shutdown();
+                panic!("Assistant readiness timed out; Snapshot: {snapshot}; Core shutdown: {exit:?}");
+            }
             thread::sleep(Duration::from_millis(10));
         }
 

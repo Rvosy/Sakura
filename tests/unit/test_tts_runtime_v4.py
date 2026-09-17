@@ -13,7 +13,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.tts_boundary import TTSBoundary
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory

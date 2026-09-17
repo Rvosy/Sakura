@@ -163,7 +163,8 @@ sakura.host.chat.completed {
 
 ## 6. 轻量 Turn 投影
 
-上下文构建读取当前角色候选条目后，通过无状态函数按 `turn_id` 分组并按 `seq` 排序。它遵守：
+上下文构建按完整 Turn 从新到旧分页读取当前角色的候选条目，通过无状态函数投影；轮内按 `seq` 排序，
+轮次顺序取该 Turn 首条记录的位置。交错写入的轮次也不能被分页切开。它遵守：
 
 - `human` 投影为真实 user history；`assistant` 的 segments 按顺序合成一个历史 assistant message；
 - 当前 observation 可以按 Provider 约束使用 user-role 容器，但必须携带内部 observation provenance；历史
@@ -176,6 +177,15 @@ sakura.host.chat.completed {
   它们不恢复内部 observation prompt、不变成普通聊天 Turn，也不单独写入长期记忆；
 - 选中 Turn 最终按旧到新输出，不颠倒真实会话顺序；
 - 不创建有状态 TurnAssembler、Turn cache 或 Turn lifecycle。投影失败只影响对应候选，不修改 Timeline。
+
+同一次请求的聊天、观察和主动发言候选共享 Timeline 高水位游标。游标绑定角色与数据库；分页间新写入的
+记录，包括补到旧 Turn 的回复，留给下一次请求。数据库先筛选候选和完整轮次，才解码该页 payload；
+页大小只控制每次传输，不是总历史上限。观察与主动发言候选可以重叠，最终由投影语义决定归属，避免重复注入。
+
+默认助手通过 `sakura.host.timeline.read_turn_page` 获取完整轮次。Host 为本轮授权的插件、角色与快照发放
+临时 `historyToken`，请求结束或插件退出后撤销；更换角色或伪造快照不能扩大读取范围。分页优先在 RPC
+预算内返回完整轮次；单轮超过帧预算时使用现有 Artifact 临时文件，读取后释放，取消时由 Host 回收。
+同轮工具步骤只复用已经读取的投影，再按当前剩余预算续读，不创建持久历史缓存。
 
 ## 7. 自适应 Token Budget
 
@@ -226,6 +236,11 @@ tokenizer；不可用时使用现有保守估算器，并在 Trace 标明 estima
    `token_budget` 只约束自身正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 再分配共享额度；必需片段必须完整保留；
 5. 用剩余预算从近到远选择其余两小时内 observation Turn，再选择更早的真实对话 Turn；
 6. 输出前恢复为旧到新，并由 Provider adapter 进行最终 role/placement 兼容。
+
+聊天和观察分别提供倒序候选流，预算策略按上述优先级按需读取下一页。某轮放不下时继续尝试更旧的小轮次，
+不得用首个超限轮次或固定页数代替预算判断。剩余预算低于有效轮次的最低估算成本时停止读取；极端情况下，
+为寻找能放下的小轮次仍可能读完候选。Trace 只统计实际检查过的候选与丢弃原因，未读取的历史不伪装成
+`budget_exhausted` 或损坏记录，也不为补齐诊断而额外加载全部历史。
 
 旧 Turn 超大时只允许类型化降级：使用已经存在的安全摘要/引用，或丢弃整个 Turn 并记录原因；不得在请求
 路径临时调用另一个 LLM 总结，也不得截出破坏 role/tool 原子性的半个 Turn。

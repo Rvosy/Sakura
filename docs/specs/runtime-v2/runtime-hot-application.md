@@ -24,16 +24,16 @@ updated: 2026-09-18
 ## 域契约
 
 - Provider/模型：一次 `settings.provider_model.save` 完成 Provider、Core 模型槽和当前 PluginApplication 插件模型槽
-  保存。默认 Assistant 的有效 Session 调用 client `update_settings()`；其模型配置变为无效时只退休该 Session，
-  恢复有效时在同 generation 创建 Session 并绑定既有 PluginApplication。
-- 正常聊天固定使用默认 Assistant。`f9fde091` 中的互动方式设置已撤回，`settings.executor.get/save` 不再提供，
-  历史 `chat_executor` 字段被忽略，不作为隐藏选择。插件开关只管理插件生命周期，不切换聊天实现。
-  未使用的执行器实验已清理；当前边界见 [Plugin Runtime](sakura-plugin-runtime-v4.md#65-正常对话与插件服务的边界)。
-- Tools：空闲时保存并更新 `AgentRuntime` 的 loop settings；进行中的轮次继续使用既有快照，
+  保存。成功准备新 Session 后才发布 modelSlots 快照；默认 Assistant 的 prepare 和每轮请求只消费该快照，
+  不自行读取最新磁盘值。配置失效时退休 Session，恢复有效时在同 generation 重新准备并绑定既有 PluginApplication。
+- 正常聊天使用唯一 `sakura.assistant` 服务。默认实现可以停用并由第三方 Provider 替换；旧 session 固定 scope，
+  停用或重载使其失效，不自动重绑正在执行的轮次。`settings.executor.get/save` 不再提供，历史 chat_executor
+  字段仍被忽略；当前边界见 [Assistant 插件合同](assistant-plugin-boundary.md)。
+- Tools：空闲时保存并更新 Session 的 loopSettings；默认插件在 begin 时消费本轮快照，
   此时保存返回 `CONFIG_APPLY_FAILED`，不会在下一次聊天自动发布设置。
 - MCP：`sakura.mcp` 只提供 Service，服务器配置与变更由消费插件处理；不读取旧 `mcp.yaml`。
-- Agent Trace：新开关只控制新 trace operation；已开始 operation 必须继续记录并完成 staging commit。
-  同一设置通过 Host Event 同步给 Memory 插件 recorder。
+- Agent Trace：固定启用，不读取遗留 agent_trace.enabled，也不广播开关事件。默认 Assistant 拥有 recorder，
+  已开始 operation 随真实终态完成 staging commit，Trace 故障不得改变聊天结果。
 - 插件：enable、disable、install、uninstall、reload 和 `restart_required` 都是当前用户操作内的同步步骤。
   只停止目标、硬依赖 consumer 或 Service 冲突参与者；无关 scope、Memory owner 和 TTS Provider 保持不动。
   不发送完整 inventory，不运行后台 reconcile，也不自动恢复或重放调用。

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots

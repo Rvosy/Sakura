@@ -1383,7 +1383,8 @@ function handleCoreEvent(event) {
   }
   if (event.type === "chat.started" && result.state.phase === "thinking") waitingIndicator.start();
   if (event.type === "chat.started" && result.state.phase === "thinking") ttsController.cancel();
-  if (event.type === "chat.completed" && result.state.phase === "typing") {
+  if (event.type === "chat.completed" && result.state.phase === "typing"
+      && result.state.operationId === event.operationId) {
     rendererHost.begin(event.operationId);
     ttsController.beginReply(event.operationId, result.state.segments);
     typewriter.start(result.state.segments);
@@ -1425,7 +1426,7 @@ const updateAnnouncement = createUpdateAnnouncementController({
 
 const screenAwareness = createScreenAwarenessController({
   invoke,
-  send: (payload) => chatClient.send({ ...payload, presentation: "silent" }),
+  send: (payload) => chatClient.observeScreen(payload),
   generationId: () => presentation.current().generationId,
   isIdle: () => {
     const state = presentation.current();

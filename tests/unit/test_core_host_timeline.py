@@ -11,9 +11,9 @@ import pytest
 from app.core_host.real_chat import (
     ChatTurnInput,
     RealChatBoundary,
-    assemble_recent_turns,
 )
-from app.llm.chat_reply import ChatReply, ChatSegment
+from sakura_assistant.history import assemble_recent_turns
+from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
 from app.storage.paths import StoragePaths
 from app.storage.timeline import (
     NewTimelineEntry,
@@ -65,6 +65,21 @@ def _update_request(
     }
 
 
+class _AssistantDouble:
+    def commit_result(self, commit):
+        return commit()
+
+    def release(self, _operation_id, *, status):
+        pass
+
+
+class _SessionDouble(SimpleNamespace):
+    visual_binding = None
+
+    def descriptor(self):
+        return {"character": {"id": self.character.id}, "loopSettings": {}}
+
+
 def _boundary(
     tmp_path: Path,
     reply: ChatReply,
@@ -74,16 +89,15 @@ def _boundary(
 ) -> tuple[RealChatBoundary, TimelineStore, list[dict[str, object]]]:
     events: list[dict[str, object]] = []
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(reply=reply, actions=actions)
 
-        run_event = run_user_message
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -192,18 +206,18 @@ def test_update_event_creates_only_one_proactive_assistant_entry(tmp_path: Path)
     events: list[dict[str, object]] = []
     received = []
 
-    class Pipeline:
-        def run_event(self, event, **_kwargs):  # type: ignore[no-untyped-def]
-            received.append(event)
+    class Assistant(_AssistantDouble):
+        def run_turn(self, event, **_kwargs):  # type: ignore[no-untyped-def]
+            received.append(event["event"])
             return SimpleNamespace(
                 reply=ChatReply([ChatSegment("发现 1.2.0，请到设置里的关于页面查看。")]),
                 actions=[SimpleNamespace(type="event")],
             )
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -222,8 +236,8 @@ def test_update_event_creates_only_one_proactive_assistant_entry(tmp_path: Path)
     boundary.reserve_send(request)
     boundary.handle_send(request)
 
-    assert received[0].type == "update_available"
-    assert received[0].payload["version"] == "1.2.0"
+    assert received[0]["type"] == "update_available"
+    assert received[0]["payload"]["version"] == "1.2.0"
     entries = store.read_all("sakura")
     assert [entry.kind for entry in entries] == [TimelineKind.ASSISTANT]
     assert entries[0].origin == "proactive"
@@ -234,14 +248,14 @@ def test_update_event_creates_only_one_proactive_assistant_entry(tmp_path: Path)
 def test_empty_update_reply_fails_without_marking_a_visible_announcement(tmp_path: Path) -> None:
     events: list[dict[str, object]] = []
 
-    class Pipeline:
-        def run_event(self, _event, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _event, **_kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(reply=ChatReply([ChatSegment("")]), actions=[])
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -320,6 +334,56 @@ def test_empty_noop_reply_does_not_create_assistant_history(tmp_path: Path) -> N
     boundary.close()
 
 
+@pytest.mark.parametrize("replacement", [False, True])
+@pytest.mark.parametrize("text", ["old reply", ""])
+def test_retired_assistant_cannot_commit_or_complete_its_old_result(
+    tmp_path: Path, replacement: bool, text: str,
+) -> None:
+    from app.core_host.assistant_adapter import BoundAssistant
+    from app.plugins.runtime_v4 import PluginRuntimeManager, _ServiceBinding
+
+    manager = PluginRuntimeManager(tmp_path, GENERATION_ID, [])
+    identity = {"providerId": "test.assistant", "scopeId": "old-scope"}
+    manager._services["sakura.assistant"] = _ServiceBinding(
+        identity["providerId"], frozenset(), process=SimpleNamespace(scope_id="old-scope"),
+    )
+
+    class Assistant(BoundAssistant):
+        def run_turn(self, _descriptor, **_kwargs):
+            return SimpleNamespace(reply=ChatReply([ChatSegment(text)]), actions=[])
+
+        def commit_result(self, commit):
+            # The result has crossed RPC and been parsed, then the process is
+            # invalidated immediately before Core commits the reply.
+            with manager._lock:
+                manager._services.pop("sakura.assistant")
+                if replacement:
+                    manager._services["sakura.assistant"] = _ServiceBinding(
+                        identity["providerId"], frozenset(), process=SimpleNamespace(scope_id="new-scope"),
+                    )
+            return super().commit_result(commit)
+
+        def release(self, _operation_id, *, status):
+            pass
+
+    session = _SessionDouble(character=SimpleNamespace(id="sakura"), assistant=Assistant(manager, identity))
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    store.initialize()
+    boundary = RealChatBoundary(
+        GENERATION_ID, GENERATION_CREDENTIAL, tmp_path,
+        session_provider=lambda: session, timeline_store=store,
+    )
+    try:
+        outcome = boundary.run_turn(ChatTurnInput("retired-result", "hello"))
+        assert outcome.terminal == "chat.failed"
+        assert outcome.payload["error"]["code"] == "ASSISTANT_BINDING_EXPIRED"
+        assert outcome.payload["historyStatus"] == "saved"
+        assert [entry.kind for entry in store.read_all("sakura")] == [TimelineKind.HUMAN]
+        assert boundary.snapshot_fields("ready", None)["activeInteractionSummary"] is None
+    finally:
+        boundary.close()
+
+
 def test_cancel_waiting_on_assistant_commit_is_rejected_after_completion_claim(
     tmp_path: Path,
 ) -> None:
@@ -335,14 +399,14 @@ def test_cancel_waiting_on_assistant_commit_is_rejected_after_completion_claim(
 
     events: list[dict[str, object]] = []
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(reply=ChatReply([ChatSegment("reply")]), actions=[])
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -670,16 +734,16 @@ def test_activated_timeline_failure_does_not_fork_writes_back_to_legacy_jsonl(
     legacy.write_text("", encoding="utf-8")
     pipeline_called = False
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             nonlocal pipeline_called
             pipeline_called = True
             return SimpleNamespace(reply=ChatReply([ChatSegment("reply")]), actions=[])
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )
@@ -718,14 +782,14 @@ def test_timeline_initialization_failure_never_falls_back_to_legacy_history(
         def emit_event(self, name, payload):  # type: ignore[no-untyped-def]
             plugin_events.append((name, payload))
 
-    class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+    class Assistant(_AssistantDouble):
+        def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(reply=ChatReply([ChatSegment("reply")]), actions=[])
 
-    session = SimpleNamespace(
+    session = _SessionDouble(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Assistant(),
         tool_actions=None,
         memory_boundary=None,
     )

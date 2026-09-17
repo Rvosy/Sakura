@@ -20,7 +20,7 @@ from app.plugin_sdk.sakura_process import terminate_process_tree
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
-from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer, json_value
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
@@ -30,6 +30,19 @@ INITIALIZE_TIMEOUT_SECONDS = 8.0
 CALL_TIMEOUT_SECONDS = 3.0
 CLOSE_TIMEOUT_SECONDS = 0.8
 TERMINATE_TIMEOUT_SECONDS = 2.0
+
+
+def _process_working_directory(directory: Path) -> str:
+    # Rust canonical paths may retain the Windows verbatim namespace. As a
+    # process cwd it breaks root-relative probes such as distro's /etc lookup.
+    # Keep argument and resource paths unchanged; only normalize this boundary.
+    value = str(directory)
+    if os.name == "nt" and value.startswith("\\\\?\\"):
+        if value[4:8].upper() == "UNC\\":
+            return "\\\\" + value[8:]
+        if len(value) >= 7 and value[4].isalpha() and value[5:7] == ":\\":
+            return value[4:]
+    return value
 
 
 def _create_windows_kill_job(process: subprocess.Popen[bytes]) -> int:
@@ -256,7 +269,7 @@ class _PluginProcess:
                     # directory open as its CWD. API v4 exposes explicit
                     # plugin data/config paths, so the private data directory
                     # is the stable working directory for the runner.
-                    cwd=data_dir,
+                    cwd=_process_working_directory(data_dir),
                     env=environment,
                     bufsize=0,
                     start_new_session=os.name != "nt",
@@ -750,6 +763,51 @@ class PluginRuntimeManager:
             if self._closed or self.service_identity(service_key) != identity:
                 raise PluginRuntimeError("SERVICE_BINDING_EXPIRED", service_key=service_key)
             return commit()
+
+    def commit_plugin_scope(self, plugin_id: str, scope_id: str, commit):
+        """Publish a small Host grant atomically with the receiver's invalidation."""
+        with self._lock:
+            record = self._records.get(plugin_id)
+            process = record.process if record else None
+            if (self._closed or process is None or process.scope_id != scope_id
+                    or record.state != "active" and record.reason_code != "PLUGIN_STARTING"):
+                raise PluginRuntimeError("SERVICE_BINDING_EXPIRED", plugin_id=plugin_id)
+            return commit()
+
+    def abort_bound_service(
+        self, service_key: str, identity: Mapping[str, str], *, reason: str,
+    ) -> bool:
+        """Finish one uncertain call's process lifetime before releasing its inputs."""
+        provider_id, scope_id = identity.get("providerId"), identity.get("scopeId")
+        if not provider_id or not scope_id:
+            raise PluginRuntimeError("SERVICE_BINDING_EXPIRED", service_key=service_key)
+        with self._operation_lock:
+            with self._lock:
+                record = self._records.get(provider_id)
+                if record is None or service_key not in record.spec.provides:
+                    return False
+                draining = self._draining_processes.get(provider_id)
+                process = record.process or (draining.process if draining else None)
+                if process is None or process.scope_id != scope_id:
+                    # A replacement lifetime cannot inherit the uncertain call.
+                    return False
+                consumers = self._hard_dependents_locked(provider_id)
+            deadline = time.monotonic() + CLOSE_TIMEOUT_SECONDS
+            first_error = None
+            for plugin_id in [*consumers, provider_id]:
+                try:
+                    self._stop_process(
+                        plugin_id,
+                        reason=reason if plugin_id == provider_id else "DEPENDENCY_FAILED",
+                        failed=True,
+                        deadline=deadline,
+                    )
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error
+            if first_error is not None:
+                raise first_error
+            return True
 
     def service_identity(self, service_key: str, *, include_starting: bool = False) -> dict[str, str]:
         """Host-only identity for an active Service's exact process lifetime."""
@@ -1488,8 +1546,11 @@ class PluginRuntimeManager:
             caller_record = self._records.get(caller_id)
             spec = caller_record.spec if caller_record else None
             log_metadata = (spec.name, spec.provides) if spec else ("", ())
+            caller_process = caller_record.process if caller_record else None
+            caller_scope = caller_scope or (caller_process.scope_id if caller_process else None)
         metadata_token = HOST_CALLER_LOG_METADATA.set(log_metadata)
         caller_token = HOST_CALLER.set(caller_id)
+        scope_token = HOST_CALLER_SCOPE.set(caller_scope)
         try:
             result = callback(*detached_args)
             self._track_host_effect(caller_id, service_key, method, detached_args, result)
@@ -1505,6 +1566,7 @@ class PluginRuntimeManager:
                 service_key=service_key,
             ) from error
         finally:
+            HOST_CALLER_SCOPE.reset(scope_token)
             HOST_CALLER.reset(caller_token)
             HOST_CALLER_LOG_METADATA.reset(metadata_token)
 

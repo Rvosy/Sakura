@@ -6,6 +6,7 @@ from contextvars import ContextVar
 
 # Bound by the runtime for the duration of a host call, never supplied by payload.
 HOST_CALLER: ContextVar[str | None] = ContextVar("sakura_host_caller", default=None)
+HOST_CALLER_SCOPE: ContextVar[str | None] = ContextVar("sakura_host_caller_scope", default=None)
 
 HOST_CALLER_LOG_METADATA: ContextVar[tuple[str, tuple[str, ...]]] = ContextVar("sakura_host_log_metadata", default=("", ()))
 

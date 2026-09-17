@@ -12,9 +12,9 @@ from app.config.provider_model_settings import (
     ProviderModelSettingsError,
     ProviderModelSettingsRepository,
 )
-from app.core.cancellation import CancellationToken, OperationCancelled
-from app.llm.api_client import ApiConfigError, ApiRequestError, ApiSettings, OpenAICompatibleClient
-from app.llm.provider_errors import provider_http_status, public_provider_http_message
+from app.plugin_sdk.sakura_cancellation import CancellationToken, OperationCancelled
+from app.plugin_sdk.sakura_model import ApiConfigError, ApiRequestError, ApiSettings, ModelProbe
+from app.plugin_sdk.sakura_provider_errors import provider_http_status, public_provider_http_message
 
 from .protocol import error_payload, response
 
@@ -530,7 +530,7 @@ class ProviderSettingsBoundary:
 
             register_diagnostic_secret(secret)
             # 探测只发送一次，给生成请求完整预算；避免短超时重复中断慢模型。
-            client = OpenAICompatibleClient(
+            client = ModelProbe(
                 ApiSettings(
                     base_url=base_url,
                     api_key=secret,

@@ -9,7 +9,7 @@ from app.config.models import (
     ModelSelectionSettings,
     ModelSlotSelection,
 )
-from app.llm.api_client import ApiSettings
+from app.plugin_sdk.sakura_model import ApiSettings
 
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768

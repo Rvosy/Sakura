@@ -64,6 +64,15 @@ class NewTimelineEntry:
     payload: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class TimelineTurnPage:
+    """Newest turns first; entries inside each turn retain their original order."""
+
+    turns: tuple[tuple[TimelineEntry, ...], ...]
+    next_cursor: str | None
+    snapshot_cursor: str
+
+
 class TimelineStore:
     """Small Host-owned store for committed interaction facts."""
 
@@ -158,6 +167,138 @@ class TimelineStore:
         except sqlite3.DatabaseError as exc:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
         return [_entry_from_row(row) for row in rows]
+
+    def read_turn_page(
+        self,
+        character_id: str,
+        *,
+        category: str,
+        observation_since: datetime,
+        proactive_since: datetime,
+        limit: int = 16,
+        before_cursor: str | None = None,
+        snapshot_cursor: str | None = None,
+        max_bytes: int | None = None,
+    ) -> TimelineTurnPage:
+        """Read complete context candidate turns without decoding older payloads.
+
+        All categories in one model request share ``snapshot_cursor``. A turn is
+        ordered by its first entry, including when concurrent turns interleave.
+        The snapshot also excludes later additions to an existing turn.
+        """
+
+        _bounded_text("character_id", character_id, MAX_ID_CHARS)
+        _validated_limit(limit)
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes <= 0):
+            raise TimelineDataError("TIMELINE_LIMIT_INVALID")
+        if category not in {"conversation", "observation", "proactive"}:
+            raise TimelineDataError("TIMELINE_CATEGORY_INVALID")
+        observation_text = _aware_iso_datetime("observation_since", observation_since)
+        proactive_text = _aware_iso_datetime("proactive_since", proactive_since)
+        if before_cursor is not None and snapshot_cursor is None:
+            raise TimelineDataError("TIMELINE_CURSOR_INVALID")
+        if not self.path.is_file():
+            raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
+        try:
+            with self._connect_existing() as connection:
+                # Keep cursor validation, candidate selection and payload reading
+                # in one SQLite read snapshot, including concurrent appends.
+                connection.execute("BEGIN")
+                lineage = _assert_activated_connection(connection)
+
+                def cursor_seq(cursor: str) -> int:
+                    seq, entry_id = _decode_cursor(cursor, character_id, lineage)
+                    if seq:
+                        row = connection.execute(
+                            "SELECT entry_id, character_id FROM timeline_entries WHERE seq = ?",
+                            (seq,),
+                        ).fetchone()
+                        if row is None or row != (entry_id, character_id):
+                            raise TimelineDataError("TIMELINE_CURSOR_INVALID")
+                    return seq
+
+                if snapshot_cursor is None:
+                    latest = connection.execute(
+                        "SELECT seq, entry_id FROM timeline_entries "
+                        "WHERE character_id = ? ORDER BY seq DESC LIMIT 1",
+                        (character_id,),
+                    ).fetchone()
+                    high_water = int(latest[0]) if latest else 0
+                    snapshot_cursor = _encode_cursor(
+                        character_id, lineage, high_water, str(latest[1]) if latest else "",
+                    )
+                else:
+                    high_water = cursor_seq(snapshot_cursor)
+                before_seq = cursor_seq(before_cursor) if before_cursor is not None else None
+                if before_seq is not None and not 0 < before_seq <= high_water:
+                    raise TimelineDataError("TIMELINE_CURSOR_INVALID")
+
+                human_exists = """EXISTS (
+                    SELECT 1 FROM timeline_entries AS human
+                    WHERE human.character_id = :character
+                      AND human.turn_id = head.turn_id
+                      AND human.seq <= :snapshot AND human.kind = 'human'
+                )"""
+                eligibility = human_exists
+                if category != "conversation":
+                    kind, origin, cutoff = (
+                        ("observation", "scheduled_screen", observation_text)
+                        if category == "observation"
+                        else ("assistant", "proactive", proactive_text)
+                    )
+                    eligibility = f"""NOT {human_exists} AND EXISTS (
+                        SELECT 1 FROM timeline_entries AS candidate
+                        WHERE candidate.character_id = :character
+                          AND candidate.turn_id = head.turn_id
+                          AND candidate.seq <= :snapshot
+                          AND candidate.kind = :kind AND candidate.origin = :origin
+                          AND julianday(candidate.created_at) >= julianday(:cutoff)
+                    )"""
+                else:
+                    kind, origin, cutoff = "human", "chat", ""
+                candidates = connection.execute(
+                    f"""
+                    SELECT head.turn_id, head.seq, head.entry_id
+                    FROM timeline_entries AS head
+                    WHERE head.character_id = :character
+                      AND head.seq <= :snapshot
+                      AND head.seq < :before
+                      AND NOT EXISTS (
+                          SELECT 1 FROM timeline_entries AS earlier
+                          WHERE earlier.character_id = :character
+                            AND earlier.turn_id = head.turn_id AND earlier.seq < head.seq
+                      )
+                      AND {eligibility}
+                    ORDER BY head.seq DESC LIMIT :limit
+                    """,
+                    {"character": character_id, "snapshot": high_water,
+                     "before": before_seq if before_seq is not None else high_water + 1,
+                     "limit": limit + 1, "kind": kind, "origin": origin, "cutoff": cutoff},
+                ).fetchall()
+                turns: list[tuple[TimelineEntry, ...]] = []
+                used_bytes = 0
+                for turn_id, _seq, _entry_id in candidates[:limit]:
+                    turn = tuple(_entry_from_row(row) for row in connection.execute(
+                        """SELECT seq, entry_id, turn_id, character_id, kind, origin,
+                                  created_at, payload_json
+                           FROM timeline_entries
+                           WHERE character_id = ? AND turn_id = ? AND seq <= ?
+                           ORDER BY seq""",
+                        (character_id, turn_id, high_water),
+                    ))
+                    turn_bytes = sum(_timeline_transfer_bytes(entry) for entry in turn)
+                    if turns and max_bytes is not None and used_bytes + turn_bytes > max_bytes:
+                        break
+                    turns.append(turn)
+                    used_bytes += turn_bytes
+                next_cursor = (
+                    _encode_cursor(character_id, lineage, int(candidates[len(turns) - 1][1]),
+                                   str(candidates[len(turns) - 1][2]))
+                    if len(candidates) > len(turns) else None
+                )
+                return TimelineTurnPage(tuple(turns), next_cursor, snapshot_cursor)
+        except sqlite3.DatabaseError as exc:
+            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
 
     def read_context_candidates(
         self,
@@ -626,7 +767,7 @@ def _validate_payload(kind: TimelineKind, payload: dict[str, Any]) -> None:
             if not required <= set(segment) or set(segment) - required - {"control"}:
                 raise TimelineDataError("TIMELINE_SEGMENT_INVALID")
             if "control" in segment:
-                from app.llm.visual_control import validate_visual_control
+                from app.plugin_sdk.sakura_visual_control import validate_visual_control
                 try:
                     validate_visual_control(segment["control"])
                 except ValueError as error:

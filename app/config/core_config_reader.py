@@ -16,7 +16,7 @@ from app.config.models import (
     ModelSelectionSettings,
     ModelSlotSelection,
 )
-from app.llm.api_client import ApiSettings as ClientApiSettings
+from app.plugin_sdk.sakura_model import ApiSettings as ClientApiSettings
 from app.plugin_sdk.sakura_http import is_loopback_url
 from app.storage.paths import StoragePaths
 

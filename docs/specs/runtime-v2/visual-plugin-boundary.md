@@ -43,6 +43,9 @@ visuals:
 路径使用 `/`，不含空段、点段、驱动器、网络地址或穿越；实际访问继续检查解析后的路径包含关系。
 Discovery、Inventory、安装器共用解析，不在发现阶段执行模块。未知展示元信息忽略。
 
+VisualHost 使用当前 generation 的应用目录快照，不为候选、编辑器、缩略图或角色预览重复扫描安装目录。
+安装、卸载、插件重载和插件设置刷新会更新这份快照；Provider 的启停和 scope 有效性仍在实际调用时检查。
+
 可选声明按能力处理失败：无效形态不参与绑定，其他形态和普通 Service 继续可用；无效编辑模块只关闭该编辑入口，
 已有形态仍可显示。Inventory 保留 `capability_issues`，形态与编辑查询分别返回 `VISUAL_MANIFEST_INVALID`
 或 `VISUAL_MODULE_INVALID`，不把已安装插件误报成缺失。合法插件入口和 API 仍是插件启动前提。

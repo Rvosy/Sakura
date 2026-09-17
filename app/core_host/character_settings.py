@@ -354,7 +354,7 @@ class CharacterSettingsBoundary:
         except CharacterConfigError as error:
             raise CharacterSettingsError("CHARACTER_NOT_FOUND", "选择的角色不存在。") from error
         application = self._plugin_application_provider()
-        host = application.application.visuals if application is not None else None
+        host = application.visuals if application is not None else None
         choices = [host.resource_choice(resource, profile.visual_providers.get(resource.id)) if host else {
             "id": resource.id, "name": resource.name or "未命名形态", "providerId": None,
             "installId": None, "reasonCode": "VISUAL_SERVICE_UNAVAILABLE"
@@ -398,7 +398,7 @@ class CharacterSettingsBoundary:
                         if application is None:
                             raise CharacterSettingsError("VISUAL_SERVICE_UNAVAILABLE", "表现插件暂不可用，请稍后重试。")
                         try:
-                            application.application.validate_visual_choice(profile, resource)
+                            application.validate_visual_choice(profile, resource)
                         except VisualHostError as error:
                             raise CharacterSettingsError(error.code, "所选形态无法使用，请检查对应插件或选择其他形态。") from error
                 needs_switch = current != character_id or self._switch_apply_pending

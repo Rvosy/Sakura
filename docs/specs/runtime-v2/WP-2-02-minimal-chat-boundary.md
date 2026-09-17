@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-16
+updated: 2026-09-18
 ---
 
 # WP-2-02：最小聊天取消、Gateway 与 Snapshot 边界
@@ -15,7 +15,8 @@ updated: 2026-09-16
 
 测试使用隔离临时根和确定性 fixture/local Provider；不依赖真实用户凭据，不污染用户数据。
 Router、Gateway 与领域实现共享既有 Core 生命周期和单 stdout writer，不另建生命周期根。
-正常聊天使用现有 Assistant 和 ChatPipeline；已撤回执行器实验及其专用进度、清理失败分支不再属于当前协议。
+正常聊天由 Core 受理并调用普通 `sakura.assistant` 服务，模型与上下文策略在插件进程中执行；
+服务及回收合同见 [Assistant 插件边界](assistant-plugin-boundary.md)，公开唯一终态协议保持不变。
 
 ## 冻结边界与故障矩阵
 

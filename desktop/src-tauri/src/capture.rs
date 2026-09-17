@@ -203,6 +203,7 @@ struct CaptureState {
     resources: HashMap<String, CaptureResource>,
     active_generation: Option<String>,
     awareness_frames: VecDeque<ScreenAwarenessFrame>,
+    awareness_revision: u64,
 }
 
 impl CaptureManager {
@@ -255,6 +256,7 @@ impl CaptureManager {
         if state.active_generation.as_deref() != Some(generation_id) {
             cleanup_resources(&mut state.resources);
             state.awareness_frames.clear();
+            state.awareness_revision = state.awareness_revision.wrapping_add(1);
             state.active_generation = Some(generation_id.to_string());
         }
         let session_id = Uuid::new_v4().simple().to_string();
@@ -443,6 +445,7 @@ impl CaptureManager {
         if !(1..=20).contains(&batch_limit) || !valid_screen_awareness_resolution(resolution) {
             return Err("SCREEN_AWARENESS_SETTINGS_INVALID".to_string());
         }
+        let revision = self.begin_screen_awareness_capture(generation_id)?;
         let monitor = Monitor::from_point(cursor_x, cursor_y)
             .map_err(|_| "SCREEN_CAPTURE_MONITOR_GONE".to_string())?;
         let image = monitor
@@ -482,15 +485,10 @@ impl CaptureManager {
                 .take(128)
                 .collect(),
         };
-        self.push_screen_awareness_frame(generation_id, frame, batch_limit)
+        self.push_screen_awareness_frame(generation_id, revision, frame, batch_limit)
     }
 
-    fn push_screen_awareness_frame(
-        &self,
-        generation_id: &str,
-        frame: ScreenAwarenessFrame,
-        batch_limit: usize,
-    ) -> Result<ScreenAwarenessCapturePublication, String> {
+    fn begin_screen_awareness_capture(&self, generation_id: &str) -> Result<u64, String> {
         let mut state = self
             .state
             .lock()
@@ -498,7 +496,27 @@ impl CaptureManager {
         if state.active_generation.as_deref() != Some(generation_id) {
             cleanup_resources(&mut state.resources);
             state.awareness_frames.clear();
+            state.awareness_revision = state.awareness_revision.wrapping_add(1);
             state.active_generation = Some(generation_id.to_string());
+        }
+        Ok(state.awareness_revision)
+    }
+
+    fn push_screen_awareness_frame(
+        &self,
+        generation_id: &str,
+        revision: u64,
+        frame: ScreenAwarenessFrame,
+        batch_limit: usize,
+    ) -> Result<ScreenAwarenessCapturePublication, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string())?;
+        if state.active_generation.as_deref() != Some(generation_id)
+            || state.awareness_revision != revision
+        {
+            return Err("SCREEN_AWARENESS_CAPTURE_CANCELLED".to_string());
         }
         let character_session_id = frame.character_session_id.clone();
         state.awareness_frames.push_back(frame);
@@ -532,7 +550,6 @@ impl CaptureManager {
                 .lock()
                 .map_err(|_| "SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string())?;
             if state.active_generation.as_deref() != Some(generation_id) {
-                state.awareness_frames.clear();
                 return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
             }
             state
@@ -612,6 +629,7 @@ impl CaptureManager {
             .map(|mut state| {
                 let count = state.awareness_frames.len();
                 state.awareness_frames.clear();
+                state.awareness_revision = state.awareness_revision.wrapping_add(1);
                 count
             })
             .unwrap_or(0)
@@ -1190,19 +1208,93 @@ mod tests {
     }
 
     #[test]
+    fn clearing_a_batch_rejects_capture_that_finishes_after_the_client_is_gone() {
+        let root =
+            std::env::temp_dir().join(format!("sakura-late-capture-{}", Uuid::new_v4().simple()));
+        let manager = CaptureManager::with_base(root.clone()).unwrap();
+        let generation = "00000000-0000-4000-8000-000000004007";
+        let revision = manager.begin_screen_awareness_capture(generation).unwrap();
+        manager.clear_screen_awareness_batch();
+        let error = manager
+            .push_screen_awareness_frame(generation, revision, awareness_frame("late", 8), 6)
+            .unwrap_err();
+        assert_eq!(error, "SCREEN_AWARENESS_CAPTURE_CANCELLED");
+        assert!(manager.state.lock().unwrap().awareness_frames.is_empty());
+        let fresh_revision = manager.begin_screen_awareness_capture(generation).unwrap();
+        manager
+            .push_screen_awareness_frame(generation, fresh_revision, awareness_frame("fresh", 8), 6)
+            .unwrap();
+        let next_generation = "00000000-0000-4000-8000-000000004008";
+        let next_revision = manager
+            .begin_screen_awareness_capture(next_generation)
+            .unwrap();
+        assert!(manager
+            .push_screen_awareness_frame(
+                generation,
+                fresh_revision,
+                awareness_frame("stale-generation", 8),
+                6
+            )
+            .is_err());
+        assert_eq!(
+            manager.state.lock().unwrap().active_generation.as_deref(),
+            Some(next_generation)
+        );
+        manager
+            .push_screen_awareness_frame(
+                next_generation,
+                next_revision,
+                awareness_frame("next", 8),
+                6,
+            )
+            .unwrap();
+        assert!(manager
+            .materialize_screen_awareness_batch(generation, "session-a")
+            .is_err());
+        let descriptors = manager
+            .materialize_screen_awareness_batch(next_generation, "session-a")
+            .unwrap();
+        assert_eq!(descriptors[0].captured_at, "next");
+        manager.release_descriptors(&descriptors, next_generation);
+        drop(manager);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn screen_awareness_batch_keeps_latest_frames_in_capture_order_and_cleans_files() {
         let root =
             std::env::temp_dir().join(format!("sakura-awareness-test-{}", Uuid::new_v4().simple()));
         let manager = CaptureManager::with_base(root.clone()).unwrap();
         let generation_id = "00000000-0000-4000-8000-000000004007";
         manager
-            .push_screen_awareness_frame(generation_id, awareness_frame("first", 8), 2)
+            .push_screen_awareness_frame(
+                generation_id,
+                manager
+                    .begin_screen_awareness_capture(generation_id)
+                    .unwrap(),
+                awareness_frame("first", 8),
+                2,
+            )
             .unwrap();
         manager
-            .push_screen_awareness_frame(generation_id, awareness_frame("second", 8), 2)
+            .push_screen_awareness_frame(
+                generation_id,
+                manager
+                    .begin_screen_awareness_capture(generation_id)
+                    .unwrap(),
+                awareness_frame("second", 8),
+                2,
+            )
             .unwrap();
         let publication = manager
-            .push_screen_awareness_frame(generation_id, awareness_frame("third", 8), 2)
+            .push_screen_awareness_frame(
+                generation_id,
+                manager
+                    .begin_screen_awareness_capture(generation_id)
+                    .unwrap(),
+                awareness_frame("third", 8),
+                2,
+            )
             .unwrap();
         assert_eq!(publication.count, 2);
         assert_eq!(publication.dropped_count, 1);
@@ -1241,6 +1333,9 @@ mod tests {
             manager
                 .push_screen_awareness_frame(
                     first_generation,
+                    manager
+                        .begin_screen_awareness_capture(first_generation)
+                        .unwrap(),
                     awareness_frame(label, 23 * 1024 * 1024),
                     20,
                 )
@@ -1249,7 +1344,14 @@ mod tests {
         assert_eq!(manager.state.lock().unwrap().awareness_frames.len(), 2);
         let second_generation = "00000000-0000-4000-8000-000000004008";
         manager
-            .push_screen_awareness_frame(second_generation, awareness_frame("new", 8), 20)
+            .push_screen_awareness_frame(
+                second_generation,
+                manager
+                    .begin_screen_awareness_capture(second_generation)
+                    .unwrap(),
+                awareness_frame("new", 8),
+                20,
+            )
             .unwrap();
         let state = manager.state.lock().unwrap();
         assert_eq!(state.active_generation.as_deref(), Some(second_generation));
@@ -1273,14 +1375,24 @@ mod tests {
             let mut frame = awareness_frame(label, 8);
             frame.character_session_id = session.to_string();
             manager
-                .push_screen_awareness_frame(generation, frame, 20)
+                .push_screen_awareness_frame(
+                    generation,
+                    manager.begin_screen_awareness_capture(generation).unwrap(),
+                    frame,
+                    20,
+                )
                 .unwrap();
         }
         // A late frame from the first A session arrives after returning to A.
         let mut late = awareness_frame("late", 8);
         late.character_session_id = "alpha-first".to_string();
         manager
-            .push_screen_awareness_frame(generation, late, 20)
+            .push_screen_awareness_frame(
+                generation,
+                manager.begin_screen_awareness_capture(generation).unwrap(),
+                late,
+                20,
+            )
             .unwrap();
         let descriptors = manager
             .materialize_screen_awareness_batch(generation, "alpha-second")

@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_application import PluginApplicationHost
-from app.llm.prompts.types import ContextRequest
+from app.plugin_sdk.sakura_context import ContextRequest
 from app.plugins.installer import LocalPluginInstaller
 from app.plugins.inventory import PluginDesiredStateStore
-from app.plugins.models import ContextProviderContribution
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
 from plugins.optional.context_rules.plugin import ContextRulesPlugin, DEFAULT_CONTENT, _config_values
@@ -21,14 +21,6 @@ from tools.release.package_optional_plugin import build
 
 SOURCE_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugins/optional/context_rules"
 PLUGIN_ID = "context_rules"
-
-
-class _ContextConsumer:
-    def __init__(self) -> None:
-        self.providers: list[ContextProviderContribution] = []
-
-    def set_context_providers(self, providers: list[ContextProviderContribution]) -> None:
-        self.providers = list(providers)
 
 
 @pytest.mark.parametrize("legacy_config", [None, {"rules": " 原有要求\n", "reference": "\n原有文本 "}])
@@ -50,7 +42,12 @@ def test_optional_rules_install_configure_and_disable_through_v4(
     PluginDesiredStateStore(user).set(installed.plugin_id, True)
     registry = ToolRegistry()
     application = PluginApplicationHost(roots, "context-rules-test", registry)
-    consumer = _ContextConsumer()
+    def catalog():
+        return application.call_service("sakura.host.context", "catalog")
+
+    def collect(provider, turn):
+        return application.call_service("sakura.host.context", "collect", provider["registrationId"],
+                                        asdict(ContextRequest(current_turn_id=turn)))
     try:
         application.start()
         record = next(
@@ -59,15 +56,14 @@ def test_optional_rules_install_configure_and_disable_through_v4(
         )
         assert record["state"] == "active", record
         assert record["source"] == "user"
-        application.application.bind_runtime(registry, consumer)
-        provider, = consumer.providers
-        assert provider.provider_id == PLUGIN_ID
-        assert provider.scope == "turn"
-        assert provider.failure_policy == "abort"
-        contribution, = provider.build_context(ContextRequest(current_turn_id="initial"))
+        provider, = catalog()
+        assert provider["providerId"] == PLUGIN_ID
+        assert provider["scope"] == "turn"
+        assert provider["failurePolicy"] == "abort"
+        contribution, = collect(provider, "initial")
         expected = DEFAULT_CONTENT if legacy_config is None else " 原有要求\n\n\n\n原有文本 "
-        assert contribution.content == expected
-        assert contribution.required is True
+        assert contribution["content"] == expected
+        assert contribution["required"] is True
         if legacy_config is not None:
             assert json.loads(config_path.read_text(encoding="utf-8")) == legacy_config
 
@@ -75,22 +71,22 @@ def test_optional_rules_install_configure_and_disable_through_v4(
         assert application.settings_save(
             PLUGIN_ID, PLUGIN_ID, {"content": content},
         ) == {"saved": True, "applicationState": "applied", "reasonCode": "READY"}
-        contribution, = provider.build_context(ContextRequest(current_turn_id="updated"))
-        assert contribution.content == content
-        assert contribution.required is True
+        contribution, = collect(provider, "updated")
+        assert contribution["content"] == content
+        assert contribution["required"] is True
 
         application.set_enabled(installed.install_id, False)
-        assert consumer.providers == []
+        assert catalog() == []
         application.set_enabled(installed.install_id, True)
-        reloaded, = consumer.providers
-        contribution, = reloaded.build_context(ContextRequest(current_turn_id="reloaded"))
-        assert contribution.content == content
+        reloaded, = catalog()
+        contribution, = collect(reloaded, "reloaded")
+        assert contribution["content"] == content
         application.settings_save(PLUGIN_ID, PLUGIN_ID, {"content": ""})
-        assert reloaded.build_context(ContextRequest(current_turn_id="cleared")) == ()
+        assert collect(reloaded, "cleared") == []
         application.set_enabled(installed.install_id, False)
         application.set_enabled(installed.install_id, True)
-        cleared, = consumer.providers
-        assert cleared.build_context(ContextRequest(current_turn_id="cleared-reloaded")) == ()
+        cleared, = catalog()
+        assert collect(cleared, "cleared-reloaded") == []
     finally:
         application.close()
 

@@ -6,17 +6,16 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.agent.trace import (
+from sakura_assistant.agent.trace import (
     AgentTraceRecorder,
     MessageProvenance,
     PromptTraceMetadata,
     traced_message,
 )
-from app.agent.actions import AgentAction, AgentResult
-from app.core.chat_pipeline import ChatPipeline
-from app.llm.chat_reply import parse_chat_reply
-from app.llm.prompts.runtime import estimate_prompt_tokens
-from app.llm.prompts.types import (
+from sakura_assistant.agent.actions import AgentAction, AgentResult
+from sakura_assistant.llm.chat_reply import parse_chat_reply
+from sakura_assistant.llm.prompts.runtime import estimate_prompt_tokens
+from sakura_context import (
     ContextFragment,
     ContextFragmentDecision,
     ContextRequest,
@@ -569,8 +568,7 @@ def test_compact_request_keeps_large_history_readable_and_tool_costs_actionable(
 
 def test_write_failures_do_not_affect_model_boundary(tmp_path: Path) -> None:
     blocked = tmp_path / "blocked"
-    (blocked / "data").mkdir(parents=True)
-    (blocked / "data" / "logs").write_text("not a directory", encoding="utf-8")
+    blocked.write_text("not a directory", encoding="utf-8")
     recorder = AgentTraceRecorder(blocked)
     assert recorder.start_model_call(
         model="m",

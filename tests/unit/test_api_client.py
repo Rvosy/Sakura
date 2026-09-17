@@ -9,8 +9,8 @@ import httpx
 from openai import APIConnectionError, APIStatusError
 
 from app.config.app_version import read_app_version
-from app.agent.trace import AgentTraceRecorder
-from app.llm.api_client import (
+from sakura_assistant.agent.trace import AgentTraceRecorder
+from sakura_assistant.llm.api_client import (
     MAX_COMPATIBILITY_ATTEMPTS,
     ApiRequestError,
     ApiSettings,
@@ -18,9 +18,10 @@ from app.llm.api_client import (
     _build_chat_completion_payload,
     _filter_supported_chat_params,
 )
-from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply, sanitize_reply_tones
-from app.llm.prompts.runtime import ContextPolicy, PromptRuntime
-from app.llm.prompts.types import ContextFragment, ContextRequest, PromptRecipe
+from sakura_assistant_contract import ChatReply, ChatSegment
+from sakura_assistant.llm.chat_reply import parse_chat_reply, sanitize_reply_tones
+from sakura_assistant.llm.prompts.runtime import ContextPolicy, PromptRuntime
+from sakura_context import ContextFragment, ContextRequest, PromptRecipe
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -126,7 +127,7 @@ def test_complete_raw_does_not_log_request_body(monkeypatch) -> None:  # type: i
         lambda *_args, **_kwargs: {"choices": [{"message": {"content": "OK"}}]},
     )
     monkeypatch.setattr(
-        "app.llm.api_client.log_event",
+        "sakura_assistant.llm.api_client.log_event",
         lambda _channel, message, attributes=None, **_kwargs: events.append((message, attributes or {})),
     )
 
@@ -360,7 +361,7 @@ def test_trailing_system_rejection_retries_and_records_compatibility(
         return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]})
 
     mock_http(monkeypatch, read_response)
-    monkeypatch.setattr("app.llm.api_client.submit_telemetry_model_call", metrics.append)
+    monkeypatch.setattr("sakura_assistant.llm.api_client.submit_telemetry_model_call", metrics.append)
 
     with recorder.operation("trailing-system", finalize_external=True):
         for _ in range(2):
@@ -390,10 +391,10 @@ def test_proactive_history_fallback_preserves_context_and_provider_defaults(
     monkeypatch: pytest.MonkeyPatch, method: str, scenario: str,
 ) -> None:
     from types import SimpleNamespace
-    from app.agent.context_orchestrator import messages_for_context_snapshot
-    from app.core_host.real_chat import _ProjectedTurn, _TurnProjection, _messages_from_turn_projection
+    from sakura_assistant.agent.context_orchestrator import messages_for_context_snapshot
+    from sakura_assistant.history import _ProjectedTurn, _TurnProjection, messages_from_turn_projection
 
-    messages = _messages_from_turn_projection(_TurnProjection(
+    messages = messages_from_turn_projection(_TurnProjection(
         (_ProjectedTurn("conversation", (
             {"role": "user", "content": "previous user"},
             {"role": "assistant", "content": "previous assistant"},
@@ -703,7 +704,7 @@ def test_list_models_requests_models_endpoint(monkeypatch) -> None:
     assert str(request.url) == "https://api.example.com/v1/models"
     assert request.method == "GET"
     assert request.headers["Authorization"] == "Bearer key"
-    assert request.headers["User-Agent"] == f"Sakura/{read_app_version(REPO_ROOT)}"
+    assert request.headers["User-Agent"] == "Sakura/dev"
     assert request.extensions["timeout"]["read"] == 12
 
 
@@ -819,7 +820,7 @@ def test_model_call_runtime_events_match_final_payload_and_trace(
     def capture_log_event(_channel, _message, attributes=None, **kwargs):  # type: ignore[no-untyped-def]
         events.append((kwargs.get("event"), dict(attributes or {})))
 
-    monkeypatch.setattr("app.llm.api_client.log_event", capture_log_event)
+    monkeypatch.setattr("sakura_assistant.llm.api_client.log_event", capture_log_event)
     monkeypatch.setattr(
         client,
         "_post_chat_completions",

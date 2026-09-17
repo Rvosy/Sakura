@@ -1,34 +1,12 @@
 export const SCREEN_AWARENESS_POLL_INTERVAL_MS = 10_000;
-export const SCREEN_AWARENESS_PROMPT = "这是一次由 Sakura 定时截图触发的主动屏幕观察。以下截图按时间顺序展示我最近正在做的事情。请结合最近聊天历史和这些截图，以当前角色的语气自然接话：可以评论变化、接续任务、询问卡点或提供轻量帮助。不要逐张复述，也不要因为时间或久坐机械地提醒休息；如果没有明显变化，就简短说出你能确认的具体内容。";
 
-const RESOLUTIONS = new Set(["fullscreen", "720p", "1080p", "2160p"]);
-
-export function normalizeScreenAwarenessSettings(value) {
-  const settings = {
-    enabled: value?.enabled === true,
-    checkIntervalMinutes: Number(value?.checkIntervalMinutes),
-    cooldownMinutes: Number(value?.cooldownMinutes),
-    batchLimit: Number(value?.batchLimit),
-    resolution: String(value?.resolution || ""),
-  };
-  if (!Number.isSafeInteger(settings.checkIntervalMinutes)
-      || settings.checkIntervalMinutes < 1 || settings.checkIntervalMinutes > 120
-      || !Number.isSafeInteger(settings.cooldownMinutes)
-      || settings.cooldownMinutes < 1 || settings.cooldownMinutes > 120
-      || !Number.isSafeInteger(settings.batchLimit)
-      || settings.batchLimit < 1 || settings.batchLimit > 20
-      || !RESOLUTIONS.has(settings.resolution)) {
-    throw new Error("SCREEN_AWARENESS_SETTINGS_INVALID");
-  }
-  return Object.freeze(settings);
-}
-
+// UI reports activity/idle facts and executes Core decisions. It owns no
+// sampling clocks, settings policy, batch count, or Assistant prompt.
 export function createScreenAwarenessController({
   invoke,
   send,
   isIdle,
   generationId,
-  now = () => Date.now(),
   setInterval = (callback, delay) => globalThis.setInterval(callback, delay),
   clearInterval = (timer) => globalThis.clearInterval(timer),
   onDiagnostic = () => {},
@@ -36,97 +14,85 @@ export function createScreenAwarenessController({
   if ([invoke, send, isIdle, generationId].some((value) => typeof value !== "function")) {
     throw new Error("SCREEN_AWARENESS_DEPENDENCY_INVALID");
   }
-  let settings = null;
   let timer = null;
   let disposed = false;
   let ticking = false;
   let generation = "";
-  let lastActivityAt = now();
-  let lastCaptureAt = now();
-  let batchStartedAt = null;
-  let batchCount = 0;
-  let batchRevision = 0;
+  let activity = true;
+  let reset = true;
+  let epoch = 0;
 
-  function invokeBestEffort(command, args) {
+  function bestEffort(command, args) {
     try { void Promise.resolve(invoke(command, args)).catch(() => {}); }
     catch { /* Native teardown may already have started. */ }
   }
 
-  function resetClock(timestamp = now()) {
-    lastActivityAt = timestamp;
-    lastCaptureAt = timestamp;
-    batchStartedAt = null;
-    batchCount = 0;
-  }
-
-  function clearBatch(reason, timestamp = now()) {
-    batchRevision += 1;
-    invokeBestEffort("clear_screen_awareness_batch");
-    resetClock(timestamp);
+  function clearBatch(reason) {
+    epoch += 1;
+    reset = true;
+    activity = true;
+    bestEffort("clear_screen_awareness_batch");
     onDiagnostic("screen_awareness.batch.cleared", { reason });
   }
 
-  async function fail(stage, error, attachmentId = null) {
-    if (attachmentId) {
-      invokeBestEffort("release_screen_attachment", { payload: { attachmentId } });
-    }
-    clearBatch(stage);
-    onDiagnostic("screen_awareness.failed", { stage, code: String(error || stage).split("|")[0] });
+  function facts(extra = {}) {
+    const payload = { idle: isIdle(), activity, reset, ...extra };
+    activity = false;
+    reset = false;
+    return payload;
   }
 
   async function tick() {
-    if (disposed || ticking || !settings) return;
+    if (disposed || ticking) return;
     const currentGeneration = String(generationId() || "");
     if (currentGeneration !== generation) {
       generation = currentGeneration;
       clearBatch("generation_changed");
-      return;
     }
-    if (!settings.enabled || !currentGeneration || !isIdle()) return;
+    if (!currentGeneration) return;
     ticking = true;
-    const revision = batchRevision;
+    const currentEpoch = epoch;
+    let attachmentId = null;
+    const stale = () => currentEpoch !== epoch || disposed;
     try {
-      const timestamp = now();
-      const intervalMs = settings.checkIntervalMinutes * 60_000;
-      if (timestamp - lastActivityAt >= intervalMs && timestamp - lastCaptureAt >= intervalMs) {
-        try {
-          const result = await invoke("capture_screen_awareness_frame", { payload: {
-            resolution: settings.resolution,
-            batchLimit: settings.batchLimit,
-          } });
-          if (revision !== batchRevision || disposed) return;
-          if (!Number.isSafeInteger(result?.count) || result.count < 1 || result.count > settings.batchLimit) {
-            throw new Error("SCREEN_AWARENESS_CAPTURE_RESPONSE_INVALID");
-          }
-          lastCaptureAt = timestamp;
-          if (batchCount === 0) batchStartedAt = timestamp;
-          batchCount = result.count;
-        } catch (error) {
-          if (revision !== batchRevision || disposed) return;
-          await fail("capture", error);
+      let plan = await invoke("screen_awareness_step", { payload: facts() });
+      if (stale()) return;
+      if (plan?.action === "capture") {
+        if (!isIdle() || activity) return;
+        const result = await invoke("capture_screen_awareness_frame", { payload: {
+          resolution: plan.resolution, batchLimit: plan.batchLimit,
+        } });
+        if (stale()) {
+          bestEffort("clear_screen_awareness_batch");
           return;
         }
+        plan = await invoke("screen_awareness_step", { payload: facts({
+          revision: plan.revision, count: result.count,
+        }) });
+        if (stale()) return;
       }
-      if (batchCount === 0 || batchStartedAt === null
-          || timestamp - batchStartedAt < settings.cooldownMinutes * 60_000
-          || !isIdle()) return;
-
-      let attachmentId = null;
-      try {
-        const attached = await invoke("attach_screen_awareness_batch");
-        attachmentId = String(attached?.attachmentId || "");
-        if (revision !== batchRevision || disposed) {
-          if (attachmentId) invokeBestEffort("release_screen_attachment", { payload: { attachmentId } });
-          return;
-        }
-        if (!/^screen-[0-9a-f]{32}$/.test(attachmentId) || attached?.count !== batchCount) {
-          throw new Error("SCREEN_AWARENESS_ATTACHMENT_RESPONSE_INVALID");
-        }
-        await send({ message: SCREEN_AWARENESS_PROMPT, attachmentId });
-        resetClock(timestamp);
-      } catch (error) {
-        if (revision !== batchRevision || disposed) return;
-        await fail("send", error, attachmentId);
+      if (plan?.action === "clear") {
+        bestEffort("clear_screen_awareness_batch");
+        return;
+      }
+      if (plan?.action !== "submit" || !isIdle() || activity) return;
+      const attached = await invoke("attach_screen_awareness_batch");
+      attachmentId = String(attached?.attachmentId || "");
+      if (stale() || !isIdle() || activity) {
+        if (attachmentId) bestEffort("release_screen_attachment", { payload: { attachmentId } });
+        clearBatch("activity_changed");
+        return;
+      }
+      if (!/^screen-[0-9a-f]{32}$/.test(attachmentId) || attached?.count !== plan.count) {
+        throw new Error("SCREEN_AWARENESS_ATTACHMENT_RESPONSE_INVALID");
+      }
+      await send({ attachmentId });
+      clearBatch("submitted");
+    } catch (error) {
+      if (attachmentId) bestEffort("release_screen_attachment", { payload: { attachmentId } });
+      if (!stale()) {
+        clearBatch("failed");
+        onDiagnostic("screen_awareness.failed", { code: String(error).split("|")[0] });
       }
     } finally {
       ticking = false;
@@ -134,28 +100,20 @@ export function createScreenAwarenessController({
   }
 
   return Object.freeze({
-    applySettings(value) {
-      settings = normalizeScreenAwarenessSettings(value);
+    applySettings() {
       generation = String(generationId() || "");
-      clearBatch(settings.enabled ? "settings_changed" : "disabled");
+      clearBatch("settings_changed");
     },
     start() {
       if (disposed || timer !== null) return;
       timer = setInterval(() => { void tick(); }, SCREEN_AWARENESS_POLL_INTERVAL_MS);
     },
     tick,
-    noteActivity() {
-      lastActivityAt = now();
-    },
-    noteManualSend() {
-      clearBatch("manual_send");
-    },
+    noteActivity() { activity = true; },
+    noteManualSend() { clearBatch("manual_send"); },
     generationChanged(value = generationId()) {
       generation = String(value || "");
       clearBatch("generation_changed");
-    },
-    snapshot() {
-      return Object.freeze({ settings, generation, lastActivityAt, lastCaptureAt, batchStartedAt, batchCount });
     },
     dispose() {
       if (disposed) return;

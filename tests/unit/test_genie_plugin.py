@@ -18,7 +18,7 @@ from dataclasses import replace
 import psutil
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.tts_boundary import TTSBoundary
 from app.plugins.dependencies import PluginDependencyRoots

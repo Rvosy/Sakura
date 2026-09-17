@@ -4,14 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.agent.trace import (
+from sakura_assistant.agent.trace import (
     AgentTraceRecorder,
     PromptTraceMetadata,
     TRACE_PROVENANCE_KEY,
     traced_message,
 )
-from app.llm.api_client import ApiRequestError, ApiSettings, OpenAICompatibleClient
-from app.llm.prompts.types import (
+from sakura_assistant.llm.api_client import ApiRequestError, ApiSettings, OpenAICompatibleClient
+from app.plugin_sdk.sakura_context import (
     ContextFragment,
     ContextFragmentDecision,
     ContextRequest,

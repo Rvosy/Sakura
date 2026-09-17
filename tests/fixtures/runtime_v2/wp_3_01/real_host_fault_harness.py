@@ -48,10 +48,13 @@ class FaultingAssistantAdapter:
     def __init__(self, roots, tools, mode: str, directory: Path, script: Path) -> None:
         from app.core_host.assistant_adapter import AssistantAdapter
 
-        self._owned = AssistantAdapter(roots, tool_registry=tools)
+        self._owned = AssistantAdapter(roots)
         self._mode = mode
         self._directory = directory
         self._script = script
+
+    def bind_application(self, application):
+        self._owned.bind_application(application)
 
     def initialize(self, cancel: threading.Event) -> object:
         result = self._owned.initialize(cancel)
@@ -105,6 +108,7 @@ def _run_host(
 
     writer = ResponseWriter(output_stream)
     dispatcher = ControlDispatcher(config, initializer_factory=factory)  # type: ignore[arg-type]
+    dispatcher._readiness.enable_plugins()
     primary_error: BaseException | None = None
     primary_traceback = None
     try:

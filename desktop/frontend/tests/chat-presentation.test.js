@@ -194,8 +194,8 @@ test("silent proactive requests preserve the current UI until the completed repl
   assert.equal(reducer.current().silentInteraction, false);
 });
 
-test("failed or cancelled silent proactive requests leave the current UI untouched", () => {
-  for (const terminal of ["chat.failed", "chat.cancelled"]) {
+test("silent terminals without a reply preserve the UI and release the next conversation", () => {
+  for (const terminal of ["chat.failed", "chat.cancelled", "chat.completed"]) {
     const reducer = readyReducer();
     const before = reducer.current();
     reducer.reduce({
@@ -211,11 +211,17 @@ test("failed or cancelled silent proactive requests leave the current UI untouch
       generationNumber: 1,
       operationId: terminal,
       error: { message: "不应展示" },
+      reply: { segments: [] },
     });
     assert.equal(reducer.current().phase, before.phase);
     assert.equal(reducer.current().bubbleText, before.bubbleText);
     assert.equal(reducer.current().operationId, null);
     assert.equal(reducer.current().silentInteraction, false);
+    assert.equal(reducer.reduce({
+      type: "chat.started", generationId: "generation-1", generationNumber: 1,
+      operationId: "next-manual",
+    }).applied, true);
+    assert.equal(reducer.current().phase, "thinking");
   }
 });
 

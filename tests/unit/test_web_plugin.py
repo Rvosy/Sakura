@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
-from app.agent.tools import Tool, ToolRegistry
+from app.plugin_sdk.sakura_tools import Tool, ToolRegistry
 from app.core_host.plugin_application import PluginApplicationHost
 from app.plugins.inventory import PluginDesiredStateStore
 from app.storage.runtime_roots import RuntimeRoots
@@ -144,7 +144,7 @@ def test_proxy_fetch_in_isolated_worker(tmp_path: Path, monkeypatch) -> None:
         assert fetched.content["title"] == "Proxy fixture"
         assert "isolated worker response" in fetched.content["text"]
         assert requests == [("http://public.example/article", "public.example")]
-        process = application.application._manager._records["sakura.web"].process._process
+        process = application._manager._records["sakura.web"].process._process
         assert process.args[1:3] == ["-I", "-S"]
         assert str(dependency) in process.args
     finally:
@@ -247,7 +247,7 @@ def test_worker_exit_withdraws_tools_without_automatic_restart(tmp_path: Path) -
     app = PluginApplicationHost(roots(tmp_path), "web-crash", registry)
     try:
         app.start()
-        process = app.application._manager._records["sakura.web"].process._process
+        process = app._manager._records["sakura.web"].process._process
         process.kill()
         process.wait(timeout=5)
         deadline = time.monotonic() + 5

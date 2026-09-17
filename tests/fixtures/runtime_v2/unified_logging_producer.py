@@ -10,7 +10,7 @@ from pathlib import Path
 # Bootstrap the explicit source root just as the production Core launcher does.
 sys.path.insert(0, sys.argv[2])
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core.runtime_log import log_message
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.runtime_logging import install_runtime_logging
@@ -40,7 +40,7 @@ host = PluginApplicationHost(roots, "generation-unified-test", ToolRegistry())
 try:
     log_message("info", "Core 资源加载完成", fields={"count": 2})
     host.start()
-    assert host.application.wait_until_loaded(timeout=3)
+    assert host.wait_until_loaded(timeout=3)
 finally:
     host.close()
     bridge.close()

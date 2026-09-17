@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.agent.tools import Tool, ToolRegistry
+from app.plugin_sdk.sakura_tools import Tool, ToolRegistry
+from app.core.runtime_log import log_event
 
 
 def get_current_time() -> dict[str, str]:
@@ -26,7 +27,7 @@ def create_runtime_v2_tool_registry() -> ToolRegistry:
                 parameters={"type": "object", "properties": {}, "required": []},
                 handler=lambda _arguments: get_current_time(),
             ),
-        ]
+        ], logger=log_event
     )
 
 

@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import io
 import json
+from types import SimpleNamespace
+from functools import partial
 
-from app.agent.trace import AgentTraceRecorder
+import pytest
+
+from sakura_assistant.agent.trace import AgentTraceRecorder
 from app.core_host import runtime_logging
 from app.core_host.runtime_logging import TELEMETRY_BRIDGE_PREFIX, install_runtime_logging
-from app.llm import api_client
-from app.llm.api_client import ApiRequestError, ApiSettings, OpenAICompatibleClient
+from sakura_assistant.llm import api_client
+from sakura_assistant import diagnostics
+from app.core_host.plugin_host_services import _LoggingHostService
+from app.plugins.host_services import HOST_CALLER
+from sakura_assistant.llm.api_client import ApiRequestError, ApiSettings, OpenAICompatibleClient
 
 
 SENTINELS = {
@@ -22,6 +29,24 @@ SENTINELS = {
     "model": "private-custom-model-SENTINEL_MODEL_ae77",
     "agent_trace": "SENTINEL_AGENT_TRACE_f815",
 }
+
+
+@pytest.fixture(autouse=True)
+def assistant_metric_host_bridge(monkeypatch):
+    host = _LoggingHostService()
+
+    def emit(severity, message, *, fields):
+        token = HOST_CALLER.set("sakura.assistant.default")
+        try:
+            return host.call("emit", [[{"severity": severity, "message": message, "fields": fields}], 0])
+        finally:
+            HOST_CALLER.reset(token)
+
+    def model_call(candidate):
+        return emit("debug", "模型请求已结束", fields={"event": "model.call.metric", "modelCall": candidate})
+
+    monkeypatch.setattr(diagnostics, "_logger", SimpleNamespace(model_call=model_call,
+        **{severity: partial(emit, severity) for severity in ("debug", "info", "warning", "error")}))
 
 
 def _telemetry_payloads(stream: io.BytesIO) -> list[dict[str, object]]:

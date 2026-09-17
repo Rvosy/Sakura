@@ -12,11 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.config.character_loader import CharacterRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
-from app.llm.chat_reply import ChatReply, ChatSegment
+from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
 from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
@@ -162,7 +162,9 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
         call_timeout=1.0,
     )
     application.bind_chat_boundary(ChatBoundary())
-    application.bind_runtime(ToolRegistry(), runtime, session=session)
+    session.assistant = object()
+    session.visual_binding = None
+    application.bind_session(session)
     try:
         application.start()
         record = application.public_snapshot()["plugins"][0]
@@ -212,8 +214,11 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
     shell_events: list[dict[str, object]] = []
 
     class Pipeline:
-        def run_user_message(self, messages, **_kwargs):  # type: ignore[no-untyped-def]
-            pipeline_messages.extend(messages)
+        def commit_result(self, commit):
+            commit()
+
+        def run_turn(self, descriptor, **_kwargs):  # type: ignore[no-untyped-def]
+            pipeline_messages.append(descriptor)
             time.sleep(3.2)
             return SimpleNamespace(
                 reply=ChatReply([ChatSegment("mobile raw", translation="手机回答")]),
@@ -227,7 +232,9 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
     session = SimpleNamespace(
         character=profile,
         runtime=runtime,
-        pipeline=Pipeline(),
+        assistant=Pipeline(),
+        visual_binding=None,
+        descriptor=lambda: {},
         tool_actions=None,
         memory_boundary=None,
     )
@@ -251,7 +258,7 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
         call_timeout=1.0,
     )
     application.bind_chat_boundary(boundary)
-    application.bind_runtime(ToolRegistry(), runtime, session=session)
+    application.bind_session(session)
     image = "data:image/jpeg;base64," + base64.b64encode(b"x" * 1_100_000).decode("ascii")
     try:
         application.start()
@@ -268,19 +275,8 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
         assert result["reply"] == "手机回答"
         assert shell_events == []
         assert application._host_services.artifact_count == 0
-        assert any(
-            isinstance(message, dict)
-            and isinstance(message.get("content"), list)
-            and any(
-                isinstance(part, dict)
-                and part.get("type") == "image_url"
-                and str(part.get("image_url", {}).get("url", "")).startswith(
-                    "data:image/jpeg;base64,"
-                )
-                for part in message["content"]
-            )
-            for message in pipeline_messages
-        )
+        assert pipeline_messages[0]["attachment"]["observations"][0]["data_url"] == image
+
     finally:
         application.close()
         boundary.close()
@@ -292,7 +288,10 @@ def test_mobile_host_image_busy_does_not_poison_the_next_attachment(tmp_path: Pa
     calls = 0
 
     class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+        def commit_result(self, commit):
+            commit()
+
+        def run_turn(self, _descriptor, **_kwargs):  # type: ignore[no-untyped-def]
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -303,7 +302,9 @@ def test_mobile_host_image_busy_does_not_poison_the_next_attachment(tmp_path: Pa
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Pipeline(),
+        visual_binding=None,
+        descriptor=lambda: {},
         tool_actions=None,
         memory_boundary=None,
     )

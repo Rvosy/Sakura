@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
+from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.config.character_loader import CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.config.defaults import DEFAULT_BASE_URL, DEFAULT_TEXT_MODEL
@@ -19,7 +19,7 @@ from app.config.models import (
     theme_colors_to_mapping,
     theme_from_mapping,
 )
-from app.llm.api_client import ApiSettings
+from app.plugin_sdk.sakura_model import ApiSettings
 from app.storage.paths import StoragePaths
 from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,

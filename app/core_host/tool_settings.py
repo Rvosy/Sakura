@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import yaml
 
-from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
+from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.core_host.protocol import error_payload, response
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths

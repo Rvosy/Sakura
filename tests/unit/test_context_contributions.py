@@ -8,20 +8,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.agent.actions import AgentEvent
-from app.agent.context_orchestrator import ContextContributionError, ContextOrchestrator
-from app.agent.runtime import AgentRuntime
-from app.agent.runtime_limits import RuntimeLoopSettings
-from app.agent.tools import Tool, ToolRegistry
-from app.core.cancellation import CancellationToken, OperationCancelled
-from app.llm.api_client import (
+from sakura_assistant.agent.actions import AgentEvent
+from sakura_assistant.agent.context_orchestrator import ContextContributionError, ContextOrchestrator
+from sakura_assistant.agent.runtime import AgentRuntime
+from sakura_assistant_contract import RuntimeLoopSettings
+from sakura_tools import Tool, ToolRegistry
+from sakura_cancellation import CancellationToken, OperationCancelled
+from sakura_assistant.llm.api_client import (
     ApiSettings,
     ChatCompletionTurn,
     NativeToolCall,
     OpenAICompatibleClient,
 )
-from app.llm.chat_reply import ChatReply, ChatSegment
-from app.llm.prompts.runtime import (
+from sakura_assistant_contract import ChatReply, ChatSegment
+from sakura_assistant.llm.prompts.runtime import (
     ContextPolicy,
     ContextWindowExceededError,
     PromptRuntime,
@@ -29,7 +29,7 @@ from app.llm.prompts.runtime import (
     estimate_context_runtime_tokens,
     estimate_prompt_tokens,
 )
-from app.llm.prompts.types import ContextFragment, ContextRequest, PromptRecipe
+from sakura_context import ContextFragment, ContextRequest, PromptRecipe
 from app.plugins.models import ContextProviderContribution
 
 

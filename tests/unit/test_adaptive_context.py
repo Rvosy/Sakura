@@ -3,18 +3,18 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 
-from app.agent.context_orchestrator import (
+from sakura_assistant.agent.context_orchestrator import (
     ContextOrchestrator,
     build_context_request,
     messages_for_context_snapshot,
 )
-from app.agent.runtime import AgentRuntime, _build_tool_role_message
-from app.agent.tools import ToolExecutionResult
-from app.agent.trace import traced_message
+from sakura_assistant.agent.runtime import AgentRuntime, _build_tool_role_message
+from sakura_tools import ToolExecutionResult
+from sakura_assistant.agent.trace import traced_message
 from app.config.model_slots import resolve_model_slot
 from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
-from app.llm.api_client import ApiSettings, NativeToolCall, OpenAICompatibleClient
-from app.llm.prompts.runtime import (
+from sakura_assistant.llm.api_client import ApiSettings, NativeToolCall, OpenAICompatibleClient
+from sakura_assistant.llm.prompts.runtime import (
     ContextBudget,
     ContextPolicy,
     ContextWindowExceededError,
@@ -24,8 +24,8 @@ from app.llm.prompts.runtime import (
     estimate_prompt_tokens,
     truncate_to_token_budget,
 )
-from app.llm.prompts.types import ContextFragment, ContextRequest, ContextTurn, PromptRecipe, PromptSection
-from app.llm.token_estimation import (
+from sakura_context import ContextFragment, ContextRequest, ContextTurn, PromptRecipe, PromptSection
+from sakura_assistant.llm.token_estimation import (
     estimate_message_image_tokens,
     estimate_message_tokens,
 )

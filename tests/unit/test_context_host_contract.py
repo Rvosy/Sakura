@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from app.core_host.plugin_host_services import HostServiceError, _ContextHostService
-from app.agent.context_orchestrator import ContextContributionError, ContextOrchestrator
-from app.llm.prompts.types import ContextRequest
+from sakura_assistant.agent.context_orchestrator import ContextContributionError, ContextOrchestrator
+from app.plugin_sdk.sakura_context import ContextRequest
 from app.plugins.host_services import HOST_CALLER
 
 

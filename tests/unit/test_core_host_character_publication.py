@@ -42,7 +42,7 @@ def test_switch_publishes_summary_and_final_visual_together(tmp_path, monkeypatc
         during.append(controller.minimal_snapshot(None))
 
     application = SimpleNamespace(
-        application=SimpleNamespace(set_current_character=lambda _: None),
+        set_current_character=lambda _: None,
         unbind_session=lambda: None, bind_session=bind,
         bind_character_presentation=bind, visual_presentation=lambda: visual,
     )

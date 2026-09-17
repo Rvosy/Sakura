@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-16
+updated: 2026-09-18
 ---
 
 # 编写 Sakura 插件
@@ -841,7 +841,7 @@ tools.register(
 
 Context schema 2 只传递内容和调用信息，不分类行为要求与资料，也不判断内容和角色卡的关系。
 插件自行组织文本；当前默认对话实现负责采集、组合、预算和模型消息格式。Host 保留来源绑定、登记有效性及有界 JSON 传输。
-默认对话实现仍在 Core 进程内，迁入独立插件的后续范围见[开放插件生态计划](../plans/runtime-v2/open-plugin-ecosystem.md)。
+默认对话实现位于 `sakura.assistant.default` 插件进程，使用本节相同的公开 Context 接口。
 
 上下文贡献者收到有界请求，返回少量文本片段。未声明分类的旧检索插件可以保留原写法：
 
@@ -930,9 +930,52 @@ Context 只影响本次模型请求，不自动写入 Timeline，也不改变长
 
 ## 正常聊天与插件服务
 
-正常聊天使用现有 Assistant 和 ChatPipeline。未使用的执行器实验及登记服务已移除，普通插件通过 Service、Context、Tools 和设置贡献参与现有能力。
-需要固定进程的长操作使用已有 `context.bind()`；服务超时不表示后台任务已停止，消费者仍应按自己的业务合同收尾。
-插件不应导入宿主的 Agent 或 Pipeline。默认模型与对话实现迁移尚未完成，范围见[当前计划](../plans/runtime-v2/open-plugin-ecosystem.md)。
+普通插件通过 Service、Context、Tools 和设置贡献参与聊天。实现完整对话策略的插件可以声明并提供唯一
+`sakura.assistant` 服务；预装 `sakura.assistant.default` 也使用相同合同，没有私有 Core import 或专用启动器。
+用户停用默认实现后可启用替代实现，同时提供相同服务会触发普通服务冲突。
+
+Assistant 导出 `prepare/begin/poll/result/cancel/release`：prepare 检查会话本地可用性，begin 接收
+operationId 与输入 artifact；后台运行期间 poll 返回有界进度，result 交付结果 artifact，cancel 请求停止，
+release 在终态后释放输出、Trace 与执行槽。Core 拥有用户输入、Timeline 写入、取消仲裁和公共聊天终态，
+插件拥有模型请求、上下文选择与工具循环。完整参数、状态和失败规则见
+[Assistant 插件合同](../specs/runtime-v2/assistant-plugin-boundary.md)。
+
+Core 的受控 session 描述符包含角色、loopSettings、modelSlots 和表现合同。modelSlots 是成功应用的模型
+快照，可能含凭据；只用于当前绑定实例，禁止写日志或向其他服务公开。默认 Assistant 不在每轮读取最新模型设置，
+因此“磁盘保存成功但应用失败”不会在下次聊天隐式生效。
+
+需要固定进程的长操作使用 `context.bind()`；绑定在调用前后检查实例身份。超时不表示后台任务已停止，
+也不授权重试已接受的工作。Core 消费 Assistant 时还会在最终 Timeline 提交前再次原子验证 scope；
+未知 begin ACK 或回收 RPC 失败会停止精确旧实例，再撤销其输入授权，不影响同 ID 的新实例。
+
+### 消费工具与 Context
+
+完整对话 Provider 可以读取当前贡献目录并按登记身份调用，不需要导入 Core ToolRegistry 或 contributor 对象：
+
+```python
+tools = context.get("sakura.host.tools")
+catalog = tools.catalog()
+tool = catalog[0]
+result = tools.execute(
+    tool["registrationId"], tool["name"], arguments,
+    timeout_seconds=tool["timeoutSeconds"],
+)
+
+contexts = context.get("sakura.host.context")
+contributors = contexts.catalog()
+fragments = contexts.collect(contributors[0]["registrationId"], request)
+```
+
+工具目录保留 name、description、parameters、group、risk、capability、source 与 timeoutSeconds；
+Context 目录保留 providerId、description、order、enabled、scope、failurePolicy 与实际 pluginId。
+调用方必须保留 registrationId，不能在失败后按同名重新查找并重放调用。登记失效时 Host 明确报错，
+同名新登记不会接管旧请求。副作用已经开始后的取消不保证撤销。
+
+工具结果含图片 artifact 时，Host 只验证并交付描述符及接收授权。Assistant 在自己的进程读取图片、
+构造模型输入并释放资源，不要求 Host 将完整图片转换成跨 RPC 的 base64。
+成功交付后文件所有权与额度转到具体接收实例，生产者不能再次交付或删除它。接收者退出会回收文件；
+回调迟到时不会把结果交给同 ID 的新实例，格式错误和交付失败的源文件也会被释放。当前每次结果只支持一个
+明确的 artifact，不支持在任意嵌套 JSON 中夹带资源引用。
 
 ## 模型、角色、历史和文件
 
@@ -966,6 +1009,10 @@ model_slots.register(
 `catalog()` 返回宿主可选模型目录，`resolve({"profileId": ..., "model": ...})` 返回实际调用信息，包括
 `baseUrl`、`apiKey` 和 `timeoutSeconds`。解析结果只在插件进程内使用，不要写日志、设置投影或普通 Service
 返回值。`required: false` 时，空的 `profileId/model` 表示动态继承当前对话模型。
+
+`active()` 返回当前 chat 与可空 vision_chat 的公开 ApiSettings 字段，用于明确需要当前配置的消费者。
+需要一轮配置稳定时，应在开始时取一次快照。默认 Assistant 直接使用 Core 传入的 session.modelSlots，
+不需要声明 model_slots 依赖或每轮调用 active。
 
 ### 当前角色和角色扩展
 
@@ -1004,6 +1051,27 @@ limit 范围为 1–500。cursor 绑定角色和数据库 lineage，是不透明
 拼接或当作整数。cursor 失效时会得到 `TIMELINE_CURSOR_INVALID`，由插件明确决定是否从 `read_recent()`
 重新建立起点。
 
+Assistant 输入还包含 Host 签发的 historyToken 与固定 historyCursor，可以按完整轮读取同一快照：
+
+```python
+page = timeline.read_turn_page({
+    "historyToken": request["historyToken"],
+    "characterId": request["session"]["character"]["id"],
+    "snapshotCursor": request["historyCursor"],
+    "category": "conversation",
+    "limit": 16,
+    "beforeCursor": None,
+    "observationSince": observation_since.isoformat(),
+    "proactiveSince": proactive_since.isoformat(),
+})
+```
+
+category 可为 conversation、observation 或 proactive。返回 turns、nextCursor、snapshotCursor，
+每一项 turns 都是完整一轮；轮按首条记录从新到旧，轮内消息按写入顺序排列。
+下一页原样传回 nextCursor 为 beforeCursor。超过单帧预算时返回 `{artifact: descriptor}`，按下节读取
+同形状 JSON 后释放；单个超大轮也不拆开。token 固定插件、角色与快照，不能另选角色或扩展快照。
+取消、轮次结束或 scope 关闭后不得继续使用；默认插件按模型预算续页并复用本轮缓存，不全量扫描历史。
+
 ### 私有数据与共享存储
 
 大多数插件只应使用 `context.data_path()`。确实要和 Sakura 的某类公共数据协作时，才调用：
@@ -1036,6 +1104,25 @@ except Exception:
 `allocate()` 返回的 `path` 是 Host 特意签发的临时写入位置，是普通 Service 禁止传裸路径规则的例外。
 `commit()` 后返回的 descriptor 含 `artifactId`、`mediaType` 和 `byteLength`。每个插件同时最多持有 16 个
 artifact，单个文件最多 64 MiB。未提交文件会随插件 scope 清理；提交后由接收它的 Host consumer 释放。
+
+消费 Assistant 输入、大历史页或工具图片时，可以解析 Host 明确交付的 artifact：
+
+```python
+from pathlib import Path
+
+resolved = artifacts.resolve(descriptor["artifactId"])
+try:
+    payload = Path(resolved["path"]).read_bytes()
+    if len(payload) != descriptor["byteLength"] or resolved["mediaType"] != descriptor["mediaType"]:
+        raise RuntimeError("ARTIFACT_INVALID")
+    consume(payload)
+finally:
+    artifacts.release_received(descriptor["artifactId"])
+```
+
+resolve 只接受已提交、由本插件拥有或 Host 明确授权给本插件的资源。返回 path 是这项读取合同的例外，
+不能拿任意路径替代 artifactId。Host 在确认进程停止后才清理仍被其使用的 artifact；服务失效本身不能证明
+本地文件已不再被读取。应用关闭与异常回收负责最终回收，消费者仍应及时 release_received。
 
 ### 移动端聊天能力
 

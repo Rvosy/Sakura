@@ -148,7 +148,7 @@ def test_long_speech_vad_boundaries_keep_every_repeated_sentence(engine, tmp_pat
 
 
 def test_real_model_through_host_hub_and_isolated_provider_process(tmp_path, monkeypatch):
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_runtime_application import PluginRuntimeApplication
     from app.plugins.inventory import PluginInventory
     from app.storage.runtime_roots import RuntimeRoots

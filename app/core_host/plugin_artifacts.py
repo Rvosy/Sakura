@@ -122,6 +122,18 @@ class PluginArtifactStore:
         shutil.rmtree(artifact.path.parent, ignore_errors=True)
         return True
 
+    def transfer_committed(self, owner_id: str, artifact_id: str, receiver_id: str) -> None:
+        """Move ownership of a committed file without moving or copying its bytes."""
+        with self._lock:
+            artifact = self._owned(owner_id, artifact_id)
+            if not artifact.committed:
+                raise PluginArtifactError("ARTIFACT_NOT_COMMITTED")
+            if owner_id != receiver_id and sum(
+                item.plugin_id == receiver_id for item in self._artifacts.values()
+            ) >= MAX_ARTIFACTS_PER_PLUGIN:
+                raise PluginArtifactError("ARTIFACT_LIMIT_EXCEEDED")
+            artifact.plugin_id = receiver_id
+
     def release_plugin(self, plugin_id: str) -> int:
         """Release every artifact still owned by one departed plugin scope."""
 

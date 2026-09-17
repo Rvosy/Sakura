@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from app.agent.screen_observation import ScreenObservation
+from app.plugin_sdk.sakura_assistant_contract import ScreenObservation
 
 
 SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"

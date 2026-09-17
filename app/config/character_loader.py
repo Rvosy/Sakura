@@ -13,7 +13,6 @@ from app.config.models import (
     theme_from_mapping,
 )
 from app.core.runtime_log import log_event
-from app.llm.prompt_templates import with_desktop_pet_context
 from app.storage.paths import sanitize_file_stem
 from app.config.character_resources import CharacterVisualResource, character_visual_resources
 
@@ -373,4 +372,4 @@ def _validate_character_id(character_id: str, manifest_path: Path) -> str:
 
 
 def _append_desktop_context(content: str) -> str:
-    return with_desktop_pet_context(content)
+    return content

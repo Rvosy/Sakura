@@ -260,7 +260,10 @@ class PluginRunner:
         name: str,
         payload: Mapping[str, Any],
     ) -> object:
-        return self._peer.request(name, payload)
+        timeout = payload.get("timeoutSeconds")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 122):
+            raise PluginApiError("PLUGIN_DEADLINE_INVALID")
+        return self._peer.request(name, payload, **({"timeout": float(timeout)} if timeout is not None else {}))
 
     def _require_context(self) -> PluginContext:
         if self._context is None:

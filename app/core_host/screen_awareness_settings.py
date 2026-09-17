@@ -20,10 +20,11 @@ from app.agent.screen_awareness import (
 )
 from app.config.settings_service import AppSettingsService
 from app.core_host.protocol import response
+from app.core_host.screen_awareness_policy import ScreenAwarenessPolicy
 
 
 SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES = frozenset(
-    {"screen_awareness.settings.get", "screen_awareness.settings.save"}
+    {"screen_awareness.settings.get", "screen_awareness.settings.save", "screen_awareness.step"}
 )
 
 
@@ -49,6 +50,7 @@ class ScreenAwarenessSettingsBoundary:
         self._generation_credential = generation_credential
         self._service = AppSettingsService(app_root)
         self._save_lock = threading.Lock()
+        self._policy: ScreenAwarenessPolicy | None = None
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -71,6 +73,8 @@ class ScreenAwarenessSettingsBoundary:
                 if set(payload) != {"settings"}:
                     raise ScreenAwarenessSettingsError("INVALID_REQUEST", "设置保存请求格式无效。")
                 result = self.save(payload["settings"])
+            elif name == "screen_awareness.step":
+                result = self.step(payload)
             else:
                 raise ScreenAwarenessSettingsError("UNKNOWN_COMMAND", "不支持的主动屏幕感知设置命令。")
             return response(
@@ -98,6 +102,24 @@ class ScreenAwarenessSettingsBoundary:
             ) from error
         return _snapshot(settings)
 
+    def step(self, facts: Mapping[str, object]) -> dict[str, object]:
+        fields = {"sessionId", "idle", "activity", "reset"}
+        if set(facts) not in (fields, fields | {"revision", "count"}):
+            raise ScreenAwarenessSettingsError("INVALID_REQUEST", "屏幕活动事实字段无效。")
+        if not isinstance(facts["sessionId"], str) or not facts["sessionId"] or any(
+            not isinstance(facts[name], bool) for name in ("idle", "activity", "reset")
+        ):
+            raise ScreenAwarenessSettingsError("INVALID_REQUEST", "屏幕活动事实无效。")
+        if "count" in facts and (
+            type(facts["count"]) is not int or not 1 <= facts["count"] <= 20
+            or type(facts["revision"]) is not int
+        ):
+            raise ScreenAwarenessSettingsError("INVALID_REQUEST", "屏幕采集结果无效。")
+        with self._save_lock:
+            if self._policy is None:
+                self._policy = ScreenAwarenessPolicy(_validate_settings(self.snapshot()["settings"]))
+            return self._policy.step(facts)
+
     def save(self, raw: object) -> dict[str, object]:
         settings = _validate_settings(raw)
         with self._save_lock:
@@ -107,6 +129,8 @@ class ScreenAwarenessSettingsBoundary:
                 raise ScreenAwarenessSettingsError(
                     "CONFIG_SAVE_FAILED", "主动屏幕感知设置保存失败，原文件保持不变。"
                 ) from error
+            if self._policy is not None:
+                self._policy.reset(settings)
         return _snapshot(settings)
 
 

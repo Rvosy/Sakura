@@ -12,7 +12,7 @@ import time
 import psutil
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_application import PluginApplicationHost
 from app.plugins.sakura_plugin_sdk import PluginContext
 from app.storage.runtime_roots import RuntimeRoots
@@ -87,7 +87,7 @@ def test_windows_plugin_dynamic_tools_and_cleanup(tmp_path):
     try:
         host.start()
         def status():
-            return host.application.call_service("sakura.windows-mcp", "status")
+            return host.call_service("sakura.windows-mcp", "status")
         state = until(lambda: (value if (value := status())["state"] != "connecting" else None))
         assert state["state"] == "ready", state
         assert {tool.name for tool in registry.all()} == {"windows_mcp_result", "windows_mcp_snapshot", "windows_mcp_large", "windows_mcp_fail"}
@@ -156,10 +156,10 @@ def test_released_windows_mcp_readonly_desktop(tmp_path):
     try:
         host.start()
         def status():
-            return host.application.call_service("sakura.windows-mcp", "status")
+            return host.call_service("sakura.windows-mcp", "status")
         state = until(lambda: (value if (value := status())["state"] != "connecting" else None), timeout=70)
         assert state["state"] == "ready", state
-        catalog = host.application.call_service("sakura.windows-mcp", "catalog")
+        catalog = host.call_service("sakura.windows-mcp", "catalog")
         names = [item["name"] for item in catalog]
         assert {"Snapshot", "Screenshot", "Click", "PowerShell"}.issubset(names)
         result = registry.execute("windows_mcp_snapshot", {"use_vision": False, "use_ui_tree": False, "use_dom": False})
@@ -167,7 +167,7 @@ def test_released_windows_mcp_readonly_desktop(tmp_path):
         assert result.content.get("isError") is not True
         assert any(item.get("type") == "text" and item.get("text") for item in result.content["content"])
         # Report only protocol facts and sizes, never desktop text or screenshots.
-        manager = host.application._manager
+        manager = host._manager
         snapshot = host.settings_snapshot()
         core = next(row for row in snapshot["plugins"] if row["pluginId"] == "sakura.mcp")
         assert core["sections"] == []

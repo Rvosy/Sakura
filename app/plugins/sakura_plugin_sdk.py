@@ -744,6 +744,21 @@ class _HostRegistrationProxy:
             raise PluginApiError("HOST_DESCRIPTOR_INVALID", plugin_id=self._context.plugin_id)
         return dict(result)
 
+    def catalog(self) -> list[dict[str, Any]]:
+        return self._context._remote_call(self._service_key, "catalog", [])
+
+    def collect(self, registration_id: str, request: Mapping[str, Any]) -> object:
+        return self._context._remote_call(self._service_key, "collect", [registration_id, dict(request)])
+
+    def execute(self, registration_id: str, name: str, arguments: Mapping[str, Any], *, timeout_seconds: float = 15.0) -> object:
+        if not 0 < timeout_seconds <= 120:
+            raise PluginApiError("TOOL_DEADLINE_INVALID")
+        # The advertised tool deadline includes callback work. Never replay a timed-out side effect.
+        return self._context._remote_request("service.call", {
+            "serviceKey": self._service_key, "method": "execute",
+            "args": [registration_id, name, dict(arguments)], "timeoutSeconds": timeout_seconds + 2,
+        })
+
     def register(
         self,
         descriptor: Mapping[str, Any],
@@ -850,6 +865,12 @@ class _ArtifactsProxy:
         self._context = context
         self._allocations: dict[str, tuple[Callable[[], None], dict[str, bool]]] = {}
 
+    def resolve(self, artifact_id: str) -> dict[str, Any]:
+        return self._context._remote_call("sakura.host.artifacts", "resolve", [artifact_id])
+
+    def release_received(self, artifact_id: str) -> object:
+        return self._context._remote_call("sakura.host.artifacts", "release_received", [artifact_id])
+
     def allocate(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(descriptor, Mapping):
             raise PluginApiError(
@@ -953,6 +974,9 @@ class _LoggingProxy:
                 self._worker.start()
             except RuntimeError:
                 self._stopping = True
+
+    def model_call(self, candidate: Mapping[str, Any]) -> object:
+        return self._emit("debug", "模型请求已结束", {"event": "model.call.metric", "modelCall": dict(candidate)})
 
     def debug(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
         return self._emit("debug", message, fields)
@@ -1243,6 +1267,9 @@ class _SettingsCollectionProxy:
 class _ModelSlotsProxy:
     def __init__(self, context: "PluginContext") -> None:
         self._context = context
+
+    def active(self) -> dict[str, object]:
+        return self._context._remote_call("sakura.host.model_slots", "active", [])
 
     def catalog(self) -> list[dict[str, object]]:
         result = self._context._remote_call(

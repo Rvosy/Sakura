@@ -53,6 +53,11 @@ Tauri Shell
 artifact/resource token，以及仅供 Host Contribution 使用的 callback handle，全部绑定 generation 和插件
 scope；旧 generation 或已退出插件的身份立即失效。
 
+Core 的生产装配与运行时应用是同一个对象，不再通过 `application.application` 或透明属性转发访问服务。
+会话、关闭状态和资源清理由该对象统一持有。插件目录快照也由它持有，视觉目录、角色选择和普通状态查询
+复用该快照；安装、卸载、重载、启停设置及明确读取插件设置时刷新。服务是否仍可用继续按当前 scope 判断，
+目录快照不延长旧服务或资源的寿命。
+
 `PluginRuntimeManager` 只允许提供通用操作，例如启动/停止插件、路由 Service 方法、派发 Host Event、调用
 Host Service、应用配置和撤销 scope。不得出现 `call_tts()`、`register_memory()`、Provider ID 白名单或其他
 领域分支。
@@ -133,7 +138,8 @@ SDK 提供不依赖 Core 的 `sakura_http.urlopen_direct_for_loopback` 和 `prox
 插件不得从 `data_path()` 的物理位置反推 `user_root`。确需继续拥有现有共享用户数据的插件通过通用
 `sakura.host.storage` 取得有界的 data/cache 目录 descriptor；当前角色及角色卡正文通过
 `sakura.host.character.current()` 取得；Provider 目录、对话模型继承和调用凭据通过
-`sakura.host.model_slots.catalog()/resolve()` 取得。三者对 bundled 与 user 插件使用同一合同，Generic
+`sakura.host.model_slots.catalog()/resolve()/active()` 取得。默认 Assistant 读取 Core 发布的 session.modelSlots 快照，
+避免设置应用失败后隐式读取新值。上述能力对 bundled 与 user 插件使用同一合同，Generic
 Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件私有配置和其他普通持久数据仍只使用
 `config` 与 `data_path()`。
 
@@ -374,7 +380,7 @@ model slot；替代插件可以提供相同或部分贡献。用户既可以关�
 
 ### 6.4 Context 行为贡献
 
-`sakura.host.context` 提供 `register/unregister/describe`。当前 `describe()` 返回
+`sakura.host.context` 提供 `register/unregister/describe/catalog/collect`。当前 `describe()` 返回
 `{schemaVersion: 2, scopes: ["step", "turn"], failurePolicies: ["skip", "abort"]}`，不包含 `fragmentKinds`。
 新插件在启用时核实版本和所需能力；旧 Host 缺少方法或版本不符时明确失败。版本只通过能力查询检查，
 注册描述不另设版本字段。没有分类字段的旧插件保持兼容。
@@ -393,7 +399,7 @@ Host 保留以下边界：
 - 在有界 JSON 与 IPC 总尺寸允许的范围内，传递全部片段及完整文本。Host 不执行前 16 项或每项 8192 字符的裁剪；
   结构或传输超限时明确拒绝，不把截断后的结果当作完整传输。
 
-以下是当前默认对话实现的消费约定；裁剪逻辑在该消费者内，代码仍在现有进程内，尚未迁成独立插件：
+以下是默认 Assistant 插件的消费约定；采集与裁剪在 `sakura.assistant.default` 的独立进程中执行：
 
 - 顶层用户或事件互动开始时固定贡献者集合与顺序。`scope: step` 为默认值，每次组装调用；`turn` 首次组装采集，
   后续工具步骤、最终总结与格式修复复用，退出后释放。配置更新或停用不改写本轮已采集结果，下一轮重新采集。
@@ -414,10 +420,16 @@ Agent Trace 与 Prompt Inspection 保留必需性、采集范围及真实来源�
 
 ### 6.5 正常对话与插件服务的边界
 
-正常聊天只调用现有 Assistant/ChatPipeline。已撤回的执行器实验不再提供 `sakura.host.executors`、替代 Session 或专用进度协议。
-旧 `chat_executor` 配置直接忽略，不迁移或改写用户文件；缺少模型配置时仍报告需要配置。
-普通插件继续通过公共 Service、Context、Tools 和设置贡献扩展能力，安装或启用服务不会接管聊天。
-未来默认模型与对话迁移必须替换真实调用链。取舍见 [ADR-0054](../../adr/0054-retire-executor-experiment-and-scope-collections.md)。
+正常聊天通过唯一 `sakura.assistant` 服务，默认实现 `sakura.assistant.default` 与第三方 Provider 使用相同的
+普通插件进程和公开能力。Core 不再构造 Agent/ChatPipeline，也不按实现 ID 提供兜底。停用默认实现后可以
+启用另一个提供该服务的插件；同时启用多个 Provider 按普通服务冲突处理。
+
+prepare/begin/poll/result/cancel/release、输入与结果 artifact、历史分页、模型快照和固定实例最终提交见
+[Assistant 插件合同](assistant-plugin-boundary.md)。未知 begin ACK 不重试；确认原进程停止前不回收它仍在读取
+的输入。通用 Runtime 只负责调用、身份和回收，不理解 Prompt、模型预算或工具循环。
+
+旧 `chat_executor` 配置仍直接忽略，不提供 `sakura.host.executors`、执行器登记表或第二套会话控制面。
+旧实验撤回的历史取舍见 [ADR-0054](../../adr/0054-retire-executor-experiment-and-scope-collections.md)。
 
 ## 7. 官方默认插件
 
@@ -436,7 +448,7 @@ Agent Trace 与 Prompt Inspection 保留必需性、采集范围及真实来源�
 `bundled` 可以让安装器拥有插件文件并禁止卸载，但不能隐含 privileged API。默认领域插件必须允许停用，以便
 替代实现接管能力；插件关闭后保留文件用于恢复默认是允许的。
 
-预装插件包括 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
+预装插件包括 `sakura_assistant`、`sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
 `sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天；已有用户的显式开关和沿用清单的
 隐式启用状态保持不变，初始化规则见[发行与存储](release-distribution-and-storage.md)。`playwright_browser` 改为可选插件，不进入主安装包。
 

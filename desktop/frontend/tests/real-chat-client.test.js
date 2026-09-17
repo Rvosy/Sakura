@@ -47,7 +47,7 @@ function harness(sendResponses = []) {
     const { onEvent, ...args } = payload || {};
     calls.push([name, Object.keys(args).length ? args : undefined]);
     if (name === "runtime_lifecycle_snapshot") return publication;
-    if (["chat_send", "chat_update_announce"].includes(name)) return sendResponses.shift();
+    if (["chat_send", "chat_update_announce", "chat_screen_observation"].includes(name)) return sendResponses.shift();
     if (name === "chat_cancel") return cancelResponses.length ? cancelResponses.shift() : { accepted: true, operationId: payload.payload.operationId };
     throw new Error(name);
   };
@@ -466,5 +466,21 @@ test("queued cancellation failure does not reject an already accepted send", asy
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(cancelErrors, ["cancel unavailable"]);
   assert.equal(await client.cancel("op"), true);
+  client.dispose();
+});
+
+test("screen observations use the ordinary operation channel with explicit source and silent presentation", async () => {
+  const response = { accepted: true, operationId: "screen", cancelHandle: "cancel", generationId: "generation-1", generationNumber: 1 };
+  const env = harness([response]);
+  const events = [];
+  const client = env.create(event => events.push(event));
+  await client.start();
+  await client.observeScreen({ attachmentId: `screen-${"a".repeat(32)}` });
+  assert.deepEqual(env.calls.find(([name]) => name === "chat_screen_observation"), [
+    "chat_screen_observation", { attachmentId: `screen-${"a".repeat(32)}` },
+  ]);
+  env.emit({ ...response, type: "chat.completed", reply: { segments: [] } });
+  assert.equal(events.at(-1).presentation, "silent");
+  assert.equal(client.isBusy(), false);
   client.dispose();
 });

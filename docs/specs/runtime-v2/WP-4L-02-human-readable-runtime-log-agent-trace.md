@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-15
+updated: 2026-09-18
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -13,6 +13,10 @@ updated: 2026-09-15
 
 本规范冻结两条互不混写的本地日志：`data/logs/sakura-runtime.log` 用于快速阅读运行故障，
 `data/logs/sakura-agent-trace.log` 用于分析真实发送给模型的历史、记忆、动态上下文、工具定义和模型输出。
+默认 Assistant 的 `sakura_assistant.agent.trace.AgentTraceRecorder` 在插件进程中拥有 Trace，日志目录通过
+公开 `sakura.host.storage.resolve("data", "logs")` 取得。Core 不导入该 recorder；Core 的最终完成、失败或取消
+状态通过 Assistant.release 交回插件，插件据此完成 staging 与输出资源回收。协议见
+[Assistant 插件边界](assistant-plugin-boundary.md)。
 执行状态只以
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
 
@@ -94,12 +98,10 @@ debug/trace，直至加入固定目录。
 
 ### 2.2 Prompt 依赖与后台 Agent
 
-Core 全局 readiness 不等待 Memory preload。每次交互在最终 Prompt 构建前必须执行一次
-有界、可取消的依赖门：Memory 最多等待 5 秒。旧 MCP discovery 和对应等待已移除。依赖在期限内完成后
-才能读取本轮记忆和最终 ToolRegistry；用户取消必须及时中止等待。期限结束或 Memory 初始化失败时，
-对话继续降级执行，但必须先写 `context.dependencies.degraded`，包含 dependency、status、
-reason_code、elapsed_ms，以及可用时的安全 stage/category/error_type。Memory 非 ready 的空结果不得记录为
-“召回完成”，而应记录 `memory.recall.unavailable`。
+Core 全局 readiness 不等待 Memory preload。默认 Assistant 从公开 tools/context 目录固定本轮贡献者，
+通过登记身份调用；Memory 的准备、召回与后台整理归对应插件所有。Core 不再建立专用 Memory/MCP
+Prompt 等待门。贡献回调失败按 scope/failurePolicy 合同处理，取消必须传播；诊断保留真实插件、Provider、
+原因码与耗时，不能把失败或不可用结果记录成成功召回。
 
 回复后自动记忆整理属于新的后台 Agent operation，不得追加到已终态的聊天 operation。它必须同时绑定
 Runtime interaction context 和 Agent Trace operation；其中每次 Provider 调用使用

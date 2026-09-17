@@ -311,7 +311,7 @@ def run(components=None):
                     raw_resource = next(item for item in saved['visuals']['resources'] if item.get('name') == name)
                     resource = CharacterVisualResource.from_mapping(raw_resource)
                     from app.config.character_loader import _load_profile
-                    projection = application.application.export_visual_resource(_load_profile(package / 'character.json'), resource)
+                    projection = application.export_visual_resource(_load_profile(package / 'character.json'), resource)
                     assert projection['pluginRequirements'][0]['plugins'][0]['id'] == 'sakura.visual.spine'
                     assert projection['data']['defaultSkin'] == 'smile' and projection['data']['speed'] == 1.5
                     assert projection['data']['premultipliedAlpha'] == (saved_alpha == 'true')
@@ -319,7 +319,7 @@ def run(components=None):
                     assert projection['data']['skinLabels']['smile'] == '开心'
                     assert projection['data']['skinLabels']['normal'] == '认真'
                     assert len(projection['assets']) >= 3
-                    binding = application.application.visuals.bind('sample', package, resource)
+                    binding = application.visuals.bind('sample', package, resource)
                     assert json.loads(binding.description['prompt'].split('\n', 1)[1])['skinLabels']['smile'] == '开心'
                     visual = binding.presentation()
                     visual['renderer'] = origin + '/plugins/builtin/sakura_spine/renderer.mjs'

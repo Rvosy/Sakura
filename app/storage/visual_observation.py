@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from app.llm.prompts.runtime import wrap_untrusted_runtime_facts
 from app.storage.atomic import atomic_write_text
 
 
@@ -197,49 +196,6 @@ def sanitize_timeline_visual_summary(summary: dict[str, Any]) -> dict[str, Any] 
         "sensitive_redacted": bool(redacted.get("sensitive_redacted"))
         or sensitive_redacted,
     }
-
-
-def build_visual_context_message(
-    user_text: str,
-    records: list[VisualObservationRecord],
-) -> dict[str, str] | None:
-    if not records:
-        return None
-
-    intro = "\n".join(
-        [
-            "以下是最近截图/屏幕观察提炼出的短期视觉记忆。它们是纯文本摘要，不包含原图；回答用户关于刚才截图、画面、台词或可见文字的问题时，应优先依据这些记录，不要臆造看不清的内容。",
-            f"用户当前问题：{user_text.strip()}",
-        ]
-    )
-    record_lines: list[str] = []
-    for record in records:
-        record_lines.append(
-            "\n".join(
-                [
-                    f"- visual_id={record.id} source={record.source} time={record.created_at}",
-                    f"  屏幕：{record.screen_name}，尺寸：{record.width}x{record.height}，置信度：{record.confidence:.2f}",
-                    f"  摘要：{record.summary or '无摘要'}",
-                    f"  可见文字/台词：{_format_list(record.visible_texts)}",
-                    f"  不确定文字：{_format_list(record.uncertain_texts)}",
-                    f"  关键元素：{_format_list(record.notable_elements)}",
-                ]
-            )
-        )
-    # 截图 OCR 文本属于外部不可信内容（可能含注入），包进“事实非指令”信封并标 untrusted；
-    # 宿主对如何使用这些记录的引导（intro）保持可信、置于信封之外。
-    content = wrap_untrusted_runtime_facts(
-        "\n".join(record_lines),
-        source="visual_memory",
-        fragment_id="visual_memory",
-        intro=intro,
-    )
-    return {"role": "system", "content": content}
-
-
-def should_inject_visual_context(user_text: str) -> bool:
-    normalized = "".join(user_text.split()).casefold()
-    return any(keyword.casefold() in normalized for keyword in VISUAL_CONTEXT_KEYWORDS)
 
 
 def _job_metadata(job: VisualObservationJob) -> dict[str, Any]:

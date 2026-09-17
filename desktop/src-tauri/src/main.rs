@@ -3421,6 +3421,26 @@ async fn chat_send(
 }
 
 #[tauri::command]
+async fn chat_screen_observation(
+    window: WebviewWindow,
+    attachment_id: String,
+    on_event: tauri::ipc::Channel<chat_bridge::ChatEventPublication>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<chat_bridge::ChatSendPublication, String> {
+    let handle = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
+    let pending =
+        handle
+            .chat_bridge()?
+            .send_screen_observation(window.label(), attachment_id, on_event)?;
+    tauri::async_runtime::spawn_blocking(move || pending.wait())
+        .await
+        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
+}
+
+#[tauri::command]
 async fn chat_cancel(
     window: WebviewWindow,
     payload: chat_bridge::ChatCancelRequest,
@@ -3775,6 +3795,33 @@ async fn remove_screen_attachment_item(
         item_id: response_item_id.to_string(),
         count,
     })
+}
+
+#[tauri::command]
+async fn screen_awareness_step(
+    window: WebviewWindow,
+    mut payload: Value,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let session_id = screen_session_id(&handle)?;
+        payload
+            .as_object_mut()
+            .ok_or_else(|| "INVALID_REQUEST".to_string())?
+            .insert("sessionId".to_string(), json!(session_id));
+        settings_response_payload(handle.settings_request(
+            None,
+            "screen_awareness.step",
+            payload,
+            std::time::Duration::from_secs(10),
+        )?)
+    })
+    .await
+    .map_err(|_| "SCREEN_AWARENESS_TASK_ABORTED".to_string())?
 }
 
 #[tauri::command]
@@ -5298,6 +5345,7 @@ async fn settings_screen_awareness_save(
     settings: Value,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
+    captures: State<'_, Arc<capture::CaptureManager>>,
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
     let handle = settings_core_handle(&lifecycle)?;
@@ -5311,6 +5359,7 @@ async fn settings_screen_awareness_save(
     )
     .await?;
     let mut payload = settings_response_payload(response)?;
+    captures.clear_screen_awareness_batch();
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let object = payload
         .as_object_mut()
@@ -7952,6 +8001,9 @@ fn main() {
             if window.label() == "main" {
                 match event {
                     tauri::WindowEvent::Destroyed => {
+                        window
+                            .state::<Arc<capture::CaptureManager>>()
+                            .clear_screen_awareness_batch();
                         if let Some(handle) = window.state::<ShellLifecycleState>().handle.as_ref()
                         {
                             if let Ok(bridge) = handle.chat_bridge() {
@@ -8111,6 +8163,8 @@ fn main() {
             release_screen_attachment,
             remove_screen_attachment_item,
             capture_screen_awareness_frame,
+            screen_awareness_step,
+            chat_screen_observation,
             attach_screen_awareness_batch,
             clear_screen_awareness_batch,
             composer_tools_get,

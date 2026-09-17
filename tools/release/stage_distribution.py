@@ -21,6 +21,7 @@ from tools.release.diagnostic_build import write_mapping
 
 TARGETS = {"windows-x64", "macos-arm64", "linux-x64"}
 BUILTIN_PLUGINS = {
+    "sakura_assistant",
     "sakura_mcp",
     "sakura_portrait",
     "sakura_spine",
@@ -34,6 +35,7 @@ BUILTIN_PLUGINS = {
     "sakura_gpt_sovits",
 }
 BUNDLED_DEPENDENCY_DIRECTORIES = {
+    "sakura_assistant",
     "sakura_mcp",
     "sakura_web",
     "sakura_asr_sensevoice",
@@ -45,6 +47,8 @@ CORE_IMPORTS = (
     "yaml",
     "py7zz",
     "openai",
+    "httpx",
+    "socksio",
 )
 PLUGIN_ONLY_IMPORTS = (
     "mcp",
@@ -59,7 +63,6 @@ PLUGIN_ONLY_IMPORTS = (
     "fastembed",
     "onnxruntime",
     "py7zr",
-    "socksio",
 )
 FORBIDDEN_PARTS = {
     ".cache",

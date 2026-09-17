@@ -169,6 +169,20 @@ impl ChatBridge {
         )
     }
 
+    pub fn send_screen_observation(
+        &self,
+        window_label: &str,
+        attachment_id: String,
+        on_event: Channel<ChatEventPublication>,
+    ) -> Result<PendingChatSend, String> {
+        self.send_payload(
+            window_label,
+            json!({"event": {"type": "screen_observation"}, "attachmentId": attachment_id}),
+            None,
+            on_event,
+        )
+    }
+
     pub fn send_update_available(
         &self,
         window_label: &str,
@@ -534,6 +548,16 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
         validate_update_available_event(object.get("event"))?;
         return Ok(());
     }
+    if object.len() == 2 && object.get("event") == Some(&json!({"type": "screen_observation"})) {
+        if object
+            .get("attachmentId")
+            .and_then(Value::as_str)
+            .is_some_and(crate::capture::valid_attachment_id)
+        {
+            return Ok(());
+        }
+        return Err("INVALID_CHAT_PAYLOAD: screen observation attachment is invalid".to_string());
+    }
     if object
         .keys()
         .any(|key| !matches!(key.as_str(), "message" | "attachmentId"))
@@ -679,6 +703,21 @@ mod tests {
             "name": name,
             "payload": payload,
         })
+    }
+
+    #[test]
+    fn screen_observation_requires_typed_source_and_attachment() {
+        let attachment = format!("screen-{}", "a".repeat(32));
+        assert!(validate_chat_payload(
+            &json!({"event": {"type": "screen_observation"}, "attachmentId": attachment})
+        )
+        .is_ok());
+        assert!(validate_chat_payload(&json!({"event": {"type": "screen_observation"}})).is_err());
+        assert!(validate_chat_payload(
+            &json!({"event": {"type": "screen_observation"}, "attachmentId": "private-path"})
+        )
+        .is_err());
+        assert!(validate_chat_payload(&json!({"event": {"type": "screen_observation"}, "attachmentId": attachment, "message": "prompt"})).is_err());
     }
 
     #[test]

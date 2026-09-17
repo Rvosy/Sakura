@@ -11,7 +11,7 @@ import threading
 import pytest
 import psutil
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_application import PluginApplicationHost
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.storage.runtime_roots import RuntimeRoots
@@ -72,7 +72,7 @@ class Consumer:
         assert mcp["sections"] == []
         assert not (user / "config/mcp.yaml").exists()
         config = {"command": sys.executable, "args": ["-I", "-S", str(REPO / "tests/fixtures/mcp_component/server.py"), str(DEPENDENCIES)]}
-        call = lambda method, *args: application.application.call_service("test.consumer", "call", method, list(args))
+        call = lambda method, *args: application.call_service("test.consumer", "call", method, list(args))
         with pytest.raises(PluginRuntimeError, match="MCP_CREDENTIAL_KEY_INVALID"):
             call("registerServer", config, "../foreign")
         handle = call("registerServer", config, "fixture")["handle"]
@@ -96,7 +96,7 @@ class Consumer:
         op = call("begin", handle, "tools/call", {"name": "pid"})["operationId"]
         result = until(lambda: (value if (value := call("inspect", op))["state"] != "running" else None))
         crashed_server_pid = int(result["result"]["content"][0]["text"])
-        manager = application.application._manager
+        manager = application._manager
         component_pid = manager._records["sakura.mcp"].pid
         manager._records["test.consumer"].process._process.kill()
         until(lambda: not psutil.pid_exists(crashed_server_pid))

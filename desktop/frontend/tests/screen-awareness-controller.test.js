@@ -1,153 +1,114 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createScreenAwarenessController } from "../chat/screen-awareness-controller.js";
 
-import {
-  SCREEN_AWARENESS_PROMPT,
-  createScreenAwarenessController,
-} from "../chat/screen-awareness-controller.js";
-
-function settings(overrides = {}) {
-  return {
-    enabled: true,
-    checkIntervalMinutes: 1,
-    cooldownMinutes: 2,
-    batchLimit: 3,
-    resolution: "1080p",
-    ...overrides,
-  };
+const attachmentId = `screen-${"a".repeat(32)}`;
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
 }
 
-function harness({ enabled = true } = {}) {
-  let clock = 0;
-  let idle = true;
-  let generation = "generation-a";
-  let captureCount = 0;
-  let sendFailure = false;
+function harness(plans = [], overrides = {}) {
   const calls = [];
   const sends = [];
+  let idle = true;
   const controller = createScreenAwarenessController({
-    now: () => clock,
-    generationId: () => generation,
-    isIdle: () => idle,
+    generationId: () => "generation-a", isIdle: () => idle,
     invoke: async (command, args) => {
       calls.push([command, args]);
-      if (command === "capture_screen_awareness_frame") return { count: ++captureCount, droppedCount: 0 };
-      if (command === "attach_screen_awareness_batch") {
-        return { attachmentId: `screen-${"a".repeat(32)}`, count: captureCount };
-      }
+      if (overrides[command]) return overrides[command](args);
+      if (command === "screen_awareness_step") return plans.shift() || { action: "none" };
+      if (command === "capture_screen_awareness_frame") return { count: 2 };
+      if (command === "attach_screen_awareness_batch") return { attachmentId, count: 2 };
       return true;
     },
-    send: async (payload) => {
-      sends.push(payload);
-      if (sendFailure) throw new Error("CHAT_FAILED");
-      return { operationId: "op-1" };
-    },
-    setInterval: () => 1,
-    clearInterval: () => {},
+    send: async payload => { sends.push(payload); if (overrides.send) return overrides.send(payload); },
   });
-  controller.applySettings(settings({ enabled }));
-  return {
-    controller,
-    calls,
-    sends,
-    setClock: (value) => { clock = value; },
-    setIdle: (value) => { idle = value; },
-    setGeneration: (value) => { generation = value; },
-    failSend: () => { sendFailure = true; },
-    resetCaptures: () => { captureCount = 0; },
-  };
+  controller.applySettings();
+  return { controller, calls, sends, setIdle(value) { idle = value; } };
 }
 
-function commands(env, name) {
-  return env.calls.filter(([command]) => command === name);
-}
-
-test("a capture finishing after same-generation character changes cannot restore the old batch", async () => {
-  let clock = 0;
-  let finishCapture;
-  const controller = createScreenAwarenessController({
-    invoke: async command => command === "capture_screen_awareness_frame"
-      ? new Promise(resolve => { finishCapture = resolve; }) : true,
-    send: async () => assert.fail("old capture must not send"),
-    isIdle: () => true, generationId: () => "same-core", now: () => clock,
-  });
-  controller.applySettings(settings());
-  clock = 60_000;
-  const tick = controller.tick();
-  controller.generationChanged("same-core");
-  controller.generationChanged("same-core");
-  finishCapture({ count: 1 });
-  await tick;
-  assert.equal(controller.snapshot().batchCount, 0);
-  controller.dispose();
-});
-
-test("disabled screen awareness never captures", async () => {
-  const env = harness({ enabled: false });
-  env.setClock(10 * 60_000);
+test("UI executes Core capture and submit decisions with facts and an opaque attachment", async () => {
+  const env = harness([
+    { action: "capture", revision: 3, resolution: "1080p", batchLimit: 6 },
+    { action: "submit", revision: 3, count: 2 },
+  ]);
   await env.controller.tick();
-  assert.equal(commands(env, "capture_screen_awareness_frame").length, 0);
+  assert.deepEqual(env.calls.filter(([name]) => name === "screen_awareness_step").map(([, args]) => args.payload), [
+    { idle: true, activity: true, reset: true },
+    { idle: true, activity: false, reset: false, revision: 3, count: 2 },
+  ]);
+  assert.deepEqual(env.sends, [{ attachmentId }]);
 });
 
-test("capture interval and first-frame cooldown produce one ordered ordinary chat send", async () => {
+test("UI reports busy and activity even when Core chooses no action", async () => {
   const env = harness();
-  env.setClock(60_000);
-  await env.controller.tick();
-  env.setClock(120_000);
-  await env.controller.tick();
-  assert.equal(env.sends.length, 0);
-  env.setClock(180_000);
-  await env.controller.tick();
-
-  assert.equal(commands(env, "capture_screen_awareness_frame").length, 3);
-  assert.equal(commands(env, "attach_screen_awareness_batch").length, 1);
-  assert.deepEqual(env.sends, [{
-    message: SCREEN_AWARENESS_PROMPT,
-    attachmentId: `screen-${"a".repeat(32)}`,
-  }]);
-});
-
-test("busy state, fresh input, and long sleep skip work without catch-up", async () => {
-  const env = harness();
-  env.setClock(60_000);
   env.setIdle(false);
   await env.controller.tick();
-  assert.equal(commands(env, "capture_screen_awareness_frame").length, 0);
-
-  env.setIdle(true);
   env.controller.noteActivity();
-  env.setClock(119_999);
   await env.controller.tick();
-  assert.equal(commands(env, "capture_screen_awareness_frame").length, 0);
-
-  env.setClock(8 * 60 * 60_000);
-  await env.controller.tick();
-  assert.equal(commands(env, "capture_screen_awareness_frame").length, 1);
-  await env.controller.tick();
-  assert.equal(commands(env, "capture_screen_awareness_frame").length, 1);
+  assert.deepEqual(env.calls.filter(([name]) => name === "screen_awareness_step")[1][1].payload,
+    { idle: false, activity: true, reset: false });
+  assert.equal(env.calls.some(([name]) => name === "capture_screen_awareness_frame"), false);
 });
 
-test("manual send, hot settings, generation change, and dispose clear the native batch", async () => {
-  const env = harness();
-  const before = commands(env, "clear_screen_awareness_batch").length;
-  env.controller.noteManualSend();
-  env.controller.applySettings(settings({ resolution: "720p" }));
-  env.setGeneration("generation-b");
+test("late capture after same-generation role switch is discarded and cleared", async () => {
+  const entered = deferred();
+  const captured = deferred();
+  const env = harness([{ action: "capture", revision: 1, resolution: "fullscreen", batchLimit: 6 }], {
+    capture_screen_awareness_frame: () => { entered.resolve(); return captured.promise; },
+  });
+  const pending = env.controller.tick();
+  await entered.promise;
+  env.controller.generationChanged("generation-a");
+  captured.resolve({ count: 1 });
+  await pending;
+  assert.equal(env.sends.length, 0);
+  assert.equal(env.calls.at(-1)[0], "clear_screen_awareness_batch");
   await env.controller.tick();
+  assert.equal(env.calls.at(-1)[1].payload.reset, true);
+});
+
+test("activity during attachment creation releases the attachment without a proactive send", async () => {
+  const entered = deferred();
+  const attached = deferred();
+  const env = harness([{ action: "submit", revision: 1, count: 2 }], {
+    attach_screen_awareness_batch: () => { entered.resolve(); return attached.promise; },
+  });
+  const pending = env.controller.tick();
+  await entered.promise;
+  env.controller.noteActivity();
+  attached.resolve({ attachmentId, count: 2 });
+  await pending;
+  assert.equal(env.sends.length, 0);
+  assert.ok(env.calls.some(([command, args]) => command === "release_screen_attachment" && args.payload.attachmentId === attachmentId));
+});
+
+test("send failure releases resources and requests a new Core cycle without retrying", async () => {
+  const env = harness([{ action: "submit", revision: 1, count: 2 }], { send: () => { throw new Error("CHAT_FAILED"); } });
+  await env.controller.tick();
+  assert.equal(env.sends.length, 1);
+  assert.ok(env.calls.some(([command]) => command === "release_screen_attachment"));
+  await env.controller.tick();
+  assert.equal(env.calls.at(-1)[1].payload.reset, true);
+  assert.equal(env.sends.length, 1);
+});
+
+test("dispose rejects a late attachment and stops future steps", async () => {
+  const entered = deferred();
+  const attached = deferred();
+  const env = harness([{ action: "submit", revision: 1, count: 2 }], {
+    attach_screen_awareness_batch: () => { entered.resolve(); return attached.promise; },
+  });
+  const pending = env.controller.tick();
+  await entered.promise;
   env.controller.dispose();
-  assert.equal(commands(env, "clear_screen_awareness_batch").length, before + 4);
-});
-
-test("failed automatic send releases the attachment and does not retry", async () => {
-  const env = harness();
-  env.failSend();
-  env.setClock(60_000);
+  attached.resolve({ attachmentId, count: 2 });
+  await pending;
+  const count = env.calls.length;
   await env.controller.tick();
-  env.setClock(180_000);
-  await env.controller.tick();
-  await Promise.resolve();
-  assert.equal(env.sends.length, 1);
-  assert.equal(commands(env, "release_screen_attachment").length, 1);
-  await env.controller.tick();
-  assert.equal(env.sends.length, 1);
+  assert.equal(env.calls.length, count);
+  assert.equal(env.sends.length, 0);
+  assert.ok(env.calls.some(([command]) => command === "release_screen_attachment"));
 });

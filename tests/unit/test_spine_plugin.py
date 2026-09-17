@@ -205,7 +205,7 @@ def test_preparation_keeps_source_and_copies_only_component_dependencies(spine_r
 
 
 def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_resource, tmp_path):
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.config.character_resources import CharacterVisualResource
     from app.core_host.plugin_application import PluginApplicationHost
     from app.plugins.inventory import PluginInventory
@@ -235,7 +235,7 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
     application = PluginApplicationHost(roots, 'spine-test', ToolRegistry())
     try:
         application.start()
-        host = application.application.visuals
+        host = application.visuals
         assert host.candidates('spine.json@1')[0]['reasonCode'] == 'READY'
         resource = CharacterVisualResource('model', 'spine.json@1', 'visual', 'spine-resource.json')
         binding = host.bind('alice', package, resource)
@@ -256,7 +256,7 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
         assert invalid.reason_code == 'VISUAL_CONTROL_REJECTED'
         (package / 'visual/texture.png').unlink()
         with pytest.raises(PluginRuntimeError):
-            application.application.call_service('sakura.visual.spine', 'describe', {'characterId': 'alice', 'resource': resource.to_mapping()})
+            application.call_service('sakura.visual.spine', 'describe', {'characterId': 'alice', 'resource': resource.to_mapping()})
         application.set_enabled(installed.install_id, False)
         assert binding.parse_control(envelope).reason_code == 'VISUAL_BINDING_EXPIRED'
     finally:
@@ -271,7 +271,7 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
 
 
 def test_v110_role_imports_spine_publishes_and_keeps_selection_after_restart(spine_resource, tmp_path):
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.config.character_loader import CharacterRegistry
     from app.config.settings_service import AppSettingsService
     from app.core_host.character_settings import CharacterSettingsBoundary
@@ -337,7 +337,7 @@ def test_v110_role_imports_spine_publishes_and_keeps_selection_after_restart(spi
         assert settings_service.load_current_character_id(CharacterRegistry(roots.user_root)) == "alice"
         restarted.bind_character_presentation("alice")
         assert restarted.visual_presentation()["visual"]["resourceId"] == resource_id
-        binding = restarted.application._visual_binding
+        binding = restarted._visual_binding
         result = binding.parse_control({"version": 1, "resourceId": resource_id,
                                         "payload": {"skin": "smile", "action": "wave"}})
         assert result.reason_code == "READY"

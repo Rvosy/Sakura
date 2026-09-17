@@ -8,14 +8,14 @@ import math
 import re
 import secrets
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from app.agent.tools import Tool
-from app.core.runtime_log import log_message
-from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_LOGGING_SERVICE
-from app.llm.prompts.types import ContextFragment, ContextRequest
+from app.plugin_sdk.sakura_tools import Tool
+from app.core.runtime_log import log_event, log_message
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE, HOST_LOGGING_SERVICE
+from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 
 
@@ -103,6 +103,9 @@ class _LoggingHostService:
             log_message("warning", "插件日志发送拥塞或中断，部分记录已丢弃",
                 fields={"dropped_count": dropped}, component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         for item in batch:
+            if item["fields"].get("event") == "model.call.metric":
+                from app.core_host.runtime_logging import submit_telemetry_model_call
+                submit_telemetry_model_call(item["fields"].get("modelCall", {}))
             log_message(item["severity"], item["message"], fields=item["fields"],
                 component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         # Core owns downstream loss accounting; the SDK counts transport loss only.
@@ -114,11 +117,79 @@ class _TimelineHostService:
         self,
         store: object,
         current_character_id: Callable[[], str | None],
+        artifact_store: object | None = None,
     ) -> None:
         self._store = store
         self._current_character_id = current_character_id
+        self._artifact_store = artifact_store
+        self._history_lock = threading.RLock()
+        self._history: dict[str, tuple[str, str, str, set[str]]] = {}
+
+    def grant(self, plugin_id: str, character_id: str, snapshot_cursor: str | None = None) -> dict[str, str]:
+        snapshot = snapshot_cursor if snapshot_cursor is not None else self._store.latest_cursor(character_id)
+        token = secrets.token_urlsafe(24)
+        with self._history_lock:
+            self._history[token] = (plugin_id, character_id, snapshot, set())
+        return {"historyToken": token, "snapshotCursor": snapshot}
+
+    def revoke(self, token: str) -> None:
+        with self._history_lock:
+            binding = self._history.pop(token, None)
+        if binding is not None and self._artifact_store is not None:
+            for artifact_id in binding[3]:
+                self._artifact_store.release(binding[0], artifact_id)
+
+    def revoke_scope(self, plugin_id: str) -> None:
+        with self._history_lock:
+            tokens = [token for token, binding in self._history.items() if binding[0] == plugin_id]
+        for token in tokens:
+            self.revoke(token)
+
+    def _read_turn_page(self, request: Mapping[str, Any]) -> object:
+        from datetime import datetime
+
+        token = request.get("historyToken")
+        binding = self._history.get(token) if isinstance(token, str) else None
+        if binding is None or HOST_CALLER.get() != binding[0] or (
+            request.get("characterId") != binding[1] or request.get("snapshotCursor") != binding[2]
+        ):
+            raise HostServiceError("TIMELINE_HISTORY_UNAVAILABLE")
+        page = self._store.read_turn_page(binding[1],
+            category=request.get("category"), limit=request.get("limit", 16),
+            before_cursor=request.get("beforeCursor"), snapshot_cursor=binding[2],
+            observation_since=datetime.fromisoformat(request["observationSince"]),
+            proactive_since=datetime.fromisoformat(request["proactiveSince"]),
+            max_bytes=_TIMELINE_RESPONSE_ENTRY_BYTES)
+        result = {"turns": [[{**_timeline_entry_mapping(entry), "sequence": entry.seq} for entry in turn]
+                            for turn in page.turns],
+                  "nextCursor": page.next_cursor, "snapshotCursor": page.snapshot_cursor}
+        payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(payload) <= _TIMELINE_RESPONSE_ENTRY_BYTES:
+            return result
+        if self._artifact_store is None:
+            raise HostServiceError("TIMELINE_ARTIFACT_UNAVAILABLE")
+        allocation = self._artifact_store.allocate(binding[0], {"mediaType": "application/json", "suffix": ".json"})
+        artifact_id = allocation["artifactId"]
+        try:
+            Path(allocation["path"]).write_bytes(payload)
+            descriptor = self._artifact_store.commit(binding[0], artifact_id)
+        except Exception:
+            self._artifact_store.release(binding[0], artifact_id)
+            raise
+        binding[3].add(artifact_id)
+        return {"artifact": descriptor}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "read_turn_page" and len(args) == 1:
+            try:
+                request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
+                with self._history_lock:
+                    return self._read_turn_page(request)
+            except HostServiceError:
+                raise
+            except Exception as exc:
+                code = str(exc)
+                raise HostServiceError(code if code.startswith(("TIMELINE_", "ARTIFACT_")) else "TIMELINE_READ_FAILED") from exc
         character_id = self._current_character_id()
         if not isinstance(character_id, str) or not character_id:
             raise HostServiceError("TIMELINE_CHARACTER_UNAVAILABLE")
@@ -169,11 +240,21 @@ class _TimelineHostService:
 
 
 class _ArtifactsHostService:
-    def __init__(self, store: object) -> None:
+    def __init__(self, store: object, commit_scope: Callable[..., Any] | None = None) -> None:
         self._store = store
+        self._commit_scope = commit_scope
+        self._received: dict[str, tuple[str, str]] = {}
+        self._received_lock = threading.RLock()
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         try:
+            if method == "resolve" and len(args) == 1:
+                artifact = self._resolve_received(str(args[0]))
+                return {"artifactId": artifact.artifact_id, "path": str(artifact.path),
+                        "mediaType": artifact.media_type, "byteLength": artifact.byte_length}
+            if method == "release_received" and len(args) == 1:
+                self._resolve_received(str(args[0]))
+                return {"released": self.release_committed(str(args[0]))}
             if method == "allocate" and len(args) == 2:
                 return getattr(self._store, "allocate")(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
@@ -186,7 +267,7 @@ class _ArtifactsHostService:
                 )
             if method == "release" and len(args) == 2:
                 return {
-                    "released": getattr(self._store, "release")(
+                    "released": self._release_owned(
                         _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                         _bounded_identifier(args[1], "ARTIFACT_NOT_FOUND", 200),
                     )
@@ -196,66 +277,108 @@ class _ArtifactsHostService:
             raise HostServiceError(code if isinstance(code, str) else "ARTIFACT_OPERATION_FAILED") from error
         raise HostServiceError("HOST_METHOD_INVALID")
 
+    def _release_owned(self, plugin_id: str, artifact_id: str) -> bool:
+        with self._received_lock:
+            released = self._store.release(plugin_id, artifact_id)
+            if released:
+                self._received.pop(artifact_id, None)
+            return released
+
+    def _resolve_received(self, artifact_id):
+        with self._received_lock:
+            artifact = self.resolve_committed(artifact_id)
+            caller = HOST_CALLER.get()
+            received = self._received.get(artifact_id)
+            if (artifact.plugin_id != caller or received is not None and
+                    received != (caller, HOST_CALLER_SCOPE.get())):
+                raise HostServiceError("ARTIFACT_NOT_FOUND")
+            return artifact
+
+    def create_json(self, plugin_id, value):
+        allocation = self._store.allocate(plugin_id, {"mediaType": "application/json", "suffix": ".json"})
+        try:
+            Path(allocation["path"]).write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            return self._store.commit(plugin_id, allocation["artifactId"])
+        except BaseException:
+            self._store.release(plugin_id, allocation["artifactId"])
+            raise
+
     def clear(self) -> None:
-        getattr(self._store, "clear")()
+        with self._received_lock:
+            self._received.clear()
+            getattr(self._store, "clear")()
 
     def revoke_scope(self, plugin_id: str) -> None:
-        getattr(self._store, "release_plugin")(plugin_id)
+        with self._received_lock:
+            self._received = {artifact_id: identity for artifact_id, identity in self._received.items()
+                              if identity[0] != plugin_id}
+            getattr(self._store, "release_plugin")(plugin_id)
 
     def resolve_committed(self, artifact_id: str) -> object:
         return getattr(self._store, "resolve_committed_by_id")(artifact_id)
 
     def release_committed(self, artifact_id: str) -> bool:
-        artifact = self.resolve_committed(artifact_id)
-        return bool(
-            getattr(self._store, "release")(
-                getattr(artifact, "plugin_id"),
-                artifact_id,
+        with self._received_lock:
+            self._received.pop(artifact_id, None)
+            artifact = self.resolve_committed(artifact_id)
+            return bool(
+                getattr(self._store, "release")(
+                    getattr(artifact, "plugin_id"), artifact_id,
+                )
             )
-        )
 
-    def consume_tool_result(self, value: object) -> object:
+    def consume_tool_result(self, value: object, *, source_plugin_id: str | None = None) -> object:
         """Resolve one explicit tool artifact envelope without crossing it back over RPC."""
 
         if not isinstance(value, Mapping) or set(value) != {"content", "artifact"}:
             return value
         descriptor = _mapping(value.get("artifact"), "TOOL_ARTIFACT_INVALID")
-        if set(descriptor) != {"artifactId", "mediaType", "byteLength"}:
-            raise HostServiceError("TOOL_ARTIFACT_INVALID")
         artifact_id = descriptor.get("artifactId")
         if not isinstance(artifact_id, str):
             raise HostServiceError("TOOL_ARTIFACT_INVALID")
+        cleanup_owner = None
         try:
             artifact = self.resolve_committed(artifact_id)
+            if source_plugin_id is not None and artifact.plugin_id != source_plugin_id:
+                raise HostServiceError("TOOL_ARTIFACT_INVALID")
+            cleanup_owner = artifact.plugin_id
             media_type = getattr(artifact, "media_type", "")
             byte_length = getattr(artifact, "byte_length", -1)
             if (
-                descriptor.get("mediaType") != media_type
+                set(descriptor) != {"artifactId", "mediaType", "byteLength"}
+                or descriptor.get("mediaType") != media_type
                 or descriptor.get("byteLength") != byte_length
                 or not isinstance(media_type, str)
                 or not media_type.startswith("image/")
             ):
                 raise HostServiceError("TOOL_ARTIFACT_INVALID")
-            payload = getattr(artifact, "path").read_bytes()
-            if len(payload) != byte_length:
-                raise HostServiceError("TOOL_ARTIFACT_INVALID")
-            return {
-                "content": value.get("content"),
-                "artifact": {
-                    "type": "image",
-                    "data": base64.b64encode(payload).decode("ascii"),
-                    "mimeType": media_type,
-                },
-            }
-        except HostServiceError:
-            raise
+            receiver_id, scope_id = HOST_CALLER.get(), HOST_CALLER_SCOPE.get()
+            if receiver_id not in {None, "sakura.core"}:
+                def accept():
+                    nonlocal cleanup_owner
+                    with self._received_lock:
+                        self._store.transfer_committed(artifact.plugin_id, artifact_id, receiver_id)
+                        cleanup_owner = receiver_id
+                        self._received[artifact_id] = (receiver_id, scope_id)
+
+                if not scope_id or self._commit_scope is None:
+                    raise HostServiceError("ARTIFACT_RECEIVER_INVALID")
+                self._commit_scope(receiver_id, scope_id, accept)
+            return {"content": value.get("content"), "artifact": {
+                "artifactId": artifact_id, "mediaType": media_type, "byteLength": byte_length,
+            }}
         except Exception as error:
+            # Invalid descriptors and late callbacks both relinquish their
+            # original file; never delete an artifact another consumer owns.
+            if cleanup_owner is not None:
+                try:
+                    self._release_owned(cleanup_owner, artifact_id)
+                except Exception as cleanup_error:
+                    if getattr(cleanup_error, "code", "") != "ARTIFACT_NOT_FOUND":
+                        raise cleanup_error from error
+            if isinstance(error, HostServiceError):
+                raise
             raise HostServiceError("TOOL_ARTIFACT_INVALID") from error
-        finally:
-            try:
-                self.release_committed(artifact_id)
-            except Exception:
-                pass
 
     @property
     def count(self) -> int:
@@ -354,14 +477,27 @@ class _ToolsHostService:
         self,
         tool_registry: object,
         invoke_callback: Callable[..., Any],
-        consume_result: Callable[[object], object] | None = None,
+        consume_result: Callable[..., object] | None = None,
     ) -> None:
         self._tool_registry = tool_registry
         self._invoke_callback = invoke_callback
-        self._consume_result = consume_result or (lambda value: value)
+        self._consume_result = consume_result or (lambda value, **_kwargs: value)
         self._registrations: dict[str, _ToolRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "catalog" and not args:
+            return [{"registrationId": tool.registration_id, "name": tool.name,
+                     "description": tool.description, "parameters": tool.parameters,
+                     "group": tool.group, "risk": tool.risk, "capability": tool.capability,
+                     "source": tool.source, "timeoutSeconds": tool.timeout_seconds}
+                    for tool in self._tool_registry.all()]
+        if method == "execute" and len(args) == 3:
+            registration_id, name, arguments = args
+            tool = self._tool_registry.get(name)
+            if tool is None or tool.registration_id != registration_id:
+                raise HostServiceError("TOOL_REGISTRATION_EXPIRED")
+            # Execute the captured object; a concurrent same-name replacement cannot be substituted.
+            return self._tool_registry.execute(name, dict(arguments), expected=tool).to_dict()
         if method == "register" and len(args) == 2:
             return self._register(args[0], args[1])
         if method == "unregister" and len(args) == 1:
@@ -403,6 +539,8 @@ class _ToolsHostService:
         ):
             raise HostServiceError("TOOL_DESCRIPTOR_INVALID")
 
+        source_plugin_id = HOST_CALLER.get()
+
         def handler(arguments: dict[str, Any]) -> object:
             return self._consume_result(
                 self._invoke_callback(
@@ -410,7 +548,8 @@ class _ToolsHostService:
                     "tools.handler",
                     arguments,
                     timeout=float(timeout),
-                )
+                ),
+                source_plugin_id=source_plugin_id,
             )
 
         tool = Tool(
@@ -422,6 +561,7 @@ class _ToolsHostService:
             risk=risk,
             capability=capability,
             source="plugin",
+            timeout_seconds=float(timeout),
         )
         registration_id = _new_registration_id(self._registrations)
         try:
@@ -454,6 +594,7 @@ class _ToolsHostService:
 @dataclass
 class _ContextRegistration:
     contribution: ContextProviderContribution
+    callback_handle: str
 
 
 class _ContextHostService:
@@ -469,6 +610,22 @@ class _ContextHostService:
         self._registrations: dict[str, _ContextRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "catalog" and not args:
+            return [{"registrationId": key, "providerId": item.contribution.provider_id,
+                     "description": item.contribution.description, "order": item.contribution.order,
+                     "enabled": item.contribution.enabled, "scope": item.contribution.scope,
+                     "failurePolicy": item.contribution.failure_policy, "pluginId": item.contribution.plugin_id}
+                    for key, item in self._registrations.items()]
+        if method == "collect" and len(args) == 2:
+            registration = self._registrations.get(_registration_id(args[0]))
+            if registration is None:
+                raise HostServiceError("CONTEXT_REGISTRATION_EXPIRED")
+            payload = self._invoke_callback(registration.callback_handle, "context.contributor",
+                                            dict(_mapping(args[1], "CONTEXT_REQUEST_INVALID")))
+            if not isinstance(payload, list):
+                raise HostServiceError("CONTEXT_RESULT_INVALID")
+            return [asdict(_context_fragment(item, index, scope=registration.contribution.scope))
+                    for index, item in enumerate(payload)]
         if method == "describe" and not args:
             return {
                 "schemaVersion": 2,
@@ -533,7 +690,7 @@ class _ContextHostService:
             plugin_id=HOST_CALLER.get() or "",
         )
         registration_id = _new_registration_id(self._registrations)
-        self._registrations[registration_id] = _ContextRegistration(contribution)
+        self._registrations[registration_id] = _ContextRegistration(contribution, handle)
         self._publish()
         return {"registrationId": registration_id}
 
@@ -611,14 +768,20 @@ class _ModelSlotsHostService:
         invoke_callback: Callable[..., Any],
         catalog: Callable[[], list[dict[str, object]]] | None = None,
         resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
+        active_resolver: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         self._invoke_callback = invoke_callback
         self._catalog = catalog
         self._resolver = resolver
+        self._active_resolver = active_resolver
         self._registrations: dict[str, _ModelSlotRegistration] = {}
         self._lock = threading.RLock()
 
     def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "active" and not args:
+            if self._active_resolver is None:
+                raise HostServiceError("MODEL_CATALOG_UNAVAILABLE")
+            return self._active_resolver()
         if method == "catalog" and not args:
             if self._catalog is None:
                 raise HostServiceError("MODEL_CATALOG_UNAVAILABLE")
@@ -1466,11 +1629,13 @@ class PluginHostServices:
         storage_root: Path | None = None,
         model_catalog: Callable[[], list[dict[str, object]]] | None = None,
         model_resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
+        active_model_resolver: Callable[[], dict[str, object]] | None = None,
+        commit_plugin_scope: Callable[..., Any] | None = None,
     ) -> None:
-        self._artifacts = _ArtifactsHostService(artifact_store)
+        self._artifacts = _ArtifactsHostService(artifact_store, commit_plugin_scope)
         self._diagnostics = _DiagnosticsHostService()
         self._character = _CharacterHostService(character_store)
-        self._timeline = _TimelineHostService(timeline_store, current_character_id)
+        self._timeline = _TimelineHostService(timeline_store, current_character_id, artifact_store)
         self._tools = _ToolsHostService(
             tool_registry,
             invoke_callback,
@@ -1488,6 +1653,7 @@ class PluginHostServices:
             invoke_callback,
             catalog=model_catalog,
             resolver=model_resolver,
+            active_resolver=active_model_resolver,
         )
         self._storage = (
             _StorageHostService(storage_root) if storage_root is not None else None
@@ -1522,6 +1688,12 @@ class PluginHostServices:
 
     def context_providers(self) -> list[ContextProviderContribution]:
         return self._context.providers()
+
+    def grant_history(self, plugin_id: str, character_id: str, snapshot_cursor: str | None = None) -> dict[str, str]:
+        return self._timeline.grant(plugin_id, character_id, snapshot_cursor)
+
+    def revoke_history(self, history_token: str) -> None:
+        self._timeline.revoke(history_token)
 
     def decorate_settings_snapshot(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
         result = json.loads(json.dumps(dict(snapshot), ensure_ascii=False))
@@ -1594,6 +1766,12 @@ class PluginHostServices:
         """Core-only lookup; this method is never routed through host.call."""
 
         return self._artifacts.resolve_committed(artifact_id)
+
+    def create_json_artifact(self, plugin_id, value):
+        return self._artifacts.create_json(plugin_id, value)
+
+    def release_owned_artifact(self, plugin_id, artifact_id):
+        return self._artifacts._store.release(plugin_id, artifact_id)
 
     def release_committed_artifact(self, artifact_id: str) -> bool:
         return self._artifacts.release_committed(artifact_id)

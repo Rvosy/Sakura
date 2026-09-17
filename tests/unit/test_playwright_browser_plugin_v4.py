@@ -56,7 +56,7 @@ def _fake_playwright_wheel(parent: Path) -> Path:
 def test_optional_playwright_installs_through_user_entry_and_runs_in_v4(
     tmp_path: Path,
 ) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
     from app.plugins.installer import LocalPluginInstaller
     from app.plugins.inventory import PluginDesiredStateStore

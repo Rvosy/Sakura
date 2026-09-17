@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.plugin_host_services import _SettingsHostService
 from app.core_host.plugin_settings import PluginSettingsBoundary, PluginSettingsError
@@ -43,7 +43,7 @@ class Plugin:
     host = PluginApplicationHost(roots, "settings-contract", ToolRegistry())
     try:
         host.start()
-        assert host.application.wait_until_loaded(timeout=5)
+        assert host.wait_until_loaded(timeout=5)
         boundary = PluginSettingsBoundary("settings-contract", "a" * 32, roots, application_provider=lambda: host)
         plugins = {item["pluginId"]: item for item in boundary.snapshot()["plugins"]}
         assert all(item["state"] == "active" for item in plugins.values()), plugins
@@ -154,7 +154,7 @@ class Plugin:
     host = PluginApplicationHost(roots, "settings-action-contract", ToolRegistry())
     try:
         host.start()
-        assert host.application.wait_until_loaded(timeout=5)
+        assert host.wait_until_loaded(timeout=5)
         boundary = PluginSettingsBoundary("settings-action-contract", "a" * 32, roots, application_provider=lambda: host)
         request = {"pluginId": "fixture.action", "sectionId": "general", "actionId": "refresh", "values": {}}
         for change, expected in [

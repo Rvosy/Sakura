@@ -21,7 +21,7 @@ from app.config.core_config_reader import (
     ProviderSelection,
     StableReadinessError,
 )
-from app.llm.api_client import ApiSettings
+from app.plugin_sdk.sakura_model import ApiSettings
 
 
 FIXTURE_ROOT = (
@@ -200,20 +200,30 @@ def test_legacy_chat_executor_does_not_override_default_assistant(
 ) -> None:
     from threading import Event
 
-    from app.agent.tools import ToolRegistry
+    from types import SimpleNamespace
     from app.core_host.assistant_adapter import AssistantAdapter
 
     root = _fresh_root(tmp_path)
     system_path = root / "config" / "system_config.yaml"
     saved = f"config_version: 1\nchat_executor: {legacy_selection}\nother: keep\n"
     system_path.write_text(saved, encoding="utf-8")
-    adapter = AssistantAdapter(root, tool_registry=ToolRegistry())
+    identity = {"providerId": "sakura.assistant.default", "scopeId": "fixture"}
+    calls = []
+
+    def prepare(service, bound, method, _session):
+        calls.append((service, bound, method))
+        return {"state": "ready", "code": "READY", "message": "", "retryable": False}
+
+    adapter = AssistantAdapter(root)
+    adapter.bind_application(SimpleNamespace(
+        service_identity=lambda _service: identity, active_models=lambda: {}, call_bound_service=prepare,
+    ))
     try:
         result = adapter.initialize(Event())
         assert result.state == "ready"
         assert result.session is not None
-        assert result.session.provider is not None
-        assert result.session.pipeline is not None
+        assert result.session.assistant.identity == identity
+        assert calls == [("sakura.assistant", identity, "prepare")]
     finally:
         adapter.close()
 

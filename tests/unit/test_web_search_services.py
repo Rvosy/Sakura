@@ -155,8 +155,8 @@ def test_tavily_extract_rejects_local_address_before_api_request(monkeypatch):
 
 
 def test_search_metadata_and_fuller_content_reach_model_tool_message(monkeypatch):
-    from app.agent.runtime import _build_tool_role_message, NativeToolCall
-    from app.agent.tools import ToolExecutionResult
+    from sakura_assistant.agent.runtime import _build_tool_role_message, NativeToolCall
+    from app.plugin_sdk.sakura_tools import ToolExecutionResult
     content = '来源内容' * 1200
     tavily_transport(monkeypatch, 200, {'results': [{'title': '作品', 'url': 'https://example.com', 'content': content, 'published_date': '2026-04-24'}]})
     result = search.search('作品', 1, {'provider': 'tavily', 'tavily_api_key': 'test-key'})

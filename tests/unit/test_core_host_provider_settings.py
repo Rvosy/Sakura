@@ -16,7 +16,7 @@ from app.config.provider_model_settings import ProviderModelSettingsError
 from app.core.runtime_log import log_event
 from app.core_host.__main__ import GuardedStdout
 from app.core_host.provider_settings import ProviderSettingsBoundary
-from app.llm.api_client import ApiRequestError, OpenAICompatibleClient
+from app.plugin_sdk.sakura_model import ApiRequestError, ModelProbe
 from app.storage.runtime_roots import RuntimeRoots
 
 
@@ -522,7 +522,7 @@ def test_probe_http_errors_keep_status_and_provider_details_after_redaction(
     boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
     boundary.enable()
 
-    def fail(_self: OpenAICompatibleClient, **_kwargs: object) -> list[str]:
+    def fail(_self: ModelProbe, **_kwargs: object) -> list[str]:
         body = json.dumps(
             {
                 "error": {
@@ -541,7 +541,7 @@ def test_probe_http_errors_keep_status_and_provider_details_after_redaction(
         )
         raise ApiRequestError(f"API HTTP {status}: {body}") from http_error
 
-    monkeypatch.setattr(OpenAICompatibleClient, "list_models", fail)
+    monkeypatch.setattr(ModelProbe, "list_models", fail)
     result = boundary.handle(
         _request("probe", "settings.provider_model.list_models", _profile("probe"))
     )
@@ -573,11 +573,11 @@ def test_probe_suppresses_runtime_logs_reserved_from_core_stdout(
     boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
     boundary.enable()
 
-    def noisy_probe(_self: OpenAICompatibleClient, **_kwargs: object) -> object:
+    def noisy_probe(_self: ModelProbe, **_kwargs: object) -> object:
         log_event("API", "HTTP 请求成功", {"status": 200})
         return result
 
-    monkeypatch.setattr(OpenAICompatibleClient, method, noisy_probe)
+    monkeypatch.setattr(ModelProbe, method, noisy_probe)
     monkeypatch.setattr(sys, "stdout", GuardedStdout())
     operation_id = f"guarded-{method}"
     profile = _profile(operation_id)
@@ -595,10 +595,10 @@ def test_probe_timeout_and_save_failure_have_stable_codes(
     boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
     boundary.enable()
 
-    def timeout(_self: OpenAICompatibleClient, **_kwargs: object) -> list[str]:
+    def timeout(_self: ModelProbe, **_kwargs: object) -> list[str]:
         raise ApiRequestError(f"timed out with private value {SECRET}")
 
-    monkeypatch.setattr(OpenAICompatibleClient, "list_models", timeout)
+    monkeypatch.setattr(ModelProbe, "list_models", timeout)
     timed_out = boundary.handle(
         _request("timeout", "settings.provider_model.list_models", _profile("timeout"))
     )
@@ -624,7 +624,7 @@ def test_network_probe_has_one_cancelled_terminal(
     entered = threading.Event()
 
     def block(
-        _self: OpenAICompatibleClient,
+        _self: ModelProbe,
         *,
         cancel_checker,
     ) -> list[str]:  # type: ignore[no-untyped-def]
@@ -633,7 +633,7 @@ def test_network_probe_has_one_cancelled_terminal(
             cancel_checker()
             time.sleep(0.01)
 
-    monkeypatch.setattr(OpenAICompatibleClient, "list_models", block)
+    monkeypatch.setattr(ModelProbe, "list_models", block)
     results: list[dict[str, object]] = []
     thread = threading.Thread(
         target=lambda: results.append(
@@ -662,7 +662,7 @@ def test_close_cancels_an_active_probe_once(
     entered = threading.Event()
 
     def block(
-        _self: OpenAICompatibleClient,
+        _self: ModelProbe,
         *,
         cancel_checker,
     ) -> list[str]:  # type: ignore[no-untyped-def]
@@ -671,7 +671,7 @@ def test_close_cancels_an_active_probe_once(
             cancel_checker()
             time.sleep(0.01)
 
-    monkeypatch.setattr(OpenAICompatibleClient, "list_models", block)
+    monkeypatch.setattr(ModelProbe, "list_models", block)
     results: list[dict[str, object]] = []
     thread = threading.Thread(
         target=lambda: results.append(
@@ -758,158 +758,137 @@ def test_repeated_saves_are_serialized(
     assert all(result["ok"] is True for result in results)
 
 
-def test_provider_readiness_transitions_replace_only_the_session(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    from app.config.core_config_reader import CoreConfigReader
+def test_plugin_replacement_publishes_new_binding_without_adopting_the_old_turn(tmp_path):
+    from app.core_host.assistant_adapter import ReadinessResult
+    from app.core_host.server import HostConfig, ReadinessController
+    from app.plugins.runtime_v4 import PluginRuntimeError
+
+    selected = {"identity": {"providerId": "assistant", "scopeId": "first"}}
+    initialized = []
+
+    class Initializer:
+        def initialize(self, _cancel):
+            identity = selected["identity"]
+            initialized.append(identity)
+            return ReadinessResult(
+                "ready" if identity else "setup_required",
+                "READY" if identity else "ASSISTANT_PROVIDER_REQUIRED", "fixture", False, None,
+                session=SimpleNamespace(assistant=SimpleNamespace(identity=dict(identity))) if identity else None,
+            )
+
+        def close(self):
+            pass
+
+    class Application:
+        def service_identity(self, _key):
+            if selected["identity"] is None:
+                raise PluginRuntimeError("SERVICE_MISSING")
+            return dict(selected["identity"])
+
+        def bind_session(self, _session):
+            pass
+
+        def unbind_session(self):
+            pass
+
+        def close(self):
+            pass
+
+    controller = ReadinessController(
+        HostConfig(RuntimeRoots(tmp_path, tmp_path), GENERATION, CREDENTIAL),
+        initializer_factory=lambda _root, _tools: Initializer(),
+    )
+    controller.begin({})
+    controller._worker.join(2)
+    controller._plugin_application = Application()
+    original = controller.published_session()
+    try:
+        controller.refresh_assistant_binding()
+        assert len(initialized) == 1  # Unrelated plugin changes leave this Session intact.
+        selected["identity"] = {"providerId": "assistant", "scopeId": "replacement"}
+        controller.refresh_assistant_binding()
+        assert controller.published_session().assistant.identity == selected["identity"]
+        assert original.assistant.identity["scopeId"] == "first"
+        selected["identity"] = None
+        controller.refresh_assistant_binding()
+        assert controller.published_session() is None
+        assert controller.readiness() == "setup_required"
+        selected["identity"] = {"providerId": "custom", "scopeId": "third"}
+        controller.refresh_assistant_binding()
+        assert controller.published_session().assistant.identity == selected["identity"]
+        assert len(initialized) == 4
+    finally:
+        controller.close()
+
+
+def test_assistant_readiness_republishes_session_with_shared_application_tools(tmp_path):
     from app.core_host.assistant_adapter import ReadinessResult
     from app.core_host.server import HostConfig, ReadinessController
 
     presentation = {
-        "schemaVersion": 1,
-        "generationId": "initializer-owned",
-        "characterId": "fixture-character",
-        "displayName": "Fixture Character",
-        "initialMessage": "hello",
-        "themeTokens": {},
-        "defaultPortraitKey": "__default__",
-        "portraitKeys": ["__default__"],
-        "portraitResourceIds": {"__default__": "fixture-resource"},
+        "schemaVersion": 1, "generationId": "initializer-owned",
+        "characterId": "fixture-character", "displayName": "Fixture Character",
+        "initialMessage": "hello", "themeTokens": {}, "defaultPortraitKey": "__default__",
+        "portraitKeys": ["__default__"], "portraitResourceIds": {"__default__": "fixture-resource"},
     }
-
-    class Provider:
-        def __init__(self) -> None:
-            self.settings: list[object] = []
-
-        def update_settings(self, settings: object) -> None:
-            self.settings.append(settings)
+    selected = {"ready": True}
+    provider = object()
 
     class Initializer:
-        def __init__(self) -> None:
-            self.providers: list[Provider] = []
-            self.retired = 0
-
-        def initialize(self, _cancel) -> ReadinessResult:  # type: ignore[no-untyped-def]
-            provider = Provider()
-            self.providers.append(provider)
+        def initialize(self, _cancel):
+            ready = selected["ready"]
             return ReadinessResult(
-                state="ready",
-                code="READY",
-                message="ready",
-                retryable=False,
-                current_character_summary=None,
-                current_character_presentation=presentation,
-                session=SimpleNamespace(provider=provider),
+                state="ready" if ready else "setup_required",
+                code="READY" if ready else "PROVIDER_SETUP_REQUIRED", message="fixture", retryable=False,
+                current_character_summary=None, current_character_presentation=presentation,
+                session=SimpleNamespace(assistant=provider) if ready else None,
             )
 
-        def retire_session(self) -> None:
-            self.retired += 1
-
-        def close(self) -> None:
+        def close(self):
             pass
 
-    class PluginApplication:
-        def __init__(self) -> None:
-            self.bound: list[object] = []
+    class Application:
+        def __init__(self):
+            self.bound = []
             self.unbound = 0
 
-        def bind_session(self, session: object) -> None:
+        def bind_session(self, session):
             self.bound.append(session)
 
-        def unbind_session(self) -> None:
+        def unbind_session(self):
             self.unbound += 1
 
-        def close(self) -> None:
+        def close(self):
             pass
 
-    valid = SimpleNamespace(
-        config_problem=None,
-        provider_selection=SimpleNamespace(api_settings="hot-settings"),
-    )
-    invalid = SimpleNamespace(
-        config_problem=SimpleNamespace(
-            state="setup_required",
-            code="PROVIDER_SETUP_REQUIRED",
-            retryable=False,
-        ),
-        provider_selection=None,
-    )
-    selected = {"value": valid}
-    monkeypatch.setattr(CoreConfigReader, "read", lambda _self, _root: selected["value"])
-
-    initializer = Initializer()
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), GENERATION, CREDENTIAL),
-        initializer_factory=lambda _root, _tools: initializer,
+        initializer_factory=lambda _root, _tools: Initializer(),
     )
     controller.begin({})
-    deadline = time.monotonic() + 2
-    while controller.readiness() != "ready" and time.monotonic() < deadline:
-        time.sleep(0.01)
+    controller._worker.join(2)
     assert controller.readiness() == "ready"
+    original = controller.published_session()
+    tools = controller._application_tools
     initial_revision = controller.snapshot()["revision"]
-    expected_presentation = {**presentation, "generationId": GENERATION}
-    assert controller.snapshot()["characterPresentation"] == expected_presentation
-    original_session = controller.published_session()
-    plugin_application = PluginApplication()
+    application = Application()
     with controller._lock:
-        controller._plugin_application = plugin_application
-
-    controller.apply_provider_configuration()
-    assert controller.published_session() is original_session
-    assert initializer.providers[0].settings == ["hot-settings"]
-    assert controller.snapshot()["revision"] == initial_revision
-
-    selected["value"] = invalid
-    controller.apply_provider_configuration()
-    assert controller.readiness() == "setup_required"
-    assert controller.published_session() is None
-    assert controller.snapshot()["revision"] == initial_revision + 1
-    assert controller.snapshot()["characterPresentation"] == expected_presentation
-    assert initializer.retired == 1
-    assert plugin_application.unbound == 1
-
-    selected["value"] = valid
-    controller.apply_provider_configuration()
-    replacement = controller.published_session()
-    assert replacement is not None and replacement is not original_session
-    assert controller.readiness() == "ready"
-    assert controller.snapshot()["revision"] == initial_revision + 2
-    assert plugin_application.bound == [replacement]
-    controller.close()
-
-
-def test_real_session_recreation_borrows_the_same_application_tools(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    from app.core_host.server import HostConfig, ReadinessController
-
-    fixture = Path(__file__).parents[1] / "fixtures/runtime_v2/wp_3_01/ready"
-    root = tmp_path / "application"
-    shutil.copytree(fixture, root)
-    controller = ReadinessController(HostConfig(RuntimeRoots(root, root), GENERATION, CREDENTIAL))
-    controller.enable_tools()
+        controller._plugin_application = application
     try:
-        controller.begin({})
-        controller._worker.join(2)
-        first = controller.published_session()
-        assert first is not None
-        assert first.runtime.tools.get("get_current_time") is not None
-
-        api_path = root / "config/api.yaml"
-        saved = api_path.read_text(encoding="utf-8")
-        api_path.write_text("api_profiles: []\n", encoding="utf-8")
+        selected["ready"] = False
         controller.apply_provider_configuration()
         assert controller.readiness() == "setup_required"
         assert controller.published_session() is None
-
-        api_path.write_text(saved, encoding="utf-8")
+        assert application.unbound == 1
+        assert controller.snapshot()["characterPresentation"] == {**presentation, "generationId": GENERATION}
+        selected["ready"] = True
         controller.apply_provider_configuration()
-        second = controller.published_session()
-        assert second is not None and second is not first
-        assert second.provider is not first.provider
-        assert second.runtime.tools is first.runtime.tools
+        replacement = controller.published_session()
+        assert replacement is not original
+        assert replacement.assistant is original.assistant
+        assert controller._application_tools is tools
+        assert application.bound == [replacement]
+        assert controller.snapshot()["revision"] == initial_revision + 2
     finally:
         controller.close()
 

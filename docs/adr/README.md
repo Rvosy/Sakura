@@ -74,6 +74,8 @@ spec 或 plan，验收证据放在 records。
 
 - [ADR-0059：MCP 客户端作为可复用系统组件](0059-mcp-client-system-component.md)
 
+- [ADR-0060：共享对话入口与普通 Assistant 插件](0060-single-chat-boundary-and-plugin-assistant.md)
+
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
 

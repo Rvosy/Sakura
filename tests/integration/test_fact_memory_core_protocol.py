@@ -15,14 +15,15 @@ import psutil
 from app.plugins.installer import LocalPluginInstaller
 from app.plugins.inventory import PluginDesiredStateStore
 from app.storage.runtime_roots import RuntimeRoots
+from tests.integration import test_core_host_real_chat_integration as real_chat_fixture
 from tests.integration.test_core_host_real_chat_integration import (
     REPO_ROOT,
     _configure_app_root,
     _hello,
+    _isolated_assistant_distribution,
     _read,
     _request,
     _send,
-    _start_host,
     _stop,
 )
 from tests.integration.test_wp_4_01_memory_capability import _install_official_mem0
@@ -160,7 +161,8 @@ def _provider():
 
 @contextmanager
 def _core(user: Path, distribution: Path, *, model_configured=True):
-    process = _start_host(user, distribution_root=distribution)
+    # The shared autouse fixture installs real Assistant code and private dependencies.
+    process = real_chat_fixture._start_host(user, distribution_root=distribution)
     children = []
     try:
         peer = _CorePeer(process)

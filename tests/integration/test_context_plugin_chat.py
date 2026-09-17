@@ -15,15 +15,17 @@ from typing import Any
 
 import pytest
 
-from app.agent.runtime import AgentRuntime
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.config.character_loader import CharacterProfile
-from app.core.chat_pipeline import ChatPipeline
+from app.core_host.assistant_adapter import AssistantSession, BoundAssistant
+from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings
+from app.plugins.dependencies import PluginDependencyRoots
+import shutil
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.real_chat import RealChatBoundary
 from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
-from app.llm.api_client import ApiSettings, OpenAICompatibleClient
-from app.llm.prompts.types import ContextRequest
+from sakura_assistant.llm.api_client import ApiSettings, OpenAICompatibleClient
+from app.plugin_sdk.sakura_context import ContextRequest
 from app.storage.runtime_roots import RuntimeRoots
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 
@@ -44,7 +46,7 @@ def _write_plugin(distribution: Path) -> None:
     (root / "plugin.yaml").write_text(
         f"api: 4\nid: {PLUGIN_ID}\nname: Context fixture\nversion: 1.0.0\n"
         f"entry: plugin:Plugin\nprovides: [{SERVICE_KEY}]\n"
-        "requires: [sakura.host.context]\n",
+        "requires: [sakura.host.context, sakura.host.tools, sakura.host.artifacts]\n",
         encoding="utf-8",
     )
     (root / "plugin.py").write_text(
@@ -56,6 +58,9 @@ class Plugin:
         host = context.get("sakura.host.context")
         self.capabilities = host.describe()
         self.calls = 0
+        self.recent_messages = []
+        self.context = context
+        self.remove_image = context.get("sakura.host.tools").register({{"name": "fixture_image", "description": "Read fixture image.", "parameters": {{"type": "object", "properties": {{}}}}}}, self.image)
         host.register(
             {{
                 "providerId": "fixture.context.rules.contribution",
@@ -66,11 +71,21 @@ class Plugin:
         )
         context.provide("{SERVICE_KEY}", self, exports=("inspect",))
 
+    def image(self, arguments):
+        from pathlib import Path
+        artifacts = self.context.get("sakura.host.artifacts")
+        value = artifacts.allocate({{"mediaType": "image/png", "suffix": ".png"}})
+        Path(value["path"]).write_bytes(b"x" * 1300000)
+        return {{"content": "fixture screen", "artifact": artifacts.commit(value["artifactId"])}}
+
     def inspect(self):
-        return {{"pid": os.getpid(), "capabilities": self.capabilities, "calls": self.calls}}
+        return {{"pid": os.getpid(), "capabilities": self.capabilities, "calls": self.calls, "recentMessages": self.recent_messages}}
 
     def contribute(self, request):
         self.calls += 1
+        self.recent_messages = request["recent_messages"]
+        if request["current_input"] == "invoke expired fixture":
+            self.remove_image()
         if request["current_input"] == "fail required contribution":
             raise RuntimeError("private callback detail must not escape")
         if request["current_input"] == "transport large context":
@@ -102,7 +117,7 @@ class _ChatFixture:
     timeline: TimelineStore
     requests: list[dict[str, Any]]
     events: list[dict[str, Any]]
-    runtime: AgentRuntime
+    session: AssistantSession
 
     def send(self, operation_id: str, message: str) -> dict[str, Any]:
         request = {
@@ -121,11 +136,14 @@ class _ChatFixture:
 
 
 @pytest.fixture
-def chat(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[_ChatFixture]:
+def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_dependencies) -> Iterator[_ChatFixture]:
     # Each test owns both the plugin distribution and all writable runtime data.
     distribution, user = tmp_path / "distribution", tmp_path / "user"
     user.mkdir()
     _write_plugin(distribution)
+    shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / "builtin" / "sakura_assistant", distribution / "plugins" / "builtin" / "sakura_assistant", ignore=shutil.ignore_patterns("__pycache__"))
+    original_root = PluginDependencyRoots.verified_root
+    monkeypatch.setattr(PluginDependencyRoots, "verified_root", lambda self, plugin_id, *args, **kwargs: assistant_dependencies if plugin_id == "sakura.assistant.default" else original_root(self, plugin_id, *args, **kwargs))
     requests: list[dict[str, Any]] = []
     reject_noninitial_system = getattr(request, "param", False)
 
@@ -146,10 +164,10 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[_ChatFixtur
                 {"segments": [{"ja": "一緒に練習しましょう。", "zh": "一起练习吧。"}]},
                 ensure_ascii=False,
             )
-            body = json.dumps(
-                {"choices": [{"message": {"role": "assistant", "content": content}}]},
-                ensure_ascii=False,
-            ).encode("utf-8")
+            response_message = {"role": "assistant", "content": content}
+            if any(message.get("content") in ("invoke image fixture", "invoke expired fixture") for message in requests[-1]["messages"]) and not any(message.get("role") == "tool" for message in requests[-1]["messages"]):
+                response_message = {"role": "assistant", "content": None, "tool_calls": [{"id": "call-image", "type": "function", "function": {"name": "fixture_image", "arguments": "{}"}}]}
+            body = json.dumps({"choices": [{"message": response_message}]}, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -164,29 +182,12 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[_ChatFixtur
     worker = threading.Thread(target=provider.serve_forever, name="context-chat-local-provider")
     worker.start()
     registry = ToolRegistry()
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            f"http://127.0.0.1:{provider.server_port}/v1",
-            "LOCAL_TEST_KEY",
-            "fixture-model",
-            timeout_seconds=5,
-        ),
-    )
-    runtime = AgentRuntime(
-        client,
-        "You are Sakura, a friendly language partner.",
-        tools=registry,
-        character_id="fixture",
-        character_name="Fixture",
-        strict_provider_errors=True,
-    )
-    runtime.autonomous_screen_observation_enabled = False
-    session = SimpleNamespace(
-        character=CharacterProfile("fixture", "Fixture", user, user / "card.md", ""),
-        runtime=runtime,
-        pipeline=ChatPipeline(runtime, finalize_trace_operations=False),
-    )
     application = PluginApplicationHost(RuntimeRoots(distribution, user), GENERATION_ID, registry)
+    application._host_services._model_slots._active_resolver = lambda: {"chat": {"model": "fixture-model",
+        "base_url": f"http://127.0.0.1:{provider.server_port}/v1", "api_key": "LOCAL_TEST_KEY", "timeout_seconds": 5}, "vision_chat": None}
+    (user / "card.md").write_text("You are Sakura, a friendly language partner.", encoding="utf-8")
+    session = AssistantSession(CharacterProfile("fixture", "Fixture", user, user / "card.md", ""), None, RuntimeLoopSettings(), "test")
+    session.model_slots = application._host_services._model_slots._active_resolver()
     timeline = TimelineStore(user / "data" / "chat_history" / "timeline.sqlite3")
     timeline.initialize()
     events: list[dict[str, Any]] = []
@@ -201,13 +202,12 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[_ChatFixtur
     )
     try:
         application.start()
-        assert application.application.wait_until_loaded(timeout=5)
+        assert application.wait_until_loaded(timeout=5)
+        session.assistant = BoundAssistant(application, application.service_identity("sakura.assistant"))
         application.bind_session(session)
-        assert application.application.wait_until_bound(timeout=5)
+        assert application.wait_until_bound(timeout=5)
         snapshot = application.public_snapshot()
-        assert [(item["pluginId"], item["state"]) for item in snapshot["plugins"]] == [
-            (PLUGIN_ID, "active")
-        ], snapshot
+        assert {item["pluginId"]: item["state"] for item in snapshot["plugins"]} == {PLUGIN_ID: "active", "sakura.assistant.default": "active"}, snapshot
         inspection = application.call_service(SERVICE_KEY, "inspect")
         assert inspection["pid"] != os.getpid()
         assert inspection["capabilities"] == {
@@ -215,7 +215,7 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[_ChatFixtur
             "scopes": ["step", "turn"],
             "failurePolicies": ["skip", "abort"],
         }
-        yield _ChatFixture(application, boundary, timeline, requests, events, runtime)
+        yield _ChatFixture(application, boundary, timeline, requests, events, session)
     finally:
         boundary.close()
         application.close()
@@ -253,7 +253,7 @@ def test_real_plugin_content_reaches_provider_and_disabling_removes_it(
     assert entries[0].turn_id == entries[1].turn_id
     assert entries[1].payload["segments"] == terminal["payload"]["reply"]["segments"]
 
-    record = chat.application.public_snapshot()["plugins"][0]
+    record = next(item for item in chat.application.public_snapshot()["plugins"] if item["pluginId"] == PLUGIN_ID)
     disabled = chat.application.set_enabled(record["installId"], False)
     assert disabled["applicationState"] == "applied"
     terminal = chat.send("ordinary", "Tell me about cherry blossoms.")
@@ -268,11 +268,12 @@ def test_real_plugin_content_reaches_provider_and_disabling_removes_it(
 def test_real_plugin_content_is_limited_by_token_budget_without_extra_count_or_char_caps(
     chat: _ChatFixture,
 ) -> None:
-    provider = chat.runtime.context_providers[0]
-    transported = provider.build_context(ContextRequest(current_input="transport large context"))
+    from dataclasses import asdict
+    catalog = chat.application.call_service("sakura.host.context", "catalog")
+    transported = chat.application.call_service("sakura.host.context", "collect", catalog[0]["registrationId"], asdict(ContextRequest(current_input="transport large context")))
     assert len(transported) == 40
-    assert transported[0].content == LARGE_OPTIONAL
-    assert transported[20].content == LARGE_REQUIRED
+    assert transported[0]["content"] == LARGE_OPTIONAL
+    assert transported[20]["content"] == LARGE_REQUIRED
 
     terminal = chat.send("large-context", "transport large context")
 
@@ -323,6 +324,7 @@ def test_required_plugin_callback_failure_stops_before_provider_and_assistant_hi
     assert failure["attributes"]["reason_code"] == "CONTEXT_CONTRIBUTION_FAILED"
     assert failure["attributes"]["provider_id"] == "fixture.context.rules.contribution"
     assert failure["attributes"]["plugin_id"] == PLUGIN_ID
+    assert "private callback detail" in failure["attributes"]["diagnostic"]
 
 
 @pytest.mark.parametrize("chat", [True], indirect=True)
@@ -350,3 +352,68 @@ def test_plugin_context_and_proactive_history_survive_system_role_fallback(chat:
     assert [entry.kind for entry in chat.timeline.read_all("fixture")] == [
         TimelineKind.ASSISTANT, TimelineKind.HUMAN, TimelineKind.ASSISTANT,
     ]
+
+
+def test_default_assistant_consumes_large_tool_image_without_rpc_expansion(chat):
+    terminal = chat.send("large-tool-image", "invoke image fixture")
+    assert terminal["name"] == "chat.completed", terminal
+    assert len(chat.requests) == 2
+    content = json.dumps(chat.requests[-1]["messages"])
+    assert "data:image/png;base64," in content
+    assert len(content) > 1_700_000
+    assert chat.application._host_services.artifact_count == 0
+
+
+def test_expired_tool_registration_returns_a_tool_failure_and_the_turn_can_continue(chat):
+    terminal = chat.send("expired-tool", "invoke expired fixture")
+    assert terminal["name"] == "chat.completed", terminal
+    assert len(chat.requests) == 2
+    tool_response = next(message for message in chat.requests[-1]["messages"] if message["role"] == "tool")
+    assert "TOOL_REGISTRATION_EXPIRED" in tool_response["content"]
+    assert chat.application._host_services.artifact_count == 0
+
+
+def test_default_assistant_routes_large_attached_image_to_the_vision_slot(chat):
+    import base64
+
+    slots = chat.session.model_slots
+    slots["vision_chat"] = {**slots["chat"], "model": "fixture-vision"}
+    assert chat.send("ordinary-text", "hello")["name"] == "chat.completed"
+    image = "data:image/png;base64," + base64.b64encode(b"image" * 260_000).decode("ascii")
+
+    response = chat.boundary.run_host_message("Describe this image.", image)
+
+    assert response["reply"] == "一起练习吧。"
+    assert [item["model"] for item in chat.requests] == ["fixture-model", "fixture-vision"]
+    images = [part["image_url"]["url"] for item in chat.requests[-1]["messages"]
+              if isinstance(item["content"], list) for part in item["content"]
+              if part.get("type") == "image_url"]
+    assert images == [image]
+    assert chat.application._host_services.artifact_count == 0
+    assert "base64" not in json.dumps([entry.payload for entry in chat.timeline.read_all("fixture")])
+
+
+def test_context_contributors_receive_recent_history_from_the_fixed_turn_snapshot(chat):
+    assert chat.send("first", "Earlier language practice")["name"] == "chat.completed"
+    assert chat.send("second", "Continue the practice")["name"] == "chat.completed"
+    inspection = chat.application.call_service(SERVICE_KEY, "inspect")
+    recent = inspection["recentMessages"]
+    assert any(item["role"] == "user" and "Earlier language practice" in item["content"] for item in recent)
+    assert any(item["role"] == "assistant" and "一緒に練習しましょう" in item["content"] for item in recent)
+    assert recent[-1]["role"] == "user"
+    assert recent[-1]["content"] == "Continue the practice"
+
+
+def test_default_assistant_keeps_committed_model_settings_until_session_replacement(chat):
+    assert chat.send("before-settings-save", "hello")["name"] == "chat.completed"
+    previous = chat.session.model_slots["chat"]
+    # Saving a new configuration is not the same as applying it to the active
+    # session. A failed or busy application keeps both this turn and the next
+    # turn on the published settings snapshot.
+    chat.application._host_services._model_slots._active_resolver = lambda: {
+        "chat": {**previous, "model": "unapplied-model"}, "vision_chat": None,
+    }
+    assert chat.send("after-failed-settings-apply", "continue")["name"] == "chat.completed"
+    assert [item["model"] for item in chat.requests] == ["fixture-model", "fixture-model"]
+    log = (chat.session.character.package_dir / "data/logs/sakura-agent-trace.log").read_text(encoding="utf-8")
+    assert re.findall(r"追踪编号\s*:\s*(\d+)", log) == ["1", "1", "2", "2"]

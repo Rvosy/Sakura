@@ -112,7 +112,7 @@ def run():
             other_doc = boundary._dispatch("studio.character.open", {"characterId": "other"})["doc"]
             assert other_doc["referenceAudios"][0]["audioPath"] == voice_paths["other"]
             assert other_doc["theme"]["primaryColor"] == "#445566"
-            assert (boundary._service._workspace_package("other") / voice_paths["other"]).is_file()
+            assert (boundary._service.workspace_document("other")[0] / voice_paths["other"]).is_file()
             assert all(saved["referenceAudios"][0]["audioPath"] == voice_paths[saved["id"]] for saved in saves if saved["referenceAudios"])
             page.evaluate("document.getElementById('studioCharacterSelect').value='character'; document.getElementById('studioCharacterSelect').dispatchEvent(new Event('change'))")
             expect(page.locator("#displayName")).to_have_value("角色")
@@ -132,7 +132,7 @@ def run():
             expect(page.locator("#visualResourceList .form-card")).to_have_count(1)
             expect(page.locator('#expressionList input[type="number"]')).to_have_value("28")
 
-            binding = application.application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
+            binding = application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
             public = binding.presentation()
             public["renderer"] = origin + "/tests/fixtures/visual_numeric/frontend/renderer.js"
             raw = json.dumps({"segments": [{"ja": "こんにちは", "zh": "你好", "tone": "中性", "control": {"version": 1, "resourceId": resource.id, "payload": {"angle": 27, "wave": True}}}]})
@@ -261,7 +261,7 @@ def run():
                 assert error["cause"] in error["message"]
                 assert error["stage"] == "visual.portrait"
                 assert origin not in error["message"]
-            application.application.set_plugin_enabled("fixture.numeric", False)
+            application.set_plugin_enabled("fixture.numeric", False)
             expect(page.locator('#expressionList input[type="number"]')).to_have_count(0)
             assert binding.parse_control({"version": 1, "resourceId": resource.id, "payload": {"angle": 1}}).control is None
             assert timeline.read_all(profile.id)[0].payload["segments"][0]["text"] == "こんにちは"

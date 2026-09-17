@@ -88,20 +88,21 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
 
 
 def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
 
     registry = ToolRegistry()
     runtime = _Runtime()
     application = PluginApplicationHost(_assistant_root(tmp_path), "generation-a", registry)
     session = type("Session", (), {
-        "runtime": runtime,
+        "assistant": object(),
+        "visual_binding": None,
         "character": CharacterProfile("fixture", "Fixture", tmp_path, tmp_path / "card.md", ""),
     })()
     try:
         application.start()
         application.bind_session(session)
-        application.application.wait_until_loaded(timeout=5)
+        application.wait_until_loaded(timeout=5)
         snapshot = application.public_snapshot()
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
 
@@ -115,16 +116,16 @@ def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> No
         }
         assert "entry" not in repr(snapshot)
         assert str(tmp_path) not in repr(snapshot)
-        assert application.application.wait_until_bound(timeout=5)
+        assert application.wait_until_bound(timeout=5)
 
         result = registry.execute("fixture_echo", {"value": "hello"})
         assert result.success is True
         assert result.content == {"echo": "hello"}
     finally:
         application.close()
-    assert application.application.state == "stopped"
+    assert application.state == "stopped"
     assert registry.get("fixture_echo") is None
-    assert runtime.context_providers == []
+    assert registry.get("fixture_echo") is None
 
 
 def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -> None:
@@ -148,7 +149,7 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
         _wait_until(lambda: controller.readiness() == "failed")
         application = controller.published_plugin_application()
         assert application is not None
-        application.application.wait_until_loaded(timeout=5)
+        application.wait_until_loaded(timeout=5)
 
         snapshot = application.settings_snapshot()
         fixture = next(
