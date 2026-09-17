@@ -377,6 +377,7 @@ def test_numeric_controls_follow_real_chat_and_event_pipeline_into_history(visua
     runtime.set_visual_binding(binding)
     assert 'numeric-1' in runtime._build_tool_system_prompt()
     assert 'maxAngle' not in runtime._build_tool_system_prompt()  # no private parser snapshot
+    assert '"payload": {}' not in runtime._build_tool_system_prompt()  # not a valid sample for every plugin
     pipeline = ChatPipeline(runtime)
     result = pipeline.run_event(AgentEvent("reminder_due", {"message": "你好"})) if event else pipeline.run_user_message([{"role": "user", "content": "你好"}])
     projected = _project_reply(result.reply)

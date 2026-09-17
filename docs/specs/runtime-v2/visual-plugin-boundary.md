@@ -116,6 +116,8 @@ request = {characterId, resource:{id,type,root,entry}, segment?}
 该例外只适用于表现 DTO 的私有字典，资产值仍须通过包内路径校验，其他 Snapshot 字段继续检查。
 说明总 JSON 最多 64 KiB，`prompt` 最多 16,384 个字符，`outputSchema` 必须是对象。
 宿主把私有载荷说明和 Schema 组合进公共提示词，不执行 Schema 中的外部引用。
+公共提示词只声明 control 的 version、resourceId、payload 字段及固定目标，不生成空 payload 作为通用示例。
+payload 的必填字段和可省略内容由当前插件的格式定义。
 
 绑定保存描述的独立副本，提示词与解析使用同一份 `parserData` 快照；重新绑定才更新。解析时 `request.segment`
 提供本段公共信息，例如 TTS `tone`。`describe` 与 `parseControl` 不执行动作；进程级资源仍使用 v4 effect 回收。
