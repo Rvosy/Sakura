@@ -337,3 +337,29 @@ def test_mobile_host_image_busy_does_not_poison_the_next_attachment(tmp_path: Pa
     )
     assert result["reply_raw"] == "ok"
     boundary.close()
+
+
+def test_mobile_worker_preserves_failure_cause_after_completion(tmp_path: Path, monkeypatch) -> None:
+    from app.core_host.mobile_host import MobileHostError, MobileHostService
+
+    failure = OSError("fixture unreadable image")
+    diagnostics = []
+
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr("app.core_host.mobile_host.log_event", lambda *args, **kwargs: diagnostics.append(args[2]))
+    host = MobileHostService(
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        chat_boundary_provider=lambda: SimpleNamespace(run_host_message=fail),
+        artifact_resolver=lambda _id: None,
+        artifact_releaser=lambda _id: True,
+    )
+    job_id = host.begin("fixture", "sakura", "hello")["jobId"]
+    assert host._jobs[job_id].done.wait(3)
+    with pytest.raises(MobileHostError) as caught:
+        host.poll("fixture", job_id)
+    assert caught.value.__cause__ is failure
+    assert diagnostics[0]["stage"] == "mobile_chat"
+    assert "fixture unreadable image" in diagnostics[0]["diagnostic"]

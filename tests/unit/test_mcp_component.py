@@ -37,6 +37,12 @@ def test_sdk_transports_and_operations(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_component_lifecycle_under_controlled_failures():
+    result = subprocess.run([sys.executable, "-I", "-S", str(REPO / "tests/fixtures/mcp_component/lifecycle.py"),
+                             str(REPO)], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("service_access", ["get", "bind"])
 def test_component_in_real_plugin_host(tmp_path, service_access):
     dist = tmp_path / "distribution"

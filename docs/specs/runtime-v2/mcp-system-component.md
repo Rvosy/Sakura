@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-15
+updated: 2026-09-18
 ---
 
 # MCP 系统组件
@@ -85,6 +85,15 @@ Runtime 在停用、重载或崩溃清理后发送 sakura.host.scope.closed。�
 取消操作、关闭连接、释放文件。退出时关闭所有连接；stdio 进程树由 SDK 和已有 Worker 监管回收。
 SDK 异步上下文始终在同一任务进入和退出。插件注销后重新注册相同凭据 key 时，等待旧连接退出，避免端口和文件冲突。
 失败交由消费插件处理，组件不建设后台自愈循环。
+
+scope 撤销先确认访问已失效，耗时清理由组件保留的任务完成；重复撤销和组件关闭共用该任务。
+取消操作只提出取消请求，`inspect` 在执行任务实际退出后才返回 `cancelled`。释放结果与 scope 清理并发时，
+只有移除操作记录的协程负责关闭结果文件。
+
+同步控制调用超时后，组件报告 `MCP_COMPONENT_CALL_TIMEOUT` 并拒绝新业务，保留仍在执行的原调用，
+不重放请求或建立新 loop。关闭超时报告 `MCP_CLEANUP_TIMEOUT`；未退出的任务继续由原 loop 持有，
+待清理真正结束才停止 loop。宿主沿用有期限的插件进程树回收作为最终兜底，不把超时当作清理成功。
+清理抛错保留原异常组；MCP 传输错误日志带原始异常类型和脱敏原因。
 
 ## 数据与业务边界
 

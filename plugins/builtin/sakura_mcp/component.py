@@ -21,6 +21,10 @@ from mcp.client.streamable_http import streamable_http_client
 from pydantic import TypeAdapter
 
 
+CALL_TIMEOUT_SECONDS = 10
+CLOSE_TIMEOUT_SECONDS = 10
+
+
 class MCPComponentError(ValueError):
     def __init__(self, code):
         self.code = code
@@ -85,7 +89,13 @@ class Component:
         self.connections = {}
         self.operations = {}
         self.revoked = set()
+        self._revocations = {}
         self.closed = False
+        self.closing = False
+        self.failure = None
+        self._calls = set()
+        self._shutdown = None
+        self._lifecycle_lock = threading.Lock()
         self.thread = threading.Thread(target=self._run, name="mcp-client", daemon=True)
         self.thread.start()
 
@@ -114,14 +124,36 @@ class Component:
 
     def _run(self):
         asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
-        self.loop.run_until_complete(self.loop.shutdown_asyncgens())
-        self.loop.close()
+        try:
+            self.loop.run_forever()
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+        finally:
+            self.loop.close()
+            self.closed = True
 
     def call(self, method, *args):
-        if self.closed:
-            raise MCPComponentError("MCP_COMPONENT_CLOSED")
-        return asyncio.run_coroutine_threadsafe(getattr(self, method)(*args), self.loop).result(timeout=10)
+        with self._lifecycle_lock:
+            if self.closed or self.closing:
+                raise MCPComponentError("MCP_COMPONENT_CLOSED" if self.closed else "MCP_COMPONENT_CLOSING")
+            if self.failure:
+                raise MCPComponentError(self.failure)
+            future = asyncio.run_coroutine_threadsafe(getattr(self, method)(*args), self.loop)
+            self._calls.add(future)
+        future.add_done_callback(self._call_finished)
+        try:
+            return future.result(timeout=CALL_TIMEOUT_SECONDS)
+        except TimeoutError as error:
+            if future.done():
+                raise
+            # A timed-out control call can still own a connection or task.
+            # Keep that future for close; never replace the loop or replay it.
+            with self._lifecycle_lock:
+                self.failure = "MCP_COMPONENT_CALL_TIMEOUT"
+            raise MCPComponentError(self.failure) from error
+
+    def _call_finished(self, future):
+        with self._lifecycle_lock:
+            self._calls.discard(future)
 
     async def register(self, owner, raw, label="", credential_key=None):
         if owner in self.revoked:
@@ -208,7 +240,9 @@ class Component:
 
                 async def message(message):
                     if isinstance(message, Exception):
-                        self._log("error", "MCP 传输失败", conn, reason_code="MCP_TRANSPORT_FAILED")
+                        self._log("error", "MCP 传输失败", conn, reason_code="MCP_TRANSPORT_FAILED",
+                                  error_type=type(message).__name__, diagnostic=str(message))
+                        conn.update(state="error", error="MCP_TRANSPORT_FAILED")
                         self._event(conn, "transportError", {"code": "MCP_TRANSPORT_FAILED"})
                         conn["stop"].set()
                     else:
@@ -255,6 +289,8 @@ class Component:
             conn["error"] = "MCP_CONNECTION_FAILED"
             self._log("error", "MCP 服务连接失败", conn, reason_code=conn["error"])
         finally:
+            conn["state"] = "error" if "error" in conn else "closing"
+            conn["ready"].set()
             await self._cancel_operations(conn["handle"])
             conn["client"] = None
             conn["state"] = "error" if "error" in conn else "closed"
@@ -299,6 +335,9 @@ class Component:
         op = {"operationId": op_id, "owner": owner, "handle": handle, "state": "running", "result": None}
         self.operations[op_id] = op
         op["task"] = asyncio.create_task(self._operate(conn, op, method, params or {}, options))
+        op["task"].add_done_callback(
+            lambda task: op.update(state="cancelled") if task.cancelled() else None
+        )
         return {"operationId": op_id, "state": "running"}
 
     async def _operate(self, conn, op, method, params, options):
@@ -386,24 +425,26 @@ class Component:
 
     async def cancel(self, owner, operation_id):
         op = self._owned(self.operations, owner, operation_id)
-        if not op["task"].done():
+        if not op["task"].done() and not op["task"].cancelling():
             op["task"].cancel()
-            op["state"] = "cancelled"
         return {"operationId": operation_id}
 
     async def release(self, owner, operation_id):
         op = self._owned(self.operations, owner, operation_id)
-        op["task"].cancel()
+        if not op["task"].done() and not op["task"].cancelling():
+            op["task"].cancel()
         await asyncio.gather(op["task"], return_exceptions=True)
-        if "stream" in op:
+        # release() and scope revocation can await the same task concurrently.
+        # Only the coroutine that removes its record owns the retained stream.
+        if self.operations.pop(operation_id, None) is op and "stream" in op:
             op["stream"].close()
-        del self.operations[operation_id]
         return {}
 
     async def _cancel_operations(self, handle):
         tasks = [op["task"] for op in self.operations.values() if op["handle"] == handle and not op["task"].done()]
         for task in tasks:
-            task.cancel()
+            if not task.cancelling():
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _input(self, conn, kind, params):
@@ -470,7 +511,29 @@ class Component:
         return {}
 
     async def revoke(self, owner):
+        await self.revoke_scope(owner)
+        await asyncio.shield(self._revocations[owner])
+
+    async def revoke_scope(self, owner):
+        """Revoke access before replying; retain the task that owns cleanup."""
         self.revoked.add(owner)
+        if owner not in self._revocations:
+            task = asyncio.create_task(self._revoke(owner))
+            self._revocations[owner] = task
+            task.add_done_callback(lambda finished: self._revoke_finished(owner, finished))
+        return {}
+
+    def _revoke_finished(self, owner, task):
+        try:
+            task.result()
+        except Exception:
+            if self.logger is not None:
+                self.logger.error("MCP 插件作用域清理失败",
+                    fields={"consumerPluginId": owner[0], "scopeId": owner[1], "stage": "cleanup"})
+        else:
+            self._revocations.pop(owner, None)
+
+    async def _revoke(self, owner):
         conns = [conn for conn in self.connections.values() if conn["owner"] == owner]
         for conn in conns:
             await self.unregister(owner, conn["handle"])
@@ -482,15 +545,36 @@ class Component:
             self.connections.pop(conn["handle"], None)
 
     async def shutdown(self):
-        owners = {item["owner"] for item in [*self.connections.values(), *self.operations.values()]}
-        await asyncio.gather(*(self.revoke(owner) for owner in owners))
+        with self._lifecycle_lock:
+            pending = list(self._calls)
+        await asyncio.gather(*(asyncio.wrap_future(call) for call in pending), return_exceptions=True)
+        owners = set(self._revocations) | {item["owner"] for item in [*self.connections.values(), *self.operations.values()]}
+        outcomes = await asyncio.gather(*(self.revoke(owner) for owner in owners), return_exceptions=True)
+        failures = [error for error in outcomes if isinstance(error, Exception)]
+        if failures:
+            raise ExceptionGroup("MCP connection cleanup failed", failures)
 
     def close(self):
-        if self.closed:
-            return
+        with self._lifecycle_lock:
+            if self._shutdown is None:
+                if self.closed:
+                    return
+                self.closing = True
+                self._shutdown = asyncio.run_coroutine_threadsafe(self.shutdown(), self.loop)
+                # Stop only after the owner coroutines have returned. If the
+                # deadline expires, this same cleanup continues in this loop;
+                # the plugin process owner remains the bounded final fallback.
+                self._shutdown.add_done_callback(lambda _: self.loop.call_soon_threadsafe(self.loop.stop))
         try:
-            self.call("shutdown")
-        finally:
-            self.closed = True
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            self.thread.join(timeout=5)
+            self._shutdown.result(timeout=CLOSE_TIMEOUT_SECONDS)
+        except TimeoutError as error:
+            self.failure = "MCP_CLEANUP_TIMEOUT"
+            raise MCPComponentError(self.failure) from error
+        except Exception:
+            self.failure = "MCP_CLEANUP_FAILED"
+            self.thread.join(timeout=CLOSE_TIMEOUT_SECONDS)
+            raise
+        self.thread.join(timeout=CLOSE_TIMEOUT_SECONDS)
+        if self.thread.is_alive():
+            self.failure = "MCP_CLEANUP_TIMEOUT"
+            raise MCPComponentError(self.failure)

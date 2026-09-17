@@ -6,12 +6,13 @@ import base64
 import threading
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from app.config.character_loader import CharacterRegistry
 from app.core_host.character_presentation import project_character_presentation
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.paths import StoragePaths
 from app.storage.timeline import TimelineKind, TimelineStore
 
@@ -29,6 +30,7 @@ class _MobileChatJob:
     done: threading.Event
     result: dict[str, Any] | None = None
     error_code: str = ""
+    error: Exception | None = field(default=None, repr=False)
 
 
 class MobileHostService:
@@ -190,9 +192,17 @@ class MobileHostService:
                     raise MobileHostError("MOBILE_CHAT_FAILED")
                 job.result = {"character_id": str(profile.id), **dict(result)}
             except Exception as error:
+                job.error = error
                 code = getattr(error, "code", None)
                 job.error_code = (
                     code if isinstance(code, str) and code else "MOBILE_CHAT_FAILED"
+                )
+                log_event(
+                    "Mobile", "移动端对话失败",
+                    {"operation_id": operation_id, **diagnostic_attributes(
+                        error, reason_code=job.error_code, stage="mobile_chat",
+                    )},
+                    event="mobile.chat.failed", severity="error",
                 )
             finally:
                 if artifact_id:
@@ -221,7 +231,7 @@ class MobileHostService:
         with self._lock:
             self._jobs.pop(job_id, None)
         if job.error_code:
-            raise MobileHostError(job.error_code)
+            raise MobileHostError(job.error_code) from job.error
         return {"status": "completed", "result": dict(job.result or {})}
 
     def cancel(self, plugin_id: str, job_id: str) -> dict[str, bool]:

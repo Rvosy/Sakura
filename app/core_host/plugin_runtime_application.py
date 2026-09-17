@@ -173,7 +173,7 @@ class PluginRuntimeApplication:
             raise PluginRuntimeError("GENERATION_INVALIDATED")
         try:
             self._manager.start()
-            self._manager.emit_host_event(
+            self._manager.notify_host_event(
                 "sakura.host.app.started",
                 {"generationId": self._generation_id},
             )
@@ -216,7 +216,7 @@ class PluginRuntimeApplication:
         )
         if event_name is None:
             raise PluginRuntimeError("EVENT_INVALID")
-        self._manager.emit_host_event(event_name, dict(payload))
+        self._manager.notify_host_event(event_name, dict(payload))
 
     def bind_runtime(
         self,

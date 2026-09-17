@@ -419,6 +419,15 @@ class _PluginProcess:
         except PluginApiError as error:
             raise PluginRuntimeError.from_api(error) from error
 
+    def notify(self, name: str, payload: object) -> None:
+        peer = self._peer
+        if peer is None:
+            raise PluginRuntimeError("PLUGIN_PROCESS_UNAVAILABLE", plugin_id=self._spec.plugin_id)
+        try:
+            peer.notify("event.emit", {"name": name, "payload": payload})
+        except PluginApiError as error:
+            raise PluginRuntimeError.from_api(error) from error
+
     def invoke_callback(
         self,
         handle: str,
@@ -478,8 +487,14 @@ class _PluginProcess:
                         {},
                         timeout=remaining,
                     )
-                except PluginApiError:
-                    pass
+                except PluginApiError as error:
+                    from app.core.diagnostics import exception_diagnostics
+                    from app.core.runtime_log import log_message
+
+                    log_message("warning", "插件协作清理失败，正在回收进程", component="plugin",
+                        plugin_id=self._spec.plugin_id, plugin_name=self._spec.name,
+                        fields={"event": "plugin.cleanup.failed", **exception_diagnostics(
+                            error, reason_code=error.code, stage="cleanup")})
         if peer is not None:
             peer.close("GENERATION_INVALIDATED")
         if process is not None and process.stdin is not None:
@@ -930,6 +945,22 @@ class PluginRuntimeManager:
                 process.emit(name, detached)
             except PluginRuntimeError:
                 continue
+
+    def notify_host_event(self, name: str, payload: object) -> None:
+        """Wake optional observers of facts they can reread from their owner."""
+        if (not isinstance(name, str) or not name.startswith("sakura.host.")
+                or name == "sakura.host.scope.closed"):
+            raise PluginRuntimeError("HOST_EVENT_NAME_INVALID")
+        detached = json_value(payload)
+        with self._lock:
+            recipients = [(record, record.process) for record in self._records.values()
+                          if record.state == "active" and record.process is not None]
+        for record, process in recipients:
+            try:
+                process.notify(name, detached)
+            except PluginRuntimeError as error:
+                self._log_lifecycle(record, "plugin.notification.dropped", "插件观察通知未入队",
+                    diagnostics={"event_name": name, "notification_reason": error.code})
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

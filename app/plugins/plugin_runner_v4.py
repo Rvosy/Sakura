@@ -81,6 +81,8 @@ class PluginRunner:
             generation_id=generation_id,
             plugin_id=plugin_id,
             request_handler=self._handle_request,
+            notification_handler=self._handle_notification,
+            notification_error_handler=self._notification_failed,
         )
 
     def run(self) -> int:
@@ -189,6 +191,18 @@ class PluginRunner:
             return None
         raise PluginApiError("PLUGIN_REQUEST_UNKNOWN")
 
+    def _handle_notification(self, name: str, payload: Mapping[str, Any]) -> None:
+        if name != "event.emit":
+            raise PluginApiError("PLUGIN_REQUEST_UNKNOWN")
+        self._handle_request(name, payload)
+
+    def _notification_failed(self, name: str, error: BaseException) -> None:
+        context = self._context
+        if context is not None:
+            context.get("sakura.host.logging").warning("插件观察通知未处理",
+                fields={"event": "plugin.notification.dropped", "stage": "notification",
+                        "event_name": name, "error_type": type(error).__name__})
+
     def _initialize(self) -> object:
         if self._initialized:
             raise PluginApiError("PLUGIN_ALREADY_INITIALIZED", plugin_id=self.plugin_id)
@@ -211,8 +225,13 @@ class PluginRunner:
                 raise PluginApiError("PLUGIN_ENTRY_INVALID", plugin_id=self.plugin_id)
             setup(context)
             context.commit()
-        except Exception:
-            context.close()
+        except Exception as error:
+            try:
+                context.close()
+            except Exception as cleanup_error:
+                raise ExceptionGroup(
+                    "Plugin initialization and cleanup failed", [error, cleanup_error]
+                ) from error
             raise
         self._context = context
         self._initialized = True

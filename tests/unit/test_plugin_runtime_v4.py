@@ -2037,6 +2037,119 @@ def test_rpc_deadline_includes_blocked_pipe_write() -> None:
         output_stream.release.set()
 
 
+def test_effect_disposer_and_context_shutdown_release_each_resource_once(tmp_path: Path) -> None:
+    from app.plugins.sakura_plugin_sdk import PluginContext
+
+    context = PluginContext("fixture.cleanup", tmp_path, tmp_path, lambda *_: None, lambda *_: None)
+    calls = []
+    first = context.effect(lambda: calls.append("first"))
+    second = context.effect(lambda: calls.append("second"))
+    first()
+    context.close()
+    first()
+    second()
+    assert calls == ["first", "second"]
+
+
+def test_initialization_keeps_primary_and_cleanup_errors_when_log_bridge_is_closed(tmp_path, monkeypatch):
+    from app.core import runtime_log
+
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.cleanup", "fixture.cleanup.service", body='''
+def release():
+    raise OSError("cleanup fixture failure")
+
+class Plugin:
+    def setup(self, context):
+        context.get("sakura.host.logging").close()
+        context.effect(release)
+        raise ValueError("primary fixture failure")
+''')
+    captured = []
+    monkeypatch.setattr(runtime_log, "log_message", lambda *args, **kwargs: captured.append(kwargs))
+    manager = PluginRuntimeManager(roots, "generation-cleanup-evidence", PluginInventory(roots).scan().runtime_specs)
+    try:
+        snapshot = manager.start()
+        assert snapshot["plugins"][0]["state"] == "failed"
+        failure = next(row["fields"] for row in captured if row.get("fields", {}).get("event") == "plugin.start.failed")
+        assert "ValueError: primary fixture failure" in failure["exception_stack"]
+        assert "OSError: cleanup fixture failure" in failure["exception_stack"]
+        assert "release" in failure["exception_stack"]
+    finally:
+        manager.close()
+
+
+def test_optional_observer_does_not_block_service_and_queued_work_is_owned_by_process(tmp_path: Path):
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.observer", "fixture.observer.service", body='''
+import threading
+
+class Service:
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+    def observe(self, payload):
+        self.entered.set()
+        self.release.wait()
+        self.finished.set()
+    def entered_observer(self): return self.entered.wait(2)
+    def complete(self):
+        self.release.set()
+        return self.finished.wait(2)
+
+class Plugin:
+    def setup(self, context):
+        service = Service()
+        context.on("sakura.host.timeline.changed", service.observe)
+        context.provide("fixture.observer.service", service, exports=("entered_observer", "complete"))
+''')
+    manager = PluginRuntimeManager(roots, "generation-observer", PluginInventory(roots).scan().runtime_specs)
+    snapshot = manager.start()
+    pid = snapshot["plugins"][0]["pid"]
+    try:
+        manager.notify_host_event("sakura.host.timeline.changed", {"cursor": "fixture"})
+        assert manager.call_service("fixture.observer.service", "entered_observer") is True
+        assert manager.call_service("fixture.observer.service", "complete") is True
+        with pytest.raises(PluginRuntimeError, match="HOST_EVENT_NAME_INVALID"):
+            manager.notify_host_event("sakura.host.scope.closed", {})
+    finally:
+        manager.close()
+    _wait_pids_gone([pid])
+
+
+def test_observer_queue_is_bounded_and_does_not_consume_request_capacity():
+    from app.plugins.sakura_plugin_sdk import MAX_PENDING_REQUESTS
+
+    entered, release, responded = threading.Event(), threading.Event(), threading.Event()
+    dropped = []
+
+    def observe(_name, _payload):
+        entered.set()
+        release.wait()
+
+    peer = RpcPeer(io.BytesIO(), io.BytesIO(), generation_id="bounded", plugin_id="fixture",
+        request_handler=lambda *_: responded.set(), notification_handler=observe,
+        notification_error_handler=lambda name, error: dropped.append((name, type(error).__name__)))
+    worker = threading.Thread(target=peer._notification_loop)
+    worker.start()
+    notification = {"type": "notification", "generationId": "bounded", "pluginId": "fixture",
+                    "name": "event.emit", "payload": {"name": "sakura.host.timeline.changed"}}
+    try:
+        peer._accept(notification)
+        assert entered.wait(1)
+        for _ in range(MAX_PENDING_REQUESTS + 1):
+            peer._accept(notification)
+        assert dropped == [("event.emit", "Full")]
+        peer._accept({**notification, "type": "request", "id": "still-callable", "name": "service.call"})
+        assert responded.wait(1)
+    finally:
+        peer.close()
+        release.set()
+        worker.join(1)
+    assert not worker.is_alive()
+
+
 def test_v3_install_is_rejected_without_resolving_dependency_declaration(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     source = _plugin_source(

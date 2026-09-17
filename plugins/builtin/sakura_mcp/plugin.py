@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import re
 
 try:
@@ -79,5 +78,5 @@ class MCPPlugin:
         return self.component.call("respond", self._owner(), handle, request_id, response)
 
     def scope_closed(self, payload):
-        # The Runtime lifecycle callback must not block on a child process shutdown.
-        asyncio.run_coroutine_threadsafe(self.component.revoke((payload["pluginId"], payload["scopeId"])), self.component.loop)
+        # Acknowledge revocation, while the component retains the cleanup task.
+        self.component.call("revoke_scope", (payload["pluginId"], payload["scopeId"]))

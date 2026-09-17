@@ -152,7 +152,7 @@ def _safe_exception_message(error: BaseException) -> str:
         return f"{type(error).__name__}: exception message could not be formatted"
 
 
-def _exception_diagnostics(error: BaseException) -> dict[str, str]:
+def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | None = None) -> dict[str, str]:
     """Stdlib-only worker diagnostics; never serialize exception objects/locals."""
     chain, stacks, seen = [], [], set()
     current = error
@@ -197,6 +197,19 @@ def _exception_diagnostics(error: BaseException) -> dict[str, str]:
         for key in ("exception_chain", "exception_stack"):
             if isinstance(remote.get(key), str):
                 result[key] = _diagnostic_text(result[key] + "\nRemote:\n" + remote[key])
+    if isinstance(error, BaseExceptionGroup):
+        # A failed initialization and its cleanup are distinct evidence. Keep
+        # every bounded group member's traceback without serializing locals.
+        budget = [16] if _group_budget is None else _group_budget
+        for index, child in enumerate(error.exceptions, 1):
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            child_diagnostics = _exception_diagnostics(child, _group_budget=budget)
+            for key in ("exception_chain", "exception_stack"):
+                result[key] = _diagnostic_text(
+                    result[key] + f"\nGroup member {index}:\n" + child_diagnostics[key]
+                )
     return result
 
 
@@ -268,6 +281,8 @@ class RpcPeer:
         plugin_id: str,
         request_handler: Callable[[str, Mapping[str, Any]], object],
         on_eof: Callable[[], None] | None = None,
+        notification_handler: Callable[[str, Mapping[str, Any]], object] | None = None,
+        notification_error_handler: Callable[[str, BaseException], None] | None = None,
     ) -> None:
         self._input = input_stream
         self._output = output_stream
@@ -275,6 +290,11 @@ class RpcPeer:
         self._plugin_id = plugin_id
         self._request_handler = request_handler
         self._on_eof = on_eof
+        self._notification_handler = notification_handler
+        self._notification_error_handler = notification_error_handler
+        self._notifications: queue.Queue[tuple[str, Mapping[str, Any]] | None] = queue.Queue(
+            maxsize=MAX_PENDING_REQUESTS
+        )
         self._state_lock = threading.Lock()
         self._pending: dict[str, _Pending] = {}
         self._outgoing_slots = threading.BoundedSemaphore(MAX_PENDING_REQUESTS)
@@ -285,6 +305,7 @@ class RpcPeer:
         self._closed = threading.Event()
         self._reader: threading.Thread | None = None
         self._writer: threading.Thread | None = None
+        self._observer: threading.Thread | None = None
 
     @property
     def closed(self) -> bool:
@@ -299,12 +320,24 @@ class RpcPeer:
             daemon=True,
         )
         self._writer.start()
+        if self._notification_handler is not None:
+            self._observer = threading.Thread(
+                target=self._notification_loop, name=f"{thread_name}-observer", daemon=True
+            )
+            self._observer.start()
         self._reader = threading.Thread(
             target=self._read_loop,
             name=thread_name,
             daemon=True,
         )
         self._reader.start()
+
+    def notify(self, name: str, payload: Mapping[str, Any]) -> None:
+        """Accept a best-effort wakeup locally without waiting for its observer."""
+        self._write({
+            "type": "notification", "generationId": self._generation_id,
+            "pluginId": self._plugin_id, "name": name, "payload": dict(payload),
+        })
 
     def request(
         self,
@@ -380,6 +413,10 @@ class RpcPeer:
             self._outgoing.put_nowait(None)
         except queue.Full:
             pass
+        try:
+            self._notifications.put_nowait(None)
+        except queue.Full:
+            pass
         with self._state_lock:
             pending = list(self._pending.values())
         for item in pending:
@@ -428,6 +465,16 @@ class RpcPeer:
         ):
             raise PluginApiError("GENERATION_INVALIDATED")
         message_type = message.get("type")
+        if message_type == "notification":
+            name, payload = message.get("name"), message.get("payload")
+            if (self._notification_handler is None or not isinstance(name, str)
+                    or not isinstance(payload, Mapping)):
+                raise PluginApiError("PLUGIN_PROTOCOL_INVALID")
+            try:
+                self._notifications.put_nowait((name, dict(payload)))
+            except queue.Full as error:
+                self._report_notification_error(name, error)
+            return
         request_id = message.get("id")
         if not isinstance(request_id, str) or not request_id:
             raise PluginApiError("PLUGIN_PROTOCOL_INVALID")
@@ -467,6 +514,25 @@ class RpcPeer:
             name=f"sakura-plugin-rpc-{self._plugin_id}",
             daemon=True,
         ).start()
+
+    def _report_notification_error(self, name: str, error: BaseException) -> None:
+        if self._notification_error_handler is not None:
+            try:
+                self._notification_error_handler(name, error)
+            except Exception:
+                # An unavailable log sink cannot stop the RPC reader/observer.
+                pass
+
+    def _notification_loop(self) -> None:
+        while not self.closed:
+            item = self._notifications.get()
+            if item is None or self.closed:
+                return
+            name, payload = item
+            try:
+                self._notification_handler(name, payload)
+            except Exception as error:
+                self._report_notification_error(name, error)
 
     def _dispatch_request(
         self,
@@ -1385,22 +1451,22 @@ class PluginContext:
         return remove
 
     def effect(self, cleanup: Callable[[], object]) -> Callable[[], None]:
-        if self._closed or not callable(cleanup):
-            raise PluginApiError("EFFECT_INVALID", plugin_id=self.plugin_id)
         active = True
-        self._effects.append(cleanup)
 
         def dispose() -> None:
             nonlocal active
-            if not active:
-                return
-            active = False
-            try:
-                self._effects.remove(cleanup)
-            except ValueError:
-                pass
+            with self._stage_lock:
+                if not active:
+                    return
+                active = False
+                if dispose in self._effects:
+                    self._effects.remove(dispose)
             cleanup()
 
+        with self._stage_lock:
+            if self._closed or not callable(cleanup):
+                raise PluginApiError("EFFECT_INVALID", plugin_id=self.plugin_id)
+            self._effects.append(dispose)
         return dispose
 
     def _stage(
@@ -1523,11 +1589,14 @@ class PluginContext:
             if self._closed:
                 return
             self._closed = True
-        while self._effects:
-            cleanup = self._effects.pop()
+            effects = list(reversed(self._effects))
+            self._effects.clear()
+        failures = []
+        for cleanup in effects:
             try:
                 cleanup()
-            except Exception:
+            except Exception as error:
+                failures.append(error)
                 self.get("sakura.host.logging").warning("插件资源清理失败",
                     fields={"event": "plugin.cleanup.failed", "stage": "cleanup"})
         if self._logger is not None:
@@ -1536,6 +1605,8 @@ class PluginContext:
         self._services.clear()
         self._events.clear()
         self._callbacks.clear()
+        if failures:
+            raise ExceptionGroup("Plugin resource cleanup failed", failures)
 
 
 def _identifier(value: object, code: str) -> str:
