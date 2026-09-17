@@ -72,24 +72,41 @@ jobs:
       - name: Install telemetry test dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          -r tools/telemetry_server/requirements.txt pytest httpx
+          -r services/sakura/requirements.txt pytest httpx
 
       - name: Run telemetry server tests
         run: >-
           python -m pytest -q -c /dev/null -p no:cacheprovider
-          tools/telemetry_server/tests
+          services/sakura/tests
 
       - name: Install and build the dashboard
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npm ci && npm run build
 
       - name: Install Chromium for dashboard tests
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npx playwright install --with-deps chromium
 
       - name: Run dashboard browser tests
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npm test
+
+  website:
+    name: Sakura website build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Install website package manager
+        run: npm install --global pnpm@11.19.0
+      - name: Build the public website
+        working-directory: services/sakura/site
+        env:
+          ASTRO_TELEMETRY_DISABLED: "1"
+        run: pnpm install --frozen-lockfile && pnpm build
 
   rust-format:
     name: Rust formatting

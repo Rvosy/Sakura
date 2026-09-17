@@ -64,6 +64,12 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0050：当前角色编辑局部更新，角色切换保留 generation 隔离](0050-current-character-local-refresh.md)
 - [ADR-0051：切换角色保留可复用插件与推理进程](0051-character-switch-retains-engines.md)
 
+- [ADR-0055：国内服务器提供更新清单，GitHub 继续分发安装包](0055-domestic-updater-manifest.md)
+
+- [ADR-0056：统一服务域名与独立私人控制台](0056-private-console-and-service-domains.md)
+
+- [ADR-0057：Release Action 导入草稿，维护者确认国内发布](0057-ci-imports-private-release-drafts.md)
+
 - [ADR-0058：由实际消费者负责解析，删除重复业务校验](0058-validation-at-owning-boundaries.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
