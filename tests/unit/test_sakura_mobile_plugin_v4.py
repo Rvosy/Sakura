@@ -134,6 +134,7 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
     assert {spec.plugin_id for spec in bundled} == {
         "sakura.asr",
         "sakura.asr.sensevoice",
+        "sakura.mcp",
         "sakura.memory.mem0",
         "sakura.portrait",
         "sakura.tts",

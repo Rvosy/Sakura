@@ -140,7 +140,7 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
     root = _assistant_root(tmp_path)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(root, root), "generation-plugin-application", "a" * 32),
-        initializer_factory=lambda _root, _tools, _mcp: FailingInitializer(),
+        initializer_factory=lambda _root, _tools: FailingInitializer(),
     )
     controller.enable_plugins()
     try:
@@ -260,15 +260,10 @@ def test_session_is_published_only_after_application_binding(
 def test_plugin_start_failure_closes_unpublished_application_resources(
     tmp_path: Path, monkeypatch, cleanup_fails: bool,
 ) -> None:
-    from app.agent.mcp import provider
     from app.core_host import plugin_application
     from app.core_host.server import HostConfig, ReadinessController
 
     closed: list[str] = []
-
-    class MCP:
-        def close(self) -> None:
-            closed.append("mcp")
 
     class PluginApplication:
         def __init__(self, *_args) -> None:
@@ -282,23 +277,21 @@ def test_plugin_start_failure_closes_unpublished_application_resources(
             if cleanup_fails:
                 raise RuntimeError("plugin cleanup failed")
 
-    monkeypatch.setattr(provider, "start_mcp_tools_from_config", lambda *_args, **_kwargs: MCP())
     monkeypatch.setattr(plugin_application, "PluginApplicationHost", PluginApplication)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), "generation-failed-start", "a" * 32),
     )
-    controller.enable_mcp()
     controller.enable_plugins()
     controller.begin({})
     controller._worker.join(2)
     assert not controller._worker.is_alive()
     assert controller.readiness() == "failed"
     assert controller.published_plugin_application() is None
-    assert closed == ["plugins", "mcp"]
+    assert closed == ["plugins"]
     if cleanup_fails:
         with pytest.raises(RuntimeError, match="plugin cleanup failed"):
             controller.close()
     else:
         controller.close()
     controller.close()
-    assert closed == ["plugins", "mcp"]
+    assert closed == ["plugins"]

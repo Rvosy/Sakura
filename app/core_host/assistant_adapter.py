@@ -4,8 +4,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
-from time import monotonic
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from app.agent.runtime import AgentRuntime
 from app.agent.tools import ToolRegistry
@@ -24,9 +23,6 @@ from app.core_host.character_presentation import project_character_presentation
 from app.llm.api_client import OpenAICompatibleClient
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
-if TYPE_CHECKING:
-    from app.agent.mcp.provider import MCPToolProvider
-
 
 @dataclass
 class AssistantSession:
@@ -34,39 +30,6 @@ class AssistantSession:
     provider: OpenAICompatibleClient = field(repr=False)
     runtime: AgentRuntime
     pipeline: ChatPipeline
-    mcp_provider: object | None = field(default=None, repr=False)
-
-    def wait_prompt_dependencies(
-        self,
-        *,
-        cancel_checker=None,
-        mcp_timeout: float = 15.0,
-    ) -> list[dict[str, object]]:
-        results: list[dict[str, object]] = []
-        dependency_wait_started = monotonic()
-        mcp_wait = getattr(self.mcp_provider, "wait_registration", None)
-        if callable(mcp_wait):
-            started = monotonic()
-            remaining = max(
-                0.0,
-                mcp_timeout - (monotonic() - dependency_wait_started),
-            )
-            completed = mcp_wait(remaining, cancel_checker=cancel_checker)
-            snapshot = self.mcp_provider.status_snapshot()
-            reason = str(snapshot.get("reasonCode", "UNKNOWN"))
-            results.append(
-                {
-                    "dependency": "mcp",
-                    "ready": completed
-                    and reason in {"READY", "CONFIG_DISABLED", "CONFIG_MISSING"},
-                    "status": "ready"
-                    if completed and reason in {"READY", "CONFIG_DISABLED", "CONFIG_MISSING"}
-                    else ("degraded" if completed else "loading"),
-                    "reason_code": reason if completed else "REGISTRATION_TIMEOUT",
-                    "elapsed_ms": round((monotonic() - started) * 1000),
-                }
-            )
-        return results
 
 
 @dataclass(frozen=True)
@@ -125,7 +88,6 @@ class AssistantAdapter:
         roots: RuntimeRoots | Path,
         *,
         tool_registry: ToolRegistry,
-        mcp_provider: MCPToolProvider | None,
         config_reader: CoreConfigReader | None = None,
     ) -> None:
         self._roots = coerce_runtime_roots(roots)
@@ -136,7 +98,6 @@ class AssistantAdapter:
         self._owned: list[object] = []
         # Borrow Application resources; only Provider/Runtime/Pipeline belong to this Session.
         self._application_tools = tool_registry
-        self._application_mcp = mcp_provider
 
     def initialize(self, cancel: Event) -> ReadinessResult:
         owned: list[object] = []
@@ -226,7 +187,6 @@ class AssistantAdapter:
                 provider=provider,
                 runtime=runtime,
                 pipeline=pipeline,
-                mcp_provider=self._application_mcp,
             )
             self._check_active(cancel)
             if registry.load_errors:

@@ -109,22 +109,18 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   白名单固定为 `BASE_URL → llm.base_url`、`API_KEY → llm.api_key`、`MODEL → llm.model`；仅当 YAML
   对应值缺失、为 null 或空白时填充，已有非空 YAML 始终优先。只读取源根仍在使用的 `.env`；
   `.env.migrated` 表示旧版迁移器已成功归档，不得重放。旧 `system_config`
-  只投影当前有效的工具循环、屏幕感知、记忆整理和 UI 字段。MCP Server 中已废止的
-  `requires_confirmation` 字段（包括 tool policy 内嵌字段）直接删除，保留 Server 及其当前仍有效的配置。
-  MCP Server 的 `command`、`args` 或 `env` 若引用旧来源根或其子路径，必须按路径组件边界识别并隔离，
-  Windows 路径匹配须统一正反斜杠、大小写和 `\\?\` namespace 前缀，不能继续执行旧安装源码。
+  只投影当前有效的工具循环、屏幕感知、记忆整理和 UI 字段。旧 MCP 配置不再导入、转换或恢复。
   0.9.x PR#110 的 `text_*`、`vision_*` 选择字段必须转为当前 `chat`/`vision_chat` 模型槽；已有当前形态的
   `model_slots` 时以其为准，`text_enabled=false` 且尚无模型槽时由旧视觉选择生成 `chat`。输出必须删除这些
   选择字段及 `model_names`，并把旧 Provider 可接受的模型列表规范化为当前 `models[].name`，同时保留 Provider
   顺序、密钥和允许的未知字段。
   旧 Provider 列表中的非对象记录、缺少稳定 ID/地址而无法使用的记录可逐项丢弃；旧别名字段
   `profile_id/name`、`api_base/url` 可投影为当前 `id`、`base_url`，缺少 alias 时使用 ID，非字符串空密钥按空值处理，
-  字符串模型列表转为当前形态。已存在的未知 Provider、模型和 slot 扩展字段继续保留。可修复的 MCP timeout、非字符串
+  字符串模型列表转为当前形态。已存在的未知 Provider、模型和 slot 扩展字段继续保留。非字符串
   当前角色选择和当前模型槽标量使用安全默认或字符串投影，并以 `LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED` warning
   记录修复数量；这些可重建兼容字段不得导致整棵配置被隔离。
   旧屏幕感知的 `enabled` 与 `screen_context_enabled` 合并为当前单一 `enabled` 字段。
-  已确认来源的旧内置 Web MCP 按[联网插件](web-plugin.md)合同迁移，保留关闭选择和工具限制，停用旧项。
-  源 MCP 缺失时不生成禁用空配置；导入目标已有的联网插件开关优先。自定义脚本不按路径后缀替换。
+  导入目标已有的联网插件开关优先；没有选择时使用插件默认值，不再从 MCP 配置推导。
 - Timeline和长期记忆必须先于其他域迁移。二者的角色身份来自旧聊天 scope、curation scope 和当前角色 ID；角色包
   只参与可唯一确定的大小写规范化，不拥有聊天或记忆。角色包随后尝试完整复制并由当前 `CharacterRegistry` 校验；
   复制、转换或校验失败时清除 staged `characters/`、确认该目录已不存在后记录

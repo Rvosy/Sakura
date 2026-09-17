@@ -102,7 +102,6 @@ const errorMessages = {
   LEGACY_MEMORY_SCHEMA_INVALID: "旧版长期记忆数据库结构不兼容。",
   LEGACY_MEMORY_DIMENSION_UNSUPPORTED: "旧版记忆的向量格式不兼容。",
   LEGACY_MEMORY_OPEN_FAILED: "当前记忆插件无法打开导入后的旧记忆库。",
-  LEGACY_MCP_VALIDATION_FAILED: "旧版 MCP 配置无法转换为当前格式。",
   LEGACY_REMINDERS_VALIDATION_FAILED: "旧版提醒数据无法转换为当前格式。",
   LEGACY_TASKS_VALIDATION_FAILED: "旧版任务数据无法转换为当前格式。",
   LEGACY_NOTE_VALIDATION_FAILED: "旧版笔记包含当前版本无法读取的文件。",

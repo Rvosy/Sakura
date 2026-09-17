@@ -22,17 +22,12 @@ class WebPlugin:
 
     def setup(self, context: Any) -> None:
         config = context.config.get()
-        if config.get("migration_error"):
-            from sakura_plugin_sdk import PluginApiError
-
-            raise PluginApiError(str(config["migration_error"]))
         self.context = context
         context.effect(self.close)
         context.get("sakura.host.settings").register(
             _settings_descriptor(), load=self.load, save=self.save,
             actions={"test_search": self.test_search},
         )
-        # Preserve migrated MCP tool restrictions.
         allowed = config.get("allowed_tools", ["web_search", "fetch_url"])
         risks = config.get("tool_risks", {})
         timeout = config.get("call_timeout", 20)

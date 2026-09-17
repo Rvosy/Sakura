@@ -676,7 +676,7 @@ def test_run_host_reaches_writer_cleanup_when_initializer_close_never_returns(
 
     class Dispatcher(ControlDispatcher):
         def __init__(self, config: HostConfig) -> None:
-            super().__init__(config, initializer_factory=lambda _root, _tools, _mcp: initializer)
+            super().__init__(config, initializer_factory=lambda _root, _tools: initializer)
             self._readiness.begin({})
             assert initialized.wait(1)
 

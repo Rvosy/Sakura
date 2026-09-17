@@ -3,71 +3,52 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-28
+updated: 2026-09-15
 ---
 
-# MCP 开发与验证
+# 复用 MCP 系统组件
 
-MCP 由当前 Core generation 拥有。配置解析、Server 会话、工具注册和关闭都在 Python Core 内完成；WebView 只显示受限状态。
+服务插件声明 `requires: [sakura.mcp]`。官方 SDK 由组件管理，服务插件只负责配置和业务适配。
+基础组件不贡献设置页、管理入口或模型工具。消费插件自行选择 Host 设置、工具及其他产品接口。
 
-## 代码入口
+完整消费插件示例见 [Windows-MCP 包装插件](../../plugins/optional/windows_mcp/README.md)：私有服务端依赖、
+stdio 注册、异步目录发现、宿主工具贡献、图像 artifact 和停用回收都通过公共接口完成。
 
-- `app/agent/mcp/config.py`：解析 `user_root/config/mcp.yaml`；
-- `app/agent/mcp/provider.py`：连接 Server、发现工具并执行调用；
-- `app/core_host/assistant_adapter.py`：把 MCP owner 接入 Assistant session；
-- `app/core_host/mcp_status.py`：脱敏的只读运行状态；
-- `app/core_host/server.py`：capability、request 路由和 generation 校验；
+```python
+def setup(self, context):
+    self.mcp = context.get("sakura.mcp")
+    self.handle = self.mcp.registerServer({
+        "url": "https://example.com/mcp",
+        "headers": {"Authorization": "Bearer ..."},
+    })["handle"]
+    context.effect(lambda: self.mcp.unregisterServer(self.handle))
 
-## 配置
+def start_listing(self):
+    return self.mcp.begin(self.handle, "tools/list", {})["operationId"]
 
-```yaml
-enabled: true
-default_call_timeout: 30
-servers:
-  web:
-    transport: stdio
-    command: runtime-command
-    args: [serve]
-    enabled: true
-    name_prefix: web__
-    include_tools: [search, fetch]
-    call_timeout: 20
+def poll(self, operation_id):
+    return self.mcp.inspect(operation_id)
 ```
 
-transport 只支持 `stdio` 和 `sse`。SSE URL 必须使用 `http` 或 `https`，且不能包含 userinfo。Server 名称、参数、环境变量、headers、工具过滤和超时都有数量或长度上限；解析失败时整份 MCP 配置进入 `invalid`，其他 Core 能力继续初始化。
+registerServer 不等待连接；begin 等待对应连接就绪。完整消费结果后调用 release。
+目录 nextCursor 原样传给下一次请求的 cursor，不要只读第一页。
+大结果的 result 为 null 且附有 length，用 readResult 的 nextOffset 逐段读取 JSON 文本后解析。
 
-stdio 命令必须由 bundled Runtime 布局解析，不依赖系统 PATH 的偶然状态。SSE/stdio 凭据不能进入公开 DTO 或运行日志。
+需要 elicitation/sampling 时显式启用，通过 events 获取待答请求，插件取得用户输入或调用模型后用 respond 回复。
+旧回调与新版输入往返都由 SDK 处理。未知扩展或手动输入往返可使用
+`begin(handle, method, params, {"raw": True})`。
+完整合同、预算和未支持项见 [组件 Spec](../specs/runtime-v2/mcp-system-component.md)。
 
-## 生命周期
+句柄不跨插件 scope 共享；重启后重新注册，不保存句柄供下次使用。Runtime 崩溃回收是显式 cleanup 的补充。
+组件没有用户服务器列表，不保存连接配置。需要持久 OAuth 时传入稳定 credential_key 作为 registerServer 第二个参数，
+凭据按调用插件 ID 隔离。通过 events 接收 authorization 事件，消费插件负责打开其 URL；组件不会自行打开浏览器。
 
-MCP capability 是 `assistant.mcp-v1`。握手未协商该 capability 时，Core 不创建 MCP owner，也拒绝 MCP 状态请求。
+实现位于 plugins/builtin/sakura_mcp，依赖位于组件私有目录。开发环境沿用 tools/development_plugin_dependencies.py，
+发行包由 staging 准备。验证运行：
 
-Server 状态为 `disabled`、`starting`、`ready`、`degraded`、`stopping` 或 `stopped`。连接和工具发现异步进行，普通聊天不等待所有 Server。首轮 Prompt 会在有界 dependency gate 中等待 Memory 和 MCP；超时后按当前已就绪能力继续。
-
-取消聊天会取消仍在执行的工具链。Core 关闭时逐个关闭 MCP 会话；超时或关闭错误只写诊断，不允许旧工具进入下一 generation。
-
-## 状态边界
-
-MCP 不提供设置页或保存接口，配置只来自 `mcp.yaml`。`MCPStatusBoundary` 的 `mcp.status.get` 只公开：
-
-- `configState` 和稳定 `reasonCode`；
-- Server ID、transport、启用状态、运行状态和工具数量。
-
-command、args、env、URL、headers、工具参数和异常正文不得跨出 Core。状态请求必须携带当前 generation identity。
-
-## 工具注册
-
-MCP 工具进入当前 session 的 ToolRegistry。Server 的 `name_prefix` 用于避免命名冲突，`include_tools` 与 `exclude_tools` 决定暴露范围。每次调用都使用 Server 或工具策略给出的 timeout 和 risk。
-
-工具调用结果必须满足 Core 的大小和类型边界。失败不自动重放，因为 Server 可能已经完成外部操作。
-
-## 验证
-
-下面使用 macOS/Linux 路径；Windows 使用 `.\runtime\python.exe`。
-
-```bash
-./runtime/bin/python3 -m harness run journey-mcp
-./runtime/bin/python3 -m pytest -q tests/unit/test_core_host_mcp.py
+```text
+runtime\python.exe -m pytest -q tests/unit/test_mcp_component.py
 ```
 
-测试使用临时 app root 和可控的本地 Server，覆盖缺失配置、无效配置、启动超时、工具过滤、取消、Core 重建、迟到状态和进程清理。敏感 sentinel 不得出现在 DTO 或日志中。
+macOS/Linux 使用 runtime/bin/python。测试在隔离进程加载 SDK，不把 MCP 安装进 Core。
+不要引用已删除的 app.agent.mcp 或调用 mcp.status.get；旧 journey-mcp 已退役。

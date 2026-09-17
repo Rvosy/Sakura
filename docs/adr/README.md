@@ -72,6 +72,8 @@ spec 或 plan，验收证据放在 records。
 
 - [ADR-0058：由实际消费者负责解析，删除重复业务校验](0058-validation-at-owning-boundaries.md)
 
+- [ADR-0059：MCP 客户端作为可复用系统组件](0059-mcp-client-system-component.md)
+
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
 

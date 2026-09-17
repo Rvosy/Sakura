@@ -21,6 +21,7 @@ from tools.release.diagnostic_build import write_mapping
 
 TARGETS = {"windows-x64", "macos-arm64", "linux-x64"}
 BUILTIN_PLUGINS = {
+    "sakura_mcp",
     "sakura_portrait",
     "sakura_spine",
     "sakura_web",
@@ -33,6 +34,7 @@ BUILTIN_PLUGINS = {
     "sakura_gpt_sovits",
 }
 BUNDLED_DEPENDENCY_DIRECTORIES = {
+    "sakura_mcp",
     "sakura_web",
     "sakura_asr_sensevoice",
     "sakura_mem0",
@@ -42,9 +44,9 @@ BUNDLED_DEPENDENCY_DIRECTORIES = {
 CORE_IMPORTS = (
     "yaml",
     "py7zz",
-    "mcp",
 )
 PLUGIN_ONLY_IMPORTS = (
+    "mcp",
     "sherpa_onnx",
     "sherpa_onnx_core",
     "playwright",

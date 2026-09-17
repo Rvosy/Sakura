@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # 联网搜索与网页读取
@@ -18,5 +18,4 @@ API Key。是否搜索、使用哪些关键词以及是否继续读取网页，�
 浏览器执行脚本才能显示的页面。需要打开、点击或填写网页时，使用独立的浏览器插件。
 
 请求超时、网站拒绝访问或搜索页面无法解析时，会返回具体失败原因。插件显示运行正常只表示工具可调用，
-不保证每个网站都能访问。旧配置无法迁移时，查看[运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)中的
-`WEB_MIGRATION_*` 原因，修正旧 MCP 配置后重新启动。
+不保证每个网站都能访问。更多故障信息可查看[运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)。

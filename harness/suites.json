@@ -74,12 +74,6 @@
         "runtime-v2-window-interaction-tests"
       ]
     },
-    "journey-mcp": {
-      "description": "验证 MCP 配置、generation 生命周期、工具调用、状态和清理边界",
-      "cases": [
-        "runtime-v2-mcp-python-journey"
-      ]
-    },
     "journey-plugins": {
       "description": "验证 Python 插件私有 worker、Core/Rust 设置边界与 generation 重绑定",
       "cases": [
@@ -658,24 +652,6 @@
       "timeout_seconds": 120,
       "env": {
         "NO_COLOR": "1"
-      }
-    },
-    {
-      "id": "runtime-v2-mcp-python-journey",
-      "description": "验证真实 Core MCP 配置、stdio 生命周期、工具状态和故障隔离",
-      "argv": [
-        "{python}",
-        "-m",
-        "pytest",
-        "tests/unit/test_core_host_mcp.py",
-        "tests/unit/test_mcp_runtime.py",
-        "tests/integration/test_wp_4_03_mcp_journey.py",
-        "-q"
-      ],
-      "timeout_seconds": 180,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
       }
     },
     {

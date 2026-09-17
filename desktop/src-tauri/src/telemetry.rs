@@ -1932,7 +1932,7 @@ fn feature_for_event(event: &str) -> Option<&'static str> {
         Some("tts")
     } else if event.starts_with("memory.recall.") || event.starts_with("memory.curation.") {
         Some("memory")
-    } else if event == "tool.execution.started" || event == "mcp.tool.started" {
+    } else if event == "tool.execution.started" {
         Some("tools")
     } else if event == "plugin.loaded" || event == "plugin.execution.started" {
         Some("plugins")
@@ -2167,21 +2167,6 @@ fn allowlisted_runtime_warning(
         ("rust", "screen.capture.failed") => stable_code()
             .filter(|code| code.starts_with("SCREEN_"))
             .map(|code| ("screen", code)),
-        ("core", "mcp.config.failed") => stable_code()
-            .filter(|code| matches!(code.as_str(), "MCP_CONFIG_LOAD_FAILED" | "CONFIG_INVALID"))
-            .map(|code| ("mcp", code)),
-        ("core", "mcp.server.failed") => stable_code()
-            .filter(|code| {
-                matches!(
-                    code.as_str(),
-                    "COMMAND_NOT_FOUND" | "COMMAND_NOT_EXECUTABLE" | "TIMEOUT" | "TRANSPORT_FAILED"
-                )
-            })
-            .map(|code| ("mcp", code)),
-        ("core", "mcp.close.failed") => (stable_code().as_deref() == Some("CLOSE_FAILED"))
-            .then(|| ("mcp", "CLOSE_FAILED".to_string())),
-        ("core", "mcp.close.timeout") => (stable_code().as_deref() == Some("CLOSE_TIMEOUT"))
-            .then(|| ("mcp", "CLOSE_TIMEOUT".to_string())),
         _ => None,
     }
 }
@@ -2981,13 +2966,6 @@ mod tests {
                 json!({"code": "SCREEN_CAPTURE_PLATFORM_DENIED"}),
                 Some(("screen", "SCREEN_CAPTURE_PLATFORM_DENIED")),
             ),
-            (
-                "core",
-                "warning",
-                "mcp.server.failed",
-                json!({"reason_code": "TRANSPORT_FAILED"}),
-                Some(("mcp", "TRANSPORT_FAILED")),
-            ),
         ];
         for (source, severity, event, attributes, expected) in selected {
             assert_eq!(
@@ -3000,7 +2978,7 @@ mod tests {
             allowlisted_runtime_warning(
                 "core",
                 "warning",
-                "mcp.server.failed",
+                "tool.execution.failed",
                 Some(&json!({"reason_code": "CANCELLED"})),
             ),
             None

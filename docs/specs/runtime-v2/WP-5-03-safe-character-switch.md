@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-16
+updated: 2026-09-18
 ---
 
 # WP-5-03 安全角色切换、Session 与历史分页
@@ -14,7 +14,7 @@ updated: 2026-09-16
 第一版只在设置页开放角色选择。下拉选择只更新设置窗口内的临时草稿，用户可以在提交前反复选择；只有点击
 “应用”或“保存并关闭”才保存最终目标并触发切换，放弃设置则恢复已提交角色。角色 ID 变化不是同一
 Assistant Session 的热配置：切换先阻止新聊天、取消并等待旧回复结束，撤销旧语音授权并取消录音，
-再保存目标角色并重建 Assistant Session。Core、MCP、工具注册表以及可复用的表现和 TTS 插件进程保留。
+再保存目标角色并重建 Assistant Session。Core、工具注册表以及可复用的表现和 TTS 插件进程保留。
 依赖当前角色且缓存角色信息的旧插件，在切换范围内暂停并恢复；Memory 整理及其旧回调随该插件作用域回收。
 不提供桌宠右键或托盘入口。
 

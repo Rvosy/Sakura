@@ -180,68 +180,6 @@ def test_external_only_mode_drops_when_bridge_is_absent(monkeypatch) -> None:  #
     log_event("TTS", "发送 GPT-SoVITS 请求", {"text_chars": 4})
 
 
-def test_core_bridge_maps_mcp_business_events_and_keeps_stable_reason_code() -> None:
-    stream = io.BytesIO()
-    bridge = install_runtime_logging(stream)
-    try:
-        with suppress_runtime_logs():
-            log_event(
-                "MCP",
-                "连接或读取工具失败，已跳过",
-                {
-                    "server_id": "server-a1b2c3d4",
-                    "reason_code": "CONNECT_TIMEOUT",
-                    "error": PRIVATE_CHAT,
-                },
-            )
-    finally:
-        bridge.close()
-
-    records = _records(stream)
-    assert records == [
-        {
-            "severity": "error",
-            "verbosity": "error",
-            "channel": "mcp",
-            "event": "mcp.server.failed",
-            "message": "MCP server connection failed and was skipped",
-            "attributes": {
-                "server_id": "server-a1b2c3d4",
-                "reason_code": "CONNECT_TIMEOUT",
-            },
-        }
-    ]
-    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
-
-
-def test_core_bridge_keeps_mcp_tool_registration_counts() -> None:
-    stream = io.BytesIO()
-    bridge = install_runtime_logging(stream)
-    try:
-        with suppress_runtime_logs():
-            log_event(
-                "MCP",
-                "服务器工具注册完成",
-                {
-                    "server_id": "server-a1b2c3d4",
-                    "listed": 7,
-                    "filtered": 2,
-                    "registered": 5,
-                },
-            )
-    finally:
-        bridge.close()
-
-    record = _records(stream)[0]
-    assert record["event"] == "mcp.server.ready"
-    assert record["attributes"] == {
-        "server_id": "server-a1b2c3d4",
-        "listed": 7,
-        "filtered": 2,
-        "registered": 5,
-    }
-
-
 def test_router_chat_operation_context_is_scoped_and_content_derived_events_are_removed() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
@@ -452,7 +390,6 @@ def test_broken_stderr_is_isolated_from_producers() -> None:
     assert bridge.failed
 
 
-
 def test_business_event_keeps_correlation_and_body_free_prompt_metrics() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
@@ -540,7 +477,7 @@ def test_unknown_info_event_is_not_promoted_to_user_visible_info() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     try:
-        log_event("MCP", "内部握手细节", event="mcp.internal.handshake")
+        log_event("Plugin", "内部握手细节", event="plugin.internal.handshake")
     finally:
         bridge.close()
 

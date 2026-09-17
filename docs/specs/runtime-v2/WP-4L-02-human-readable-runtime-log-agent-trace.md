@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -68,7 +68,7 @@ updated: 2026-09-11
 - `shell.started`：每次桌面进程启动，并携带发行包的 `current_version`；
 - `chat.request.received/completed/cancelled/failed`：用户请求进入、最终送达或终止；
 - `memory.recall.started/finished/failed`：召回状态、候选/选中数量和耗时；
-- `context.dependencies.ready/degraded`：Prompt 构建前 Memory/MCP 的实际就绪状态、等待耗时和稳定原因；
+- `context.dependencies.ready/degraded`：Prompt 构建前依赖的实际就绪状态、等待耗时和稳定原因；
 - `memory.curation.started/finished/failed`：后台记忆整理的独立 operation、处理量和终态；
 - `context.prompt.prepared`：最终 payload 的历史条数、记忆数、工具数和估算 token；
 - `api.request.started/finished/failed` 与 `api.response.received`：Provider、模型、HTTP 状态、耗时、usage、
@@ -94,10 +94,10 @@ debug/trace，直至加入固定目录。
 
 ### 2.2 Prompt 依赖与后台 Agent
 
-Core 全局 readiness 不等待 Memory preload 或 MCP discovery。每次交互在最终 Prompt 构建前必须执行一次
-有界、可取消的依赖门：Memory 最多使用前 5 秒，Memory 与 MCP 合计最多使用 15 秒。依赖在期限内完成后
-才能读取本轮记忆和最终 ToolRegistry；用户取消必须及时中止等待。期限结束、Memory 初始化失败或 MCP
-没有可用服务器时，对话继续降级执行，但必须先写 `context.dependencies.degraded`，包含 dependency、status、
+Core 全局 readiness 不等待 Memory preload。每次交互在最终 Prompt 构建前必须执行一次
+有界、可取消的依赖门：Memory 最多等待 5 秒。旧 MCP discovery 和对应等待已移除。依赖在期限内完成后
+才能读取本轮记忆和最终 ToolRegistry；用户取消必须及时中止等待。期限结束或 Memory 初始化失败时，
+对话继续降级执行，但必须先写 `context.dependencies.degraded`，包含 dependency、status、
 reason_code、elapsed_ms，以及可用时的安全 stage/category/error_type。Memory 非 ready 的空结果不得记录为
 “召回完成”，而应记录 `memory.recall.unavailable`。
 
@@ -226,5 +226,5 @@ reply repair、合法 segments/visual_observation、普通文本、非法 JSON�
 插件 worker 转发、等级降噪、Provider/Core/WebView 安全错误详情、业务事件目录完整性和 writer 故障隔离；
 迁移测试还必须证明活动 Runtime 日志无 JSON 混写且 Python 子进程从不持有日志文件。另需覆盖 Memory
 loading→ready 后真实召回、
-Memory/MCP 等待超时与取消、MCP 注册完成前不构建 Prompt、Memory 初始化稳定根因投影，以及后台记忆整理
+Memory 等待超时与取消、Memory 初始化稳定根因投影，以及后台记忆整理
 request/reply 的独立 operation 与 Trace。
