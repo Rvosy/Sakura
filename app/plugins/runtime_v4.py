@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import codecs
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from contextlib import contextmanager
 from pathlib import Path
@@ -699,8 +700,7 @@ class PluginRuntimeManager:
         *args: object,
         timeout: float | None = None,
     ) -> object:
-        detached_args = json_value(list(args))
-        assert isinstance(detached_args, list)
+        detached_args = deepcopy(list(args))
         with self._lock:
             binding = self._callbacks.get(handle)
             if binding is None:
@@ -1381,8 +1381,7 @@ class PluginRuntimeManager:
         timeout: float | None = None,
         expected_identity: Mapping[str, str] | None = None,
     ) -> object:
-        detached_args = json_value(list(args))
-        assert isinstance(detached_args, list)
+        detached_args = deepcopy(list(args))
         with self._lock:
             binding = self._services.get(service_key)
             draining = self._draining_processes.get(caller_id)
@@ -1452,7 +1451,7 @@ class PluginRuntimeManager:
         metadata_token = HOST_CALLER_LOG_METADATA.set(log_metadata)
         caller_token = HOST_CALLER.set(caller_id)
         try:
-            result = json_value(callback(*detached_args))
+            result = callback(*detached_args)
             self._track_host_effect(caller_id, service_key, method, detached_args, result)
             return result
         except PluginRuntimeError:

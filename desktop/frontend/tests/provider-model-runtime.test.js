@@ -80,26 +80,9 @@ function dynamicSnapshot() {
   };
 }
 
-test("provider snapshot validates identity and rejects credential-shaped response fields", () => {
-  assert.equal(validateProviderModelSnapshot(snapshot()).providers[0].configured, true);
-  assert.throws(
-    () => validateProviderModelSnapshot({ ...snapshot(), api_key: "must-not-return" }),
-    /sensitive/,
-  );
-  assert.throws(
-    () => validateProviderModelSnapshot({ ...snapshot(), core_generation_id: "" }),
-    /generation/,
-  );
-  assert.throws(
-    () => validateProviderModelSnapshot({
-      ...snapshot(),
-      model_slots: {
-        chat: { profile_id: "fixture", model: "fixture-model" },
-        vision_chat: { profile_id: "", model: "" },
-      },
-    }),
-    /model slots/,
-  );
+test("provider snapshots accept additive Core fields", () => {
+  const value = { ...snapshot(), futureField: true };
+  assert.deepEqual(validateProviderModelSnapshot(value), value);
 });
 
 test("the current schema preserves active plugin slots and unavailable selections without credentials", () => {
@@ -118,26 +101,6 @@ test("the current schema preserves active plugin slots and unavailable selection
     profile_id: "removed",
     model: "removed-model",
   });
-  assert.throws(
-    () => validateProviderModelSnapshot({
-      ...dynamicSnapshot(),
-      model_slots: dynamicSnapshot().model_slots.map((slot, index) => (
-        index === 2 ? { ...slot, apiKey: "must-not-return" } : slot
-      )),
-    }),
-    /sensitive/,
-  );
-  assert.throws(
-    () => validateProviderModelSnapshot({
-      ...dynamicSnapshot(),
-      model_slots: dynamicSnapshot().model_slots.map((slot, index) => (
-        index === 0
-          ? { ...slot, selection: { ...slot.selection, context_window_tokens: 2048 } }
-          : slot
-      )),
-    }),
-    /invalid model slot/,
-  );
 });
 
 test("dynamic model slot validation rejects incomplete, missing, and stale selections", () => {

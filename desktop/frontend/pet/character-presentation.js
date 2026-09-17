@@ -4,9 +4,6 @@ const ASSET_URL = /^(?:sakura-character:\/\/localhost|http:\/\/sakura-character\
 const MODULE_URL = /^(?:sakura-character:\/\/localhost|http:\/\/sakura-character\.localhost)\/module\/[0-9a-f]+\/[0-9a-f]{32}\/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.m?js$/;
 export function validateCharacterPresentation(value) {
   if (!value || value.schemaVersion !== 2) throw new Error("CHARACTER_PRESENTATION_SCHEMA_UNSUPPORTED");
-  for (const key of ["generationId", "characterId", "displayName", "initialMessage", "visualReasonCode"]) {
-    if (typeof value[key] !== "string" || !value[key] || value[key].length > 16384) throw new Error("CHARACTER_PRESENTATION_INVALID");
-  }
   const visual = value.visual;
   if (visual != null && (!/^[0-9a-f]{32}$/.test(visual.bindingId || "") || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(visual.resourceId || "")
     || !MODULE_URL.test(visual.renderer || "") || (visual.editor && !MODULE_URL.test(visual.editor))

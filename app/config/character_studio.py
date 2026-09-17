@@ -670,15 +670,10 @@ class CharacterStudioService:
             imported_root = _resolve_workspace_path(package_dir, f"{subdir}/{_safe_filename(source.name)}-{uuid.uuid4().hex[:12]}", "表现资源")
             items = []
             copied = []
-            total_bytes = 0
-            directory_count = 0
             try:
                 def walk_error(error):
                     raise error
                 for directory, dirs, names in os.walk(source, followlinks=False, onerror=walk_error):
-                    directory_count += 1
-                    if directory_count > 512:
-                        raise ValueError("VISUAL_ASSET_LIMIT")
                     dirs.sort()
                     for name in [*dirs, *sorted(names)]:
                         _operation_checkpoint(cancel_check)
@@ -686,13 +681,10 @@ class CharacterStudioService:
                         if file.is_symlink() or file.is_junction():
                             raise ValueError("VISUAL_ASSET_INVALID")
                         relative_source = file.resolve(strict=True).relative_to(source)
-                        if len(relative_source.parts) > 32:
-                            raise ValueError("VISUAL_ASSET_LIMIT")
                         if name in dirs:
                             continue
                         size = file.stat().st_size
-                        total_bytes += size
-                        if not file.is_file() or size > 64 * 1024 * 1024 or total_bytes > 256 * 1024 * 1024 or len(copied) >= 512:
+                        if not file.is_file():
                             raise ValueError("VISUAL_ASSET_LIMIT")
                         target = _resolve_workspace_path(imported_root, relative_source.as_posix(), "表现资源")
                         target.parent.mkdir(parents=True, exist_ok=True)
@@ -708,7 +700,7 @@ class CharacterStudioService:
                     shutil.rmtree(imported_root)
                 raise
             return {"items": items}
-        if not source.is_file() or source.stat().st_size > 64 * 1024 * 1024:
+        if not source.is_file():
             raise ValueError("VISUAL_ASSET_INVALID")
         result = _copy_workspace_asset(package_dir, source, subdir, cancel_check=cancel_check)
         self._commit_imported_assets(package_dir, [result], cancel_check=cancel_check, commit_started=commit_started)
@@ -1666,9 +1658,6 @@ def _validate_visual_draft(package_dir: Path, doc: CharacterStudioDoc) -> None:
     resources, _ = character_visual_resources({"visuals": doc.visuals}, package_dir)
     if set(doc.visual_data) - {item.id for item in resources}:
         raise ValueError("VISUAL_DRAFT_INVALID")
-    encoded = json.dumps(doc.visual_data, ensure_ascii=False, allow_nan=False)
-    if len(encoded.encode("utf-8")) > 256 * 1024:
-        raise ValueError("VISUAL_DRAFT_TOO_LARGE")
 
 
 def _write_visual_draft(package_dir: Path, doc: CharacterStudioDoc) -> None:

@@ -385,7 +385,7 @@ class _ToolsHostService:
             or not _TOOL_NAME.fullmatch(name)
             or not isinstance(description, str)
             or not description
-            or len(description) > 500
+
             or not isinstance(parameters, Mapping)
         ):
             raise HostServiceError("TOOL_DESCRIPTOR_INVALID")
@@ -494,7 +494,7 @@ class _ContextHostService:
             not isinstance(provider_id, str)
             or not _IDENTIFIER.fullmatch(provider_id)
             or not isinstance(description, str)
-            or len(description) > 240
+
             or not isinstance(order, (int, float))
             or isinstance(order, bool)
             or not math.isfinite(order)
@@ -662,7 +662,7 @@ class _ModelSlotsHostService:
         order = descriptor.get("order")
         if (
             not isinstance(label, str) or not 1 <= len(label) <= 120
-            or not isinstance(description, str) or len(description) > 240
+            or not isinstance(description, str)
             or model_kind != "chat_completion"
             or not isinstance(required, bool)
             or isinstance(order, bool) or not isinstance(order, (int, float))
@@ -797,13 +797,13 @@ class _SettingsHostService:
         if (
             not isinstance(title, str)
             or not title
-            or len(title) > 120
+
             or not isinstance(order, (int, float))
             or isinstance(order, bool)
             or not isinstance(raw_fields, list)
-            or len(raw_fields) > 32
+
             or not isinstance(raw_actions, list)
-            or len(raw_actions) > 15
+
         ):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         fields = []
@@ -1233,7 +1233,7 @@ class _SettingsHostService:
             or len(public["message"]) > 240
         ):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-        if not _json_compatible(public, 64 * 1024):
+        if not _json_compatible(public):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
         if "values" in public:
             with self._lock:
@@ -1365,9 +1365,9 @@ class _ComposerToolsV0HostService:
             or len(tool_id) > 64
             or not isinstance(label, str)
             or not label.strip()
-            or len(label) > 40
+
             or not isinstance(description, str)
-            or len(description) > 120
+
             or icon not in _COMPOSER_TOOL_ICONS
             or not isinstance(order, (int, float))
             or isinstance(order, bool)
@@ -1648,7 +1648,7 @@ def _model_slot_selection(value: object) -> dict[str, str]:
         not isinstance(profile_id, str)
         or len(profile_id) > 64
         or not isinstance(model, str)
-        or len(model) > 256
+
         or bool(profile_id) != bool(model)
     ):
         raise HostServiceError("MODEL_SLOT_SELECTION_INVALID")
@@ -1756,11 +1756,11 @@ def _settings_field(
     if (
         not isinstance(label, str)
         or not label
-        or len(label) > 120
+
         or not isinstance(kind, str)
         or kind not in kind_map
         or not isinstance(description, str)
-        or len(description) > 240
+
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     public_kind = kind_map[kind]
@@ -1796,7 +1796,7 @@ def _settings_field(
     raw_action_ids = raw.get("actionIds", [])
     if (
         not isinstance(raw_action_ids, list)
-        or len(raw_action_ids) > 8
+
         or any(
             not isinstance(action_id, str)
             or not _IDENTIFIER.fullmatch(action_id)
@@ -1819,7 +1819,7 @@ def _settings_field(
             64,
         )
         condition_value = condition.get("equals")
-        if not isinstance(condition_value, str) or len(condition_value) > 200:
+        if not isinstance(condition_value, str):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         enabled_when = {"field": condition_field, "equals": condition_value}
         if "hide" in condition:
@@ -1863,7 +1863,7 @@ def _settings_field(
 
 
 def _settings_options(value: object) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or len(value) > 64:
+    if not isinstance(value, list):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     options: list[dict[str, Any]] = []
     for item in value:
@@ -1873,7 +1873,7 @@ def _settings_options(value: object) -> list[dict[str, Any]]:
         if (
             not isinstance(label, str)
             or not label
-            or len(label) > 120
+
             or isinstance(option_value, (dict, list))
             or not isinstance(option_value, (str, bool, int, float))
         ):
@@ -1895,9 +1895,9 @@ def _settings_action(value: object) -> dict[str, Any]:
     if (
         not isinstance(label, str)
         or not label
-        or len(label) > 120
+
         or not isinstance(description, str)
-        or len(description) > 240
+
         or danger is not False
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
@@ -1944,9 +1944,8 @@ def _settings_collection(value: object) -> dict[str, Any]:
     if (
         not isinstance(title, str)
         or not title
-        or len(title) > 120
+
         or not isinstance(description, str)
-        or len(description) > 240
         or not isinstance(scope, str)
         or scope not in {"global", "character"}
         or not isinstance(searchable, bool)
@@ -1954,13 +1953,13 @@ def _settings_collection(value: object) -> dict[str, Any]:
         or isinstance(page_size, bool)
         or not 1 <= page_size <= 100
         or not isinstance(delete_confirmation, str)
-        or len(delete_confirmation) > 240
+
         or not isinstance(raw_columns, list)
         or not 1 <= len(raw_columns) <= 12
         or not isinstance(raw_fields, list)
-        or len(raw_fields) > 16
+
         or not isinstance(raw_filters, list)
-        or len(raw_filters) > 8
+
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     columns = tuple(_collection_column(item) for item in raw_columns)
@@ -2004,7 +2003,7 @@ def _collection_column(value: object) -> dict[str, Any]:
     if (
         not isinstance(label, str)
         or not label
-        or len(label) > 120
+
         or kind not in {"string", "number", "boolean", "datetime"}
         or (
             max_length is not None
@@ -2026,7 +2025,7 @@ def _collection_filter(value: object) -> dict[str, Any]:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
     label = raw.get("label")
-    if not isinstance(label, str) or not label or len(label) > 120:
+    if not isinstance(label, str) or not label:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     options = _settings_options(raw.get("options"))
     if not options:
@@ -2096,12 +2095,12 @@ def _collection_query_request(
     search = payload.get("search")
     filters = _mapping(payload.get("filters"), "SETTINGS_COLLECTION_QUERY_INVALID")
     if (
-        (cursor is not None and (not isinstance(cursor, str) or len(cursor) > 256))
+        (cursor is not None and (not isinstance(cursor, str)))
         or not isinstance(limit, int)
         or isinstance(limit, bool)
         or not 1 <= limit <= 100
         or not isinstance(search, str)
-        or len(search) > 200
+
         or (search and not collection.searchable)
         or len(filters) > len(collection.filters)
     ):
@@ -2144,7 +2143,7 @@ def _collection_query_result(
         "nextCursor": next_cursor,
         "total": total,
     }
-    if not _json_compatible(result, 256 * 1024):
+    if not _json_compatible(result):
         raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
     return result
 
@@ -2175,7 +2174,7 @@ def _collection_item(
             raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
         projected[key] = item
     result = {"itemId": item_id, "values": projected}
-    if not _json_compatible(result, 128 * 1024):
+    if not _json_compatible(result):
         raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
     return result
 
@@ -2367,12 +2366,12 @@ def _application_state(value: object) -> str:
     return "applied"
 
 
-def _json_compatible(value: object, maximum: int) -> bool:
+def _json_compatible(value: object) -> bool:
     try:
-        encoded = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        json.dumps(value, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError):
         return False
-    return len(encoded) <= maximum
+    return True
 
 
 def _timeline_entry_mapping(entry: object) -> dict[str, Any]:

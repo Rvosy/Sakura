@@ -142,3 +142,14 @@ def test_component_rollback_keeps_primary_and_cleanup_errors(tmp_path, monkeypat
     diagnostics = exception_diagnostics(failure.value, reason_code="IMPORT_FAILED", stage="studio.visual.import")
     assert "disk full" in diagnostics["diagnostic"]
     assert "cleanup denied" in diagnostics["recovery_diagnostic"]
+
+
+def test_large_resource_description_roundtrips_without_business_size_gate(tmp_path):
+    package = tmp_path / "package"
+    package.mkdir()
+    resource = CharacterVisualResource("numeric", "example.numeric@1", ".", "resource.json")
+    data = {"labels": ["label" * 1000 for _ in range(100)]}
+    archive = export_visual_archive(package, resource,
+        {"entry": "resource.json", "data": data, "assets": {}}, tmp_path / "large.visual")
+    imported = import_visual_archive(archive, package)
+    assert json.loads((package / imported.root / imported.entry).read_text()) == data

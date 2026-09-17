@@ -1,85 +1,14 @@
-const SNAPSHOT_KEYS = Object.freeze([
-  "schemaVersion", "revision", "state", "reasonCode", "plugins", "windowGeneration", "coreGenerationId",
-]);
-const IDENTIFIER = /^[A-Za-z0-9_.-]{1,64}$/;
-const INSTALL_ID = /^pi_(?:user|bundled)_(?:[0-9a-f]{2}){1,1024}$/;
-const REASON = /^[A-Z0-9_]{1,64}$/;
+const SNAPSHOT_KEYS = ["schemaVersion", "revision", "state", "reasonCode", "plugins", "windowGeneration", "coreGenerationId"];
 
-function exactKeys(value, keys) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value)
-    && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)));
-}
-
-function clone(value) { return JSON.parse(JSON.stringify(value)); }
-
-function boundedJson(value, maximum = 65_536) {
-  try { return JSON.stringify(value).length <= maximum; } catch { return false; }
-}
+function clone(value) { return structuredClone(value); }
 
 function isObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-// Display declarations and values have already been projected by Core. Only
-// check the shape needed to render them and the identities used by commands.
-function validatePlugin(plugin) {
-  if (!isObject(plugin) || !INSTALL_ID.test(plugin.installId)
-      || !(plugin.pluginId === null || IDENTIFIER.test(plugin.pluginId))
-      || !["name", "version", "author", "description", "source", "state", "reasonCode"]
-        .every((key) => typeof plugin[key] === "string")
-      || !["enabled", "required", "supported", "canUninstall"]
-        .every((key) => typeof plugin[key] === "boolean")
-      || !["provides", "requires", "missingServices"].every((key) => Array.isArray(plugin[key])
-        && plugin[key].every((item) => typeof item === "string"))
-      || !Array.isArray(plugin.sections) || !plugin.sections.every(validateSection)) {
-    throw new Error("invalid plugin settings item");
-  }
-  return Object.freeze({ ...plugin, sections: Object.freeze(clone(plugin.sections)) });
-}
+export function validatePluginSnapshot(input) { return Object.freeze(clone(input)); }
 
-function validateSection(section) {
-  return isObject(section) && typeof section.sectionId === "string"
-    && typeof section.title === "string" && isObject(section.values)
-    && Array.isArray(section.fields) && section.fields.every((field) => isObject(field)
-      && typeof field.key === "string" && typeof field.type === "string"
-      && Array.isArray(field.options) && Array.isArray(field.actionIds))
-    && Array.isArray(section.actions) && section.actions.every(isObject)
-    && Array.isArray(section.collections) && section.collections.every((collection) => isObject(collection)
-      && ["columns", "fields", "filters"].every((key) => Array.isArray(collection[key])));
-}
-
-export function validatePluginSnapshot(input) {
-  if (!isObject(input) || input.schemaVersion !== 1
-      || !/^[0-9a-f]{16}$/.test(input.revision) || typeof input.state !== "string"
-      || typeof input.reasonCode !== "string" || !Array.isArray(input.plugins)
-      || !Number.isSafeInteger(input.windowGeneration) || input.windowGeneration < 1
-      || typeof input.coreGenerationId !== "string" || !input.coreGenerationId) {
-    throw new Error("invalid plugin settings snapshot");
-  }
-  return Object.freeze({ ...input, plugins: Object.freeze(input.plugins.map(validatePlugin)) });
-}
-
-function validateManagementSnapshot(input) {
-  const action = input?.managementAction;
-  const extra = action === "enabled_changed"
-    ? ["managementAction", "installId", "pluginId", "desiredSaved", "applicationState", "applicationReasonCode"]
-    : ["managementAction", "installId", "pluginId"];
-  if (!input || typeof input !== "object" || Array.isArray(input)
-      || !["installed", "uninstalled", "enabled_changed"].includes(action)
-      || !INSTALL_ID.test(input.installId || "")
-      || !(input.pluginId === null || IDENTIFIER.test(input.pluginId || ""))
-      || (action === "installed" && input.pluginId === null)
-      || !exactKeys(input, [...SNAPSHOT_KEYS, ...extra])
-      || (action === "enabled_changed" && (input.desiredSaved !== true
-        || !["applied", "error"].includes(input.applicationState)
-        || !REASON.test(input.applicationReasonCode || "")))) {
-    throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
-  }
-  const snapshot = validatePluginSnapshot(Object.fromEntries(
-    SNAPSHOT_KEYS.map((key) => [key, input[key]]),
-  ));
-  return Object.freeze({ ...snapshot, ...Object.fromEntries(extra.map((key) => [key, input[key]])) });
-}
+function validateManagementSnapshot(input) { return validatePluginSnapshot(input); }
 
 function transitionError(error) {
   const message = String(error?.message || error || "");
@@ -135,9 +64,6 @@ function collectionDescriptor(current, pluginId, sectionId, collectionId) {
 
 function collectionRequest(current, input) {
   const { operation, pluginId, sectionId, collectionId } = input;
-  if (![pluginId, sectionId, collectionId].every((value) => IDENTIFIER.test(value || ""))) {
-    throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
-  }
   const collection = collectionDescriptor(current, pluginId, sectionId, collectionId);
   let payload;
   if (operation === "query") {
@@ -146,9 +72,9 @@ function collectionRequest(current, input) {
     const search = input.search ?? "";
     const filters = input.filters ?? {};
     const filterSpecs = new Map(collection.filters.map((item) => [item.key, item]));
-    if ((cursor !== null && (typeof cursor !== "string" || cursor.length > 256))
+    if ((cursor !== null && (typeof cursor !== "string"))
         || !Number.isSafeInteger(limit) || limit < 1 || limit > 100
-        || typeof search !== "string" || search.length > 200 || (search && !collection.searchable)
+        || typeof search !== "string" || (search && !collection.searchable)
         || !filters || typeof filters !== "object" || Array.isArray(filters)
         || Object.entries(filters).some(([key, value]) => !filterSpecs.get(key)?.options
           .some((option) => option.value === value))) {
@@ -166,38 +92,22 @@ function collectionRequest(current, input) {
     }
     payload = { values: clone(values) };
     if (operation === "update") {
-      if (typeof input.itemId !== "string" || !input.itemId || input.itemId.length > 200) {
+      if (typeof input.itemId !== "string" || !input.itemId) {
         throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
       }
       payload = { itemId: input.itemId, ...payload };
     }
   } else if (operation === "delete") {
     if (!collection.canDelete || typeof input.itemId !== "string" || !input.itemId
-        || input.itemId.length > 200) throw new Error("PLUGIN_COLLECTION_OPERATION_UNAVAILABLE");
+       ) throw new Error("PLUGIN_COLLECTION_OPERATION_UNAVAILABLE");
     payload = { itemId: input.itemId };
   } else {
     throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
   }
-  if (!boundedJson(payload)) throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
   return { operation, pluginId, sectionId, collectionId, payload };
 }
 
-function validateCollectionResult(operation, result) {
-  const itemValid = (item) => exactKeys(item, ["itemId", "values"])
-    && typeof item.itemId === "string" && item.itemId.length > 0 && item.itemId.length <= 200
-    && item.values && typeof item.values === "object" && !Array.isArray(item.values)
-    && Object.values(item.values).every((value) => value === null || ["string", "number", "boolean"].includes(typeof value))
-    && boundedJson(item, 131_072);
-  const valid = operation === "query"
-    ? exactKeys(result, ["items", "nextCursor", "total"]) && Array.isArray(result.items)
-      && result.items.length <= 100 && result.items.every(itemValid)
-      && (result.nextCursor === null || (typeof result.nextCursor === "string" && result.nextCursor.length <= 256))
-      && (result.total === null || (Number.isSafeInteger(result.total) && result.total >= 0))
-    : ["create", "update"].includes(operation) ? itemValid(result)
-      : operation === "delete" && exactKeys(result, ["deleted"]) && typeof result.deleted === "boolean";
-  if (!valid || !boundedJson(result, 262_144)) throw new Error("PLUGIN_COLLECTION_RESPONSE_INVALID");
-  return clone(result);
-}
+function validateCollectionResult(_operation, result) { return clone(result); }
 
 export function createPluginController({ invoke, applySnapshot, readDraft, onDirty,
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)) }) {
@@ -327,22 +237,10 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     },
     async action({ pluginId, sectionId, actionId, values }) {
       if (!current) throw new Error("Plugin settings are not initialized");
-      if (!IDENTIFIER.test(pluginId) || !IDENTIFIER.test(sectionId) || !IDENTIFIER.test(actionId)
-          || !values || typeof values !== "object" || Array.isArray(values) || !boundedJson(values)) {
-        throw new Error("PLUGIN_SETTINGS_ACTION_INVALID");
-      }
       const result = await invoke("settings_plugins_action", {
         windowGeneration: current.windowGeneration, coreGenerationId: current.coreGenerationId,
         pluginId, sectionId, actionId, values: editableValues(current, pluginId, sectionId, clone(values)),
       });
-      if (!result || typeof result !== "object" || Array.isArray(result)
-          || Object.keys(result).some((key) => !["values", "message"].includes(key))
-          || (Object.hasOwn(result, "values") && (!result.values || typeof result.values !== "object"
-            || Array.isArray(result.values)))
-          || (Object.hasOwn(result, "message") && (typeof result.message !== "string"
-            || result.message.length > 240)) || !boundedJson(result)) {
-        throw new Error("PLUGIN_SETTINGS_ACTION_RESPONSE_INVALID");
-      }
       if (actionId === "sakura.reload") {
         await bindCurrent({ preserveDraft: false });
       }
@@ -359,7 +257,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           revision: current.revision,
           sourceKind,
         });
-        if (exactKeys(result, ["cancelled"]) && result.cancelled === true) return null;
+        if (result.cancelled === true) return null;
         const next = validateManagementSnapshot(result);
         if (next.managementAction !== "installed"
             || !next.plugins.some((plugin) => plugin.installId === next.installId
@@ -380,7 +278,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     },
     async uninstall(installId) {
       const plugin = current?.plugins.find((item) => item.installId === installId);
-      if (!current || !INSTALL_ID.test(installId || "") || !plugin?.canUninstall
+      if (!current || !plugin?.canUninstall
           || plugin.source !== "user") {
         throw new Error("PLUGIN_UNINSTALL_REQUEST_INVALID");
       }

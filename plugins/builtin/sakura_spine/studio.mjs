@@ -28,7 +28,7 @@ export async function readEditorResource(config, read) {
     modelControls: animations.length === 1 ? ['skin'] : ['skin', 'animation', 'speed', 'action'], ...config };
   const labels = config.skinLabels ?? {};
   if (('skinLabels' in config && config.skinLabels === null) || typeof labels !== 'object' || Array.isArray(labels)
-    || Object.entries(labels).some(([name, text]) => !allSkins.includes(name) || typeof text !== 'string' || [...text].length > 120)) throw new Error('SPINE_CONFIG_INVALID');
+    || Object.entries(labels).some(([name, text]) => !allSkins.includes(name) || typeof text !== 'string')) throw new Error('SPINE_CONFIG_INVALID');
   if (!skins.includes(normalized.defaultSkin)) throw new Error('SPINE_DEFAULT_INVALID');
   return { runtimeVersion: skeleton.skeleton.spine, config: normalized, skins, animations, textures };
 }

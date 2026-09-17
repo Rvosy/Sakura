@@ -15,7 +15,7 @@ _SERVICE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 
 def relative_resource_path(value: object, *, allow_root: bool = False) -> str:
     """Accept portable, package-relative paths on every host platform."""
-    if not isinstance(value, str) or not value or len(value) > 1024:
+    if not isinstance(value, str) or not value:
         raise ValueError("VISUAL_PATH_INVALID")
     if allow_root and value == ".":
         return value

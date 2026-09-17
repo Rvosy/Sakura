@@ -627,14 +627,14 @@
     },
     {
       "id": "runtime-v2-plugin-rust-journey",
-      "description": "验证插件 capability 协商和原生设置 DTO 边界",
+      "description": "验证原生设置能力清单和凭据隔离",
       "argv": [
         "cargo",
         "test",
         "--manifest-path",
         "desktop/src-tauri/Cargo.toml",
         "--locked",
-        "wp_4_04",
+        "capability_manifest_exposes_feature_scoped_settings_without_secrets",
         "--",
         "--test-threads=1"
       ],

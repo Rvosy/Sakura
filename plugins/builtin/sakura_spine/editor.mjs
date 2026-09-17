@@ -63,7 +63,7 @@ export function createEditor({ container, rendererData, onChange = () => {}, onP
   const nameLabel = doc.createElement('label');
   nameLabel.className = 'spine-field'; nameLabel.textContent = '当前表情名称';
   const skinName = doc.createElement('input');
-  skinName.type = 'text'; skinName.maxLength = 120; skinName.setAttribute('aria-label', '当前表情名称');
+  skinName.type = 'text'; skinName.setAttribute('aria-label', '当前表情名称');
   skinName.value = labelFor(selectedSkin, 'skin', draft.skinLabels);
   skinName.addEventListener('input', () => {
     draft.skinLabels = { ...draft.skinLabels, [selectedSkin]: skinName.value };

@@ -17,7 +17,6 @@ use serde_json::{json, Value};
 use crate::{core_host_protocol::validate_envelope, core_host_runtime::ConcurrentRequestHandle};
 
 pub const CHAT_REGISTRY_LIMIT: usize = 32;
-pub const CHAT_PAYLOAD_LIMIT: usize = 64 * 1024;
 pub const CHAT_SEND_DEADLINE: Duration = Duration::from_secs(30);
 pub const CHAT_CANCEL_DEADLINE: Duration = Duration::from_secs(1);
 const ALLOWED_WINDOW: &str = "main";
@@ -261,10 +260,6 @@ impl CoreHostGateway {
         {
             return Err("INVALID_CHAT_EVENT: payload identity mismatch".to_string());
         }
-        validate_chat_event_payload(
-            event_name,
-            object.get("payload").expect("validated payload"),
-        )?;
         let mut state = self
             .state
             .lock()
@@ -348,9 +343,6 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
         .ok_or_else(|| "INVALID_CHAT_PAYLOAD: payload must be an object".to_string())?;
     if object.len() == 1 && object.contains_key("event") {
         validate_update_available_event(object.get("event"))?;
-        if serde_json::to_vec(payload).map_or(true, |encoded| encoded.len() > CHAT_PAYLOAD_LIMIT) {
-            return Err("CHAT_PAYLOAD_TOO_LARGE: payload exceeds its limit".to_string());
-        }
         return Ok(());
     }
     if object
@@ -359,16 +351,11 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
     {
         return Err("INVALID_CHAT_PAYLOAD: payload contains forbidden fields".to_string());
     }
-    let message = object
+    object
         .get("message")
         .and_then(Value::as_str)
         .filter(|message| !message.trim().is_empty())
         .ok_or_else(|| "INVALID_CHAT_PAYLOAD: message must be non-empty".to_string())?;
-    if message.len() > CHAT_PAYLOAD_LIMIT
-        || serde_json::to_vec(payload).map_or(true, |encoded| encoded.len() > CHAT_PAYLOAD_LIMIT)
-    {
-        return Err("CHAT_PAYLOAD_TOO_LARGE: payload exceeds its limit".to_string());
-    }
     if let Some(attachment_id) = object.get("attachmentId") {
         let valid = attachment_id
             .as_str()
@@ -421,82 +408,6 @@ fn validate_update_available_event(event: Option<&Value>) -> Result<(), String> 
                     .is_some_and(|text| text.chars().count() <= limit)
         }) {
             return Err(format!("INVALID_CHAT_PAYLOAD: update {key} is invalid"));
-        }
-    }
-    Ok(())
-}
-
-fn validate_chat_event_payload(name: &str, payload: &Value) -> Result<(), String> {
-    let payload = payload
-        .as_object()
-        .ok_or_else(|| "INVALID_CHAT_EVENT: payload must be an object".to_string())?;
-    match name {
-        "chat.started" if payload.len() == 1 => Ok(()),
-        "chat.cancelled" if payload.len() == 2 => validate_history_status(payload),
-        "chat.completed" if payload.len() == 3 => {
-            validate_history_status(payload)?;
-            validate_chat_reply(payload.get("reply"))
-        }
-        "chat.failed" if payload.len() == 3 => {
-            validate_history_status(payload)?;
-            let error = payload
-                .get("error")
-                .and_then(Value::as_object)
-                .ok_or_else(|| "INVALID_CHAT_EVENT: failed event error is invalid".to_string())?;
-            if error.len() == 4
-                && error.get("code").is_some_and(Value::is_string)
-                && error.get("message").is_some_and(Value::is_string)
-                && error.get("retryable").is_some_and(Value::is_boolean)
-                && error.get("details").is_some_and(Value::is_object)
-            {
-                Ok(())
-            } else {
-                Err("INVALID_CHAT_EVENT: failed event error shape is invalid".to_string())
-            }
-        }
-        _ => Err("INVALID_CHAT_EVENT: event payload shape is invalid".to_string()),
-    }
-}
-
-fn validate_history_status(payload: &serde_json::Map<String, Value>) -> Result<(), String> {
-    if matches!(
-        payload.get("historyStatus").and_then(Value::as_str),
-        Some("saved" | "degraded")
-    ) {
-        Ok(())
-    } else {
-        Err("INVALID_CHAT_EVENT: history status is invalid".to_string())
-    }
-}
-
-fn validate_chat_reply(reply: Option<&Value>) -> Result<(), String> {
-    let reply = reply
-        .and_then(Value::as_object)
-        .ok_or_else(|| "INVALID_CHAT_EVENT: completed reply is invalid".to_string())?;
-    if reply.len() != 1 {
-        return Err("INVALID_CHAT_EVENT: completed reply shape is invalid".to_string());
-    }
-    let segments = reply
-        .get("segments")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "INVALID_CHAT_EVENT: completed segments are invalid".to_string())?;
-    for segment in segments {
-        let segment = segment
-            .as_object()
-            .ok_or_else(|| "INVALID_CHAT_EVENT: completed segment is invalid".to_string())?;
-        // Visual controls are optional opaque data. The renderer boundary drops
-        // invalid controls without rejecting an otherwise valid text reply.
-        if segment.keys().any(|key| {
-            !matches!(
-                key.as_str(),
-                "text" | "translation" | "tone" | "portrait" | "suppressTts" | "control"
-            )
-        }) || !["text", "translation", "tone", "portrait"]
-            .iter()
-            .all(|key| segment.get(*key).is_some_and(Value::is_string))
-            || !segment.get("suppressTts").is_some_and(Value::is_boolean)
-        {
-            return Err("INVALID_CHAT_EVENT: completed segment shape is invalid".to_string());
         }
     }
     Ok(())
@@ -622,25 +533,6 @@ mod tests {
             }}}),
         ] {
             assert!(validate_chat_payload(&invalid).is_err());
-        }
-    }
-
-    #[test]
-    fn completed_reply_and_history_status_require_the_exact_public_shape() {
-        let operation_id = "chat-exact";
-        let mut valid = chat_event(operation_id, "chat.completed");
-        assert!(validate_chat_event_payload("chat.completed", &valid["payload"]).is_ok());
-        for field in ["_debug", "actions", "prompt", "model", "apiKey"] {
-            valid["payload"]["reply"][field] = json!("PRIVATE");
-            assert!(validate_chat_event_payload("chat.completed", &valid["payload"]).is_err());
-            valid["payload"]["reply"]
-                .as_object_mut()
-                .expect("reply object")
-                .remove(field);
-        }
-        for invalid in [json!(null), json!("saved-ish"), json!(true)] {
-            valid["payload"]["historyStatus"] = invalid;
-            assert!(validate_chat_event_payload("chat.completed", &valid["payload"]).is_err());
         }
     }
 

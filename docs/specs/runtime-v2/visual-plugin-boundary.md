@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-12
+updated: 2026-09-16
 ---
 
 # 表现插件：资源、编辑、控制与渲染
@@ -111,10 +111,10 @@ request = {characterId, resource:{id,type,root,entry}, segment?}
 ```
 
 `describe` 通过 `sakura.host.character.resolve_resource(characterId, relativePath)` 读取文件。`assets` 是
-`key -> 角色包内相对路径`，最多 256 项；它列出供渲染或组件导出的文件。宿主不解释资源格式。
+`key -> 角色包内相对路径`；它列出供渲染或组件导出的文件。宿主不解释资源格式。
 资产 key 与 rendererData 内部键属于插件语义，`secret`、`token` 等名称可以作为资源标识；不按宿主敏感字段名拒绝。
-该例外只适用于表现 DTO 的私有字典，资产值仍须通过包内路径校验，其他 Snapshot 字段继续检查。
-说明总 JSON 最多 64 KiB，`prompt` 最多 16,384 个字符，`outputSchema` 必须是对象。
+资产值仍须通过包内路径授权。内部 Snapshot 允许增加字段，消费层不重复验证完整结构。
+描述不另设容量、资产数量或提示词长度门槛；`outputSchema` 必须是对象。跨进程数据遵循插件通信帧预算。
 宿主把私有载荷说明和 Schema 组合进公共提示词，不执行 Schema 中的外部引用。
 
 绑定保存描述的独立副本，提示词与解析使用同一份 `parserData` 快照；重新绑定才更新。解析时 `request.segment`
@@ -130,7 +130,7 @@ Service 调用前后检查 provider 与进程 scope，清理或重启后的在�
 ```
 
 宿主校验 version、resourceId 和顶层字段，插件解析 payload。插件返回持续状态 `state`、一次动作列表 `actions`，
-或两者；至少有一个字段，动作最多 32 项。结果必须是有限 JSON，最多 64 KiB，不允许插件指定 bindingId。
+或两者；至少有一个字段。宿主只提取 state 和 actions，再添加自己管理的路由身份。JSON 合法性和帧预算由通信边界负责。
 宿主补上绑定身份后写入 segment 的可选 `control`：
 
 ```json
@@ -166,7 +166,7 @@ export function mount({ container, resource, host, signal }) {
 `resource` 是当前 VisualPresentation，含 bindingId、resourceId、type、providerId、私有 data 和受控 assets URL。
 `ready` 可以是 Promise；`applyState`、`destroy` 必须存在，其他回调按需要实现。控制 context 包含
 `operationId`、`segmentIndex` 与 operation `signal`。挂载 signal 表示整份绑定的生命期。
-`snapshotState()` 同步返回可交给 `applyState` 的完整持续状态（有限 JSON，连同路由封装最多 64 KiB）。
+`snapshotState()` 同步返回可交给 `applyState` 的完整持续状态（可传输的 JSON，不另设状态大小门槛）。
 它不包含一次动作、计时器或 GPU 对象。未实现此方法的插件仍能播放新回复，回看只更新文字；
 快照失败不阻止本段动作执行。回看和返回实时状态的 context 使用独立 operation signal，`segmentIndex` 为 -1。
 RendererHost 限制模块加载、mount 和 ready 等待各为 10 秒，销毁迟到实例，并隔离旧回调及宿主服务调用。
@@ -185,7 +185,7 @@ reportError(reasonCode)
 unavailable(reasonCode)
 ```
 
-尺寸为 1–8192 的整数。不提供 assetKey 时使用矩形表面；提供 key 时由原生 PNG alpha-mask 原语生成命中数据。
+尺寸为正整数，原生命中遮罩分配保留 192 MiB 内存预算。不提供 assetKey 时使用矩形表面；提供 key 时由原生 PNG alpha-mask 原语生成命中数据。
 Windows 上的动态表现可在 `setSurface` 成功后调用可选的 `setHitTest`，提供当前画面的一点命中函数。
 参数为表现容器内从左上角起算的归一化 `[x,y]`；true 接收鼠标，false 穿透。宿主负责屏幕坐标、DPI 和 CSS 缩放转换。
 换算必须使用当前绑定实际挂载的表面容器，包含其按比例适配、底部对齐和个人缩放；不能使用外层角色占位区域的矩形。
@@ -211,7 +211,7 @@ Rust 将资源 URL 编码为 `/v1/{hexGeneration}/{bindingId}-{hexAssetKey}`，�
 模块路径按 UTF-8 路径段进行 URL 编码；协议读取时只解码一次，再检查包内路径和模块类型。
 中文、空格及文件名中的字面 `%`、`#` 可正常读取；编码后的分隔符和越界路径仍被拒绝。
 WebView 不接收安装绝对路径；模块只能来自已安装插件，角色包里的 JavaScript 不会作为模块加载。
-普通资产限 64 MiB，模块限 4 MiB。内置立绘插件和原生 PNG 命中服务的单张文件上限均为 16 MiB（16,777,216 字节，含上限）；PNG 宽高各不超过 8192，像素总数不超过 40,000,000。PNG 命中服务另有解码预算和小容量缓存。
+普通资产、模块和立绘不按压缩文件大小拒绝。立绘插件读取 PNG 元信息，实际显示与原生命中服务负责解码；不另设宽高或像素数上限。PNG 解码保留 192 MiB 内存预算和小容量缓存。
 URL 随 generation 与绑定失效；同 generation 的插件重绑同样撤销旧目标。CSP 不允许 eval 或运行时 CDN。
 前端模块是可信插件代码，共享 WebView 权限，不是恶意 JavaScript 沙箱。
 
@@ -243,12 +243,12 @@ PNG data URL 上限 2 MiB，仅图片 CSP 允许 data URL，脚本授权不变�
 选中编辑器与缩略图任务各保留一个独立授权槽；替换缩略图不撤销编辑器，替换编辑器不打断缩略图。
 关闭工坊或提供方失效时一并撤销两者。生成结果仅保存在当前工作区的前端缓存，不写入角色资源或草稿。保存或切换选中项时复用已有缩略图和图片节点；资源配置实际变化后才重新生成，生成期间保留旧图。缩略图使用固定视口，不从正在缩放或重新布局的编辑器画布截取。
 `host.assetUrl` 在本地生成稳定 URL 并复用同路径结果，图片和模型文件直接经原生资源协议读取，不逐张请求 Core，
-也不占用草稿写锁。协议复核 generation、编辑器授权和路径包含关系，单文件上限 64 MiB。
+也不占用草稿写锁。协议复核 generation、编辑器授权和路径包含关系；资源直接读取，失败保留系统原因，不另设业务文件大小门槛。
 路径编码为 `/editor-assets/{hexGeneration}/{bindingId}/{hexUtf8RelativePath}`；JSON 返回 application/json，
 未知格式返回 application/octet-stream，并启用 nosniff，包内脚本不能作为模块执行。
 导入结果含资源相对 resourcePath、原 name；小型文本文件可提供 text，由插件解释。宿主不解析立绘标签文件。
 目录导入保留文件名、大小写和子目录关系，每次使用独立导入目录避免覆盖已有文件；拒绝符号链接和目录联接，
-最多 512 个文件、512 个目录、32 层目录、总计 256 MiB。取消或失败清理本次导入，保留原草稿资源。
+不设文件数、目录数、目录深度和业务文件大小门槛。取消或失败清理本次导入，保留原草稿资源。
 `collect` 返回私有数据，修改时必须调用 changed；`validate` 返回布尔值或抛出可读错误。模块或挂载超时为 10 秒。
 桌面 CSP 不允许动态内联 `<style>`。插件可使用 `CSSStyleSheet.replaceSync` 与 `document.adoptedStyleSheets`
 安装有作用域的样式，在 destroy 时移除。signal 中止时停止异步工作，保留静态画面和样式，供宿主等待新实例就绪。
