@@ -220,13 +220,7 @@ class AgentRuntime:
     @property
     def reply_visual(self):
         binding = self._visual_binding
-        if binding is None:
-            return None
-        try:
-            description = binding.description
-            return {"resourceId": binding.resource_id, "prompt": description["prompt"], "outputSchema": description["outputSchema"]}
-        except ValueError:
-            return None
+        return binding.reply_visual if binding is not None else None
 
     def set_context_providers(
         self,

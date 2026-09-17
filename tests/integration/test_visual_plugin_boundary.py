@@ -331,14 +331,23 @@ def test_unbinding_chat_keeps_a_fresh_independent_visual_presentation(visual_app
     assert application.visual_presentation()["visual"] is None
 
 
-def test_large_optional_controls_cannot_discard_text_history(tmp_path):
+@pytest.mark.parametrize("invalid", [False, True])
+def test_rejected_optional_controls_preserve_text_history_and_report_why(tmp_path, monkeypatch, invalid):
     from app.core_host.real_chat import _project_reply
     from app.llm.chat_reply import ChatReply, ChatSegment
     from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
-    control = {"version": 1, "resourceId": "numeric-1", "bindingId": "a" * 32, "state": {"data": "x" * 60000}}
+    diagnostics = []
+    monkeypatch.setattr("app.core.runtime_log.log_event", lambda channel, message, attributes, **kwargs: diagnostics.append(attributes))
+    control = {} if invalid else {"version": 1, "resourceId": "numeric-1", "bindingId": "a" * 32, "state": {"data": "x" * 60000}}
     reply = ChatReply([ChatSegment(text="你好", translation="", tone="中性", control=control) for _ in range(5)])
     projected = _project_reply(reply)
     assert all(item["text"] == "你好" and "control" not in item for item in projected)
+    assert diagnostics
+    assert {item["reason_code"] for item in diagnostics} == {"VISUAL_CONTROL_INVALID" if invalid else "VISUAL_CONTROL_TOO_LARGE"}
+    if invalid:
+        assert [item["segment_index"] for item in diagnostics] == list(range(5))
+    else:
+        assert diagnostics[0]["segment_count"] == 5
     store = TimelineStore(tmp_path / "timeline.sqlite3")
     store.initialize()
     store.append(NewTimelineEntry(entry_id="assistant-1", turn_id="turn-1", character_id="character", kind=TimelineKind.ASSISTANT, origin="chat", created_at="2026-09-11T12:00:00+08:00", payload={"segments": projected}))
@@ -368,6 +377,7 @@ def test_numeric_controls_follow_real_chat_and_event_pipeline_into_history(visua
     runtime.set_visual_binding(binding)
     assert 'numeric-1' in runtime._build_tool_system_prompt()
     assert 'maxAngle' not in runtime._build_tool_system_prompt()  # no private parser snapshot
+    assert '"payload": {}' not in runtime._build_tool_system_prompt()  # not a valid sample for every plugin
     pipeline = ChatPipeline(runtime)
     result = pipeline.run_event(AgentEvent("reminder_due", {"message": "你好"})) if event else pipeline.run_user_message([{"role": "user", "content": "你好"}])
     projected = _project_reply(result.reply)
@@ -405,7 +415,13 @@ def test_real_plugin_contributes_numeric_schema_and_parses_state_and_one_shot_ac
         "state": {"angle": 12.5}, "actions": [{"wave": True}],
     }
     description["rendererData"]["maxAngle"] = 100
+    presentation = binding.presentation()
+    presentation["data"]["maxAngle"] = 100
+    prompt = binding.reply_visual
+    prompt["outputSchema"]["properties"]["angle"]["maximum"] = 100
     assert binding.description["rendererData"]["maxAngle"] == 20
+    assert binding.presentation()["data"]["maxAngle"] == 20
+    assert binding.reply_visual["outputSchema"]["properties"]["angle"]["maximum"] == 20
     assert binding.parse_control(_control(resource, {"angle": 21})).reason_code == "VISUAL_CONTROL_REJECTED"
     assert binding.parse_control(None, legacy={"portrait": "happy"}).reason_code == "VISUAL_CONTROL_REJECTED"
     assert binding.parse_control(_control(resource, {"angle": 0})).control["state"] == {"angle": 0}

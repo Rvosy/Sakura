@@ -240,7 +240,7 @@ def run():
                 const signal=new AbortController();
                 const instance=mount({container:target,signal:signal.signal,
                   resource:{assets:{A:location.origin+'/portrait-a.png',B:location.origin+(phase==='decode'?'/portrait-broken.png':'/portrait-b.png')},data:{defaultKey:'A',metadata:{A:{width:1,height:1},B:{width:1,height:1}}}},
-                  host:{prepareSurface:()=>true,setSurface:async ({assetKey})=>{if(assetKey==='B') throw new Error('commit failed'); active=assetKey; commits.push(assetKey); fallback=false; return true;},finishSurface:()=>true,cancelSurface:()=>{},reportError:code=>errors.push(code),unavailable:()=>{fallback=true;active='';}}});
+                  host:{prepareSurface:()=>true,setSurface:async ({assetKey})=>{if(assetKey==='B') throw new Error('commit failed'); active=assetKey; commits.push(assetKey); fallback=false; return true;},finishSurface:()=>true,cancelSurface:()=>{},reportError:(code,error,stage)=>errors.push({code,message:error.message,cause:error.cause?.message,stage}),unavailable:()=>{fallback=true;active='';}}});
                 await instance.ready;
                 await instance.applyState({key:'B'},{signal:signal.signal});
                 const clean=!target.shadowRoot.querySelector('.portrait-image--next').hasAttribute('src') && !target.shadowRoot.querySelector('.portrait-frame').classList.contains('is-transitioning');
@@ -251,7 +251,16 @@ def run():
               return observations;
             }""")
             for phase, observed in zip(["DECODE", "COMMIT"], portrait_failure):
-                assert observed == {"active": "A", "fallback": False, "clean": True, "commits": ["A"], "errors": [f"PORTRAIT_{phase}_FAILED"], "current": True}, observed
+                reported = observed.pop("errors")
+                assert observed == {"active": "A", "fallback": False, "clean": True, "commits": ["A"], "current": True}, observed
+                assert len(reported) == 1, reported
+                error = reported[0]
+                assert error["code"] == f"PORTRAIT_{phase}_FAILED"
+                assert '"B"' in error["message"]
+                assert error["cause"] == ("PORTRAIT_LOAD_FAILED" if phase == "DECODE" else "commit failed")
+                assert error["cause"] in error["message"]
+                assert error["stage"] == "visual.portrait"
+                assert origin not in error["message"]
             application.application.set_plugin_enabled("fixture.numeric", False)
             expect(page.locator('#expressionList input[type="number"]')).to_have_count(0)
             assert binding.parse_control({"version": 1, "resourceId": resource.id, "payload": {"angle": 1}}).control is None

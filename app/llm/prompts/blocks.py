@@ -99,7 +99,9 @@ def build_segment_protocol(
     blocks.append(reply_label_constraints_block(tones))
     if isinstance(visual, Mapping):
         blocks.append(PromptBlock("表现控制", "\n".join([
-            "每段可以附带 control，封装为 " + json.dumps({"version": 1, "resourceId": visual["resourceId"], "payload": {}}, ensure_ascii=False) + "。",
+            "每段可以附带 control；提供时必须包含 version、resourceId、payload 三个字段。"
+            "version 固定为 1，resourceId 固定为 " + json.dumps(visual["resourceId"], ensure_ascii=False)
+            + "；payload 按下述插件格式填写。",
             str(visual["prompt"]),
             "control.payload 的格式：" + json.dumps(visual["outputSchema"], ensure_ascii=False),
         ])))

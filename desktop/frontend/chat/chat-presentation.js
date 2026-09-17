@@ -1,5 +1,4 @@
 import { isChatReadyLifecycle } from "../lifecycle.js";
-import { normalizeVisualControl } from "../pet/visual-control.js";
 
 const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
@@ -70,7 +69,8 @@ function normalizedSegments(reply) {
           tone: typeof segment.tone === "string" ? segment.tone : "calm",
           portrait: typeof segment.portrait === "string" ? segment.portrait : "idle",
           suppressTts: segment.suppressTts === true,
-          ...(normalizeVisualControl(segment.control) ? { control: normalizeVisualControl(segment.control) } : {}),
+          // The renderer owns control validation; keep invalid input visible there.
+          ...(segment.control != null ? { control: segment.control } : {}),
         }),
       ),
   );

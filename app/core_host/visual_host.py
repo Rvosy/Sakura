@@ -6,9 +6,9 @@ Renderer mounting and chat/playback wiring are separate consumers of this bounda
 
 from __future__ import annotations
 
-from copy import deepcopy
 import threading
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -87,6 +87,20 @@ class VisualBinding:
         return deepcopy(self._description)
 
     @property
+    def reply_visual(self) -> dict[str, Any] | None:
+        try:
+            self._check_active()
+        except VisualHostError as error:
+            if error.code != "VISUAL_BINDING_EXPIRED":
+                raise
+            return None
+        return {
+            "resourceId": self.resource_id,
+            "prompt": self._description["prompt"],
+            "outputSchema": deepcopy(self._description["outputSchema"]),
+        }
+
+    @property
     def resource_id(self) -> str:
         return self._request["resource"]["id"]
 
@@ -103,6 +117,8 @@ class VisualBinding:
         try:
             current = self._runtime.service_identity(self.capability.service)
         except PluginRuntimeError as error:
+            if error.code != "SERVICE_MISSING":
+                raise
             raise VisualHostError("VISUAL_BINDING_EXPIRED") from error
         if self._closed.is_set() or current != self._identity:
             raise VisualHostError("VISUAL_BINDING_EXPIRED")
