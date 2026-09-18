@@ -23,6 +23,7 @@ export function createTypewriter({
   onStart = () => {},
   onText = () => {},
   onSegment = () => {},
+  onSegmentComplete = () => {},
   onComplete = () => {},
 } = {}) {
   let typingDelay = Math.max(5, Math.min(200, Number(intervalMs) || 28));
@@ -46,13 +47,20 @@ export function createTypewriter({
 
   function scheduleNextSegment(run) {
     if (run.sequence !== sequence) return;
-    if (run.segmentIndex + 1 >= run.segments.length) return complete(run);
-    timer = setTimer(() => {
-      timer = null;
-      if (run.sequence !== sequence) return;
-      run.segmentIndex += 1;
-      typeSegment(run);
-    }, run.pauseDelay);
+    const revision = run.segmentRevision;
+    const advance = () => {
+      if (run.sequence !== sequence || revision !== run.segmentRevision) return;
+      if (run.segmentIndex + 1 >= run.segments.length) return complete(run);
+      timer = setTimer(() => {
+        timer = null;
+        if (run.sequence !== sequence) return;
+        run.segmentIndex += 1;
+        typeSegment(run);
+      }, run.pauseDelay);
+    };
+    const gate = onSegmentComplete(run.segments[run.segmentIndex], run.segmentIndex);
+    if (gate && typeof gate.then === "function") Promise.resolve(gate).then(advance, advance);
+    else advance();
   }
 
   function typeSegment(run) {
@@ -60,28 +68,40 @@ export function createTypewriter({
     const segment = run.segments[run.segmentIndex];
     if (!segment) return complete(run);
     const segmentRevision = ++run.segmentRevision;
-    onSegment(segment, run.segmentIndex);
-    if (run.sequence !== sequence || segmentRevision !== run.segmentRevision) return;
-    run.text = selectSegmentText(segment, selectedLanguage);
-    run.visible = "";
-    run.characters = Array.from(run.text);
-    run.characterIndex = 0;
-    onText("", Object.freeze({ reason: "segment", forceEnd: true }));
-    if (run.characters.length === 0) {
-      run.visible = run.text;
-      if (run.text) onText(run.visible, Object.freeze({ reason: "typing", forceEnd: true }));
-      scheduleNextSegment(run);
-      return;
-    }
-    const tick = () => {
-      timer = null;
+    run.waitingForStart = true;
+    const begin = () => {
       if (run.sequence !== sequence || segmentRevision !== run.segmentRevision) return;
-      run.visible += run.characters[run.characterIndex++];
-      onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
-      if (run.characterIndex >= run.characters.length) scheduleNextSegment(run);
-      else timer = setTimer(tick, run.typingDelay);
+      run.waitingForStart = false;
+      run.openedIndex = run.segmentIndex;
+      run.text = selectSegmentText(segment, selectedLanguage);
+      run.visible = "";
+      run.characters = Array.from(run.text);
+      run.characterIndex = 0;
+      onText("", Object.freeze({ reason: "segment", forceEnd: true }));
+      if (run.characters.length === 0) {
+        run.visible = run.text;
+        if (run.text) onText(run.visible, Object.freeze({ reason: "typing", forceEnd: true }));
+        scheduleNextSegment(run);
+        return;
+      }
+      const tick = () => {
+        timer = null;
+        if (run.sequence !== sequence || segmentRevision !== run.segmentRevision) return;
+        run.visible += run.characters[run.characterIndex++];
+        onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
+        if (run.characterIndex >= run.characters.length) scheduleNextSegment(run);
+        else timer = setTimer(tick, run.typingDelay);
+      };
+      timer = setTimer(tick, run.typingDelay);
     };
-    timer = setTimer(tick, run.typingDelay);
+    if (run.gateIndex !== run.segmentIndex) {
+      run.gateIndex = run.segmentIndex;
+      run.segmentGate = onSegment(segment, run.segmentIndex);
+    }
+    const prepared = run.openedIndex === run.segmentIndex ? null : run.segmentGate;
+    if (prepared && typeof prepared.then === "function") {
+      Promise.resolve(prepared).then(begin, begin);
+    } else begin();
   }
 
   return Object.freeze({
@@ -112,7 +132,7 @@ export function createTypewriter({
       return true;
     },
     skip() {
-      if (!active) return false;
+      if (!active || active.waitingForStart) return false;
       const run = active;
       clearActiveTimer();
       run.segmentRevision += 1;

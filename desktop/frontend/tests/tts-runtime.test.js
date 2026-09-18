@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import { createChatPresentationReducer } from "../chat/chat-presentation.js";
+import { createWaitingIndicator } from "../chat/waiting-indicator.js";
 
 import { createTtsController } from "../audio/tts-controller.js";
 import { createTypewriter } from "../pet/typewriter.js";
@@ -48,126 +52,269 @@ async function harness(implementation = () => descriptor) {
   };
 }
 
-test("subtitles complete while synthesis is pending and audio advances only on its own terminal", async () => {
-  const synthesis = deferred();
-  const h = await harness((name) => name === "tts_prepare_segment" ? synthesis.promise : undefined);
-  const segments = [{ text: "one" }, { text: "two" }];
+const appSource = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const typewriterBinding = appSource.slice(
+  appSource.indexOf("const typewriter = createTypewriter({"),
+  appSource.indexOf("\nconst waitingIndicator =", appSource.indexOf("const typewriter = createTypewriter({")),
+);
+
+function sequence(h, segments) {
   const timers = [];
   const text = [];
-  const visualSegments = [];
-  let complete = false;
-  const typewriter = createTypewriter({
-    setTimer: (callback) => { timers.push(callback); return callback; },
-    clearTimer: () => {},
-    onSegment: (_segment, index) => {
-      visualSegments.push(index);
-      return synthesis.promise;
-    },
-    onText: (value) => text.push(value),
-    onComplete: () => { complete = true; },
+  const portraits = [];
+  const opened = segments.map(() => deferred());
+  const requested = segments.map(() => deferred());
+  const pauses = segments.map(() => deferred());
+  const finished = deferred();
+  const presentation = createChatPresentationReducer({ initialMessage: "你好" });
+  const identity = { generationId: "generation-1", generationNumber: 1, operationId: "reply" };
+  presentation.reduce({ type: "lifecycle", status: "ready", revision: 1, ...identity });
+  presentation.reduce({ type: "chat.started", ...identity });
+  const waiting = createWaitingIndicator({
+    setTimer: () => 1, clearTimer() {}, onFrame: frame => presentation.setWaitingText(frame),
   });
+  waiting.start();
+  presentation.reduce({ type: "chat.completed", reply: { segments }, ...identity });
+  segments = presentation.current().segments;
+  // Execute the production app binding, with fake native audio and deterministic timers.
+  const writer = runInNewContext(`${typewriterBinding}\ntypewriter;`, {
+    chatTiming: { subtitleTypingIntervalMs: 28, replySegmentPauseMs: 160 },
+    subtitleLanguage: "zh", bubbleScroll: { beginReply() {} },
+    presentation, ttsController: h.controller, waitingIndicator: waiting,
+    rendererHost: { play(_control, _operation, _index, segment) { portraits.push(segment.portrait); } },
+    render() {},
+    createTypewriter(options) {
+      return createTypewriter({
+        ...options,
+        setTimer(callback, delay) {
+          timers.push(callback);
+          if (delay === 160) pauses[portraits.length - 1].resolve();
+          return callback;
+        },
+        clearTimer(callback) {
+          const index = timers.indexOf(callback);
+          if (index >= 0) timers.splice(index, 1);
+        },
+        onSegment(segment, index) {
+          requested[index].resolve();
+          return options.onSegment(segment, index);
+        },
+        onText(value, update) {
+          options.onText(value, update);
+          text.push(value);
+          if (update.reason === "segment") opened[portraits.length - 1]?.resolve();
+        },
+        onComplete(result) { options.onComplete(result); finished.resolve(); },
+      });
+    },
+  });
+  h.controller.beginReply("reply", segments);
+  writer.start(segments);
+  return {
+    writer, text, portraits, opened, requested, pauses, finished, waiting, presentation,
+    drain() { while (timers.length) timers.shift()(); },
+  };
+}
 
-  assert.equal(h.controller.beginReply("operation-1", segments), undefined);
-  typewriter.start(segments);
-  while (timers.length) timers.shift()();
+for (const audioFirst of [false, true]) {
+  test(`each segment waits for synthesis and playback start, then both text and audio completion (${audioFirst})`, async () => {
+    const synthesis = [deferred(), deferred()];
+    const h = await harness((name, args) => name === "tts_prepare_segment"
+      ? synthesis[args.payload.segmentIndex].promise : undefined);
+    const s = sequence(h, [{ text: "one", portrait: "smile" }, { text: "two", portrait: "calm" }]);
+    s.drain();
+    assert.deepEqual(s.text, []);
+    assert.deepEqual(s.portraits, []);
+    assert.equal(s.waiting.active(), true);
+    assert.equal(s.presentation.current().bubbleText, ".");
+    assert.equal(s.writer.skip(), false);
+    synthesis[0].resolve(descriptor);
+    await h.waitFor("tts_play_prepared");
+    assert.deepEqual(s.portraits, []);
+    assert.deepEqual(s.text, []);
+    h.emit("tts-1-0", "started");
+    await s.opened[0].promise;
+    assert.equal(s.waiting.active(), false);
+    assert.deepEqual(s.portraits, ["smile"]);
+    assert.deepEqual(s.text, [""]);
+    if (audioFirst) {
+      h.emit("tts-1-0", "finished");
+      assert.deepEqual(s.portraits, ["smile"]);
+      assert.equal(s.writer.isActive(), true);
+      s.drain();
+    } else {
+      s.drain();
+      assert.equal(s.text.at(-1), "one");
+      assert.deepEqual(s.portraits, ["smile"]);
+      assert.equal(s.writer.isActive(), true);
+      h.emit("tts-1-0", "finished");
+    }
+    await s.pauses[0].promise;
+    s.drain();
+    await s.requested[1].promise;
+    assert.equal(s.writer.skip(), false);
+    assert.equal(s.text.at(-1), "one");
+    assert.deepEqual(s.portraits, ["smile"]);
+    synthesis[1].resolve(descriptor);
+    await h.waitFor("tts_play_prepared", 2);
+    assert.equal(s.text.at(-1), "one");
+    h.emit("tts-1-1", "started");
+    await s.opened[1].promise;
+    assert.deepEqual(s.portraits, ["smile", "calm"]);
+    s.drain();
+    assert.equal(s.text.at(-1), "two");
+    assert.equal(s.writer.isActive(), true);
+    h.emit("tts-1-1", "finished");
+    await s.finished.promise;
+    assert.equal(s.writer.isActive(), false);
+    s.writer.dispose();
+    h.controller.dispose();
+  });
+}
 
-  assert.equal(complete, true);
-  assert.deepEqual(visualSegments, [0, 1]);
-  assert.ok(text.includes("one") && text.includes("two"));
-  assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
-  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
-
-  synthesis.resolve(descriptor);
+test("subtitle language changes reuse the pending gate and never replay a segment", async () => {
+  const pending = deferred();
+  const h = await harness(name => name === "tts_prepare_segment" ? pending.promise : undefined);
+  const s = sequence(h, [{ text: "かな", translation: "中文", portrait: "smile" }]);
+  s.writer.updateLanguage("ja");
+  assert.deepEqual(s.text, []);
+  pending.resolve(descriptor);
   await h.waitFor("tts_play_prepared");
   h.emit("tts-1-0", "started");
-  assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
+  await s.opened[0].promise;
+  s.drain();
+  assert.equal(s.text.at(-1), "かな");
+  s.writer.updateLanguage("zh");
+  assert.equal(s.writer.skip(), true);
+  assert.equal(s.writer.skip(), true);
+  assert.equal(s.text.at(-1), "中文");
+  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 1);
   h.emit("tts-1-0", "finished");
-  const [, next] = await h.waitFor("tts_play_prepared", 2);
-  assert.equal(next.payload.playbackId, "tts-1-1");
-  h.controller.dispose();
-  typewriter.dispose();
-});
-
-test("voice capture stops queued TTS and does not replay replies received during capture", async () => {
-  const pending = deferred();
-  const h = await harness((name) => name === "tts_prepare_segment" ? pending.promise : undefined);
-  h.controller.beginReply("before-capture", [{ text: "old" }]);
-  h.controller.setInputCaptureActive(true);
-  h.controller.beginReply("during-capture", [{ text: "during capture" }]);
-  h.controller.setInputCaptureActive(false);
-  pending.resolve(descriptor);
-  await pending.promise;
-  assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
-  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
-  assert.ok(h.calls.some(([name]) => name === "tts_stop_playback"));
+  await s.finished.promise;
+  assert.deepEqual(s.portraits, ["smile"]);
+  s.writer.dispose();
   h.controller.dispose();
 });
 
-test("synthesis and playback failures stay in the audio queue and allow following segments", async () => {
-  const h = await harness((name, args) => {
-    if (name === "tts_prepare_segment" && args.payload.segmentIndex === 0) {
-      throw new Error("TTS_SERVICE_UNAVAILABLE");
+for (const failure of ["synthesis", "descriptor", "command", "event", "disabled", "suppressed"]) {
+  test(`${failure} releases the visual gate and allows later segments`, async () => {
+    const h = await harness((name, args) => {
+      if (name === "tts_prepare_segment" && args.payload.segmentIndex === 0) {
+        if (failure === "synthesis") throw new Error("TTS_SERVICE_UNAVAILABLE");
+        if (failure === "disabled") throw "TTS_DISABLED|角色语音已关闭";
+        if (failure === "descriptor") return null;
+      }
+      if (name === "tts_play_prepared" && failure === "command") throw new Error("AUDIO_PLAYBACK_FAILED");
+      return descriptor;
+    });
+    const segments = [{ text: "one", suppressTts: failure === "suppressed" }, { text: "two", suppressTts: true }];
+    h.controller.beginReply("errors", segments);
+    const shown = [];
+    const gate = h.controller.beforeSegment(segments[0], 0, { onStarted: () => shown.push(0) });
+    if (failure === "event") {
+      await h.waitFor("tts_play_prepared");
+      h.emit("tts-1-0", "failed");
     }
-    if (name === "tts_play_prepared" && args.payload.playbackId === "tts-1-1") {
-      throw new Error("AUDIO_PLAYBACK_FAILED");
-    }
-    return descriptor;
+    await gate;
+    await h.controller.afterSegment(0);
+    await h.controller.beforeSegment(segments[1], 1, { onStarted: () => shown.push(1) });
+    assert.deepEqual(shown, [0, 1]);
+    assert.equal(h.diagnostics.length, ["disabled", "suppressed"].includes(failure) ? 0 : 1);
+    h.controller.dispose();
   });
-  h.controller.beginReply("operation-errors", [{ text: "one" }, { text: "two" }, { text: "three" }]);
-  const [, next] = await h.waitFor("tts_play_prepared", 2);
-  assert.equal(next.payload.playbackId, "tts-1-2");
-  assert.deepEqual(h.diagnostics, ["TTS_SERVICE_UNAVAILABLE", "AUDIO_PLAYBACK_FAILED"]);
-  h.controller.dispose();
-});
+}
 
-test("disabled TTS quietly ends the reply audio queue", async () => {
-  const h = await harness((name) => {
-    if (name === "tts_prepare_segment") throw "TTS_DISABLED|角色语音已关闭";
-  });
-  h.controller.beginReply("disabled", [{ text: "one" }, { text: "two" }]);
+test("disabled TTS skips the rest of the reply without repeated synthesis", async () => {
+  const h = await harness(() => { throw new Error("TTS_DISABLED"); });
+  const segments = [{ text: "one" }, { text: "two" }];
+  h.controller.beginReply("disabled", segments);
+  for (const [index, segment] of segments.entries()) await h.controller.beforeSegment(segment, index);
   assert.deepEqual(h.calls.map(([name]) => name), ["tts_prepare_segment"]);
   assert.deepEqual(h.diagnostics, []);
   h.controller.dispose();
 });
 
-test("suppressed segments never request synthesis", async () => {
+for (const stage of ["synthesis", "playback"]) {
+  test(`voice capture releases ${stage} wait and never replays this reply`, async () => {
+    const pending = deferred();
+    const h = await harness(name => name === "tts_prepare_segment" ? pending.promise : undefined);
+    const segments = [{ text: "one" }, { text: "two" }];
+    const shown = [];
+    h.controller.beginReply("capture", segments);
+    const gate = h.controller.beforeSegment(segments[0], 0, { onStarted: () => shown.push(0) });
+    if (stage === "playback") {
+      pending.resolve(descriptor);
+      await h.waitFor("tts_play_prepared");
+    }
+    h.controller.setInputCaptureActive(true);
+    await gate;
+    await h.controller.afterSegment(0);
+    h.controller.setInputCaptureActive(false);
+    await h.controller.beforeSegment(segments[1], 1, { onStarted: () => shown.push(1) });
+    pending.resolve(descriptor);
+    await pending.promise;
+    assert.deepEqual(shown, [0, 1]);
+    assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
+    assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, stage === "playback" ? 1 : 0);
+    h.controller.dispose();
+  });
+}
+
+test("a reply received during capture stays silent after capture ends", async () => {
   const h = await harness();
-  h.controller.beginReply("operation-silent", [{ text: "silent", suppressTts: true }]);
-  assert.deepEqual(h.calls, []);
+  const segments = [{ text: "one" }];
+  h.controller.setInputCaptureActive(true);
+  h.controller.beginReply("capture", segments);
+  h.controller.setInputCaptureActive(false);
+  let shown = false;
+  await h.controller.beforeSegment(segments[0], 0, { onStarted: () => { shown = true; } });
+  assert.equal(shown, true);
+  assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 0);
   h.controller.dispose();
 });
 
-test("cancellation stops pending synthesis and rejects its late result", async () => {
-  const pending = deferred();
-  const h = await harness((name) => name === "tts_prepare_segment" ? pending.promise : undefined);
-  h.controller.beginReply("operation-cancel", [{ text: "cancel" }]);
-  h.controller.cancel();
-  assert.deepEqual(h.calls.slice(1), [
-    ["tts_cancel_synthesis", { payload: { operationId: "operation-cancel" } }],
-    ["tts_stop_playback", undefined],
-  ]);
-  pending.reject(new Error("TTS_SYNTHESIS_CANCELLED"));
-  await pending.promise.catch(() => {});
-  assert.deepEqual(h.diagnostics, []);
-  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
-  h.controller.dispose();
-});
+for (const action of ["cancel", "dispose", "replace"]) {
+  test(`${action} releases pending synthesis and ignores its late result`, async () => {
+    const pending = deferred();
+    const h = await harness(name => name === "tts_prepare_segment" ? pending.promise : undefined);
+    const segments = [{ text: "old" }];
+    h.controller.beginReply("old", segments);
+    let shown = false;
+    const gate = h.controller.beforeSegment(segments[0], 0, { onStarted: () => { shown = true; } });
+    if (action === "replace") h.controller.beginReply("new", []);
+    else h.controller[action]();
+    await gate;
+    pending.resolve(descriptor);
+    await pending.promise;
+    assert.equal(shown, false);
+    assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
+    assert.ok(h.calls.some(([name, args]) => name === "tts_cancel_synthesis" && args.payload.operationId === "old"));
+    h.controller.dispose();
+  });
+}
 
-test("replacing the reply stops old playback and ignores its late terminal", async () => {
-  const h = await harness();
-  h.controller.beginReply("old-character", [{ text: "old one" }, { text: "old two" }]);
+test("replacing playback ignores late events and native rejection from the old reply", async () => {
+  const oldCommand = deferred();
+  const h = await harness((name, args) => name === "tts_play_prepared" && args.payload.playbackId === "tts-1-0"
+    ? oldCommand.promise : descriptor);
+  const old = [{ text: "old" }];
+  const next = [{ text: "new" }];
+  const shown = [];
+  h.controller.beginReply("old", old);
+  const oldGate = h.controller.beforeSegment(old[0], 0, { onStarted: () => shown.push("old") });
   await h.waitFor("tts_play_prepared");
-  h.controller.beginReply("new-character", [{ text: "new one" }, { text: "new two" }]);
+  h.controller.beginReply("new", next);
+  const newGate = h.controller.beforeSegment(next[0], 0, { onStarted: () => shown.push("new") });
   await h.waitFor("tts_play_prepared", 2);
+  await oldGate;
+  h.emit("tts-1-0", "started");
   h.emit("tts-1-0", "finished");
-  assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 2);
-  h.emit("tts-2-0", "finished");
-  const [, next] = await h.waitFor("tts_prepare_segment", 3);
-  assert.deepEqual(next.payload, { operationId: "new-character", segmentIndex: 1 });
+  oldCommand.reject(new Error("AUDIO_PLAYBACK_FAILED"));
+  await oldCommand.promise.catch(() => {});
+  assert.deepEqual(shown, []);
+  assert.deepEqual(h.diagnostics, []);
+  h.emit("tts-2-0", "started");
+  await newGate;
+  assert.deepEqual(shown, ["new"]);
   h.controller.dispose();
-  assert.deepEqual(h.calls.filter(([name]) => name === "tts_cancel_synthesis"), [
-    ["tts_cancel_synthesis", { payload: { operationId: "old-character" } }],
-    ["tts_cancel_synthesis", { payload: { operationId: "new-character" } }],
-  ]);
-  assert.equal(h.calls.filter(([name]) => name === "tts_stop_playback").length, 2);
 });
