@@ -36,6 +36,7 @@ class ModelClient:
         self._lock = threading.Lock()
         self._closed = False
         self._operations = set()
+        self._artifact_cleanups = {}
         self.description = self._service.invoke("describe", reference["profileId"], reference["modelId"], timeout_seconds=5)
 
     @property
@@ -50,7 +51,6 @@ class ModelClient:
             self._operations.add(operation_id)
         request_artifact = None
         committed = delivered = delivery_attempted = begin_attempted = False
-        succeeded = False
         def check():
             check_cancelled(cancel_checker)
             with self._lock:
@@ -111,37 +111,61 @@ class ModelClient:
             else:
                 response = result["response"]
             check()
-            succeeded = True
             return response
         finally:
-            # A timed-out begin might still be executing. Both commands address the
-            # preallocated ID on the same bound process, never a replacement instance.
+            # release also cancels and registers disposal when the worker exits.
+            # Send it first so a slow cancel ACK cannot consume its cleanup budget.
             deadline = time.monotonic() + 2
-            cleanup_methods = (("release",) if succeeded else ("cancel", "release")) if begin_attempted else ()
-            for method in cleanup_methods:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    self._service.invoke(method, operation_id, timeout_seconds=remaining)
-                except Exception:
-                    pass  # Provider scope revocation remains the final resource owner.
+            cleanup = []
             if request_artifact is not None:
-                cleanup = []
                 if delivery_attempted:
                     cleanup.append((self._artifacts.release_delivered, (request_artifact, operation_id)))
                 if not delivered:
                     cleanup.append((self._artifacts.release_received if committed else self._artifacts.release, (request_artifact,)))
-                for release, args in cleanup:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    try:
-                        release(*args, timeout_seconds=remaining)
-                    except Exception:
-                        pass
+                with self._lock:
+                    self._artifact_cleanups[operation_id] = cleanup
+            if begin_attempted:
+                self._release_operation(operation_id, deadline)
+            else:
+                with self._lock:
+                    self._operations.discard(operation_id)
+            self._release_artifacts(operation_id, deadline)
+
+    def _release_operation(self, operation_id, deadline):
+        with self._lock:
+            if operation_id not in self._operations:
+                return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        try:
+            result = self._service.invoke("release", operation_id, timeout_seconds=remaining)
+        except Exception:
+            return  # Keep the unknown operation for close; never rebind or replay begin.
+        # False acknowledges cancellation plus deferred disposal by the Provider.
+        # A missing/invalid ACK does not establish either kind of ownership transfer.
+        if isinstance(result, Mapping) and isinstance(result.get("released"), bool):
             with self._lock:
                 self._operations.discard(operation_id)
+
+    def _release_artifacts(self, operation_id, deadline):
+        with self._lock:
+            cleanup = tuple(self._artifact_cleanups.get(operation_id, ()))
+        for release, args in cleanup:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                release(*args, timeout_seconds=remaining)
+            except Exception as error:
+                if getattr(error, "code", "") != "ARTIFACT_NOT_FOUND":
+                    continue
+            with self._lock:
+                pending = self._artifact_cleanups.get(operation_id, [])
+                if (release, args) in pending:
+                    pending.remove((release, args))
+                if not pending:
+                    self._artifact_cleanups.pop(operation_id, None)
 
     def complete_raw(self, system_prompt, messages, *, temperature=.2, response_format=None, max_tokens=None, cancel_checker=None, trace_metadata=None):
         parameters = {"temperature": temperature}
@@ -154,13 +178,8 @@ class ModelClient:
     def close(self):
         with self._lock:
             self._closed = True
-            operations = tuple(self._operations)
+            operations = tuple(self._operations | self._artifact_cleanups.keys())
         deadline = time.monotonic() + 2
         for operation_id in operations:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                self._service.invoke("cancel", operation_id, timeout_seconds=remaining)
-            except Exception:
-                pass
+            self._release_operation(operation_id, deadline)
+            self._release_artifacts(operation_id, deadline)

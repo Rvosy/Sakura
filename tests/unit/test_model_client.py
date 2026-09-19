@@ -29,34 +29,40 @@ def client(service, **kwargs):
     return ModelClient(context, REF, **kwargs)
 
 
-def test_unknown_ack_cancels_and_releases_the_same_id_without_replay():
+def test_unknown_ack_releases_the_same_id_without_replay():
     def action(method, _args):
         if method == "begin":
             raise TimeoutError("lost ack")
-        return {}
+        return {"released": False}
     service = Service(action)
     with pytest.raises(TimeoutError, match="lost ack"):
         client(service).complete({"messages": []})
-    assert [call[0] for call in service.calls] == ["describe", "begin", "cancel", "release"]
+    assert [call[0] for call in service.calls] == ["describe", "begin", "release"]
     identity = service.calls[1][1][0]["operationId"]
-    assert service.calls[2][1] == service.calls[3][1] == (identity,)
-    assert 0 < service.calls[3][2] <= service.calls[2][2] <= 2
+    assert service.calls[2][1] == (identity,)
+    assert 0 < service.calls[2][2] <= 2
 
 
-def test_cleanup_commands_share_a_budget_and_never_restart_it(monkeypatch):
+def test_unknown_release_is_retained_for_close_without_restarting_the_cleanup_budget(monkeypatch):
     now = [0.]
     monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
     def action(method, _args):
         if method == "begin":
             raise TimeoutError("lost ack")
-        if method == "cancel":
+        if method == "release" and now[0] == 0:
             now[0] += 3
-            raise TimeoutError("cancel lost")
-        return {}
+            raise TimeoutError("release lost")
+        return {"released": True}
     service = Service(action)
+    value = client(service)
     with pytest.raises(TimeoutError, match="lost ack"):
-        client(service).complete({"messages": []})
-    assert [call[0] for call in service.calls] == ["describe", "begin", "cancel"]
+        value.complete({"messages": []})
+    assert [call[0] for call in service.calls] == ["describe", "begin", "release"]
+    assert value._operations == {service.calls[1][1][0]["operationId"]}
+    value.close()
+    assert [call[0] for call in service.calls][-1] == "release"
+    assert value._operations == set()
+    assert service.calls[-1][1] == service.calls[-2][1]
 
 
 def test_generation_has_no_total_cleanup_deadline_and_preserves_batched_progress(monkeypatch):
@@ -138,7 +144,7 @@ def test_request_artifact_cleanup_matches_ownership_and_shares_the_rpc_budget(tm
     assert all(0 < timeout <= 2 for timeout in deadlines)
     assert deadlines == sorted(deadlines, reverse=True)
     if failure == "begin":
-        assert deadlines[0] < service.calls[-1][2] < service.calls[-2][2]
+        assert deadlines[0] < service.calls[-1][2] <= 2
 
 
 def test_bound_sdk_deadline_and_artifact_deadlines_reach_the_rpc_payload(tmp_path):
@@ -163,3 +169,36 @@ def test_bound_sdk_deadline_and_artifact_deadlines_reach_the_rpc_payload(tmp_pat
     artifacts.release_delivered("delivered", "operation", timeout_seconds=.1)
     assert [payload["timeoutSeconds"] for name, payload in calls[-3:]] == [.3, .2, .1]
     assert [payload["method"] for name, payload in calls[-3:]] == ["release", "release_received", "release_delivered"]
+
+
+def test_close_reclaims_artifact_cleanup_skipped_by_an_unknown_release(tmp_path, monkeypatch):
+    now, released, attempts = [0.], [], [0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    class Artifacts:
+        def allocate(self, _descriptor):
+            return {"artifactId": "input", "path": str(tmp_path / "request.json")}
+        def commit(self, _identity):
+            return {}
+        def deliver(self, _identity, _receiver, _operation):
+            return {"artifactId": "input"}
+        def release_delivered(self, identity, operation, *, timeout_seconds):
+            released.append((identity, operation, timeout_seconds))
+            return {"released": True}
+    def action(method, _args):
+        if method == "begin":
+            raise TimeoutError("begin ack lost")
+        attempts[0] += 1
+        if attempts[0] == 1:
+            now[0] += 3
+            raise TimeoutError("release ack lost")
+        return {"released": False}
+    service = Service(action)
+    value = ModelClient(SimpleNamespace(bind=lambda _key: service, get=lambda _key: Artifacts()), REF)
+    with pytest.raises(TimeoutError, match="begin ack lost"):
+        value.complete({"messages": [{"role": "user", "content": "x" * 40000}]})
+    assert released == []
+    assert value._operations
+    value.close()
+    assert released == [("input", service.calls[1][1][0]["operationId"], 2)]
+    assert not value._operations
+    assert not value._artifact_cleanups

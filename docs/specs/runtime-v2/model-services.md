@@ -44,6 +44,8 @@ content 支持字符串，或由 `{type: "text", text}` 与 `{type: "image", dat
 `id/name/arguments`，arguments 保留提供方返回的原文，格式错误交给消费方处理。
 消息及工具调用中的 `providerData` 是不透明的 continuation 元数据；消费者保留并回传，
 不得把它当成工具指令。OpenAI 兼容插件用它保留供应商要求的 thought signature 等字段。
+流式响应同样保留消息级扩展字段：`reasoning_content/reasoning/refusal` 的文本增量按顺序拼接，
+其他不透明元数据保留最近的非 null 值；最终随 `providerData` 返回，供下一次工具结果请求原样回传。
 
 `failure` 包含 `code/message` 和可选 `diagnostics`。HTTP 状态通过 `diagnostics.httpStatus`
 传递，不将含凭据的网络异常链发送给消费者。普通 HTTP 错误、网络错误和未知响应不会触发重试。
@@ -62,7 +64,9 @@ Provider。scope.closed 先撤销 owner 再取消其任务，迟到 begin 不得
 ModelClient 在创建时绑定精确 `{providerId, scopeId}`。Assistant 的 prepare 把模型绑定交回 Core，
 Core 随已发布 Session 冻结它。每轮创建客户端时验证期望身份；模型插件重载后旧 Session 明确失效，
 不偷偷绑定新配置。正常模型生成没有跨任务的总期限；取消、未知 ACK 和 release 共用有界清理预算。
-任务无法及时确认清理时，由原 scope 的回收继续承担资源所有权，不以取消一个消费者为由杀共享模型进程。
+清理优先调用 `release`，它同时请求取消并登记 worker 结束后释放；`released: false` 表示已接管延后释放，
+不能解释为未受理。未知清理回执及未完成的请求 artifact 回收保留在客户端，后续 `close()` 在自身有界预算内继续处理。
+仍无法确认时由原 scope 回收，不重放 begin，也不以取消一个消费者为由杀共享模型进程。
 
 超过 32 KiB 的模型请求或结果使用独享 JSON artifact。发送方 commit 后通过
 `artifacts.deliver(artifactId, receiverIdentity, operationId)` 明确交付，接收方 resolve 后校验宿主提供的

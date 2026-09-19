@@ -22,6 +22,9 @@ SERVICE = "sakura.model.openai_compatible"
 REF = {"serviceKey": SERVICE, "profileId": "fixture", "modelId": "fixture"}
 CONSUMER = '''
 import threading
+import time
+from types import SimpleNamespace
+import sakura_model_client as model_module
 from sakura_model import ModelClient
 from sakura_cancellation import OperationCancelled
 
@@ -44,12 +47,34 @@ class Consumer:
             return client.complete(request)
         finally:
             client.close()
-    def start(self, ref, request, lose_ack=False):
+    def start(self, ref, request, lose_ack=False, cleanup_fault=None):
         if request["messages"][0]["content"] == "large":
             request["messages"][0]["content"] += "x" * 1100000
         self.done.clear()
         self.cancelled.clear()
         self.client = ModelClient(self.context, ref)
+        if cleanup_fault:
+            original = self.client._service.invoke
+            original_clock, offset = model_module.time, [0.]
+            model_module.time = SimpleNamespace(monotonic=lambda: time.monotonic() + offset[0])
+            release_failed = False
+            self.cleanup_calls = []
+            def invoke(method, *args, **kwargs):
+                nonlocal release_failed
+                if method == "begin":
+                    self.operation_id = args[0]["operationId"]
+                if method in {"cancel", "release"}:
+                    self.cleanup_calls.append(method)
+                if method == "release" and cleanup_fault == "release_not_sent" and not release_failed:
+                    release_failed = True
+                    offset[0] += kwargs["timeout_seconds"] + 1
+                    raise TimeoutError("release did not reach provider")
+                result = original(method, *args, **kwargs)
+                if method == "cancel":
+                    offset[0] += kwargs["timeout_seconds"] + 1
+                    raise TimeoutError("cancel acknowledgement exhausted cleanup budget")
+                return result
+            self.client._service.invoke = invoke
         if lose_ack:
             original = self.client._service.invoke
             def invoke(method, *args, **kwargs):
@@ -69,7 +94,13 @@ class Consumer:
             except BaseException as error:
                 self.result = {"state": "cancelled" if isinstance(error, OperationCancelled) else "failed", "code": getattr(error, "code", type(error).__name__)}
             finally:
+                if cleanup_fault:
+                    self.result["pendingBeforeClose"] = len(self.client._operations)
                 self.client.close()
+                if cleanup_fault:
+                    self.result.update(operationId=self.operation_id, cleanupCalls=self.cleanup_calls,
+                                       pendingAfterClose=len(self.client._operations))
+                    model_module.time = original_clock
                 self.done.set()
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
@@ -96,6 +127,23 @@ def model_process(tmp_path, monkeypatch, assistant_dependencies):
     user.mkdir()
     root = Path(__file__).resolve().parents[2]
     shutil.copytree(root / "plugins/builtin/sakura_model_openai_compatible", distribution / "plugins/builtin/model", ignore=shutil.ignore_patterns("__pycache__"))
+    # Observe the actual provider's retained jobs without adding a production API.
+    provider = distribution / "plugins/builtin/model"
+    with (provider / "plugin.py").open("a", encoding="utf-8") as source:
+        source.write('''
+
+class FixtureModelPlugin(ModelPlugin):
+    def setup(self, context):
+        super().setup(context)
+        context.provide("fixture.model.inspect", self, exports=("wait_disposed",))
+    def wait_disposed(self, operation_id):
+        with self.changed:
+            self.changed.wait_for(lambda: not any(job.operation_id == operation_id for job in self.jobs.values()), timeout=3)
+            return [{"owner": job.owner[0], "operationId": job.operation_id, "state": job.state} for job in self.jobs.values()]
+''')
+    manifest = provider / "plugin.yaml"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace("entry: plugin:ModelPlugin", "entry: plugin:FixtureModelPlugin")
+                        .replace("provides:\n", "provides:\n  - fixture.model.inspect\n"), encoding="utf-8")
     for identity in ("fixture.model.a", "fixture.model.b"):
         plugin = distribution / "plugins/builtin" / identity
         plugin.mkdir()
@@ -118,6 +166,26 @@ def model_process(tmp_path, monkeypatch, assistant_dependencies):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.put(body)
             text = body["messages"][0]["content"]
+            if text == "stream-tools" and body.get("stream"):
+                deltas = [
+                    {"role": "assistant", "reasoning_content": "先检查", "opaque_continuation": {"signature": "opaque-1"}},
+                    {"reasoning_content": "工具参数。", "opaque_continuation": {"signature": "opaque-1"}},
+                    {"tool_calls": [{"index": 0, "id": "call-stream-1", "type": "function",
+                                     "function": {"name": "lookup", "arguments": '{"city":'},
+                                     "extra_content": {"google": {"thought_signature": "tool-signature"}}}]},
+                    {"tool_calls": [{"index": 0, "function": {"arguments": '"杭州"}'}}]},
+                    {"reasoning_content": None},
+                ]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for index, delta in enumerate(deltas):
+                    chunk = {"id": "stream", "object": "chat.completion.chunk", "created": 0, "model": "fixture",
+                             "choices": [{"index": 0, "delta": delta, "finish_reason": "tool_calls" if index == len(deltas) - 1 else None}]}
+                    self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+                    self.wfile.flush()
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
             if text == "hold":
                 gate.wait()
             response = "r" * 1_100_000 if isinstance(text, str) and text.startswith("large") else "OK"
@@ -259,6 +327,58 @@ def test_saved_profiles_do_not_change_effective_generation_until_reload(model_pr
     assert app.service_identity(SERVICE) != before
     with pytest.raises(Exception):
         app.call_service("fixture.model.a", "start", REF, request("invalid-old-model"))
+
+
+@pytest.mark.parametrize("fault,count", [("cancel_ack_timeout", 33), ("release_not_sent", 1)])
+def test_cleanup_releases_jobs_without_exhausting_owner_quota_or_cancelling_others(model_process, fault, count):
+    app, requests, gate, config = model_process
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    saved["profiles"][0]["timeout_seconds"] = 60
+    config.write_text(json.dumps(saved), encoding="utf-8")
+    app.reload_plugin(SERVICE)
+    provider = app.service_identity(SERVICE)
+    app.call_service("fixture.model.b", "start", REF, request("hold"))
+    assert requests.get(timeout=3)["messages"][0]["content"] == "hold"
+    for _ in range(count):
+        app.call_service("fixture.model.a", "start", REF, request("hold"), False, fault)
+        assert requests.get(timeout=3)["messages"][0]["content"] == "hold"
+        app.call_service("fixture.model.a", "cancel")
+        result = app.call_service("fixture.model.a", "wait")
+        assert result["state"] == "cancelled", result
+        jobs = app._manager.call_service("fixture.model.inspect", "wait_disposed", result["operationId"], timeout=5)
+        assert all(job["owner"] != "fixture.model.a" for job in jobs), jobs
+        assert [(job["owner"], job["state"]) for job in jobs] == [("fixture.model.b", "running")]
+        assert result["cleanupCalls"] == (["release", "release"] if fault == "release_not_sent" else ["release"])
+        assert result["pendingBeforeClose"] == int(fault == "release_not_sent")
+        assert result["pendingAfterClose"] == 0
+    assert app.service_identity(SERVICE) == provider
+    gate.set()
+    assert app.call_service("fixture.model.b", "wait")["state"] == "completed"
+    assert app.call_service("fixture.model.a", "complete", REF, request("after-cancellations"))["message"]["content"] == "OK"
+    assert app._host_services.artifact_count == 0
+
+
+def test_streaming_message_and_tool_continuation_are_returned_on_the_next_request(model_process):
+    app, requests, _gate, _config = model_process
+    first = {**request("stream-tools"), "stream": True,
+             "tools": [{"name": "lookup", "description": "查天气", "parameters": {"type": "object"}}]}
+    response = app.call_service("fixture.model.a", "complete", REF, first)
+    assert requests.get(timeout=3)["stream"] is True
+    message = response["message"]
+    assert response["finishReason"] == "tool_calls"
+    assert message["providerData"] == {"reasoning_content": "先检查工具参数。", "opaque_continuation": {"signature": "opaque-1"}}
+    call = message["toolCalls"][0]
+    assert call == {"id": "call-stream-1", "name": "lookup", "arguments": '{"city":"杭州"}',
+                    "providerData": {"extra_content": {"google": {"thought_signature": "tool-signature"}}}}
+    app.call_service("fixture.model.a", "complete", REF, {"messages": [*first["messages"], message,
+                     {"role": "tool", "toolCallId": call["id"], "content": "晴"}]})
+    next_request = requests.get(timeout=3)
+    assistant, tool_result = next_request["messages"][1:]
+    assert assistant["reasoning_content"] == "先检查工具参数。"
+    assert assistant["opaque_continuation"] == {"signature": "opaque-1"}
+    assert assistant["tool_calls"] == [{"id": "call-stream-1", "type": "function", "function": {"name": "lookup", "arguments": '{"city":"杭州"}'},
+                                         "extra_content": {"google": {"thought_signature": "tool-signature"}}}]
+    assert tool_result["tool_call_id"] == "call-stream-1"
 
 
 def test_provider_apply_reclaims_consumer_started_after_idle_preflight(model_process, monkeypatch):

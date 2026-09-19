@@ -115,6 +115,7 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                     if request.get("stream"):
                         stream = await sdk.chat.completions.create(**payload, stream=True, stream_options={"include_usage": True}, extra_headers=headers)
                         content, calls, usage, finish = [], {}, {}, None
+                        metadata = {}
                         pending, last_emit = "", asyncio.get_running_loop().time()
                         async with stream:
                             async for chunk in stream:
@@ -126,6 +127,13 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                                         continue
                                     finish = choice.finish_reason or finish
                                     delta = choice.delta
+                                    # Reasoning/refusal are text deltas; opaque signatures
+                                    # and other metadata are snapshots, not token fragments.
+                                    for name, value in delta.model_dump(exclude_none=True, exclude={"role", "content", "tool_calls"}).items():
+                                        if name in {"reasoning_content", "reasoning", "refusal"} and isinstance(value, str):
+                                            metadata[name] = metadata.get(name, "") + value
+                                        else:
+                                            metadata[name] = deepcopy(value)
                                     if delta.content:
                                         content.append(delta.content)
                                         pending += delta.content
@@ -147,7 +155,7 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                                     last_emit = now
                         if pending:
                             progress({"type": "text_delta", "text": pending})
-                        return {"choices": [{"message": {"content": "".join(content), "tool_calls": [calls[index] for index in sorted(calls)]}, "finish_reason": finish}], "usage": usage}
+                        return {"choices": [{"message": {**metadata, "content": "".join(content), "tool_calls": [calls[index] for index in sorted(calls)]}, "finish_reason": finish}], "usage": usage}
                     response = await sdk.chat.completions.with_raw_response.create(**payload, extra_headers=headers)
                     return response.http_response.json()
 
