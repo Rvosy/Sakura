@@ -120,7 +120,7 @@ class ChatHost:
             # the admission lock here, or call back into the boundary while
             # holding the publication lock from the revocation path.
             with active.publication_lock:
-                if active.revoked or active.terminal:
+                if active.terminal or (active.revoked and not active.started):
                     return
                 active.started = True
                 active.terminal = name != "chat.started"
@@ -158,9 +158,10 @@ class ChatHost:
         for operation_id, active in operations:
             with active.publication_lock:
                 active.revoked = True
-                if active.started and not active.terminal:
-                    active.terminal = True
-                    self._emit("host.chat.cancelled", dict(active.metadata))
+            # RealChat owns the business terminal. In particular, revoking the
+            # source after its reply was committed cannot turn completed into
+            # cancelled. An already-started desktop operation still needs that
+            # authoritative terminal, even after its source scope has ended.
             active.boundary.cancel_host_message(operation_id)
 
     def revoke_scope(self, plugin_id: str) -> None:

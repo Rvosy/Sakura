@@ -58,6 +58,10 @@ Core 消费原生文件后保存内存句柄；迟到结果、取消和传输失
 `{accepted: true, operationId}`，或 `{accepted: false, reasonCode}`。`cancel(operationId)` 只能取消
 当前实例自己的操作。会话、资源所有权和 UI 活动均在受理时重新校验；忙碌时直接拒绝，不增加排队系统。
 
+来源实例退出时，Host 向 RealChat 请求取消，不自行发布业务终态。回复写入 Timeline 并认领完成后，
+取消返回 `accepted: false`；已经向桌面发布 `started` 的操作仍交付 RealChat 决定的唯一终态，
+与历史和 Trace 保持一致。尚未发布 `started` 就被撤销的操作不再向桌面交付事件。
+
 宿主把请求送入既有 RealChat 排他和取消边界。默认 Assistant 不识别屏幕感知功能名，也不替换它的提示词。
 来源 `sourcePluginId` 由宿主绑定，记录为 `origin: host` 的 `OBSERVATION`，不发布人类消息、不写 `HUMAN`。
 Timeline 保存中性观察及实际回复，不保存原图、base64、路径、资源句柄或插件业务提示词。空回复是正常完成。
