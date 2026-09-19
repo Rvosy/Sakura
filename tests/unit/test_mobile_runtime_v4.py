@@ -113,6 +113,22 @@ def _json(
     return value
 
 
+def _wait_for_mobile_server(application: PluginRuntimeApplication) -> None:
+    # app.started is an asynchronous notification. The plugin's own status is
+    # published after bind/listen, before an HTTP client can consume the server.
+    deadline = time.monotonic() + 2
+    while True:
+        plugin = next(item for item in application.settings_snapshot()["plugins"]
+                      if item["pluginId"] == "sakura_mobile")
+        assert plugin["state"] == "active", plugin
+        status = next(item["values"] for item in plugin["sections"]
+                      if item["sectionId"] == "sakura_mobile")
+        assert not status["error"], status
+        if status["running"] == "运行中":
+            return
+        assert time.monotonic() < deadline, status
+
+
 def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Path) -> None:
     port = _free_port()
     roots = _roots(tmp_path, port)
@@ -171,6 +187,7 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
         assert record["pluginId"] == "sakura_mobile"
         assert record["state"] == "active"
         assert record["pid"] not in {None, 0}
+        _wait_for_mobile_server(application)
 
         base = f"http://127.0.0.1:{port}"
         assert _json(f"{base}/api/status?token=mobile-token") == {"ok": True}
@@ -262,6 +279,7 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
     image = "data:image/jpeg;base64," + base64.b64encode(b"x" * 1_100_000).decode("ascii")
     try:
         application.start()
+        _wait_for_mobile_server(application)
         result = _json(
             f"http://127.0.0.1:{port}/api/chat",
             payload={

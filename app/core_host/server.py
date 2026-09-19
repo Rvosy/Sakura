@@ -188,6 +188,10 @@ class ReadinessController:
         with self._lock:
             self._session_published_callback = callback
             call_now = self._session is not None and self._readiness in {"ready", "degraded"}
+            application = self._plugin_application
+            loaded = getattr(application, "wait_until_loaded", None)
+            if call_now and callable(loaded):
+                call_now = loaded(timeout=0)
         if call_now:
             callback()
 
@@ -331,6 +335,9 @@ class ReadinessController:
             self._session = result.session
             self._revision += 1
             callback = self._session_published_callback if result.session is not None else None
+            loaded = getattr(plugin_application, "wait_until_loaded", None)
+            if callback is not None and callable(loaded) and not loaded(timeout=0):
+                callback = None
         if callback is not None:
             callback()
 
@@ -664,23 +671,12 @@ class ReadinessController:
                     self._session = result.session
                     self._revision += 1
                     claimed = None
-                    session_callback = (
-                        self._session_published_callback
-                        if self._session is not None and self._readiness in {"ready", "degraded"}
-                        else None
-                    )
             if claimed is not None:
                 self._start_initializer_close(claimed)
             elif result.session is None and plugin_application is not None and presentation is not None:
                 bind_presentation = getattr(plugin_application, "bind_character_presentation", None)
                 if callable(bind_presentation):
                     bind_presentation(str(presentation["characterId"]))
-            if claimed is None and session_callback is not None:
-                try:
-                    session_callback()
-                except Exception:
-                    # TTS warmup is optional and must not alter Core readiness.
-                    pass
         except BaseException as error:  # noqa: BLE001 - publish a stable, sanitized readiness
             from .assistant_adapter import report_assistant_failure
 
@@ -713,6 +709,20 @@ class ReadinessController:
                 except BaseException:
                     # The application records its original startup failure.
                     # Already-published Assistant/visual state remains usable.
+                    pass
+            with self._lock:
+                session_callback = (
+                    self._session_published_callback
+                    if not self._closed and self._session is not None and self._readiness in {"ready", "degraded"}
+                    else None
+                )
+            if session_callback is not None:
+                try:
+                    # This worker already published chat readiness. Optional TTS
+                    # services must finish registering before startup warmup.
+                    session_callback()
+                except Exception:
+                    # TTS warmup is optional and must not alter Core readiness.
                     pass
             # The controller owns starting/published applications; only resources
             # never claimed by it or returned after failed startup remain here.

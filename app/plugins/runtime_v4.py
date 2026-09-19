@@ -1025,7 +1025,11 @@ class PluginRuntimeManager:
                 {
                     "pluginId": record.spec.plugin_id,
                     "enabled": record.spec.enabled,
-                    "state": record.state,
+                    "state": (
+                        "starting" if record.spec.enabled and record.reason_code in {"NOT_STARTED", "PLUGIN_STARTING"}
+                        else "disabled" if not record.spec.enabled and record.reason_code == "NOT_STARTED"
+                        else record.state
+                    ),
                     "reasonCode": record.reason_code,
                     "provides": list(record.spec.provides),
                     "requires": list(record.spec.requires),
@@ -1033,7 +1037,13 @@ class PluginRuntimeManager:
                 }
                 for record in sorted(self._records.values(), key=lambda item: item.spec.plugin_id)
             ]
-        return {"schemaVersion": 1, "state": "ready", "reasonCode": "READY", "plugins": plugins}
+            state, reason = (
+                ("stopped", "PLUGIN_RUNTIME_STOPPED") if self._closed
+                else ("starting", "PLUGIN_STARTING") if any(item["state"] == "starting" for item in plugins)
+                else ("degraded", "PLUGIN_START_FAILED") if any(item["state"] == "failed" for item in plugins)
+                else ("ready", "READY")
+            )
+        return {"schemaVersion": 1, "state": state, "reasonCode": reason, "plugins": plugins}
 
     def close(self) -> None:
         with self._lock:

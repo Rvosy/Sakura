@@ -70,7 +70,7 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
         )
     )
     assert required["enabled"] is True
-    assert required["state"] == "failed"
+    assert required["state"] == "starting"
     assert required["reasonCode"] == "PLUGIN_APPLICATION_NOT_READY"
 
     invalid_user_required = _preview_plugin(

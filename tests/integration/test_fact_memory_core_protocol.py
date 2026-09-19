@@ -71,8 +71,9 @@ class _CorePeer:
         self.next_id += 1
         return self.exchange(_request(f"control-{self.next_id}", name, payload or {}))
 
-    def readiness(self, expected: str) -> dict[str, Any]:
-        deadline = time.monotonic() + 10
+    def readiness(self, expected: str, *, deadline: float | None = None) -> dict[str, Any]:
+        if deadline is None:
+            deadline = time.monotonic() + 10
         while True:
             snapshot = self.request("core.snapshot")
             if snapshot["readiness"] == expected:
@@ -97,7 +98,7 @@ class _CorePeer:
 
     def completed(self, operation_id: str) -> dict[str, Any]:
         terminal = self.event(operation_id, "chat.completed")
-        assert terminal["name"] == "chat.completed", terminal
+        assert terminal["name"] == "chat.completed", json.dumps(terminal, ensure_ascii=False)
         events = [frame for frame in self.frames if frame.get("kind") == "event" and frame.get("id") == operation_id]
         assert events[0]["name"] == "chat.started"
         assert [frame["name"] for frame in events if frame["name"] in {"chat.completed", "chat.failed", "chat.cancelled"}] == ["chat.completed"]
@@ -168,7 +169,15 @@ def _core(user: Path, distribution: Path, *, model_configured=True):
         peer = _CorePeer(process)
         peer.exchange(_hello(["transport.concurrent-router", "assistant.plugins-v1", "assistant.tools-v1"]))
         peer.request("core.initialize")
-        peer.readiness("ready" if model_configured else "setup_required")
+        deadline = time.monotonic() + 10
+        peer.readiness("ready" if model_configured else "setup_required", deadline=deadline)
+        while True:
+            plugins = peer.request("plugins.settings.get")["plugins"]
+            required = [item for item in plugins if item["pluginId"] in {PLUGIN_ID, "context_rules"} and item["enabled"]]
+            assert all(item["state"] in {"starting", "active"} for item in required), required
+            if all(item["state"] == "active" for item in required):
+                break
+            assert time.monotonic() < deadline, required
         yield peer
     finally:
         if process.poll() is None:
@@ -324,7 +333,8 @@ def test_memory_collection_works_without_a_model_and_never_initializes_one(tmp_p
     )
     PluginDesiredStateStore(user).set(result.plugin_id, True)
     with _core(user, distribution, model_configured=False) as peer:
-        assert _plugin(peer)["state"] == "active"
+        plugin = _plugin(peer)
+        assert plugin["state"] == "active", (plugin["reasonCode"], plugin["sections"])
         item = _collection(peer, "create", values={"content": ORIGINAL_FACT, "keywords": "验收项目"})
         assert _query(peer)["items"][0]["itemId"] == item["itemId"]
         assert peer.request("core.snapshot")["readiness"] == "setup_required"

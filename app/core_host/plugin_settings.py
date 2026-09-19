@@ -155,24 +155,16 @@ class PluginSettingsBoundary:
                 state = getattr(application, "state", "degraded")
                 state = state if state in _PLUGIN_STATES else "degraded"
                 reason = getattr(application, "reason_code", "STATUS_INVALID")
-                if state == "starting":
-                    public = getattr(application, "public_snapshot")()
-                    plugins = [
-                        item
-                        for item in public.get("plugins", [])[:64]
-                        if isinstance(item, Mapping)
-                    ]
-                    if not plugins:
-                        plugins = [_preview_plugin(record) for record in inventory.records[:64]]
-                    else:
-                        plugins = _project_plugins(plugins, inventory)
-                else:
-                    raw = getattr(application, "settings_snapshot")()
-                    plugins = raw.get("plugins", []) if isinstance(raw, Mapping) else []
-                    plugins = _project_plugins(
-                        [item for item in plugins[:64] if isinstance(item, Mapping)],
-                        inventory,
-                    )
+                raw = getattr(application, "settings_snapshot")()
+                if isinstance(raw, Mapping):
+                    state = raw.get("state", state)
+                    state = state if state in _PLUGIN_STATES else "degraded"
+                    reason = raw.get("reasonCode", reason)
+                plugins = raw.get("plugins", []) if isinstance(raw, Mapping) else []
+                plugins = _project_plugins(
+                    [item for item in plugins[:64] if isinstance(item, Mapping)],
+                    inventory,
+                )
             except Exception:
                 public = getattr(application, "public_snapshot")()
                 plugins = _project_plugins(
@@ -458,7 +450,7 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "requires": list(spec.requires),
         "missingServices": [],
         "state": (
-            "failed" if supported and enabled else "disabled" if supported else "failed"
+            "starting" if supported and enabled else "disabled" if supported else "failed"
         ),
         "reasonCode": "PLUGIN_APPLICATION_NOT_READY" if supported and enabled else spec.reason_code,
         "sections": [],
@@ -511,7 +503,11 @@ def _project_plugin(
         "provides": _identifier_list(raw.get("provides")),
         "requires": _identifier_list(raw.get("requires")),
         "missingServices": _identifier_list(raw.get("missingServices")),
-        "state": raw.get("state") if raw.get("state") in {"disabled", "active", "failed"} else "failed",
+        "state": (
+            "starting" if raw.get("enabled") and raw.get("reasonCode") in {"NOT_STARTED", "PLUGIN_STARTING"}
+            else raw.get("state") if raw.get("state") in {"disabled", "starting", "active", "failed"}
+            else "failed"
+        ),
         "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
     }

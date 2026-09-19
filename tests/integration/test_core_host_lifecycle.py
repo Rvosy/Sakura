@@ -488,11 +488,23 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
         }
         assert snapshot["currentCharacterSummary"] is None
         assert snapshot["characterPresentation"]["characterId"] == "sakura"
+        # Character/Assistant publication precedes optional TTS startup. Wait
+        # for the capability this assertion consumes, within the same deadline.
+        sequence = 0
+        while True:
+            plugins = exchange(process, request(f"voice-plugin-{sequence}", "plugins.settings.get"))
+            assert plugins["ok"] is True, plugins
+            tts = next(item for item in plugins["payload"]["plugins"] if item["pluginId"] == "sakura.tts")
+            if tts["state"] == "active":
+                break
+            assert tts["state"] in {"starting", "waiting"}, tts
+            assert time.monotonic() < deadline, (tts, _stderr_text(process))
+            sequence += 1
         voice = exchange(
             process,
             request("voice-settings", "tts.settings.get"),
         )
-        assert voice["ok"] is True
+        assert voice["ok"] is True, voice
         assert voice["payload"]["character"] == {
             "characterId": "sakura",
             "displayName": "Sakura Fixture",

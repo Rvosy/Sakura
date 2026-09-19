@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+import json
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,8 @@ import pytest
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.real_chat import RealChatBoundary
 from app.core_host.server import HostConfig, ReadinessController
+from app.core_host.plugin_settings import PluginSettingsBoundary
+from app.core_host.tts_boundary import TTSBoundary
 from app.storage.runtime_roots import RuntimeRoots
 
 
@@ -25,7 +28,7 @@ def _plugin(distribution, plugin_id, service, body, requires=()):
     (root / "plugin.py").write_text(body, encoding="utf-8")
 
 
-@pytest.mark.parametrize("outcome", ["ready", "optional_failed", "assistant_ack_lost"])
+@pytest.mark.parametrize("outcome", ["ready", "optional_failed", "assistant_ack_lost", "assistant_release_stuck"])
 def test_visual_and_real_chat_are_published_before_optional_start_finishes(tmp_path, monkeypatch, outcome):
     optional_fails = outcome == "optional_failed"
     user, distribution = tmp_path / "user", tmp_path / "distribution"
@@ -74,16 +77,38 @@ class Plugin:
     _plugin(distribution, "aaa.optional", "fixture.optional", f'''
 class Plugin:
     def setup(self, context):
+        context.get("sakura.host.settings").register(
+            {{"sectionId": "fixture", "title": "Fixture", "fields": [{{"key": "value", "label": "Value", "type": "readonly", "default": ""}}]}},
+            load=lambda: {{"value": "ready"}}, save=lambda values: None)
         context.get("fixture.startup.gate").wait("optional")
         if {optional_fails!r}:
             raise RuntimeError("optional fixture setup failed")
         context.provide("fixture.optional", object(), exports=())
-''', requires=("fixture.startup.gate",))
+''', requires=("fixture.startup.gate", "sakura.host.settings"))
+    shutil.copytree(REPO / "plugins/builtin/sakura_tts_hub", distribution / "plugins/builtin/sakura_tts_hub",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    _plugin(distribution, "fixture.voice", "fixture.voice", '''
+class Plugin:
+    def setup(self, context):
+        self.gate = context.get("fixture.startup.gate")
+        self.gate.wait("tts")
+        context.provide("fixture.voice", self, exports=("status", "warmup"))
+        context.get("sakura.tts").registerProvider({"providerId": "fixture.voice", "serviceKey": "fixture.voice", "label": "Fixture"})
+    def status(self):
+        return {"available": True}
+    def warmup(self, character_id):
+        self.gate.warmed(character_id)
+        return True
+''', requires=("fixture.startup.gate", "sakura.tts"))
+    tts_config = user / "data/plugins/sakura.tts/config.json"
+    tts_config.parent.mkdir(parents=True)
+    tts_config.write_text(json.dumps({"selections": {"sakura": {"enabled": True, "provider": "fixture.voice"}}}), encoding="utf-8")
 
-    entered = {stage: threading.Event() for stage in ("assistant", "optional")}
+    entered = {stage: threading.Event() for stage in ("assistant", "optional", "tts")}
     release = {stage: threading.Event() for stage in entered}
     applications = []
     visits = []
+    warmed = []
 
     class Gate:
         def wait(self, stage):
@@ -91,9 +116,12 @@ class Plugin:
             entered[stage].set()
             assert release[stage].wait(6), stage
 
+        def warmed(self, character_id):
+            warmed.append(character_id)
+
     def create_application(*args):
         application = PluginApplicationHost(*args)
-        application._manager.install_host_service("fixture.startup.gate", Gate(), exports=("wait",))
+        application._manager.install_host_service("fixture.startup.gate", Gate(), exports=("wait", "warmed"))
         applications.append(application)
         return application
 
@@ -106,6 +134,12 @@ class Plugin:
         plugin_application_provider=controller.published_plugin_application,
         event_publisher=events.append)
     controller.bind_chat_boundary(boundary)
+    tts = TTSBoundary(config.generation_id, config.generation_credential, user,
+        session_provider=controller.published_session,
+        plugin_application_provider=controller.published_plugin_application)
+    controller.set_session_published_callback(tts.warmup_current_selection)
+    settings = PluginSettingsBoundary(config.generation_id, config.generation_credential, config.roots,
+        application_provider=controller.published_plugin_application)
     chat_worker = None
     try:
         controller.begin({})
@@ -117,6 +151,13 @@ class Plugin:
         assert early["characterPresentation"]["visual"]["providerId"] == "sakura.portrait"
         assert controller.published_character_presentation() == early["characterPresentation"]
         application = controller.published_plugin_application()
+        pending = settings.snapshot()
+        assert pending["state"] == "starting"
+        pending_plugins = {item["pluginId"]: item for item in pending["plugins"]}
+        assert pending_plugins["aaa.optional"]["state"] == "starting"
+        assert pending_plugins["aaa.optional"]["reasonCode"] == "NOT_STARTED"
+        assert pending_plugins["fixture.assistant"]["state"] == "starting"
+        assert pending_plugins["fixture.assistant"]["reasonCode"] == "PLUGIN_STARTING"
         visual_identity = application.service_identity("sakura.visual.portrait")
         dependency_identity = application.service_identity("fixture.visual.dep")
         assert not entered["optional"].is_set()
@@ -126,6 +167,10 @@ class Plugin:
         assert controller.readiness() == "ready"
         assert controller.snapshot()["components"]["assistant"]["code"] == "vendor.chat_ready"
         assert not application.wait_until_loaded(timeout=0)
+        assert warmed == []
+        optional_pending = next(item for item in settings.snapshot()["plugins"] if item["pluginId"] == "aaa.optional")
+        assert optional_pending["state"] == "starting"
+        assert optional_pending["sections"] == []
         request = {"id": "early-chat", "kind": "request", "name": "chat.send",
             "generationId": config.generation_id, "generationCredential": config.generation_credential,
             "payload": {"operationId": "early-chat", "message": "现在能聊天吗？"}}
@@ -133,15 +178,25 @@ class Plugin:
         boundary.handle_send(request)
         assert events[-1]["name"] == "chat.completed", events
 
-        if outcome == "assistant_ack_lost":
+        if outcome in {"assistant_ack_lost", "assistant_release_stuck"}:
             from app.plugins.runtime_v4 import PluginRuntimeError
             call = application.call_bound_service
-            def lose_begin_ack(service, identity, method, *args):
-                response = call(service, identity, method, *args)
-                if method == "begin":
+            clock = [0.0]
+            releasing = [False]
+            if outcome == "assistant_release_stuck":
+                monkeypatch.setattr("app.core_host.assistant_adapter.monotonic", lambda: clock[0])
+            def failed_cleanup(service, identity, method, *args, **kwargs):
+                if outcome == "assistant_release_stuck" and method == "release":
+                    releasing[0] = True
+                    return {"released": False}
+                if releasing[0] and method == "poll":
+                    clock[0] += 0.4
+                    return {"state": "running", "sequence": 0, "progress": []}
+                response = call(service, identity, method, *args, **kwargs)
+                if outcome == "assistant_ack_lost" and method == "begin":
                     raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT")
                 return response
-            monkeypatch.setattr(application, "call_bound_service", lose_begin_ack)
+            monkeypatch.setattr(application, "call_bound_service", failed_cleanup)
             failed_request = {**request, "id": "lost-ack", "payload": {"operationId": "lost-ack", "message": "请求已执行但确认丢失。"}}
             finished, failures = threading.Event(), []
             def send_with_lost_ack():
@@ -158,17 +213,30 @@ class Plugin:
             # Cleanup must finish while the unrelated startup gate is closed.
             assert finished.wait(2), "Assistant abort was blocked by optional startup"
             assert not failures
-            assert events[-1]["name"] == "chat.failed", events
+            assert events[-1]["name"] == ("chat.failed" if outcome == "assistant_ack_lost" else "chat.completed"), events
             with pytest.raises(PluginRuntimeError, match="SERVICE_MISSING"):
                 application.service_identity("sakura.assistant")
             optional_after = next(item for item in application._manager.snapshot()["plugins"] if item["pluginId"] == "aaa.optional")
             assert optional_after == optional_before
 
         release["optional"].set()
+        assert entered["tts"].wait(5)
+        assert controller.readiness() == "ready"
+        assert warmed == []
+        during_tts = settings.snapshot()
+        assert during_tts["state"] == "starting"
+        optional_state = next(item for item in during_tts["plugins"] if item["pluginId"] == "aaa.optional")
+        assert optional_state["state"] == ("failed" if optional_fails else "active")
+        if not optional_fails:
+            assert optional_state["sections"][0]["values"] == {"value": "ready"}
+        release["tts"].set()
         assert application.wait_until_loaded(timeout=5)
         controller._worker.join(2)
         assert not controller._worker.is_alive()
         assert controller.readiness() == "ready"
+        assert warmed == ["sakura"]
+        settled = settings.snapshot()
+        assert settled["state"] == ("degraded" if optional_fails or outcome in {"assistant_ack_lost", "assistant_release_stuck"} else "ready"), json.dumps(settled, ensure_ascii=False)
         assert application.service_identity("sakura.visual.portrait") == visual_identity
         assert application.service_identity("fixture.visual.dep") == dependency_identity
         optional = next(item for item in application.public_snapshot()["plugins"] if item["pluginId"] == "aaa.optional")
@@ -176,7 +244,8 @@ class Plugin:
         # Completing or explicitly revisiting startup never retries failed setup.
         application.start()
         assert controller.readiness() == "ready"
-        assert visits == ["assistant", "optional"]
+        assert visits == ["assistant", "optional", "tts"]
+        assert warmed == ["sakura"]
     finally:
         for gate in release.values():
             gate.set()
@@ -184,6 +253,7 @@ class Plugin:
             chat_worker.join(5)
             assert not chat_worker.is_alive()
         boundary.close()
+        tts.close()
         controller.close()
     assert all(item["pid"] is None for item in applications[0]._manager.snapshot()["plugins"])
 

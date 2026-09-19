@@ -1703,6 +1703,8 @@ class PluginHostServices:
         for plugin in plugins:
             if not isinstance(plugin, dict) or not isinstance(plugin.get("pluginId"), str):
                 continue
+            if plugin.get("state") != "active":
+                continue
             sections = plugin.get("sections")
             if not isinstance(sections, list):
                 sections = []

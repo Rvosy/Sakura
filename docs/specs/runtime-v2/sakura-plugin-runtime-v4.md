@@ -492,8 +492,11 @@ GPT-SoVITS 保留 Coordinator、Endpoint 和推理进程，下一次预热或合
 `set_sovits_weights`。prepare 失败时不写入角色文件；finish 失败与文件保存结果分开报告。
 未实现完整接口的 Provider 使用局部插件生命周期回退，不重启整个 Core。
 
-公开状态继续保持简单的 `disabled/active/failed`；具体原因通过稳定 `reasonCode` 和有界详情表达，不新增
-waiting、self-healing 或复杂调和状态机。
+公开状态为 `disabled/starting/active/failed`。已启用但尚未启动、或正在执行 setup 的插件显示
+`starting`；具体失败仍立即通过 `failed` 和稳定 `reasonCode` 表达。只要还有插件尚未完成启动，
+全局状态保持 `starting`，完成后为 `ready` 或 `degraded`，前端按已有轮询读取实际能力状态。
+Assistant 就绪不代表可选插件已注册完成；消费者等待自己需要的服务或 Collection，不以聊天状态替代。
+语音预热由同一个后台启动线程在可选插件启动结束后触发，不阻塞角色和聊天发布；慢可选插件可能推迟预热。
 
 ## 9. 安装与发行
 

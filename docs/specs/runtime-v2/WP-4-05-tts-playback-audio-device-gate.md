@@ -26,7 +26,7 @@ updated: 2026-09-19
   并取消尚未完成的合成、停止播放。录音开始时停止语音并放行字幕，结束后不补播被中断或录音期间的回复。
 - 输出始终使用播放时的系统默认设备；不提供设备选择器。设备断开只结束当前项，下一次播放重新探测。
 - Provider 插件拥有自身 Endpoint、健康检查、预热和 Managed Runtime；Runtime v2 Core 不读取 Provider 私有
-  配置，也不构造具体实现。当前角色启用 TTS 且选中 Sakura 托管 Provider 时，Core 在启动期 Session 发布后
+  配置，也不构造具体实现。当前角色启用 TTS 且选中 Sakura 托管 Provider 时，Core 在启动期 Session 发布、可选插件注册完成后
   通过 Hub 排队后台预热，由 Provider 启动服务并准备当前角色权重；该过程不阻塞 Core readiness，失败后首次
   合成仍可再次准备并只降级字幕。Custom Endpoint 启动预热不得连接、启动、接管或探测外部服务。设置页读取
   状态不得触发服务启动、旧进程清理或全 Provider 探测。

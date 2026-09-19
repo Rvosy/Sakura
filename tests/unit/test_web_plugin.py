@@ -220,23 +220,27 @@ def test_production_initialization_offers_plugin_without_legacy_setup(tmp_path: 
     from app.core_host.server import HostConfig, ReadinessController
     runtime_roots = roots(tmp_path)
     seen = []
+    initializer_created = threading.Event()
     class Initializer:
         def initialize(self, cancel):
             raise RuntimeError("fixture: no chat model configured")
         def close(self):
             pass
     def factory(roots, tools):
-        seen.extend(tools.all())
+        seen.append(tools)
+        initializer_created.set()
         return Initializer()
     controller = ReadinessController(HostConfig(runtime_roots, "web-production", "a" * 32), initializer_factory=factory)
     controller.enable_plugins()
     try:
-        controller.begin({})
         deadline = time.monotonic() + 8
-        while controller.readiness() != "failed" and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert {tool.name for tool in seen} == NAMES
+        controller.begin({})
+        assert initializer_created.wait(max(0, deadline - time.monotonic()))
         app = controller.published_plugin_application()
+        assert app is not None
+        assert app.wait_until_loaded(timeout=max(0, deadline - time.monotonic()))
+        assert controller.readiness() == "failed"
+        assert {tool.name for tool in seen[0].all()} == NAMES
         assert app.public_snapshot()["plugins"][0]["state"] == "active"
     finally:
         controller.close()
