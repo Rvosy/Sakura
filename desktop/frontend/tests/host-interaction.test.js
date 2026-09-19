@@ -97,6 +97,45 @@ test("same-generation session publication restores revoked UI facts without user
   controller.dispose();
 });
 
+test("a lifecycle publication during an in-flight facts update survives its late acknowledgement", async () => {
+  const entered = deferred(), acknowledgement = deferred(), calls = [];
+  let remoteIdle = false, stateCalls = 0;
+  const controller = createHostInteractionController({
+    generationId: () => "g", isReady: () => true, isIdle: () => true,
+    invoke: async (name, args) => {
+      calls.push([name, args]);
+      if (name === "host_interaction_current") return { sessionId: "same-session" };
+      remoteIdle = args.payload.idle;
+      if (++stateCalls === 1) {
+        entered.resolve();
+        return acknowledgement.promise;
+      }
+      return { accepted: true };
+    },
+  });
+  const publication = revision => ({ type: "lifecycle", generationId: "g", revision });
+  const oldUpdate = controller.handleLifecycle(publication(1));
+  await entered.promise;
+  // The new Core session clears UI facts while the first acknowledgement is in flight.
+  remoteIdle = false;
+  await controller.handleLifecycle(publication(2));
+  assert.equal(stateCalls, 1);
+  acknowledgement.resolve({ accepted: true });
+  await oldUpdate;
+  assert.equal(remoteIdle, false);
+
+  // The next scheduled update must read the new session and republish its facts.
+  await controller.update();
+  assert.equal(calls.filter(([name]) => name === "host_interaction_current").length, 2);
+  assert.equal(stateCalls, 2);
+  assert.equal(remoteIdle, true);
+  const published = calls.filter(([name]) => name === "host_interaction_state");
+  assert.ok(published[1][1].payload.activityRevision > published[0][1].payload.activityRevision);
+  await controller.update();
+  assert.equal(stateCalls, 2, "only the new acknowledgement may establish deduplication");
+  controller.dispose();
+});
+
 function visualFixture({ claim = Promise.resolve({ accepted: true }), play = Promise.resolve(true) } = {}) {
   const target = { characterId: "character", bindingId: "binding", resourceId: "resource" };
   const calls = [], rendered = [];
