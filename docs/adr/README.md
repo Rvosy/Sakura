@@ -76,6 +76,8 @@ spec 或 plan，验收证据放在 records。
 
 - [ADR-0060：共享对话入口与普通 Assistant 插件](0060-single-chat-boundary-and-plugin-assistant.md)
 
+- [ADR-0061：模型提供方与插件主动互动](0061-model-providers-and-plugin-interactions.md)
+
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
 

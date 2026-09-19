@@ -75,8 +75,8 @@ TTS 返回 `TTS_STORAGE_UNAVAILABLE`，设置快照通过 `TTS_ROOT_MISSING`、`
 
 ## 发行内容
 
-随主安装包预装的五个官方默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、
-`sakura_genie` 和 `sakura_gpt_sovits`。它们允许禁用、不可卸载；不可卸载只表示文件由安装器拥有，不赋予私有 API 或实现优先级。
+主安装包预装 Assistant、远程模型提供方、主动屏幕感知、MCP、立绘、Spine、联网、Memory、Mobile、
+TTS Hub、ASR Hub、SenseVoice、Genie 和 GPT-SoVITS。它们允许禁用、不可卸载；不可卸载只表示文件由安装器拥有，不赋予私有 API 或实现优先级。
 新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天，其余插件沿用各自默认状态。
 Shell 首次创建用户配置目录时，将这三个关闭状态写入 `config/plugins.yaml`。已有配置目录不补写或覆盖，
 包括尚未生成 `plugins.yaml`、一直沿用清单默认启用状态的老用户。清单保留原启用默认值用于升级兼容，
@@ -88,18 +88,19 @@ Shell 首次创建用户配置目录时，将这三个关闭状态写入 `config
 
 Plugin Runtime v4 的发行 Python 只携带 Core 必需依赖、Plugin SDK 和安装工具；官方插件依赖进入
 各自独立 dependency root，不进入主 Runtime 的全局 `site-packages`。预装插件可以携带已解析环境或
-wheelhouse 以保证首次启动离线可用；普通第三方插件不强制携带完整 wheelhouse。`uv`、`uvx`、`7zz` 位于
+wheelhouse，避免加载插件时安装依赖；普通第三方插件不强制携带完整 wheelhouse。默认对话仍使用远程 API，发行包不携带本地推理模型。`uv`、`uvx`、`7zz` 位于
 `python/tools/`，共享下载缓存只做物理去重，不改变插件 import 隔离。具体过渡合同见
 [Plugin Runtime v4](sakura-plugin-runtime-v4.md)。
 
 当前物理路径固定为：预装插件使用只读的 `distribution_root/plugins/dependencies/<plugin-id>/`，普通用户插件
-使用可写的 `user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用同一 marker、fingerprint 和
+使用可写的 `user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用相同的依赖就绪标记和
 Runner 校验；普通启动只读取并验证，不把预装环境复制到 user root，也不自动安装或修复。
 
-主 Python 运行时只读且不执行 pip。Memory 不携带约 91 MB 模型，Genie/GPT-SoVITS 不携带本体、环境或
+主 Python 运行时只读且不执行 pip；OpenAI SDK、HTTPX 与 SOCKS 传输依赖只进入远程模型插件环境，Assistant 无这些私有依赖。
+Memory 不携带约 91 MB 模型，Genie/GPT-SoVITS 不携带本体、环境或
 模型；Playwright 的 Python 包和浏览器资源都随可选插件流程取得。
 
-依赖隔离缩小并稳定的是 Core Runtime 依赖闭包，不等于五个预装插件的依赖从安装包消失。完整下载体积是否
+依赖隔离缩小并稳定的是 Core Runtime 依赖闭包，不等于预装插件的依赖从安装包消失。完整下载体积是否
 下降取决于预装插件集合；当前直接减少来自 Playwright 可选化，后续收益是增删插件不再改变 Core 依赖集合。
 
 Windows 生成 Setup 与带 `portable.flag` 的 ZIP；前者使用 Tauri Updater，后者只检查并下载新版 ZIP。

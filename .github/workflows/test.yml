@@ -262,7 +262,7 @@ jobs:
           $runtime = Join-Path $env:GITHUB_WORKSPACE 'runtime'
           @('python312.zip', '.', 'Lib/site-packages', 'import site') | Set-Content -LiteralPath (Join-Path $runtime 'python312._pth') -Encoding ascii
 
-      - name: Install Core and default Assistant dependencies into the bundled Runtime
+      - name: Install Core and isolated remote model dependencies
         shell: bash
         run: |
           python - <<'PY'
@@ -278,30 +278,30 @@ jobs:
           pip = [sys.executable, "-m", "pip", "--python", str(runtime), "install", "--only-binary=:all:"]
           subprocess.run([*pip, "--requirement", str(repo / "requirements.txt")], check=True)
 
-          plugin_root = repo / "plugins/builtin/sakura_assistant"
-          dependency_root = repo / "plugins/dependencies/sakura.assistant.default"
+          plugin_root = repo / "plugins/builtin/sakura_model_openai_compatible"
+          dependency_root = repo / "plugins/dependencies/sakura.model.openai_compatible"
           subprocess.run([
               *pip, "--target", str(dependency_root),
               "--requirement", str(plugin_root / "requirements.txt"),
           ], check=True)
           version = subprocess.check_output([
               str(runtime), "-I", "-c",
-              "import sys, yaml, py7zz, openai, httpx, socksio; "
+              "import sys, yaml, py7zz; "
               "print(f'{sys.version_info.major}.{sys.version_info.minor}')",
           ], text=True).strip()
           (dependency_root / ".sakura-dependencies.json").write_text(
               json.dumps({"schemaVersion": 1, "kind": "requirements.txt", "python": version}),
               encoding="utf-8",
           )
-          with tempfile.TemporaryDirectory(prefix="sakura-native-assistant-") as data_dir:
+          with tempfile.TemporaryDirectory(prefix="sakura-native-model-") as data_dir:
               subprocess.run([
                   str(runtime), "-I", "-B", "-S", str(repo / "app/plugins/plugin_runner_v4.py"),
-                  "--plugin-id", "sakura.assistant.default",
+                  "--plugin-id", "sakura.model.openai_compatible",
                   "--generation-id", "native-ci",
                   "--plugin-root", str(plugin_root),
                   "--dependency-root", str(dependency_root),
                   "--data-dir", data_dir,
-                  "--entry", "plugin:AssistantPlugin", "--validate-entry",
+                  "--entry", "plugin:ModelPlugin", "--validate-entry",
               ], check=True, timeout=30)
           PY
 
