@@ -58,6 +58,45 @@ test("rejected desktop facts reacquire the role session before publishing activi
   controller.dispose();
 });
 
+test("same-generation session publication restores revoked UI facts without user activity", async () => {
+  let generation = "g1", remoteIdle = false;
+  const calls = [];
+  const controller = createHostInteractionController({
+    generationId: () => generation, isReady: () => true, isIdle: () => true,
+    invoke: async (name, args) => {
+      calls.push([name, args]);
+      if (name === "host_interaction_current") return { sessionId: "same-session" };
+      remoteIdle = args.payload.idle;
+      return { accepted: true };
+    },
+  });
+  const publication = revision => ({ type: "lifecycle", generationId: generation, revision });
+  await controller.handleLifecycle(publication(1));
+  assert.equal(remoteIdle, true);
+  const first = calls.length;
+  await controller.update();
+  assert.equal(calls.length, first, "unchanged timer updates remain deduplicated");
+
+  // Applying model settings replaces the Core session and revokes ChatHost UI facts,
+  // while the current character, generation, screen-session ID and idle state stay put.
+  remoteIdle = false;
+  await controller.handleLifecycle(publication(2));
+  assert.equal(remoteIdle, true);
+  assert.equal(calls.length, first + 2);
+  assert.equal(calls.at(-1)[1].payload.sessionId, "same-session");
+  await controller.handleLifecycle(publication(2));
+  await controller.handleLifecycle(publication(1));
+  await controller.update();
+  assert.equal(calls.length, first + 2, "replayed lifecycle events do not republish");
+
+  generation = "g2";
+  await controller.handleLifecycle({ type: "lifecycle", generationId: "g1", revision: 3 });
+  assert.equal(calls.length, first + 2, "old generations cannot trigger publication");
+  await controller.handleLifecycle(publication(1));
+  assert.equal(calls.at(-1)[1].payload.generationId, "g2");
+  controller.dispose();
+});
+
 function visualFixture({ claim = Promise.resolve({ accepted: true }), play = Promise.resolve(true) } = {}) {
   const target = { characterId: "character", bindingId: "binding", resourceId: "resource" };
   const calls = [], rendered = [];

@@ -2,6 +2,7 @@
 export function createHostInteractionController({ invoke, generationId, isReady, isIdle, onDiagnostic = () => {},
   intervalMs = 200, schedule = (fn, ms) => window.setInterval(fn, ms), unschedule = id => window.clearInterval(id) }) {
   let session = null, generation = null, revision = 0, epoch = 0, last = null, busy = false, timer = null, disposed = false;
+  let lifecycle = null;
   function invalidate() { session = null; generation = null; last = null; epoch += 1; revision += 1; }
   async function update() {
     if (disposed || busy || !isReady()) return;
@@ -33,6 +34,16 @@ export function createHostInteractionController({ invoke, generationId, isReady,
   }
   return Object.freeze({
     start() { if (!disposed && timer === null) { timer = schedule(() => { void update(); }, intervalMs); void update(); } },
+    handleLifecycle(event) {
+      if (disposed || event?.type !== "lifecycle" || event.generationId !== generationId()
+          || !Number.isSafeInteger(event.revision)
+          || (lifecycle?.generationId === event.generationId && event.revision <= lifecycle.revision)) return;
+      lifecycle = { generationId: event.generationId, revision: event.revision };
+      // Core can publish a replacement session without restarting its generation.
+      // Its UI facts were revoked, even when this desktop is still idle.
+      invalidate();
+      return update();
+    },
     noteActivity() { revision += 1; void update(); },
     invalidate,
     update,

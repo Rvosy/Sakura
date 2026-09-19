@@ -787,6 +787,7 @@
         "tests/unit/test_screen_plugin_hosts.py",
         "tests/unit/test_host_scope_admission.py",
         "tests/integration/test_host_interaction_protocol.py",
+        "tests/integration/test_screen_optional_startup.py",
         "tests/integration/test_core_host_real_chat_integration.py",
         "-k",
         "screen_resource or jpeg_dimensions or screen_awareness or screen_plugin_hosts or host_scope_admission or host_interaction_protocol or plugin_image_batch or manual_screen_attachment or character_switch_rejects_old_capture",

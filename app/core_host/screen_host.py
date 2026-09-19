@@ -225,9 +225,14 @@ def migrate_legacy_screen_settings(user_root) -> None:
     from app.storage.paths import StoragePaths
 
     target = StoragePaths(user_root).plugin_data_for("sakura.screen_awareness") / "config.json"
-    existing = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    try:
+        existing = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    except (OSError, ValueError):
+        # Leave the private file to PluginConfig: its failure belongs to this
+        # optional plugin, not construction of Core and the management surface.
+        return
     if not isinstance(existing, dict):
-        raise ValueError("PLUGIN_CONFIG_INVALID")
+        return
     keys = {"enabled", "checkIntervalMinutes", "cooldownMinutes", "batchLimit", "resolution"}
     if keys.issubset(existing):
         return
