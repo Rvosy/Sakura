@@ -2,13 +2,13 @@ import { hasIcon } from "../core/icons.js";
 
 const NORMAL_REASONS = new Set(["ACTIVE", "READY"]);
 export const pluginKinds = Object.freeze({ extension: "功能扩展", provider: "功能引擎", infrastructure: "系统组件" });
-export const pluginCategories = Object.freeze({ model: "模型", voice: "语音", memory: "记忆", tools: "工具", connectivity: "连接", other: "其他" });
+export const pluginCategories = Object.freeze({ model: "模型", voice: "语音", memory: "记忆", visual: "表现", tools: "工具", connectivity: "连接", other: "其他" });
 
 export function pluginIconName(plugin) {
   if (hasIcon(plugin?.presentation?.icon)) return plugin.presentation.icon;
   const { kind, category } = pluginMetadata(plugin);
   if (kind === "infrastructure") return "layers";
-  return { model: "cpu", voice: "audio-lines", memory: "brain", tools: "wrench", connectivity: "globe", other: "puzzle" }[category];
+  return { model: "cpu", voice: "audio-lines", memory: "brain", visual: "person-standing", tools: "wrench", connectivity: "globe", other: "puzzle" }[category];
 }
 
 export function pluginMetadata(plugin) {

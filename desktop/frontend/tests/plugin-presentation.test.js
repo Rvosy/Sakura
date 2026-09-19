@@ -53,6 +53,7 @@ test("plugin icons use the local catalogue and fall back without interpreting su
     assert.equal(pluginIconName({ presentation: { category: "memory", icon } }), "brain");
   }
   assert.equal(pluginIconName({ presentation: { kind: "infrastructure", category: "voice" } }), "layers");
+  assert.equal(pluginIconName({ presentation: { kind: "provider", category: "visual" } }), "person-standing");
   assert.equal(pluginIconName({ plugin_id: "sakura_mem0" }), "puzzle");
 });
 

@@ -92,7 +92,7 @@ capability dependency；Python distribution dependency 单独通过 `pyproject.t
 ### 3.1 展示分类与图标
 
 Manifest 可以声明 `presentation: {kind, category, icon}`。`kind` 为 `extension`（功能扩展）、`provider`（能力提供方）
-或 `infrastructure`（系统组件）；`category` 为 `model/voice/memory/tools/connectivity/other`。
+或 `infrastructure`（系统组件）；`category` 为 `model/voice/memory/visual/tools/connectivity/other`。
 未声明、类型不符或未知的值逐字段回退为 `extension/other`，不影响插件的加载资格。
 
 Inventory 将归一化后的分类放入公开 Plugin Settings Snapshot。Rust 和 WebView 接受省略 `presentation` 的旧快照，
@@ -543,8 +543,9 @@ inventory `revision` 直接比较安装记录和结构化开关配置，状态�
 可观察状态从 A 变成 B 再变回 A 时使用新的 token，旧请求仍判为版本冲突。
 
 插件页按功能扩展、功能引擎和系统组件分组。顶部分类切换与名称、作者、ID、简介搜索同排，空间不足时换行；不再提供领域、来源和运行状态筛选面板。
-三个分组在同一个列表中显示，以图标、浅色标签、数量和细分隔线区分；系统组件不再使用底部固定入口或折叠展开，异常数量仍显示在该组标题旁。
+三个分组在同一个列表中显示，以图标、浅色标签、数量和细分隔线区分。系统组件默认折叠，异常数量仍显示在标题旁；用户可通过标题按钮展开。搜索、切换到系统组件分类、安装定位和依赖跳转会展开目标所在分组。
 每个插件保留独立卡片，选中时以边框和底色区分，不显示左侧色带。卡片标题行左侧显示名称，右侧显示运行状态，下方保留简介；领域、安装来源和插件角色集中在详情中。
+领域 `visual` 表示角色表现，立绘和 Spine 按清单归入该领域。分类不影响依赖或运行顺序。
 分类切换回到列表顶部。安装完成和依赖跳转清除阻挡目标的分类与搜索条件，并选中、滚动定位目标卡片；空结果同步清空详情。
 
 详情标题右侧仅显示紧凑的“插件设置”按钮，没有设置贡献时不占位。运行状态统一显示在左侧列表卡片中，详情继续保留具体异常原因和诊断信息。

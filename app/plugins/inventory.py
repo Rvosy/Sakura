@@ -375,7 +375,7 @@ class PluginInventory:
             tts_resources=tts_resources,
             capability_issues=tuple(capability_issues),
             presentation_kind=kind if kind in ("extension", "provider", "infrastructure") else "extension",
-            presentation_category=category if category in ("model", "voice", "memory", "tools", "connectivity", "other") else "other",
+            presentation_category=category if category in ("model", "voice", "memory", "visual", "tools", "connectivity", "other") else "other",
             presentation_icon=icon if isinstance(icon, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", icon) else "",
             visuals=visuals,
         )

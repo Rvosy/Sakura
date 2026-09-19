@@ -20,5 +20,5 @@ visuals:
     editor: editor.mjs
 presentation:
   kind: provider
-  category: model
+  category: visual
   icon: person-standing

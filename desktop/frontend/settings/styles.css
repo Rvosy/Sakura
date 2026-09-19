@@ -4328,6 +4328,9 @@ body:has(#page-plugins.is-active) .page-head { display: none; }
 .plugin-group { --plugin-group-color: var(--sakura-primary); display: grid; flex-shrink: 0; gap: 8px; min-width: 0; }
 .plugin-group.kind-provider { --plugin-group-color: color-mix(in srgb, var(--sakura-primary) 50%, var(--sakura-accent)); }
 .plugin-group.kind-infrastructure { --plugin-group-color: var(--sakura-secondary-text); }
+.plugin-group-items { display: grid; gap: 8px; }
+.plugin-group-items[hidden] { display: none; }
+.plugin-group-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
 .plugin-group-heading { display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0; color: var(--sakura-secondary-text); font-size: 12px; font-weight: var(--font-weight-medium); }
 .plugin-group-heading::after { content: ""; flex: 1; border-top: 1px solid var(--hairline); }
 .plugin-group-label { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; color: color-mix(in srgb, var(--plugin-group-color) 80%, var(--sakura-text)); background: color-mix(in srgb, var(--plugin-group-color) 10%, var(--surface-raised)); }

@@ -53,6 +53,7 @@ def test_presentation_only_changes_display_and_never_runtime_eligibility(tmp_pat
     baseline = manifest.read_text(encoding="utf-8")
     for declaration, expected in [
         ("presentation: {kind: provider, category: voice}", {"kind": "provider", "category": "voice", "icon": ""}),
+        ("presentation: {kind: provider, category: visual}", {"kind": "provider", "category": "visual", "icon": ""}),
         ("presentation: {kind: future-role, category: future-domain}", {"kind": "extension", "category": "other", "icon": ""}),
         ("presentation: {kind: provider, category: voice, icon: audio-lines}", {"kind": "provider", "category": "voice", "icon": "audio-lines"}),
         ("presentation: {kind: provider, category: voice, icon: future-icon}", {"kind": "provider", "category": "voice", "icon": "future-icon"}),

@@ -54,6 +54,7 @@ export function createPluginSettingsFeature({
   const pluginState = {
     selectedId: "",
     role: "all",
+    infrastructureCollapsed: true,
     enabledById: {},
     initialEnabledById: {},
     settingsValues: {},
@@ -473,6 +474,7 @@ export function createPluginSettingsFeature({
       tab.setAttribute('aria-controls', 'pluginList'); tab.tabIndex = pluginState.role === key ? 0 : -1;
       tab.addEventListener('click', () => {
         pluginState.role = key;
+        if (key === 'infrastructure') pluginState.infrastructureCollapsed = false;
         pluginState.selectedId = '';
         renderPluginPage();
         fields.pluginList.scrollTop = 0;
@@ -487,7 +489,9 @@ export function createPluginSettingsFeature({
       });
       fields.pluginRoleTabs.append(tab);
     });
-    if (!plugins.some((plugin) => plugin.id === pluginState.selectedId)) pluginState.selectedId = plugins[0]?.id || '';
+    const visiblePlugins = plugins.filter(plugin => !pluginState.infrastructureCollapsed
+      || pluginPresentation.pluginMetadata(plugin).kind !== 'infrastructure');
+    if (!visiblePlugins.some((plugin) => plugin.id === pluginState.selectedId)) pluginState.selectedId = visiblePlugins[0]?.id || '';
     for (const [kind, label] of Object.entries(pluginPresentation.pluginKinds)) {
       const entries = plugins.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === kind);
       if (!entries.length) continue;
@@ -498,10 +502,28 @@ export function createPluginSettingsFeature({
       const badge = pluginNode('span', 'plugin-group-label');
       badge.append(createIcon(document, { extension: 'puzzle', provider: 'audio-lines', infrastructure: 'layers' }[kind]),
         pluginNode('span', '', label), pluginNode('span', 'plugin-group-count', entries.length));
-      header.append(badge);
+      if (kind === 'infrastructure') {
+        const toggle = pluginNode('button', 'plugin-group-toggle');
+        toggle.type = 'button';
+        toggle.setAttribute('aria-expanded', String(!pluginState.infrastructureCollapsed));
+        toggle.setAttribute('aria-controls', 'plugin-infrastructure-items');
+        toggle.append(createIcon(document, pluginState.infrastructureCollapsed ? 'chevron-right' : 'chevron-down'), badge);
+        toggle.addEventListener('click', () => {
+          pluginState.infrastructureCollapsed = !pluginState.infrastructureCollapsed;
+          renderPluginPage();
+          fields.pluginList.querySelector('.plugin-group-toggle')?.focus();
+        });
+        header.append(toggle);
+      } else header.append(badge);
       const problems = pluginPresentation.filterPluginCatalog(entries, { status: 'problem' }).length;
       if (kind === 'infrastructure' && problems) header.append(pluginNode('span', 'plugin-system-problems', ` · ${problems} 个需要处理`));
       group.append(header);
+      const cards = kind === 'infrastructure' ? pluginNode('div', 'plugin-group-items') : group;
+      if (kind === 'infrastructure') {
+        cards.id = 'plugin-infrastructure-items';
+        cards.hidden = pluginState.infrastructureCollapsed;
+        group.append(cards);
+      }
       for (const plugin of entries) {
         const metadata = pluginPresentation.pluginMetadata(plugin);
         const activity = pluginLiveStatus(plugin);
@@ -525,7 +547,7 @@ export function createPluginSettingsFeature({
           card.append(pluginIcon(plugin), main);
           card.addEventListener('click', () => selectManagedPlugin(plugin.id));
         }
-        group.append(card);
+        cards.append(card);
       }
       fields.pluginList.append(group);
     }
@@ -2483,6 +2505,7 @@ export function createPluginSettingsFeature({
     void refreshPluginActivityCurrent();
   });
   listen(fields.pluginSearch, "input", () => {
+    if (fields.pluginSearch.value.trim()) pluginState.infrastructureCollapsed = false;
     pluginState.selectedId = "";
     renderPluginPage();
     fields.pluginList.scrollTop = 0;
@@ -2584,6 +2607,7 @@ export function createPluginSettingsFeature({
     const plugin = pluginView.items.find((item) => item.id === id);
     if (!plugin) return;
     if (reveal) clearPluginFilters();
+    if (pluginPresentation.pluginMetadata(plugin).kind === 'infrastructure') pluginState.infrastructureCollapsed = false;
     pluginState.selectedId = id;
     renderPluginPage();
     fields.pluginDetail.scrollTop = 0;
@@ -2752,8 +2776,7 @@ export function createPluginSettingsFeature({
       const plugin = pluginView.items.find(item => item.id === installId);
       showPage("plugins");
       if (!plugin) return;
-      pluginState.selectedId = installId;
-      renderPluginPage();
+      selectManagedPlugin(installId, { reveal: true });
       if (configure && pluginSettingsSections(plugin).some(section => section.surface !== "memory")) openPluginSettingsDialog(plugin);
     },
     isDirty: () => runtimePluginController.isDirty() || hasCollectionDrafts(),
