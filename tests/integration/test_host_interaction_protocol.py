@@ -19,10 +19,12 @@ _isolated_assistant_distribution = core._isolated_assistant_distribution
 
 _CONSUMER = '''
 import json
+from sakura_screen import ScreenClient
 class Plugin:
     def setup(self, context):
         self.chat = context.get("sakura.host.chat")
-        self.screen = context.get("sakura.host.screen")
+        self.screen = ScreenClient(context.get("sakura.host.screen"))
+        context.effect(self.screen.close)
         self.visual = context.get("sakura.host.visual")
         self.receipt = None
         self.image = None
@@ -154,6 +156,7 @@ def test_real_core_routes_scoped_screen_visual_and_detach_protocol(tmp_path):
         capture_event = core._read(process)
         assert capture_event["name"] == "host.screen.capture", capture_event
         pending = capture_event["payload"]
+        assert set(pending) == {"requestId", "sessionId", "resolution"}
         token = secrets.token_hex(16)
         resource_path = generation_resource_root(core.GENERATION_ID) / f"{token}.jpg"
         resource_path.parent.mkdir(parents=True, exist_ok=True)

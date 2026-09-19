@@ -582,7 +582,7 @@ class ServiceProxy:
         return dict(self._identity)
 
     def invoke(self, method: str, *args: object, timeout_seconds: float | None = None) -> object:
-        """Call a bound method with an optional end-to-end RPC deadline."""
+        """Call a remote method with an optional end-to-end RPC deadline."""
         method = _method(method)
         if self._timed_call is None:
             raise PluginApiError("SERVICE_BINDING_REQUIRED", service_key=self._service_key)
@@ -1469,7 +1469,13 @@ class PluginContext:
         }.get(key)
         if callback_shape is not None:
             return _HostRegistrationProxy(self, key, callback_shape)
-        return ServiceProxy(service_key, self._remote_call)
+        def timed_call(method, args, timeout):
+            payload = {"serviceKey": key, "method": method, "args": list(args)}
+            if timeout is not None:
+                payload["timeoutSeconds"] = timeout
+            return self._remote_request("service.call", payload)
+
+        return ServiceProxy(service_key, self._remote_call, timed_call=timed_call)
 
     def bind(self, service_key: str) -> ServiceProxy:
         """Hold one active plugin process; never adopt a replacement instance."""

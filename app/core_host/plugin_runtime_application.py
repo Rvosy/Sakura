@@ -131,7 +131,6 @@ class PluginRuntimeApplication:
             migrate_legacy_model_configuration(roots.user_root)
         except (OSError, ValueError):
             self._model_configuration_issue = "CONFIG_DATA_INVALID"
-        migrate_legacy_screen_settings(roots.user_root)
         self._inventory = PluginInventory(roots)
         self._inventory_snapshot = self._inventory.scan()
         manager_options = {} if call_timeout is None else {"call_timeout": call_timeout}
@@ -139,6 +138,7 @@ class PluginRuntimeApplication:
             roots,
             generation_id,
             self._inventory_snapshot.runtime_specs if specs is None else specs,
+            before_start=self._prepare_plugin,
             **manager_options,
         )
         self.visuals = VisualHost(self._manager, inventory=self.inventory)
@@ -190,7 +190,7 @@ class PluginRuntimeApplication:
             emit_callback=self._emit_desktop_event)
         self.chat = ChatHost(boundary_provider=lambda: self._chat_boundary,
             screen_host=self.screen, emit_callback=self._emit_desktop_event, commit_scope=commit_scope)
-        self._manager.install_host_service(HOST_SCREEN_SERVICE, self.screen, exports=("capture", "release"))
+        self._manager.install_host_service(HOST_SCREEN_SERVICE, self.screen, exports=("capture", "release", "release_capture"))
         self._manager.install_host_service(HOST_CHAT_SERVICE, self.chat, exports=("current", "submit", "cancel"))
         self.visual_controls = HostVisualService(binding_provider=self._current_visual_binding,
             emit_callback=self._emit_desktop_event, is_idle=lambda: self.chat.current()["idle"],
@@ -254,6 +254,15 @@ class PluginRuntimeApplication:
             return "PLUGIN_RUNTIME_STOPPED"
         snapshot = self._manager.snapshot()
         return str(snapshot.get("reasonCode", "READY"))
+
+    def _prepare_plugin(self, spec) -> None:
+        if spec.plugin_id == "sakura.screen_awareness":
+            try:
+                migrate_legacy_screen_settings(self._roots.user_root)
+            except Exception as error:
+                failure = PluginRuntimeError("SCREEN_SETTINGS_MIGRATION_FAILED", plugin_id=spec.plugin_id)
+                failure.recovery_error = getattr(error, "recovery_error", None)
+                raise failure from error
 
     def start(self) -> None:
         if self._closed:

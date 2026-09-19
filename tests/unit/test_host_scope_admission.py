@@ -91,7 +91,7 @@ def test_late_capture_cannot_create_resources_after_scope_clear(tmp_path, monkey
     manager.install_host_service("sakura.host.screen", screen, exports=("capture", "release"))
 
     _invoke_after_scope_clear(manager, process, "sakura.host.screen", "capture",
-        {"sessionId": "session", "resolution": "720p"}, replacement, monkeypatch)
+        {"operationId": "capture-1", "sessionId": "session", "resolution": "720p"}, replacement, monkeypatch)
 
     assert events == []
     assert screen._pending == {}

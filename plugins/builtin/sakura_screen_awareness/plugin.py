@@ -147,7 +147,11 @@ class ScreenAwarenessRuntime:
 
 class ScreenAwarenessPlugin:
     def setup(self, context):
-        runtime = ScreenAwarenessRuntime(context.get("sakura.host.screen"), context.get("sakura.host.chat"),
+        from sakura_screen import ScreenClient
+
+        screen = ScreenClient(context.get("sakura.host.screen"))
+        context.effect(screen.close)
+        runtime = ScreenAwarenessRuntime(screen, context.get("sakura.host.chat"),
                                          context.config, logger=context.get("sakura.host.logging"))
         context.effect(runtime.close)
         context.config.on_change(runtime.apply_settings)

@@ -14,6 +14,7 @@ HOST_SCREEN_SERVICE = "sakura.host.screen"
 _RESOLUTIONS = {"fullscreen", "720p", "1080p", "2160p"}
 _RESOURCE_LIMIT = 20
 _MEMORY_LIMIT = 128 * 1024 * 1024
+_CANCELLED_OPERATION_LIMIT = 256
 
 
 class ScreenHostError(RuntimeError):
@@ -32,6 +33,7 @@ def caller_identity() -> tuple[str, str]:
 @dataclass
 class _Capture:
     owner: tuple[str, str]
+    operation_id: str
     session_id: str
     done: threading.Event = field(default_factory=threading.Event)
     result: dict | None = None
@@ -41,6 +43,7 @@ class _Capture:
 @dataclass
 class _Resource:
     owner: tuple[str, str]
+    operation_id: str
     session_id: str
     observation: object
 
@@ -58,6 +61,9 @@ class ScreenHost:
         self._lock = threading.RLock()
         self._pending: dict[str, _Capture] = {}
         self._resources: dict[str, _Resource] = {}
+        self._operations: dict[tuple[tuple[str, str], str], _Capture] = {}
+        self._cancelled: dict[tuple[str, str], set[str]] = {}
+        self._cancelled_limit: set[tuple[str, str]] = set()
         self._closed = False
         self._session_epoch = 0
         self._owner_revisions: dict[str, int] = {}
@@ -77,12 +83,15 @@ class ScreenHost:
 
     def capture(self, request: Mapping) -> dict:
         owner = caller_identity()
-        if (not isinstance(request, Mapping) or set(request) != {"sessionId", "resolution"}
+        if (not isinstance(request, Mapping) or set(request) != {"operationId", "sessionId", "resolution"}
+                or not isinstance(request.get("operationId"), str) or not 1 <= len(request["operationId"]) <= 128
                 or request.get("resolution") not in _RESOLUTIONS):
             raise ScreenHostError("SCREEN_CAPTURE_REQUEST_INVALID")
         session_id = request["sessionId"]
         request_id = "capture-" + secrets.token_hex(16)
-        pending = _Capture(owner, session_id)
+        operation_id = request["operationId"]
+        key = owner, operation_id
+        pending = _Capture(owner, operation_id, session_id)
         delivered = False
         with self._lock:
             owner_revision = self._owner_revisions.get(owner[0], 0)
@@ -91,16 +100,27 @@ class ScreenHost:
             self._check_epoch(epoch)
             if owner_revision != self._owner_revisions.get(owner[0], 0):
                 raise ScreenHostError("SCREEN_CAPTURE_CANCELLED")
+            if operation_id in self._cancelled.get(owner, ()):
+                self._cancelled[owner].remove(operation_id)
+                raise ScreenHostError("SCREEN_CAPTURE_CANCELLED")
+            if owner in self._cancelled_limit:
+                raise ScreenHostError("SCREEN_CANCELLATION_LIMIT")
+            if key in self._operations:
+                raise ScreenHostError("SCREEN_OPERATION_EXISTS")
             if any(item.owner == owner for item in self._pending.values()):
                 raise ScreenHostError("SCREEN_CAPTURE_BUSY")
-            if sum(item.owner == owner for item in self._resources.values()) >= _RESOURCE_LIMIT:
+            if sum(item.owner == owner for item in self._operations.values()) >= _RESOURCE_LIMIT:
                 raise ScreenHostError("SCREEN_RESOURCE_LIMIT")
-            self._commit_scope(owner, lambda: self._pending.__setitem__(request_id, pending))
+            def admit():
+                self._operations[key] = pending
+                self._pending[request_id] = pending
+            self._commit_scope(owner, admit)
         try:
             with self._lock:
                 if self._pending.get(request_id) is not pending:
                     raise ScreenHostError("SCREEN_CAPTURE_CANCELLED")
-                self._emit("host.screen.capture", {"requestId": request_id, **dict(request)})
+                self._emit("host.screen.capture", {"requestId": request_id, "sessionId": session_id,
+                                                    "resolution": request["resolution"]})
             if not pending.done.wait(self._timeout):
                 raise ScreenHostError("SCREEN_CAPTURE_TIMEOUT")
             if pending.error:
@@ -155,7 +175,7 @@ class ScreenHost:
                 if len(owned) >= _RESOURCE_LIMIT or sum(len(item.observation.data_url) for item in owned) + len(observation.data_url) > _MEMORY_LIMIT:
                     raise ScreenHostError("SCREEN_RESOURCE_LIMIT")
                 resource_id = "image-" + secrets.token_hex(16)
-                self._resources[resource_id] = _Resource(pending.owner, pending.session_id, observation)
+                self._resources[resource_id] = _Resource(pending.owner, pending.operation_id, pending.session_id, observation)
                 pending.result = {"resourceId": resource_id, "sessionId": pending.session_id,
                                   "width": observation.width, "height": observation.height,
                                   "capturedAt": observation.captured_at, "screenName": observation.screen_name}
@@ -174,7 +194,36 @@ class ScreenHost:
             if item.owner != owner:
                 raise ScreenHostError("SCREEN_RESOURCE_UNAUTHORIZED")
             self._resources.pop(resource_id)
+            self._operations.pop((owner, item.operation_id), None)
             return {"released": True}
+
+    def release_capture(self, operation_id: str) -> dict:
+        """Cancel one owner operation even when its capture reply was lost."""
+        owner = caller_identity()
+        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128:
+            raise ScreenHostError("SCREEN_CAPTURE_REQUEST_INVALID")
+        with self._lock:
+            def release():
+                pending = self._operations.pop((owner, operation_id), None)
+                if pending is not None:
+                    pending.error = "SCREEN_CAPTURE_CANCELLED"
+                    pending.done.set()
+                    for request_id, item in tuple(self._pending.items()):
+                        if item is pending:
+                            self._pending.pop(request_id)
+                    if pending.result is not None:
+                        self._resources.pop(pending.result["resourceId"], None)
+                    return {"released": True}
+                cancelled = self._cancelled.setdefault(owner, set())
+                if operation_id not in cancelled:
+                    if len(cancelled) >= _CANCELLED_OPERATION_LIMIT:
+                        # Never evict an older cancellation and let a delayed
+                        # request revive it. Scope reload is the recovery path.
+                        self._cancelled_limit.add(owner)
+                        raise ScreenHostError("SCREEN_CANCELLATION_LIMIT")
+                    cancelled.add(operation_id)
+                return {"released": False}
+            return self._commit_scope(owner, release)
 
     def take_resources(self, owner: tuple[str, str], session_id: str, ids: Sequence[str]) -> tuple:
         epoch = self._session_snapshot(session_id)
@@ -187,10 +236,11 @@ class ScreenHost:
             if any(item is None or item.owner != owner or item.session_id != session_id for item in items):
                 raise ScreenHostError("SCREEN_RESOURCE_UNAUTHORIZED")
             for value in ids:
-                self._resources.pop(value)
+                item = self._resources.pop(value)
+                self._operations.pop((owner, item.operation_id), None)
             return tuple(item.observation for item in items)
 
-    def _revoke(self, owner_id: str | None) -> None:
+    def _revoke(self, owner_id: str | None, *, clear_cancellations: bool = True) -> None:
         with self._lock:
             for key, pending in tuple(self._pending.items()):
                 if owner_id is None or pending.owner[0] == owner_id:
@@ -199,6 +249,13 @@ class ScreenHost:
                     pending.done.set()
             self._resources = {key: item for key, item in self._resources.items()
                                if owner_id is not None and item.owner[0] != owner_id}
+            self._operations = {key: item for key, item in self._operations.items()
+                                if owner_id is not None and item.owner[0] != owner_id}
+            if clear_cancellations:
+                self._cancelled = {owner: ids for owner, ids in self._cancelled.items()
+                                   if owner_id is not None and owner[0] != owner_id}
+                self._cancelled_limit = {owner for owner in self._cancelled_limit
+                                         if owner_id is not None and owner[0] != owner_id}
 
     def revoke_scope(self, plugin_id: str) -> None:
         with self._lock:
@@ -208,7 +265,7 @@ class ScreenHost:
     def invalidate_session(self) -> None:
         with self._lock:
             self._session_epoch += 1
-            self._revoke(None)
+            self._revoke(None, clear_cancellations=False)
 
     def close(self) -> None:
         with self._lock:
@@ -227,7 +284,7 @@ def migrate_legacy_screen_settings(user_root) -> None:
     target = StoragePaths(user_root).plugin_data_for("sakura.screen_awareness") / "config.json"
     try:
         existing = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
-    except (OSError, ValueError):
+    except ValueError:
         # Leave the private file to PluginConfig: its failure belongs to this
         # optional plugin, not construction of Core and the management surface.
         return
@@ -245,5 +302,9 @@ def migrate_legacy_screen_settings(user_root) -> None:
     try:
         temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
+    except BaseException as error:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            error.recovery_error = cleanup_error
+        raise

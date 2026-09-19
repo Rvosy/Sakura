@@ -39,7 +39,7 @@ def test_capture_ownership_and_late_scope_result_is_released():
     def capture():
         with caller():
             try:
-                screen.capture({"sessionId": "session", "resolution": "720p"})
+                screen.capture({"operationId": "capture-1", "sessionId": "session", "resolution": "720p"})
             except ScreenHostError as error:
                 errors.append(error.code)
     worker = threading.Thread(target=capture)
@@ -66,7 +66,7 @@ def captured_screen(session_provider=lambda: "session"):
 def test_resource_handles_are_scoped_and_consumed_once():
     screen = captured_screen()
     with caller():
-        image = screen.capture({"sessionId": "session", "resolution": "720p"})
+        image = screen.capture({"operationId": "capture-1", "sessionId": "session", "resolution": "720p"})
     with caller(scope="replacement"):
         with pytest.raises(ScreenHostError, match="UNAUTHORIZED"):
             screen.release(image["resourceId"])
@@ -283,7 +283,7 @@ def test_capture_session_invalidation_does_not_wait_for_boundary_reader():
     def capture():
         with caller():
             try:
-                screen.capture({"sessionId": "session", "resolution": "720p"})
+                screen.capture({"operationId": "capture-1", "sessionId": "session", "resolution": "720p"})
             except ScreenHostError as error:
                 errors.append(error.code)
     worker = threading.Thread(target=capture)

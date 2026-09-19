@@ -265,6 +265,8 @@ result = service.some_method({"value": 1})
 
 位置透明只保证相同的方法名、参数合同、结果合同和稳定错误，不保证对象 identity、属性反射、共享内存、
 零延迟或无限调用时间。每次调用必须具有 deadline；超时或连接失效绝不自动重放。
+远端代理也可使用 `service.invoke("method", args, timeout_seconds=10)` 为单次调用指定期限；
+动态 `get()` 与固定进程 `bind()` 均支持。期限由调用方传入 RPC，领域客户端负责按操作 ID 清理超时后状态。
 
 Manifest 只声明 `provides/requires` Service key，不声明方法表。插件在 setup 中调用
 `context.provide(service_key, service, exports=...)`，`exports` 是唯一方法导出来源；Runtime 在 IPC 边界拒绝

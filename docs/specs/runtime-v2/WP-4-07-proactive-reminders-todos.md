@@ -33,12 +33,27 @@ updated: 2026-09-19
 插件 `config` 是生产保存入口，字段为 `enabled/checkIntervalMinutes/cooldownMinutes/batchLimit/resolution`。
 首次加载时，宿主读取旧 `screen_awareness` 配置，把 `enabled && screen_context_enabled` 合并为开关，
 只补齐插件配置中缺少的字段。已有插件配置优先；旧 YAML 保持可读，不回写、不双向同步，不需要重填设置。
+迁移在该插件启动边界执行；读写、替换或目录权限失败只使该插件启动失败，保留原配置和完整异常诊断。
+管理界面仍可禁用插件，修复权限后重新启用会再次迁移；禁用状态不触发迁移。
 
 ## 受控截图接口
 
-普通插件通过 `sakura.host.screen.capture({sessionId, resolution})` 请求截图，返回
+普通插件使用公共 SDK 的 `sakura_screen.ScreenClient(context.get("sakura.host.screen"))`，
+通过 `capture({sessionId, resolution})` 请求截图，返回
 `{resourceId, sessionId, width, height, capturedAt, screenName}`。调用者由 Plugin Runtime 的实例 scope
 确定，不能通过参数冒充。`release(resourceId)` 回收未消费的图片。
+
+底层 `capture({operationId, sessionId, resolution})` 必须携带调用者预先生成且不复用的操作 ID；
+缺少 ID 时拒绝受理。SDK 为每次调用生成 ID，使用 10 秒 RPC 期限覆盖 Host 的 8 秒截图期限，
+失败后通过 `release_capture(operationId)` 撤销在途请求或回收回复丢失后留下的句柄。
+清理未确认时保留该 ID，后续截图先确认清理，失败则返回 `SCREEN_CAPTURE_CLEANUP_PENDING`，不继续申请资源。
+插件退出时调用客户端 `close()`；宿主仍按实例退出边界回收所有状态。
+
+如果撤销先于截图到达，Host 保留该实例的撤销 ID，迟到截图抵达时消费记录并拒绝请求。
+只有尚未收到对应截图的撤销才积累此记录，正常释放已知操作不积累。每实例最多保存 256 个；
+超限返回 `SCREEN_CANCELLATION_LIMIT` 并拒绝该实例后续截图，重载插件后恢复，不淘汰旧 ID 放行迟到请求。
+ID 和资源均按认证实例隔离，其他实例不能撤销该请求。底层事件仍只向 Rust 发送
+`requestId/sessionId/resolution`，操作 ID 留在 Host 所有权边界内。
 
 资源句柄属于当前调用实例与角色会话，不暴露文件路径、像素或原生 token。宿主每个实例最多保留 20 个句柄、
 128 MiB 编码内容，并只允许一个在途截图请求。插件在达到设置张数上限前先释放最旧帧。

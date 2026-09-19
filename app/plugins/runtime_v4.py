@@ -649,12 +649,14 @@ class PluginRuntimeManager:
         specs: Sequence[PluginSpec | RuntimePluginSpec],
         *,
         call_timeout: float = CALL_TIMEOUT_SECONDS,
+        before_start: Callable[[PluginSpec], None] | None = None,
     ) -> None:
         if not isinstance(generation_id, str) or not generation_id:
             raise ValueError("generation_id must not be empty")
         self._roots = coerce_runtime_roots(roots)
         self._generation_id = generation_id
         self._call_timeout = max(0.05, float(call_timeout))
+        self._before_start = before_start
         self._dependencies = PluginDependencyRoots(
             self._roots.user_root,
             distribution_root=self._roots.distribution_root,
@@ -1317,20 +1319,25 @@ class PluginRuntimeManager:
                 record.state = "failed"
                 record.reason_code = "MISSING_SERVICE"
                 return False
+        stage = "prepare"
         try:
+            if self._before_start is not None:
+                self._before_start(spec)
+            stage = "dependencies"
             dependency_root = self._dependencies.verified_root(
                 spec.plugin_id,
                 spec.plugin_root,
                 source=spec.source,
             )
-        except PluginDependencyError as error:
-            diagnostics.update(exception_diagnostics(error, reason_code=error.code, stage="dependencies"))
+        except Exception as error:
+            code = error.code if isinstance(error, (PluginDependencyError, PluginRuntimeError)) else "PLUGIN_PREPARE_FAILED"
+            diagnostics.update(exception_diagnostics(error, reason_code=code, stage=stage))
             with self._lock:
                 if (self._records.get(spec.plugin_id) is not record or record.spec is not spec
                         or (only_unstarted and record.reason_code != "NOT_STARTED")):
                     return None
                 record.state = "failed"
-                record.reason_code = error.code
+                record.reason_code = code
             return False
         process = _PluginProcess(
             roots=self._roots,
