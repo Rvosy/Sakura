@@ -36,14 +36,14 @@ class ScreenAwarenessSettings:
 
 
 def settings_descriptor():
-    return {"sectionId": "screen_awareness", "title": "主动屏幕感知", "order": 50,
+    return {"sectionId": "screen_awareness", "title": "主动屏幕感知", "order": 50, "presentation": {"component": "form", "alignedUnits": True},
             "fields": [
                 {"key": "enabled", "label": "启用主动屏幕感知", "type": "boolean", "default": True,
-                 "description": "定时截取光标所在屏幕，并发送给当前对话模型。"},
-                {"key": "checkIntervalMinutes", "label": "截图间隔（分钟）", "type": "integer", "default": 20, "minimum": 1, "maximum": 120},
-                {"key": "cooldownMinutes", "label": "收集时长（分钟）", "type": "integer", "default": 10, "minimum": 1, "maximum": 120},
-                {"key": "batchLimit", "label": "最多保留截图", "type": "integer", "default": 6, "minimum": 1, "maximum": 20},
-                {"key": "resolution", "label": "截图分辨率", "type": "select", "default": "fullscreen",
+                 "description": "定时截屏，判断是否主动搭话。"},
+                {"key": "checkIntervalMinutes", "label": "截图检查间隔", "unit": "分钟", "type": "integer", "default": 20, "minimum": 1, "maximum": 120},
+                {"key": "cooldownMinutes", "label": "最短搭话间隔", "unit": "分钟", "type": "integer", "default": 10, "minimum": 1, "maximum": 120},
+                {"key": "batchLimit", "label": "单次最多发送截图", "unit": "张", "type": "integer", "default": 6, "minimum": 1, "maximum": 20},
+                {"key": "resolution", "label": "截图分辨率", "tooltip": "发送前按比例缩小，不放大截图", "type": "select", "default": "fullscreen",
                  "options": [{"value": value, "label": label} for value, label in
-                             (("fullscreen", "原始分辨率"), ("720p", "720p"), ("1080p", "1080p"), ("2160p", "2160p"))]},
+                             (("fullscreen", "全屏分辨率"), ("720p", "720p"), ("1080p", "1080p"), ("2160p", "2160p"))]},
             ]}

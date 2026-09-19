@@ -82,3 +82,5 @@ spec 或 plan，验收证据放在 records。
 `supersedes` 关系。
 
 - [ADR-0054：开放插件成果整合与 Collection 归属](0054-retire-executor-experiment-and-scope-collections.md)
+
+- [ADR-0062：配置归属与设置页面展示分离](0062-settings-ownership-and-placement.md)

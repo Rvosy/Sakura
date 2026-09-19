@@ -164,6 +164,10 @@
         "visual-plugin-rust-journey"
       ]
     },
+    "journey-settings-contributions": {
+      "description": "验证插件页面贡献、窗口草稿和真实浏览器模型发现与统一保存",
+      "cases": ["settings-contributions-python", "settings-contributions-frontend", "settings-contributions-browser"]
+    },
     "journey-visuals-browser": {
       "description": "验证设置形态选择、工坊编辑与真实插件播放",
       "cases": [
@@ -1136,6 +1140,25 @@
         "NO_COLOR": "1",
         "CARGO_TERM_COLOR": "never"
       }
+    },
+    {
+      "id": "settings-contributions-python",
+      "description": "验证独立插件页面、区块归属、兼容配置和模型探测",
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/integration/test_plugin_settings_pages.py", "tests/unit/test_model_provider_profiles.py", "tests/unit/test_provider_model_settings.py", "tests/unit/test_plugin_settings_contract.py", "tests/unit/test_assistant_lifecycle.py", "tests/unit/test_screen_plugin_hosts.py"],
+      "timeout_seconds": 120
+    },
+    {
+      "id": "settings-contributions-frontend",
+      "description": "验证动态页面、私有设置、草稿保留和部分保存",
+      "argv": ["node", "--test", "desktop/frontend/tests/settings-pages.test.js", "desktop/frontend/tests/plugin-settings.test.js", "desktop/frontend/tests/plugin-runtime.test.js", "desktop/frontend/tests/provider-settings.test.js"],
+      "timeout_seconds": 120
+    },
+    {
+      "id": "settings-contributions-browser",
+      "description": "使用真实插件、隔离配置和浏览器验证旧设置交互与统一保存",
+      "argv": ["{python}", "desktop/frontend/tests/settings-contributions.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
     },
     {
       "id": "settings-visuals-browser-journey",

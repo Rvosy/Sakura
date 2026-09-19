@@ -383,9 +383,10 @@ def test_streaming_message_and_tool_continuation_are_returned_on_the_next_reques
 
 def test_provider_apply_reclaims_consumer_started_after_idle_preflight(model_process, monkeypatch):
     app, requests, gate, config = model_process
-    saved = json.loads(config.read_text(encoding="utf-8"))
-    saved["profiles"][0]["models"] = ["replacement"]
-    config.write_text(json.dumps(saved), encoding="utf-8")
+    provider = next(p for p in app.settings_snapshot()["plugins"] if p["pluginId"] == SERVICE)
+    section = next(s for s in provider["sections"] if s["sectionId"] == "connections")
+    draft = {"connections": section["values"]["connections"]}
+    draft["connections"][0]["models"] = ["replacement"]
     previous = app.service_identity(SERVICE)
     preflight_done, reload_allowed = threading.Event(), threading.Event()
     results, errors = [], []
@@ -401,7 +402,7 @@ def test_provider_apply_reclaims_consumer_started_after_idle_preflight(model_pro
 
     def apply():
         try:
-            results.append(app.settings_action(SERVICE, "connections", "applyProfiles", {}))
+            results.append(app.settings_save(SERVICE, "connections", draft))
         except BaseException as error:
             errors.append(error)
 
@@ -431,19 +432,22 @@ def test_provider_apply_reclaims_consumer_started_after_idle_preflight(model_pro
     assert app._host_services.artifact_count == 0
 
 
-@pytest.mark.parametrize("action", ["testConnection", "listModels"])
+@pytest.mark.parametrize("action", ["test_connection", "list_models"])
 def test_provider_settings_actions_use_the_real_bound_job_lifecycle(model_process, action):
     app, requests, _gate, config = model_process
-    app.settings_action(SERVICE, "connections", action, {"profileId": "fixture", "modelId": "fixture"})
+    before = config.read_bytes()
+    app.settings_action(SERVICE, "connections", "probe", {"probeRequest": {"operation": action,
+        "requestId": "probe-test", "profileId": "fixture", "modelId": "fixture"}})
     requests.get(timeout=3)
     deadline = time.monotonic() + 3
     while True:
         row = next(item for item in app.settings_snapshot()["plugins"] if item["pluginId"] == SERVICE)
-        status = next(section for section in row["sections"] if section["sectionId"] == "connections")["values"]["probeStatus"]
-        if status["state"] != "working":
+        status = next(section for section in row["sections"] if section["sectionId"] == "connections")["values"]["probeResult"]
+        if status["state"] != "running":
             break
         assert time.monotonic() < deadline
-    assert status["state"] == "ready", status
-    if action == "listModels":
-        assert "discovered" in [item["modelId"] for item in json.loads(config.read_text(encoding="utf-8"))["profiles"][0]["models"]]
+    assert status["state"] == "completed", status
+    assert config.read_bytes() == before
+    if action == "list_models":
+        assert "discovered" in [item["modelId"] for item in status["models"]]
         assert "discovered" not in [item["modelId"] for item in app.call_service(SERVICE, "catalog")[0]["models"]]

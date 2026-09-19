@@ -509,6 +509,7 @@ def _project_plugin(
             else "failed"
         ),
         "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
+        "pages": raw.get("pages", []),
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
     }
 

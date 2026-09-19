@@ -122,12 +122,16 @@ function browserFixture() {
   }
   const document = new Element("document");
   document.createElement = (tagName) => new Element(tagName);
-  document.getElementById = (id) => document.querySelector(`#${id}`);
+  document.getElementById = (id) => document.querySelectorAll("*").find(element => element.id === String(id)) || null;
   document.body = new Element("body");
   document.append(document.body);
   const shell = new Element("main");
   shell.className = "settings-shell";
   document.body.append(shell);
+  const scroll = new Element("div"); scroll.className = "page-scroll"; shell.append(scroll);
+  for (const name of ["character", "ai", "behavior", "system"]) {
+    const group = new Element("div"); const label = new Element("h3"); label.id = `navgrp-${name}`; group.append(label); shell.append(group);
+  }
   for (const id of [
     "pluginTotal", "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
     "pluginInstallZipButton", "pluginInstallFolderButton", "pluginList", "pluginDetail",

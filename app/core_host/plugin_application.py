@@ -157,6 +157,7 @@ class PluginApplicationHost(PluginRuntimeApplication):
             "missingServices": list(runtime.get("missingServices", []))[:64] if runnable else [],
             "state": state,
             "reasonCode": reason,
+            "pages": list(runtime.get("pages", [])) if runnable else [],
             "sections": list(runtime.get("sections", []))[:16] if runnable else [],
         }
 

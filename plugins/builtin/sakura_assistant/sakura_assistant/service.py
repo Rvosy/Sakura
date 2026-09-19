@@ -109,15 +109,16 @@ class AssistantPlugin:
         self.closed = False
         self.trace = None
         self.generation = deepcopy(context.config.get().get("generation", {}))
+        self.context_window_tokens = context.config.get().get("contextWindowTokens")
         self._register_settings()
         diagnostics.configure(context.get("sakura.host.logging"))
         context.effect(self.close)
         context.provide("sakura.assistant", self, exports=("prepare", "begin", "poll", "result", "cancel", "release"))
 
     def _register_settings(self):
-        fields = [{"key": "temperature", "label": "温度", "type": "number", "default": None, "minimum": 0, "maximum": 2},
-                  {"key": "top_p", "label": "Top P", "type": "number", "default": None, "minimum": 0, "maximum": 1},
-                  {"key": "max_tokens", "label": "最大输出 token", "type": "integer", "default": None, "minimum": 1}]
+        fields = [{"key": "temperature", "label": "创造性 (temperature)", "type": "number", "default": None, "displayDefault": 0.8, "step": 0.01, "description": "越高越多变，越低越稳定。", "minimum": 0, "maximum": 2},
+                  {"key": "top_p", "label": "用词多样性 (top_p)", "type": "number", "default": None, "optionalToggle": True, "displayDefault": 1, "step": 0.01, "description": "值越低，用词范围越集中。", "minimum": 0, "maximum": 1},
+                  {"key": "max_tokens", "label": "回复长度上限 (max_tokens)", "type": "integer", "default": None, "optionalToggle": True, "displayDefault": 2048, "minimum": 1, "maximum": 1000000}]
         def load():
             saved = self.context.config.get().get("generation", {})
             return {field["key"]: saved.get(field["key"]) for field in fields}
@@ -132,9 +133,23 @@ class AssistantPlugin:
             if self.context.config.update({"generation": result}) == "error":
                 raise ApiConfigError("生成参数保存失败。")
             return {"applicationState": "restart_required"}
-        self.context.get("sakura.host.settings").register({"sectionId": "generation", "title": "对话生成", "order": 30,
-            "description": "保存后重新加载 Assistant 生效。", "fields": fields}, load=load, save=save)
-        self.context.get("sakura.host.settings.surface-v0").register("generation", "model")
+        self.context.get("sakura.host.settings").register({"sectionId": "generation", "title": "高级参数", "order": 30,
+            "presentation": {"component": "form", "group": "model-advanced", "collapsible": True}, "fields": fields}, load=load, save=save)
+        settings = self.context.get("sakura.host.settings")
+        settings.place("generation", page_id="host:model", order=30)
+        def save_budget(values):
+            value = values.get("contextWindowTokens")
+            if value is not None and (type(value) is not int or not 4096 <= value <= 2000000):
+                raise ApiConfigError("上下文上限无效。")
+            if self.context.config.update({"contextWindowTokens": value}) == "error":
+                raise ApiConfigError("上下文上限保存失败。")
+            return {"applicationState": "restart_required"}
+        settings.register({"sectionId": "context_budget", "title": "高级参数", "order": 10,
+            "presentation": {"component": "form", "group": "model-advanced", "collapsible": True},
+            "fields": [{"key": "contextWindowTokens", "label": "上下文上限", "type": "integer", "default": None,
+                        "minimum": 4096, "maximum": 2000000, "unit": "tokens", "placeholder": "例如 1000000", "description": "默认 32K tokens"}]},
+            load=lambda: {"contextWindowTokens": self.context.config.get().get("contextWindowTokens")}, save=save_budget)
+        settings.place("context_budget", page_id="host:model", order=10)
 
     def _settings(self, session):
         slots = session.get("modelSlots", {})
@@ -297,7 +312,7 @@ class AssistantPlugin:
                 description = model.description
                 settings = DialogueSettings(model=model.reference["modelId"],
                     temperature=self.generation.get("temperature"), top_p=self.generation.get("top_p"), max_tokens=self.generation.get("max_tokens"),
-                    context_window_tokens=description.get("contextWindowTokens", 32768), context_window_source=description.get("contextWindowSource", "fallback"))
+                    context_window_tokens=self.context_window_tokens or 32768, context_window_source="user" if self.context_window_tokens else "fallback")
                 return AssistantModelClient(settings, model, agent_trace_recorder=trace)
             client = adapter(models[0])
             vision_client = adapter(models[1]) if len(models) > 1 else None

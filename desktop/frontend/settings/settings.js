@@ -295,6 +295,7 @@ function setSubmissionBusy(busy) {
 }
 
 async function closeSettingsWindow() {
+  await runtimePluginController?.cancelOperations();
   bypassCloseGuard = true;
   beginSettingsWindowClose();
   try {
@@ -705,11 +706,11 @@ const pageMeta = {
 };
 
 function showPage(page) {
-  Object.entries(fields.pages).forEach(([key, element]) => {
+  Array.from(document.querySelectorAll(".settings-page")).map(element => [element.id.slice(5), element]).forEach(([key, element]) => {
     element.hidden = key !== page;
     element.classList.toggle("is-active", key === page);
   });
-  fields.navItems.forEach((item) => {
+  document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
     const active = item.dataset.page === page;
     item.classList.toggle("is-active", active);
     if (active) {
@@ -722,7 +723,7 @@ function showPage(page) {
     "is-admin-active",
     page === "memory" || page === "plugins" || page === "providers",
   );
-  const meta = pageMeta[page];
+  const meta = pageMeta[page] || { title: document.getElementById(`page-${page}`)?.dataset.pageTitle || "设置" };
   if (meta) {
     fields.pageTitle.textContent = meta.title;
     fields.pageSubtitle.textContent = "";
@@ -1371,6 +1372,15 @@ async function refreshRuntimeVoiceCurrent() {
 }
 
 async function saveRuntimeSettings({ keepGlobalCollectionDrafts = false } = {}) {
+  const invalid = document.querySelector('.settings-page input:invalid, .settings-page select:invalid');
+  if (invalid) {
+    const page = invalid.closest('.settings-page'); if (page) showPage(page.id.slice(5));
+    const details = invalid.closest('details'); if (details) details.open = true;
+    invalid.reportValidity();
+    throw new Error("请检查设置中的无效值。");
+  }
+  if (runtimeProviderFeature?.isDirty()) runtimeProviderFeature.validate();
+  runtimePluginController?.validate();
   if (runtimePluginController?.hasCollectionDrafts()
       && (!keepGlobalCollectionDrafts || runtimePluginController.characterCollectionDraftCount() > 0)) {
     throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
@@ -1378,6 +1388,11 @@ async function saveRuntimeSettings({ keepGlobalCollectionDrafts = false } = {}) 
   if (runtimeAsrController?.isDirty()) await runtimeAsrController.save();
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
   let result = null;
+  if (runtimePluginController?.isDirty()) {
+    result = await runtimePluginController.save({ keepGlobalCollectionDrafts });
+    await runtimeProviderFeature?.refreshCurrent({ preserveDraft: true });
+    await refreshRuntimeVoiceCurrent();
+  }
   if (runtimeProviderFeature?.isDirty()) {
     result = await runtimeProviderFeature.save();
     await runtimePluginController?.refreshCurrent();
@@ -1394,11 +1409,6 @@ async function saveRuntimeSettings({ keepGlobalCollectionDrafts = false } = {}) 
   }
   if (runtimeToolsController?.isDirty()) {
     result = await runtimeToolsController.save();
-  }
-  if (runtimePluginController?.isDirty()) {
-    result = await runtimePluginController.save({ keepGlobalCollectionDrafts });
-    await runtimeProviderFeature?.refreshCurrent();
-    await refreshRuntimeVoiceCurrent();
   }
   if (runtimeVoiceController?.isDirty()) {
     result = await runtimeVoiceController.save();
@@ -1760,6 +1770,7 @@ async function startSettingsFrontend() {
     await initializeRuntimeSettingsSection(async () => {
       const { createProviderSettingsFeature } = await import("./provider-settings.js");
       runtimeProviderFeature = createProviderSettingsFeature({
+        getProviderCatalog: () => runtimePluginController?.providerCatalog() || [],
         document,
         window,
         invoke,
@@ -1803,6 +1814,7 @@ async function startSettingsFrontend() {
     await initializeRuntimeSettingsSection(async () => {
       const { createPluginSettingsFeature } = await import("./plugin-settings.js");
       runtimePluginController = createPluginSettingsFeature({
+        onModelCatalogChanged: () => runtimeProviderFeature?.refreshChoices(),
         document,
         window,
         invoke,

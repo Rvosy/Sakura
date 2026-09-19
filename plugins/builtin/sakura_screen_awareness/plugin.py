@@ -156,5 +156,5 @@ class ScreenAwarenessPlugin:
         context.effect(runtime.close)
         context.config.on_change(runtime.apply_settings)
         context.get("sakura.host.settings").register(settings_descriptor(), load=runtime.load_settings, save=runtime.save_settings)
-        context.get("sakura.host.settings.surface-v0").register("screen_awareness", "screen_awareness")
+        context.get("sakura.host.settings").place("screen_awareness", page_id="host:interaction", order=50)
         runtime.start()

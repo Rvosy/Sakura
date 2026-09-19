@@ -1194,6 +1194,24 @@ class _SettingsRegistrationProxy:
             raise
 
 
+    def _register_ui(self, descriptor):
+        def activate():
+            result = self._context._remote_call("sakura.host.settings", "register",
+                                               [self._context.plugin_id, descriptor, {}])
+            identity = result["registrationId"]
+            return lambda: self._context._remote_call("sakura.host.settings", "unregister", [identity])
+        return self._context._stage(activate)
+
+    def register_page(self, descriptor):
+        """Register a namespaced navigation page using host components."""
+        return self._register_ui({**dict(descriptor), "kind": "page"})
+
+    def place(self, section_id, *, page_id, region="content", order=100):
+        """Place one owned section in one explicitly available page region."""
+        return self._register_ui({"kind": "placement", "sectionId": section_id,
+                                 "pageId": page_id, "region": region, "order": order})
+
+
 class _SettingsSurfaceProxy:
     def __init__(self, context: "PluginContext") -> None:
         self._context = context

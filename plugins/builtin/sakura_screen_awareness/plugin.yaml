@@ -11,7 +11,6 @@ requires:
   - sakura.host.screen
   - sakura.host.chat
   - sakura.host.settings
-  - sakura.host.settings.surface-v0
   - sakura.host.logging
 presentation:
   kind: extension

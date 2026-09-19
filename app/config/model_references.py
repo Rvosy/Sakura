@@ -53,6 +53,28 @@ def migrate_legacy_model_configuration(user_root: Path) -> None:
     target = paths.config_dir / "model_slots.json"
     with _HANDOFF_LOCK:
         if target.exists():
+            # Earlier plugin builds placed the chat budget on model metadata.
+            # Adopt it once; an explicit null in Assistant means the user cleared it.
+            assistant_path = paths.plugin_data_for("sakura.assistant.default") / "config.json"
+            assistant = _read(assistant_path)
+            if "contextWindowTokens" not in assistant:
+                reference = ModelReferenceRepository(user_root).load()["chat"]
+                budget = None
+                if reference.get("serviceKey") == OPENAI_SERVICE:
+                    provider = _read(paths.plugin_data_for(OPENAI_SERVICE) / "config.json")
+                    profiles = provider.get("profiles", [])
+                    if not isinstance(profiles, list):
+                        raise ValueError("CONFIG_DATA_INVALID")
+                    for profile in profiles:
+                        if not isinstance(profile, Mapping):
+                            raise ValueError("CONFIG_DATA_INVALID")
+                        if profile.get("profileId") == reference.get("profileId"):
+                            models = profile.get("models", [])
+                            if not isinstance(models, list) or any(not isinstance(model, Mapping) for model in models):
+                                raise ValueError("CONFIG_DATA_INVALID")
+                            budget = next((model.get("contextWindowTokens") for model in models
+                                           if model.get("modelId") == reference.get("modelId")), None)
+                _write(assistant_path, {**assistant, "contextWindowTokens": budget})
             return
         legacy_path = paths.api_config()
         try:
@@ -107,9 +129,13 @@ def migrate_legacy_model_configuration(user_root: Path) -> None:
                                                 "profileId": old.get("profile_id", ""), "modelId": old.get("model", "")})
         if "profiles" not in provider:
             _write(provider_path, {**provider, "profiles": profiles})
+        original_assistant = dict(assistant)
         if "generation" not in assistant:
             generation = {key: llm[key] for key in ("temperature", "top_p", "max_tokens") if llm.get(key) is not None}
-            _write(assistant_path, {**assistant, "generation": generation})
+            assistant["generation"] = generation
+        assistant.setdefault("contextWindowTokens", (slots.get("chat") or {}).get("context_window_tokens"))
+        if assistant != original_assistant:
+            _write(assistant_path, assistant)
         _write(target, {"schemaVersion": 1, "slots": references})
 
 

@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from app.plugin_sdk.sakura_tools import Tool
 from app.core.runtime_log import log_event, log_message
+from . import settings_ui
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE, HOST_LOGGING_SERVICE
 from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
@@ -786,6 +787,7 @@ class _SettingsRegistration:
     action_handles: dict[str, str]
     order: float
     surface: str | None
+    presentation: dict | None = None
     application_state: str = "applied"
     reason_code: str = "READY"
     descriptor_invalid: bool = False
@@ -1025,6 +1027,7 @@ class _SettingsHostService:
         self._invoke_callback = invoke_callback
         self._registrations: dict[str, _SettingsRegistration] = {}
         self._surface_registrations: dict[str, tuple[str, str, str]] = {}
+        self._ui_registrations: dict[str, tuple[str, dict]] = {}
         self._collection_registrations: dict[
             str,
             tuple[str, str, _SettingsCollection],
@@ -1046,6 +1049,14 @@ class _SettingsHostService:
     ) -> dict[str, str]:
         plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(raw_descriptor, "SETTINGS_DESCRIPTOR_INVALID")
+        if HOST_CALLER.get() and HOST_CALLER.get() != plugin_id:
+            raise HostServiceError("SETTINGS_OWNER_INVALID")
+        if descriptor.get("kind") in {"page", "placement"}:
+            return self._register_ui(plugin_id, descriptor)
+        try:
+            presentation = settings_ui.presentation(descriptor.get("presentation"))
+        except ValueError as error:
+            raise HostServiceError(str(error)) from error
         section_id = _bounded_identifier(
             descriptor.get("sectionId"),
             "SETTINGS_DESCRIPTOR_INVALID",
@@ -1096,6 +1107,14 @@ class _SettingsHostService:
         descriptor_invalid |= len(valid_fields) != len(fields)
         fields = valid_fields
         field_keys = {field["key"] for field in fields}
+        if presentation and presentation["component"] == "connection-editor":
+            bindings = {field["key"]: field for field in fields}
+            for key in ("valueField", "requestField", "resultField"):
+                field = bindings.get(presentation.get(key))
+                if field is None or field["type"] != "data" or (key != "resultField" and field["readonly"]):
+                    raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
+            if any(presentation.get(key) not in declared_action_ids for key in ("probeAction", "statusAction", "cancelAction")):
+                raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
         for field in fields:
             condition = field["enabledWhen"]
             if condition is not None and (
@@ -1135,6 +1154,7 @@ class _SettingsHostService:
             action_handles=action_handles,
             order=float(order),
             surface=None,
+            presentation=presentation,
             descriptor_invalid=descriptor_invalid,
         )
         with self._lock:
@@ -1147,8 +1167,64 @@ class _SettingsHostService:
             self._registrations[registration_id] = registration
         return {"registrationId": registration_id}
 
+    def _register_ui(self, owner, raw):
+        try:
+            if raw["kind"] == "page":
+                value = {"kind": "page", **settings_ui.page(owner, raw)}
+            else:
+                section = settings_ui.identifier(raw.get("sectionId"))
+                value = {"kind": "placement", "sectionId": section, **settings_ui.placement(raw)}
+        except ValueError as error:
+            raise HostServiceError(str(error)) from error
+        with self._lock:
+            if value["kind"] == "placement":
+                if self._find_locked(owner, value["sectionId"]) is None:
+                    raise HostServiceError("SETTINGS_SECTION_INVALID")
+                if any(p == owner and s == value["sectionId"] for p, s, _ in self._surface_registrations.values()):
+                    raise HostServiceError("SETTINGS_SURFACE_CONFLICT")
+            identity = "pageId" if value["kind"] == "page" else "sectionId"
+            if any(p == owner and v["kind"] == value["kind"] and v[identity] == value[identity]
+                   for p, v in self._ui_registrations.values()):
+                raise HostServiceError("SETTINGS_UI_CONFLICT")
+            registration_id = _new_registration_id(self._ui_registrations)
+            self._ui_registrations[registration_id] = (owner, value)
+        return {"registrationId": registration_id}
+
+    def pages_for_plugin(self, owner):
+        with self._lock:
+            return [dict(value) for plugin, value in self._ui_registrations.values()
+                    if plugin == owner and value["kind"] == "page"]
+
+    def _placement(self, registration):
+        with self._lock:
+            value = next((v for owner, v in self._ui_registrations.values()
+                          if owner == registration.plugin_id and v["kind"] == "placement"
+                          and v["sectionId"] == registration.section_id), None)
+            if value is None:
+                return None
+            target_owner, target_id = value["pageId"].split(":", 1)
+            if target_owner == "host":
+                available = value["region"] == "content"
+            else:
+                target = next((v for _, v in self._ui_registrations.values()
+                               if v["kind"] == "page" and v["pageId"] == value["pageId"]), None)
+                available = target is not None and (value["region"] in target["regions"] or
+                            (target_owner == registration.plugin_id and value["region"] == "content"))
+            return {**value, "available": available}
+
     def _unregister(self, registration_id: str) -> bool:
         with self._lock:
+            ui = self._ui_registrations.get(registration_id)
+            section = self._registrations.get(registration_id)
+            owner = ui[0] if ui else section.plugin_id if section else None
+            if owner and HOST_CALLER.get() and HOST_CALLER.get() != owner:
+                raise HostServiceError("SETTINGS_OWNER_INVALID")
+            if ui:
+                del self._ui_registrations[registration_id]
+                return True
+            if section:
+                self._ui_registrations = {key: value for key, value in self._ui_registrations.items()
+                    if not (value[0] == section.plugin_id and value[1].get("sectionId") == section.section_id)}
             return self._registrations.pop(registration_id, None) is not None
 
     def register_surface(
@@ -1168,6 +1244,9 @@ class _SettingsHostService:
             registration = self._find_locked(plugin_id, section_id)
             if registration is None:
                 raise HostServiceError("SETTINGS_SECTION_INVALID")
+            if any(owner == plugin_id and value["kind"] == "placement" and value["sectionId"] == section_id
+                   for owner, value in self._ui_registrations.values()):
+                raise HostServiceError("SETTINGS_SURFACE_CONFLICT")
             if surface == "about":
                 referenced_actions = {
                     action_id
@@ -1332,8 +1411,13 @@ class _SettingsHostService:
                 if plugin_id == registration.plugin_id
                 and section_id == registration.section_id
             ][:4]
+            instance_id = next((key for key, item in self._registrations.items() if item is registration), None)
         return {
             "sectionId": registration.section_id,
+            "instanceId": instance_id,
+            "presentation": registration.presentation,
+            "placement": self._placement(registration),
+            "order": registration.order,
             "title": registration.title,
             "surface": surface,
             "reasonCode": reason_code,
@@ -1546,6 +1630,7 @@ class _SettingsHostService:
         with self._lock:
             self._registrations.clear()
             self._surface_registrations.clear()
+            self._ui_registrations.clear()
             self._collection_registrations.clear()
 
     @property
@@ -1826,6 +1911,7 @@ class PluginHostServices:
             sections = plugin.get("sections")
             if not isinstance(sections, list):
                 sections = []
+            plugin["pages"] = self._settings.pages_for_plugin(plugin["pluginId"])
             plugin["sections"] = [
                 *sections,
                 *self._settings.sections_for_plugin(plugin["pluginId"]),
@@ -2028,6 +2114,7 @@ def _settings_field(
     kind = raw.get("type")
     description = raw.get("description", "")
     kind_map = {
+        "data": "data",
         "text": "string",
         "path": "string",
         "secret": "password",
@@ -2134,6 +2221,11 @@ def _settings_field(
         "type": public_kind,
         "default": default,
         "description": description,
+        "tooltip": raw.get("tooltip", "") if isinstance(raw.get("tooltip", ""), str) else "",
+        "placeholder": raw.get("placeholder", "") if isinstance(raw.get("placeholder", ""), str) else "",
+        "unit": raw.get("unit", "") if isinstance(raw.get("unit", ""), str) else "",
+        "optionalToggle": raw.get("optionalToggle") is True,
+        "displayDefault": raw.get("displayDefault"),
         "options": options,
         "minimum": minimum,
         "maximum": maximum,
@@ -2505,6 +2597,8 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
     if value is None:
         return not bool(field.get("required"))
     kind = field.get("type")
+    if kind == "data":
+        return isinstance(value, (list, dict)) and _json_compatible(value)
     if kind == "status":
         return _settings_status_value_valid(value)
     if kind == "resource":

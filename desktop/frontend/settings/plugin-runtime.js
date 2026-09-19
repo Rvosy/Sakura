@@ -109,7 +109,7 @@ function collectionRequest(current, input) {
 
 function validateCollectionResult(_operation, result) { return clone(result); }
 
-export function createPluginController({ invoke, applySnapshot, readDraft, onDirty,
+export function createPluginController({ invoke, applySnapshot, readDraft, onDirty, onSectionSaved = () => {}, onSectionFailed = () => {},
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)) }) {
   let current = null;
   let disposed = false;
@@ -173,6 +173,8 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       const settings = editableDraft(current, clone(readDraft()));
       const previousGeneration = current.coreGenerationId;
       let hasDetailedSettings = false;
+      const savedSections = [];
+      let savingSection = "";
       let enableResultPending = false;
       try {
         for (const [pluginId, enabled] of Object.entries(settings.enabledById)) {
@@ -200,6 +202,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         for (const [pluginId, sections] of Object.entries(settings.settingsById)) {
           for (const [sectionId, values] of Object.entries(sections)) {
             hasDetailedSettings = true;
+            savingSection = `${pluginId}/${sectionId}`;
             const result = await invoke("settings_plugins_save", {
               windowGeneration: current.windowGeneration,
               coreGenerationId: previousGeneration,
@@ -212,6 +215,8 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
                 || result.applicationReasonCode !== "READY") {
               throw new Error("PLUGIN_SETTINGS_CHANGE_PLAN_INVALID");
             }
+            onSectionSaved(pluginId, sectionId, values);
+            savedSections.push(savingSection);
           }
         }
         let next;
@@ -228,10 +233,14 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           applicationReasonCode: "READY",
         });
       } catch (error) {
-        if (enableResultPending || uncertainManagementError(error)) {
+        if (savingSection && !savedSections.includes(savingSection)) {
+          const [pluginId, sectionId] = savingSection.split("/"); onSectionFailed(pluginId, sectionId);
+        }
+        if (hasDetailedSettings || enableResultPending || uncertainManagementError(error)) {
           // The desired state may already be saved even when the reply is lost.
           try { await bindCurrent({ preserveDraft: true }); } catch { /* keep the original save error */ }
         }
+        if (savedSections.length) throw new Error(`已保存 ${savedSections.length} 个设置区块；${savingSection} 未完成，修改已保留。${String(error.message || error)}`);
         throw error;
       }
     },
@@ -242,7 +251,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         pluginId, sectionId, actionId, values: editableValues(current, pluginId, sectionId, clone(values)),
       });
       if (actionId === "sakura.reload") {
-        await bindCurrent({ preserveDraft: false });
+        await bindCurrent({ preserveDraft: true });
       }
       return clone(result);
     },

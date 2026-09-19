@@ -107,8 +107,7 @@ class ProviderProfiles:
         self._probe = None
         self._probe_thread = None
         self._probe_cancel = threading.Event()
-        self._selection = {"profileId": self._active[0]["profileId"] if self._active else "", "modelId": ""}
-        self._probe_state = {"state": "neutral", "label": "尚未测试", "message": ""}
+        self._probe_result = {}
 
     def set_service(self, service):
         self._service = service
@@ -121,21 +120,6 @@ class ProviderProfiles:
             self._probe_cancel.set()
         if worker is not None and worker is not threading.current_thread():
             worker.join(timeout=2)
-
-    def _load_actions(self):
-        with self._lock:
-            status = dict(self._probe_state)
-            return {**self._selection, "probeStatus": status}
-
-    def _save_actions(self, values):
-        with self._lock:
-            self._selection = {key: _text(values.get(key, ""), maximum=256) for key in ("profileId", "modelId")}
-        return {"applicationState": "applied"}
-
-    def _apply(self, _values):
-        if self._service is not None and self._service.has_active_jobs():
-            raise ProfileError("MODEL_BUSY", "模型仍在处理请求，请稍后应用。")
-        return {"applicationState": "restart_required", "message": "模型服务配置已保存。"}
 
     def _start_probe(self, values, *, operation):
         with self._lock:
@@ -150,7 +134,7 @@ class ProviderProfiles:
             bound = self._context.bind(SERVICE_KEY)
             try:
                 bound.invoke("begin_probe", {"operationId": operation_id, "operation": operation,
-                                             "profileId": values.get("profileId", ""), "values": {"modelId": values.get("modelId", "")}}, timeout_seconds=5)
+                                             "profileId": values.get("profileId", ""), "values": {key: value for key, value in values.items() if key in {"modelId", "base_url", "credential", "timeout_seconds"}}}, timeout_seconds=5)
             except Exception:
                 try:
                     bound.invoke("release", operation_id, timeout_seconds=1)
@@ -158,9 +142,8 @@ class ProviderProfiles:
                     pass
                 raise
             self._probe = operation_id
-            self._selection = {key: values.get(key, "") for key in ("profileId", "modelId")}
+            self._probe_result = {"requestId": values.get("requestId", ""), "state": "running"}
             self._probe_cancel.clear()
-            self._probe_state = {"state": "working", "label": "正在测试" if operation == "test_connection" else "正在获取模型", "message": ""}
 
         def run():
             try:
@@ -178,17 +161,13 @@ class ProviderProfiles:
                     raise ProfileError(code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,80}", code) else "MODEL_PROBE_FAILED")
                 result = completed["response"]
                 if operation == "list_models":
-                    with self._lock:
-                        profiles = self._saved()
-                        profile = next(item for item in profiles if item["profileId"] == values["profileId"])
-                        existing = {item["modelId"]: item for item in profile["models"]}
-                        profile["models"] = [dict(existing.get(item["modelId"], {}), **item) for item in _models(result["models"])]
-                        self._write(profiles)
-                    message = "模型列表已保存，应用后生效。"
+                    result = {"models": _models(result["models"])}
+                    message = ""
                 else:
                     message = str(values.get("modelId", ""))
                 state = {"state": "ready", "label": "已获取模型" if operation == "list_models" else "连接成功", "message": message}
             except Exception as error:
+                result = {}
                 state = {"state": "error", "label": "模型测试失败", "message": str(getattr(error, "code", "MODEL_PROBE_FAILED"))}
             finally:
                 try:
@@ -198,20 +177,16 @@ class ProviderProfiles:
                 finally:
                     with self._lock:
                         self._probe = None
-                        self._probe_state = state
+                        self._probe_result = {"requestId": values.get("requestId", ""),
+                                              "state": "completed" if state["state"] == "ready" else "failed",
+                                              "code": state["message"] if state["state"] == "error" else "",
+                                              "models": result.get("models", []) if state["state"] == "ready" else []}
 
         worker = threading.Thread(target=run, name="model-settings-probe", daemon=True)
         with self._lock:
             self._probe_thread = worker
         worker.start()
-        return {"values": self._load_actions(), "message": ""}
-
-    def _cancel_probe(self, _values):
-        with self._lock:
-            operation = self._probe
-        if operation:
-            self._probe_cancel.set()
-        return {"values": self._load_actions(), "message": ""}
+        return self.editor_probe_status({})
 
     def catalog(self):
         public_keys = {"modelId", "label", "contextWindowTokens", "inputModalities", "supportsTools"}
@@ -273,133 +248,88 @@ class ProviderProfiles:
         if result == "error":
             raise ProfileError("CONFIG_APPLY_FAILED")
 
-    @staticmethod
-    def _item(profile):
-        return {"itemId": profile["profileId"], "values": {
-            "label": profile["label"], "base_url": profile["base_url"],
-            "configured": bool(profile["api_key"]), "credentialAction": "keep", "apiKey": "",
-            "models": "\n".join(item["modelId"] for item in profile["models"]),
-            "timeout_seconds": profile["timeout_seconds"],
-        }}
-
-    def query(self, request):
+    def load_editor(self):
         with self._lock:
-            items = [self._item(item) for item in self._saved()]
-        needle = str(request.get("search", "")).casefold()
-        if needle:
-            items = [item for item in items if needle in (item["values"]["label"] + item["values"]["base_url"]).casefold()]
-        start = int(request.get("cursor") or 0)
-        limit = max(1, min(int(request.get("limit", 25)), 100))
-        return {"items": items[start:start + limit], "nextCursor": str(start + limit) if start + limit < len(items) else None, "total": len(items)}
+            return {"connections": [{"id": p["profileId"], "alias": p["label"], "base_url": p["base_url"],
+                     "api_key": "", "configured": bool(p["api_key"]), "credential_action": "keep",
+                     "models": [m["modelId"] for m in p["models"]], "timeout_seconds": p["timeout_seconds"]}
+                    for p in self._saved()], "probeRequest": {}, "probeResult": dict(self._probe_result)}
 
-    def create(self, values):
-        return self._upsert(uuid.uuid4().hex, values, create=True)
-
-    def update(self, identity, values):
-        return self._upsert(identity, values, create=False)
-
-    def _upsert(self, identity, values, *, create):
-        if not isinstance(values, Mapping):
-            raise ProfileError("PROFILE_INVALID")
+    def save_editor(self, values):
+        if self._service is not None and self._service.has_active_jobs():
+            raise ProfileError("MODEL_BUSY", "模型仍在处理请求，请稍后应用。")
+        raw = values.get("connections")
+        if not isinstance(raw, list):
+            raise ProfileError("PROFILES_INVALID")
         with self._lock:
-            profiles = self._saved()
-            previous = next((item for item in profiles if item["profileId"] == identity), None)
-            if previous is None and not create:
-                raise ProfileError("MODEL_REFERENCE_INVALID")
-            previous = previous or {}
-            old_models = {item["modelId"]: item for item in previous.get("models", [])}
-            models = [dict(old_models.get(item["modelId"], {}), **item) for item in _models(values.get("models", ""))]
-            item = dict(previous, profileId=identity, label=_text(values.get("label", ""), required=True, maximum=120),
-                        base_url=_url(values.get("base_url", "")),
-                        api_key=self._credential(previous.get("api_key", ""), {"action": values.get("credentialAction", "keep"), "value": values.get("apiKey", "")}),
-                        models=models, timeout_seconds=_timeout(values.get("timeout_seconds", 60)))
-            profiles = [item if old["profileId"] == identity else old for old in profiles]
-            if create:
-                profiles.append(item)
-            self._write(profiles)
-            return {**self._item(item), "applicationState": "restart_required"}
+            previous = {p["profileId"]: p for p in self._saved()}
+            profiles = []
+            for value in raw:
+                if not isinstance(value, Mapping):
+                    raise ProfileError("PROFILE_INVALID")
+                identity = _text(value.get("id", ""), required=True, maximum=64)
+                old = previous.get(identity, {})
+                old_models = {m["modelId"]: m for m in old.get("models", [])}
+                models = [deepcopy(old_models.get(m["modelId"], m)) for m in _models(value.get("models", []))]
+                profiles.append(dict(old, profileId=identity,
+                    label=_text(value.get("alias", ""), required=True, maximum=120),
+                    base_url=_url(value.get("base_url", "")), models=models,
+                    timeout_seconds=_timeout(value.get("timeout_seconds", old.get("timeout_seconds", self.load_timeout()["timeout_seconds"]))),
+                    api_key=self._credential(old.get("api_key", ""), {"action": value.get("credential_action", "keep"), "value": value.get("api_key", "")})))
+            # Validate the entire set before its single write, including duplicate identities.
+            self._write(_profiles({"profiles": profiles}))
+        return {"applicationState": "restart_required"}
 
-    def delete(self, identity):
+    def load_timeout(self):
+        saved = self._config.get()
+        profiles = _profiles(saved)
+        return {"timeout_seconds": saved.get("timeout_seconds", profiles[0]["timeout_seconds"] if profiles else 60)}
+
+    def save_timeout(self, values):
+        timeout = _timeout(values.get("timeout_seconds"))
+        if self._service is not None and self._service.has_active_jobs():
+            raise ProfileError("MODEL_BUSY", "模型仍在处理请求，请稍后应用。")
         with self._lock:
-            profiles = self._saved()
-            self._write([item for item in profiles if item["profileId"] != identity])
-        return {"deleted": any(item["profileId"] == identity for item in profiles), "applicationState": "restart_required"}
+            profiles = [dict(p, timeout_seconds=timeout) for p in self._saved()]
+            if self._config.update({"timeout_seconds": timeout, "profiles": profiles}) == "error":
+                raise ProfileError("CONFIG_APPLY_FAILED")
+        return {"applicationState": "restart_required"}
 
-    def _model_item(self, profile, model):
-        identity = json.dumps([profile["profileId"], model["modelId"]], ensure_ascii=False, separators=(",", ":"))
-        return {"itemId": identity,
-                "values": {"profile": profile["label"], "modelId": model["modelId"],
-                           "contextWindowTokens": model.get("contextWindowTokens"),
-                           "inputModalities": "unknown" if model.get("inputModalities") is None else "image" if "image" in model["inputModalities"] else "text",
-                           "supportsTools": "unknown" if model.get("supportsTools") is None else "yes" if model["supportsTools"] else "no"}}
+    def editor_probe(self, values):
+        request = values.get("probeRequest", {})
+        operation = request.get("operation")
+        if operation not in {"list_models", "test_connection"}:
+            raise ProfileError("INVALID_REQUEST")
+        self._start_probe(request, operation=operation)
+        return self.editor_probe_status({})
 
-    def query_models(self, request):
+    def editor_probe_status(self, _values):
         with self._lock:
-            items = [self._model_item(profile, model) for profile in self._saved() for model in profile["models"]]
-        needle = str(request.get("search", "")).casefold()
-        items = [item for item in items if needle in (item["values"]["profile"] + item["values"]["modelId"]).casefold()]
-        start = int(request.get("cursor") or 0)
-        limit = max(1, min(int(request.get("limit", 25)), 100))
-        return {"items": items[start:start + limit], "nextCursor": str(start + limit) if start + limit < len(items) else None, "total": len(items)}
+            return {"values": {"probeResult": deepcopy(self._probe_result)}}
 
-    def update_model(self, identity, values):
+    def editor_cancel(self, values):
         with self._lock:
-            try:
-                profile_id, model_id = json.loads(identity)
-            except (ValueError, TypeError):
-                raise ProfileError("MODEL_REFERENCE_INVALID") from None
-            profiles = self._saved()
-            profile = next((item for item in profiles if item["profileId"] == profile_id), None)
-            model = next((item for item in profile["models"] if item["modelId"] == model_id), None) if profile else None
-            if model is None or self._model_item(profile, model)["itemId"] != identity:
-                raise ProfileError("MODEL_REFERENCE_INVALID")
-            modality, tools = values.get("inputModalities", "unknown"), values.get("supportsTools", "unknown")
-            if modality not in {"unknown", "text", "image"} or tools not in {"unknown", "yes", "no"}:
-                raise ProfileError("MODEL_CAPABILITIES_INVALID")
-            model.update(contextWindowTokens=values.get("contextWindowTokens"),
-                         inputModalities=None if modality == "unknown" else ["text", "image"] if modality == "image" else ["text"],
-                         supportsTools=None if tools == "unknown" else tools == "yes")
-            _models([model])
-            self._write(profiles)
-            return {**self._model_item(profile, model), "applicationState": "restart_required"}
+            request_id = values.get("probeRequest", {}).get("requestId")
+            if request_id == self._probe_result.get("requestId"):
+                self._probe_cancel.set()
+        return self.editor_probe_status({})
 
     def register_settings(self):
-        section = "connections"
-        self._context.get("sakura.host.settings").register({"sectionId": section, "title": "模型服务", "order": 10,
-            "fields": [
-                {"key": "profileId", "label": "连接", "type": "select", "default": self._active[0]["profileId"] if self._active else "",
-                 "options": [{"value": "", "label": "请选择"}, *[{"value": item["profileId"], "label": item["label"]} for item in self._active]]},
-                {"key": "modelId", "label": "测试模型 ID", "type": "string", "default": ""},
-                {"key": "probeStatus", "label": "测试结果", "type": "status", "placement": "section_header", "default": {"state": "neutral", "label": "尚未测试", "message": ""}}],
-            "actions": [{"actionId": "applyProfiles", "label": "应用"}, {"actionId": "listModels", "label": "获取模型列表"},
-                        {"actionId": "testConnection", "label": "测试连接"}, {"actionId": "cancelProbe", "label": "取消测试"}],
-        }, load=self._load_actions, save=self._save_actions,
-           actions={"applyProfiles": self._apply, "listModels": lambda values: self._start_probe(values, operation="list_models"),
-                    "testConnection": lambda values: self._start_probe(values, operation="test_connection"), "cancelProbe": self._cancel_probe})
-        self._context.get("sakura.host.settings.surface-v0").register(section, "providers")
-        self._context.get("sakura.host.settings.collection-v0").register(section, {
-            "collectionId": "profiles", "title": "连接配置", "scope": "global", "searchable": True,
-            "description": "保存后重新加载模型服务生效。",
-            "deleteConfirmation": "删除后，使用此连接的模型将不可用。",
-            "columns": [{"key": "label", "label": "名称", "type": "string"},
-                        {"key": "base_url", "label": "API 地址", "type": "string"},
-                        {"key": "configured", "label": "已设置 API Key", "type": "boolean"}],
-            "fields": [{"key": "label", "label": "名称", "type": "string", "required": True},
-                       {"key": "base_url", "label": "API 地址", "type": "string", "required": True},
-                       {"key": "credentialAction", "label": "API Key 操作", "type": "select", "default": "keep", "options": [
-                           {"value": "keep", "label": "保留"}, {"value": "replace", "label": "替换"}, {"value": "clear", "label": "清除"}]},
-                       {"key": "apiKey", "label": "新 API Key", "type": "password", "default": ""},
-                       {"key": "models", "label": "模型 ID（每行一个）", "type": "string", "default": "", "maxLength": 16384},
-                       {"key": "timeout_seconds", "label": "请求超时（秒）", "type": "integer", "default": 60, "minimum": 1, "maximum": 300}],
-        }, query=self.query, create=self.create, update=self.update, delete=self.delete)
-        self._context.get("sakura.host.settings.collection-v0").register(section, {
-            "collectionId": "models", "title": "模型参数", "scope": "global", "searchable": True,
-            "columns": [{"key": "profile", "label": "连接", "type": "string"}, {"key": "modelId", "label": "模型", "type": "string"}],
-            "fields": [{"key": "profile", "label": "连接", "type": "readonly"},
-                       {"key": "modelId", "label": "模型", "type": "readonly"},
-                       {"key": "contextWindowTokens", "label": "上下文窗口（Token）", "type": "integer", "default": None, "minimum": 4096, "maximum": 2000000},
-                       {"key": "inputModalities", "label": "输入能力", "type": "select", "default": "unknown", "options": [
-                           {"value": "unknown", "label": "未知"}, {"value": "text", "label": "文本"}, {"value": "image", "label": "文本与图像"}]},
-                       {"key": "supportsTools", "label": "工具调用", "type": "select", "default": "unknown", "options": [
-                           {"value": "unknown", "label": "未知"}, {"value": "yes", "label": "支持"}, {"value": "no", "label": "不支持"}]}],
-        }, query=self.query_models, update=self.update_model)
+        settings = self._context.get("sakura.host.settings")
+        settings.register({"sectionId": "connections", "title": "模型服务", "order": 10,
+            "presentation": {"component": "connection-editor", "serviceKey": SERVICE_KEY, "valueField": "connections",
+                             "requestField": "probeRequest", "resultField": "probeResult", "timeoutSection": "request", "timeoutField": "timeout_seconds",
+                             "probeAction": "probe", "statusAction": "probeStatus", "cancelAction": "cancelProbe"},
+            "fields": [{"key": "connections", "label": "连接", "type": "data", "default": []},
+                       {"key": "probeRequest", "label": "测试请求", "type": "data", "default": {}},
+                       {"key": "probeResult", "label": "测试结果", "type": "data", "default": {}, "readonly": True}],
+            "actions": [{"actionId": "probe", "label": "测试连接"}, {"actionId": "probeStatus", "label": "测试状态"},
+                        {"actionId": "cancelProbe", "label": "取消测试"}]},
+            load=self.load_editor, save=self.save_editor,
+            actions={"probe": self.editor_probe, "probeStatus": self.editor_probe_status, "cancelProbe": self.editor_cancel})
+        settings.place("connections", page_id="host:providers", order=10)
+        settings.register({"sectionId": "request", "title": "高级参数", "order": 20,
+            "presentation": {"component": "form", "group": "model-advanced", "collapsible": True},
+            "fields": [{"key": "timeout_seconds", "label": "请求超时时间", "type": "integer", "default": 60,
+                        "minimum": 1, "maximum": 300, "unit": "秒"}]}, load=self.load_timeout, save=self.save_timeout)
+        settings.place("request", page_id="host:model", order=20)

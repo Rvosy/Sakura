@@ -39,16 +39,14 @@ class Context:
         self.callbacks[handle] = callback
         return handle
     def get(self, key):
-        if key == "sakura.host.settings":
-            def register(descriptor, *, load, save, actions):
-                return self.host.call("register", [SERVICE_KEY, descriptor, {"load": self.handle(load), "save": self.handle(save), "actions": {key: self.handle(value) for key,value in actions.items()}}])
-        elif key == "sakura.host.settings.surface-v0":
-            def register(section, surface):
-                return self.host.register_surface(SERVICE_KEY, section, surface)
-        else:
-            def register(section, descriptor, **callbacks):
-                return self.host.register_collection(SERVICE_KEY, section, descriptor, {key: self.handle(callbacks.get(key)) for key in ("query", "create", "update", "delete")})
-        return SimpleNamespace(register=register)
+        assert key == "sakura.host.settings"
+        def register(descriptor, *, load=None, save=None, actions=None):
+            return self.host.call("register", [SERVICE_KEY, descriptor, {"load": self.handle(load), "save": self.handle(save),
+                "actions": {key: self.handle(value) for key, value in (actions or {}).items()}}])
+        def place(section_id, **kwargs):
+            return self.host.call("register", [SERVICE_KEY, {"kind": "placement", "sectionId": section_id,
+                "pageId": kwargs["page_id"], "order": kwargs.get("order", 100)}, {}])
+        return SimpleNamespace(register=register, place=place)
 
 
 @pytest.fixture
@@ -59,102 +57,136 @@ def provider():
     return profiles, context
 
 
-def _query(context, collection="profiles"):
-    return context.host.collection("query", SERVICE_KEY, "connections", collection, {"cursor": None, "limit": 25, "search": "", "filters": {}})
-
-
 @pytest.mark.parametrize(("action", "value", "expected"), [("keep", "", SECRET), ("replace", "replacement", "replacement"), ("clear", "", "")])
-def test_collection_credential_actions_are_private_and_effective_only_after_reload(provider, action, value, expected):
+def test_editor_credential_actions_are_private_and_effective_only_after_reload(provider, action, value, expected):
     profiles, context = provider
-    item, = _query(context)["items"]
-    assert SECRET not in repr(item)
-    assert item["values"]["apiKey"] == ""
-    result = context.host.collection("update", SERVICE_KEY, "connections", "profiles", {"itemId": item["itemId"], "values": {**{key: value for key, value in item["values"].items() if key != "configured"}, "credentialAction": action, "apiKey": value}})
-    assert result["applicationState"] == "restart_required"
-    assert result["values"]["apiKey"] == ""
-    assert context.host.sections_for_plugin(SERVICE_KEY)[0]["reasonCode"] == "CONFIG_RELOAD_REQUIRED"
+    snapshot = context.host.sections_for_plugin(SERVICE_KEY)[0]
+    assert SECRET not in repr(snapshot)
+    draft = snapshot["values"]
+    draft["connections"][0].update(credential_action=action, api_key=value)
+    found, result = context.host.save(SERVICE_KEY, "connections", {k: draft[k] for k in ("connections", "probeRequest")})
+    assert found and result["applicationState"] == "restart_required"
+    assert context.config.get()["profiles"][0]["api_key"] == expected
     assert profiles.resolve("fixture", "model")["api_key"] == SECRET
     assert ProviderProfiles(context).resolve("fixture", "model")["api_key"] == expected
 
 
-def test_invalid_credentials_leave_saved_configuration_unchanged(provider):
+def test_invalid_second_connection_does_not_partially_save(provider):
     profiles, context = provider
-    original = context.config.get()
-    item = _query(context)["items"][0]
-    with pytest.raises(ProfileError, match="配置无效"):
-        profiles.update(item["itemId"], {**item["values"], "credentialAction": "keep", "apiKey": "accidental"})
-    assert context.config.get() == original
+    before = context.config.get()
+    draft = profiles.load_editor()
+    draft["connections"][0]["alias"] = "Changed"
+    draft["connections"].append({"id": "broken", "alias": "Broken", "base_url": "not-a-url"})
+    with pytest.raises(ProfileError):
+        profiles.save_editor(draft)
+    assert context.config.get() == before
+    draft = profiles.load_editor()
+    draft["connections"][0]["api_key"] = "must-not-be-used-with-keep"
+    with pytest.raises(ProfileError):
+        profiles.save_editor(draft)
+    assert context.config.get() == before
 
 
-def test_model_metadata_edit_preserves_active_catalog_and_survives_list_edit(provider):
+def test_list_edit_retains_existing_model_metadata_and_unknown_profile_fields(provider):
     profiles, context = provider
-    item = _query(context, "models")["items"][0]
-    result = context.host.collection("update", SERVICE_KEY, "connections", "models", {"itemId": item["itemId"], "values": {**item["values"], "contextWindowTokens": 64000, "inputModalities": "image", "supportsTools": "yes"}})
-    assert result["applicationState"] == "restart_required"
-    assert profiles.describe("fixture", "model")["contextWindowTokens"] == 128000
-    connection = _query(context)["items"][0]
-    profiles.update(connection["itemId"], {**connection["values"], "models": "model\nnew-model"})
-    reloaded = ProviderProfiles(context)
-    assert reloaded.describe("fixture", "model") == {"contextWindowTokens": 64000, "contextWindowSource": "user", "inputModalities": ["text", "image"], "supportsTools": True}
-    assert reloaded.describe("fixture", "new-model")["inputModalities"] is None
-    assert SECRET not in repr(reloaded.catalog())
+    context.config.value["profiles"][0]["future"] = "keep"
+    draft = profiles.load_editor()
+    draft["connections"][0]["models"].append("new-model")
+    profiles.save_editor(draft)
+    saved = context.config.get()["profiles"][0]
+    assert saved["models"][0]["contextWindowTokens"] == 128000
+    assert saved["models"][0]["label"] == "Model"
+    assert saved["models"][1]["modelId"] == "new-model"
+    assert saved["future"] == "keep"
+    assert len(profiles.catalog()[0]["models"]) == 1
 
 
-def test_explicit_apply_is_blocked_by_any_active_consumer(provider):
-    profiles, _context = provider
+def test_save_is_blocked_before_writing_when_any_consumer_is_active(provider):
+    profiles, context = provider
+    before = context.config.get()
     profiles.set_service(SimpleNamespace(has_active_jobs=lambda: True))
     with pytest.raises(ProfileError) as error:
-        profiles._apply({})
+        profiles.save_editor(profiles.load_editor())
     assert error.value.code == "MODEL_BUSY"
+    assert context.config.get() == before
 
 
-def test_probe_uses_saved_draft_without_applying_and_releases_finished_operation(provider):
+def test_discovery_uses_unsaved_connection_without_writing_and_releases(provider):
     profiles, context = provider
-    completed = threading.Event()
+    before = context.config.get()
+    released = threading.Event()
     calls = []
-    class Service:
-        def begin_probe(self, descriptor):
-            calls.append(descriptor)
-        def poll(self, *args):
-            return {"sequence": 1, "state": "completed"}
-        def result(self, operation):
-            return {"response": {"models": ["new-model"]}}
-        def release(self, operation):
-            completed.set()
-    context.service = Service()
+    context.service = SimpleNamespace(begin_probe=lambda descriptor: calls.append(descriptor),
+        poll=lambda *args: {"sequence": 1, "state": "completed"},
+        result=lambda operation: {"response": {"models": ["new-model"]}}, release=lambda operation: released.set())
     profiles.set_service(context.service)
-    profiles._start_probe({"profileId": "fixture", "modelId": ""}, operation="list_models")
-    assert completed.wait(2)
+    request = {"operation": "list_models", "requestId": "test", "profileId": "unsaved",
+               "base_url": "https://unsaved.invalid/v1", "credential": {"action": "replace", "value": "draft-key"}, "timeout_seconds": 17}
+    context.host.action(SERVICE_KEY, "connections", "probe", {"probeRequest": request})
+    assert released.wait(2)
     profiles.close()
-    assert context.config.get()["profiles"][0]["models"][0]["modelId"] == "new-model"
-    assert profiles.catalog()[0]["models"][0]["modelId"] == "model"
-    assert calls[0]["operation"] == "list_models"
-    assert SECRET not in repr(profiles._load_actions())
+    result = profiles.editor_probe_status({})["values"]["probeResult"]
+    assert result["state"] == "completed" and result["requestId"] == "test"
+    assert result["models"][0]["modelId"] == "new-model"
+    assert context.config.get() == before
+    assert calls[0]["profileId"] == "unsaved"
+    assert calls[0]["values"]["credential"]["value"] == "draft-key"
+    assert "draft-key" not in repr(result)
 
 
 def test_probe_failure_reports_safe_code_and_always_releases(provider):
     profiles, context = provider
     released = threading.Event()
-    service = SimpleNamespace(begin_probe=lambda descriptor: None, poll=lambda *args: {"sequence": 1, "state": "failed"},
-                              result=lambda operation: {"failure": {"code": "AUTH_REQUIRED", "message": SECRET}}, release=lambda operation: released.set())
-    profiles.set_service(service)
-    context.service = service
-    profiles._start_probe({"profileId": "fixture", "modelId": "model"}, operation="test_connection")
+    context.service = SimpleNamespace(begin_probe=lambda descriptor: None, poll=lambda *args: {"sequence": 1, "state": "failed"},
+        result=lambda operation: {"failure": {"code": "AUTH_REQUIRED", "message": SECRET}}, release=lambda operation: released.set())
+    profiles.set_service(context.service)
+    profiles.editor_probe({"probeRequest": {"operation": "test_connection", "requestId": "test", "profileId": "fixture", "modelId": "model"}})
     assert released.wait(2)
     profiles.close()
-    assert profiles._load_actions()["probeStatus"]["message"] == "AUTH_REQUIRED"
-    assert SECRET not in repr(profiles._load_actions())
+    result = profiles.editor_probe_status({})
+    assert result["values"]["probeResult"]["code"] == "AUTH_REQUIRED"
+    assert SECRET not in repr(result)
 
 
-def test_model_collection_identity_survives_reload_and_long_model_ids(provider):
+def test_global_timeout_is_applied_only_on_explicit_edit(provider):
     profiles, context = provider
-    model_id = 'model-' + ('"' * 250)
-    context.config.value["profiles"][0]["models"] = [{"modelId": model_id, "label": model_id}]
-    item, = _query(context, "models")["items"]
-    assert len(item["itemId"]) > 200
-    reloaded = ProviderProfiles(context)
-    same, = reloaded.query_models({"limit": 25})["items"]
-    assert same["itemId"] == item["itemId"]
-    result = reloaded.update_model(item["itemId"], {"contextWindowTokens": 64000, "inputModalities": "text", "supportsTools": "no"})
-    assert result["itemId"] == item["itemId"]
-    assert context.config.value["profiles"][0]["models"][0]["contextWindowTokens"] == 64000
+    context.config.value["profiles"].append({**context.config.value["profiles"][0], "profileId": "second", "timeout_seconds": 45})
+    profiles.save_editor(profiles.load_editor())
+    assert context.config.get()["profiles"][1]["timeout_seconds"] == 45
+    profiles.save_timeout({"timeout_seconds": 23})
+    assert [p["timeout_seconds"] for p in context.config.get()["profiles"]] == [23, 23]
+    draft = profiles.load_editor()
+    draft["connections"].append({"id": "new", "alias": "New", "base_url": "https://new.invalid/v1", "models": []})
+    profiles.save_editor(draft)
+    assert context.config.get()["profiles"][-1]["timeout_seconds"] == 23
+
+
+def test_probe_cancel_is_request_scoped_and_releases_without_saving(provider):
+    profiles, context = provider
+    polling, resume, released = threading.Event(), threading.Event(), threading.Event()
+    cancelled = []
+    before = context.config.get()
+    count = 0
+    def poll(*args):
+        nonlocal count
+        count += 1
+        if count == 1:
+            polling.set()
+            assert resume.wait(2)
+            return {"sequence": 1, "state": "running"}
+        return {"sequence": 2, "state": "cancelled"}
+    context.service = SimpleNamespace(begin_probe=lambda descriptor: None, poll=poll,
+        cancel=lambda operation: cancelled.append(operation),
+        result=lambda operation: {"failure": {"code": "MODEL_CANCELLED"}}, release=lambda operation: released.set())
+    profiles.set_service(context.service)
+    profiles.editor_probe({"probeRequest": {"operation": "list_models", "requestId": "current"}})
+    assert polling.wait(2)
+    profiles.editor_cancel({"probeRequest": {"requestId": "old"}})
+    assert not profiles._probe_cancel.is_set()
+    profiles.editor_cancel({"probeRequest": {"requestId": "current"}})
+    resume.set()
+    assert released.wait(2)
+    profiles.close()
+    assert len(cancelled) == 1
+    assert context.config.get() == before
+    assert profiles.editor_probe_status({})["values"]["probeResult"]["state"] == "failed"

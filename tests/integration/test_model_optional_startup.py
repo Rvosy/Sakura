@@ -53,7 +53,8 @@ try:
     models = settings._snapshot()
     assert models['providers'] == []
     assert models['model_slots'][0]['reasonCode'] == 'MODEL_REFERENCE_UNAVAILABLE'
-    assert application.settings_sections('model')  # Assistant settings remain editable.
+    assistant = next(p for p in plugins['plugins'] if p['pluginId'] == 'sakura.assistant.default')
+    assert any(s.get('placement', {}).get('pageId') == 'host:model' for s in assistant['sections'])  # Assistant settings remain editable.
 finally:
     controller.close()
 '''

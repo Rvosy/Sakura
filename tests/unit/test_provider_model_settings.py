@@ -126,3 +126,22 @@ def test_legacy_import_validation_discards_partial_handoff_before_optional_confi
     assert not _assistant(tmp_path).exists()
     assert not ModelReferenceRepository(tmp_path).path.exists()
     assert legacy.read_bytes() == original
+
+
+def test_earlier_plugin_chat_budget_is_adopted_once_without_overwriting_clear(tmp_path):
+    ModelReferenceRepository(tmp_path).save({"chat": REF, "vision_chat": EMPTY_REFERENCE})
+    module._write(_provider(tmp_path), {"profiles": [{"profileId": "fixture", "models": [{"modelId": "chat-model", "contextWindowTokens": 96000}]}]})
+    migrate_legacy_model_configuration(tmp_path)
+    assert module._read(_assistant(tmp_path))["contextWindowTokens"] == 96000
+    module._write(_assistant(tmp_path), {"contextWindowTokens": None, "custom": "keep"})
+    migrate_legacy_model_configuration(tmp_path)
+    assert module._read(_assistant(tmp_path)) == {"contextWindowTokens": None, "custom": "keep"}
+
+
+@pytest.mark.parametrize("profiles", [None, [None], [{"profileId": "fixture", "models": None}], [{"profileId": "fixture", "models": [None]}]])
+def test_invalid_prior_model_metadata_does_not_commit_budget_handoff(tmp_path, profiles):
+    ModelReferenceRepository(tmp_path).save({"chat": REF, "vision_chat": EMPTY_REFERENCE})
+    module._write(_provider(tmp_path), {"profiles": profiles})
+    with pytest.raises(ValueError, match="CONFIG_DATA_INVALID"):
+        migrate_legacy_model_configuration(tmp_path)
+    assert not _assistant(tmp_path).exists()

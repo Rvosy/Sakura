@@ -425,7 +425,7 @@ test("Apply commits a character and ordinary settings while retaining global rec
   // and plugin features. Only unrelated settings controllers and native close
   // are replaced here.
   vm.runInNewContext(`${saveSettingsSource}\n${submitButtonsSource}`, {
-    fields, runtimePluginController: plugins.feature, runtimeCharacterFeature: characters.feature,
+    fields, document: plugins.document, runtimePluginController: plugins.feature, runtimeCharacterFeature: characters.feature,
     runtimeAsrController: null, runtimeAppearanceController: null, runtimeScreenAwarenessController: null,
     runtimeProviderFeature: null, runtimeChatTimingController: null, runtimeBubbleAutoHideController: null,
     runtimeAutostartController: null, runtimeToolsController: null, runtimeVoiceController: null,
@@ -494,7 +494,7 @@ test("Apply rejects disabling the owner of an edited global record before the sn
   const fields = characterDocument().fields;
   const errors = [];
   vm.runInNewContext(`${saveSettingsSource}\n${submitButtonsSource}`, {
-    fields, runtimePluginController: plugins.feature, runtimeCharacterFeature: null,
+    fields, document: plugins.document, runtimePluginController: plugins.feature, runtimeCharacterFeature: null,
     runtimeAsrController: null, runtimeAppearanceController: null, runtimeScreenAwarenessController: null,
     runtimeProviderFeature: null, runtimeChatTimingController: null, runtimeBubbleAutoHideController: null,
     runtimeAutostartController: null, runtimeToolsController: null, runtimeVoiceController: null,

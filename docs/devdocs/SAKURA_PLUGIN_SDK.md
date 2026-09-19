@@ -227,8 +227,12 @@ presentation:
 | `kind` | 分组 | 适合的插件 |
 |---|---|---|
 | `extension` | 功能扩展 | 聊天工具、记忆、手机连接等用户直接使用的功能。 |
-| `provider` | 能力提供方 | 实现某项能力的提供方，例如语音引擎。 |
-| `infrastructure` | 系统组件 | 主要被其他插件依赖的基础服务，与其他分组一起显示在插件列表中。 |
+| `provider` | 功能引擎 | 用户会直接选择、更换和管理的实现，例如语音引擎、角色渲染器。 |
+| `infrastructure` | 系统组件 | 支撑日常功能的底层运行与通用接入，例如内置 Assistant、OpenAI 兼容模型接入、语音输入/输出 Hub 和 MCP。默认折叠。 |
+
+分类按用户的管理需要声明。内置的记忆、联网、手机连接等功能仍放在功能扩展；内置语音引擎仍放在功能引擎。
+系统组件展开后可继续管理，搜索和定位组件会展开分组，折叠时仍提示异常数量。
+分类不影响插件贡献的功能设置页：模型服务连接和模型参数仍在对应侧栏页面编辑。
 
 `category` 决定详情中的领域说明和默认图标：
 
@@ -689,33 +693,66 @@ settings.register(
 可参考 [GPT-SoVITS 资源管理器](../../plugins/builtin/sakura_gpt_sovits/_bundle.py)。该文件属于插件实现，
 不是公共 SDK；第三方插件应自行实现或使用公开依赖，不能跨目录导入它。
 
-### 把区块放到现有页面
+### 页面与区块贡献
 
-先注册设置区块，再通过实验性 `sakura.host.settings.surface-v0` 放置：
+设置侧栏按功能组织。插件拥有配置、作用范围和 `load/save/actions`，宿主提供页面、导航和组件。
+模型服务的 API 地址、API Key 属于日常功能配置；引擎路径、进程参数、诊断选项放在插件设置。
+功能页中的高级参数仍留在该功能页，不因参数技术性强而移动到插件设置。
 
 ```python
-surface = context.get("sakura.host.settings.surface-v0")
-surface.register("connection", "voice")
+settings = context.get("sakura.host.settings")
+# 区块仍用现有 register(descriptor, load=..., save=..., actions=...) 注册。
+settings.register({
+    "sectionId": "schedule", "title": "日程",
+    "presentation": {"component": "form"},
+    "fields": [{"key": "enabled", "label": "启用", "type": "boolean", "default": True}],
+}, load=load_schedule, save=save_schedule)
+settings.register_page({
+    "pageId": "schedule", "title": "日程", "icon": "calendar",
+    "group": "behavior", "order": 100, "regions": ["extensions"],
+})
+settings.place("schedule", page_id=context.plugin_id + ":schedule")
+# 也可以直接放到宿主页；一个区块只能选择一个主要编辑位置。
+# settings.place("schedule", page_id="host:interaction", order=100)
 ```
 
-当前桌面端支持以下放置方式：
+`register_page()` 和 `place()` 返回可调用的 disposer，随插件作用域自动回收；不需要声明额外 Host Service。
+页面身份为 `pluginId:pageId`，同名标题或局部 ID 不冲突。分组只接受 `character/ai/behavior/system`，
+新页面按 `order`、页面 ID 排序，排在所属分组已有页面之后。插件只能注册、撤销自己的贡献。
+独立页面的 `content` 默认供所有者使用；`regions` 是明确开放给其他插件的区域名。
+第三方用完整页面 ID 和 `region` 贡献区块。页面停用、区域未开放时，该放置标记不可用，不转为第二份私有表单。
+宿主页面 ID 使用 `host:` 前缀，开放 `content` 区域；支持 `character/appearance/providers/model/voice/memory/interaction/tools/plugins/system/about`。
 
-| surface | 显示位置 | 约束 |
-|---|---|---|
-| 不注册或 `plugin` | 插件设置窗口 | 普通字段、Action 和 Collection 都可用。 |
-| `voice` | “语音”页及插件设置窗口 | 适合语音引擎配置；两个入口复用 Voice controller 的同一组控件与保存链路。 |
-| `memory` | “记忆”页 | 适合记忆管理区块和 Collection。 |
-| `providers` | “模型服务”页 | 模型提供方的连接、模型参数和探测操作。 |
-| `model` | “模型”页 | Assistant 等消费者的模型生成参数。 |
-| `about` | 历史资源区块，管理操作显示在插件设置 | 只能有只读 `resource` 字段；不能保存，也不能挂 Collection。所有 Action 必须被资源字段引用。 |
+`presentation.component` 当前支持：
 
-surface 不会创建新的左侧导航项。传入其他字符串也不会得到一个自定义页面，所以插件不要自创 surface 名称。
-`surface-v0` 仍是实验接口，将来可能随宿主页面调整。
+| 组件 | 声明与行为 |
+|---|---|
+| `form` | 现有表单行、状态、资源、动作和 Collection。`collapsible` 折叠整个区块；同一页面区域内相同 `group` 的区块按放置顺序共用分组。`alignedUnits` 对齐带单位的数字框和下拉框。 |
+| `connection-editor` | 宿主的连接列表与详情、模型标签、手动添加、发现勾选弹窗、连接测试和凭据三态。绑定声明字段和 Action，不接收代码。 |
 
-显式注册 surface 时，Manifest 还需声明 `sakura.host.settings.surface-v0`。新插件的常规设置和资源管理
-建议不注册 surface，使用默认插件窗口即可；只有确实属于语音或记忆页面的内容才使用相应入口。
-GPT-SoVITS 与 Genie 的 `aboutBundle` 已改为 `plugin`，section ID 和原有回调保留；Mem0 向量模型下载仍
-声明 `about`，管理操作同样进入插件设置窗口。新资源不需要为了出现在组件总览里而使用 `about`。
+字段可补充 `unit`、`placeholder`、`tooltip`、`displayDefault` 和 `optionalToggle`。`displayDefault` 只控制空值的显示，
+不会在读取时保存。数值字段的 `optionalToggle` 提供“自定义”开关，关闭写入 `null`。
+`data` 字段承载组件所需的 JSON 对象或数组，不渲染成普通输入框。复杂结构由拥有它的插件校验。
+模型选择继续使用 `sakura.host.model_slots` 的公开用途注册，复用宿主下拉选择与继承状态。
+Collection 继续使用下面的公开注册与列表详情组件。
+
+`connection-editor` 声明 `valueField/requestField/resultField`（均为 `data`），以及
+`probeAction/statusAction/cancelAction`。可用 `serviceKey` 将连接草稿加入模型选择目录，
+`timeoutSection/timeoutField` 引用同插件的超时草稿。连接值是数组，每项包含 `id/alias/base_url/models`，
+`models` 为模型 ID 数组；凭据只返回 `configured` 和空 `api_key`，编辑时携带 `credential_action=keep|replace|clear`。
+可以保留 `timeout_seconds`。请求含随机 `requestId`、`operation=list_models|test_connection`、
+`profileId/modelId/base_url/credential/timeout_seconds`。结果含同一个 `requestId`、
+`state=running|completed|failed`、安全 `code` 和 `models: [{modelId: ...}]`。
+发现成功只打开勾选弹窗，用户选中后才进入窗口草稿；探测、取消均不调用 `save`。
+
+未放置的区块留在插件设置窗口。插件详情单独提供功能页跳转，只有存在底层设置时才显示“插件设置”。
+“完成”接受编辑，外层“应用”“保存并关闭”统一提交；取消私有弹窗只恢复其中的编辑，不能恢复功能页草稿。
+调整展示位置不移动配置文件、不改变回调或作用范围。下载、诊断和 Collection 管理保持各自已有的执行方式。
+
+旧 `sakura.host.settings.surface-v0` 继续兼容：`providers/model/voice/memory/screen_awareness`
+分别映射到模型服务、模型、语音、记忆、交互页；`plugin` 或未声明保持私有设置。
+历史 `about` 资源的管理操作仍在插件设置，组件总览保持原入口。语音和记忆的旧贡献继续使用原控制器和布局。
+同一区块不能同时注册 surface 和 `place()`。新贡献优先使用公开页面放置接口；不支持自定义 HTML、JavaScript、CSS 或侧栏分组。
 
 ### 分页 Collection
 

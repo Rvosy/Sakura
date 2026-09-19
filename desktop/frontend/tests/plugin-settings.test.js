@@ -696,7 +696,7 @@ test("About component actions use the owning plugin section and refresh its rend
   feature.dispose();
 });
 
-test("voice sections initialized after opening the dialog mount once and cancel restores their draft", async () => {
+test("private settings never borrow or restore functional voice controls", async () => {
   let voice = null;
   const calls = [];
   const ui = featureFixture(async () => snapshot(), { getVoiceController: () => voice });
@@ -714,14 +714,11 @@ test("voice sections initialized after opening the dialog mount once and cancel 
   };
   ui.feature.onVoiceSectionsRendered();
   ui.feature.onVoiceSectionsRendered();
-  assert.deepEqual(calls, [["mount", "fixture_plugin"]]);
+  assert.deepEqual(calls, []);
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
   await ui.openSettings();
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
-  assert.deepEqual(calls, [
-    ["mount", "fixture_plugin"], ["unmount"], ["mount", "fixture_plugin"],
-    ["restore", { pluginId: "fixture_plugin", values: { timeout: 60 } }], ["unmount"],
-  ]);
+  assert.deepEqual(calls, []);
   ui.feature.dispose();
 });
 
@@ -743,7 +740,7 @@ test("disposing during dialog exit releases it once and ignores the late animati
   assert.equal(ui.timers.size, 0);
 });
 
-test("ASR provider dialog mounts shared input controls, cancels capture on close and restores microphone draft", async () => {
+test("private settings leave microphone controls and capture ownership on the voice page", async () => {
   const calls = [];
   const asr = {
     refresh: async () => {}, hasPluginControls: (id) => id === "fixture_plugin",
@@ -758,10 +755,8 @@ test("ASR provider dialog mounts shared input controls, cancels capture on close
   const ui = featureFixture(async () => snapshot(), { getAsrController: () => asr });
   ui.feature.initialize(snapshot());
   await ui.openSettings();
-  assert.ok(ui.document.querySelector(".plugin-dialog-asr select"));
+  assert.equal(ui.document.querySelector(".plugin-dialog-asr select"), null);
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
-  assert.deepEqual(calls, [
-    ["mount", "fixture_plugin"], ["cancel"], ["restore", { inputDeviceId: "saved-mic" }], ["unmount"],
-  ]);
+  assert.deepEqual(calls, []);
   ui.feature.dispose();
 });

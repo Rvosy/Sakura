@@ -198,7 +198,7 @@ test("invalid configuration remains editable with its recovery explanation", asy
   assert.deepEqual(ui.calls.find(([command]) => command.endsWith("_save"))[1].draft.model_slots["core:chat"], ref());
 });
 
-test("partial saves refresh published state before reporting the failed slot", async () => {
+test("partial model saves retain uncommitted selections after refreshing published state", async () => {
   const ui = fixture(snapshot(), command => command.endsWith("_save") ? {
     change_plan: "applied", save_state: "partial", failed_slot: { identity: "plugin:memory:curation" },
   } : undefined);
@@ -206,8 +206,8 @@ test("partial saves refresh published state before reporting the failed slot", a
   ui.control("model", "core:chat").value = "third-model";
   await ui.control("model", "core:chat").fire("change");
   await assert.rejects(ui.feature.save(), /plugin:memory:curation/);
-  assert.equal(ui.control("model", "core:chat").value, "fixture-model");
-  assert.equal(ui.feature.isDirty(), false);
+  assert.equal(ui.control("model", "core:chat").value, "third-model");
+  assert.equal(ui.feature.isDirty(), true);
 });
 
 test("refresh removes retired plugin slots", async () => {
