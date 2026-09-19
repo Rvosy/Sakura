@@ -1212,8 +1212,6 @@ mod tests {
         std::fs::create_dir_all(beta.join("portraits")).expect("beta portrait directory");
         std::fs::write(beta.join("card.md"), "You are the isolated Beta fixture.")
             .expect("beta card");
-        std::fs::write(beta.join("portraits/neutral.txt"), "isolated beta portrait")
-            .expect("beta portrait");
         std::fs::write(
             beta.join("character.json"),
             r#"{
@@ -1222,13 +1220,39 @@ mod tests {
   "initial_message": "Beta greeting.",
   "card": "card.md",
   "portrait": {
-    "default": "portraits/neutral.txt",
-    "expressions": {"neutral": "portraits/neutral.txt"}
+    "default": "portraits/neutral.png",
+    "expressions": {"neutral": "portraits/neutral.png"}
   },
   "reply": {"tones": ["neutral"]}
 }"#,
         )
         .expect("beta character manifest");
+        // Candidate publication validates the actual image, including when
+        // switching back to the original role. Both fixtures need loadable PNGs.
+        for role in ["sakura", "beta"] {
+            let package = root.join("characters").join(role);
+            let image = std::fs::File::create(package.join("portraits/neutral.png"))
+                .expect("fixture portrait file");
+            let mut encoder = png::Encoder::new(image, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .expect("PNG header")
+                .write_image_data(&[144, 128, 112, 255])
+                .expect("PNG pixels");
+            let path = package.join("character.json");
+            let mut manifest: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("fixture manifest"))
+                    .expect("valid fixture manifest");
+            manifest["portrait"] = json!({"default": "portraits/neutral.png",
+                "expressions": {"neutral": "portraits/neutral.png"}});
+            std::fs::write(
+                path,
+                serde_json::to_vec(&manifest).expect("encode fixture manifest"),
+            )
+            .expect("write fixture manifest");
+        }
         root.canonicalize().expect("canonical isolated user root")
     }
 
@@ -1609,6 +1633,11 @@ mod tests {
             )
             .expect("persist beta selection");
         assert_eq!(
+            select_beta.get("ok"),
+            Some(&Value::Bool(true)),
+            "{select_beta}"
+        );
+        assert_eq!(
             select_beta
                 .pointer("/payload/changePlan")
                 .and_then(Value::as_str),
@@ -1625,6 +1654,15 @@ mod tests {
                     .and_then(Value::as_str)
                     == Some(role)
                 {
+                    assert_eq!(
+                        publication
+                            .character_presentation
+                            .as_ref()
+                            .and_then(|value| value.get("visualReasonCode"))
+                            .and_then(Value::as_str),
+                        Some("READY"),
+                        "selected character must have a validated visual"
+                    );
                     let bootstrap = handle
                         .settings_request(
                             None,
@@ -1703,6 +1741,11 @@ mod tests {
                 Duration::from_secs(5),
             )
             .expect("persist sakura selection");
+        assert_eq!(
+            select_sakura.get("ok"),
+            Some(&Value::Bool(true)),
+            "{select_sakura}"
+        );
         assert_eq!(
             select_sakura
                 .pointer("/payload/changePlan")
