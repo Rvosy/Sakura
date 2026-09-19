@@ -1426,10 +1426,13 @@ impl FileWriter {
 
 fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>> {
     let channel = display_channel(&record.channel, &record.event);
+    let request_message = viewer_ipc_request_message(record);
     let message = if record.custom {
         &record.message
     } else {
-        human_message(&record.event, &record.message)
+        request_message
+            .as_deref()
+            .unwrap_or_else(|| human_message(&record.event, &record.message))
     };
     let mut summary_parts = correlation_summary(record);
     if let Some(id) = &record.plugin_id {
@@ -1627,19 +1630,44 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "tts.settings.save" => "保存语音设置",
         "tts.status.get" => "读取语音状态",
         "tts.playback.observe" => "更新语音播放状态",
+        "asr.input.prepare" => "准备语音输入",
+        "asr.input.poll" => "读取语音识别进度",
+        "asr.input.cancel" => "取消语音输入",
+        "asr.input.capture_target" => "准备录音文件",
+        "asr.input.capture_ready" => "提交录音",
+        "asr.input.capture_discarded" => "丢弃录音",
+        "asr.input.capture_status" => "读取录音状态",
+        "asr.input.submit" => "提交识别结果",
+        "asr.input.availability" => "检查语音输入状态",
+        "asr.settings.get" => "读取语音输入设置",
+        "asr.settings.save" => "保存语音输入设置",
+        "asr.settings.action" => "执行语音输入操作",
+        "screen.session" => "读取屏幕共享状态",
+        "screen.attach" | "screen.attachBatch" => "附加截图",
+        "screen.remove" => "移除截图",
+        "screen.release" => "释放截图",
         "screen_awareness.settings.get" => "读取屏幕感知设置",
         "screen_awareness.settings.save" => "保存屏幕感知设置",
+        "screen_awareness.step" => "检查主动屏幕感知",
         "studio.bootstrap" => "打开角色工坊",
+        "studio.plugin.requirements" => "检查角色插件需求",
+        "studio.character.presentation" => "读取角色表现",
         "studio.character.open" => "打开角色草稿",
         "studio.character.create" => "新建角色",
         "studio.character.publish" => "保存角色",
         "studio.draft.save" => "保存角色草稿",
+        "studio.draft.discard" => "丢弃角色草稿",
+        "studio.workspace.release" => "关闭角色工作区",
+        "studio.reference.preview" => "预览参考音频",
+        "studio.archive.export" => "导出角色包",
+        "studio.operation.cancel" => "取消角色工坊操作",
         "studio.visual.catalog" => "读取形态插件目录",
         "studio.visual.open" | "studio_visual_open" | "studio_visual_editor" => "打开形态编辑器",
         "studio.visual.previews" | "studio_visual_previews" | "studio_visual_cover" => {
             "加载形态封面"
         }
         "studio.visual.create" => "添加形态",
+        "studio.visual.thumbnail" => "读取形态缩略图",
         "studio.visual.import" => "导入形态",
         "studio.visual.export" => "导出形态",
         "studio.asset.import" => "导入角色资源",
@@ -1657,7 +1685,9 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "storage.settings.choose_tts_root" => "更改语音数据目录",
         "storage.settings.reset_tts_root" => "恢复默认语音目录",
         "ui.history.page" => "读取对话记录",
-        _ => return None,
+        // Keep an unmapped command identifiable instead of making unrelated
+        // operations share the same generic request title.
+        _ => return Some(format!("请求{suffix}（{command}）")),
     };
     Some(
         if matches!(
@@ -4703,10 +4733,22 @@ mod tests {
             viewer_ipc_request_message(&record("ipc.request.failed", "plugins.install")).as_deref(),
             Some("安装插件失败")
         );
-        assert_eq!(
-            viewer_ipc_request_message(&record("ipc.request.completed", "future.command")),
-            None
-        );
+        let unknown = record("ipc.request.completed", "future.command");
+        let projected = project_viewer_record(&unknown, Severity::Info).unwrap();
+        assert!(projected.message.contains("future.command"));
+        let text = String::from_utf8(encode_record(&unknown, 4096).unwrap()).unwrap();
+        assert!(text.contains(&projected.message));
+        for (command, action) in [
+            ("screen.session", "屏幕共享"),
+            ("screen_awareness.step", "屏幕感知"),
+        ] {
+            let failed =
+                project_viewer_record(&record("ipc.request.failed", command), Severity::Warning)
+                    .unwrap();
+            assert!(failed.message.contains(action));
+            assert!(failed.message.contains("失败"));
+            assert!(failed.details.iter().any(|detail| detail.value == command));
+        }
     }
 
     #[test]

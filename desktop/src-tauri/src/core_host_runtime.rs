@@ -1346,6 +1346,8 @@ impl ConcurrentRequestHandle {
                     | "asr.input.poll"
                     | "asr.input.capture_status"
                     | "studio.visual.catalog"
+                    | "screen.session"
+                    | "screen_awareness.step"
             ) {
             Severity::Debug
         } else {
@@ -4451,6 +4453,8 @@ mod tests {
                 "asr.input.poll",
                 "asr.input.capture_status",
                 "studio.visual.catalog",
+                "screen.session",
+                "screen_awareness.step",
             ] {
                 handle.log_request(
                     Severity::Info,
@@ -4480,6 +4484,15 @@ mod tests {
                 500,
                 Duration::from_millis(500),
             );
+            for command in ["screen.session", "screen_awareness.step"] {
+                handle.log_request_result(
+                    "screen-log-rejected",
+                    command,
+                    &Ok(json!({"ok": false, "error": {"code": "SCREEN_CAPTURE_UNAVAILABLE"}})),
+                    1,
+                    Duration::from_secs(3),
+                );
+            }
             for code in ["ASR_CANCELLED", "CANCELLED"] {
                 handle.log_request_result(
                     "asr-log-cancelled",
@@ -4496,14 +4509,14 @@ mod tests {
                 .collect();
             assert_eq!(
                 ipc.len(),
-                4,
+                6,
                 "successful polling must not consume viewer history"
             );
-            assert!(ipc[..2]
+            assert!(ipc[..4]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.failed"
                     && record.severity == "warning"));
-            assert!(ipc[2..]
+            assert!(ipc[4..]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.cancelled"
                     && record.severity == "info"));
@@ -4558,6 +4571,14 @@ mod tests {
                 if level == Verbosity::Debug { 3 } else { 0 });
             assert!(text.contains("REQUEST_DEADLINE_EXCEEDED"));
             assert!(text.contains("ASR_RECORDING_NOT_FOUND"));
+            for command in ["screen.session", "screen_awareness.step"] {
+                assert_eq!(
+                    text.lines()
+                        .filter(|line| line.contains(command) && line.contains("outcome=completed"))
+                        .count(),
+                    if level == Verbosity::Debug { 1 } else { 0 }
+                );
+            }
             assert_eq!(
                 text.lines()
                     .filter(|line| line.contains("studio.visual.catalog"))
