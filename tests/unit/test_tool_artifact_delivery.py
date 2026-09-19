@@ -52,7 +52,7 @@ class Runtime:
         self.artifacts = _ArtifactsHostService(self.store, self.manager.commit_plugin_scope)
         self.tools = _ToolsHostService(ToolRegistry(), callback, self.artifacts.consume_tool_result)
         self.manager.install_host_service("sakura.host.artifacts", HostAdapter(self.artifacts),
-                                          exports=("resolve", "release_received", "allocate", "commit", "release"))
+                                          exports=("resolve", "release_received", "allocate", "commit", "release", "deliver", "release_delivered"))
         self.manager.install_host_service("sakura.host.tools", HostAdapter(self.tools),
                                           exports=("register", "unregister", "catalog", "execute"))
         self.source = self.activate(SOURCE, "source-scope")
@@ -207,5 +207,56 @@ def test_tool_cannot_redeliver_or_delete_an_artifact_already_owned_by_receiver(t
         assert runtime.store.count == 1
         runtime.call(RECEIVER, runtime.receiver, "sakura.host.artifacts", "release_received", descriptor["artifactId"])
         assert runtime.store.count == 0 and not runtime.artifacts._received
+    finally:
+        runtime.manager.close()
+
+
+@pytest.mark.parametrize("departing", [SOURCE, RECEIVER])
+def test_operation_delivery_is_revoked_when_either_bound_participant_exits(tmp_path, departing):
+    runtime = Runtime(tmp_path, lambda *_args, **_kwargs: None)
+    descriptor, path = runtime.image()
+    try:
+        delivered = runtime.call(SOURCE, runtime.source, "sakura.host.artifacts", "deliver",
+            descriptor["artifactId"], {"providerId": RECEIVER, "scopeId": "old-scope"}, "model-op")
+        assert delivered == descriptor
+        received = runtime.call(RECEIVER, runtime.receiver, "sakura.host.artifacts", "resolve", descriptor["artifactId"])
+        assert Path(received["path"]).read_bytes() == b"fixture-image"
+        runtime.stop(departing, runtime.source if departing == SOURCE else runtime.receiver)
+        assert not path.exists() and runtime.store.count == 0
+        assert not runtime.artifacts._deliveries and not runtime.artifacts._received
+    finally:
+        runtime.manager.close()
+
+
+def test_sender_can_reclaim_unknown_begin_delivery_but_not_another_operation(tmp_path):
+    runtime = Runtime(tmp_path, lambda *_args, **_kwargs: None)
+    descriptor, path = runtime.image()
+    try:
+        runtime.call(SOURCE, runtime.source, "sakura.host.artifacts", "deliver",
+            descriptor["artifactId"], {"providerId": RECEIVER, "scopeId": "old-scope"}, "model-op")
+        with pytest.raises(PluginApiError, match="ARTIFACT_NOT_FOUND"):
+            runtime.call(SOURCE, runtime.source, "sakura.host.artifacts", "release_delivered", descriptor["artifactId"], "other-op")
+        with pytest.raises(PluginApiError, match="ARTIFACT_NOT_FOUND"):
+            runtime.call(RECEIVER, runtime.receiver, "sakura.host.artifacts", "release_delivered", descriptor["artifactId"], "model-op")
+        assert path.exists()
+        assert runtime.call(SOURCE, runtime.source, "sakura.host.artifacts", "release_delivered", descriptor["artifactId"], "model-op") == {"released": True}
+        assert runtime.call(SOURCE, runtime.source, "sakura.host.artifacts", "release_delivered", descriptor["artifactId"], "model-op") == {"released": False}
+        assert not path.exists() and not runtime.artifacts._received
+    finally:
+        runtime.manager.close()
+
+
+def test_delivery_rejects_replaced_receiver_without_losing_sender_ownership(tmp_path):
+    runtime = Runtime(tmp_path, lambda *_args, **_kwargs: None)
+    descriptor, path = runtime.image()
+    try:
+        runtime.stop(RECEIVER, runtime.receiver)
+        runtime.activate(RECEIVER, "replacement")
+        with pytest.raises(PluginApiError, match="SERVICE_BINDING_EXPIRED"):
+            runtime.call(SOURCE, runtime.source, "sakura.host.artifacts", "deliver",
+                descriptor["artifactId"], {"providerId": RECEIVER, "scopeId": "old-scope"}, "model-op")
+        assert path.exists()
+        assert runtime.store.resolve_committed(SOURCE, descriptor["artifactId"])
+        assert not runtime.artifacts._received
     finally:
         runtime.manager.close()

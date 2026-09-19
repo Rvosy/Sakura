@@ -1502,6 +1502,11 @@ class PluginRuntimeManager:
         if name == "service.call" and (not isinstance(method, str) or not isinstance(args, list)):
             raise PluginApiError("PLUGIN_PROTOCOL_INVALID", plugin_id=caller_id)
         identity = payload.get("binding")
+        timeout = payload.get("timeoutSeconds")
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 122
+        ):
+            raise PluginApiError("PLUGIN_DEADLINE_INVALID", plugin_id=caller_id)
         if "binding" in payload and (
             not isinstance(identity, Mapping)
             or set(identity) != {"providerId", "scopeId"}
@@ -1520,6 +1525,7 @@ class PluginRuntimeManager:
             return self._route_service_call(
                 caller_id, service_key, method, args, expected_identity=identity,
                 caller_scope=calling_process.scope_id if calling_process else None,
+                timeout=timeout,
             )
         except PluginRuntimeError as error:
             raise PluginApiError(

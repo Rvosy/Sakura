@@ -239,22 +239,48 @@ class _TimelineHostService:
         raise HostServiceError("HOST_METHOD_UNAVAILABLE")
 
 
+@dataclass(frozen=True)
+class _ArtifactDelivery:
+    sender: tuple[str, str]
+    receiver: tuple[str, str]
+    operation_id: str
+
+
 class _ArtifactsHostService:
     def __init__(self, store: object, commit_scope: Callable[..., Any] | None = None) -> None:
         self._store = store
         self._commit_scope = commit_scope
         self._received: dict[str, tuple[str, str]] = {}
+        self._deliveries: dict[str, _ArtifactDelivery] = {}
         self._received_lock = threading.RLock()
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         try:
+            if method == "deliver" and len(args) == 3:
+                return self._deliver(args[0], args[1], args[2])
+            if method == "release_delivered" and len(args) == 2:
+                with self._received_lock:
+                    delivery = self._deliveries.get(args[0]) if isinstance(args[0], str) else None
+                    if delivery is None:
+                        return {"released": False}
+                    if (delivery.sender != (HOST_CALLER.get(), HOST_CALLER_SCOPE.get())
+                            or delivery.operation_id != args[1]):
+                        raise HostServiceError("ARTIFACT_NOT_FOUND")
+                    return {"released": self._release_owned(delivery.receiver[0], args[0])}
             if method == "resolve" and len(args) == 1:
-                artifact = self._resolve_received(str(args[0]))
-                return {"artifactId": artifact.artifact_id, "path": str(artifact.path),
-                        "mediaType": artifact.media_type, "byteLength": artifact.byte_length}
+                with self._received_lock:
+                    artifact = self._resolve_received(str(args[0]))
+                    result = {"artifactId": artifact.artifact_id, "path": str(artifact.path),
+                              "mediaType": artifact.media_type, "byteLength": artifact.byte_length}
+                    delivery = self._deliveries.get(artifact.artifact_id)
+                    if delivery is not None:
+                        result["delivery"] = {"senderId": delivery.sender[0], "senderScope": delivery.sender[1],
+                                              "operationId": delivery.operation_id}
+                    return result
             if method == "release_received" and len(args) == 1:
-                self._resolve_received(str(args[0]))
-                return {"released": self.release_committed(str(args[0]))}
+                with self._received_lock:
+                    self._resolve_received(str(args[0]))
+                    return {"released": self.release_committed(str(args[0]))}
             if method == "allocate" and len(args) == 2:
                 return getattr(self._store, "allocate")(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
@@ -277,11 +303,40 @@ class _ArtifactsHostService:
             raise HostServiceError(code if isinstance(code, str) else "ARTIFACT_OPERATION_FAILED") from error
         raise HostServiceError("HOST_METHOD_INVALID")
 
+    def _deliver(self, raw_id, raw_receiver, raw_operation):
+        artifact_id = _bounded_identifier(raw_id, "ARTIFACT_NOT_FOUND", 200)
+        receiver = _mapping(raw_receiver, "ARTIFACT_RECEIVER_INVALID")
+        if set(receiver) != {"providerId", "scopeId"}:
+            raise HostServiceError("ARTIFACT_RECEIVER_INVALID")
+        receiver_id = _bounded_identifier(receiver["providerId"], "ARTIFACT_RECEIVER_INVALID", 64)
+        receiver_scope = _bounded_identifier(receiver["scopeId"], "ARTIFACT_RECEIVER_INVALID", 200)
+        operation_id = _bounded_identifier(raw_operation, "ARTIFACT_OPERATION_INVALID", 200)
+        sender, sender_scope = HOST_CALLER.get(), HOST_CALLER_SCOPE.get()
+        if not sender or not sender_scope or self._commit_scope is None:
+            raise HostServiceError("ARTIFACT_SENDER_INVALID")
+
+        def accept():
+            with self._received_lock:
+                artifact = self._resolve_received(artifact_id)
+                if artifact_id in self._deliveries:
+                    raise HostServiceError("ARTIFACT_ALREADY_DELIVERED")
+                self._store.transfer_committed(sender, artifact_id, receiver_id)
+                self._received[artifact_id] = (receiver_id, receiver_scope)
+                self._deliveries[artifact_id] = _ArtifactDelivery(
+                    (sender, sender_scope), (receiver_id, receiver_scope), operation_id,
+                )
+                return {"artifactId": artifact_id, "mediaType": artifact.media_type,
+                        "byteLength": artifact.byte_length}
+
+        return self._commit_scope(sender, sender_scope,
+            lambda: self._commit_scope(receiver_id, receiver_scope, accept))
+
     def _release_owned(self, plugin_id: str, artifact_id: str) -> bool:
         with self._received_lock:
             released = self._store.release(plugin_id, artifact_id)
             if released:
                 self._received.pop(artifact_id, None)
+                self._deliveries.pop(artifact_id, None)
             return released
 
     def _resolve_received(self, artifact_id):
@@ -306,10 +361,14 @@ class _ArtifactsHostService:
     def clear(self) -> None:
         with self._received_lock:
             self._received.clear()
+            self._deliveries.clear()
             getattr(self._store, "clear")()
 
     def revoke_scope(self, plugin_id: str) -> None:
         with self._received_lock:
+            for artifact_id, delivery in list(self._deliveries.items()):
+                if plugin_id in {delivery.sender[0], delivery.receiver[0]}:
+                    self._release_owned(delivery.receiver[0], artifact_id)
             self._received = {artifact_id: identity for artifact_id, identity in self._received.items()
                               if identity[0] != plugin_id}
             getattr(self._store, "release_plugin")(plugin_id)
@@ -320,6 +379,7 @@ class _ArtifactsHostService:
     def release_committed(self, artifact_id: str) -> bool:
         with self._received_lock:
             self._received.pop(artifact_id, None)
+            self._deliveries.pop(artifact_id, None)
             artifact = self.resolve_committed(artifact_id)
             return bool(
                 getattr(self._store, "release")(

@@ -566,9 +566,32 @@ class RpcPeer:
 
 
 class ServiceProxy:
-    def __init__(self, service_key: str, call: Callable[[str, str, Sequence[Any]], object]) -> None:
+    def __init__(self, service_key: str, call: Callable[[str, str, Sequence[Any]], object],
+                 *, identity: Mapping[str, str] | None = None,
+                 timed_call: Callable[..., object] | None = None) -> None:
         self._service_key = service_key
         self._call = call
+        self._identity = dict(identity) if identity is not None else None
+        self._timed_call = timed_call
+
+    @property
+    def identity(self) -> dict[str, str]:
+        """Return the exact bound process identity for explicit artifact delivery."""
+        if self._identity is None:
+            raise PluginApiError("SERVICE_BINDING_REQUIRED", service_key=self._service_key)
+        return dict(self._identity)
+
+    def invoke(self, method: str, *args: object, timeout_seconds: float | None = None) -> object:
+        """Call a bound method with an optional end-to-end RPC deadline."""
+        method = _method(method)
+        if self._timed_call is None:
+            raise PluginApiError("SERVICE_BINDING_REQUIRED", service_key=self._service_key)
+        if timeout_seconds is not None and (
+            isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+            or not 0 < timeout_seconds <= 122
+        ):
+            raise PluginApiError("PLUGIN_DEADLINE_INVALID", service_key=self._service_key)
+        return self._timed_call(method, args, timeout_seconds)
 
     def __getattr__(self, method: str) -> Callable[..., object]:
         if not method or method.startswith("_"):
@@ -863,13 +886,33 @@ class _CharacterProxy:
 class _ArtifactsProxy:
     def __init__(self, context: "PluginContext") -> None:
         self._context = context
-        self._allocations: dict[str, tuple[Callable[[], None], dict[str, bool]]] = {}
+        self._allocations: dict[str, tuple[Callable[[], None], dict[str, Any]]] = {}
 
     def resolve(self, artifact_id: str) -> dict[str, Any]:
         return self._context._remote_call("sakura.host.artifacts", "resolve", [artifact_id])
 
-    def release_received(self, artifact_id: str) -> object:
-        return self._context._remote_call("sakura.host.artifacts", "release_received", [artifact_id])
+    def _release_call(self, method, args, timeout_seconds):
+        if timeout_seconds is None:
+            return self._context._remote_call("sakura.host.artifacts", method, args)
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+                or not 0 < timeout_seconds <= 122):
+            raise PluginApiError("PLUGIN_DEADLINE_INVALID")
+        return self._context._remote_request("service.call", {
+            "serviceKey": "sakura.host.artifacts", "method": method, "args": args,
+            "timeoutSeconds": timeout_seconds,
+        })
+
+    def release_received(self, artifact_id: str, *, timeout_seconds: float | None = None) -> object:
+        return self._release_call("release_received", [artifact_id], timeout_seconds)
+
+    def deliver(self, artifact_id: str, receiver: Mapping[str, str], operation_id: str) -> dict[str, Any]:
+        return self._context._remote_call(
+            "sakura.host.artifacts", "deliver", [artifact_id, dict(receiver), operation_id],
+        )
+
+    def release_delivered(self, artifact_id: str, operation_id: str,
+                          *, timeout_seconds: float | None = None) -> object:
+        return self._release_call("release_delivered", [artifact_id, operation_id], timeout_seconds)
 
     def allocate(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(descriptor, Mapping):
@@ -895,11 +938,7 @@ class _ArtifactsProxy:
             self._allocations.pop(artifact_id, None)
             if ownership["transferred"]:
                 return
-            self._context._remote_call(
-                "sakura.host.artifacts",
-                "release",
-                [self._context.plugin_id, artifact_id],
-            )
+            self._release_call("release", [self._context.plugin_id, artifact_id], ownership.get("timeout_seconds"))
 
         disposer = self._context.effect(cleanup)
         self._allocations[artifact_id] = (disposer, ownership)
@@ -924,10 +963,11 @@ class _ArtifactsProxy:
         disposer()
         return dict(result)
 
-    def release(self, artifact_id: str) -> bool:
+    def release(self, artifact_id: str, *, timeout_seconds: float | None = None) -> bool:
         binding = self._allocations.pop(artifact_id, None)
         if binding is None:
             return False
+        binding[1]["timeout_seconds"] = timeout_seconds
         binding[0]()
         return True
 
@@ -1431,7 +1471,13 @@ class PluginContext:
                 "binding": identity,
             })
 
-        return ServiceProxy(key, call)
+        def timed_call(method, args, timeout):
+            payload = {"serviceKey": key, "method": method, "args": list(args), "binding": identity}
+            if timeout is not None:
+                payload["timeoutSeconds"] = timeout
+            return self._remote_request("service.call", payload)
+
+        return ServiceProxy(key, call, identity=identity, timed_call=timed_call)
 
     def provide(
         self,

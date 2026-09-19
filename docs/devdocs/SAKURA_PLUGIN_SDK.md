@@ -398,7 +398,11 @@ state = provider.poll(job_id)
 
 `bind()` 只适用于插件提供的服务，内置 Host 服务使用 `get()`。绑定时没有 active 服务返回 `SERVICE_MISSING`，
 尝试绑定 Host 服务返回 `SERVICE_BINDING_UNSUPPORTED`；畸形绑定在 RPC 边界报告 `PLUGIN_PROTOCOL_INVALID`。
-插件代码持有代理即可，不需要读取、保存或自行构造绑定身份。
+普通调用持有代理即可；跨任务 Artifact 交付可读取 `provider.identity` 的副本，不自行构造或复用旧 scope。
+
+需要限定一次 RPC 的等待时间时使用 `provider.invoke("cancel", job_id, timeout_seconds=1.0)`。
+截止时间贯穿调用两端，取值须大于 0、至多 122 秒；它不代表后台任务已经停止。清理多个步骤时共用一份剩余预算，
+不要让每个步骤重新获得完整期限。
 
 现有 TTS Hub 在 `begin` 前绑定 Provider，就绪查询 `status`、受理以及该任务的全部 `poll/cancel` 使用同一代理。
 Provider 崩溃并由用户重载后，新任务可以绑定新进程；即使新进程重复使用旧 `jobId`，旧任务也不能读到或取消它。
@@ -1123,6 +1127,13 @@ finally:
 resolve 只接受已提交、由本插件拥有或 Host 明确授权给本插件的资源。返回 path 是这项读取合同的例外，
 不能拿任意路径替代 artifactId。Host 在确认进程停止后才清理仍被其使用的 artifact；服务失效本身不能证明
 本地文件已不再被读取。应用关闭与异常回收负责最终回收，消费者仍应及时 release_received。
+
+跨插件任务需要显式交付文件时，先绑定接收服务，再调用
+`artifacts.deliver(artifact_id, provider.identity, operation_id)`。接收者解析文件时得到只读
+`delivery: {senderId, senderScope, operationId}`，应核对它与任务调用者一致。交付后的任务文件不能再次转交，
+发送或接收 scope 退出都会回收；这与普通工具图片由接收者继续持有的规则不同。
+发送方可以用 `release_delivered(artifact_id, operation_id)` 撤销本次交付，其他发送方或错误 operationId 无权撤销。
+`release()`、`release_received()`、`release_delivered()` 均支持 `timeout_seconds`，用于共用有界回收预算。
 
 ### 移动端聊天能力
 
