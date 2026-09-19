@@ -310,36 +310,90 @@ class ReadinessController:
         if initializer is None:
             raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
         result = getattr(initializer, "initialize")(self._cancel)
-        if result.session is None and session is not None and plugin_application is not None:
-            plugin_application.unbind_session()
-        result = self._bind_initialized_result(initializer, plugin_application, result)
-        summary = self._project_summary(result.current_character_summary)
-        presentation = self._project_presentation(
-            result.current_character_presentation
-        )
-        if plugin_application is not None and result.session is not None:
-            project = getattr(plugin_application, "visual_presentation", None)
-            if callable(project):
-                presentation = self._project_presentation(project())
-        with self._lock:
-            if self._closed:
-                raise OperationCancelled()
-            self._readiness = result.state
-            self._component = {
-                "state": result.state,
-                "code": result.code,
-                "retryable": result.retryable,
-            }
-            self._current_character_summary = summary
-            self._current_character_presentation = presentation
-            self._session = result.session
-            self._revision += 1
-            callback = self._session_published_callback if result.session is not None else None
-            loaded = getattr(plugin_application, "wait_until_loaded", None)
-            if callback is not None and callable(loaded) and not loaded(timeout=0):
-                callback = None
+        if result.state == "failed":
+            self._reject_provider_configuration(result, session, plugin_application)
+        candidate = None
+        try:
+            summary = self._project_summary(result.current_character_summary)
+            presentation = self._project_presentation(result.current_character_presentation)
+            prepare = getattr(plugin_application, "prepare_character", None)
+            if callable(prepare) and (result.session is not None or presentation is not None):
+                from app.config.character_loader import CharacterRegistry
+                character = (result.session.character if result.session is not None else
+                    CharacterRegistry(self._config.user_root).get(presentation["characterId"]))
+                candidate = prepare(character, strict=True)
+                presentation = self._project_presentation(candidate.presentation)
+            self._validate_character_projection(summary, presentation)
+            with self._lock:
+                if self._closed or self._session is not session:
+                    raise OperationCancelled()
+                if plugin_application is not None:
+                    if result.session is not None:
+                        if candidate is not None:
+                            plugin_application.bind_session(result.session, prepared_character=candidate)
+                        else:
+                            plugin_application.bind_session(result.session)
+                    elif candidate is not None:
+                        plugin_application.publish_character(candidate)
+                        plugin_application.retire_session()
+                    elif session is not None:
+                        plugin_application.unbind_session()
+                self._readiness = result.state
+                self._component = {"state": result.state, "code": result.code, "retryable": result.retryable}
+                self._current_character_summary = summary
+                self._current_character_presentation = presentation
+                self._session = result.session
+                self._revision += 1
+                callback = self._session_published_callback if result.session is not None else None
+                loaded = getattr(plugin_application, "wait_until_loaded", None)
+                if callback is not None and callable(loaded) and not loaded(timeout=0):
+                    callback = None
+        except BaseException as error:
+            if candidate is not None:
+                candidate.close()
+            if isinstance(error, OperationCancelled):
+                raise
+            from .assistant_adapter import ReadinessResult, report_assistant_failure
+            report_assistant_failure(error, stage="session_bind", code="SESSION_BIND_FAILED")
+            failed = ReadinessResult("failed", "SESSION_BIND_FAILED", "Assistant 会话未能完成绑定。", False, None)
+            self._reject_provider_configuration(failed, session, plugin_application)
         if callback is not None:
-            callback()
+            try:
+                callback()
+            except Exception:
+                # Optional warmup cannot turn an already-published save into failure.
+                pass
+
+    def _reject_provider_configuration(self, result, session, application):
+        """Keep the last usable Session; never retain a revoked provider scope."""
+        valid = session is not None
+        identity = getattr(getattr(session, "assistant", None), "identity", None)
+        if valid and application is not None and identity is not None:
+            from app.plugins.runtime_v4 import PluginRuntimeError
+            try:
+                valid = application.service_identity("sakura.assistant") == identity
+            except PluginRuntimeError:
+                valid = False
+        with self._lock:
+            if self._closed or self._session is not session:
+                raise OperationCancelled()
+            if not valid:
+                self._session = None
+                self._readiness = result.state
+                self._component = {"state": result.state, "code": result.code, "retryable": result.retryable}
+                self._current_character_summary = None
+                self._revision += 1
+        if not valid and application is not None and session is not None:
+            application.unbind_session()
+        raise RuntimeError(result.code)
+
+    @staticmethod
+    def _validate_character_projection(summary, presentation):
+        if summary is not None and presentation is not None and any(
+            presentation[field] != summary[summary_field]
+            for field, summary_field in (("characterId", "id"), ("displayName", "displayName"), ("initialMessage", "initialMessage"))
+        ):
+            raise RuntimeError("CHARACTER_PRESENTATION_NOT_READY")
 
     def _bind_initialized_result(self, initializer: object, application: object | None, result: Any) -> Any:
         """Publish a Session only after its application binding succeeds."""
@@ -376,44 +430,18 @@ class ReadinessController:
             )
 
     def switch_character_session(self) -> None:
-        from app.config.character_loader import CharacterRegistry
-        from app.config.settings_service import AppSettingsService
-        registry = CharacterRegistry(self._config.user_root)
-        character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
         with self._lock:
             if self._closed or self._switching_character or self._readiness == "initializing":
                 raise RuntimeError("CHARACTER_SWITCH_NOT_READY")
             self._switching_character = True
-            initializer = self._initializer
-            application = self._plugin_application
-            self._session = None
         try:
-            if application is not None:
-                application.unbind_session()
-                application.set_current_character(character_id)
-            if initializer is not None:
-                initializer.retire_session()
             self.apply_provider_configuration()
-            if self.readiness() == "failed":
-                raise RuntimeError("ASSISTANT_INITIALIZATION_FAILED")
-            # Provider setup can leave us without a Session, but the selected
-            # character must still be available in Settings and Studio.
-            if application is not None and self.published_session() is None:
-                application.bind_character_presentation(character_id)
-        except Exception:
-            with self._lock:
-                self._session = None
-                self._readiness = "failed"
-                self._component = {"state": "failed", "code": "ASSISTANT_INITIALIZATION_FAILED", "retryable": False}
-                self._current_character_summary = None
-                self._current_character_presentation = None
-                self._revision += 1
-            raise
         finally:
             with self._lock:
                 self._switching_character = False
 
     def apply_character_configuration(self) -> None:
+        from dataclasses import replace
         from app.config.character_loader import CharacterRegistry, load_character_system_prompt
         from app.config.settings_service import AppSettingsService
         from app.core_host.assistant_adapter import project_current_character_summary
@@ -432,23 +460,32 @@ class ReadinessController:
         if session is not None:
             if session.character.id != character_id:
                 raise ValueError("CHARACTER_SESSION_MISMATCH")
-            session.character = character
+            replacement = replace(session, character=character, system_prompt=load_character_system_prompt(character))
+        else:
+            replacement = None
         summary = project_current_character_summary(character) if session is not None else None
-        project = getattr(application, "visual_presentation", None)
-        presentation = self._project_presentation(
-            project() if callable(project) else project_character_presentation(character)
-        )
-        if summary is not None and presentation is not None and any(
-            presentation[field] != summary[summary_field]
-            for field, summary_field in (("characterId", "id"), ("displayName", "displayName"), ("initialMessage", "initialMessage"))
-        ):
-            raise RuntimeError("CHARACTER_PRESENTATION_NOT_READY")
-        with self._lock:
-            if self._closed or self._session is not session:
-                raise OperationCancelled()
-            self._current_character_summary = summary
-            self._current_character_presentation = presentation
-            self._revision += 1
+        prepare = getattr(application, "prepare_character", None)
+        candidate = prepare(character, strict=True) if callable(prepare) else None
+        try:
+            presentation = self._project_presentation(
+                candidate.presentation if candidate is not None else project_character_presentation(character))
+            self._validate_character_projection(summary, presentation)
+            with self._lock:
+                if self._closed or self._session is not session:
+                    raise OperationCancelled()
+                if candidate is not None:
+                    if replacement is not None:
+                        application.bind_session(replacement, prepared_character=candidate)
+                    else:
+                        application.publish_character(candidate)
+                self._session = replacement
+                self._current_character_summary = summary
+                self._current_character_presentation = presentation
+                self._revision += 1
+        except BaseException:
+            if candidate is not None:
+                candidate.close()
+            raise
 
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
@@ -1068,20 +1105,10 @@ class ControlDispatcher:
             yield []
 
     def apply_character_configuration(self) -> None:
-        from app.config.character_loader import CharacterRegistry
-        from app.config.settings_service import AppSettingsService
-        registry = CharacterRegistry(self._config.user_root)
-        character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
-        def apply() -> None:
-            application = self.published_plugin_application()
-            if application is not None and character_id:
-                application.bind_character_presentation(character_id)
-            self._readiness.apply_character_configuration()
-
         if self._chat_boundary is not None:
-            self._chat_boundary.apply_runtime_update(apply)
+            self._chat_boundary.apply_runtime_update(self._readiness.apply_character_configuration)
         else:
-            apply()
+            self._readiness.apply_character_configuration()
 
     def drain_generation_work(self) -> None:
         """Wait for detached event producers before the Router closes its writer."""

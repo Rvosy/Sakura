@@ -272,11 +272,23 @@ class VisualHost:
         *,
         provider_id: str | None = None,
     ) -> VisualBinding:
+        revision, binding = self.prepare(character_id, package_dir, resource, provider_id=provider_id)
+        try:
+            self.publish(revision, binding)
+        except BaseException:
+            binding.close()
+            raise
+        return binding
+
+    def prepare(self, character_id, package_dir, resource, *, provider_id=None):
+        """Describe a candidate without retiring the published visual."""
         with self._lock:
             if self._closed:
                 raise VisualHostError("VISUAL_BINDING_EXPIRED")
             self._revision += 1
             revision = self._revision
+        if resource is None:
+            return revision, None
         try:
             resource.validate_paths(package_dir)
         except ValueError as error:
@@ -288,14 +300,19 @@ class VisualHost:
         except PluginRuntimeError as error:
             code = "VISUAL_RESOURCE_INVALID" if error.code == "VISUAL_RESOURCE_INVALID" else "VISUAL_PROVIDER_FAILED"
             raise VisualHostError(code) from error
+        return revision, binding
+
+    def publish(self, revision, binding) -> None:
         with self._lock:
-            if revision != self._revision:
-                binding.close()
+            if self._closed or revision != self._revision:
+                if binding is not None:
+                    binding.close()
                 raise VisualHostError("VISUAL_BINDING_EXPIRED")
+            if binding is not None:
+                binding._check_active()
             if self._binding is not None:
                 self._binding.close()
             self._binding = binding
-        return binding
 
     def _matching_candidates(self, resource_type, provider_id=None):
         candidates = self._candidates(resource_type)

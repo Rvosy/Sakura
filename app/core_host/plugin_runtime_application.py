@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
 from app.core_host.plugin_artifacts import PluginArtifactStore
@@ -83,6 +83,19 @@ class _HostServiceAdapter:
 
     def revoke_scope(self, plugin_id: str) -> None:
         self._services.revoke_scope(self._service_key, plugin_id)
+
+
+@dataclass
+class PreparedCharacter:
+    character: object
+    revision: int
+    binding: object | None
+    reason: str
+    presentation: dict
+
+    def close(self):
+        if self.binding is not None:
+            self.binding.close()
 
 
 class PluginRuntimeApplication:
@@ -267,7 +280,7 @@ class PluginRuntimeApplication:
             raise PluginRuntimeError("EVENT_INVALID")
         self._manager.notify_host_event(event_name, dict(payload))
 
-    def bind_session(self, session):
+    def bind_session(self, session, *, prepared_character=None):
         character_id = getattr(getattr(session, "character", None), "id", None)
         if not character_id or getattr(session, "assistant", None) is None:
             raise PluginRuntimeError("PLUGIN_SESSION_INVALID")
@@ -275,11 +288,18 @@ class PluginRuntimeApplication:
             raise PluginRuntimeError("GENERATION_INVALIDATED")
         if self._session is session:
             return
-        if self._session is not None:
-            self.unbind_session()
+        candidate = prepared_character or self.prepare_character(session.character)
+        try:
+            identity = getattr(session.assistant, "identity", None)
+            if identity is not None and self.service_identity("sakura.assistant") != identity:
+                raise PluginRuntimeError("SERVICE_BINDING_EXPIRED")
+            self.publish_character(candidate)
+        except BaseException:
+            candidate.close()
+            raise
         self._session = session
         self._tool_registry.set_event_emitter(lambda name, payload: self.emit_event(name, payload or {}))
-        self.bind_visual_character(session.character)
+        session.visual_binding = candidate.binding
         self._bound.set()
 
     def create_assistant_input(self, identity, payload):
@@ -315,25 +335,50 @@ class PluginRuntimeApplication:
             self._host_services.release_owned_artifact(identity[0]["providerId"], artifact_id)
 
     def bind_visual_character(self, character) -> None:
+        candidate = self.prepare_character(character)
+        try:
+            self.publish_character(candidate)
+        except BaseException:
+            candidate.close()
+            raise
+
+    def prepare_character(self, character, *, strict=False):
+        from app.core_host.character_presentation import project_character_presentation
         from app.core_host.visual_host import VisualHostError
         binding = None
         reason = "VISUAL_RESOURCE_MISSING"
         resource = AppSettingsService(self._roots.user_root).selected_visual_resource(character)
-        if resource is not None:
-            try:
-                binding = self.visuals.bind(character.id, character.package_dir, resource, provider_id=character.visual_providers.get(resource.id))
+        try:
+            revision, binding = self.visuals.prepare(character.id, character.package_dir, resource,
+                provider_id=character.visual_providers.get(resource.id) if resource is not None else None)
+            if binding is not None:
                 reason = "READY"
-            except VisualHostError as error:
-                reason = error.code
-                if reason not in VISUAL_INACTIVE_REASONS:
-                    log_event("Visual", "角色表现加载失败", exception_diagnostics(
-                        error, reason_code=reason, stage="visual.bind",
-                    ), event="visual.binding.failed", severity="warning")
-        if binding is None:
-            self.visuals.clear()
-        self._visual_character = character
-        self._visual_binding = binding
-        self._visual_reason = reason
+        except VisualHostError as error:
+            reason = error.code
+            if reason not in VISUAL_INACTIVE_REASONS:
+                log_event("Visual", "角色表现加载失败", exception_diagnostics(
+                    error, reason_code=reason, stage="visual.bind",
+                ), event="visual.binding.failed", severity="warning")
+            if strict and (reason not in VISUAL_INACTIVE_REASONS or reason == "VISUAL_BINDING_EXPIRED"):
+                raise
+            revision, binding = self.visuals.prepare(character.id, character.package_dir, None)
+        try:
+            presentation = project_character_presentation(character,
+                binding.presentation() if binding is not None else None, reason_code=reason)
+            return PreparedCharacter(character, revision, binding, reason, presentation)
+        except BaseException:
+            if binding is not None:
+                binding.close()
+            raise
+
+    def publish_character(self, candidate):
+        if self._closed:
+            raise PluginRuntimeError("GENERATION_INVALIDATED")
+        self.visuals.publish(candidate.revision, candidate.binding)
+        self._visual_character = candidate.character
+        self._visual_binding = candidate.binding
+        self._visual_reason = candidate.reason
+        self._character_store.set_current(candidate.character.id)
         if self._session is not None:
             self._session.visual_binding = self._visual_binding
 
@@ -417,6 +462,15 @@ class PluginRuntimeApplication:
         self.visuals.clear()
         self._visual_binding = None
         self._visual_character = None
+        self.retire_session()
+
+        # A missing model configuration removes chat, not the character window.
+        # Revoke in-flight controls while issuing an independent display binding.
+        if character is not None and not self._closed:
+            self.bind_visual_character(character)
+
+    def retire_session(self) -> None:
+        """Remove chat after an independently prepared display was published."""
         registry = self._tool_registry
         if self._session is not None:
             self._session.visual_binding = None
@@ -424,11 +478,6 @@ class PluginRuntimeApplication:
         self._bound.clear()
         if hasattr(registry, "set_event_emitter"):
             registry.set_event_emitter(None)
-
-        # A missing model configuration removes chat, not the character window.
-        # Revoke in-flight controls while issuing an independent display binding.
-        if character is not None and not self._closed:
-            self.bind_visual_character(character)
 
     def wait_until_bound(self, *, timeout: float = 8.0) -> bool:
         return self._bound.wait(max(0.0, timeout)) and not self._closed
@@ -472,9 +521,6 @@ class PluginRuntimeApplication:
                and ({"sakura.host.character", "sakura.host.timeline"} & set(item["requires"]))
                and not any(key == "sakura.tts" or key == "sakura.assistant" or key.startswith(("sakura.tts.provider.", "sakura.visual.")) for key in item["provides"])]
         return self._manager.pause_plugins(ids)
-
-    def set_current_character(self, character_id: str) -> None:
-        self._character_store.set_current(character_id)
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         result = self._manager.set_enabled(plugin_id, enabled)

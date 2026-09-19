@@ -32,10 +32,15 @@ class AssistantSession:
     app_version: str
     visual_binding: object | None = None
     model_slots: dict = field(default_factory=dict, repr=False)
+    system_prompt: str | None = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self.system_prompt is None:
+            self.system_prompt = load_character_system_prompt(self.character)
 
     def descriptor(self):
         return {"character": {"id": self.character.id, "displayName": self.character.display_name,
-                "replyTones": list(self.character.reply_tones), "systemPrompt": load_character_system_prompt(self.character)},
+                "replyTones": list(self.character.reply_tones), "systemPrompt": self.system_prompt},
                 "loopSettings": asdict(self.loop_settings), "appVersion": self.app_version, "modelSlots": self.model_slots,
                 "replyVisual": self.visual_binding.reply_visual if self.visual_binding is not None else None}
 

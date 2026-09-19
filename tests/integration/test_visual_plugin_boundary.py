@@ -62,6 +62,204 @@ def _control(resource, payload):
     return {"version": 1, "resourceId": resource.id, "payload": payload}
 
 
+@contextmanager
+def initialized_controller(application, package, monkeypatch):
+    from types import SimpleNamespace
+    from app.core_host.assistant_adapter import AssistantAdapter
+    from app.core_host.server import HostConfig, ReadinessController
+    from app.plugins.runtime_v4 import PluginRuntimeError
+
+    config = package.parents[1] / "config"
+    config.mkdir(exist_ok=True)
+    (config / "characters.yaml").write_text("current_character_id: character\n", encoding="utf-8")
+    (config / "api.yaml").write_text(yaml.safe_dump({
+        "api_profiles": [{"id": "fixture", "alias": "Fixture", "base_url": "https://fixture.invalid/v1",
+            "api_key": "TEST_KEY", "models": [{"name": "old-model"}, {"name": "new-model"}]}],
+        "model_slots": {"chat": {"profile_id": "fixture", "model": "old-model"}},
+    }), encoding="utf-8")
+    state = {"scope": "first", "failure": None}
+    actual_identity = application.service_identity
+
+    def identity(service):
+        if service != "sakura.assistant":
+            return actual_identity(service)
+        if state["scope"] is None:
+            raise PluginRuntimeError("SERVICE_MISSING")
+        return {"providerId": "fixture.assistant", "scopeId": state["scope"]}
+
+    def prepare(service, bound, method, descriptor):
+        assert service == "sakura.assistant" and method == "prepare"
+        assert bound == identity(service)
+        if state["failure"] == "exception":
+            raise OSError("candidate initialization failed")
+        if state["failure"] == "failed":
+            return {"state": "failed", "code": "FIXTURE_PREPARE_FAILED", "message": "failed", "retryable": False}
+        ready = descriptor["modelSlots"]["chat"] is not None
+        return {"state": "ready" if ready else "setup_required", "code": "READY" if ready else "PROVIDER_SETUP_REQUIRED",
+            "message": "fixture", "retryable": False}
+
+    monkeypatch.setattr(application, "service_identity", identity)
+    monkeypatch.setattr(application, "call_bound_service", prepare)
+    adapter = AssistantAdapter(application._roots)
+    adapter.bind_application(application)
+    controller = ReadinessController(HostConfig(application._roots, "visual-test-generation", "a" * 32),
+        initializer_factory=lambda *_args: SimpleNamespace(initialize=adapter.initialize, close=adapter.close))
+    controller.begin({})
+    controller._worker.join(2)
+    assert controller.readiness() == "ready"
+    application.bind_session(controller.published_session())
+    controller._plugin_application = application
+    try:
+        yield controller, state
+    finally:
+        controller.close()
+
+
+@pytest.mark.parametrize("failure", ["failed", "exception", "projection"])
+@pytest.mark.parametrize("expired", [False, True])
+def test_saved_model_failure_preserves_only_a_live_published_session(visual_application, monkeypatch, failure, expired):
+    from app.core_host.provider_settings import ProviderSettingsBoundary
+
+    application, package, _resource = visual_application
+    with initialized_controller(application, package, monkeypatch) as (controller, state):
+        boundary = ProviderSettingsBoundary("visual-test-generation", "a" * 32, package.parents[1],
+            runtime_apply=controller.apply_provider_configuration)
+        boundary.enable()
+        request = {"generationId": "visual-test-generation", "generationCredential": "a" * 32, "id": "save",
+            "protocolMajor": 2, "protocolMinor": 2, "name": "settings.provider_model.save"}
+        current = boundary._snapshot()
+        draft = {"providers": [{**current["providers"][0], "credential": {"action": "keep", "value": ""}}],
+            "model_slots": {item["identity"]: dict(item["selection"]) for item in current["model_slots"]},
+            "settings": dict(current["settings"])}
+        draft["model_slots"]["core:chat"]["model"] = "new-model"
+        original = controller.published_session()
+        before = controller.snapshot()
+        descriptor = original.descriptor()
+        project = controller._project_presentation
+        if failure == "projection":
+            def fail_projection(_presentation):
+                raise RuntimeError("candidate projection failed")
+            monkeypatch.setattr(controller, "_project_presentation", fail_projection)
+        else:
+            state["failure"] = failure
+        if expired:
+            state["scope"] = "replacement"
+        result = boundary.handle({**request, "payload": {"draft": draft}})
+        assert result["error"]["code"] == "CONFIG_APPLY_FAILED"
+        assert application.active_models()["chat"]["model"] == "new-model"
+        monkeypatch.setattr(controller, "_project_presentation", project)
+        if expired:
+            assert controller.published_session() is None
+            assert application._session is None
+            assert controller.readiness() == "failed"
+        else:
+            assert controller.published_session() is original
+            assert application._session is original
+            assert original.descriptor() == descriptor
+            assert controller.snapshot() == before
+        state["failure"] = None
+        assert boundary.handle({**request, "payload": {"draft": draft}})["ok"]
+        assert controller.published_session().descriptor()["modelSlots"]["chat"]["model"] == "new-model"
+
+
+def test_cleared_models_and_disabled_assistant_intentionally_retire_session(visual_application, monkeypatch):
+    application, package, _resource = visual_application
+    with initialized_controller(application, package, monkeypatch) as (controller, state):
+        path = package.parents[1] / "config/api.yaml"
+        original = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(original)
+        data["model_slots"]["chat"] = {"profile_id": "", "model": ""}
+        path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        controller.apply_provider_configuration()
+        assert controller.readiness() == "setup_required"
+        assert controller.published_session() is None
+        assert application._session is None
+        assert controller.snapshot()["characterPresentation"]["visual"] is not None
+        path.write_text(original, encoding="utf-8")
+        controller.apply_provider_configuration()
+        assert controller.published_session() is not None
+        state["scope"] = None
+        controller.apply_provider_configuration()
+        assert controller.readiness() == "setup_required"
+        assert controller.published_session() is None
+        assert application._session is None
+
+
+@pytest.mark.parametrize("failure", ["visual", "projection"])
+def test_saved_character_failure_keeps_published_prompt_and_visual_until_reapply(visual_application, monkeypatch, failure):
+    application, package, resource = visual_application
+    with initialized_controller(application, package, monkeypatch) as (controller, _state):
+        original = controller.published_session()
+        before = controller.snapshot()
+        descriptor = original.descriptor()
+        (package / "card.md").write_text("新的角色人设", encoding="utf-8")
+        path = package / "character.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["display_name"] = "新角色名称"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        (package / "numeric/resource.json").write_text('{"maxAngle": 25}', encoding="utf-8")
+        assert original.descriptor() == descriptor
+        project = controller._project_presentation
+        describe = application.visuals._describe
+        if failure == "visual":
+            def fail_visual(*_args):
+                raise VisualHostError("VISUAL_DESCRIPTION_INVALID")
+            monkeypatch.setattr(application.visuals, "_describe", fail_visual)
+        else:
+            def fail_projection(presentation):
+                if presentation["displayName"] == "新角色名称":
+                    raise RuntimeError("candidate projection failed")
+                return project(presentation)
+            monkeypatch.setattr(controller, "_project_presentation", fail_projection)
+        with pytest.raises((VisualHostError, RuntimeError)):
+            controller.apply_character_configuration()
+        assert controller.published_session() is original
+        assert application._session is original
+        assert original.descriptor() == descriptor
+        assert controller.snapshot() == before
+        assert original.visual_binding.parse_control(_control(resource, {"angle": 20})).control is not None
+        monkeypatch.setattr(controller, "_project_presentation", project)
+        monkeypatch.setattr(application.visuals, "_describe", describe)
+        controller.apply_character_configuration()
+        updated = controller.published_session()
+        assert updated is not original
+        assert updated.character.display_name == "新角色名称"
+        assert "新的角色人设" in updated.descriptor()["character"]["systemPrompt"]
+        assert updated.visual_binding is application._visual_binding
+        after = controller.snapshot()
+        assert after["revision"] == before["revision"] + 1
+        assert after["currentCharacterSummary"]["displayName"] == after["characterPresentation"]["displayName"] == "新角色名称"
+        assert after["characterPresentation"]["visual"]["data"] == {"maxAngle": 25}
+        assert after["characterPresentation"]["visual"]["bindingId"] != before["characterPresentation"]["visual"]["bindingId"]
+
+
+def test_character_switch_commits_host_character_before_session_callback(visual_application, monkeypatch):
+    import shutil
+    application, package, _resource = visual_application
+    with initialized_controller(application, package, monkeypatch) as (controller, state):
+        original = controller.published_session()
+        second = package.parent / "second"
+        shutil.copytree(package, second)
+        path = second / "character.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest.update(id="second", display_name="第二个角色")
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        callbacks = []
+        controller.set_session_published_callback(lambda: callbacks.append((
+            controller.published_session().character.id, application._character_store.current("fixture")["id"])))
+        callbacks.clear()
+        (package.parents[1] / "config/characters.yaml").write_text("current_character_id: second\n", encoding="utf-8")
+        state["failure"] = "failed"
+        with pytest.raises(RuntimeError, match="FIXTURE_PREPARE_FAILED"):
+            controller.switch_character_session()
+        assert controller.published_session() is original
+        assert application._character_store.current("fixture")["id"] == "character"
+        assert callbacks == []
+        state["failure"] = None
+        controller.switch_character_session()
+        assert callbacks == [("second", "second")]
+
+
 @pytest.mark.parametrize("cover", ["cover.webp", None, "missing.png", "../outside.png", "model.json"])
 def test_static_model_cover_needs_no_renderer_or_editor(tmp_path, cover):
     from app.core_host.character_studio import CharacterStudioBoundary

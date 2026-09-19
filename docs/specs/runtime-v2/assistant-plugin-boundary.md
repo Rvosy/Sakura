@@ -66,6 +66,11 @@ Host 在创建输入 artifact 时增加 `historyToken`，将读取许可固定�
 经受控 prepare 或输入 artifact 交给绑定插件。默认 Assistant 不在每轮重新读取磁盘或 Host active；
 设置保存但应用失败时，下一轮继续使用已发布快照，不隐式应用失败的变更。
 
+角色说明也在创建 Session 时读取并冻结。角色卡保存后，Core 先准备新的角色、提示词、视觉绑定和公开投影，
+校验通过才一起发布；准备失败时，旧提示词、视觉和 revision 保持不变。模型热应用返回 `failed` 或绑定失败时，
+设置回执必须为 `CONFIG_APPLY_FAILED`；仍有效的旧 Assistant scope 继续服务，已撤销的 scope 不得保留。
+明确清空模型配置或停用 Assistant 则发布 `setup_required` 并退休旧 Session，角色仍可显示。
+
 输出 JSON 为 `{reply: {segments: [...]}, actions: [...], visual_observation: object|null}`。
 segment 使用公开 DTO 的 `text/translation/tone/portrait/suppress_tts/control`。Core 验证结果形状，按表现
 插件合同解释 control，再投影为桌面协议中的 `suppressTts` 等公开字段。actions、模型 continuation、

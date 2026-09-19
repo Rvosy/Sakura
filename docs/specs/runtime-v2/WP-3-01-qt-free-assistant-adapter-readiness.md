@@ -31,7 +31,7 @@ Core initialize → 既有初始化 worker
 已发布的角色或聊天状态；角色可在 Assistant 仍 initializing、需要设置或失败时显示。所有阶段共用同一个
 受管 worker，关闭先停止 Application 拥有的启动中或已启动进程，再按原有期限等待 worker 退出。
 
-AssistantSession 保存 CharacterProfile、BoundAssistant、loopSettings、model_slots、appVersion 和可空 visual binding。
+AssistantSession 保存 CharacterProfile、冻结的 system_prompt、BoundAssistant、loopSettings、model_slots、appVersion 和可空 visual binding。
 `descriptor()` 只输出本轮需要的角色说明、回复语气、循环设置、模型快照、版本与表现合同；插件进程由
 PluginRuntimeApplication 拥有，退休 readiness session 不关闭无关插件，也不恢复本地 Agent。
 
