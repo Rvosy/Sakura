@@ -1,7 +1,7 @@
 from dataclasses import replace
 
-from app.agent.screen_awareness import ScreenAwarenessSettings
-from app.core_host.screen_awareness_policy import ScreenAwarenessPolicy
+from plugins.builtin.sakura_screen_awareness.settings import ScreenAwarenessSettings
+from plugins.builtin.sakura_screen_awareness.policy import ScreenAwarenessPolicy
 
 
 def make_policy():
@@ -17,7 +17,7 @@ def make_policy():
     return now, settings, policy, step
 
 
-def test_core_collects_ordered_batch_then_submits_after_first_capture_cooldown():
+def test_plugin_collects_ordered_batch_then_submits_after_first_capture_cooldown():
     now, _, _, step = make_policy()
     for count, timestamp in enumerate((60, 120, 180), 1):
         now[0] = timestamp

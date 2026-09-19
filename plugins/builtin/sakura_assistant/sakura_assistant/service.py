@@ -20,7 +20,7 @@ from . import diagnostics
 from .agent.actions import AgentEvent
 from .agent.runtime import AgentRuntime
 from .agent.trace import AgentTraceRecorder, traced_message
-from .agent.screen_observation import build_screen_observation_batch_user_message, build_manual_screen_observation_batch_user_message
+from .agent.screen_observation import build_screen_observation_batch_user_message
 from .llm.api_client import AssistantModelClient, DialogueSettings
 from .llm.prompts.blocks import with_desktop_pet_context
 from .history import PagedHistory
@@ -327,14 +327,10 @@ class AssistantPlugin:
                     history = PagedHistory(self.context.get("sakura.host.timeline"), character["id"], request["historyCursor"], datetime.fromisoformat(request["historyNow"]), artifacts=self.context.get("sakura.host.artifacts"), history_token=request["historyToken"], cancel_checker=operation.check)
                     runtime.context_orchestrator.history = history
                     attachment = request.get("attachment")
-                    if (request.get("event") or {}).get("type") == "screen_observation":
-                        from .agent.screen_observation import SCREEN_AWARENESS_PROACTIVE_PROMPT
-                        request["message"] = SCREEN_AWARENESS_PROACTIVE_PROMPT
                     message = {"role": "user", "content": request["message"]}
                     observations = tuple(ScreenObservation(**item) for item in attachment["observations"]) if attachment else ()
                     if attachment:
-                        builder = build_screen_observation_batch_user_message if attachment["source"] == "screen_awareness" else build_manual_screen_observation_batch_user_message
-                        message = builder(request["message"], observations)
+                        message = build_screen_observation_batch_user_message(request["message"], observations)
                     message = traced_message(message, "observation_input" if attachment else "user_input", turn_id=request["turnId"],
                         entry_ids=tuple(request["entryIds"]), human_entry_id=request.get("humanEntryId", ""),
                         observation_entry_ids=tuple(request.get("observationEntryIds", ())),

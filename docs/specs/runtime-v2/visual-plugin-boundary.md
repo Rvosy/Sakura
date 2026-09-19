@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-09-19
 ---
 
 # 表现插件：资源、编辑、控制与渲染
@@ -376,6 +376,30 @@ ZIP 穿越、重复路径、符号链接与超限归档被拒绝；中途取消�
 只有 GPT-SoVITS 原始 `.ckpt` + `.pth`、没有 ONNX 的角色包，在 Genie 已安装并启用时应显示兼容；
 用户选择 Genie 后，现有语音准备流程按需转换。转换依赖、模型版本、参考语音等实际问题仍在准备或合成时报告。
 形态编辑、渲染和 TTS 启用/选择继续遵循各自现有流程，需求查询不替代运行时检查。
+
+## 普通插件发起表现控制
+
+普通插件可声明依赖 `sakura.host.visual`。`current()` 返回当前 `target`、提供者、类型、控制提示词及
+`outputSchema`；`target` 为 `{characterId, bindingId, resourceId}`。未绑定时返回空目标和原因码，
+不向调用者暴露 rendererData、资源路径或 assets。
+
+`apply({target, control})` 只接受当前目标。`control` 是现有 `{version, resourceId, payload}` 输入，
+由当前表现提供者解析，宿主验证通用 state/actions 结构后交给现有 RendererHost。聊天或桌面忙碌时拒绝，
+不排队、不绕过语音和字幕的播放时机。收到 `{accepted: true, requestId, status: accepted}` 只表示已受理；
+桌面执行前还要向宿主 claim，完成后才记录 `displayed`，失败记录 `failed`。`status(requestId)` 查询结果，
+`release(requestId)` 释放回执并取消该操作。每个宿主最多保留 128 条待调用者释放的回执。
+
+调用实例退出、角色/形态更换或窗口关闭使未完成和已显示的控制失效，状态变为 `cancelled`。
+claim 等待期间收到取消也不得开始播放。取消只作用于匹配的 RendererHost 操作 ID，不能打断后来开始的聊天。
+已显示的姿态保留取消归属，但不持续占据忙碌状态。旧目标、旧 scope 和旧 generation 不能发布新画面。
+
+`select({target, resourceId})` 经现有角色设置流程校验兼容资源、保存选择并重建当前表现绑定。
+受理与保存都校验调用实例和原目标；该接口不允许重写角色包或设置任意路径。形态替换使旧控制目标立即失效。
+从资源校验到绑定完成，宿主保留空闲更新名额，拒绝并发聊天受理；等待插件回复时不持有聊天锁。
+保存前还要核对桌面会话与活动版本，期间有新活动则拒绝保存。
+保存后重建绑定失败时返回 `{accepted: false, saved: true, reasonCode: VISUAL_SELECTION_APPLY_FAILED}`，
+明确区分尚未保存的拒绝与已保存但未应用。再次选择同一资源会重试应用，不能因偏好已保存而跳过。
+接口对内置和第三方插件一致，不要求插件导入 Core、伪造 Assistant 回复或直接触碰 WebView。
 
 ## 失败诊断
 

@@ -8,7 +8,7 @@ import { createComposerActionIndicator } from "./chat/composer-action-indicator.
 import { createComposerToolRegistry } from "./chat/composer-tool-dock.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
 import { createScreenAttachmentController } from "./chat/screen-attachment-controller.js";
-import { createScreenAwarenessController } from "./chat/screen-awareness-controller.js";
+import { createHostInteractionController, createHostVisualController } from "./chat/host-interaction.js";
 import { createUpdateAnnouncementController } from "./chat/update-announcement-controller.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
@@ -1361,7 +1361,7 @@ function handleCoreEvent(event) {
     void asrAvailability.refresh();
     ttsController.cancel();
     screenAttachment.invalidate();
-    screenAwareness.generationChanged(event.generationId);
+    hostInteraction.invalidate(event.generationId);
     updateAnnouncement.generationChanged();
     composerToolRegistry.invalidate();
     ++portraitHitRevision;
@@ -1408,6 +1408,7 @@ const chatClient = createRealChatClient({
   createChannel: () => new window.__TAURI__.core.Channel(),
   onCancelError: () => showRecoverableError("取消失败，请重试。"),
   onEvent: handleCoreEvent,
+  listenHost: onEvent => invoke("host_chat_listen", { onEvent }),
   initialPreparedGenerationId: characterPresentation.generationId,
   prepareGeneration: ({ generationId, refresh }) => rebindCoreGeneration(generationId, { refresh }),
 });
@@ -1436,30 +1437,29 @@ const updateAnnouncement = createUpdateAnnouncementController({
   }),
 });
 
-const screenAwareness = createScreenAwarenessController({
+function isHostIdle() {
+  const state = presentation.current();
+  return !presentationUnavailable && isChatReadyLifecycle(state.lifecycle)
+    && !chatClient.isBusy() && !state.canCancel && !waitingIndicator.active()
+    && !typewriter.isActive() && input.value === "" && stage.dataset.composing !== "true"
+    && !screenAttachment.busy() && !asrController?.active() && !updateAnnouncement.isPending()
+    && !hostVisualController.busy();
+}
+
+const hostInteraction = createHostInteractionController({
   invoke,
-  send: (payload) => chatClient.observeScreen(payload),
   generationId: () => presentation.current().generationId,
-  isIdle: () => {
-    const state = presentation.current();
-    return !presentationUnavailable
-      && isChatReadyLifecycle(state.lifecycle)
-      && !chatClient.isBusy()
-      && !state.canCancel
-      && !waitingIndicator.active()
-      && !typewriter.isActive()
-      && input.value === ""
-      && stage.dataset.composing !== "true"
-      && !screenAttachment.busy()
-      && !asrController?.active()
-      && !updateAnnouncement.isPending();
-  },
-  onDiagnostic: (event, details) => runtimeDiagnostics.record({
-    level: event.endsWith("failed") ? "warn" : "info",
-    event,
-    outcome: event.endsWith("failed") ? "failed" : "completed",
-    ...details,
-  }),
+  isReady: () => isChatReadyLifecycle(presentation.current().lifecycle),
+  isIdle: isHostIdle,
+  onDiagnostic: (event, details) => runtimeDiagnostics.record({ level: "warn", event, ...details }),
+});
+const hostVisualController = createHostVisualController({
+  invoke, renderer: rendererHost,
+  generationId: () => presentation.current().generationId,
+  characterId: () => characterPresentation.characterId,
+  isIdle: isHostIdle,
+  onError: error => runtimeDiagnostics.record({ level: "warn", event: "visual.plugin_control.failed",
+    code: String(error).split(":")[0] }),
 });
 
 async function submitMessage({ text }) {
@@ -1467,7 +1467,7 @@ async function submitMessage({ text }) {
   const state = presentation.current();
   if (presentationUnavailable || chatClient.isBusy() || state.canCancel || !isChatReadyLifecycle(state.lifecycle)) return;
   updateAnnouncement.noteActivity();
-  screenAwareness.noteManualSend();
+  hostInteraction.noteActivity();
   typewriter.cancel("");
   ttsController.cancel();
   rendererHost.cancel("interrupted");
@@ -1685,7 +1685,7 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
       asrPresentation.reset();
       composerActionIndicator.reset();
       screenAttachment.invalidate();
-      screenAwareness.generationChanged(next.generationId);
+      hostInteraction.invalidate(next.generationId);
       updateAnnouncement.generationChanged();
       composerToolRegistry.invalidate();
     }
@@ -2087,12 +2087,8 @@ await listenAppEvent("sakura://screen-capture-cancelled", (event) => {
 await listenAppEvent("sakura://screen-capture-error", (event) => {
   screenAttachment.handleError(event?.payload?.message, event?.payload?.captureRevision);
 });
-await listenAppEvent("sakura://screen-awareness-settings", (event) => {
-  try {
-    screenAwareness.applySettings(event?.payload);
-  } catch {
-    // Persisted settings remain authoritative and will be loaded on the next startup.
-  }
+await listenAppEvent("sakura-host-visual", event => {
+  void hostVisualController.receive(event?.payload);
 });
 await listenAppEvent("sakura://update-preferences-changed", (event) => {
   updateAnnouncement.applyPreferences(event?.payload);
@@ -2112,7 +2108,7 @@ input.addEventListener("compositionend", (event) => {
 input.addEventListener("input", () => {
   draftVersion += 1;
   updateAnnouncement.noteActivity();
-  screenAwareness.noteActivity();
+  hostInteraction.noteActivity();
   input.lang = inferTextLanguage(input.value);
   adaptiveSurface.schedule();
   surfaceVisibilityController?.setInputPinned(inputIsPinned());
@@ -2134,7 +2130,7 @@ document.addEventListener("pointerdown", (event) => {
 }, true);
 input.addEventListener("keydown", (event) => {
   updateAnnouncement.noteActivity();
-  screenAwareness.noteActivity();
+  hostInteraction.noteActivity();
   if (event.key === "Escape" && screenAttachment.isOpen()) {
     event.preventDefault();
     screenAttachment.close({ focus: true });
@@ -2218,7 +2214,7 @@ function dispose() {
   chatClient.dispose();
   contextMenu.dispose();
   composerToolRegistry.dispose();
-  screenAwareness.dispose();
+  hostInteraction.dispose();
   updateAnnouncement.dispose();
   runtimeDiagnostics.dispose();
 }
@@ -2230,18 +2226,7 @@ await rendererHost.bind(characterPresentation);
 surfaceVisibilityController?.start(presentation.current().phase);
 render(presentation.current());
 await chatClient.start();
-try {
-  const snapshot = await invoke("settings_screen_awareness_get");
-  screenAwareness.applySettings(snapshot?.settings);
-  screenAwareness.start();
-} catch (error) {
-  runtimeDiagnostics.record({
-    level: "warn",
-    event: "screen_awareness.settings.unavailable",
-    outcome: "failed",
-    code: String(error || "SCREEN_AWARENESS_SETTINGS_UNAVAILABLE").split("|")[0],
-  });
-}
+hostInteraction.start();
 await waitForRuntimeFonts();
 await adaptiveSurface.refresh();
 document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";

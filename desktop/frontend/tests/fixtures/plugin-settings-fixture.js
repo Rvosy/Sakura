@@ -132,7 +132,7 @@ function browserFixture() {
     "pluginTotal", "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
     "pluginInstallZipButton", "pluginInstallFolderButton", "pluginList", "pluginDetail",
     "aboutComponentsSummary", "aboutComponentsRefresh", "aboutComponentsState", "aboutComponentsList",
-    "memorySurface", "page-memory", "page-plugins", "page-about",
+    "memorySurface", "screenAwarenessSurface", "page-memory", "page-plugins", "page-about",
   ]) {
     const element = new Element("div");
     element.id = id;

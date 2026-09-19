@@ -43,7 +43,7 @@ Shell 用 bundled Python 启动：
 
 进程启动后先从 stdin 读取 16 字节 generation credential，再进入帧协议。stdout 只允许写协议帧；日志经 stderr bridge 交给 Shell。
 
-Core Host 负责角色、模型引用、对话受理与取消、Tools 注册、音画消费边界和 Timeline。默认 Assistant、模型提供方、Memory、
+Core Host 负责角色、模型引用、对话受理与取消、Tools 注册、音画消费边界和 Timeline。默认 Assistant、模型提供方、主动屏幕感知、Memory、
 TTS Hub 与 TTS Provider 等实现属于普通插件。主要入口在 `app/core_host/server.py`，共享聊天用例在
 `app/core_host/real_chat.py`。默认模型循环、上下文预算、Prompt、回复解析和 Trace 位于
 `plugins/builtin/sakura_assistant/sakura_assistant/`，Core 不再构造 AgentRuntime 或 ChatPipeline。
@@ -99,12 +99,16 @@ Core 在持有服务绑定锁时提交结果，插件停用或重载后的旧回
 协议参数兼容在提供方处理，Assistant 负责回复格式修复和工具循环。会话固定提供方实例，保存配置不改写有效配置，
 显式应用后才发布新会话。具体字段见[模型服务合同](../specs/runtime-v2/model-services.md)。
 
+主动屏幕感知插件负责采样间隔、批次、冷却和提示词。`sakura.host.screen` 提供受控截图，`sakura.host.chat`
+受理当前会话互动，之后仍经过 `RealChatBoundary`、`ChatBridge` 和原有分段播放链。字幕、立绘和语音的同步时机不变。
+普通插件还可通过 `sakura.host.visual` 提交表现控制或选择已有资源；宿主核对角色和绑定，并返回实际播放回执。
+
 截图和音频通过 generation 私有 Artifact 传递。生产边界只交换 opaque ID 和受限元数据，不把临时绝对路径交给 WebView。
 
 ## 配置所有权
 
 Core 模型引用由 `ModelReferenceRepository` 保存到 `config/model_slots.json`；远程连接归模型提供方插件，
-生成参数归 Assistant，记忆模型引用归 Memory。界面设置由 Rust
+生成参数归 Assistant，记忆模型引用归 Memory，主动屏幕设置归屏幕感知插件。界面设置由 Rust
 `UiConfigRepository` 保存到 `config/ui.json`；工具设置和插件配置分别由对应边界与 Plugin Runtime 处理。
 首次交接读取旧 `api.yaml`，先保存插件配置，再写入模型引用作为完成标记；已有新配置优先，旧文件保留可读。
 
@@ -151,13 +155,15 @@ macOS/Linux 的 `scripts/start.sh` 与 Windows 的 `scripts/start.bat` 都会增
 | Assistant 初始化、固定插件实例、任务回收 | `app/core_host/assistant_adapter.py` |
 | 默认模型循环、Prompt、工具策略、Trace | `plugins/builtin/sakura_assistant/sakura_assistant/service.py`、`agent/`、`llm/` |
 | 模型消费、远程传输与配置 | `app/plugin_sdk/sakura_model_client.py`、`plugins/builtin/sakura_model_openai_compatible/` |
+| 主动屏幕策略、截图与互动受理 | `plugins/builtin/sakura_screen_awareness/`、`app/core_host/screen_host.py`、`chat_host.py` |
+| 插件主动表现控制 | `app/core_host/visual_control_host.py`、`desktop/frontend/chat/host-interaction.js` |
 | 历史存储与分页、默认历史预算 | `app/storage/timeline.py`、默认 Assistant 的 `history.py` |
 | 插件进程、Service/Callback、依赖失效 | `app/plugins/runtime_v4.py` |
 | 公共值对象与插件可导入能力 | `app/plugin_sdk/` |
 | 角色草稿、文件事务与发布 | `app/config/character_studio.py`；运行应用由 `app/core_host/character_studio.py` 接收结果 |
 | 桌面聊天投影与每轮 Channel | `desktop/src-tauri/src/chat_bridge.rs` |
 
-架构取舍见 [ADR-0060](../adr/0060-single-chat-boundary-and-plugin-assistant.md)。
+架构取舍见 [ADR-0060](../adr/0060-single-chat-boundary-and-plugin-assistant.md) 和 [ADR-0061](../adr/0061-model-providers-and-plugin-interactions.md)。
 
 ## Sakura Service
 

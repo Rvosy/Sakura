@@ -84,7 +84,7 @@ def _tool(handler=lambda _args: {"ok": True}) -> Tool:
     )
 
 
-@pytest.mark.parametrize("event_type", [None, "reminder_due", "screen_awareness_check"])
+@pytest.mark.parametrize("event_type", [None, "reminder_due"])
 def test_plugin_content_coexists_with_character_in_normal_and_proactive_requests(event_type) -> None:
     provider = _provider(
         lambda _request: (
@@ -100,10 +100,7 @@ def test_plugin_content_coexists_with_character_in_normal_and_proactive_requests
         call = client.complete_with_tools.call_args
     else:
         runtime.handle_event(AgentEvent(event_type))
-        call = (
-            client.complete_with_tools.call_args
-            if event_type == "screen_awareness_check" else client.chat.call_args
-        )
+        call = client.chat.call_args
 
     rendered = call.kwargs["runtime_context"]
     assert RUNTIME_CONTEXT_HEADER in rendered

@@ -1,4 +1,4 @@
-"""Core-owned screen sampling and proactive-turn policy.
+"""Plugin-owned screen sampling and proactive-turn policy.
 
 The shell reports activity and capture results; only this object owns clocks and
 batch decisions. The revision rejects capture results from a discarded cycle.
@@ -9,7 +9,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from time import monotonic
 
-from app.agent.screen_awareness import ScreenAwarenessSettings
+try:
+    from .settings import ScreenAwarenessSettings
+except ImportError:
+    from settings import ScreenAwarenessSettings
 
 
 class ScreenAwarenessPolicy:

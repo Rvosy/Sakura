@@ -781,10 +781,12 @@ def _validate_payload(kind: TimelineKind, payload: dict[str, Any]) -> None:
                 raise TimelineDataError("TIMELINE_SEGMENT_INVALID")
         return
     if kind is TimelineKind.OBSERVATION:
-        allowed = {"text", "visual"}
+        allowed = {"text", "visual", "sourcePluginId"}
         if not set(payload) <= allowed or "text" not in payload:
             raise TimelineDataError("TIMELINE_PAYLOAD_SHAPE_INVALID")
         _bounded_text("text", payload.get("text"), MAX_TEXT_CHARS, allow_empty=True)
+        if "sourcePluginId" in payload:
+            _bounded_text("sourcePluginId", payload["sourcePluginId"], 64)
         visual = payload.get("visual")
         if visual is not None:
             _validate_visual_metadata(visual)

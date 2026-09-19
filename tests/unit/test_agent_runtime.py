@@ -51,7 +51,6 @@ from sakura_assistant.llm.api_client import (
     NativeToolCall,
     AssistantModelClient,
 )
-from sakura_assistant.llm.prompts.blocks import screen_awareness_rules_block
 from sakura_assistant_contract import ChatReply, ChatSegment
 
 
@@ -164,15 +163,12 @@ def test_chat_prompt_budget_excludes_native_visual_reply_instruction() -> None:
 
 def test_runtime_tool_prompts_are_role_neutral_and_match_direct_execution() -> None:
     screen_tool = create_screen_observation_tool()
-    screen_rules = screen_awareness_rules_block(include_tool_rules=True).body
     runtime_prompt = AgentRuntime(
         _dummy_api_client(),
         _dummy_system_prompt(),
     )._build_tool_system_prompt()
 
     assert "主人" not in screen_tool.description
-    assert "主人" not in screen_rules
-    assert "不得自行调用会改变外部状态的操作" in screen_rules
     assert "工具调用会直接执行" in runtime_prompt
     assert "需要确认" not in runtime_prompt
 
@@ -397,15 +393,6 @@ class TestScreenAwarenessEventFlow:
             "拒绝不支持的主动事件",
             {"event_type": "unknown_event"},
         ) in logs
-
-    def test_screen_awareness_check_enters_tool_loop(self) -> None:
-        client = _dummy_api_client()
-        runtime = AgentRuntime(client, _dummy_system_prompt())
-        event = AgentEvent(type="screen_awareness_check", payload={
-            "screen_context_allowed": False, "recent_conversation": [],
-        })
-        runtime.handle_event(event)
-        assert client.complete_with_tools.called
 
     def test_reminder_due_uses_chat_not_tools(self) -> None:
         client = _dummy_api_client()
@@ -811,9 +798,7 @@ class TestAgentRuntimeBasics:
 
 
 def test_tool_prompt_does_not_advertise_unavailable_web_tools() -> None:
-    from sakura_assistant.llm.prompts.blocks import screen_awareness_web_research_rules_block
     runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
     prompt = runtime._build_tool_system_prompt()
     for name in ("web__web_search", "web__fetch_url"):
         assert name not in prompt
-        assert name not in str(screen_awareness_web_research_rules_block())

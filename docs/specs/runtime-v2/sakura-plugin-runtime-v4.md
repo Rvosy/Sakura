@@ -144,6 +144,11 @@ SDK 提供不依赖 Core 的 `sakura_http.urlopen_direct_for_loopback` 和 `prox
 Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件私有配置和其他普通持久数据仍只使用
 `config` 与 `data_path()`。
 
+普通插件可通过 `sakura.host.screen` 获取受控截图，通过 `sakura.host.chat` 请求当前会话互动，
+通过 `sakura.host.visual` 提交当前表现目标的控制。截图句柄、聊天操作和表现回执均绑定调用实例；
+实例退出后撤销资源和过期结果。宿主只负责资源与受理，具体采样、提示词和触发策略归普通插件。
+接口见[主动屏幕感知](WP-4-07-proactive-reminders-todos.md)与[表现插件合同](visual-plugin-boundary.md)。
+
 ### 4.1 统一宿主日志
 
 主程序、Core、WebView 和插件共用 Rust `RuntimeLogService`。日志服务在插件系统之前启动，

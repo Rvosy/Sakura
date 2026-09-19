@@ -86,7 +86,7 @@ payload 只允许以下形状：
 |---|---|---|
 | `human` | `{ "text": string }` | 仅用户实际提交的文字；Host 引导语不得混入 |
 | `assistant` | `{ "segments": Segment[1..N] }` | 一个 generation 一条；Segment 保留 text/translation/tone/portrait/suppressTts，可选 control 见表现插件合同 |
-| `observation` | `{ "text": string, "visual": object? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata |
+| `observation` | `{ "text": string, "visual": object?, "sourcePluginId": string? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata；插件来源由宿主绑定，最多 64 字符 |
 | `system` | `{ "text": string, "eventType": string? }` | 仅需要进入未来关系连续性的 Host 已确认事实，不是普通日志 |
 
 所有字符串和数组必须有界。`payload_json` 不得含图片/音频字节、data URL、base64、绝对路径、临时资源 token、
@@ -96,6 +96,8 @@ API key 或 Provider 原始异常。
 
 - Core 接受一次外部或主动交互时生成一个 `turn_id`。用户文字与手动截图可以是同一 Turn 内的 `human` 和
   `observation` 两个条目；定时截图只有 `observation` 触发条目。
+- 普通插件通过 `sakura.host.chat` 提交的互动使用 `origin=host` 的 observation，记录 `sourcePluginId`，
+  不写 human，也不把插件业务提示词保存为观察正文。旧 `scheduled_screen` 条目保持可读。
 - 只有真正提交给对话模型的 observation 才进入 Timeline。单纯捕获、批次替换、繁忙跳过和提交前取消只
   进入现有日志/Trace。
 - human/observation 输入在 Provider 调用前提交。Provider 失败或取消时不伪造 assistant 条目；下一轮投影

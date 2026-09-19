@@ -16,6 +16,7 @@ mod core_host_runtime;
 mod core_supervisor;
 mod dynamic_hit_test;
 mod history_window;
+mod host_interaction;
 mod input_visual_effect;
 mod interaction_latency;
 mod legacy_import;
@@ -3454,26 +3455,6 @@ async fn chat_send(
 }
 
 #[tauri::command]
-async fn chat_screen_observation(
-    window: WebviewWindow,
-    attachment_id: String,
-    on_event: tauri::ipc::Channel<chat_bridge::ChatEventPublication>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<chat_bridge::ChatSendPublication, String> {
-    let handle = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
-    let pending =
-        handle
-            .chat_bridge()?
-            .send_screen_observation(window.label(), attachment_id, on_event)?;
-    tauri::async_runtime::spawn_blocking(move || pending.wait())
-        .await
-        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
-}
-
-#[tauri::command]
 async fn chat_cancel(
     window: WebviewWindow,
     payload: chat_bridge::ChatCancelRequest,
@@ -3828,140 +3809,6 @@ async fn remove_screen_attachment_item(
         item_id: response_item_id.to_string(),
         count,
     })
-}
-
-#[tauri::command]
-async fn screen_awareness_step(
-    window: WebviewWindow,
-    mut payload: Value,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let session_id = screen_session_id(&handle)?;
-        payload
-            .as_object_mut()
-            .ok_or_else(|| "INVALID_REQUEST".to_string())?
-            .insert("sessionId".to_string(), json!(session_id));
-        settings_response_payload(handle.settings_request(
-            None,
-            "screen_awareness.step",
-            payload,
-            std::time::Duration::from_secs(10),
-        )?)
-    })
-    .await
-    .map_err(|_| "SCREEN_AWARENESS_TASK_ABORTED".to_string())?
-}
-
-#[tauri::command]
-async fn capture_screen_awareness_frame(
-    window: WebviewWindow,
-    payload: capture::ScreenAwarenessCaptureRequest,
-    lifecycle: State<'_, ShellLifecycleState>,
-    captures: State<'_, Arc<capture::CaptureManager>>,
-) -> Result<capture::ScreenAwarenessCapturePublication, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
-    let cursor = window
-        .app_handle()
-        .cursor_position()
-        .map_err(|_| "SCREEN_CAPTURE_CURSOR_UNAVAILABLE".to_string())?;
-    let manager = captures.inner().clone();
-    let task_generation_id = generation_id.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let character_session_id = screen_session_id(&handle)?;
-        manager.capture_screen_awareness_frame(
-            &task_generation_id,
-            &character_session_id,
-            cursor.x.round() as i32,
-            cursor.y.round() as i32,
-            &payload.resolution,
-            payload.batch_limit,
-        )
-    })
-    .await
-    .map_err(|_| "SCREEN_CAPTURE_TASK_ABORTED".to_string())??;
-    record_screen_capture(
-        &lifecycle.runtime_log,
-        &generation_id,
-        "screen.awareness.frame.captured",
-        Severity::Info,
-        json!({
-            "outcome": "completed",
-            "batch_count": result.count,
-            "dropped_count": result.dropped_count,
-        }),
-    );
-    Ok(result)
-}
-
-#[tauri::command]
-async fn attach_screen_awareness_batch(
-    window: WebviewWindow,
-    lifecycle: State<'_, ShellLifecycleState>,
-    captures: State<'_, Arc<capture::CaptureManager>>,
-) -> Result<capture::ScreenAwarenessAttachmentPublication, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
-    let manager = captures.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let character_session_id = screen_session_id(&handle)?;
-        let descriptors =
-            manager.materialize_screen_awareness_batch(&generation_id, &character_session_id)?;
-        let count = descriptors.len();
-        let response = handle.settings_request(
-            None,
-            "screen.attachBatch",
-            json!({"resources": descriptors, "sessionId": character_session_id}),
-            std::time::Duration::from_secs(15),
-        );
-        manager.release_descriptors(&descriptors, &generation_id);
-        let payload = settings_response_payload(response?)?;
-        let attachment_id = payload
-            .get("attachmentId")
-            .and_then(Value::as_str)
-            .filter(|value| capture::valid_attachment_id(value))
-            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
-        let attached_count = payload
-            .get("count")
-            .and_then(Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|value| *value == count)
-            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
-        Ok(capture::ScreenAwarenessAttachmentPublication {
-            attachment_id: attachment_id.to_string(),
-            count: attached_count,
-        })
-    })
-    .await
-    .map_err(|_| "SCREEN_ATTACHMENT_TASK_ABORTED".to_string())?
-}
-
-#[tauri::command]
-fn clear_screen_awareness_batch(
-    window: WebviewWindow,
-    captures: State<'_, Arc<capture::CaptureManager>>,
-) -> Result<usize, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    Ok(captures.clear_screen_awareness_batch())
 }
 
 fn valid_composer_tool_segment(value: &str) -> bool {
@@ -5333,79 +5180,6 @@ async fn settings_provider_model_save(
     let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     reveal_pet_when_session_ready(app_handle, handle);
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_screen_awareness_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    if !matches!(
-        window.label(),
-        "main" | product_shell::SETTINGS_WINDOW_LABEL
-    ) {
-        return Err("SCREEN_AWARENESS_WINDOW_INVALID".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle,
-        None,
-        "screen_awareness.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    let mut payload = settings_response_payload(response)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "SCREEN_AWARENESS_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(shell.generation()?));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_screen_awareness_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    settings: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-    captures: State<'_, Arc<capture::CaptureManager>>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "screen_awareness.settings.save",
-        json!({"settings": settings}),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    let mut payload = settings_response_payload(response)?;
-    captures.clear_screen_awareness_batch();
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "SCREEN_AWARENESS_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    if let Some(saved_settings) = object.get("settings").cloned() {
-        let _ = window.app_handle().emit_to(
-            "main",
-            "sakura://screen-awareness-settings",
-            saved_settings,
-        );
-    }
     Ok(payload)
 }
 
@@ -7976,14 +7750,12 @@ fn main() {
             if window.label() == "main" {
                 match event {
                     tauri::WindowEvent::Destroyed => {
-                        window
-                            .state::<Arc<capture::CaptureManager>>()
-                            .clear_screen_awareness_batch();
                         if let Some(handle) = window.state::<ShellLifecycleState>().handle.as_ref()
                         {
                             if let Ok(bridge) = handle.chat_bridge() {
                                 bridge.invalidate();
                             }
+                            host_interaction::detach(handle);
                         }
                     }
                     tauri::WindowEvent::Moved(position) => {
@@ -8134,14 +7906,14 @@ fn main() {
             chat_cancel,
             start_screen_capture,
             capture_selected_region,
+            host_interaction::host_chat_listen,
+            host_interaction::host_interaction_current,
+            host_interaction::host_interaction_state,
+            host_interaction::host_visual_claim,
+            host_interaction::host_visual_result,
             cancel_screen_capture,
             release_screen_attachment,
             remove_screen_attachment_item,
-            capture_screen_awareness_frame,
-            screen_awareness_step,
-            chat_screen_observation,
-            attach_screen_awareness_batch,
-            clear_screen_awareness_batch,
             composer_tools_get,
             composer_tool_invoke,
             audio::tts_prepare_segment,
@@ -8267,8 +8039,6 @@ fn main() {
             settings_provider_model_save,
             tool_settings::settings_tools_get,
             tool_settings::settings_tools_save,
-            settings_screen_awareness_get,
-            settings_screen_awareness_save,
             plugin_settings::settings_plugins_get,
             plugin_settings::settings_plugins_save,
             plugin_settings::settings_plugins_enabled_set,

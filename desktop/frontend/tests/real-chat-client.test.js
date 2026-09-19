@@ -47,7 +47,7 @@ function harness(sendResponses = []) {
     const { onEvent, ...args } = payload || {};
     calls.push([name, Object.keys(args).length ? args : undefined]);
     if (name === "runtime_lifecycle_snapshot") return publication;
-    if (["chat_send", "chat_update_announce", "chat_screen_observation"].includes(name)) return sendResponses.shift();
+    if (["chat_send", "chat_update_announce"].includes(name)) return sendResponses.shift();
     if (name === "chat_cancel") return cancelResponses.length ? cancelResponses.shift() : { accepted: true, operationId: payload.payload.operationId };
     throw new Error(name);
   };
@@ -522,18 +522,73 @@ test("queued cancellation failure does not reject an already accepted send", asy
   client.dispose();
 });
 
-test("screen observations use the ordinary operation channel with explicit source and silent presentation", async () => {
+test("plugin proactive messages enter the ordinary cancellable operation and silent presentation", async () => {
   const response = { accepted: true, operationId: "screen", cancelHandle: "cancel", generationId: "generation-1", generationNumber: 1 };
-  const env = harness([response]);
+  const env = harness();
   const events = [];
-  const client = env.create(event => events.push(event));
+  let hostChannel;
+  const client = env.create(event => events.push(event), { listenHost: async channel => { hostChannel = channel; } });
   await client.start();
-  await client.observeScreen({ attachmentId: `screen-${"a".repeat(32)}` });
-  assert.deepEqual(env.calls.find(([name]) => name === "chat_screen_observation"), [
-    "chat_screen_observation", { attachmentId: `screen-${"a".repeat(32)}` },
-  ]);
-  env.emit({ ...response, type: "chat.completed", reply: { segments: [] } });
+  hostChannel.onmessage({ ...response, type: "chat.started" });
+  assert.equal(client.isBusy(), true);
+  assert.equal(events.at(-1).presentation, "silent");
+  assert.equal(await client.cancel("screen"), true);
+  assert.deepEqual(env.calls.find(([name]) => name === "chat_cancel"), [
+    "chat_cancel", { payload: { operationId: "screen", cancelHandle: "cancel" } }]);
+  hostChannel.onmessage({ ...response, type: "chat.completed", reply: { segments: [] } });
   assert.equal(events.at(-1).presentation, "silent");
   assert.equal(client.isBusy(), false);
+  const before = events.length;
+  hostChannel.onmessage({ ...response, type: "chat.completed", reply: { segments: [] } });
+  assert.equal(events.length, before);
+  client.dispose();
+  hostChannel.onmessage({ ...response, type: "chat.started" });
+  assert.equal(events.length, before);
+});
+
+test("host subscription is rebound on generation change and cannot replace an accepted manual operation", async () => {
+  const env = harness([{ accepted: true, operationId: "manual", cancelHandle: "cancel",
+    generationId: "generation-1", generationNumber: 1 }]);
+  const events = [], subscriptions = [];
+  const client = env.create(event => events.push(event), { listenHost: async channel => subscriptions.push(channel) });
+  await client.start();
+  await client.send({ message: "manual" });
+  env.emit({ type: "chat.started", operationId: "manual", generationId: "generation-1", generationNumber: 1 });
+  const before = events.length;
+  subscriptions[0].onmessage({ type: "chat.started", operationId: "plugin", generationId: "generation-1", generationNumber: 1 });
+  assert.equal(events.length, before);
+  env.setPublication(lifecyclePublication(2));
+  await env.tick();
+  assert.equal(subscriptions.length, 2);
+  const after = events.length;
+  subscriptions[0].onmessage({ type: "chat.started", operationId: "late", generationId: "generation-1", generationNumber: 1 });
+  subscriptions[1].onmessage({ type: "chat.completed", operationId: "late", generationId: "generation-2", generationNumber: 2 });
+  assert.equal(events.length, after);
+  assert.equal(client.isBusy(), false);
+  client.dispose();
+});
+
+test("native host events delivered before listen registration resolves retain started and terminal", async () => {
+  const listening = deferred(), registered = deferred();
+  const events = [];
+  const env = harness();
+  let channel;
+  const client = env.create(event => events.push(event), { listenHost: async current => {
+    channel = current;
+    current.onmessage({ type: "chat.started", operationId: "early", cancelHandle: "opaque",
+      generationId: "generation-1", generationNumber: 1 });
+    registered.resolve();
+    await listening.promise;
+  } });
+  const starting = client.start();
+  await registered.promise;
+  assert.equal(client.isBusy(), true);
+  assert.deepEqual(events.map(event => event.type), ["lifecycle", "chat.started"]);
+  channel.onmessage({ type: "chat.completed", operationId: "early", generationId: "generation-1", generationNumber: 1,
+    reply: { segments: [] } });
+  assert.equal(events.at(-1).type, "chat.completed");
+  assert.equal(client.isBusy(), false);
+  listening.resolve();
+  await starting;
   client.dispose();
 });

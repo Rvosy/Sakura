@@ -1640,12 +1640,15 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "asr.settings.save" => "保存语音输入设置",
         "asr.settings.action" => "执行语音输入操作",
         "screen.session" => "读取屏幕共享状态",
-        "screen.attach" | "screen.attachBatch" => "附加截图",
+        "screen.attach" => "附加截图",
         "screen.remove" => "移除截图",
         "screen.release" => "释放截图",
-        "screen_awareness.settings.get" => "读取屏幕感知设置",
-        "screen_awareness.settings.save" => "保存屏幕感知设置",
-        "screen_awareness.step" => "检查主动屏幕感知",
+        "host.interaction.current" => "读取角色互动状态",
+        "host.interaction.state" => "更新角色互动状态",
+        "host.interaction.detach" => "结束窗口互动",
+        "host.screen.result" => "接收屏幕截图",
+        "host.visual.claim" => "准备角色动作",
+        "host.visual.result" => "更新角色动作结果",
         "studio.bootstrap" => "打开角色工坊",
         "studio.plugin.requirements" => "检查角色插件需求",
         "studio.character.presentation" => "读取角色表现",
@@ -4738,7 +4741,8 @@ mod tests {
         assert!(text.contains(&projected.message));
         for (command, action) in [
             ("screen.session", "屏幕共享"),
-            ("screen_awareness.step", "屏幕感知"),
+            ("host.screen.result", "屏幕截图"),
+            ("host.visual.claim", "角色动作"),
         ] {
             let failed =
                 project_viewer_record(&record("ipc.request.failed", command), Severity::Warning)

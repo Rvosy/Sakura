@@ -12,6 +12,24 @@ const container = () => {
 };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test("cancelling a retired plugin operation does not interrupt the next chat renderer", async () => {
+  const cancelled = [];
+  const host = createRendererHost({ container: container(),
+    loadModule: async () => ({ mount: () => ({ applyState() {}, cancel: value => cancelled.push(value.reason), destroy() {} }) }),
+  });
+  await host.bind(binding());
+  host.begin("plugin");
+  assert.equal(await host.play(control(), "plugin", 0), true);
+  host.begin("chat");
+  const before = cancelled.length;
+  assert.equal(host.cancelOperation("plugin", "scope_closed"), false);
+  assert.equal(cancelled.length, before);
+  assert.equal(await host.play(control(), "chat", 0), true);
+  assert.equal(host.cancelOperation("chat", "cancelled"), true);
+  assert.equal(await host.play(control(), "chat", 1), false);
+  host.destroy();
+});
+
 test("deferred controls prepare without executing and cannot cross an operation or binding change", async () => {
   const pending = deferred();
   const events = [];

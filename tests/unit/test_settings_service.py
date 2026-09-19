@@ -14,7 +14,6 @@ from app.config.models import (
     ThemeSettings,
 )
 from app.config.yaml_config import load_yaml_mapping
-from app.agent.screen_awareness import ScreenAwarenessSettings
 
 
 class CharacterRegistryStub:
@@ -36,7 +35,7 @@ def test_settings_service_rejects_non_v1_system_config() -> None:
         service.load_startup_settings()
 
 
-def test_settings_service_saves_character_and_screen_settings_without_replacing_other_domains() -> None:
+def test_settings_service_saves_character_without_replacing_other_domains() -> None:
     root = _runtime_root("yaml_save")
     service = AppSettingsService(root)
     service.config_dir.mkdir(parents=True)
@@ -48,23 +47,10 @@ def test_settings_service_saves_character_and_screen_settings_without_replacing_
     )
 
     service.save_current_character_id(CharacterRegistryStub(), "nanami")  # type: ignore[arg-type]
-    service.save_screen_awareness_settings(
-        ScreenAwarenessSettings(
-            enabled=True,
-            screen_context_enabled=True,
-            check_interval_minutes=5,
-            cooldown_minutes=7,
-            screen_context_batch_limit=3,
-            screen_context_resolution="720p",
-        )
-    )
-
     characters = load_yaml_mapping(service.characters_config_path)
     system = load_yaml_mapping(service.system_config_path)
     assert characters == {"current_character_id": "nanami", "other": "keep"}
     assert system["startup"]["launch_at_login"] is True
-    assert system["screen_awareness"]["check_interval_minutes"] == 5
-    assert service.load_screen_awareness_settings().screen_context_resolution == "720p"
 
 
 def test_settings_service_reads_bubble_settings() -> None:

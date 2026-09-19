@@ -54,11 +54,6 @@ const fields = {
   bubbleAutoExpand: document.getElementById("bubbleAutoExpand"),
   controlPanelOffset: document.getElementById("controlPanelOffset"),
   inputBarOffset: document.getElementById("inputBarOffset"),
-  enabled: document.getElementById("enabled"),
-  checkInterval: document.getElementById("checkInterval"),
-  cooldown: document.getElementById("cooldown"),
-  batchLimit: document.getElementById("batchLimit"),
-  screenResolution: document.getElementById("screenResolution"),
   themeColors: document.getElementById("themeColors"),
   visualEffectMode: document.getElementById("visualEffectMode"),
   themeAiButton: document.getElementById("themeAiButton"),
@@ -135,7 +130,6 @@ let latestUpdateSnapshot = null;
 let updateActionBusy = false;
 let runtimeVoiceController = null;
 let runtimeAsrController = null;
-let runtimeScreenAwarenessController = null;
 let runtimeAutostartController = null;
 let firstRunGuideController = null;
 let runtimeAppearanceInitialized = false;
@@ -256,7 +250,6 @@ function computeDirty() {
     || runtimePluginController?.isDirty()
     || runtimeVoiceController?.isDirty()
     || runtimeAsrController?.isDirty()
-    || runtimeScreenAwarenessController?.isDirty()
     || runtimeAutostartController?.isDirty()
     || runtimeCharacterFeature?.isDirty()
   );
@@ -742,14 +735,6 @@ function showPage(page) {
   runtimeCharacterFeature?.onPageChanged(page);
 }
 
-function syncEnabledState() {
-  const enabled = fields.enabled.checked;
-  setControlDisabled(fields.checkInterval, !enabled);
-  setControlDisabled(fields.cooldown, !enabled);
-  setControlDisabled(fields.batchLimit, !enabled);
-  setControlDisabled(fields.screenResolution, !enabled);
-}
-
 function syncBubbleState() {
   setControlDisabled(fields.bubbleAutoHideDelay, !fields.bubbleAutoHide.checked);
 }
@@ -980,7 +965,6 @@ function currentCharacterHasDrafts() {
 
 async function rebindSettingsAfterCharacterSwitch(generationId) {
   runtimeProviderFeature?.rebindIdentity(generationId);
-  runtimeScreenAwarenessController?.rebindIdentity(generationId);
   await runtimeAppearanceController?.rebindGeneration(generationId);
   await runtimeToolsController?.refreshCurrent();
   await runtimePluginController?.refreshCurrent();
@@ -1394,9 +1378,6 @@ async function saveRuntimeSettings({ keepGlobalCollectionDrafts = false } = {}) 
   if (runtimeAsrController?.isDirty()) await runtimeAsrController.save();
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
   let result = null;
-  if (runtimeScreenAwarenessController?.isDirty()) {
-    result = await runtimeScreenAwarenessController.save();
-  }
   if (runtimeProviderFeature?.isDirty()) {
     result = await runtimeProviderFeature.save();
     await runtimePluginController?.refreshCurrent();
@@ -1566,7 +1547,6 @@ fields.telemetryCopyButton.addEventListener("click", async () => {
 });
 fields.telemetryRegenerateButton.addEventListener("click", regenerateTelemetryInstallationId);
 fields.updateActionButton.addEventListener("click", runUpdateAction);
-fields.enabled.addEventListener("change", syncEnabledState);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
 fields.visualEffectMode.addEventListener("runtime-value-applied", () => refreshSelect(fields.visualEffectMode));
 fields.resetThemeButton.addEventListener("click", () => {
@@ -1676,7 +1656,6 @@ window.addEventListener("beforeunload", () => {
   runtimePluginController?.dispose();
   runtimeVoiceController?.dispose();
   runtimeAsrController?.dispose();
-  runtimeScreenAwarenessController?.dispose();
   runtimeAutostartController?.dispose();
   firstRunGuideController?.dispose();
   runtimeDiagnostics?.dispose({ settings: true });
@@ -1818,19 +1797,6 @@ async function startSettingsFrontend() {
         onDirty: refreshDirty,
       });
       runtimeBubbleAutoHideController.initialize(await invoke("settings_bubble_auto_hide_get"));
-    });
-  }
-  if (featureStatus(manifest, "privacy.screen_awareness") === "available") {
-    await initializeRuntimeSettingsSection(async () => {
-      const { createScreenAwarenessSettingsController } = await import("./screen-awareness-runtime.js");
-      runtimeScreenAwarenessController = createScreenAwarenessSettingsController({
-        document,
-        invoke,
-        enhanceSelect,
-        refreshSelect,
-        onDirty: refreshDirty,
-      });
-      runtimeScreenAwarenessController.initialize(await invoke("settings_screen_awareness_get"));
     });
   }
   if (featureStatus(manifest, "plugins.manage") === "available") {

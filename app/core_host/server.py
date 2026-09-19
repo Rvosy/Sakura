@@ -37,6 +37,8 @@ TOOLS_CAPABILITY = "assistant.tools-v1"
 PLUGINS_CAPABILITY = "assistant.plugins-v1"
 TTS_CAPABILITY = "assistant.tts-v1"
 SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"
+HOST_DESKTOP_REQUESTS = frozenset({"host.interaction.current", "host.interaction.state", "host.interaction.detach",
+    "host.screen.result", "host.visual.claim", "host.visual.result"})
 SUPPORTED_CAPABILITIES = (
     *CAPABILITIES,
     ROUTER_CAPABILITY,
@@ -182,6 +184,7 @@ class ReadinessController:
         self._starting_plugin_application: object | None = None
         self._plugin_application: object | None = None
         self._chat_boundary: object | None = None
+        self._visual_selector = None
 
     def set_session_published_callback(self, callback: Callable[[], None]) -> None:
         call_now = False
@@ -201,6 +204,13 @@ class ReadinessController:
             application = self._plugin_application
         if application is not None:
             getattr(application, "bind_chat_boundary")(boundary)
+
+    def bind_visual_selector(self, callback) -> None:
+        with self._lock:
+            self._visual_selector = callback
+            application = self._plugin_application
+        if application is not None:
+            application.bind_visual_selector(callback)
 
     def enable_tools(self) -> None:
         with self._lock:
@@ -645,8 +655,11 @@ class ReadinessController:
                 unpublished_resources.append(plugin_application)
                 with self._lock:
                     chat_boundary = self._chat_boundary
+                    visual_selector = self._visual_selector
                 if chat_boundary is not None:
                     plugin_application.bind_chat_boundary(chat_boundary)
+                if visual_selector is not None:
+                    plugin_application.bind_visual_selector(visual_selector)
                 with self._lock:
                     if self._closed:
                         return
@@ -1141,6 +1154,9 @@ class ControlDispatcher:
     def published_plugin_application(self) -> object | None:
         return self._readiness.published_plugin_application()
 
+    def bind_visual_selector(self, callback) -> None:
+        self._readiness.bind_visual_selector(callback)
+
 
     def apply_provider_configuration(self) -> None:
         self._readiness.apply_provider_configuration()
@@ -1284,7 +1300,7 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, "handle_cancel")(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
-        elif name in {"screen.session", "screen.attach", "screen.attachBatch", "screen.remove", "screen.release"}:
+        elif name in {"screen.session", "screen.attach", "screen.remove", "screen.release"}:
             if (
                 SCREEN_CAPTURE_CAPABILITY not in self._negotiated_capabilities
                 or self._chat_boundary is None
@@ -1298,7 +1314,6 @@ class ControlDispatcher:
                 handler = {
                     "screen.session": "handle_screen_session",
                     "screen.attach": "handle_screen_attach",
-                    "screen.attachBatch": "handle_screen_attach_batch",
                     "screen.remove": "handle_screen_remove",
                     "screen.release": "handle_screen_release",
                 }[name]
@@ -1463,10 +1478,6 @@ def run_host(
     from .history import HISTORY_REQUEST_NAMES, HistoryBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
-    from .screen_awareness_settings import (
-        SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
-        ScreenAwarenessSettingsBoundary,
-    )
     from .storage_settings import STORAGE_SETTINGS_REQUEST_NAMES, StorageSettingsBoundary
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
@@ -1561,11 +1572,6 @@ def run_host(
                 dispatcher, "published_plugin_application", lambda: None
             ),
         )
-        screen_awareness_settings = ScreenAwarenessSettingsBoundary(
-            config.generation_id,
-            config.generation_credential,
-            config.user_root,
-        )
         character_settings = CharacterSettingsBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1576,6 +1582,9 @@ def run_host(
             apply_switch=getattr(dispatcher, "switch_character_session", None),
             plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
         )
+        bind_visual_selector = getattr(dispatcher, "bind_visual_selector", None)
+        if callable(bind_visual_selector):
+            bind_visual_selector(character_settings.select_visual_resource)
         character_studio = CharacterStudioBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1605,6 +1614,54 @@ def run_host(
 
         class RequestBoundary:
             def handle(self, request: dict[str, Any]) -> object:
+                if request.get("name") in HOST_DESKTOP_REQUESTS:
+                    credential = request.get("generationCredential")
+                    if not isinstance(credential, str) or not hmac.compare_digest(credential, config.generation_credential):
+                        raise TransportFailure("GENERATION_CREDENTIAL_MISMATCH", "request credential does not match the active generation")
+                    if request.get("kind") != "request":
+                        raise TransportFailure("INVALID_CONTROL", "host interaction accepts requests only")
+                    try:
+                        if not isinstance(request.get("payload"), Mapping):
+                            raise ValueError("INVALID_REQUEST")
+                        payload = dict(request["payload"])
+                        if (request.get("generationId") != config.generation_id
+                                or payload.pop("generationId", None) != config.generation_id):
+                            raise ValueError("GENERATION_MISMATCH")
+                        application = dispatcher.published_plugin_application()
+                        if application is None:
+                            raise ValueError("HOST_INTERACTION_UNAVAILABLE")
+                        name = request["name"]
+                        if name == "host.interaction.current":
+                            if payload:
+                                raise ValueError("INVALID_REQUEST")
+                            result = application.chat.current()
+                        elif name == "host.interaction.state":
+                            result = application.chat.set_ui_state(payload)
+                        elif name == "host.interaction.detach":
+                            if payload:
+                                raise ValueError("INVALID_REQUEST")
+                            application.chat.invalidate_session()
+                            application.screen.invalidate_session()
+                            application.visual_controls.invalidate_activity()
+                            result = {"accepted": True}
+                        elif name == "host.screen.result":
+                            result = application.screen.complete(payload)
+                        elif name == "host.visual.claim":
+                            if set(payload) != {"requestId", "target"}:
+                                raise ValueError("INVALID_REQUEST")
+                            result = application.visual_controls.claim(payload.get("requestId"), payload.get("target"))
+                        else:
+                            result = application.visual_controls.complete(payload)
+                        return response(request, generation_id=config.generation_id,
+                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
+                            payload=result if isinstance(result, Mapping) else {"accepted": True})
+                    except Exception as error:
+                        code = getattr(error, "code", str(error) if isinstance(error, ValueError) else "HOST_INTERACTION_FAILED")
+                        if not isinstance(code, str) or len(code) > 80 or not code.replace("_", "").isalnum():
+                            code = "HOST_INTERACTION_FAILED"
+                        return response(request, generation_id=config.generation_id,
+                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload(code, "宿主操作未完成。"))
                 if request.get("name") == "visual.control.parse":
                     credential = request.get("generationCredential")
                     if not isinstance(credential, str) or not hmac.compare_digest(credential, config.generation_credential):
@@ -1686,19 +1743,6 @@ def run_host(
                             ),
                         )
                     return tts_boundary.handle(request)
-                if request.get("name") in SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES:
-                    if SCREEN_CAPTURE_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "Screen awareness capability was not negotiated",
-                            ),
-                        )
-                    return screen_awareness_settings.handle(request)
                 if request.get("name") in CHARACTER_SETTINGS_REQUEST_NAMES:
                     return character_settings.handle(request)
                 if request.get("name") in CHARACTER_STUDIO_REQUEST_NAMES:
@@ -1739,7 +1783,7 @@ def run_host(
                     *COMPOSER_TOOL_REQUEST_NAMES,
                     *TTS_REQUEST_NAMES,
                     *ASR_REQUEST_NAMES,
-                    *SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
+                    *HOST_DESKTOP_REQUESTS,
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_STUDIO_REQUEST_NAMES,
                     *STORAGE_SETTINGS_REQUEST_NAMES,

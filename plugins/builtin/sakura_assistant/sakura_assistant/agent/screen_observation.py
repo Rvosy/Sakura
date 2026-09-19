@@ -130,10 +130,3 @@ def _marker_with_visual_id(marker: str, visual_id: str | None) -> str:
     if marker.endswith("]"):
         return f"{marker[:-1]}，视觉记录 visual_id={visual_id}]"
     return f"{marker}，视觉记录 visual_id={visual_id}"
-
-
-SCREEN_AWARENESS_PROACTIVE_PROMPT = (
-    "这是一次由 Sakura 定时截图触发的主动屏幕观察。以下截图按时间顺序展示我最近正在做的事情。"
-    "请结合最近聊天历史和这些截图，以当前角色的语气自然接话：可以评论变化、接续任务、询问卡点或提供轻量帮助。"
-    "不要逐张复述，也不要因为时间或久坐机械地提醒休息；如果没有明显变化，就简短说出你能确认的具体内容。"
-)

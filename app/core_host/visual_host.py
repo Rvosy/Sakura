@@ -340,6 +340,14 @@ class VisualHost:
                 self._binding.close()
             self._binding = binding
 
+    def commit_current(self, binding, commit):
+        """Serialize a short preference write with visual replacement and teardown."""
+        with self._lock:
+            if self._closed or binding is None or self._binding is not binding:
+                raise VisualHostError("VISUAL_BINDING_EXPIRED")
+            binding._check_active()
+            return commit()
+
     def _matching_candidates(self, resource_type, provider_id=None):
         candidates = self._candidates(resource_type)
         winners = {record.plugin_id.casefold() for record, _ in candidates if record.runtime_eligible and record.plugin_id}

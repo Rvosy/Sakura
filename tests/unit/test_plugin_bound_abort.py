@@ -163,6 +163,7 @@ def test_application_close_reclaims_inputs_after_manager_cleanup(cleanup_fails):
     application = _application()
     application._closed = False
     application.visuals, application.audio_input = Mock(), Mock()
+    application.chat, application.screen, application.visual_controls = Mock(), Mock(), Mock()
     application.unbind_session = Mock()
     application._loaded = threading.Event()
 

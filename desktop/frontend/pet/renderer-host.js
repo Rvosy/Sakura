@@ -28,6 +28,11 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     if (hadOperation && restoreSurface) services.cancelSurface?.();
     if (hadOperation) cleanup(instance, "cancel", { reason });
   }
+  function cancelOperation(operationId, reason = "interrupted") {
+    if (operation?.id !== operationId) return false;
+    cancel(reason);
+    return true;
+  }
   function freeze(reason = "unbound") {
     epoch += 1;
     history = new WeakMap();
@@ -215,5 +220,5 @@ export function createRendererHost({ container, loadModule = (url) => import(url
       return false;
     }
   }
-  return Object.freeze({ bind, begin, prepare, play, review, cancel, freeze, clear, destroy: () => clear("destroyed"), current: () => binding });
+  return Object.freeze({ bind, begin, prepare, play, review, cancel, cancelOperation, freeze, clear, destroy: () => clear("destroyed"), current: () => binding });
 }

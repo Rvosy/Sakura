@@ -139,6 +139,7 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
         "sakura.memory.mem0",
         "sakura.model.openai_compatible",
         "sakura.portrait",
+        "sakura.screen_awareness",
         "sakura.tts",
         "sakura.tts.genie",
         "sakura.tts.gpt-sovits",

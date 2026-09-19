@@ -376,8 +376,13 @@ impl ShellLifecycleHandle {
 pub struct ShellLifecycleSession {
     handle: ShellLifecycleHandle,
     worker: Option<JoinHandle<()>>,
-    chat_events: Option<Receiver<ChatEventPublication>>,
+    chat_events: Option<Receiver<DesktopProjection>>,
     chat_projector: Option<JoinHandle<()>>,
+}
+
+enum DesktopProjection {
+    Chat(ChatEventPublication),
+    Host(Value),
 }
 
 impl ShellLifecycleSession {
@@ -466,9 +471,17 @@ impl ShellLifecycleSession {
             .take()
             .ok_or("CHAT_PROJECTOR_UNAVAILABLE")?;
         let update_coordinator = app.state::<UpdateCoordinator>().inner().clone();
+        let handle = self.handle.clone();
         self.chat_projector = Some(thread::spawn(move || {
             while let Ok(event) = events.recv() {
-                let _ = update_coordinator.observe_chat_event(&event);
+                match event {
+                    DesktopProjection::Chat(event) => {
+                        let _ = update_coordinator.observe_chat_event(&event);
+                    }
+                    DesktopProjection::Host(event) => {
+                        crate::host_interaction::dispatch(&app, &handle, event)
+                    }
+                }
             }
         }));
         Ok(())
@@ -520,7 +533,7 @@ fn run_worker(
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
-    chat_events: Sender<ChatEventPublication>,
+    chat_events: Sender<DesktopProjection>,
     runtime_log: Option<RuntimeLogService>,
     start_immediately: bool,
 ) {
@@ -688,7 +701,7 @@ fn run_worker(
     );
 }
 
-fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublication>) {
+fn drain_chat_events(state: &mut WorkerState, events: &Sender<DesktopProjection>) {
     let Some(host) = state.host.as_ref() else {
         return;
     };
@@ -700,13 +713,18 @@ fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublicati
         if event
             .get("name")
             .and_then(Value::as_str)
-            .is_some_and(|name| name.starts_with("chat."))
+            .is_some_and(|name| name.starts_with("chat.") || name.starts_with("host.chat."))
         {
             if let Some(bridge) = state.chat_bridge.as_ref() {
                 if let Ok(Some(publication)) = bridge.observe_event(&event) {
-                    let _ = events.send(publication);
+                    let _ = events.send(DesktopProjection::Chat(publication));
                 }
             }
+        } else if matches!(
+            event.get("name").and_then(Value::as_str),
+            Some("host.screen.capture" | "host.visual.apply" | "host.visual.cancel")
+        ) {
+            let _ = events.send(DesktopProjection::Host(event));
         }
     }
 }

@@ -47,6 +47,7 @@ export function createRealChatClient({
   prepareGeneration = async () => true,
   initialPreparedGenerationId = null,
   pollIntervalMs = 120,
+  listenHost = null,
 }) {
   let disposed = false;
   let lifecycleTimer = null;
@@ -59,6 +60,7 @@ export function createRealChatClient({
   let preparedGenerationId = null;
   let preparedCharacterId = null;
   let interaction = null;
+  let hostChannel = null;
 
   const sameIdentity = (generationId, generationNumber) => Boolean(
     currentIdentity
@@ -88,6 +90,8 @@ export function createRealChatClient({
     }
     if (!sameIdentity(supervisor.generationId, supervisor.generationNumber)) {
       sealInteraction();
+      if (hostChannel) hostChannel.onmessage = () => {};
+      hostChannel = null;
       currentIdentity = Object.freeze({
         generationId: supervisor.generationId,
         generationNumber: supervisor.generationNumber,
@@ -192,7 +196,18 @@ export function createRealChatClient({
         preparedGenerationId = supervisor.generationId;
         preparedCharacterId = characterId;
       }
+      // Native registration may deliver an accepted operation before its invoke
+      // resolves. Publish the prepared lifecycle first so that channel cannot
+      // discard started and leave the following terminal without an owner.
       emitLifecycle(view.status, supervisor, lifecycleSignatureFor(publication, view.status), view.canRetry, view.failure);
+      if (listenHost && !hostChannel && isChatReadyLifecycle(view.status)) {
+        const identity = currentIdentity;
+        const channel = createChannel();
+        channel.onmessage = receiveHost;
+        await listenHost(channel);
+        if (disposed || identity !== currentIdentity) { channel.onmessage = () => {}; return; }
+        hostChannel = channel;
+      }
     } finally {
       lifecycleBusy = false;
     }
@@ -234,6 +249,22 @@ export function createRealChatClient({
       if (current.response) interaction = null;
     }
     onEvent(Object.freeze({ ...event, presentation: current.presentation }));
+  }
+
+  function receiveHost(value) {
+    let event;
+    try { event = validateChatEvent(value); } catch { return; }
+    if (disposed || !isChatReadyLifecycle(lifecycleStatus)
+        || !sameIdentity(event.generationId, event.generationNumber)
+        || (event.characterId && preparedCharacterId && event.characterId !== preparedCharacterId)) return;
+    if (event.type === "chat.started" && interaction?.operationId !== event.operationId) {
+      if (interaction?.started) return;
+      sealInteraction();
+      interaction = { identity: currentIdentity, epoch: interactionEpoch, presentation: "silent",
+        operationId: event.operationId, response: { ...event, cancelHandle: event.cancelHandle },
+        started: false, terminal: false, cancelRequested: false, channel: { onmessage: () => {} } };
+    }
+    if (interaction?.operationId === event.operationId) receive(interaction, event);
   }
 
   async function sendCommand(command, args, presentation) {
@@ -293,9 +324,6 @@ export function createRealChatClient({
     async announceUpdate() {
       return sendCommand("chat_update_announce", undefined, "silent");
     },
-    async observeScreen({ attachmentId }) {
-      return sendCommand("chat_screen_observation", { attachmentId }, "silent");
-    },
     async cancel(operationId) {
       const current = interaction;
       if (disposed || !current || current.terminal || current.operationId !== operationId) return false;
@@ -313,6 +341,8 @@ export function createRealChatClient({
       window.clearInterval(lifecycleTimer);
       lifecycleTimer = null;
       sealInteraction();
+      if (hostChannel) hostChannel.onmessage = () => {};
+      hostChannel = null;
     },
   });
 }

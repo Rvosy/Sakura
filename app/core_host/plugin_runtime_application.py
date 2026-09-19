@@ -15,6 +15,9 @@ from app.core_host.visual_host import VisualHost, VISUAL_INACTIVE_REASONS
 from app.core.runtime_log import log_event
 from app.core.diagnostics import exception_diagnostics
 from app.core_host.mobile_host import MobileHostService
+from app.core_host.chat_host import ChatHost, HOST_CHAT_SERVICE
+from app.core_host.visual_control_host import HostVisualService, HOST_VISUAL_SERVICE
+from app.core_host.screen_host import ScreenHost, HOST_SCREEN_SERVICE, migrate_legacy_screen_settings
 from app.plugin_sdk.sakura_context import ContextRequest
 from app.plugins.host_services import (
     HOST_ARTIFACTS_SERVICE,
@@ -128,6 +131,7 @@ class PluginRuntimeApplication:
             migrate_legacy_model_configuration(roots.user_root)
         except (OSError, ValueError):
             self._model_configuration_issue = "CONFIG_DATA_INVALID"
+        migrate_legacy_screen_settings(roots.user_root)
         self._inventory = PluginInventory(roots)
         self._inventory_snapshot = self._inventory.scan()
         manager_options = {} if call_timeout is None else {"call_timeout": call_timeout}
@@ -141,6 +145,8 @@ class PluginRuntimeApplication:
         self._visual_character = None
         self._visual_binding = None
         self._visual_reason = "VISUAL_NOT_BOUND"
+        self._visual_state_lock = threading.RLock()
+        self._visual_selector = None
         self.audio_input = AudioInputResources(roots.user_root, generation_id, self._manager.service_identity)
         self._manager.install_host_service(
             HOST_AUDIO_INPUT_SERVICE, self.audio_input,
@@ -178,6 +184,62 @@ class PluginRuntimeApplication:
             ),
             exports=("characters", "history", "begin", "poll", "cancel", "theme"),
         )
+        commit_scope = lambda owner, commit: self._manager.commit_plugin_scope(*owner, commit)
+        self.screen = ScreenHost(generation_id, commit_scope=commit_scope,
+            session_provider=lambda: self._chat_boundary.current_host_state()["sessionId"] if self._chat_boundary else None,
+            emit_callback=self._emit_desktop_event)
+        self.chat = ChatHost(boundary_provider=lambda: self._chat_boundary,
+            screen_host=self.screen, emit_callback=self._emit_desktop_event, commit_scope=commit_scope)
+        self._manager.install_host_service(HOST_SCREEN_SERVICE, self.screen, exports=("capture", "release"))
+        self._manager.install_host_service(HOST_CHAT_SERVICE, self.chat, exports=("current", "submit", "cancel"))
+        self.visual_controls = HostVisualService(binding_provider=self._current_visual_binding,
+            emit_callback=self._emit_desktop_event, is_idle=lambda: self.chat.current()["idle"],
+            select_callback=self._select_visual_resource, commit_scope=commit_scope)
+        self._manager.install_host_service(HOST_VISUAL_SERVICE, self.visual_controls,
+            exports=("current", "apply", "status", "release", "select"))
+
+    def _current_visual_binding(self):
+        with self._visual_state_lock:
+            return (self._visual_character.id, self._visual_binding) if self._visual_character else None
+
+    def bind_visual_selector(self, callback):
+        self._visual_selector = callback
+
+    def _select_visual_resource(self, target, resource_id):
+        if self._visual_selector is None:
+            raise PluginRuntimeError("VISUAL_SELECTION_UNAVAILABLE")
+        from app.core_host.real_chat import RealChatRejection
+        state = self.chat.current()
+        if not state["idle"] or self._chat_boundary is None:
+            return {"accepted": False, "reasonCode": "VISUAL_BUSY"}
+        try:
+            with self._chat_boundary.idle_runtime_update():
+                return self._visual_selector(target, resource_id, expected_visual_activity=state)
+        except RealChatRejection as error:
+            return {"accepted": False, "reasonCode": error.code}
+
+    def commit_visual_selection(self, target, commit, *, expected_activity=None):
+        """Commit a local preference while the caller and display target are current."""
+        from app.core_host.screen_host import caller_identity
+        owner = caller_identity()
+        value = self._current_visual_binding()
+        if value is None or value[1] is None or {
+            "characterId": value[0], "bindingId": value[1].id,
+            "resourceId": value[1].resource_id,
+        } != target:
+            raise PluginRuntimeError("VISUAL_BINDING_EXPIRED")
+        def publish():
+            value[1]._check_active()
+            return commit()
+        def commit_scope():
+            return self._manager.commit_plugin_scope(*owner, publish)
+        return self.visuals.commit_current(value[1],
+            lambda: self.chat.commit_idle(expected_activity, commit_scope) if expected_activity is not None else commit_scope())
+
+    def _emit_desktop_event(self, name, payload):
+        if self._chat_boundary is None:
+            raise PluginRuntimeError("DESKTOP_UNAVAILABLE")
+        self._chat_boundary.publish_host_event(name, payload)
 
     @property
     def state(self) -> str:
@@ -309,6 +371,8 @@ class PluginRuntimeApplication:
             candidate.close()
             raise
         self._session = session
+        self.chat.invalidate_session()
+        self.screen.invalidate_session()
         self._tool_registry.set_event_emitter(lambda name, payload: self.emit_event(name, payload or {}))
         session.visual_binding = candidate.binding
         self._bound.set()
@@ -386,9 +450,11 @@ class PluginRuntimeApplication:
         if self._closed:
             raise PluginRuntimeError("GENERATION_INVALIDATED")
         self.visuals.publish(candidate.revision, candidate.binding)
-        self._visual_character = candidate.character
-        self._visual_binding = candidate.binding
-        self._visual_reason = candidate.reason
+        with self._visual_state_lock:
+            self._visual_character = candidate.character
+            self._visual_binding = candidate.binding
+            self._visual_reason = candidate.reason
+        self.visual_controls.invalidate_target()
         self._character_store.set_current(candidate.character.id)
         if self._session is not None:
             self._session.visual_binding = self._visual_binding
@@ -471,8 +537,10 @@ class PluginRuntimeApplication:
     def unbind_session(self) -> None:
         character = self._visual_character
         self.visuals.clear()
-        self._visual_binding = None
-        self._visual_character = None
+        with self._visual_state_lock:
+            self._visual_binding = None
+            self._visual_character = None
+        self.visual_controls.invalidate_target()
         self.retire_session()
 
         # A missing model configuration removes chat, not the character window.
@@ -486,6 +554,8 @@ class PluginRuntimeApplication:
         if self._session is not None:
             self._session.visual_binding = None
         self._session = None
+        self.chat.invalidate_session()
+        self.screen.invalidate_session()
         self._bound.clear()
         if hasattr(registry, "set_event_emitter"):
             registry.set_event_emitter(None)
@@ -659,6 +729,9 @@ class PluginRuntimeApplication:
         if self._closed:
             return
         self._closed = True
+        self.chat.close()
+        self.screen.close()
+        self.visual_controls.close()
         self.visuals.close()
         preview = getattr(self, "_preview_visuals", None)
         if preview is not None:

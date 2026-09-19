@@ -1294,7 +1294,7 @@ def test_plugin_completion_failure_does_not_block_committed_chat(tmp_path: Path)
 
 
 @pytest.mark.parametrize("empty_reply", [False, True])
-def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs(
+def test_plugin_image_batch_is_multimodal_and_history_safe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     empty_reply: bool,
@@ -1365,35 +1365,20 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         timeline_store=timeline,
         event_publisher=events.append,
     )
-    attach = boundary.handle_screen_attach_batch(
-        _request("attach-batch", "screen.attachBatch", {"sessionId": boundary.handle_screen_session(_request("screen-session", "screen.session", {}))["payload"]["sessionId"], "resources": resources})
-    )
-    assert attach["payload"]["count"] == 2
+    from app.core_host.screen_capture import consume_screen_resource
+    observations = tuple(consume_screen_resource(resource, generation_id=GENERATION_ID) for resource in resources)
     assert not any(root.glob("*.jpg"))
-    disguised = _request("disguised-screen", "chat.send", {
-        "message": "这是一次主动屏幕观察。", "operationId": "disguised-screen",
-        "attachmentId": attach["payload"]["attachmentId"],
-    })
-    with pytest.raises(RealChatRejection, match="INVALID_CHAT_PAYLOAD"):
-        boundary.reserve_send(disguised)
-    send = _request(
-        "screen-awareness-chat",
-        "chat.send",
-        {
-            "event": {"type": "screen_observation"},
-            "operationId": "screen-awareness-chat",
-            "attachmentId": attach["payload"]["attachmentId"],
-        },
-    )
-    boundary.reserve_send(send)
-    boundary.handle_send(send)
+    operation_id = boundary.reserve_plugin_message("fixture.screen", boundary.current_host_state()["sessionId"],
+                                                  "查看这组屏幕图片。", observations)
+    boundary.run_reserved_plugin_message(operation_id, lambda name, payload: events.append({"name": name, "payload": payload}))
     assert events[-1]["name"] == "chat.completed"
 
     descriptor, _kwargs = pipeline_calls[0]
-    assert descriptor["message"] == ""
-    assert descriptor["event"] == {"type": "screen_observation"}
+    assert descriptor["message"] == "查看这组屏幕图片。"
+    assert "查看这组屏幕图片。" not in str(timeline.read_recent("sakura", 10))
+    assert descriptor["event"] is None
     attachment = descriptor["attachment"]
-    assert attachment["source"] == "screen_awareness"
+    assert attachment["source"] == "plugin"
     assert len(attachment["observations"]) == 2
     assert attachment["observations"][0]["data_url"] != attachment["observations"][1]["data_url"]
     stored = TimelineStore(tmp_path / "timeline.sqlite3").read_all("sakura")
@@ -1402,8 +1387,9 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         TimelineKind.OBSERVATION,
         TimelineKind.ASSISTANT,
     ])
-    assert stored[0].origin == "scheduled_screen"
-    assert stored[0].payload["text"] == "刚才留意了一下屏幕状态。"
+    assert stored[0].origin == "host"
+    assert stored[0].payload["sourcePluginId"] == "fixture.screen"
+    assert stored[0].payload["visual"]["imageCount"] == 2
     if not empty_reply:
         assert stored[1].payload["visual"]["analysisStatus"] == "succeeded"
         assert "用户正在修复 Context 测试" in stored[1].payload["text"]
@@ -1550,60 +1536,6 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
             resource_root.rmdir()
         except OSError:
             pass
-        _stop(process)
-        _stop_provider(server, provider_thread)
-
-
-def test_real_core_routes_screen_awareness_settings_and_preserves_yaml(tmp_path: Path) -> None:
-    server, provider_thread = _start_provider("complete")
-    app_root = _configure_app_root(tmp_path, server.server_address[1])
-    system_path = app_root / "config/system_config.yaml"
-    existing = system_path.read_text(encoding="utf-8")
-    system_path.write_text(existing + "\npreserve_screen_setting: true\n", encoding="utf-8")
-    process = _start_host(app_root)
-    try:
-        _wait_ready(process, ["transport.concurrent-router", "assistant.screen-capture-v2"])
-        current = _exchange(
-            process,
-            _request("screen-awareness-get", "screen_awareness.settings.get", {}),
-        )
-        assert current["payload"]["settings"]["checkIntervalMinutes"] == 20
-        saved = _exchange(
-            process,
-            _request(
-                "screen-awareness-save",
-                "screen_awareness.settings.save",
-                {
-                    "settings": {
-                        "enabled": True,
-                        "checkIntervalMinutes": 12,
-                        "cooldownMinutes": 7,
-                        "batchLimit": 3,
-                        "resolution": "1080p",
-                    }
-                },
-            ),
-        )
-        assert set(saved["payload"]) == {"schemaVersion", "settings"}
-        assert saved["payload"]["settings"] == {
-            "enabled": True,
-            "checkIntervalMinutes": 12,
-            "cooldownMinutes": 7,
-            "batchLimit": 3,
-            "resolution": "1080p",
-        }
-        document = system_path.read_text(encoding="utf-8")
-        assert "preserve_screen_setting: true" in document
-        assert "check_interval_minutes: 12" in document
-        assert "screen_context_enabled" not in document
-        session = _exchange(process, _request("policy-session", "screen.session", {}))["payload"]["sessionId"]
-        facts = {"sessionId": session, "idle": True, "activity": False, "reset": False}
-        first = _exchange(process, _request("policy-start", "screen_awareness.step", facts))
-        assert first["payload"]["action"] == "clear"
-        idle = _exchange(process, _request("policy-idle", "screen_awareness.step", facts))
-        assert idle["payload"]["action"] == "none"
-        _exchange(process, _request("shutdown-screen-settings", "system.shutdown", {}))
-    finally:
         _stop(process)
         _stop_provider(server, provider_thread)
 

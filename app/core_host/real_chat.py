@@ -52,6 +52,7 @@ class ChatTurnInput:
     operation_id: str
     message: str = ""
     event: Mapping[str, Any] | None = None
+    source_plugin_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,18 @@ class RealChatBoundary:
                 raise RuntimeError("chat event publisher is already configured")
             self._event_publisher = publisher
 
+    def publish_host_event(self, name: str, payload: Mapping[str, Any]) -> None:
+        publisher = self._event_publisher
+        if publisher is None or self._closed:
+            raise RealChatRejection("DESKTOP_UNAVAILABLE", "桌面连接不可用")
+        identity = payload.get("requestId") or payload.get("operationId")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("host event identity is invalid")
+        publisher(event(
+            {"id": identity}, name=name, payload=dict(payload), generation_id=self._generation_id,
+            generation_credential=self._generation_credential, protocol_minor=2,
+        ))
+
     def reserve_send(self, request: Mapping[str, Any]) -> None:
         payload = self._validate_send(request)
         self._reserve_turn(
@@ -149,6 +162,7 @@ class RealChatBoundary:
         attachment_id: str | None = None,
         screen_attachment: _ScreenAttachment | None = None,
         expected_character_id: str | None = None,
+        expected_session_id: str | None = None,
     ) -> None:
         operation_id = turn.operation_id
         with self._changed:
@@ -158,6 +172,8 @@ class RealChatBoundary:
                 raise RealChatRejection("CHARACTER_SWITCH_IN_PROGRESS", "角色正在切换", retryable=True)
             if self._closed:
                 raise RealChatRejection("GENERATION_INVALIDATED", "chat generation is closing")
+            if expected_session_id is not None and expected_session_id != self._screen_session_id:
+                raise RealChatRejection("CHAT_SESSION_STALE", "角色会话已更新")
             session = self._session_provider()
             if session is None:
                 raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
@@ -179,9 +195,6 @@ class RealChatBoundary:
                         "screen attachment is stale or unavailable",
                     )
                 screen_attachment = pending
-            is_screen_event = turn.event is not None and turn.event.get("type") == "screen_observation"
-            if is_screen_event != (screen_attachment is not None and screen_attachment.source == "screen_awareness"):
-                raise RealChatRejection("INVALID_CHAT_PAYLOAD", "scheduled screen input requires its explicit event and attachment")
             if attachment_id is not None:
                 self._pending_screen_attachment = None
             self._executions[operation_id] = _Execution(
@@ -362,14 +375,14 @@ class RealChatBoundary:
             stage = "input_prepare"
             proactive_event = execution.turn.event
             is_update_event = proactive_event is not None and proactive_event.get("type") == "update_available"
-            is_screen_event = proactive_event is not None and proactive_event.get("type") == "screen_observation"
+            source_plugin_id = execution.turn.source_plugin_id
             message = execution.turn.message
             plugin_application = (
                 self._plugin_application_provider()
                 if self._plugin_application_provider is not None
                 else None
             )
-            if plugin_application is not None and not is_update_event and not is_screen_event:
+            if plugin_application is not None and not is_update_event and source_plugin_id is None:
                 try:
                     getattr(plugin_application, "emit_event")(
                         "message.user",
@@ -388,7 +401,7 @@ class RealChatBoundary:
                 raise _BoundaryFailure("TIMELINE_READ_FAILED", "Chat history could not be read", False) from error
             stage = "input_prepare"
             if not is_update_event:
-                if screen_attachment is None or screen_attachment.source != "screen_awareness":
+                if source_plugin_id is None:
                     input_entries.append(NewTimelineEntry(entry_id=uuid.uuid4().hex, turn_id=turn_id,
                         character_id=str(character.id), kind=TimelineKind.HUMAN, origin="chat", created_at=created_at,
                         payload={"text": message}))
@@ -397,11 +410,17 @@ class RealChatBoundary:
                               "capturedAt": screen_attachment.observations[0].captured_at}
                     if screen_attachment.visual_id is not None:
                         visual["visualId"] = screen_attachment.visual_id
-                    scheduled = screen_attachment.source == "screen_awareness"
                     input_entries.append(NewTimelineEntry(entry_id=uuid.uuid4().hex, turn_id=turn_id,
                         character_id=str(character.id), kind=TimelineKind.OBSERVATION,
-                        origin="scheduled_screen" if scheduled else "manual_screen", created_at=created_at,
-                        payload={"text": "刚才留意了一下屏幕状态。" if scheduled else f"你分享了 {len(screen_attachment.observations)} 张屏幕截图。", "visual": visual}))
+                        origin="host" if source_plugin_id else "manual_screen", created_at=created_at,
+                        payload={"text": (f"插件分享了 {len(screen_attachment.observations)} 张图片。" if source_plugin_id
+                                          else f"你分享了 {len(screen_attachment.observations)} 张屏幕截图。"),
+                                 "visual": visual, **({"sourcePluginId": source_plugin_id} if source_plugin_id else {})}))
+                elif source_plugin_id is not None:
+                    input_entries.append(NewTimelineEntry(entry_id=uuid.uuid4().hex, turn_id=turn_id,
+                        character_id=str(character.id), kind=TimelineKind.OBSERVATION,
+                        origin="host", created_at=created_at,
+                        payload={"text": "插件发起了一次互动。", "sourcePluginId": source_plugin_id}))
                 stage = "timeline_write"
                 try:
                     execution.cancel.throw_if_cancelled()
@@ -446,7 +465,7 @@ class RealChatBoundary:
             semantic_observation_entry = None
             if (
                 screen_attachment is not None
-                and screen_attachment.source == "screen_awareness"
+                and source_plugin_id is not None
             ):
                 from app.storage.visual_observation import sanitize_timeline_visual_summary
 
@@ -460,10 +479,11 @@ class RealChatBoundary:
                         turn_id=turn_id,
                         character_id=str(character.id),
                         kind=TimelineKind.OBSERVATION,
-                        origin="scheduled_screen",
+                        origin="host",
                         created_at=_now_iso(),
                         payload={
                             "text": semantic_observation["text"],
+                            "sourcePluginId": source_plugin_id,
                             "visual": {
                                 "imageCount": len(screen_attachment.observations),
                                 "capturedAt": str(getattr(first_observation, "captured_at")),
@@ -514,10 +534,7 @@ class RealChatBoundary:
                         origin=(
                             "proactive"
                             if is_update_event
-                            or (
-                                screen_attachment is not None
-                                and screen_attachment.source == "screen_awareness"
-                            )
+                            or source_plugin_id is not None
                             else "chat"
                         ),
                         created_at=_now_iso(),
@@ -652,6 +669,25 @@ class RealChatBoundary:
                     "idle": available and not self._executions and not self._runtime_update_pending,
                     "interactionRevision": self._interaction_revision}
 
+    def reserve_plugin_message(self, source_plugin_id: str, session_id: str, message: str,
+                               observations: Sequence[Any] = ()) -> str:
+        if (not isinstance(source_plugin_id, str) or not source_plugin_id
+                or not isinstance(message, str) or not message.strip() or len(message) > 32768):
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "主动互动输入无效")
+        operation_id = "plugin-" + uuid.uuid4().hex
+        attachment = (_ScreenAttachment(
+            attachment_id="screen-" + secrets.token_hex(16), observations=tuple(observations),
+            item_ids=(), source="plugin",
+        ) if observations else None)
+        self._reserve_turn(ChatTurnInput(operation_id, message.strip(), source_plugin_id=source_plugin_id),
+                           screen_attachment=attachment, expected_session_id=session_id)
+        return operation_id
+
+    def run_reserved_plugin_message(self, operation_id: str, emit: Callable) -> ChatOutcome:
+        from app.core.interaction import interaction_context
+
+        with interaction_context(operation_id):
+            return self._run_turn(operation_id, emit=emit)
 
     def reserve_host_message(
         self,
@@ -880,47 +916,6 @@ class RealChatBoundary:
             },
         )
 
-    def handle_screen_attach_batch(self, request: dict[str, Any]) -> dict[str, Any]:
-        payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"resources", "sessionId"}:
-            raise ValueError("screen.attachBatch payload is invalid")
-        resources = payload.get("resources")
-        if not isinstance(resources, list) or not 1 <= len(resources) <= 20:
-            raise ValueError("screen.attachBatch resources count is invalid")
-        if any(not isinstance(resource, Mapping) for resource in resources):
-            raise ValueError("screen.attachBatch resource is invalid")
-        from app.core_host.screen_capture import consume_screen_resource
-
-        with self._lock:
-            self._check_screen_session(payload["sessionId"])
-        observations = tuple(
-            consume_screen_resource(resource, generation_id=self._generation_id)
-            for resource in resources
-        )
-        attachment = _ScreenAttachment(
-            attachment_id=f"screen-{secrets.token_hex(16)}",
-            observations=observations,
-            item_ids=(),
-            source="screen_awareness",
-        )
-        with self._lock:
-            self._check_screen_session(payload["sessionId"])
-            if self._pending_screen_attachment is not None:
-                raise LookupError("another screen attachment is pending")
-            self._pending_screen_attachment = attachment
-            self._revision += 1
-        return response(
-            request,
-            generation_id=self._generation_id,
-            generation_credential=self._generation_credential,
-            protocol_minor=2,
-            payload={
-                "attached": True,
-                "attachmentId": attachment.attachment_id,
-                "count": len(observations),
-            },
-        )
-
     def handle_screen_remove(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
         if not isinstance(payload, Mapping) or set(payload) != {"attachmentId", "itemId"}:
@@ -1146,11 +1141,6 @@ class RealChatBoundary:
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat identity is invalid")
         if set(payload) == {"operationId", "event"}:
             self._validate_update_event(payload.get("event"))
-            return payload
-        if set(payload) == {"operationId", "event", "attachmentId"} and payload["event"] == {"type": "screen_observation"}:
-            attachment_id = payload["attachmentId"]
-            if not isinstance(attachment_id, str) or re.fullmatch(r"screen-[0-9a-f]{32}", attachment_id) is None:
-                raise RealChatRejection("INVALID_CHAT_PAYLOAD", "screen attachment identity is invalid")
             return payload
         if not {"message", "operationId"}.issubset(payload) or not set(payload).issubset(
             {"message", "operationId", "attachmentId"}

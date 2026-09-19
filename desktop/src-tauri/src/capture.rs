@@ -1,7 +1,7 @@
 //! Generation-private manual screen capture resources and per-monitor overlay windows.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::Write,
     path::PathBuf,
@@ -27,7 +27,6 @@ const RESOURCE_DIRECTORY: &str = "sakura-runtime-v2-screen-resources";
 const RESOURCE_TTL: Duration = Duration::from_secs(120);
 const MAX_CAPTURE_BYTES: usize = 24 * 1024 * 1024;
 const MAX_CAPTURE_PIXELS: u64 = 32_000_000;
-const MAX_SCREEN_AWARENESS_BATCH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CAPTURE_EDGE: u32 = 1280;
 const MIN_SELECTION_LOGICAL_PX: f64 = 8.0;
 
@@ -61,16 +60,6 @@ struct CaptureResource {
     path: PathBuf,
     generation_id: String,
     created_at: Instant,
-}
-
-#[derive(Clone, Debug)]
-struct ScreenAwarenessFrame {
-    character_session_id: String,
-    bytes: Vec<u8>,
-    width: u32,
-    height: u32,
-    captured_at: String,
-    screen_name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -115,21 +104,6 @@ pub struct ScreenAttachmentItemRemovePublication {
     pub count: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScreenAwarenessCapturePublication {
-    pub count: usize,
-    #[serde(skip_serializing)]
-    pub dropped_count: usize,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScreenAwarenessAttachmentPublication {
-    pub attachment_id: String,
-    pub count: usize,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureStartRequest {
@@ -166,13 +140,6 @@ pub struct AttachmentItemRemoveRequest {
     pub item_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScreenAwarenessCaptureRequest {
-    pub resolution: String,
-    pub batch_limit: usize,
-}
-
 pub struct CaptureManager {
     base_root: PathBuf,
     available: bool,
@@ -202,8 +169,6 @@ struct CaptureState {
     active: Option<CaptureSession>,
     resources: HashMap<String, CaptureResource>,
     active_generation: Option<String>,
-    awareness_frames: VecDeque<ScreenAwarenessFrame>,
-    awareness_revision: u64,
 }
 
 impl CaptureManager {
@@ -255,8 +220,6 @@ impl CaptureManager {
             .unwrap_or_default();
         if state.active_generation.as_deref() != Some(generation_id) {
             cleanup_resources(&mut state.resources);
-            state.awareness_frames.clear();
-            state.awareness_revision = state.awareness_revision.wrapping_add(1);
             state.active_generation = Some(generation_id.to_string());
         }
         let session_id = Uuid::new_v4().simple().to_string();
@@ -429,29 +392,46 @@ impl CaptureManager {
         }
     }
 
-    pub fn capture_screen_awareness_frame(
+    pub fn capture_host_frame(
         &self,
         generation_id: &str,
-        character_session_id: &str,
+        session_id: &str,
         cursor_x: i32,
         cursor_y: i32,
         resolution: &str,
-        batch_limit: usize,
-    ) -> Result<ScreenAwarenessCapturePublication, String> {
+    ) -> Result<ScreenResourceDescriptor, String> {
         if !self.available {
             return Err("SCREEN_RESOURCE_ROOT_UNAVAILABLE".to_string());
         }
         validate_generation(generation_id)?;
-        if !(1..=20).contains(&batch_limit) || !valid_screen_awareness_resolution(resolution) {
-            return Err("SCREEN_AWARENESS_SETTINGS_INVALID".to_string());
+        if session_id.is_empty() || !valid_capture_resolution(resolution) {
+            return Err("SCREEN_CAPTURE_REQUEST_INVALID".to_string());
         }
-        let revision = self.begin_screen_awareness_capture(generation_id)?;
         let monitor = Monitor::from_point(cursor_x, cursor_y)
             .map_err(|_| "SCREEN_CAPTURE_MONITOR_GONE".to_string())?;
         let image = monitor
             .capture_image()
             .map_err(|_| "SCREEN_CAPTURE_PLATFORM_DENIED".to_string())?;
-        let image = resize_screen_awareness_capture(image, resolution);
+        let screen_name = monitor
+            .name()
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "monitor".to_string())
+            .chars()
+            .take(128)
+            .collect();
+        self.publish_host_image(generation_id, image, resolution, screen_name)
+    }
+
+    fn publish_host_image(
+        &self,
+        generation_id: &str,
+        image: image::RgbaImage,
+        resolution: &str,
+        screen_name: String,
+    ) -> Result<ScreenResourceDescriptor, String> {
+        self.cleanup_expired();
+        let image = resize_host_capture(image, resolution);
         if u64::from(image.width()) * u64::from(image.height()) > MAX_CAPTURE_PIXELS {
             return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
         }
@@ -468,171 +448,59 @@ impl CaptureManager {
         if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
             return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
         }
-        let frame = ScreenAwarenessFrame {
-            character_session_id: character_session_id.to_string(),
-            bytes,
-            width: rgb.width(),
-            height: rgb.height(),
-            captured_at: OffsetDateTime::now_utc()
-                .format(&Rfc3339)
-                .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string()),
-            screen_name: monitor
-                .name()
-                .ok()
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| "monitor".to_string())
-                .chars()
-                .take(128)
-                .collect(),
-        };
-        self.push_screen_awareness_frame(generation_id, revision, frame, batch_limit)
-    }
-
-    fn begin_screen_awareness_capture(&self, generation_id: &str) -> Result<u64, String> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string())?;
-        if state.active_generation.as_deref() != Some(generation_id) {
-            cleanup_resources(&mut state.resources);
-            state.awareness_frames.clear();
-            state.awareness_revision = state.awareness_revision.wrapping_add(1);
-            state.active_generation = Some(generation_id.to_string());
-        }
-        Ok(state.awareness_revision)
-    }
-
-    fn push_screen_awareness_frame(
-        &self,
-        generation_id: &str,
-        revision: u64,
-        frame: ScreenAwarenessFrame,
-        batch_limit: usize,
-    ) -> Result<ScreenAwarenessCapturePublication, String> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string())?;
-        if state.active_generation.as_deref() != Some(generation_id)
-            || state.awareness_revision != revision
-        {
-            return Err("SCREEN_AWARENESS_CAPTURE_CANCELLED".to_string());
-        }
-        let character_session_id = frame.character_session_id.clone();
-        state.awareness_frames.push_back(frame);
-        let mut dropped_count = 0;
-        while state.awareness_frames.len() > batch_limit
-            || awareness_batch_bytes(&state.awareness_frames) > MAX_SCREEN_AWARENESS_BATCH_BYTES
-        {
-            state.awareness_frames.pop_front();
-            dropped_count += 1;
-        }
-        Ok(ScreenAwarenessCapturePublication {
-            count: state
-                .awareness_frames
-                .iter()
-                .filter(|frame| frame.character_session_id == character_session_id)
-                .count(),
-            dropped_count,
-        })
-    }
-
-    pub fn materialize_screen_awareness_batch(
-        &self,
-        generation_id: &str,
-        character_session_id: &str,
-    ) -> Result<Vec<ScreenResourceDescriptor>, String> {
-        validate_generation(generation_id)?;
-        self.cleanup_expired();
-        let frames = {
+        let root = self.generation_root(generation_id)?;
+        let token = Uuid::new_v4().simple().to_string();
+        let path = root.join(format!("{token}.jpg"));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
+            restrict_file(&path)?;
+            file.write_all(&bytes)
+                .and_then(|_| file.flush())
+                .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
+            let canonical = path
+                .canonicalize()
+                .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
+            if canonical.parent() != Some(root.as_path()) {
+                return Err("SCREEN_CAPTURE_RESOURCE_ESCAPE".to_string());
+            }
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| "SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string())?;
-            if state.active_generation.as_deref() != Some(generation_id) {
-                return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
+            // Only temporary publication handles live here. Batch selection and
+            // resource ownership belong to the plugin and the Core Host service.
+            if state.resources.len() >= 64 {
+                return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
             }
-            state
-                .awareness_frames
-                .drain(..)
-                .filter(|frame| frame.character_session_id == character_session_id)
-                .collect::<Vec<_>>()
-        };
-        if frames.is_empty() {
-            return Err("SCREEN_AWARENESS_BATCH_EMPTY".to_string());
-        }
-        let root = self.generation_root(generation_id)?;
-        let mut descriptors = Vec::with_capacity(frames.len());
-        for frame in frames {
-            let token = Uuid::new_v4().simple().to_string();
-            let path = root.join(format!("{token}.jpg"));
-            let write_result = (|| {
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
-                restrict_file(&path)?;
-                file.write_all(&frame.bytes)
-                    .and_then(|_| file.flush())
-                    .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
-                path.canonicalize()
-                    .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())
-            })();
-            let canonical = match write_result {
-                Ok(path) if path.parent() == Some(root.as_path()) => path,
-                Ok(path) => {
-                    let _ = fs::remove_file(path);
-                    self.release_descriptors(&descriptors, generation_id);
-                    return Err("SCREEN_CAPTURE_RESOURCE_ESCAPE".to_string());
-                }
-                Err(error) => {
-                    let _ = fs::remove_file(&path);
-                    self.release_descriptors(&descriptors, generation_id);
-                    return Err(error);
-                }
-            };
-            let descriptor = ScreenResourceDescriptor {
-                generation_id: generation_id.to_string(),
-                resource_token: token.clone(),
-                mime_type: "image/jpeg",
-                width: frame.width,
-                height: frame.height,
-                byte_length: frame.bytes.len(),
-                captured_at: frame.captured_at,
-                screen_name: frame.screen_name,
-            };
-            let mut state = match self.state.lock() {
-                Ok(state) => state,
-                Err(_) => {
-                    let _ = fs::remove_file(&canonical);
-                    self.release_descriptors(&descriptors, generation_id);
-                    return Err("SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string());
-                }
-            };
             state.resources.insert(
-                token,
+                token.clone(),
                 CaptureResource {
                     path: canonical,
                     generation_id: generation_id.to_string(),
                     created_at: Instant::now(),
                 },
             );
-            descriptors.push(descriptor);
-        }
-        Ok(descriptors)
-    }
-
-    pub fn clear_screen_awareness_batch(&self) -> usize {
-        self.state
-            .lock()
-            .map(|mut state| {
-                let count = state.awareness_frames.len();
-                state.awareness_frames.clear();
-                state.awareness_revision = state.awareness_revision.wrapping_add(1);
-                count
+            Ok(ScreenResourceDescriptor {
+                generation_id: generation_id.to_string(),
+                resource_token: token,
+                mime_type: "image/jpeg",
+                width: rgb.width(),
+                height: rgb.height(),
+                byte_length: bytes.len(),
+                captured_at: OffsetDateTime::now_utc()
+                    .format(&Rfc3339)
+                    .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string()),
+                screen_name,
             })
-            .unwrap_or(0)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&path);
+        }
+        result
     }
 
     pub fn release_descriptors(
@@ -911,11 +779,11 @@ fn resize_capture(image: image::RgbaImage) -> image::RgbaImage {
     )
 }
 
-fn valid_screen_awareness_resolution(value: &str) -> bool {
+fn valid_capture_resolution(value: &str) -> bool {
     matches!(value, "fullscreen" | "720p" | "1080p" | "2160p")
 }
 
-fn screen_awareness_target_size(width: u32, height: u32, resolution: &str) -> (u32, u32) {
+fn capture_target_size(width: u32, height: u32, resolution: &str) -> (u32, u32) {
     let bounds = match resolution {
         "720p" => Some((1280_u32, 720_u32)),
         "1080p" => Some((1920_u32, 1080_u32)),
@@ -937,17 +805,13 @@ fn screen_awareness_target_size(width: u32, height: u32, resolution: &str) -> (u
     )
 }
 
-fn resize_screen_awareness_capture(image: image::RgbaImage, resolution: &str) -> image::RgbaImage {
-    let target = screen_awareness_target_size(image.width(), image.height(), resolution);
+fn resize_host_capture(image: image::RgbaImage, resolution: &str) -> image::RgbaImage {
+    let target = capture_target_size(image.width(), image.height(), resolution);
     if target == (image.width(), image.height()) {
         image
     } else {
         image::imageops::resize(&image, target.0, target.1, FilterType::Lanczos3)
     }
-}
-
-fn awareness_batch_bytes(frames: &VecDeque<ScreenAwarenessFrame>) -> usize {
-    frames.iter().map(|frame| frame.bytes.len()).sum()
 }
 
 fn validate_generation(value: &str) -> Result<(), String> {
@@ -997,17 +861,6 @@ fn restrict_file(_path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn awareness_frame(label: &str, byte_length: usize) -> ScreenAwarenessFrame {
-        ScreenAwarenessFrame {
-            character_session_id: "session-a".to_string(),
-            bytes: vec![7; byte_length],
-            width: 100,
-            height: 50,
-            captured_at: label.to_string(),
-            screen_name: "fixture".to_string(),
-        }
-    }
 
     fn request() -> CaptureSelectionRequest {
         CaptureSelectionRequest {
@@ -1188,218 +1041,39 @@ mod tests {
     }
 
     #[test]
-    fn screen_awareness_resolution_preserves_aspect_ratio_and_never_upscales() {
-        assert_eq!(
-            screen_awareness_target_size(2560, 1440, "720p"),
-            (1280, 720)
-        );
-        assert_eq!(
-            screen_awareness_target_size(1000, 600, "2160p"),
-            (1000, 600)
-        );
-        assert_eq!(
-            screen_awareness_target_size(1440, 2560, "1080p"),
-            (1080, 1920)
-        );
-        assert_eq!(
-            screen_awareness_target_size(3840, 2160, "fullscreen"),
-            (3840, 2160)
-        );
+    fn capture_resolution_preserves_aspect_ratio_and_never_upscales() {
+        assert_eq!(capture_target_size(2560, 1440, "720p"), (1280, 720));
+        assert_eq!(capture_target_size(1000, 600, "2160p"), (1000, 600));
+        assert_eq!(capture_target_size(1440, 2560, "1080p"), (1080, 1920));
+        assert_eq!(capture_target_size(3840, 2160, "fullscreen"), (3840, 2160));
     }
 
     #[test]
-    fn clearing_a_batch_rejects_capture_that_finishes_after_the_client_is_gone() {
+    fn host_frame_publishes_a_controlled_jpeg_and_releases_it() {
         let root =
-            std::env::temp_dir().join(format!("sakura-late-capture-{}", Uuid::new_v4().simple()));
+            std::env::temp_dir().join(format!("sakura-host-capture-{}", Uuid::new_v4().simple()));
         let manager = CaptureManager::with_base(root.clone()).unwrap();
         let generation = "00000000-0000-4000-8000-000000004007";
-        let revision = manager.begin_screen_awareness_capture(generation).unwrap();
-        manager.clear_screen_awareness_batch();
-        let error = manager
-            .push_screen_awareness_frame(generation, revision, awareness_frame("late", 8), 6)
-            .unwrap_err();
-        assert_eq!(error, "SCREEN_AWARENESS_CAPTURE_CANCELLED");
-        assert!(manager.state.lock().unwrap().awareness_frames.is_empty());
-        let fresh_revision = manager.begin_screen_awareness_capture(generation).unwrap();
-        manager
-            .push_screen_awareness_frame(generation, fresh_revision, awareness_frame("fresh", 8), 6)
-            .unwrap();
-        let next_generation = "00000000-0000-4000-8000-000000004008";
-        let next_revision = manager
-            .begin_screen_awareness_capture(next_generation)
-            .unwrap();
-        assert!(manager
-            .push_screen_awareness_frame(
+        let descriptor = manager
+            .publish_host_image(
                 generation,
-                fresh_revision,
-                awareness_frame("stale-generation", 8),
-                6
-            )
-            .is_err());
-        assert_eq!(
-            manager.state.lock().unwrap().active_generation.as_deref(),
-            Some(next_generation)
-        );
-        manager
-            .push_screen_awareness_frame(
-                next_generation,
-                next_revision,
-                awareness_frame("next", 8),
-                6,
+                image::RgbaImage::new(1600, 900),
+                "720p",
+                "fixture".to_string(),
             )
             .unwrap();
-        assert!(manager
-            .materialize_screen_awareness_batch(generation, "session-a")
-            .is_err());
-        let descriptors = manager
-            .materialize_screen_awareness_batch(next_generation, "session-a")
-            .unwrap();
-        assert_eq!(descriptors[0].captured_at, "next");
-        manager.release_descriptors(&descriptors, next_generation);
-        drop(manager);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn screen_awareness_batch_keeps_latest_frames_in_capture_order_and_cleans_files() {
-        let root =
-            std::env::temp_dir().join(format!("sakura-awareness-test-{}", Uuid::new_v4().simple()));
-        let manager = CaptureManager::with_base(root.clone()).unwrap();
-        let generation_id = "00000000-0000-4000-8000-000000004007";
-        manager
-            .push_screen_awareness_frame(
-                generation_id,
-                manager
-                    .begin_screen_awareness_capture(generation_id)
-                    .unwrap(),
-                awareness_frame("first", 8),
-                2,
-            )
-            .unwrap();
-        manager
-            .push_screen_awareness_frame(
-                generation_id,
-                manager
-                    .begin_screen_awareness_capture(generation_id)
-                    .unwrap(),
-                awareness_frame("second", 8),
-                2,
-            )
-            .unwrap();
-        let publication = manager
-            .push_screen_awareness_frame(
-                generation_id,
-                manager
-                    .begin_screen_awareness_capture(generation_id)
-                    .unwrap(),
-                awareness_frame("third", 8),
-                2,
-            )
-            .unwrap();
-        assert_eq!(publication.count, 2);
-        assert_eq!(publication.dropped_count, 1);
-
-        let descriptors = manager
-            .materialize_screen_awareness_batch(generation_id, "session-a")
-            .unwrap();
-        assert_eq!(
-            descriptors
-                .iter()
-                .map(|descriptor| descriptor.captured_at.as_str())
-                .collect::<Vec<_>>(),
-            ["second", "third"]
-        );
-        let paths = descriptors
-            .iter()
-            .map(|descriptor| {
-                root.join(generation_id)
-                    .join(format!("{}.jpg", descriptor.resource_token))
-            })
-            .collect::<Vec<_>>();
-        assert!(paths.iter().all(|path| path.exists()));
-        manager.release_descriptors(&descriptors, generation_id);
-        assert!(paths.iter().all(|path| !path.exists()));
-        drop(manager);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn screen_awareness_batch_enforces_memory_limit_and_generation_cleanup() {
-        let root =
-            std::env::temp_dir().join(format!("sakura-awareness-test-{}", Uuid::new_v4().simple()));
-        let manager = CaptureManager::with_base(root.clone()).unwrap();
-        let first_generation = "00000000-0000-4000-8000-000000004007";
-        for label in ["one", "two", "three"] {
-            manager
-                .push_screen_awareness_frame(
-                    first_generation,
-                    manager
-                        .begin_screen_awareness_capture(first_generation)
-                        .unwrap(),
-                    awareness_frame(label, 23 * 1024 * 1024),
-                    20,
-                )
-                .unwrap();
-        }
-        assert_eq!(manager.state.lock().unwrap().awareness_frames.len(), 2);
-        let second_generation = "00000000-0000-4000-8000-000000004008";
-        manager
-            .push_screen_awareness_frame(
-                second_generation,
-                manager
-                    .begin_screen_awareness_capture(second_generation)
-                    .unwrap(),
-                awareness_frame("new", 8),
-                20,
-            )
-            .unwrap();
-        let state = manager.state.lock().unwrap();
-        assert_eq!(state.active_generation.as_deref(), Some(second_generation));
-        assert_eq!(state.awareness_frames.len(), 1);
-        drop(state);
-        drop(manager);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn screen_awareness_batch_rejects_frames_from_previous_character_sessions() {
-        let root =
-            std::env::temp_dir().join(format!("sakura-session-test-{}", Uuid::new_v4().simple()));
-        let manager = CaptureManager::with_base(root.clone()).unwrap();
-        let generation = "00000000-0000-4000-8000-000000004007";
-        for (session, label) in [
-            ("alpha-first", "old"),
-            ("beta", "other"),
-            ("alpha-second", "current"),
-        ] {
-            let mut frame = awareness_frame(label, 8);
-            frame.character_session_id = session.to_string();
-            manager
-                .push_screen_awareness_frame(
-                    generation,
-                    manager.begin_screen_awareness_capture(generation).unwrap(),
-                    frame,
-                    20,
-                )
-                .unwrap();
-        }
-        // A late frame from the first A session arrives after returning to A.
-        let mut late = awareness_frame("late", 8);
-        late.character_session_id = "alpha-first".to_string();
-        manager
-            .push_screen_awareness_frame(
-                generation,
-                manager.begin_screen_awareness_capture(generation).unwrap(),
-                late,
-                20,
-            )
-            .unwrap();
-        let descriptors = manager
-            .materialize_screen_awareness_batch(generation, "alpha-second")
-            .unwrap();
-        assert_eq!(descriptors.len(), 1);
-        assert_eq!(descriptors[0].captured_at, "current");
-        manager.release_descriptors(&descriptors, generation);
+        assert_eq!((descriptor.width, descriptor.height), (1280, 720));
+        let path = root
+            .join(generation)
+            .join(format!("{}.jpg", descriptor.resource_token));
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), descriptor.byte_length);
+        assert_eq!(&bytes[..2], &[0xff, 0xd8]);
+        assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 1280);
+        manager.release(&descriptor.resource_token, "another-generation");
+        assert!(path.exists());
+        manager.release_descriptors(&[descriptor], generation);
+        assert!(!path.exists());
         drop(manager);
         fs::remove_dir_all(root).unwrap();
     }

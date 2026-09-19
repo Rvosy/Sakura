@@ -39,6 +39,7 @@ export function createPluginSettingsFeature({
     aboutComponentsState: document.getElementById("aboutComponentsState"),
     aboutComponentsList: document.getElementById("aboutComponentsList"),
     memorySurface: document.getElementById("memorySurface"),
+    screenAwarenessSurface: document.getElementById("screenAwarenessSurface"),
     modelProviderSurface: document.getElementById("modelProviderSurface"),
     modelSettingsSurface: document.getElementById("modelSettingsSurface"),
     pages: {
@@ -1238,7 +1239,7 @@ export function createPluginSettingsFeature({
 
   function renderPluginSettings(plugin, surface = null) {
     const allSections = pluginSettingsSections(plugin);
-    const knownSurfaces = new Set(["memory", "voice", "model", "providers"]);
+    const knownSurfaces = new Set(["memory", "voice", "model", "providers", "screen_awareness"]);
     const sections = allSections.filter((section) => surface ? section.surface === surface : !knownSurfaces.has(section.surface));
     const container = document.createElement("div");
     container.className = "plugin-settings";
@@ -1376,6 +1377,16 @@ export function createPluginSettingsFeature({
       for (const plugin of plugins) container.append(renderPluginSettings(plugin, surface));
       if (!plugins.length && surface === "providers") container.append(pluginNode("p", "empty-state", "暂无可用模型服务。"));
     }
+  }
+
+  function renderScreenAwarenessSurface() {
+    const container = fields.screenAwarenessSurface;
+    if (!container) return;
+    container.textContent = "";
+    const plugins = (pluginView.items || []).filter(plugin => plugin.enabled
+      && pluginSettingsSections(plugin).some(section => section.surface === "screen_awareness"));
+    for (const plugin of plugins) container.append(renderPluginSettings(plugin, "screen_awareness"));
+    if (!plugins.length) container.append(pluginNode("p", "empty-state", "主动屏幕感知未启用。"));
   }
 
   function memorySurfaceIsTransitioning() {
@@ -2254,6 +2265,7 @@ export function createPluginSettingsFeature({
     renderPluginList();
     renderPluginDetail();
     renderModelSurfaces();
+    renderScreenAwarenessSurface();
     syncPluginSettingsDialog();
     schedulePluginActivityRefresh();
   }
@@ -2642,6 +2654,9 @@ export function createPluginSettingsFeature({
   }
 
   function openPluginSettingsDialog(plugin, { sectionId = "", fieldKey = "" } = {}) {
+    if (pluginSettingsSections(plugin).some(section => (!sectionId || section.section_id === sectionId) && section.surface === "screen_awareness")) {
+      showPage("interaction"); renderScreenAwarenessSurface(); return;
+    }
     const domain = pluginSettingsSections(plugin).find(section => (!sectionId || section.section_id === sectionId) && ['providers', 'model'].includes(section.surface));
     if (domain) { showPage(domain.surface); renderModelSurfaces(); return; }
     if (pluginSettingsDialog) return;
@@ -2779,6 +2794,7 @@ export function createPluginSettingsFeature({
       clearPluginActivityRefresh();
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
+      if (page === "interaction") renderScreenAwarenessSurface();
       if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {

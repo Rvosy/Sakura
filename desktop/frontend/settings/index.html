@@ -348,45 +348,7 @@
             </div>
           </fieldset>
 
-          <fieldset class="settings-group screen-awareness-settings-group">
-            <legend>主动屏幕感知</legend>
-            <div class="setting-row">
-              <label class="setting-row-text" for="enabled">
-                <span class="setting-title">启用主动屏幕感知</span>
-                <span class="setting-desc">定时截屏，判断是否主动搭话。</span>
-              </label>
-              <span class="setting-toggle"><input id="enabled" type="checkbox" /></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="checkInterval">
-                <span class="setting-title">截图检查间隔</span>
-              </label>
-              <span class="field-unit"><input id="checkInterval" type="number" step="1" /><span class="unit">分钟</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="cooldown">
-                <span class="setting-title">最短搭话间隔</span>
-              </label>
-              <span class="field-unit"><input id="cooldown" type="number" step="1" /><span class="unit">分钟</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="batchLimit">
-                <span class="setting-title">单次最多发送截图</span>
-              </label>
-              <span class="field-unit"><input id="batchLimit" type="number" step="1" /><span class="unit">张</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="screenResolution">
-                <span class="setting-title">截图分辨率</span>
-              </label>
-              <select id="screenResolution" data-tooltip="发送前按比例缩小，不放大截图">
-                <option value="fullscreen">全屏分辨率</option>
-                <option value="720p">720p</option>
-                <option value="1080p">1080p</option>
-                <option value="2160p">2160p</option>
-              </select>
-            </div>
-          </fieldset>
+          <div id="screenAwarenessSurface"></div>
         </section>
 
         <section id="page-system" class="settings-page">

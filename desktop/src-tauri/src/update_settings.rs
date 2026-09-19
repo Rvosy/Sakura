@@ -1435,6 +1435,9 @@ mod tests {
                 marker_barrier.wait();
                 marker_coordinator
                     .observe_chat_event(&ChatEventPublication {
+                        character_id: None,
+                        presentation: None,
+                        cancel_handle: None,
                         event_type: "chat.completed".to_string(),
                         generation_id: "generation".to_string(),
                         generation_number: 1,
@@ -1480,6 +1483,9 @@ mod tests {
             snapshot: available_snapshot("1.2.0"),
         });
         let event = ChatEventPublication {
+            character_id: None,
+            presentation: None,
+            cancel_handle: None,
             event_type: "chat.completed".to_string(),
             generation_id: "generation".to_string(),
             generation_number: 1,
@@ -1513,6 +1519,9 @@ mod tests {
         ] {
             coordinator
                 .observe_chat_event(&ChatEventPublication {
+                    character_id: None,
+                    presentation: None,
+                    cancel_handle: None,
                     event_type: event_type.to_string(),
                     generation_id: "generation".to_string(),
                     generation_number: 1,

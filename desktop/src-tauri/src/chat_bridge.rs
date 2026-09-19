@@ -68,6 +68,12 @@ pub struct ChatEventPublication {
     pub reply: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_handle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub character_id: Option<String>,
     #[serde(skip)]
     pub(crate) update_version: Option<String>,
 }
@@ -99,6 +105,7 @@ struct BridgeState {
     generation_id: String,
     generation_number: u64,
     active: Option<ActiveChat>,
+    host_channel: Option<Channel<ChatEventPublication>>,
     valid: bool,
 }
 
@@ -146,6 +153,7 @@ impl ChatBridge {
                 generation_id,
                 generation_number,
                 active: None,
+                host_channel: None,
                 valid: true,
             })),
         })
@@ -169,18 +177,18 @@ impl ChatBridge {
         )
     }
 
-    pub fn send_screen_observation(
+    pub fn listen_host(
         &self,
         window_label: &str,
-        attachment_id: String,
-        on_event: Channel<ChatEventPublication>,
-    ) -> Result<PendingChatSend, String> {
-        self.send_payload(
-            window_label,
-            json!({"event": {"type": "screen_observation"}, "attachmentId": attachment_id}),
-            None,
-            on_event,
-        )
+        channel: Channel<ChatEventPublication>,
+    ) -> Result<(), String> {
+        authorize_window(window_label)?;
+        let mut state = self.state.lock().map_err(|_| "CHAT_BRIDGE_UNAVAILABLE")?;
+        if !state.valid {
+            return Err("CHAT_GENERATION_INVALIDATED".into());
+        }
+        state.host_channel = Some(channel);
+        Ok(())
     }
 
     pub fn send_update_available(
@@ -287,6 +295,9 @@ impl ChatBridge {
                             generation_number: active.publication.generation_number,
                             operation_id: operation_id.to_string(),
                             reply: None,
+                            character_id: None,
+                            presentation: None,
+                            cancel_handle: None,
                             error: Some(json!({
                                 "code": "CHAT_DELIVERY_UNCONFIRMED",
                                 "message": "回复状态无法确认，请检查连接。",
@@ -374,6 +385,53 @@ impl ChatBridge {
             .ok_or("INVALID_CHAT_EVENT")?;
         let generation_id = state.generation_id.clone();
         let generation_number = state.generation_number;
+        let raw_name = message
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("INVALID_CHAT_EVENT")?;
+        let host_event = raw_name.starts_with("host.chat.");
+        let event_type = if host_event { &raw_name[5..] } else { raw_name };
+        let payload = message
+            .get("payload")
+            .and_then(Value::as_object)
+            .ok_or("INVALID_CHAT_EVENT")?;
+        if payload.get("operationId").and_then(Value::as_str) != Some(operation_id) {
+            return Err("INVALID_CHAT_EVENT: payload identity mismatch".into());
+        }
+        if host_event
+            && event_type == "chat.started"
+            && !state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.publication.operation_id == operation_id)
+        {
+            let channel = state
+                .host_channel
+                .clone()
+                .ok_or("HOST_CHAT_LISTENER_UNAVAILABLE")?;
+            if state.active.as_ref().is_some_and(|active| active.started) {
+                return Err("CHAT_INTERACTION_ACTIVE".into());
+            }
+            // Core owns acceptance. An unacknowledged manual request may have
+            // lost the reservation race to this accepted plugin interaction.
+            if let Some(pending) = state.active.take() {
+                pending.reject("CHAT_INTERACTION_ACTIVE".into());
+            }
+            state.active = Some(ActiveChat {
+                publication: ChatSendPublication {
+                    accepted: true,
+                    operation_id: operation_id.to_owned(),
+                    cancel_handle: uuid::Uuid::new_v4().to_string(),
+                    generation_id: generation_id.clone(),
+                    generation_number,
+                },
+                started: false,
+                cancel_in_flight: false,
+                update_version: None,
+                on_event: channel,
+                acceptance: None,
+            });
+        }
         let Some(active) = state
             .active
             .as_mut()
@@ -381,17 +439,6 @@ impl ChatBridge {
         else {
             return Ok(None);
         };
-        let event_type = message
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or("INVALID_CHAT_EVENT")?;
-        let payload = message
-            .get("payload")
-            .and_then(Value::as_object)
-            .ok_or("INVALID_CHAT_EVENT")?;
-        if payload.get("operationId").and_then(Value::as_str) != Some(operation_id) {
-            return Err("INVALID_CHAT_EVENT: payload identity mismatch".to_string());
-        }
         let terminal = matches!(
             event_type,
             "chat.completed" | "chat.failed" | "chat.cancelled"
@@ -410,6 +457,17 @@ impl ChatBridge {
             generation_id,
             generation_number,
             operation_id: operation_id.to_string(),
+            character_id: host_event
+                .then(|| {
+                    payload
+                        .get("characterId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .flatten(),
+            presentation: host_event.then(|| "silent".to_string()),
+            cancel_handle: (host_event && event_type == "chat.started")
+                .then(|| active.publication.cancel_handle.clone()),
             reply: (event_type == "chat.completed")
                 .then(|| payload.get("reply").cloned())
                 .flatten(),
@@ -547,16 +605,6 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
     if object.len() == 1 && object.contains_key("event") {
         validate_update_available_event(object.get("event"))?;
         return Ok(());
-    }
-    if object.len() == 2 && object.get("event") == Some(&json!({"type": "screen_observation"})) {
-        if object
-            .get("attachmentId")
-            .and_then(Value::as_str)
-            .is_some_and(crate::capture::valid_attachment_id)
-        {
-            return Ok(());
-        }
-        return Err("INVALID_CHAT_PAYLOAD: screen observation attachment is invalid".to_string());
     }
     if object
         .keys()
@@ -706,18 +754,70 @@ mod tests {
     }
 
     #[test]
-    fn screen_observation_requires_typed_source_and_attachment() {
-        let attachment = format!("screen-{}", "a".repeat(32));
-        assert!(validate_chat_payload(
-            &json!({"event": {"type": "screen_observation"}, "attachmentId": attachment})
-        )
-        .is_ok());
-        assert!(validate_chat_payload(&json!({"event": {"type": "screen_observation"}})).is_err());
-        assert!(validate_chat_payload(
-            &json!({"event": {"type": "screen_observation"}, "attachmentId": "private-path"})
-        )
-        .is_err());
-        assert!(validate_chat_payload(&json!({"event": {"type": "screen_observation"}, "attachmentId": attachment, "message": "prompt"})).is_err());
+    fn host_interaction_uses_the_existing_slot_and_cancel_handle() {
+        let bridge = bridge();
+        assert!(bridge.listen_host("settings", channel()).is_err());
+        bridge.listen_host("main", channel()).unwrap();
+        let mut started = event("plugin-turn", "chat.started");
+        started["name"] = json!("host.chat.started");
+        started["payload"]["characterId"] = json!("sakura");
+        let publication = bridge.observe_event(&started).unwrap().unwrap();
+        assert_eq!(publication.presentation.as_deref(), Some("silent"));
+        assert_eq!(publication.character_id.as_deref(), Some("sakura"));
+        assert!(bridge
+            .send_with_attachment("main", "busy".into(), None, channel())
+            .is_err());
+        assert!(
+            bridge
+                .cancel(
+                    "main",
+                    "plugin-turn",
+                    publication.cancel_handle.as_deref().unwrap()
+                )
+                .unwrap()
+                .accepted
+        );
+        let mut terminal = event("plugin-turn", "chat.completed");
+        terminal["name"] = json!("host.chat.completed");
+        assert_eq!(
+            bridge.observe_event(&terminal).unwrap().unwrap().event_type,
+            "chat.completed"
+        );
+        assert!(bridge.observe_event(&terminal).unwrap().is_none());
+        assert!(bridge
+            .cancel(
+                "main",
+                "plugin-turn",
+                publication.cancel_handle.as_deref().unwrap()
+            )
+            .is_err());
+        assert!(bridge
+            .send_with_attachment("main", "next".into(), None, channel())
+            .is_ok());
+    }
+
+    #[test]
+    fn accepted_host_interaction_replaces_only_an_unacknowledged_manual_send() {
+        let bridge = bridge();
+        bridge.listen_host("main", channel()).unwrap();
+        let pending = bridge
+            .send_with_attachment("main", "manual".into(), None, channel())
+            .unwrap();
+        let mut started = event("plugin-turn", "chat.started");
+        started["name"] = json!("host.chat.started");
+        started["payload"]["characterId"] = json!("sakura");
+        let mut stale = started.clone();
+        stale["generationId"] = json!("old");
+        assert!(bridge.observe_event(&stale).unwrap().is_none());
+        assert!(bridge.observe_event(&started).unwrap().is_some());
+        assert_eq!(pending.wait().unwrap_err(), "CHAT_INTERACTION_ACTIVE");
+        let mut second = started.clone();
+        second["id"] = json!("second");
+        second["payload"]["operationId"] = json!("second");
+        assert_eq!(
+            bridge.observe_event(&second).unwrap_err(),
+            "CHAT_INTERACTION_ACTIVE"
+        );
     }
 
     #[test]
