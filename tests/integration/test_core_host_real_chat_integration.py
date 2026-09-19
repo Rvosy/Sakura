@@ -179,12 +179,12 @@ def _hello(optional_capabilities: list[str] | None = None) -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def _isolated_assistant_distribution(tmp_path, assistant_dependencies, monkeypatch):
-    """Run real Core processes with the same private Assistant layout as releases."""
+    """Run Core with independent Assistant and remote model provider plugins."""
     start_host = _start_host
 
     def start(app_root, *, distribution_root=None):
         distribution = distribution_root or tmp_path / "host-distribution"
-        for name in ("sakura_assistant", "sakura_portrait"):
+        for name in ("sakura_assistant", "sakura_portrait", "sakura_model_openai_compatible"):
             destination = distribution / "plugins/builtin" / name
             if not destination.exists():
                 shutil.copytree(
@@ -192,7 +192,7 @@ def _isolated_assistant_distribution(tmp_path, assistant_dependencies, monkeypat
                     destination,
                     ignore=shutil.ignore_patterns("__pycache__"),
                 )
-        dependencies = distribution / "plugins/dependencies/sakura.assistant.default"
+        dependencies = distribution / "plugins/dependencies/sakura.model.openai_compatible"
         if not dependencies.exists():
             shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
             (dependencies / ".sakura-dependencies.json").write_text(
@@ -402,13 +402,11 @@ def _stop_provider(server: ThreadingHTTPServer, thread: threading.Thread) -> Non
 
 
 def test_chat_never_applies_or_retries_a_previous_settings_save(tmp_path: Path) -> None:
-    from sakura_assistant.agent.runtime import AgentRuntime
     from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings
     from app.core_host.tool_settings import ToolSettingsBoundary, ToolSettingsError
-    from sakura_assistant.llm.api_client import ApiSettings, OpenAICompatibleClient
 
-    old_provider = ApiSettings("http://127.0.0.1", "fixture", "old")
-    new_provider = ApiSettings("http://127.0.0.1", "fixture", "new")
+    old_provider = {"serviceKey": "fixture.model", "profileId": "fixture", "modelId": "old"}
+    new_provider = {**old_provider, "modelId": "new"}
     provider = SimpleNamespace(settings=old_provider)
     provider.update_settings = lambda value: setattr(provider, "settings", value)
     runtime = SimpleNamespace(runtime_loop_settings=RuntimeLoopSettings())
@@ -2138,7 +2136,7 @@ def test_studio_publish_updates_live_character_without_restarting_core_or_plugin
                 if "--plugin-id" in child.cmdline() and "fixture.role" not in child.cmdline()}
     try:
         _wait_ready(process, ["transport.concurrent-router", "assistant.plugins-v1"])
-        expected_plugins = {"sakura.assistant.default", "sakura.portrait", "sakura.visual.spine", "sakura.tts.gpt-sovits", "sakura.tts"}
+        expected_plugins = {"sakura.assistant.default", "sakura.model.openai_compatible", "sakura.portrait", "sakura.visual.spine", "sakura.tts.gpt-sovits", "sakura.tts"}
         if switch_role:
             expected_plugins.add("fixture.role")
         deadline = time.monotonic() + 5

@@ -27,10 +27,6 @@ try:
         MemoryStore,
         append_memory_initialization_diagnostic,
     )
-    from .api_client import (
-        ApiSettings,
-        OpenAICompatibleClient,
-    )
     from .memory_curator import MemoryCurationState, MemoryCurator
     from .support import (
         OperationCancelled,
@@ -52,10 +48,6 @@ except ImportError:
         MemoryModelTaskCancelled,
         MemoryStore,
         append_memory_initialization_diagnostic,
-    )
-    from api_client import (
-        ApiSettings,
-        OpenAICompatibleClient,
     )
     from memory_curator import MemoryCurationState, MemoryCurator
     from support import (
@@ -117,6 +109,7 @@ class MemoryBoundary:
         curation_config_getter: Callable[[], Mapping[str, object]] | None = None,
         model_catalog_getter: Callable[[], object] | None = None,
         model_resolver: Callable[[Mapping[str, object]], object] | None = None,
+        model_client_factory: Callable[[Mapping[str, object]], object] | None = None,
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = _required_text(character_id, "character_id", 128)
@@ -138,7 +131,8 @@ class MemoryBoundary:
         self._model_download_error_code = ""
         self._curation_config_getter = curation_config_getter or (lambda: {})
         self._model_catalog_getter = model_catalog_getter or (lambda: [])
-        self._model_resolver = model_resolver or (lambda _selection: {})
+        self._model_resolver = model_resolver or (lambda selection: selection)
+        self._model_client_factory = model_client_factory
         self._preload_started = False
         self._store_failed = False
         self._resources = ResourceRegistry()
@@ -467,16 +461,23 @@ class MemoryBoundary:
         }
 
     def settings_get(self) -> dict[str, object]:
+        trigger, backfill, configured_slot = _curation_values(self._curation_config_getter())
+        catalog = []
+        effective = {}
         try:
-            catalog = _provider_choices(self._model_catalog_getter())
-            trigger, backfill, configured_slot = _curation_values(
-                self._curation_config_getter(),
-                catalog,
-            )
+            catalog = self._model_catalog_getter()
             effective = _resolved_model(self._model_resolver(configured_slot))
-        except MemoryBoundaryError:
-            self._set_status("read_only", "记忆设置不可写；现有数据保持不变。")
-            raise
+        except Exception:
+            # A missing/reloading model only disables curation. The local store,
+            # manual management and recall have no inference dependency.
+            pass
+        available = any(
+            provider.get("serviceKey") == effective.get("serviceKey")
+            and any(profile.get("profileId") == effective.get("profileId")
+                    and any(model.get("modelId") == effective.get("modelId") for model in profile.get("models", []))
+                    for profile in provider.get("profiles", []))
+            for provider in catalog if isinstance(provider, Mapping)
+        ) if isinstance(catalog, list) else False
         current = self.status()
         return {
             **current,
@@ -485,7 +486,7 @@ class MemoryBoundary:
                 "enabled": True,
                 "triggerTurns": trigger,
                 "backfillLimit": backfill,
-                "available": bool(effective["profileId"] and effective["model"]),
+                "available": available,
             },
             "curationModelSlot": configured_slot,
             "providerChoices": catalog,
@@ -622,11 +623,7 @@ class MemoryBoundary:
                 self._pending_timeline = timeline
                 return
             try:
-                catalog = _provider_choices(self._model_catalog_getter())
-                trigger, backfill, configured_slot = _curation_values(
-                    self._curation_config_getter(),
-                    catalog,
-                )
+                trigger, backfill, configured_slot = _curation_values(self._curation_config_getter())
                 intervals = _read_timeline_interval(
                     timeline,
                     self._character_id,
@@ -659,14 +656,8 @@ class MemoryBoundary:
                     verbosity=1,
                 )
                 resolved = _resolved_model(self._model_resolver(configured_slot))
-                if not resolved["profileId"]:
+                if not resolved["serviceKey"] or self._model_client_factory is None:
                     return
-                settings = ApiSettings(
-                    base_url=resolved["baseUrl"],
-                    api_key=resolved["apiKey"],
-                    model=resolved["model"],
-                    timeout_seconds=resolved["timeoutSeconds"],
-                )
                 selected_ids = {entry.entry_id for entry in entries}
                 intervals = [
                     ([entry for entry in page if entry.entry_id in selected_ids], cursor)
@@ -676,15 +667,15 @@ class MemoryBoundary:
             except Exception:
                 return
 
-        self._start_curation(intervals, settings)
+        self._start_curation(intervals, resolved)
 
     def _start_curation(
         self,
         intervals: list[tuple[list[ChatHistoryEntry], str]],
-        settings: ApiSettings,
+        selection: Mapping[str, str],
     ) -> None:
         def curate() -> None:
-            client: OpenAICompatibleClient | None = None
+            client = None
             pending_timeline: object | None = None
             operation_id = f"memory-curation-{uuid.uuid4().hex}"
             succeeded = False
@@ -698,7 +689,7 @@ class MemoryBoundary:
                         {"history_messages": sum(len(page) for page, _cursor in intervals)},
                         severity="debug",
                     )
-                    client = OpenAICompatibleClient(settings)
+                    client = self._model_client_factory(selection)
                     curator = MemoryCurator(
                         client,
                         self._store.scoped(self._character_id),
@@ -1027,105 +1018,24 @@ def _curation_evidence_turns(
     return selected, eligible_turns
 
 
-def _curation_values(
-    plugin: Mapping[str, object],
-    catalog: list[dict[str, object]],
-) -> tuple[int, int, dict[str, str]]:
-    trigger = _bounded_int(
-        plugin.get("triggerTurns", 8),
-        "triggerTurns",
-        1,
-        50,
-    )
-    backfill = _bounded_int(
-        plugin.get("backfillLimit", 200),
-        "backfillLimit",
-        1,
-        100_000,
-    )
-    profile = _text(
-        plugin.get("curationProfileId", ""),
-        "curationProfileId",
-        64,
-    )
-    model = _text(
-        plugin.get("curationModel", ""),
-        "curationModel",
-        256,
-    )
-    configured_slot = _parse_slot(
-        {"profileId": profile, "model": model},
-        catalog,
-    )
-    return trigger, backfill, configured_slot
+def _curation_values(plugin: Mapping[str, object]) -> tuple[int, int, dict[str, str]]:
+    trigger = _bounded_int(plugin.get("triggerTurns", 8), "triggerTurns", 1, 50)
+    backfill = _bounded_int(plugin.get("backfillLimit", 200), "backfillLimit", 1, 100_000)
+    configured = plugin.get("curationModelRef")
+    if configured is None:
+        profile = plugin.get("curationProfileId", "")
+        configured = {"serviceKey": "sakura.model.openai_compatible" if profile else "",
+                      "profileId": profile, "modelId": plugin.get("curationModel", "")}
+    return trigger, backfill, _resolved_model(configured)
 
 
-def _provider_choices(value: object) -> list[dict[str, object]]:
-    raw = value
-    if not isinstance(raw, list):
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", "Provider 配置格式无效。")
-    result: list[dict[str, object]] = []
-    for item in raw:
-        if not isinstance(item, Mapping):
-            raise MemoryBoundaryError("CONFIG_DATA_INVALID", "Provider 配置格式无效。")
-        if set(item) != {"id", "alias", "models"}:
-            raise MemoryBoundaryError("CONFIG_DATA_INVALID", "Provider 配置格式无效。")
-        profile_id = _required_text(item.get("id"), "id", 64)
-        alias = _text(item.get("alias"), "alias", 120) or profile_id
-        models_raw = item.get("models", [])
-        if not isinstance(models_raw, list):
-            raise MemoryBoundaryError("CONFIG_DATA_INVALID", "Provider 模型格式无效。")
-        models: list[str] = []
-        for model in models_raw:
-            value = model.get("name") if isinstance(model, Mapping) else model
-            models.append(_required_text(value, "model", 256))
-        result.append({"id": profile_id, "alias": alias, "models": models})
+def _resolved_model(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping) or set(value) != {"serviceKey", "profileId", "modelId"}:
+        raise MemoryBoundaryError("MODEL_REFERENCE_INVALID", "记忆整理模型引用无效。")
+    result = {key: _text(value.get(key), key, limit) for key, limit in (("serviceKey", 200), ("profileId", 64), ("modelId", 256))}
+    if len({bool(item) for item in result.values()}) != 1:
+        raise MemoryBoundaryError("MODEL_REFERENCE_INVALID", "记忆整理模型引用无效。")
     return result
-
-
-def _parse_slot(
-    raw: Mapping[str, object] | None,
-    catalog: list[dict[str, object]],
-) -> dict[str, str]:
-    if raw is None:
-        return {"profileId": "", "model": ""}
-    _only(raw, {"profileId", "model"})
-    profile = _text(raw.get("profileId"), "profileId", 64)
-    model = _text(raw.get("model"), "model", 256)
-    if bool(profile) != bool(model):
-        raise MemoryBoundaryError("FIELD_INVALID", "模型槽必须同时选择 Provider 和模型。")
-    if not profile:
-        return {"profileId": "", "model": ""}
-    choices = {item["id"]: item for item in catalog}
-    selected = choices.get(profile)
-    if selected is None or model not in selected["models"]:
-        raise MemoryBoundaryError("MODEL_REFERENCE_INVALID", "模型槽引用无效。")
-    return {"profileId": profile, "model": model}
-
-
-def _resolved_model(value: object) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != {
-        "profileId",
-        "model",
-        "baseUrl",
-        "apiKey",
-        "timeoutSeconds",
-    }:
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", "模型解析响应无效。")
-    profile_id = _text(value.get("profileId"), "profileId", 64)
-    model = _text(value.get("model"), "model", 256)
-    base_url = _text(value.get("baseUrl"), "baseUrl", 2048)
-    api_key = _text(value.get("apiKey"), "apiKey", 16_384)
-    timeout = _bounded_int(value.get("timeoutSeconds"), "timeoutSeconds", 1, 600)
-    if bool(profile_id) != bool(model) or (profile_id and (not base_url or not api_key)):
-        raise MemoryBoundaryError("MODEL_REFERENCE_INVALID", "记忆整理模型槽引用无效。")
-    return {
-        "profileId": profile_id,
-        "model": model,
-        "baseUrl": base_url,
-        "apiKey": api_key,
-        "timeoutSeconds": timeout,
-    }
 
 
 def _project_memory(raw: Mapping[str, object], scope: str) -> dict[str, object] | None:

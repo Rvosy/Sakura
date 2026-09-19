@@ -5410,64 +5410,6 @@ async fn settings_screen_awareness_save(
 }
 
 #[tauri::command]
-async fn settings_provider_model_probe(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    operation_id: String,
-    kind: String,
-    profile: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let name = match kind.as_str() {
-        "list_models" => "settings.provider_model.list_models",
-        "test_connection" => "settings.provider_model.test_connection",
-        _ => return Err("SETTINGS_PROBE_KIND_INVALID".to_string()),
-    };
-    let response = dispatch_settings_request(
-        handle.clone(),
-        Some(operation_id.clone()),
-        name,
-        json!({"operation_id": operation_id, "profile": profile}),
-        std::time::Duration::from_secs(65),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    settings_response_payload(response)
-}
-
-#[tauri::command]
-async fn settings_provider_model_cancel(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    operation_id: String,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<bool, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "settings.provider_model.cancel",
-        json!({"operationId": operation_id}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    Ok(settings_response_payload(response)?
-        .get("cancelled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false))
-}
-
-#[tauri::command]
 fn begin_control_surface_preview(
     window: WebviewWindow,
     revision: u64,
@@ -8323,8 +8265,6 @@ fn main() {
             chat_settings::settings_bubble_auto_hide_save,
             settings_provider_model_get,
             settings_provider_model_save,
-            settings_provider_model_probe,
-            settings_provider_model_cancel,
             tool_settings::settings_tools_get,
             tool_settings::settings_tools_save,
             settings_screen_awareness_get,

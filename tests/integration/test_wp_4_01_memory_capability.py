@@ -225,15 +225,35 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
 
 def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
     tmp_path: Path,
+    monkeypatch,
+    assistant_dependencies,
 ) -> None:
     from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
     from app.core_host.provider_settings import ProviderSettingsBoundary
+    from app.plugins.dependencies import PluginDependencyRoots
     from app.storage.runtime_roots import RuntimeRoots
 
     app_root = _configure_app_root(tmp_path, 9)
     distribution_root = tmp_path / "distribution"
     _install_official_mem0(distribution_root)
+    service_key = "sakura.model.openai_compatible"
+    shutil.copytree(
+        REPO_ROOT / "plugins" / "builtin" / "sakura_model_openai_compatible",
+        distribution_root / "plugins" / "builtin" / "sakura_model_openai_compatible",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    verified_root = PluginDependencyRoots.verified_root
+    monkeypatch.setattr(
+        PluginDependencyRoots,
+        "verified_root",
+        lambda self, plugin_id, *args, **kwargs: (
+            assistant_dependencies if plugin_id == service_key
+            else verified_root(self, plugin_id, *args, **kwargs)
+        ),
+    )
+    api_path = app_root / "config" / "api.yaml"
+    api_before = api_path.read_bytes()
     first_application = PluginApplicationHost(
         RuntimeRoots(distribution_root, app_root),
         "generation-before-provider-save",
@@ -253,23 +273,21 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
         )["payload"]
         identities = [slot["identity"] for slot in current["model_slots"]]
         assert "plugin:sakura.memory.mem0:curation" in identities
+        assert current["schema_version"] == 2
+        assert current["providers"][0]["serviceKey"] == service_key
+        assert "LOCAL_TEST_KEY" not in json.dumps(current)
         draft = {
-            "providers": [
-                {
-                    **current["providers"][0],
-                    "credential": {"action": "keep", "value": ""},
-                }
-            ],
             "model_slots": {
                 slot["identity"]: dict(slot["selection"])
                 for slot in current["model_slots"]
             },
-            "settings": dict(current["settings"]),
         }
-        draft["model_slots"]["plugin:sakura.memory.mem0:curation"] = {
-            "profile_id": "fixture",
-            "model": "fixture-model",
+        selection = {
+            "serviceKey": service_key,
+            "profileId": "fixture",
+            "modelId": "fixture-model",
         }
+        draft["model_slots"]["plugin:sakura.memory.mem0:curation"] = selection
         before = first_application._manager.snapshot()
         plugin_pid = next(
             item["pid"]
@@ -307,9 +325,19 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
                 / "config.json"
             ).read_text(encoding="utf-8")
         )
-        assert plugin_config["curationProfileId"] == "fixture"
-        assert plugin_config["curationModel"] == "fixture-model"
+        assert plugin_config["curationModelRef"] == selection
+        assert "curationProfileId" not in plugin_config
+        assert "curationModel" not in plugin_config
+        refreshed = first_boundary.handle(
+            _request("model-slots-after", "settings.provider_model.get", {})
+        )["payload"]
+        assert next(
+            slot["selection"] for slot in refreshed["model_slots"]
+            if slot["identity"] == "plugin:sakura.memory.mem0:curation"
+        ) == selection
+        assert api_path.read_bytes() == api_before
     finally:
+        first_boundary.close()
         first_application.close()
 
 

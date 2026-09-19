@@ -22,65 +22,6 @@ from plugins.builtin.sakura_mem0.plugin import (
     _context_request,
     _tool_registrations,
 )
-from plugins.builtin.sakura_mem0.api_client import (
-    ApiSettings,
-    OpenAICompatibleClient,
-)
-
-
-def test_mem0_api_client_normalizes_google_openai_url_without_replay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[tuple[str, dict[str, object]]] = []
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def read(self) -> bytes:
-            return b'{"choices":[{"message":{"content":"{}"}}]}'
-
-    def fake_urlopen(request, timeout):
-        assert timeout == 60
-        captured.append((request.full_url, json.loads(request.data)))
-        return Response()
-
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.api_client.urlopen_current_proxy", fake_urlopen)
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            base_url="https://generativelanguage.googleapis.com/v1beta",
-            api_key="key",
-            model="gemini-2.5-flash",
-        )
-    )
-    result = client.complete_raw(
-        "system",
-        [{"role": "user", "content": "curate"}],
-        temperature=0.2,
-        response_format={"type": "json_object"},
-        max_tokens=2000,
-    )
-
-    assert result == "{}"
-    assert len(captured) == 1
-    assert captured[0][0] == (
-        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-    )
-    assert captured[0][1] == {
-        "model": "gemini-2.5-flash",
-        "messages": [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "curate"},
-        ],
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
-        "max_tokens": 2000,
-    }
-
-
 def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
     request = _context_request(
         {
@@ -186,7 +127,7 @@ class FakeBoundary:
             "status": "ready",
             "message": "",
             "curation": {"triggerTurns": 8},
-            "curationModelSlot": {"profileId": "fixture", "model": "curator"},
+            "curationModelSlot": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"},
             "providerChoices": [
                 {"id": "fixture", "alias": "Fixture", "models": ["curator"]}
             ],
@@ -357,6 +298,7 @@ def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path
         "sakura.host.settings.collection-v0",
         "sakura.host.settings.surface-v0",
         "sakura.host.model_slots",
+        "sakura.host.artifacts",
     )
 
 
@@ -538,7 +480,7 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
     assert component["values"]["embeddingResource"]["applicability"] == "required"
     assert component["values"]["embeddingResource"]["availableActionIds"] == []
 
-    slots = _ModelSlotsHostService(lambda *_args: {"profileId": "", "model": ""})
+    slots = _ModelSlotsHostService(lambda *_args: {"serviceKey": "", "profileId": "", "modelId": ""})
     slots.call(
         "register",
         [
@@ -669,11 +611,11 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
         "availableActionIds": [],
     }
     runtime.save_settings({"triggerTurns": 12})
-    assert runtime.load_model_slot() == {"profileId": "fixture", "model": "curator"}
-    runtime.save_model_slot({"profileId": "fixture", "model": "curator"})
+    assert runtime.load_model_slot() == {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}
+    runtime.save_model_slot({"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"})
     assert boundary.saved == [
         {"triggerTurns": 12},
-        {"curationProfileId": "fixture", "curationModel": "curator"},
+        {"curationModelRef": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}},
     ]
 
 

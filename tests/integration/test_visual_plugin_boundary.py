@@ -72,11 +72,17 @@ def initialized_controller(application, package, monkeypatch):
     config = package.parents[1] / "config"
     config.mkdir(exist_ok=True)
     (config / "characters.yaml").write_text("current_character_id: character\n", encoding="utf-8")
-    (config / "api.yaml").write_text(yaml.safe_dump({
-        "api_profiles": [{"id": "fixture", "alias": "Fixture", "base_url": "https://fixture.invalid/v1",
-            "api_key": "TEST_KEY", "models": [{"name": "old-model"}, {"name": "new-model"}]}],
-        "model_slots": {"chat": {"profile_id": "fixture", "model": "old-model"}},
-    }), encoding="utf-8")
+    from app.config.model_references import ModelReferenceRepository
+    ModelReferenceRepository(package.parents[1]).save({
+        "chat": {"serviceKey": "fixture.model", "profileId": "fixture", "modelId": "old-model"},
+        "vision_chat": {},
+    })
+    monkeypatch.setattr(application, "model_catalog", lambda: [{
+        "serviceKey": "fixture.model", "pluginId": "fixture.model", "label": "Fixture",
+        "profiles": [{"profileId": "fixture", "label": "Fixture", "models": [
+            {"modelId": name, "label": name} for name in ("old-model", "new-model")]}],
+        "reasonCode": "READY",
+    }])
     state = {"scope": "first", "failure": None}
     actual_identity = application.service_identity
 
@@ -123,15 +129,13 @@ def test_saved_model_failure_preserves_only_a_live_published_session(visual_appl
     application, package, _resource = visual_application
     with initialized_controller(application, package, monkeypatch) as (controller, state):
         boundary = ProviderSettingsBoundary("visual-test-generation", "a" * 32, package.parents[1],
-            runtime_apply=controller.apply_provider_configuration)
+            runtime_apply=controller.apply_provider_configuration, plugin_application_provider=lambda: application)
         boundary.enable()
         request = {"generationId": "visual-test-generation", "generationCredential": "a" * 32, "id": "save",
             "protocolMajor": 2, "protocolMinor": 2, "name": "settings.provider_model.save"}
         current = boundary._snapshot()
-        draft = {"providers": [{**current["providers"][0], "credential": {"action": "keep", "value": ""}}],
-            "model_slots": {item["identity"]: dict(item["selection"]) for item in current["model_slots"]},
-            "settings": dict(current["settings"])}
-        draft["model_slots"]["core:chat"]["model"] = "new-model"
+        draft = {"model_slots": {item["identity"]: dict(item["selection"]) for item in current["model_slots"]}}
+        draft["model_slots"]["core:chat"]["modelId"] = "new-model"
         original = controller.published_session()
         before = controller.snapshot()
         descriptor = original.descriptor()
@@ -146,7 +150,7 @@ def test_saved_model_failure_preserves_only_a_live_published_session(visual_appl
             state["scope"] = "replacement"
         result = boundary.handle({**request, "payload": {"draft": draft}})
         assert result["error"]["code"] == "CONFIG_APPLY_FAILED"
-        assert application.active_models()["chat"]["model"] == "new-model"
+        assert application.active_models()["chat"]["modelId"] == "new-model"
         monkeypatch.setattr(controller, "_project_presentation", project)
         if expired:
             assert controller.published_session() is None
@@ -159,17 +163,17 @@ def test_saved_model_failure_preserves_only_a_live_published_session(visual_appl
             assert controller.snapshot() == before
         state["failure"] = None
         assert boundary.handle({**request, "payload": {"draft": draft}})["ok"]
-        assert controller.published_session().descriptor()["modelSlots"]["chat"]["model"] == "new-model"
+        assert controller.published_session().descriptor()["modelSlots"]["chat"]["modelId"] == "new-model"
 
 
 def test_cleared_models_and_disabled_assistant_intentionally_retire_session(visual_application, monkeypatch):
     application, package, _resource = visual_application
     with initialized_controller(application, package, monkeypatch) as (controller, state):
-        path = package.parents[1] / "config/api.yaml"
+        path = package.parents[1] / "config/model_slots.json"
         original = path.read_text(encoding="utf-8")
-        data = yaml.safe_load(original)
-        data["model_slots"]["chat"] = {"profile_id": "", "model": ""}
-        path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        data = json.loads(original)
+        data["slots"]["chat"] = {}
+        path.write_text(json.dumps(data), encoding="utf-8")
         controller.apply_provider_configuration()
         assert controller.readiness() == "setup_required"
         assert controller.published_session() is None
@@ -560,14 +564,14 @@ def test_numeric_controls_follow_assistant_result_and_core_projection_into_histo
     from sakura_assistant.agent.actions import AgentEvent
     from app.core_host.assistant_adapter import apply_visual_reply
     from app.core_host.real_chat import _project_reply
-    from sakura_assistant.llm.api_client import OpenAICompatibleClient, ChatCompletionTurn
+    from sakura_assistant.llm.api_client import AssistantModelClient, ChatCompletionTurn
     from sakura_assistant.llm.chat_reply import parse_chat_reply
     from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 
     application, package, resource = visual_application
     binding = application.visuals.bind("character", package, resource)
     raw = json.dumps({"segments": [{"ja": "こんにちは", "zh": "你好", "tone": "中性", "control": _control(resource, payload)}]})
-    client = MagicMock(spec=OpenAICompatibleClient)
+    client = MagicMock(spec=AssistantModelClient)
     client.complete_with_tools.return_value = ChatCompletionTurn(content=raw, tool_calls=[], message={"role": "assistant", "content": raw})
     client.chat.return_value = parse_chat_reply(raw)
     client.resolve_dialogue_params.return_value = (0.8, {})

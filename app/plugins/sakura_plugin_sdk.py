@@ -1319,6 +1319,24 @@ class _ModelSlotsProxy:
         )
         return result
 
+    def register_provider(self, descriptor: Mapping[str, Any], *, catalog: Callable[[], object]) -> Callable[[], None]:
+        if not isinstance(descriptor, Mapping) or not callable(catalog):
+            raise PluginApiError("MODEL_PROVIDER_INVALID", plugin_id=self._context.plugin_id)
+        handle, dispose = self._context._register_callback("model_slots.catalog", catalog)
+
+        def activate():
+            result = self._context._remote_call("sakura.host.model_slots", "register_provider", [self._context.plugin_id, dict(descriptor), handle])
+            registration_id = result.get("registrationId") if isinstance(result, Mapping) else None
+            if not isinstance(registration_id, str):
+                raise PluginApiError("HOST_REGISTRATION_INVALID", plugin_id=self._context.plugin_id)
+            return lambda: self._context._remote_call("sakura.host.model_slots", "unregister_provider", [registration_id])
+
+        try:
+            return self._context._stage(activate)
+        except Exception:
+            dispose()
+            raise
+
     def resolve(self, selection: Mapping[str, Any]) -> dict[str, object]:
         if not isinstance(selection, Mapping):
             raise PluginApiError(

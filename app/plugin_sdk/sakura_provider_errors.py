@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 
@@ -26,14 +26,13 @@ _PROVIDER_SENSITIVE_PATTERNS = (
 
 def provider_http_status(error: BaseException) -> int | None:
     """Return a real HTTP status, or an explicitly formatted API HTTP status."""
-    from openai import APIStatusError
-
     cause: BaseException | None = error
     seen: set[int] = set()
     while cause is not None and id(cause) not in seen:
         seen.add(id(cause))
-        if isinstance(cause, APIStatusError):
-            return cause.status_code
+        status = getattr(cause, "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return status
         cause = cause.__cause__
     matched = _PROVIDER_HTTP_PREFIX.search(str(error))
     return int(matched.group("status")) if matched is not None else None
@@ -42,12 +41,15 @@ def provider_http_status(error: BaseException) -> int | None:
 def public_provider_http_message(
     error: BaseException,
     status_code: int | None = None,
+    *,
+    secrets: Iterable[str] = (),
 ) -> str:
     """Keep useful Provider HTTP details while removing credentials and private paths."""
 
     resolved_status = status_code if status_code is not None else provider_http_status(error)
     if resolved_status is None:
         return "供应商请求失败。"
+    secrets = tuple(secrets)
     body = _provider_error_body(str(error), resolved_status)
     payload = _provider_error_payload(body)
     if payload is not None:
@@ -63,7 +65,7 @@ def public_provider_http_message(
             value = public_source.get(field)
             if isinstance(value, bool) or not isinstance(value, (str, int, float)):
                 continue
-            sanitized = sanitize_provider_diagnostic(str(value))
+            sanitized = sanitize_provider_diagnostic(str(value), secrets=secrets)
             if sanitized:
                 public_values[field] = sanitized
 
@@ -80,7 +82,7 @@ def public_provider_http_message(
         if metadata:
             return f"API HTTP {resolved_status}: {metadata}"
 
-    diagnostic = sanitize_provider_diagnostic(body)
+    diagnostic = sanitize_provider_diagnostic(body, secrets=secrets)
     if diagnostic:
         return f"API HTTP {resolved_status}: {diagnostic}"
     return f"API HTTP {resolved_status}: 供应商请求失败。"
@@ -104,7 +106,13 @@ def _provider_error_payload(body: str) -> Mapping[str, Any] | None:
     return decoded if isinstance(decoded, Mapping) else None
 
 
-def sanitize_provider_diagnostic(value: str) -> str:
+def sanitize_provider_diagnostic(value: str, *, secrets: Iterable[str] = ()) -> str:
+    # Decode error fields before this step, then remove known credentials before
+    # whitespace normalization or truncation could split the original value.
+    for secret in secrets:
+        if secret:
+            for encoded in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1]):
+                value = value.replace(encoded, "[REDACTED]")
     sanitized = " ".join(value.split())
     for pattern in _PROVIDER_SENSITIVE_PATTERNS:
         sanitized = pattern.sub("[REDACTED]", sanitized)

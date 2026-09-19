@@ -5,6 +5,7 @@ import base64
 import json
 import re
 import threading
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -13,15 +14,14 @@ from types import SimpleNamespace
 from sakura_assistant_contract import RuntimeLoopSettings, ScreenObservation
 from sakura_cancellation import OperationCancelled
 from sakura_context import ContextFragment
-from sakura_model import ApiSettings, ApiConfigError, ApiRequestError
-from sakura_http import is_loopback_url
+from sakura_model import ApiConfigError, ApiRequestError, ModelClient, ModelError
 from sakura_tools import Tool, ToolExecutionResult, ToolRegistry
 from . import diagnostics
 from .agent.actions import AgentEvent
 from .agent.runtime import AgentRuntime
 from .agent.trace import AgentTraceRecorder, traced_message
 from .agent.screen_observation import build_screen_observation_batch_user_message, build_manual_screen_observation_batch_user_message
-from .llm.api_client import OpenAICompatibleClient
+from .llm.api_client import AssistantModelClient, DialogueSettings
 from .llm.prompts.blocks import with_desktop_pet_context
 from .history import PagedHistory
 
@@ -108,25 +108,60 @@ class AssistantPlugin:
         self.operations = {}
         self.closed = False
         self.trace = None
+        self.generation = deepcopy(context.config.get().get("generation", {}))
+        self._register_settings()
         diagnostics.configure(context.get("sakura.host.logging"))
         context.effect(self.close)
         context.provide("sakura.assistant", self, exports=("prepare", "begin", "poll", "result", "cancel", "release"))
 
+    def _register_settings(self):
+        fields = [{"key": "temperature", "label": "温度", "type": "number", "default": None, "minimum": 0, "maximum": 2},
+                  {"key": "top_p", "label": "Top P", "type": "number", "default": None, "minimum": 0, "maximum": 1},
+                  {"key": "max_tokens", "label": "最大输出 token", "type": "integer", "default": None, "minimum": 1}]
+        def load():
+            saved = self.context.config.get().get("generation", {})
+            return {field["key"]: saved.get(field["key"]) for field in fields}
+        def save(request):
+            values = request.get("values", request)
+            result = {}
+            for field in fields:
+                value = values.get(field["key"])
+                if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value < field["minimum"] or ("maximum" in field and value > field["maximum"]) or (field["type"] == "integer" and not isinstance(value, int))):
+                    raise ApiConfigError("生成参数无效。")
+                result[field["key"]] = value
+            if self.context.config.update({"generation": result}) == "error":
+                raise ApiConfigError("生成参数保存失败。")
+            return {"applicationState": "restart_required"}
+        self.context.get("sakura.host.settings").register({"sectionId": "generation", "title": "对话生成", "order": 30,
+            "description": "保存后重新加载 Assistant 生效。", "fields": fields}, load=load, save=save)
+        self.context.get("sakura.host.settings.surface-v0").register("generation", "model")
+
     def _settings(self, session):
         slots = session.get("modelSlots", {})
         value = slots.get("chat")
-        if not isinstance(value, dict) or not value.get("model") or not value.get("base_url") or (not value.get("api_key") and not is_loopback_url(value["base_url"])):
+        if not isinstance(value, dict) or not all(value.get(key) for key in ("serviceKey", "profileId", "modelId")):
             raise ApiConfigError("PROVIDER_SETUP_REQUIRED")
-        chat = ApiSettings(**value)
-        vision = ApiSettings(**slots["vision_chat"]) if slots.get("vision_chat") is not None else None
-        return chat, vision
+        return value, slots.get("vision_chat")
 
     def prepare(self, session):
+        clients = []
         try:
-            self._settings(session)
-        except ApiConfigError:
-            return {"state": "setup_required", "code": "PROVIDER_SETUP_REQUIRED", "message": "请先配置模型服务。", "retryable": False}
-        return {"state": "ready", "code": "READY", "message": "Assistant 已就绪。", "retryable": False}
+            chat, vision = self._settings(session)
+            clients.append(ModelClient(self.context, chat))
+            if vision and vision != chat:
+                clients.append(ModelClient(self.context, vision))
+        except Exception as error:
+            for client in clients:
+                client.close()
+            diagnostics.log_event("Assistant", "模型服务尚未就绪", diagnostics.diagnostic_attributes(error), event="assistant.model.not_ready", severity="warning")
+            code = getattr(error, "code", "PROVIDER_SETUP_REQUIRED")
+            return {"state": "setup_required", "code": code, "message": "请先配置模型服务。", "retryable": False}
+        bindings = {"chat": clients[0].identity}
+        if vision:
+            bindings["vision_chat"] = clients[-1].identity
+        for client in clients:
+            client.close()
+        return {"state": "ready", "code": "READY", "message": "Assistant 已就绪。", "retryable": False, "modelBindings": bindings}
 
     def begin(self, descriptor):
         operation_id = descriptor.get("operationId")
@@ -240,20 +275,32 @@ class AssistantPlugin:
 
     def _run(self, operation):
         token = diagnostics._operation.set(operation.operation_id)
+        models = []
         try:
             request = self._read_input(operation)
             operation.check()
-            settings, vision_settings = self._settings(request["session"])
-            diagnostics.add_secret(settings.api_key)
+            chat, vision = self._settings(request["session"])
+            bindings = request["session"].get("modelBindings", {})
+            if not bindings.get("chat"):
+                raise ApiConfigError("模型会话已失效，请重新加载 Assistant。")
+            models.append(ModelClient(self.context, chat, expected_identity=bindings["chat"]))
+            if vision and vision != chat:
+                if not bindings.get("vision_chat"):
+                    raise ApiConfigError("视觉模型会话已失效。")
+                models.append(ModelClient(self.context, vision, expected_identity=bindings["vision_chat"]))
             if self.trace is None:
                 logs = self.context.get("sakura.host.storage").resolve("data", "logs")
                 self.trace = AgentTraceRecorder(logs)
             trace = operation.trace = self.trace
             character = request["session"]["character"]
-            client = OpenAICompatibleClient(settings, agent_trace_recorder=trace, app_version=request["session"].get("appVersion"))
-            vision_client = OpenAICompatibleClient(vision_settings, agent_trace_recorder=trace, app_version=request["session"].get("appVersion")) if vision_settings is not None and vision_settings != settings else None
-            if vision_settings is not None:
-                diagnostics.add_secret(vision_settings.api_key)
+            def adapter(model):
+                description = model.description
+                settings = DialogueSettings(model=model.reference["modelId"],
+                    temperature=self.generation.get("temperature"), top_p=self.generation.get("top_p"), max_tokens=self.generation.get("max_tokens"),
+                    context_window_tokens=description.get("contextWindowTokens", 32768), context_window_source=description.get("contextWindowSource", "fallback"))
+                return AssistantModelClient(settings, model, agent_trace_recorder=trace)
+            client = adapter(models[0])
+            vision_client = adapter(models[1]) if len(models) > 1 else None
             contexts = self.context.get("sakura.host.context")
             providers = []
             for row in contexts.catalog():
@@ -302,6 +349,8 @@ class AssistantPlugin:
         except BaseException as error:
             operation.error = error
         finally:
+            for model in models:
+                model.close()
             diagnostics._operation.reset(token)
             with self.changed:
                 operation.state = "cancelled" if operation.cancelled.is_set() else "failed" if operation.error else "completed"
@@ -337,7 +386,7 @@ def classify_failure(error):
                 "message": error.public_message(), "retryable": False, "attributes": error.log_attributes()}
     if isinstance(error, ApiConfigError):
         return {"code": "PROVIDER_CONFIGURATION_INVALID", "message": "模型服务配置无效。", "retryable": False}
-    if isinstance(error, ApiRequestError):
+    if isinstance(error, (ApiRequestError, ModelError)):
         status = provider_http_status(error)
         if status is not None:
             return {"code": "PROVIDER_REQUEST_FAILED", "message": public_provider_http_message(error, status),

@@ -27,7 +27,7 @@ from sakura_assistant.llm.api_client import (
     ApiRequestError,
     ChatMessage,
     NativeToolCall,
-    OpenAICompatibleClient,
+    AssistantModelClient,
     is_vision_unsupported_error,
     messages_contain_image,
 )
@@ -96,14 +96,14 @@ class AgentRuntime:
 
     def __init__(
         self,
-        api_client: OpenAICompatibleClient,
+        api_client: AssistantModelClient,
         system_prompt: str,
         reply_tones: list[str] | None = None,
         tools: ToolRegistry | None = None,
         prompt_patches: list[PromptPatchContribution] | None = None,
         context_providers: list[ContextProviderContribution] | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
-        vision_api_client: OpenAICompatibleClient | None = None,
+        vision_api_client: AssistantModelClient | None = None,
         character_id: str = "",
         character_name: str = "",
         strict_provider_errors: bool = False,
@@ -151,14 +151,14 @@ class AgentRuntime:
         return orchestrator
 
     @property
-    def vision_api_client(self) -> OpenAICompatibleClient | None:
+    def vision_api_client(self) -> AssistantModelClient | None:
         return self._vision_api_client
 
     @vision_api_client.setter
-    def vision_api_client(self, client: OpenAICompatibleClient | None) -> None:
+    def vision_api_client(self, client: AssistantModelClient | None) -> None:
         self._vision_api_client = client
 
-    def _client_for_messages(self, messages: list[ChatMessage]) -> OpenAICompatibleClient:
+    def _client_for_messages(self, messages: list[ChatMessage]) -> AssistantModelClient:
         """根据消息是否含图片，返回 vision 或 text API client。
 
         当有图片时优先使用 vision client；若 vision client 未设置，回退到主 client。

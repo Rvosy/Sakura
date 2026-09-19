@@ -15,6 +15,8 @@ requires:
   - sakura.host.timeline
   - sakura.host.storage
   - sakura.host.artifacts
+  - sakura.host.settings
+  - sakura.host.settings.surface-v0
 presentation:
   kind: provider
   category: model

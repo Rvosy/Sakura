@@ -67,7 +67,8 @@ def test_prepare_accepts_third_party_status_codes_without_requesting_recovery(st
     calls = []
     result = {"state": state, "code": "vendor.account_required", "message": "请登录。", "retryable": True, "extra": "ignored"}
     application = SimpleNamespace(call_bound_service=lambda *args: calls.append(args) or result)
-    assert assistant(application).prepare({}) == {key: result[key] for key in ("state", "code", "message", "retryable")}
+    assert assistant(application).prepare({}) == {
+        **{key: result[key] for key in ("state", "code", "message", "retryable")}, "modelBindings": {}}
     assert len(calls) == 1
 
 

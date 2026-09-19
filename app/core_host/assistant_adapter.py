@@ -18,7 +18,7 @@ from app.config.character_loader import (
 )
 from app.config.core_config_reader import CoreConfigReader
 from app.plugin_sdk.sakura_cancellation import OperationCancelled
-from app.core.diagnostics import diagnostic_secret_scope, register_diagnostic_secret
+from app.core.diagnostics import diagnostic_secret_scope
 from app.core.runtime_log import diagnostic_attributes, log_event
 from app.core_host.character_presentation import project_character_presentation
 from app.storage.runtime_roots import coerce_runtime_roots
@@ -32,6 +32,7 @@ class AssistantSession:
     app_version: str
     visual_binding: object | None = None
     model_slots: dict = field(default_factory=dict, repr=False)
+    model_bindings: dict = field(default_factory=dict, repr=False)
     system_prompt: str | None = field(default=None, repr=False)
 
     def __post_init__(self):
@@ -42,6 +43,7 @@ class AssistantSession:
         return {"character": {"id": self.character.id, "displayName": self.character.display_name,
                 "replyTones": list(self.character.reply_tones), "systemPrompt": self.system_prompt},
                 "loopSettings": asdict(self.loop_settings), "appVersion": self.app_version, "modelSlots": self.model_slots,
+                "modelBindings": self.model_bindings,
                 "replyVisual": self.visual_binding.reply_visual if self.visual_binding is not None else None}
 
 
@@ -96,7 +98,14 @@ class BoundAssistant:
                 or len(result["message"]) > 2000
                 or type(result.get("retryable")) is not bool):
             raise ValueError("ASSISTANT_PREPARE_INVALID")
-        return {key: result[key] for key in ("state", "code", "message", "retryable")}
+        bindings = result.get("modelBindings", {})
+        if (not isinstance(bindings, Mapping) or set(bindings) - {"chat", "vision_chat"}
+                or any(not isinstance(identity, Mapping) or set(identity) != {"providerId", "scopeId"}
+                       or any(not isinstance(value, str) or not value or len(value) > 200 for value in identity.values())
+                       for identity in bindings.values())):
+            raise ValueError("ASSISTANT_PREPARE_INVALID")
+        return {**{key: result[key] for key in ("state", "code", "message", "retryable")},
+                "modelBindings": {slot: dict(identity) for slot, identity in bindings.items()}}
 
     def commit_result(self, commit):
         from app.plugins.runtime_v4 import PluginRuntimeError
@@ -295,11 +304,9 @@ class AssistantAdapter:
             if self._closed or cancel.is_set():
                 raise OperationCancelled()
             config = self._config_reader.read(self._roots.user_root)
-            if config.provider_selection is not None:
-                register_diagnostic_secret(config.provider_selection.api_settings.api_key)
             problem = config.config_problem
             # Model readiness belongs to the selected Assistant provider.
-            if problem is not None and problem.code != "PROVIDER_SETUP_REQUIRED":
+            if problem is not None:
                 return ReadinessResult(problem.state, problem.code, problem.message, problem.retryable, None)
             registry = CharacterRegistry(self._roots.user_root, issue_sink=_safe_character_issue_sink)
             profile = registry.profiles.get(config.current_character_id)
@@ -321,6 +328,7 @@ class AssistantAdapter:
             session = AssistantSession(profile, assistant, load_tool_runtime_configuration(self._roots.user_root),
                 read_app_version(self._roots.distribution_root), model_slots=self._application.active_models())
             ready = assistant.prepare(session.descriptor())
+            session.model_bindings = ready["modelBindings"]
             if self._closed or cancel.is_set():
                 raise OperationCancelled()
             active = ready["state"] in {"ready", "degraded"}

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-09-19
 ---
 
 # Sakura 技术架构
@@ -43,7 +43,7 @@ Shell 用 bundled Python 启动：
 
 进程启动后先从 stdin 读取 16 字节 generation credential，再进入帧协议。stdout 只允许写协议帧；日志经 stderr bridge 交给 Shell。
 
-Core Host 负责角色、模型设置、对话受理与取消、Tools 注册、音画消费边界和 Timeline。默认 Assistant、Memory、
+Core Host 负责角色、模型引用、对话受理与取消、Tools 注册、音画消费边界和 Timeline。默认 Assistant、模型提供方、Memory、
 TTS Hub 与 TTS Provider 等实现属于普通插件。主要入口在 `app/core_host/server.py`，共享聊天用例在
 `app/core_host/real_chat.py`。默认模型循环、上下文预算、Prompt、回复解析和 Trace 位于
 `plugins/builtin/sakura_assistant/sakura_assistant/`，Core 不再构造 AgentRuntime 或 ChatPipeline。
@@ -94,16 +94,19 @@ WebView command + 本轮 Channel / Mobile 已解码输入
 取消会等待旧 worker 停止；启动确认丢失或回收通道失败时，由 Manager 终止对应实例，不重放请求。
 Core 在持有服务绑定锁时提交结果，插件停用或重载后的旧回复不能再写历史。空回复也要完成同一仲裁。
 
-默认模型客户端使用官方 OpenAI SDK，网络自动重试关闭。协议参数兼容与格式修复分别记录实际请求，
-工具副作用不会因网络错误自动再执行一次。每轮读取固定模型配置，设置保存不改写进行中的请求。
+默认 Assistant 与 Memory 使用公开的模型服务合同。模型引用只有 `serviceKey/profileId/modelId`；提供方拥有连接、凭据、
+超时和模型能力配置。默认远程插件 `sakura.model.openai_compatible` 使用 OpenAI SDK，网络自动重试关闭。
+协议参数兼容在提供方处理，Assistant 负责回复格式修复和工具循环。会话固定提供方实例，保存配置不改写有效配置，
+显式应用后才发布新会话。具体字段见[模型服务合同](../specs/runtime-v2/model-services.md)。
 
 截图和音频通过 generation 私有 Artifact 传递。生产边界只交换 opaque ID 和受限元数据，不把临时绝对路径交给 WebView。
 
 ## 配置所有权
 
-供应商和模型由 `ProviderModelSettingsRepository` 保存到 `config/api.yaml`，界面设置由 Rust
-`UiConfigRepository` 保存到 `config/ui.json`；工具设置和插件配置分别由对应的 Core 边界与 Plugin Runtime
-处理。`AppSettingsService` 保留 Core 和旧版导入使用的 YAML 读取方法，只写入当前角色选择和屏幕感知设置。
+Core 模型引用由 `ModelReferenceRepository` 保存到 `config/model_slots.json`；远程连接归模型提供方插件，
+生成参数归 Assistant，记忆模型引用归 Memory。界面设置由 Rust
+`UiConfigRepository` 保存到 `config/ui.json`；工具设置和插件配置分别由对应边界与 Plugin Runtime 处理。
+首次交接读取旧 `api.yaml`，先保存插件配置，再写入模型引用作为完成标记；已有新配置优先，旧文件保留可读。
 
 保存与应用在设置操作中完成。磁盘保存成功但运行态忙碌或应用失败时，界面收到明确结果；下一次聊天不会代为修复上次保存。
 插件管理操作改变 Assistant 服务身份时，立即重新发布可用会话；旧任务仍引用受理时的实例。
@@ -147,6 +150,7 @@ macOS/Linux 的 `scripts/start.sh` 与 Windows 的 `scripts/start.bat` 都会增
 | 受理、取消、历史提交、Mobile 共用聊天 | `app/core_host/real_chat.py`、`mobile_host.py` |
 | Assistant 初始化、固定插件实例、任务回收 | `app/core_host/assistant_adapter.py` |
 | 默认模型循环、Prompt、工具策略、Trace | `plugins/builtin/sakura_assistant/sakura_assistant/service.py`、`agent/`、`llm/` |
+| 模型消费、远程传输与配置 | `app/plugin_sdk/sakura_model_client.py`、`plugins/builtin/sakura_model_openai_compatible/` |
 | 历史存储与分页、默认历史预算 | `app/storage/timeline.py`、默认 Assistant 的 `history.py` |
 | 插件进程、Service/Callback、依赖失效 | `app/plugins/runtime_v4.py` |
 | 公共值对象与插件可导入能力 | `app/plugin_sdk/` |

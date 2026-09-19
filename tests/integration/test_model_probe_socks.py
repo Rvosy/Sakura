@@ -1,4 +1,4 @@
-"""The Core settings probe uses the same configured SOCKS proxy as model calls."""
+"""The provider settings probe uses the same configured SOCKS proxy as model calls."""
 from contextlib import contextmanager
 from http.client import parse_headers
 import json
@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from app.plugin_sdk.sakura_model import ApiSettings, ModelProbe
+from plugins.builtin.sakura_model_openai_compatible.transport import execute
 
 
 @contextmanager
@@ -54,12 +54,12 @@ def socks_proxy():
 
 
 @pytest.mark.parametrize("scheme", ["socks5", "socks5h"])
-def test_core_model_probe_uses_configured_socks_proxy(monkeypatch, scheme):
+def test_provider_model_probe_uses_configured_socks_proxy(monkeypatch, scheme):
     monkeypatch.setattr("urllib.request.proxy_bypass", lambda _host: False)
     with socks_proxy() as (port, destinations, requests):
         monkeypatch.setattr("urllib.request.getproxies", lambda: {"all": f"{scheme}://127.0.0.1:{port}"})
-        client = ModelProbe(ApiSettings("http://sakura-proxy-fixture.invalid/v1", "fixture-key", "fixture-model"))
-        assert client.test_connection() == "OK"
+        result = execute({"base_url": "http://sakura-proxy-fixture.invalid/v1", "api_key": "fixture-key", "model": "fixture-model", "timeout_seconds": 5}, {}, cancel_checker=None, progress=lambda _event: None, operation="test_connection")
+        assert result["message"]["content"] == "OK"
     assert destinations == [("sakura-proxy-fixture.invalid", 80)]
     assert len(requests) == 1
     assert requests[0][:2] == ("POST", "/v1/chat/completions")

@@ -3,90 +3,82 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-09-19
 ---
 
-# WP-3S-01：供应商与模型设置纵向链
+# 模型服务、连接与模型选择
 
-> 计划中的 [WP-4-07R](WP-4-07R-typed-timeline-adaptive-context.md) accepted 后，聊天模型槽会增加可选
-> `context_window_tokens` 供自适应上下文预算使用。在此之前，下述 Provider/模型字段仍是当前 accepted
-> 写入边界。
+## 所有权
 
-> 规范来源：`settings-incremental-migration.md` 第 6 节、ADR-0001/0002/0007/0035
-> 当前状态只以 Work Package 总表为准
+默认模型来源为远端 API 插件 `sakura.model.openai_compatible`。本阶段不引入本地模型 runner、权重管理或离线发行组合。
 
-## 设置范围
+- 模型插件拥有连接地址、凭据、请求超时、模型目录和模型能力，执行发现、连接测试及推理请求。
+- Assistant 拥有 `temperature`、`top_p`、`max_tokens`，通过自己的 Settings Contribution 展示在“模型”页。
+- Core 只保存对话和视觉对话的模型引用，聚合插件贡献的目录与用途；不读取模型凭据、不构造协议客户端，也不执行模型网络探测。
+- Mem0 等消费者保存自己的用途选择，经 SDK `ModelClient` 调用同一模型服务；不得获取其他插件的凭据。
 
-Runtime v2 canonical 设置页完成 Provider 公开读取、
-凭据动作、模型目录、聊天/视觉模型槽、原子保存、同 generation 热应用和有界网络探测的完整闭环。
+## 引用与目录
 
-生产写入仅允许 `user_root/config/api.yaml` 当前 schema 的以下字段：
+模型引用固定为：
 
-- `api_profiles[].{id,alias,base_url,api_key,models[].name}`；
-- `model_slots.chat` 与 `model_slots.vision_chat`；
-- `llm.{base_url,api_key,model}` 当前聊天槽投影，以及
-  `llm.{timeout_seconds,temperature,top_p,max_tokens}` 旧页面已支持的生成参数。
+```json
+{"serviceKey":"sakura.model.openai_compatible","profileId":"connection-id","modelId":"model-id"}
+```
 
-`memory_curation` 模型槽及 TTS/MCP/插件等非目标字段必须逐字节语义保留，不由本 WP 前端开放。写入前必须
-确认 `system_config.yaml.config_version == 1`；任何其他版本、缺失、类型错误或损坏数据都明确拒绝。
-读取不得触发迁移，响应只暴露 `configured`，不返回已保存密钥。
+三个字段必须同时非空或同时为空。模型 ID 相同但服务或连接不同，是不同的选择。空的可选用途继承当前对话模型；视觉对话也按此处理。
 
-## 契约
+模型提供方通过 `sakura.host.model_slots.register_provider()` 注册公开目录回调；目录按服务、连接、模型组织。
+`catalog()` 只读取已生效的本地目录，不发网络请求。`describe()` 返回 `contextWindowTokens`、`contextWindowSource`、
+`inputModalities` 和 `supportsTools`。未知能力保持 `null`，不能根据模型名称猜测；未配置上下文窗口时使用 32768 Token 回退值。
+模型可显式配置 4096–2000000 Token 的窗口。服务不可用或模型已删除时，保留原引用并显示 `MODEL_REFERENCE_UNAVAILABLE`。
 
-- 用户界面统一使用“模型服务”“API 地址”“获取模型列表”；协议字段和命令名称不变。
-- 添加模型服务提供 DeepSeek、Google 官方和自定义入口。Google 官方预填
-  `https://generativelanguage.googleapis.com/v1beta/openai`，不预填密钥或固定模型；用户填写 API Key 后获取并选择模型。
-- 连接测试请求列表中的第一个模型，成功反馈包含该模型名称，不以获取目录或端点可达代替模型测试。
-  已知验证失败、拒绝访问和超时使用简短提示，清洗后的 HTTP 信息和稳定错误码放在可展开的“错误详情”中。
-  新一次探测清除旧详情，失效请求不能向已切换的模型服务填入错误详情。
-- 模型探测与普通聊天使用完整的 `timeout_seconds` 作为单次 HTTP I/O 超时，不自动重试网络请求。
-  连接测试只发送模型与最小用户消息，不指定温度或输出 token 上限，避免与推理模型参数限制冲突。
-- 模型网络只使用官方 OpenAI Python SDK 的普通请求接口，SDK 的 `max_retries=0`；429、5xx、连接中断和
-  超时直接返回错误。`retryable` 表示用户可重新发起操作，不授权任何一层自动重放请求。
-  供应商明确拒绝 `response_format`、`temperature` 或尾部 system 消息时，可按已知规则调整参数后发送新请求；
-  每项兼容调整至多发生一次。回复格式修复由 Assistant 单独决定，不能伪装成网络重试。
-- 同一轮 `request_scope()` 固定模型、凭据、生成参数与连接使用的代理；工具循环中的模型调用复用同一连接池。
-  退出时关闭客户端和当前线程事件循环；取消会等待异步请求结束，不留下后台网络读取线程。配置保存影响下一轮。
-  实际网络尝试按轮递增计数，HTTP 状态、兼容回退原因与原始 SDK cause 均可检查。
-- 回环地址允许空 API Key，空值时不发送 Authorization。远端仍要求配置凭据。
-  设置保存、模型目录/连接探测和 Core 就绪判断共用此规则；`configured` 仍只表示已保存凭据，不能单独判断本地服务是否就绪。
-  应用版本缺失时发送 `Sakura/dev` User-Agent，不阻止正常模型请求。
-  当前接口交付完整回复；无流式消费者时拒绝 `stream=true`，不得把已交付的输出重放。
-- SDK 在实际模型请求时加载，不进入 Core 的启动握手路径。模型地址必须指向最终 API 端点；3xx 响应直接报错，
-  不隐式重定向并重发 POST。TLS 使用系统默认信任配置，也支持 `SSL_CERT_FILE`/`SSL_CERT_DIR` 指定的证书。
-- Google 官方域名的根地址、`/v1`、`/v1beta` 和 `/v1/openai` 统一使用 `/v1beta/openai`；
-  模型发现和聊天均使用 Bearer API Key，模型 ID 原样传递。其他域名及自定义路径不改写。
-  接口依据：[Google OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)。
-- capability schema v1 以 section + feature 表达 `available/read_only/unavailable`；其他 schema 直接拒绝。
-- Provider DTO 包含 `id/alias/baseUrl/configured/models`；credential action 仅为 `keep/replace/clear`。
-- `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；校验和写盘失败不修改原文件。
-  写盘后的运行态应用有独立结果：当前对话未结束或应用失败时返回 `CONFIG_APPLY_FAILED`，明确提示配置
-  已保存但尚未应用，并保留原异常诊断。用户重新保存或重启应用可再次应用；聊天不排队或重试设置回调。
-- ADR-0032 生效后保存成功返回 `applied`；同 generation 热更新 Session client 或只替换/退休 Assistant
-  Session，设置页按相同 Core identity 回读。
-- 冷启动和热应用必须将已保存的 `temperature`、`top_p`、`max_tokens` 传给聊天请求。
-  `temperature` 支持 0–2，`top_p` 支持 0–1，数值 0 必须保留；缺省或清空后温度恢复为 0.8，
-  `top_p` 和 `max_tokens` 不发送。配置读取器拒绝超范围、非数值和非有限数值，返回 `CONFIG_DATA_INVALID`。
-- `list_models`/`test_connection` 使用瞬时新密钥或 Core 内已保存密钥，带 deadline 与取消。HTTP 失败保留稳定
-  业务码，同时向设置页、GUI 运行日志和文件日志显示 HTTP 状态，以及供应商返回的
-  `message/code/type/status`；非 JSON 响应只显示有界的脱敏摘要。不得回显 URL query、Authorization、
-  credential、API Key 或未经筛选的完整响应 body。
-- 关窗、退出、Core crash 或 generation 变化会取消/丢弃旧操作；每个请求只有一个终态。
+Core 的 `settings.provider_model.get` 返回 schema 2，包含嵌套 `providers`、带 owner 的 `model_slots` 和 `setup_complete`。
+`settings.provider_model.save` 只接受 `draft.model_slots`，键为 `core:chat`、`core:vision_chat` 或插件槽位 identity。
+Core 引用写入 `config/model_slots.json`；插件选择交给对应插件保存。部分保存失败须返回已保存用途、失败用途和 `save_state=partial`，
+不得把已完成的写入报告为全部失败。Rust 和 WebView 消费公开引用并校验 generation，不能通过 DTO 带回密钥。
+交接尚未完成时允许读取空目录，但保存返回 `MODEL_CONFIGURATION_NOT_READY`，不能用空选择覆盖待交接的旧配置。
 
-## 数据与职责边界
+## 设置与生效时机
 
-Provider 设置只保存本域字段，保留其他配置与密钥；测试使用隔离数据，不改写真实用户配置。
-业务写入由 Core 拥有，前端不恢复旧 Qt HostRpc，也不直接操作配置文件。
-Provider、模型数量和显示名称不设业务上限；配置服务负责重复 ID、模型引用和凭据更新语义，Rust 与前端直接消费公开快照，保留请求身份及过期结果隔离。
+模型插件在“模型服务”页贡献一个设置区块，包含连接 Collection、模型参数 Collection，以及“应用”“获取模型列表”“测试连接”“取消测试”动作。
+连接可编辑名称、API 地址、密钥操作、模型 ID 列表和请求超时；模型参数只编辑已添加模型的上下文窗口、输入能力和工具调用能力。
+界面读取只返回 `configured` 和空的密钥输入值。凭据动作仅支持 `keep`、`replace`、`clear`；`replace` 必须提供新值，其他动作不得夹带新值。
 
-## 验收与回退
+连接和模型参数保存后返回 `restart_required`，只持久化，不改变当前插件进程的有效配置。显式“应用”检查服务是否仍有请求；
+忙碌时返回 `MODEL_BUSY`。Core 从确认聊天空闲到完成重载期间暂停接收新对话，跨插件 RPC 时不持有聊天锁。
+后台消费者或探测可能在检查后启动；重载会取消或终止这些旧实例任务，不能把任务重放到新实例。记忆整理保留已完成页及未处理游标。
+应用成功后旧 Assistant 模型绑定失效；Host 在本次应用动作内重新准备并发布会话，旧会话不能悄悄采用新连接。
+模型目录探测可读取已保存的连接草稿，成功后保存模型列表并提示应用。探测结果不会直接替换运行中的目录。
 
-自动门覆盖 current/non-v1/corrupt schema、unknown-field/secret 保持、credential 三态、Provider 增删改、槽
-引用、原子故障、网络终态、generation identity 保持和 secret scan。真实 Windows Tauri 验证中文 IME、模型
-列表/测试、应用/保存、关窗与重新打开；公共代码以同一候选 SHA 通过三平台门。
+连接测试和模型发现由提供方的 `begin_probe/poll/result/cancel/release` 操作完成；Settings Action 返回后，后台任务更新状态。
+测试连接必须调用用户指定模型并取得有效消息，不能以目录可达代替模型调用。取消和插件退出须结束请求并释放其资源；失败只展示安全错误码，
+不回显密钥或未经清洗的供应商响应。Core 不保留专用 `list_models/test_connection/cancel` 设置命令。
 
-回退先禁用 `providers.*`/`model.*`，取消并排水在途探测，再逆序回退代码；绝不删除、恢复或重写用户
-现有 `api.yaml`。
+Assistant 生成参数保存沿普通 Settings 保存链重新加载 Assistant。温度支持 0–2，Top P 支持 0–1，最大输出 Token 为正整数；
+缺省温度恢复为 0.8，缺省 Top P 和最大输出 Token 不发送。合法的数值 0 不得丢失。
+
+## 旧配置交接
+
+插件启动前，执行一次旧 `config/api.yaml` 的交接：
+
+- `api_profiles` 转到模型插件私有 `config.json`，请求超时转为连接字段；槽位上下文窗口转为对应模型元数据。
+- `llm` 中的生成参数转到默认 Assistant 私有配置。
+- 对话和视觉槽位转为三字段引用，最后原子写入 `config/model_slots.json` 作为交接完成标记。
+
+既有目标字段优先，进程中断后可以继续交接，不覆盖期间用户已保存的插件配置。旧 YAML 保持原内容；交接完成后旧文件的后续修改不再改变运行配置。
+旧版本导入在隔离 payload 中执行相同交接，生成文件随原有导入事务提交。Core 就绪读取器只读取系统版本与角色选择；
+模型缺失由 Assistant 的准备阶段报告，不应使角色、插件管理或本地 Memory 管理不可用。
+旧 API 或新引用文件损坏时，插件管理仍启动，模型页显示错误并保留编辑入口。用户明确选择有效对话模型后，
+保存可重建引用文件；该操作不修改旧 `api.yaml`，也不自动用空配置覆盖损坏数据。
+
+## 网络与验证
+
+OpenAI 兼容协议、Google 官方 URL 规范化、TLS、代理和错误清洗由模型提供方拥有。SDK 不自动重试网络失败；
+HTTP 错误只提取公开错误字段，在 JSON 解码后、诊断截断前清除实际使用的密钥，避免转义后的凭据进入远程异常栈。
+消费者明确发起的新操作与供应商参数兼容调整须可区分。任务绑定提供方实例，取消、结果读取和释放不得重新绑定到新实例。
+
+回归证据覆盖旧配置交接与中断续接、密钥三态、保存与应用隔离、模型元数据、失效引用、插件部分保存、真实 Core 设置往返，
+以及 Assistant 和 Mem0 共用 Model Service。测试使用隔离数据；未执行的真实窗口体验或平台条件须明确说明。
 
 ## 历史验收记录（2026-07-29）
 

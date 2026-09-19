@@ -124,8 +124,10 @@ class RealChatBoundary:
         self._pending_screen_attachment: _ScreenAttachment | None = None
         self._screen_session_id = secrets.token_hex(16)
         self._revision = 0
+        self._interaction_revision = 0
         self._closed = False
         self._switching_character = False
+        self._runtime_update_pending = False
 
     def set_event_publisher(self, publisher: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:
@@ -150,6 +152,8 @@ class RealChatBoundary:
     ) -> None:
         operation_id = turn.operation_id
         with self._changed:
+            if self._runtime_update_pending:
+                raise RealChatRejection("RUNTIME_UPDATE_BUSY", "角色表现正在更新，请稍后重试。", retryable=True)
             if self._switching_character:
                 raise RealChatRejection("CHARACTER_SWITCH_IN_PROGRESS", "角色正在切换", retryable=True)
             if self._closed:
@@ -185,6 +189,7 @@ class RealChatBoundary:
                 session=session,
                 screen_attachment=screen_attachment,
             )
+            self._interaction_revision += 1
             self._revision += 1
             self._changed.notify_all()
 
@@ -196,9 +201,25 @@ class RealChatBoundary:
                 raise RealChatRejection(
                     "GENERATION_INVALIDATED", "chat generation is closing"
                 )
-            if self._executions or self._switching_character:
+            if self._executions or self._switching_character or self._runtime_update_pending:
                 raise RealChatRejection("RUNTIME_UPDATE_BUSY", "当前对话尚未结束，设置尚未应用。", retryable=True)
             update()
+
+    @contextmanager
+    def idle_runtime_update(self):
+        """Reserve an idle update without holding the admission lock over plugin RPC."""
+        with self._changed:
+            if self._closed:
+                raise RealChatRejection("GENERATION_INVALIDATED", "chat generation is closing")
+            if self._executions or self._switching_character or self._runtime_update_pending:
+                raise RealChatRejection("RUNTIME_UPDATE_BUSY", "当前互动尚未结束。", retryable=True)
+            self._runtime_update_pending = True
+        try:
+            yield
+        finally:
+            with self._changed:
+                self._runtime_update_pending = False
+                self._changed.notify_all()
 
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))
@@ -622,6 +643,16 @@ class RealChatBoundary:
             finally:
                 self._drop_execution(operation_id)
 
+    def current_host_state(self) -> dict[str, Any]:
+        with self._lock:
+            session = self._session_provider()
+            available = session is not None and not self._closed and not self._switching_character
+            return {"sessionId": self._screen_session_id if available else None,
+                    "characterId": str(session.character.id) if available else None,
+                    "idle": available and not self._executions and not self._runtime_update_pending,
+                    "interactionRevision": self._interaction_revision}
+
+
     def reserve_host_message(
         self,
         message: str,
@@ -995,6 +1026,8 @@ class RealChatBoundary:
     def suspend_for_character_change(self):
         deadline = monotonic() + CHAT_CLOSE_TIMEOUT_SECONDS
         with self._changed:
+            if self._runtime_update_pending:
+                raise RealChatRejection("RUNTIME_UPDATE_BUSY", "角色表现正在更新，请稍后重试。", retryable=True)
             self._switching_character = True
             self._screen_session_id = secrets.token_hex(16)
             self._pending_screen_attachment = None

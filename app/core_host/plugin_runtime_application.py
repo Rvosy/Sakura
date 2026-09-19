@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
@@ -33,6 +33,9 @@ from app.plugins.host_services import (
     HOST_TOOLS_SERVICE,
 )
 from app.config.settings_service import AppSettingsService
+from app.config.model_references import (
+    EMPTY_REFERENCE, ModelReferenceRepository, migrate_legacy_model_configuration, model_reference,
+)
 from app.plugins.inventory import PluginInventory, PluginInventorySnapshot, RuntimePluginSpec
 from app.plugins.runtime_v4 import PluginRuntimeError, PluginRuntimeManager
 from app.storage.paths import StoragePaths
@@ -42,12 +45,12 @@ from app.storage.timeline import TimelineStore
 
 _HOST_EXPORTS = {
     HOST_LOGGING_SERVICE: ("emit",),
-    HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release", "resolve", "release_received"),
+    HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release", "resolve", "release_received", "deliver", "release_delivered"),
     HOST_DIAGNOSTICS_SERVICE: ("emit",),
     HOST_CHARACTER_SERVICE: ("current", "get", "update", "resolve_resource"),
     HOST_TOOLS_SERVICE: ("register", "unregister", "catalog", "execute"),
     HOST_CONTEXT_SERVICE: ("register", "unregister", "describe", "catalog", "collect"),
-    HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve", "active"),
+    HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve", "active", "register_provider", "unregister_provider"),
     HOST_STORAGE_SERVICE: ("resolve",),
     HOST_SETTINGS_SERVICE: ("register", "unregister"),
     HOST_SETTINGS_SURFACE_V0_SERVICE: ("register", "unregister"),
@@ -120,6 +123,11 @@ class PluginRuntimeApplication:
         self._closed = False
         self._loaded = threading.Event()
         self._bound = threading.Event()
+        self._model_configuration_issue = None
+        try:
+            migrate_legacy_model_configuration(roots.user_root)
+        except (OSError, ValueError):
+            self._model_configuration_issue = "CONFIG_DATA_INVALID"
         self._inventory = PluginInventory(roots)
         self._inventory_snapshot = self._inventory.scan()
         manager_options = {} if call_timeout is None else {"call_timeout": call_timeout}
@@ -149,7 +157,6 @@ class PluginRuntimeApplication:
             encode_context_request=_context_request_mapping,
             on_context_change=self._host_context_changed,
             storage_root=roots.user_root,
-            model_catalog=self._model_catalog,
             model_resolver=self._resolve_model,
             active_model_resolver=self.active_models,
             commit_plugin_scope=self._manager.commit_plugin_scope,
@@ -224,7 +231,8 @@ class PluginRuntimeApplication:
         return self.visual_presentation()
 
     def start_assistant(self) -> None:
-        self._manager.start(services=("sakura.assistant",))
+        services = {ref["serviceKey"] for ref in self.active_models().values() if ref}
+        self._manager.start(services=(*sorted(services), "sakura.assistant"))
 
     def wait_until_loaded(self, *, timeout: float = 8.0) -> bool:
         return self._loaded.wait(max(0.0, timeout)) and not self._closed
@@ -293,6 +301,9 @@ class PluginRuntimeApplication:
             identity = getattr(session.assistant, "identity", None)
             if identity is not None and self.service_identity("sakura.assistant") != identity:
                 raise PluginRuntimeError("SERVICE_BINDING_EXPIRED")
+            for slot, model_identity in getattr(session, "model_bindings", {}).items():
+                if self.service_identity(session.model_slots[slot]["serviceKey"]) != model_identity:
+                    raise PluginRuntimeError("SERVICE_BINDING_EXPIRED")
             self.publish_character(candidate)
         except BaseException:
             candidate.close()
@@ -567,13 +578,7 @@ class PluginRuntimeApplication:
         handled, result = self._host_services.settings_save(plugin_id, section_id, values)
         if not handled:
             raise PluginRuntimeError("SETTINGS_ID_INVALID", plugin_id=plugin_id)
-        if isinstance(result, Mapping) and result.get("applicationState") == "restart_required":
-            self.reload_plugin(plugin_id)
-            applied = dict(result)
-            applied["applicationState"] = "applied"
-            applied["reasonCode"] = "READY"
-            return applied
-        return result
+        return self._apply_settings_result(plugin_id, result)
 
     def settings_action(
         self,
@@ -590,7 +595,25 @@ class PluginRuntimeApplication:
         )
         if not handled:
             raise PluginRuntimeError("SETTINGS_ACTION_INVALID", plugin_id=plugin_id)
-        return result
+        return self._apply_settings_result(plugin_id, result)
+
+    def _apply_settings_result(self, plugin_id, result):
+        if not isinstance(result, Mapping) or result.get("applicationState") != "restart_required":
+            return result
+        from .real_chat import RealChatRejection
+
+        guard = self._chat_boundary.idle_runtime_update() if self._chat_boundary is not None else nullcontext()
+        try:
+            with guard:
+                snapshot = self.reload_plugin(plugin_id)
+        except RealChatRejection as error:
+            if error.code != "RUNTIME_UPDATE_BUSY":
+                raise
+            raise PluginRuntimeError("PLUGIN_RELOAD_BUSY", "请结束当前对话后应用设置。", plugin_id=plugin_id) from error
+        record = next((item for item in snapshot["plugins"] if item["pluginId"] == plugin_id), None)
+        active = record is not None and record["state"] == "active"
+        return {**result, "applicationState": "applied" if active else "error",
+                "reasonCode": "READY" if active else (record["reasonCode"] if record else "PLUGIN_NOT_FOUND")}
 
     def settings_collection(
         self,
@@ -659,61 +682,28 @@ class PluginRuntimeApplication:
         return None
 
     def _model_catalog(self) -> list[dict[str, object]]:
-        profiles = AppSettingsService(self._roots.user_root).load_api_profiles()
-        return [
-            {
-                "id": profile.id,
-                "alias": profile.alias,
-                "models": list(profile.models),
-            }
-            for profile in profiles
-        ]
+        return self._host_services.model_catalog()
+
+    def model_catalog(self):
+        return self._model_catalog()
 
     def active_models(self):
-        from app.config.model_slots import resolve_model_slot
-        service = AppSettingsService(self._roots.user_root)
-        profiles = service.load_api_profiles()
-        selections = service.load_model_selection()
-        base = service.load_api_settings()
-        output = {}
-        for slot in ("chat", "vision_chat"):
-            resolved = resolve_model_slot(profiles, selections, slot, base)
-            output[slot] = asdict(resolved.settings) if resolved is not None else None
-        return output
+        try:
+            return ModelReferenceRepository(self._roots.user_root).active()
+        except (OSError, ValueError):
+            return {"chat": None, "vision_chat": None}
+
+    def model_configuration_issue(self):
+        repository = ModelReferenceRepository(self._roots.user_root)
+        try:
+            repository.load()
+        except (OSError, ValueError):
+            return "CONFIG_DATA_INVALID"
+        return self._model_configuration_issue if not repository.path.exists() else None
 
     def _resolve_model(self, selection: Mapping[str, Any]) -> dict[str, object]:
-        settings = AppSettingsService(self._roots.user_root)
-        profile_id = selection.get("profileId")
-        model = selection.get("model")
-        if not isinstance(profile_id, str) or not isinstance(model, str):
-            raise ValueError("MODEL_SLOT_SELECTION_INVALID")
-        if bool(profile_id) != bool(model):
-            raise ValueError("MODEL_SLOT_SELECTION_INVALID")
-        if not profile_id:
-            inherited = settings.load_model_selection().chat
-            profile_id = inherited.profile_id.strip()
-            model = inherited.model.strip()
-        if not profile_id:
-            return {
-                "profileId": "",
-                "model": "",
-                "baseUrl": "",
-                "apiKey": "",
-                "timeoutSeconds": settings.load_api_settings().timeout_seconds,
-            }
-        profile = next(
-            (item for item in settings.load_api_profiles() if item.id == profile_id),
-            None,
-        )
-        if profile is None or model not in profile.models:
-            raise ValueError("MODEL_REFERENCE_INVALID")
-        return {
-            "profileId": profile.id,
-            "model": model,
-            "baseUrl": profile.base_url,
-            "apiKey": profile.api_key,
-            "timeoutSeconds": settings.load_api_settings().timeout_seconds,
-        }
+        reference = model_reference(selection)
+        return reference if reference["serviceKey"] else dict(self.active_models()["chat"] or EMPTY_REFERENCE)
 
 
 def _context_request_mapping(request: ContextRequest) -> dict[str, Any]:

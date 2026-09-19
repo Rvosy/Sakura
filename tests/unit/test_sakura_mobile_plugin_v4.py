@@ -137,6 +137,7 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
         "sakura.asr.sensevoice",
         "sakura.mcp",
         "sakura.memory.mem0",
+        "sakura.model.openai_compatible",
         "sakura.portrait",
         "sakura.tts",
         "sakura.tts.genie",

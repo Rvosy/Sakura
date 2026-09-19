@@ -19,6 +19,7 @@ import app.legacy_import.files as legacy_files
 import app.legacy_import.importer as legacy_importer
 import app.legacy_import.inspector as legacy_inspector
 import app.legacy_import.__main__ as legacy_cli
+from app.config.model_references import ModelReferenceRepository, OPENAI_SERVICE
 from app.config.settings_service import AppSettingsService
 from app.legacy_import.configuration import (
     _write_tts_plugin_config,
@@ -368,11 +369,11 @@ def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
         "api_key": "fixture-yaml-credential",
         "model": "yaml-model",
     }
-    providers = service.load_api_profiles()
-    selection = service.load_model_selection()
-    assert providers[0].api_key == "fixture-yaml-credential"
-    assert providers[0].base_url == "https://yaml.example/v1"
-    assert selection.chat.model == "yaml-model"
+    profiles = json.loads((service.base_dir / "data/plugins" / OPENAI_SERVICE / "config.json").read_text(encoding="utf-8"))["profiles"]
+    selection = ModelReferenceRepository(service.base_dir).load()
+    assert profiles[0]["api_key"] == "fixture-yaml-credential"
+    assert profiles[0]["base_url"] == "https://yaml.example/v1"
+    assert selection["chat"]["modelId"] == "yaml-model"
 
 
 @pytest.mark.parametrize(
@@ -439,15 +440,12 @@ def test_configuration_import_converts_pr110_selection_without_model_slots(
         {"name": expected_vision_model},
     ]
 
-    loaded_providers = service.load_api_profiles()
-    selection = service.load_model_selection()
-    assert loaded_providers[0].models == (expected_text_model, expected_vision_model)
-    assert loaded_providers[0].api_key == "text-provider-secret"
-    assert selection.chat.profile_id == "text-provider"
-    assert selection.chat.model == expected_text_model
-    assert selection.vision_chat is not None
-    assert selection.vision_chat.profile_id == "vision-provider"
-    assert selection.vision_chat.model == expected_vision_model
+    loaded = json.loads((service.base_dir / "data/plugins" / OPENAI_SERVICE / "config.json").read_text(encoding="utf-8"))["profiles"]
+    selection = ModelReferenceRepository(service.base_dir).load()
+    assert [model["modelId"] for model in loaded[0]["models"]] == [expected_text_model, expected_vision_model]
+    assert loaded[0]["api_key"] == "text-provider-secret"
+    assert selection["chat"] == {"serviceKey": OPENAI_SERVICE, "profileId": "text-provider", "modelId": expected_text_model}
+    assert selection["vision_chat"] == {"serviceKey": OPENAI_SERVICE, "profileId": "vision-provider", "modelId": expected_vision_model}
 
 
 def test_exception_diagnostics_do_not_include_free_form_private_messages() -> None:

@@ -341,7 +341,7 @@ def run_legacy_import(
                 fallbacks=compatibility_fallbacks,
             )
         except Exception as exc:
-            if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
+            if isinstance(exc, LegacyImportError) and exc.code in {"LEGACY_IMPORT_CANCELLED", "LEGACY_MODEL_HANDOFF_ROLLBACK_FAILED"}:
                 raise
             shutil.rmtree(payload / "config", ignore_errors=True)
             from app.plugins.inventory import PluginDesiredStateStore
@@ -1973,10 +1973,9 @@ def _validate_current_settings(
     """
 
     service = AppSettingsService(staged)
+    from app.config.model_references import OPENAI_SERVICE, ModelReferenceRepository, migrate_legacy_model_configuration
     loaders: tuple[tuple[str, str, Callable[[], object]], ...] = (
-        ("api", "config/api.yaml", service.load_api_settings),
-        ("api_profiles", "config/api.yaml", service.load_api_profiles),
-        ("model_selection", "config/api.yaml", service.load_model_selection),
+        ("model_selection", "config/model_slots.json", ModelReferenceRepository(staged).load),
         ("runtime_loop", "config/system_config.yaml", service.load_runtime_loop_settings),
         ("debug_log", "config/system_config.yaml", service.load_debug_log_settings),
         ("startup", "config/system_config.yaml", service.load_startup_settings),
@@ -2013,6 +2012,27 @@ def _validate_current_settings(
             raise LegacyImportError(
                 "LEGACY_SETTINGS_VALIDATION_FAILED", "validating", relative
             ) from exc
+
+    # Finish validation before creating the plugin-owned handoff files. The
+    # payload transaction inventories these files after this function returns.
+    destinations = [ModelReferenceRepository(staged).path,
+                    staged / "data" / "plugins" / OPENAI_SERVICE / "config.json",
+                    staged / "data" / "plugins" / "sakura.assistant.default" / "config.json"]
+    originals = {path: path.read_bytes() if path.exists() else None for path in destinations}
+    try:
+        migrate_legacy_model_configuration(staged)
+    except Exception as exc:
+        try:
+            for path, original in originals.items():
+                if original is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(original)
+        except OSError as rollback_error:
+            raise LegacyImportError("LEGACY_MODEL_HANDOFF_ROLLBACK_FAILED", "validating") from rollback_error
+        raise LegacyImportError(
+            "LEGACY_SETTINGS_VALIDATION_FAILED", "validating", "config/api.yaml"
+        ) from exc
 
 
 def _validate_characters(

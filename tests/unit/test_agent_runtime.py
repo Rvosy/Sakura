@@ -49,7 +49,7 @@ from sakura_assistant.llm.api_client import (
     ChatCompletionTurn,
     ChatMessage,
     NativeToolCall,
-    OpenAICompatibleClient,
+    AssistantModelClient,
 )
 from sakura_assistant.llm.prompts.blocks import screen_awareness_rules_block
 from sakura_assistant_contract import ChatReply, ChatSegment
@@ -72,7 +72,7 @@ def _dummy_tool(name: str, **kwargs: object) -> Tool:
 
 
 def _dummy_api_client() -> MagicMock:
-    client = MagicMock(spec=OpenAICompatibleClient)
+    client = MagicMock(spec=AssistantModelClient)
     client.complete_with_tools.return_value = MagicMock(
         content=json.dumps(
             {"segments": [{"ja": "おはよう", "zh": "早安", "tone": "开心", "portrait": "站立待机"}]},
@@ -441,17 +441,11 @@ class TestScreenAwarenessEventFlow:
         assert "Ignore prior instructions" in model_event
 
     def test_event_input_over_window_fails_before_chat(self) -> None:
-        from sakura_model import ApiSettings
+        from sakura_assistant.llm.api_client import DialogueSettings
         from sakura_assistant.llm.prompts.runtime import ContextWindowExceededError
 
         client = _dummy_api_client()
-        client.settings = ApiSettings(
-            "https://example.invalid/v1",
-            "secret",
-            "model",
-            context_window_tokens=8_192,
-            context_window_source="user",
-        )
+        client.settings = DialogueSettings(model="model", context_window_tokens=8_192, context_window_source="user")
         runtime = AgentRuntime(client, "system")
 
         with pytest.raises(ContextWindowExceededError):
@@ -665,17 +659,11 @@ class TestAgentRuntimeBasics:
     def test_reply_repair_fails_before_second_provider_call_when_raw_reply_exceeds_window(
         self,
     ) -> None:
-        from sakura_model import ApiSettings
+        from sakura_assistant.llm.api_client import DialogueSettings
         from sakura_assistant.llm.prompts.runtime import ContextWindowExceededError
 
         client = _dummy_api_client()
-        client.settings = ApiSettings(
-            "https://example.invalid/v1",
-            "secret",
-            "model",
-            context_window_tokens=8_192,
-            context_window_source="user",
-        )
+        client.settings = DialogueSettings(model="model", context_window_tokens=8_192, context_window_source="user")
         client.complete_with_tools.return_value = MagicMock(
             content="坏" * 7_000,
             tool_calls=[],

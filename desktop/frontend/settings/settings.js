@@ -306,7 +306,6 @@ async function closeSettingsWindow() {
   beginSettingsWindowClose();
   try {
     await runtimeCharacterFeature?.waitForPreview();
-    await runtimeProviderFeature?.cancelOperations();
     await invoke("resolve_settings_close", { discard: true });
   } catch (error) {
     settingsWindowClosing = false;
@@ -334,7 +333,6 @@ async function requestCancelClose() {
       discard: async () => {
         setSubmissionBusy(true);
         await runtimeAppearanceController?.cancelPreview();
-        await runtimeProviderFeature?.cancelOperations();
         runtimeChatTimingController?.discard();
         runtimeBubbleAutoHideController?.discard();
         runtimeAutostartController?.discard();
@@ -380,7 +378,6 @@ async function requestAppExitClose(event) {
       discard: async () => {
         setSubmissionBusy(true);
         await runtimeAppearanceController?.cancelPreview();
-        await runtimeProviderFeature?.cancelOperations();
         runtimeChatTimingController?.discard();
         runtimeBubbleAutoHideController?.discard();
         runtimeAutostartController?.discard();
@@ -391,7 +388,6 @@ async function requestAppExitClose(event) {
         beginSettingsWindowClose();
         try {
           await runtimeCharacterFeature?.waitForPreview();
-          await runtimeProviderFeature?.cancelOperations();
           bypassCloseGuard = true;
           await invoke("resolve_settings_exit", { discard: true, revision: event.payload });
         } catch (error) {

@@ -48,6 +48,7 @@ class SakuraMem0Runtime:
         memory_cache_dir: Path | None = None,
         model_catalog_getter: Callable[[], object] | None = None,
         model_resolver: Callable[[Mapping[str, object]], object] | None = None,
+        model_client_factory: Callable[[Mapping[str, object]], object] | None = None,
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = character_id
@@ -63,6 +64,7 @@ class SakuraMem0Runtime:
             curation_config_getter=self._config_getter,
             model_catalog_getter=model_catalog_getter,
             model_resolver=model_resolver,
+            model_client_factory=model_client_factory,
         )
         self._recall = MemoryRecallService(self._boundary)
         self._task_lock = threading.RLock()
@@ -311,16 +313,16 @@ class SakuraMem0Runtime:
     def load_model_slot(self) -> dict[str, str]:
         slot = _mapping(self._boundary.settings_get().get("curationModelSlot"))
         return {
+            "serviceKey": str(slot.get("serviceKey", "")),
             "profileId": str(slot.get("profileId", "")),
-            "model": str(slot.get("model", "")),
+            "modelId": str(slot.get("modelId", "")),
         }
 
     def save_model_slot(self, selection: Mapping[str, object]) -> dict[str, str]:
         parsed = _parse_model_slot_selection(selection)
         self._config_updater(
             {
-                "curationProfileId": parsed["profileId"],
-                "curationModel": parsed["model"],
+                "curationModelRef": parsed,
             }
         )
         return {"applicationState": "applied"}
@@ -668,6 +670,7 @@ class SakuraMem0Plugin:
 
 
 def _default_runtime(context: object) -> SakuraMem0Runtime:
+    from sakura_model_client import ModelClient
     plugin_data_root = Path(getattr(context, "data_path")("."))
     storage = getattr(context, "get")("sakura.host.storage")
     character = getattr(context, "get")("sakura.host.character").current()
@@ -690,6 +693,7 @@ def _default_runtime(context: object) -> SakuraMem0Runtime:
         memory_cache_dir=Path(storage.resolve("cache", "memory")),
         model_catalog_getter=model_slots.catalog,
         model_resolver=model_slots.resolve,
+        model_client_factory=lambda ref: ModelClient(context, ref),
     )
 
 
@@ -889,14 +893,11 @@ def _json_fits(value: object, maximum: int) -> bool:
 
 
 def _parse_model_slot_selection(value: object) -> dict[str, str]:
-    raw = _mapping(value)
-    if set(raw) != {"profileId", "model"}:
-        raise ValueError("MODEL_SLOT_SELECTION_INVALID")
-    profile_id = str(raw.get("profileId", ""))
-    model = str(raw.get("model", ""))
-    if len(profile_id) > 64 or len(model) > 256 or bool(profile_id) != bool(model):
-        raise ValueError("MODEL_SLOT_SELECTION_INVALID")
-    return {"profileId": profile_id, "model": model}
+    try:
+        from .boundary import _resolved_model
+    except ImportError:
+        from boundary import _resolved_model
+    return _resolved_model(value)
 
 
 def _runtime_status_value(status: str, message: str) -> dict[str, str]:

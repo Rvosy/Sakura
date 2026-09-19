@@ -15,10 +15,10 @@ from sakura_assistant_contract import RuntimeLoopSettings
 from sakura_tools import Tool, ToolRegistry
 from sakura_cancellation import CancellationToken, OperationCancelled
 from sakura_assistant.llm.api_client import (
-    ApiSettings,
+    DialogueSettings,
     ChatCompletionTurn,
     NativeToolCall,
-    OpenAICompatibleClient,
+    AssistantModelClient,
 )
 from sakura_assistant_contract import ChatReply, ChatSegment
 from sakura_assistant.llm.prompts.runtime import (
@@ -55,8 +55,8 @@ def _tool_turn() -> ChatCompletionTurn:
 
 
 def _client() -> MagicMock:
-    client = MagicMock(spec=OpenAICompatibleClient)
-    client.settings = ApiSettings("https://example.invalid/v1", "fixture", "model")
+    client = MagicMock(spec=AssistantModelClient)
+    client.settings = DialogueSettings(model="model")
     client.resolve_dialogue_params.return_value = (0.8, {})
     client.complete_with_tools.return_value = _reply_turn()
     client.chat.return_value = ChatReply(

@@ -258,16 +258,8 @@
           </div>
         </section>
 
-        <section id="page-providers" class="settings-page admin-page">
-          <div id="providerStatusStrip" class="admin-strip"></div>
-          <div class="admin-toolbar">
-            <input id="providerSearch" class="admin-search" type="text" placeholder="搜索模型服务、API 地址" />
-            <button id="addProviderButton" class="secondary-button" type="button">添加模型服务</button>
-          </div>
-          <div class="admin-workbench">
-            <div id="providerList" class="admin-list"></div>
-            <aside id="providerDetail" class="admin-detail"></aside>
-          </div>
+        <section id="page-providers" class="settings-page">
+          <div id="modelProviderSurface" class="plugin-surface"></div>
         </section>
 
         <section id="page-model" class="settings-page">
@@ -276,50 +268,7 @@
             <div id="modelSlots" class="dynamic-list"></div>
           </fieldset>
 
-          <details class="settings-group advanced-section">
-            <summary>高级参数</summary>
-            <div class="setting-row">
-              <div class="setting-row-text setting-row-help">
-                <label class="setting-title" for="contextWindowTokens">上下文上限</label>
-                <button class="setting-help" type="button" aria-label="上下文上限说明" data-tooltip="默认 32K tokens">?</button>
-              </div>
-              <span class="field-unit"><input id="contextWindowTokens" type="number" min="4096" max="2000000" step="1" inputmode="numeric" placeholder="例如 1000000" /><span class="unit">tokens</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="apiTimeout">
-                <span class="setting-title">请求超时时间</span>
-              </label>
-              <span class="field-unit"><input id="apiTimeout" type="number" step="1" /><span class="unit">秒</span></span>
-            </div>
-            <div class="setting-row">
-              <div class="setting-row-text setting-row-help">
-                <label class="setting-title" for="apiTemperature">创造性 (temperature)</label>
-                <button class="setting-help" type="button" aria-label="创造性 (temperature)说明" data-tooltip="越高越多变，越低越稳定。">?</button>
-              </div>
-              <input id="apiTemperature" type="number" min="0" max="2" step="0.01" />
-            </div>
-            <div class="setting-row">
-              <div class="setting-row-text setting-row-help">
-                <label class="setting-title" for="apiTopP">用词多样性 (top_p)</label>
-                <button class="setting-help" type="button" aria-label="用词多样性 (top_p)说明" data-tooltip="值越低，用词范围越集中。">?</button>
-              </div>
-              <label class="inline-input">
-                <input id="apiTopPEnabled" type="checkbox" />
-                <span>自定义</span>
-                <input id="apiTopP" type="number" min="0" max="1" step="0.01" />
-              </label>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="apiMaxTokens">
-                <span class="setting-title">回复长度上限 (max_tokens)</span>
-              </label>
-              <label class="inline-input">
-                <input id="apiMaxTokensEnabled" type="checkbox" />
-                <span>自定义</span>
-                <input id="apiMaxTokens" type="number" step="1" />
-              </label>
-            </div>
-          </details>
+          <div id="modelSettingsSurface" class="plugin-surface"></div>
         </section>
 
         <section id="page-voice" class="settings-page">

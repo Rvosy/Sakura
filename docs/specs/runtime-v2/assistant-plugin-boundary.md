@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-09-19
 ---
 
 # Assistant 插件与 Core 对话边界
@@ -14,7 +14,8 @@ updated: 2026-09-18
 预装实现 `sakura.assistant.default` 位于 `plugins/builtin/sakura_assistant/`，可以停用并由提供同一服务的
 其他插件替换。多个启用实现同时声明该服务时按普通服务冲突处理；Core 不按实现 ID 选择隐藏兜底。
 
-默认插件拥有模型客户端、Prompt、上下文预算、历史选择、工具循环、模型响应解析与修复，以及 Agent Trace。
+默认插件拥有模型服务调用端、Prompt、上下文预算、历史选择、工具循环、模型响应解析与修复，以及 Agent Trace。
+远程连接、凭据和 HTTP SDK 由独立[模型 Service](model-services.md)拥有，Assistant 与 Mem0 通过同一中性 SDK 调用。
 Core 拥有角色和设置、受理与取消、Timeline 写入、附件授权、表现控制派发、TTS 消费与终态发布。
 Core 的 `AssistantSession` 保存角色、固定实例的 `BoundAssistant`、已发布的模型快照和轮次配置，不创建本地 Agent 或 ChatPipeline。
 插件停用、退出或重载后，旧会话失效；恢复必须来自显式插件操作或重新初始化，不重放已受理操作。
@@ -30,7 +31,7 @@ Provider 在 setup 中公开以下六个方法。所有参数与返回值走有�
 
 | 方法 | 参数与结果 | 含义 |
 |---|---|---|
-| `prepare(session)` | 返回 `state/code/message/retryable` | 只检查本地可用性，不请求模型；`ready/degraded` 才能建立可用会话 |
+| `prepare(session)` | 返回 `state/code/message/retryable`，可带 `modelBindings` | 只检查本地可用性，不请求模型；`ready/degraded` 才能建立可用会话 |
 | `begin({operationId, input})` | 返回 `{operationId}` | 接受一个输入 artifact，启动后台执行；重复提交不具有重试语义 |
 | `poll(operationId, afterSequence=0, waitMs=500)` | 返回 `state/sequence/progress`，失败时附 `failure` | 最多等待 500 ms；sequence 为已产生进度项总数，只返回 afterSequence 之后的项目 |
 | `result(operationId)` | 返回已提交的 JSON artifact 描述符 | 运行中报 `ASSISTANT_RESULT_PENDING`；失败时抛出原错误并保留诊断链 |
@@ -40,7 +41,7 @@ Provider 在 setup 中公开以下六个方法。所有参数与返回值走有�
 `prepare.state` 只接受 `ready/degraded/setup_required/failed`；`code` 是 1–80 字符的公开标识符，
 字符集为 `[A-Za-z0-9_.:-]`，允许第三方使用 `vendor.account_required` 等命名，不限于内置错误枚举。
 `message` 必须是至多 2000 字符的脱敏字符串，`retryable` 必须是 JSON boolean；它只描述是否可由用户重试，
-不触发 Core 重启、重新 prepare 或自动恢复。Core 投影这四项，忽略未知附加字段；形状无效时报
+不触发 Core 重启、重新 prepare 或自动恢复。Core 投影这四项和可选 `modelBindings`，忽略未知附加字段；形状无效时报
 `ASSISTANT_PREPARE_INVALID` 并保留初始化诊断。`ready/degraded` 才建立可用 Session，其他状态不阻止已加载的角色显示。
 
 `poll.state` 为 `running/completed/failed/cancelled`。其中 completed 只表示插件结果可读；是否写入历史并
@@ -55,16 +56,17 @@ worker 退出后完成回收，不开第二个 worker 绕过占用。Trace 失�
 
 Core 构造输入 JSON，至少包含 `operationId/session/turnId/message/historyCursor/historyNow/entryIds`，
 并按本轮输入提供 `event/attachment/humanEntryId/observationEntryIds`。`session` 包含角色 ID、显示名、
-回复语气、系统说明、loopSettings、appVersion、modelSlots 与可空 replyVisual；不包含 Core 对象或 generation credential。
+回复语气、系统说明、loopSettings、appVersion、modelSlots、modelBindings 与可空 replyVisual；不包含 Core 对象或 generation credential。
 公开聊天入口不接受调用方指定的系统说明、历史数组或这些内部字段。
 
 Host 在创建输入 artifact 时增加 `historyToken`，将读取许可固定到接收插件、角色和历史快照。
 图片及长文本随 JSON 文件传递；插件通过 artifacts.resolve 取得允许读取的本地路径，检查实际长度后解析。
 输入文件读完可以 release_received；历史 token 必须保留到 worker 停止。
 
-`modelSlots` 为 Core 成功准备会话时发布的 chat/vision_chat 配置快照，可能包含调用模型所需的凭据，只允许
-经受控 prepare 或输入 artifact 交给绑定插件。默认 Assistant 不在每轮重新读取磁盘或 Host active；
-设置保存但应用失败时，下一轮继续使用已发布快照，不隐式应用失败的变更。
+`modelSlots` 为 Core 成功准备会话时发布的 chat/vision_chat 中性引用，每项仅含 serviceKey、profileId、modelId。
+prepare 返回的 `modelBindings` 按槽位保存 `{providerId, scopeId}`，默认 Assistant 每轮校验这份固定身份，
+不读取连接文件或凭据。设置保存但应用失败时，有效旧绑定继续使用旧配置；已重载失效的绑定明确拒绝调用，
+不隐式采纳新实例。对话生成参数来自 Assistant 自身启动时冻结的 generation 配置。
 
 角色说明也在创建 Session 时读取并冻结。角色卡保存后，Core 先准备新的角色、提示词、视觉绑定和公开投影，
 校验通过才一起发布；准备失败时，旧提示词、视觉和 revision 保持不变。模型热应用返回 `failed` 或绑定失败时，
@@ -111,11 +113,11 @@ Core 在调用 Assistant 前的历史读取、输入保存或 Session 描述失�
 
 | Host 服务 | 消费入口 | 边界 |
 |---|---|---|
-| `sakura.host.artifacts` | `allocate/commit/release/resolve/release_received` | 只解析已提交且由调用方拥有或明确交付给它的资源；描述符为 artifactId、mediaType、byteLength |
+| `sakura.host.artifacts` | `allocate/commit/release/resolve/release_received/deliver/release_delivered` | 只解析已提交且由调用方拥有或明确交付给它的资源；跨插件交付固定双方 scope 和 operationId |
 | `sakura.host.timeline` | `read_turn_page(request)` | historyToken、characterId、snapshotCursor 必须匹配；按完整轮分页，只读 |
 | `sakura.host.tools` | `catalog()`、`execute(registrationId, name, arguments)` | 目录带真实登记身份；执行前复核并固定工具对象，同名新登记不能接管旧调用 |
 | `sakura.host.context` | `catalog()`、`collect(registrationId, request)` | 目录带真实插件和 Provider；回调失效明确失败，Host 不决定 Prompt 优先级 |
-| `sakura.host.model_slots` | `active()`、既有 `catalog/resolve` | active 提供当前 chat 与可空 vision_chat 配置；默认 Assistant 使用 Core 传入的已发布会话快照；凭据不进入 UI 或日志 |
+| `sakura.host.model_slots` | `active()`、`catalog/resolve`、`register_provider` | active/resolve 只返回模型引用；目录由模型插件登记；默认 Assistant 使用 Core 传入的已发布引用与绑定 |
 | `sakura.host.storage` | `resolve("data", "logs")` | 返回插件可使用的日志目录，由插件写自己的 Trace |
 | `sakura.host.logging` | 既有日志 SDK | 统一 Host 脱敏、身份绑定与落盘；模型调用统计沿既有遥测链路，不传播 Prompt 正文 |
 

@@ -76,13 +76,13 @@ def _isolated_lifecycle_distribution(tmp_path, assistant_dependencies, monkeypat
     def start(app_root, generation_id=GENERATION_ID):
         distribution = tmp_path / "lifecycle-distribution"
         if not distribution.exists():
-            for name in ("sakura_assistant", "sakura_tts_hub"):
+            for name in ("sakura_assistant", "sakura_model_openai_compatible", "sakura_tts_hub"):
                 shutil.copytree(
                     REPO_ROOT / "plugins/builtin" / name,
                     distribution / "plugins/builtin" / name,
                     ignore=shutil.ignore_patterns("__pycache__"),
                 )
-            dependencies = distribution / "plugins/dependencies/sakura.assistant.default"
+            dependencies = distribution / "plugins/dependencies/sakura.model.openai_compatible"
             shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
             (dependencies / ".sakura-dependencies.json").write_text(
                 json.dumps({"schemaVersion": 1, "kind": "requirements.txt",

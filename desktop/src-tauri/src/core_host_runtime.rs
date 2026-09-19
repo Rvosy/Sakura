@@ -4592,7 +4592,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_3s_01_real_core_round_trips_redacted_provider_settings_atomically() {
+    fn real_core_round_trips_model_references_without_exposing_credentials() {
         let _test_lock = lifecycle_test_lock();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4602,6 +4602,17 @@ mod tests {
             std::env::temp_dir().join(format!("sakura-wp-3s-01-{}-{unique}", std::process::id()));
         let source = repo_root().join("tests/fixtures/runtime_v2/wp_3_01/ready");
         copy_fixture_tree(&source, &app_root);
+        let character_root = app_root.join("characters/sakura");
+        fs::copy(
+            repo_root().join("desktop/frontend/prototypes/asr/assets/navi.png"),
+            character_root.join("portraits/neutral.png"),
+        )
+        .expect("settings fixture needs a valid portrait for candidate validation");
+        let character_path = character_root.join("character.json");
+        let mut character: Value =
+            serde_json::from_slice(&fs::read(&character_path).unwrap()).unwrap();
+        character["portrait"] = json!({"default": "portraits/neutral.png", "expressions": {"neutral": "portraits/neutral.png"}});
+        fs::write(character_path, serde_json::to_vec(&character).unwrap()).unwrap();
         let secret = "WP_3S_01_SECRET_MUST_NOT_ESCAPE";
         fs::write(
             app_root.join("config/api.yaml"),
@@ -4610,6 +4621,7 @@ mod tests {
             ),
         )
         .expect("provider fixture should write");
+        let original_api = fs::read(app_root.join("config/api.yaml")).unwrap();
         let mut layout = development_layout();
         layout.user_root = app_root
             .canonicalize()
@@ -4621,6 +4633,27 @@ mod tests {
         assert!(hello["payload"]["capabilities"]
             .as_array()
             .is_some_and(|items| items.iter().any(|item| item == "settings.provider-model")));
+        host.request_with_payload(
+            "settings-initialize",
+            "core.initialize",
+            json!({}),
+            Duration::from_secs(3),
+        )
+        .expect("settings initialization should start");
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let snapshot = host
+                .refresh_snapshot("settings-ready", Duration::from_secs(3))
+                .expect("settings readiness should be readable");
+            if matches!(snapshot["readiness"].as_str(), Some("ready" | "degraded")) {
+                break;
+            }
+            if Instant::now() >= ready_deadline {
+                let exit = host.shutdown();
+                panic!("settings readiness timed out: {snapshot}; shutdown: {exit:?}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         let handle = host
             .concurrent_request_handle()
             .expect("settings router should be available");
@@ -4633,34 +4666,32 @@ mod tests {
             )
             .expect("provider settings get should complete");
         assert_eq!(get["ok"], true);
-        assert_eq!(get["payload"]["providers"][0]["configured"], true);
+        assert_eq!(get["payload"]["schema_version"], 2);
         assert!(!serde_json::to_string(&get)
             .expect("settings response should serialize")
             .contains(secret));
 
+        let mut slots = get["payload"]["model_slots"]
+            .as_array()
+            .expect("model slots should be public references")
+            .iter()
+            .map(|slot| {
+                (
+                    slot["identity"].as_str().unwrap().to_string(),
+                    slot["selection"].clone(),
+                )
+            })
+            .collect::<serde_json::Map<String, Value>>();
+        let chat = slots["core:chat"].clone();
+        assert_eq!(chat["serviceKey"], "sakura.model.openai_compatible");
+        slots.insert("core:vision_chat".to_string(), chat.clone());
         let save = handle
             .request(
                 "settings-save",
                 "settings.provider_model.save",
                 json!({
                     "draft": {
-                        "providers": [{
-                            "id": "fixture",
-                            "alias": "Fixture edited",
-                            "base_url": "https://fixture.invalid/v1",
-                            "models": ["fixture-model"],
-                            "credential": {"action": "keep", "value": ""}
-                        }],
-                        "model_slots": {
-                            "chat": {"profile_id": "fixture", "model": "fixture-model"},
-                            "vision_chat": {}
-                        },
-                        "settings": {
-                            "timeout_seconds": 30,
-                            "temperature": null,
-                            "top_p": null,
-                            "max_tokens": null
-                        }
+                        "model_slots": slots
                     }
                 }),
                 Duration::from_secs(5),
@@ -4671,11 +4702,14 @@ mod tests {
             "unexpected provider save response: {save}"
         );
         host.shutdown().expect("provider settings host should stop");
-        let saved = fs::read_to_string(app_root.join("config/api.yaml"))
-            .expect("saved provider config should read");
-        assert!(saved.contains(secret));
-        assert!(saved.contains("preserve_me: true"));
-        assert!(saved.contains("Fixture edited"));
+        assert_eq!(
+            fs::read(app_root.join("config/api.yaml")).unwrap(),
+            original_api
+        );
+        let saved: Value =
+            serde_json::from_slice(&fs::read(app_root.join("config/model_slots.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["slots"]["vision_chat"], chat);
         fs::remove_dir_all(&app_root).expect("isolated provider fixture should clean up");
     }
 

@@ -201,6 +201,7 @@ def test_initialization_keeps_original_failure_without_closing_shared_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core_host import assistant_adapter
+    from app.core.diagnostics import register_diagnostic_secret
 
     root = _fresh_secret_root(tmp_path)
     recorded = []
@@ -208,6 +209,9 @@ def test_initialization_keeps_original_failure_without_closing_shared_provider(
 
     class Application(_AssistantApplication):
         def call_bound_service(self, *_args):
+            # This synthetic in-process owner knows the key. Production model
+            # credentials are sanitized by their provider before crossing RPC.
+            register_diagnostic_secret(PLANTED_API_KEY)
             try:
                 raise OSError(f"fixture model configuration failed: {PLANTED_API_KEY}")
             except OSError as cause:

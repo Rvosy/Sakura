@@ -1,414 +1,128 @@
-from __future__ import annotations
-
+"""The old Core credential repository is replaced by a one-time ownership handoff."""
+import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 import yaml
 
-from app.config import provider_model_settings as module
-from app.config.core_config_reader import CoreConfigReader
-from app.config.provider_model_settings import (
-    ProviderModelSettingsError,
-    ProviderModelSettingsRepository,
-)
-from sakura_assistant.llm.api_client import OpenAICompatibleClient
+from app.config import model_references as module
+from app.config.model_references import EMPTY_REFERENCE, OPENAI_SERVICE, ModelReferenceRepository, migrate_legacy_model_configuration, model_reference
 
 
-SECRET = "KEEP_THIS_SECRET_BYTE_FOR_BYTE"
+REF = {"serviceKey": OPENAI_SERVICE, "profileId": "fixture", "modelId": "chat-model"}
+SECRET = "PRIVATE_HANDOFF_KEY"
 
 
-def _root(tmp_path: Path, *, version: int = 1) -> Path:
-    config = tmp_path / "config"
-    config.mkdir(parents=True)
-    (config / "system_config.yaml").write_text(
-        yaml.safe_dump({"config_version": version}, sort_keys=False),
-        encoding="utf-8",
-    )
-    return tmp_path
+def _legacy(root):
+    path = root / "config" / "api.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(yaml.safe_dump({
+        "llm": {"temperature": 0.3, "top_p": 0.8, "max_tokens": 1234, "timeout_seconds": 45},
+        "api_profiles": [{"id": "fixture", "alias": "Fixture", "base_url": "https://fixture.invalid/v1", "api_key": SECRET,
+                          "models": [{"name": "chat-model"}, {"name": "vision-model"}]}],
+        "model_slots": {"chat": {"profile_id": "fixture", "model": "chat-model", "context_window_tokens": 128000},
+                        "vision_chat": {"profile_id": "fixture", "model": "vision-model"}},
+        "unrelated": {"keep": True},
+    }), encoding="utf-8")
+    return path
 
 
-def _api(root: Path) -> Path:
-    return root / "config" / "api.yaml"
+def _provider(root):
+    return root / "data" / "plugins" / OPENAI_SERVICE / "config.json"
 
 
-def _write_current(root: Path) -> None:
-    _api(root).write_text(
-        yaml.safe_dump(
-            {
-                "llm": {
-                    "base_url": "https://fixture.invalid/v1",
-                    "api_key": SECRET,
-                    "model": "chat-model",
-                    "timeout_seconds": 60,
-                    "extension_unknown": "keep-llm",
-                },
-                "api_profiles": [
-                    {
-                        "id": "fixture",
-                        "alias": "Fixture",
-                        "base_url": "https://fixture.invalid/v1",
-                        "api_key": SECRET,
-                        "provider_unknown": "keep-provider",
-                        "models": [
-                            {"name": "chat-model", "model_unknown": "keep-model"},
-                            {"name": "vision-model"},
-                        ],
-                    }
-                ],
-                "model_slots": {
-                    "chat": {
-                        "profile_id": "fixture",
-                        "model": "chat-model",
-                        "slot_unknown": "keep-chat-slot",
-                    },
-                    "vision_chat": {"profile_id": "fixture", "model": "vision-model"},
-                    "memory_curation": {"profile_id": "fixture", "model": "chat-model"},
-                    "future_slot": {"opaque": ["preserve-slot"]},
-                },
-                "tts": {"enabled": False, "private_unknown": "keep-tts"},
-                "top_unknown": {"nested": "keep-top"},
-            },
-            allow_unicode=True,
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
+def _assistant(root):
+    return root / "data" / "plugins" / "sakura.assistant.default" / "config.json"
 
 
-def _draft(*, action: str = "keep", value: str = "") -> dict[str, object]:
-    return {
-        "providers": [
-            {
-                "id": "fixture",
-                "alias": "Fixture edited",
-                "base_url": "https://fixture.invalid/v1",
-                "models": ["chat-model", "vision-model"],
-                "credential": {"action": action, "value": value},
-            }
-        ],
-        "model_slots": {
-            "chat": {"profile_id": "fixture", "model": "chat-model"},
-            "vision_chat": {"profile_id": "fixture", "model": "vision-model"},
-        },
-        "settings": {
-            "timeout_seconds": 30,
-            "temperature": 0.7,
-            "top_p": None,
-            "max_tokens": 2048,
-        },
-    }
+def test_handoff_preserves_source_and_assigns_each_setting_to_its_owner(tmp_path):
+    legacy = _legacy(tmp_path)
+    before = legacy.read_bytes()
+    migrate_legacy_model_configuration(tmp_path)
+    assert legacy.read_bytes() == before
+    profile, = json.loads(_provider(tmp_path).read_text(encoding="utf-8"))["profiles"]
+    assert profile["api_key"] == SECRET
+    assert profile["timeout_seconds"] == 45
+    assert profile["models"][0]["contextWindowTokens"] == 128000
+    assert json.loads(_assistant(tmp_path).read_text(encoding="utf-8"))["generation"] == {"temperature": 0.3, "top_p": 0.8, "max_tokens": 1234}
+    repository = ModelReferenceRepository(tmp_path)
+    assert repository.active()["chat"] == REF
+    assert repository.active()["vision_chat"]["modelId"] == "vision-model"
+    assert SECRET not in repository.path.read_text(encoding="utf-8")
+    legacy.write_text("invalid: [", encoding="utf-8")
+    migrate_legacy_model_configuration(tmp_path)
+    assert repository.active()["chat"] == REF
 
 
-def test_snapshot_is_side_effect_free_and_never_returns_saved_secret(tmp_path: Path) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    before = _api(root).read_bytes()
-
-    snapshot = ProviderModelSettingsRepository(root).snapshot()
-
-    assert snapshot["providers"] == [
-        {
-            "id": "fixture",
-            "alias": "Fixture",
-            "base_url": "https://fixture.invalid/v1",
-            "configured": True,
-            "models": ["chat-model", "vision-model"],
-        }
-    ]
-    assert SECRET not in repr(snapshot)
-    assert _api(root).read_bytes() == before
-
-
-def test_snapshot_rejects_retired_string_model_entries(tmp_path: Path) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    document = yaml.safe_load(_api(root).read_text(encoding="utf-8"))
-    document["api_profiles"][0]["models"] = ["chat-model"]
-    _api(root).write_text(
-        yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ProviderModelSettingsError) as caught:
-        ProviderModelSettingsRepository(root).snapshot()
-
-    assert caught.value.code == "CONFIG_DATA_INVALID"
+def test_interrupted_handoff_resumes_without_overwriting_saved_destinations(tmp_path, monkeypatch):
+    _legacy(tmp_path)
+    original_write = module._write
+    def interrupt(path, value):
+        if path == _assistant(tmp_path):
+            raise OSError("interrupted")
+        original_write(path, value)
+    monkeypatch.setattr(module, "_write", interrupt)
+    with pytest.raises(OSError):
+        migrate_legacy_model_configuration(tmp_path)
+    assert not ModelReferenceRepository(tmp_path).path.exists()
+    saved = json.loads(_provider(tmp_path).read_text(encoding="utf-8"))
+    saved["profiles"][0]["api_key"] = "USER_UPDATED_KEY"
+    original_write(_provider(tmp_path), saved)
+    monkeypatch.setattr(module, "_write", original_write)
+    migrate_legacy_model_configuration(tmp_path)
+    assert json.loads(_provider(tmp_path).read_text(encoding="utf-8")) == saved
+    assert ModelReferenceRepository(tmp_path).active()["chat"] == REF
 
 
-def test_single_domain_save_preserves_unknowns_non_target_slot_and_kept_secret(tmp_path: Path) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-
-    result = ProviderModelSettingsRepository(root).save(_draft())
-    saved = yaml.safe_load(_api(root).read_text(encoding="utf-8"))
-
-    assert result == {
-        "saved": True,
-        "change_plan": "applied",
-        "setup_complete": True,
-    }
-    assert saved["api_profiles"][0]["api_key"] == SECRET
-    assert saved["api_profiles"][0]["provider_unknown"] == "keep-provider"
-    assert saved["api_profiles"][0]["models"][0]["model_unknown"] == "keep-model"
-    assert saved["model_slots"]["memory_curation"]["model"] == "chat-model"
-    assert saved["model_slots"]["chat"]["slot_unknown"] == "keep-chat-slot"
-    assert saved["model_slots"]["future_slot"] == {"opaque": ["preserve-slot"]}
-    assert saved["tts"]["private_unknown"] == "keep-tts"
-    assert saved["top_unknown"]["nested"] == "keep-top"
-    assert saved["llm"]["extension_unknown"] == "keep-llm"
+def test_existing_plugin_fields_win_and_unrelated_data_survives(tmp_path):
+    _legacy(tmp_path)
+    module._write(_provider(tmp_path), {"profiles": [], "custom": "keep"})
+    module._write(_assistant(tmp_path), {"generation": {"temperature": 1}, "custom": "keep"})
+    migrate_legacy_model_configuration(tmp_path)
+    assert json.loads(_provider(tmp_path).read_text(encoding="utf-8")) == {"profiles": [], "custom": "keep"}
+    assert json.loads(_assistant(tmp_path).read_text(encoding="utf-8"))["generation"] == {"temperature": 1}
+    assert ModelReferenceRepository(tmp_path).load()["chat"] == REF
 
 
-def test_one_million_token_context_window_round_trips_to_the_runtime_reader(tmp_path: Path) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    draft = _draft()
-    draft["model_slots"]["chat"]["context_window_tokens"] = 1_000_000  # type: ignore[index]
-
-    ProviderModelSettingsRepository(root).save(draft)
-
-    snapshot = ProviderModelSettingsRepository(root).snapshot()
-    resolved = CoreConfigReader().read(root).provider_selection
-    assert snapshot["model_slots"]["chat"]["context_window_tokens"] == 1_000_000
-    assert resolved is not None
-    assert resolved.api_settings.context_window_tokens == 1_000_000
-    assert resolved.api_settings.context_window_source == "user"
+def test_reference_identity_keeps_provider_key_and_optional_vision_inherits_chat(tmp_path):
+    repository = ModelReferenceRepository(tmp_path)
+    other = {**REF, "serviceKey": "vendor.other"}
+    repository.save({"chat": other, "vision_chat": EMPTY_REFERENCE})
+    assert repository.active() == {"chat": other, "vision_chat": other}
+    assert repository.load()["vision_chat"] == EMPTY_REFERENCE
 
 
-def test_saved_generation_settings_reach_chat_requests_after_start_and_hot_apply(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    repository = ProviderModelSettingsRepository(root)
-    captured: dict[str, Any] = {}
-    client: OpenAICompatibleClient | None = None
-
-    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        captured.clear()
-        captured.update(payload)
-        return {"choices": [{"message": {"content": '{"segments":[{"zh":"好。"}]}'}}]}
-
-    for temperature, top_p, max_tokens, expected in (
-        (0.2, 0.4, 2048, {"temperature": 0.2, "top_p": 0.4, "max_tokens": 2048}),
-        (0, 0, 1024, {"temperature": 0, "top_p": 0, "max_tokens": 1024}),
-        (None, None, None, {"temperature": 0.8}),
-    ):
-        draft = _draft()
-        draft["settings"] = {
-            "timeout_seconds": 30,
-            "temperature": temperature,
-            "top_p": top_p,
-            "max_tokens": max_tokens,
-        }
-        repository.save(draft)
-        resolved = CoreConfigReader().read(root).provider_selection
-        assert resolved is not None
-        if client is None:
-            client = OpenAICompatibleClient(resolved.api_settings)
-            monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-        else:
-            client.update_settings(resolved.api_settings)
-
-        client.chat("You are Sakura.", [{"role": "user", "content": "你好"}])
-
-        assert {
-            name: captured[name]
-            for name in ("temperature", "top_p", "max_tokens")
-            if name in captured
-        } == expected
+@pytest.mark.parametrize("value", [{"profileId": "fixture", "modelId": "x"}, {**REF, "apiKey": SECRET}, {**REF, "modelId": 3}, {**REF, "serviceKey": ""}])
+def test_invalid_or_credential_bearing_references_are_rejected(value):
+    with pytest.raises(ValueError, match="MODEL_SLOT_SELECTION_INVALID"):
+        model_reference(value)
 
 
-def test_unused_provider_draft_keeps_selected_chat_and_character_bootable(tmp_path: Path) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    (root / "config" / "characters.yaml").write_text(
-        "current_character_id: N.A.V.I.\n",
-        encoding="utf-8",
-    )
-    draft = _draft()
-    draft["providers"].append(  # type: ignore[union-attr]
-        {
-            "id": "draft-provider",
-            "alias": "Draft Provider",
-            "base_url": "https://draft.invalid/v1",
-            "models": [],
-            "credential": {"action": "clear", "value": ""},
-        }
-    )
-
-    ProviderModelSettingsRepository(root).save(draft)
-    result = CoreConfigReader().read(root)
-
-    assert result.config_problem is None
-    assert result.current_character_id == "N.A.V.I."
-    assert result.provider_selection is not None
-    assert result.provider_selection.api_settings.model == "chat-model"
+def test_legacy_llm_only_configuration_is_retained(tmp_path):
+    legacy = _legacy(tmp_path)
+    legacy.write_text(yaml.safe_dump({"llm": {"base_url": "https://fixture.invalid/v1", "api_key": SECRET, "model": "old-model"}}), encoding="utf-8")
+    migrate_legacy_model_configuration(tmp_path)
+    assert ModelReferenceRepository(tmp_path).active()["chat"]["modelId"] == "old-model"
+    assert json.loads(_provider(tmp_path).read_text(encoding="utf-8"))["profiles"][0]["api_key"] == SECRET
 
 
-@pytest.mark.parametrize(
-    ("action", "value", "expected"),
-    [("replace", "NEW_SECRET", "NEW_SECRET"), ("clear", "", "")],
-)
-def test_credential_replace_and_explicit_clear(
-    tmp_path: Path,
-    action: str,
-    value: str,
-    expected: str,
-) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    ProviderModelSettingsRepository(root).save(_draft(action=action, value=value))
-    saved = yaml.safe_load(_api(root).read_text(encoding="utf-8"))
-    assert saved["api_profiles"][0]["api_key"] == expected
-    assert saved["llm"]["api_key"] == expected
-
-
-@pytest.mark.parametrize("url,ready", [
-    ("http://localhost:11434/v1", True),
-    ("http://127.0.0.1:11434/v1", True),
-    ("http://127.4.5.6/v1", True),
-    ("http://[::1]:11434/v1", True),
-    ("https://fixture.invalid/v1", False),
-])
-def test_empty_key_readiness_and_probes_follow_endpoint_authentication(tmp_path, url, ready):
-    root = _root(tmp_path)
-    repository = ProviderModelSettingsRepository(root)
-    draft = _draft(action="clear")
-    draft["providers"][0]["base_url"] = url
-    saved = repository.save(draft)
-    assert saved["setup_complete"] is ready
-    snapshot = repository.snapshot()
-    assert snapshot["setup_complete"] is ready
-    assert snapshot["providers"][0]["configured"] is False
-    selected = CoreConfigReader().read(root)
-    assert (selected.provider_selection is not None) is ready
-    probe = {"profile_id": "fixture", "base_url": url, "model": "chat-model", "timeout_seconds": 15, "credential": {"action": "keep"}}
-    if ready:
-        assert repository.resolve_probe(probe, require_model=True) == (url, "", "chat-model", 15)
-    else:
-        with pytest.raises(ProviderModelSettingsError) as caught:
-            repository.resolve_probe(probe, require_model=True)
-        assert caught.value.code == "CREDENTIAL_REQUIRED"
-
-
-def test_invalid_domain_or_atomic_failure_never_changes_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    before = _api(root).read_bytes()
-    invalid = _draft()
-    invalid["model_slots"] = {
-        "chat": {"profile_id": "missing", "model": "chat-model"},
-        "vision_chat": {"profile_id": "", "model": ""},
-    }
-    with pytest.raises(ProviderModelSettingsError, match="模型槽"):
-        ProviderModelSettingsRepository(root).save(invalid)
-    assert _api(root).read_bytes() == before
-
-    def fail_write(*_args: object, **_kwargs: object) -> None:
-        raise OSError("fixture replace failure")
-
-    monkeypatch.setattr(module, "atomic_write_text", fail_write)
-    with pytest.raises(ProviderModelSettingsError) as caught:
-        ProviderModelSettingsRepository(root).save(_draft())
-    assert caught.value.code == "CONFIG_SAVE_FAILED"
-    assert _api(root).read_bytes() == before
-
-
-@pytest.mark.parametrize(
-    "base_url",
-    [
-        "ftp://fixture.invalid/v1",
-        "https://user:secret@fixture.invalid/v1",
-        "https://fixture.invalid/v1?token=secret",
-        "https://bad host/v1",
-        "https://-bad.invalid/v1",
-    ],
-)
-def test_invalid_provider_urls_fail_before_write(tmp_path: Path, base_url: str) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    before = _api(root).read_bytes()
-    draft = _draft()
-    draft["providers"][0]["base_url"] = base_url  # type: ignore[index]
-    with pytest.raises(ProviderModelSettingsError) as caught:
-        ProviderModelSettingsRepository(root).save(draft)
-    assert caught.value.code == "BASE_URL_INVALID"
-    assert _api(root).read_bytes() == before
-
-
-@pytest.mark.parametrize("version", [0, 2])
-def test_any_non_current_schema_is_read_only(tmp_path: Path, version: int) -> None:
-    incompatible = _root(tmp_path / str(version), version=version)
-    _write_current(incompatible)
-    before = _api(incompatible).read_bytes()
-    with pytest.raises(ProviderModelSettingsError) as caught:
-        ProviderModelSettingsRepository(incompatible).save(_draft())
-    assert caught.value.code == "CONFIG_VERSION_UNSUPPORTED"
-    assert _api(incompatible).read_bytes() == before
-
-
-def test_corrupt_yaml_and_invalid_current_domain_are_read_only(tmp_path: Path) -> None:
-    corrupt = _root(tmp_path / "corrupt")
-    _api(corrupt).write_text("api_profiles: [", encoding="utf-8")
-    before = _api(corrupt).read_bytes()
-    with pytest.raises(ProviderModelSettingsError) as caught:
-        ProviderModelSettingsRepository(corrupt).save(_draft())
-    assert caught.value.code == "CONFIG_DATA_INVALID"
-    assert _api(corrupt).read_bytes() == before
-
-    invalid = _root(tmp_path / "invalid")
-    _api(invalid).write_text("api_profiles: {}\nmodel_slots: []\n", encoding="utf-8")
-    before = _api(invalid).read_bytes()
-    with pytest.raises(ProviderModelSettingsError) as caught:
-        ProviderModelSettingsRepository(invalid).save(_draft())
-    assert caught.value.code == "CONFIG_DATA_INVALID"
-    assert _api(invalid).read_bytes() == before
-
-
-def test_delete_all_providers_is_a_valid_setup_required_state(tmp_path: Path) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    result = ProviderModelSettingsRepository(root).save(
-        {
-            "providers": [],
-            "model_slots": {"chat": {}, "vision_chat": {}},
-            "settings": {
-                "timeout_seconds": 60,
-                "temperature": None,
-                "top_p": None,
-                "max_tokens": None,
-            },
-        }
-    )
-    saved = yaml.safe_load(_api(root).read_text(encoding="utf-8"))
-    assert result["setup_complete"] is False
-    assert saved["api_profiles"] == []
-    assert saved["model_slots"]["memory_curation"]["model"] == "chat-model"
-
-
-def test_large_provider_catalog_survives_repository_reopen(tmp_path: Path) -> None:
-    root = _root(tmp_path)
-    _write_current(root)
-    draft = _draft()
-    draft["providers"][0]["alias"] = "服务" * 600
-    draft["providers"][0]["models"] += [f"model-{i}" for i in range(600)]
-    draft["providers"] += [
-        {"id": f"provider-{i}", "alias": f"Provider {i}",
-         "base_url": "https://fixture.invalid/v1", "models": ["chat-model"],
-         "credential": {"action": "clear", "value": ""}}
-        for i in range(40)
-    ]
-    ProviderModelSettingsRepository(root).save(draft)
-    snapshot = ProviderModelSettingsRepository(root).snapshot()
-    assert len(snapshot["providers"]) == 41
-    assert snapshot["providers"][0]["alias"] == draft["providers"][0]["alias"]
-    assert snapshot["providers"][0]["models"] == draft["providers"][0]["models"]
-    assert snapshot["model_slots"]["chat"]["profile_id"] == "fixture"
-    assert snapshot["model_slots"]["chat"]["model"] == "chat-model"
-    assert snapshot["model_slots"]["vision_chat"] == draft["model_slots"]["vision_chat"]
-    assert SECRET not in repr(snapshot)
+def test_legacy_import_validation_discards_partial_handoff_before_optional_config_skip(tmp_path, monkeypatch):
+    from app.legacy_import.importer import _validate_current_settings
+    from app.legacy_import.errors import LegacyImportError
+    legacy = _legacy(tmp_path)
+    original = legacy.read_bytes()
+    module._write(_provider(tmp_path), {"custom": "keep"})
+    prior_provider = _provider(tmp_path).read_bytes()
+    write = module._write
+    def fail_assistant(path, value):
+        if path == _assistant(tmp_path):
+            raise OSError("fixture write failed")
+        write(path, value)
+    monkeypatch.setattr(module, "_write", fail_assistant)
+    with pytest.raises(LegacyImportError) as error:
+        _validate_current_settings(tmp_path)
+    assert error.value.code == "LEGACY_SETTINGS_VALIDATION_FAILED"
+    assert _provider(tmp_path).read_bytes() == prior_provider
+    assert not _assistant(tmp_path).exists()
+    assert not ModelReferenceRepository(tmp_path).path.exists()
+    assert legacy.read_bytes() == original

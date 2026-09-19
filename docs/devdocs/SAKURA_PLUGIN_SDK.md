@@ -547,6 +547,8 @@ settings.register(
 ```
 
 `values` 只更新当前页面投影，不替代持久化；需要保存时仍由 Action 自己调用 `context.config.update()`。
+Action 也可返回 `applicationState`，取值与保存结果相同。显式应用动作返回 `restart_required` 时，宿主在该动作内重载插件；
+Collection 的同名状态只表示已保存、待应用，不自动重载。
 每个声明的 Action 都必须在 `actions={...}` 中提供同名回调。目前 `danger` 只支持 `false`。
 
 `load()` 应当快速读取本地配置和当前状态，不能在刷新表单时启动下载、重置任务或应用配置。`save()` 负责校验
@@ -703,6 +705,8 @@ surface.register("connection", "voice")
 | 不注册或 `plugin` | 插件设置窗口 | 普通字段、Action 和 Collection 都可用。 |
 | `voice` | “语音”页及插件设置窗口 | 适合语音引擎配置；两个入口复用 Voice controller 的同一组控件与保存链路。 |
 | `memory` | “记忆”页 | 适合记忆管理区块和 Collection。 |
+| `providers` | “模型服务”页 | 模型提供方的连接、模型参数和探测操作。 |
+| `model` | “模型”页 | Assistant 等消费者的模型生成参数。 |
 | `about` | 历史资源区块，管理操作显示在插件设置 | 只能有只读 `resource` 字段；不能保存，也不能挂 Collection。所有 Action 必须被资源字段引用。 |
 
 surface 不会创建新的左侧导航项。传入其他字符串也不会得到一个自定义页面，所以插件不要自创 surface 名称。
@@ -800,6 +804,11 @@ def delete_note(item_id):
 
 不支持的操作传 `None` 或省略对应关键字。要提供删除回调，`deleteConfirmation` 不能留空。cursor 是插件
 定义的 opaque 字符串；不要让界面解析它。Collection v0 每页最多 100 项，结果应保持有界。
+`itemId` 为最多 1024 字符的稳定身份；重新加载插件后，同一记录仍须使用原身份，避免已保留的编辑草稿指向其他记录。
+
+创建、更新和删除回调可在结果顶层附带 `applicationState`。`restart_required` 表示记录已保存、运行配置尚未切换，
+宿主保留该区块的重新加载提示；Collection 操作本身不自动重启插件。需要显式生效时，由插件提供“应用”Action。
+未返回该字段的插件保留原有行为。密码控件不会自动隐藏后端返回值，插件查询必须只投影配置状态和空密码输入值。
 
 打开编辑器不算修改，只有可编辑字段偏离原值才产生草稿。角色集合的草稿阻止换角色；全局草稿可在“应用”后保留，
 “保存并关闭”仍须先保存或放弃记录。所有集合在角色切换、同角色局部刷新和 Core 转场时暂停旧请求，重绑定后隔离旧结果；异步删除确认会复核编辑对象。
@@ -1001,8 +1010,9 @@ model_slots.register(
         "order": 50,
     },
     load=lambda: {
+        "serviceKey": context.config.get().get("serviceKey", ""),
         "profileId": context.config.get().get("profileId", ""),
-        "model": context.config.get().get("model", ""),
+        "modelId": context.config.get().get("modelId", ""),
     },
     save=lambda selection: {
         "applicationState": context.config.update(selection)
@@ -1010,13 +1020,26 @@ model_slots.register(
 )
 ```
 
-`catalog()` 返回宿主可选模型目录，`resolve({"profileId": ..., "model": ...})` 返回实际调用信息，包括
-`baseUrl`、`apiKey` 和 `timeoutSeconds`。解析结果只在插件进程内使用，不要写日志、设置投影或普通 Service
-返回值。`required: false` 时，空的 `profileId/model` 表示动态继承当前对话模型。
+`catalog()` 返回 `serviceKey → profiles[] → models[]` 的公开目录，每级包含稳定 ID 和显示名称。
+`resolve(reference)` 只解析三字段引用；可选槽位三项均为空时，返回当前对话模型引用，不返回地址、密钥或协议参数。
+`active()` 返回当前 chat 与 vision_chat 的引用或 `null`。模型消失不会清除保存的引用；用途页会显示其不可用状态。
 
-`active()` 返回当前 chat 与可空 vision_chat 的公开 ApiSettings 字段，用于明确需要当前配置的消费者。
-需要一轮配置稳定时，应在开始时取一次快照。默认 Assistant 直接使用 Core 传入的 session.modelSlots，
-不需要声明 model_slots 依赖或每轮调用 active。
+实际推理使用公开 SDK `sakura_model_client.ModelClient(context, reference)`。客户端绑定一个提供方实例，
+经模型服务的任务接口生成、取消和释放；消费者无需安装 OpenAI SDK，也不能读取提供方凭据。
+默认 Assistant 在准备阶段保存 `session.modelSlots` 与实例绑定，后续步骤不隐式读取新的连接配置。
+Mem0 使用同一客户端进行后台整理；提供方不可用只停止自动整理，不影响本地数据管理和召回。
+
+提供方先发布自己的 Model Service，再注册目录贡献：
+
+```python
+model_slots.register_provider(
+    {"serviceKey": "example.model", "label": "示例模型服务"},
+    catalog=lambda: [{"profileId": "default", "label": "默认连接", "models": [{"modelId": "chat", "label": "对话模型"}]}],
+)
+```
+
+目录回调读取本地有效配置，不发起网络发现。连接和凭据通过提供方自己的 Settings/Collection 管理；
+保存与应用的具体时机见[模型设置契约](../specs/runtime-v2/WP-3S-01-provider-model-settings.md)。
 
 ### 当前角色和角色扩展
 

@@ -39,10 +39,14 @@ export function createPluginSettingsFeature({
     aboutComponentsState: document.getElementById("aboutComponentsState"),
     aboutComponentsList: document.getElementById("aboutComponentsList"),
     memorySurface: document.getElementById("memorySurface"),
+    modelProviderSurface: document.getElementById("modelProviderSurface"),
+    modelSettingsSurface: document.getElementById("modelSettingsSurface"),
     pages: {
       memory: document.getElementById("page-memory"),
       plugins: document.getElementById("page-plugins"),
       about: document.getElementById("page-about"),
+      providers: document.getElementById("page-providers"),
+      model: document.getElementById("page-model"),
     },
   };
 
@@ -1019,6 +1023,7 @@ export function createPluginSettingsFeature({
       } else {
         state.loaded = false;
         await queryPluginCollection(plugin, section, collection);
+        if (result.applicationState === "restart_required") notify("已保存，应用后生效。", "info");
         completed = true;
       }
     } catch (error) {
@@ -1231,10 +1236,10 @@ export function createPluginSettingsFeature({
     return block;
   }
 
-  function renderPluginSettings(plugin) {
+  function renderPluginSettings(plugin, surface = null) {
     const allSections = pluginSettingsSections(plugin);
-    const knownSurfaces = new Set(["memory", "voice"]);
-    const sections = allSections.filter((section) => !knownSurfaces.has(section.surface));
+    const knownSurfaces = new Set(["memory", "voice", "model", "providers"]);
+    const sections = allSections.filter((section) => surface ? section.surface === surface : !knownSurfaces.has(section.surface));
     const container = document.createElement("div");
     container.className = "plugin-settings";
     if (!sections.length) {
@@ -1362,6 +1367,17 @@ export function createPluginSettingsFeature({
     return container;
   }
 
+  function renderModelSurfaces() {
+    for (const [surface, container] of [["providers", fields.modelProviderSurface], ["model", fields.modelSettingsSurface]]) {
+      if (!container) continue;
+      container.textContent = "";
+      const plugins = (pluginView.items || []).filter(plugin => plugin.enabled
+        && pluginSettingsSections(plugin).some(section => section.surface === surface));
+      for (const plugin of plugins) container.append(renderPluginSettings(plugin, surface));
+      if (!plugins.length && surface === "providers") container.append(pluginNode("p", "empty-state", "暂无可用模型服务。"));
+    }
+  }
+
   function memorySurfaceIsTransitioning() {
     const snapshot = runtimePluginController?.snapshot();
     if (!snapshot) return false;
@@ -1385,7 +1401,9 @@ export function createPluginSettingsFeature({
   function pluginActivityPageVisible() {
     return fields.pages.memory.classList.contains("is-active")
       || fields.pages.plugins.classList.contains("is-active")
-      || fields.pages.about.classList.contains("is-active");
+      || fields.pages.about.classList.contains("is-active")
+      || fields.pages.providers?.classList.contains("is-active")
+      || fields.pages.model?.classList.contains("is-active");
   }
 
   function visiblePluginActivityIsTransient() {
@@ -1394,6 +1412,9 @@ export function createPluginSettingsFeature({
     if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning();
     if (fields.pages.plugins.classList.contains("is-active")) return selectedPluginHasTransientActivity();
     if (fields.pages.about.classList.contains("is-active")) return aboutComponentsRunning();
+    if (fields.pages.providers?.classList.contains("is-active") || fields.pages.model?.classList.contains("is-active")) {
+      return (pluginView.items || []).some(plugin => pluginPresentation.projectPluginActivity(plugin).isTransient);
+    }
     return false;
   }
 
@@ -2232,6 +2253,7 @@ export function createPluginSettingsFeature({
     if (fields.pluginInstallMenuButton.disabled) setPluginInstallMenuOpen(false);
     renderPluginList();
     renderPluginDetail();
+    renderModelSurfaces();
     syncPluginSettingsDialog();
     schedulePluginActivityRefresh();
   }
@@ -2620,6 +2642,8 @@ export function createPluginSettingsFeature({
   }
 
   function openPluginSettingsDialog(plugin, { sectionId = "", fieldKey = "" } = {}) {
+    const domain = pluginSettingsSections(plugin).find(section => (!sectionId || section.section_id === sectionId) && ['providers', 'model'].includes(section.surface));
+    if (domain) { showPage(domain.surface); renderModelSurfaces(); return; }
     if (pluginSettingsDialog) return;
     closeSelects();
     setPluginInstallMenuOpen(false);
@@ -2755,6 +2779,7 @@ export function createPluginSettingsFeature({
       clearPluginActivityRefresh();
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
+      if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {
       const snapshot = runtimePluginController.snapshot();

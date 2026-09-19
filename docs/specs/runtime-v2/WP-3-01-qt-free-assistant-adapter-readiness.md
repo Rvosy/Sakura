@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-09-19
 ---
 
 # WP-3-01：无 Qt Assistant Adapter 与真实 Readiness
@@ -31,7 +31,7 @@ Core initialize → 既有初始化 worker
 已发布的角色或聊天状态；角色可在 Assistant 仍 initializing、需要设置或失败时显示。所有阶段共用同一个
 受管 worker，关闭先停止 Application 拥有的启动中或已启动进程，再按原有期限等待 worker 退出。
 
-AssistantSession 保存 CharacterProfile、冻结的 system_prompt、BoundAssistant、loopSettings、model_slots、appVersion 和可空 visual binding。
+AssistantSession 保存 CharacterProfile、冻结的 system_prompt、BoundAssistant、loopSettings、model_slots、modelBindings、appVersion 和可空 visual binding。
 `descriptor()` 只输出本轮需要的角色说明、回复语气、循环设置、模型快照、版本与表现合同；插件进程由
 PluginRuntimeApplication 拥有，退休 readiness session 不关闭无关插件，也不恢复本地 Agent。
 
@@ -44,8 +44,8 @@ PluginRuntimeApplication 拥有，退休 readiness session 不关闭无关插件
    不选择首个角色或隐藏默认角色。可选角色包失败使用脱敏 issue sink。
 4. Adapter 固定当前 `sakura.assistant` 实例，调用 prepare(session)。缺少服务报告
    ASSISTANT_PROVIDER_REQUIRED，不在 Core 内构造模型。模型是否必需和是否配置完成由 Provider 决定。
-5. 默认 Assistant 的 prepare 只验证 chat 配置形状。回环 endpoint 可以没有 API key，实际请求不发送
-   Authorization；远端模型需要完整配置。准备阶段不做 DNS、HTTP、认证、模型列表或模型请求。
+5. 默认 Assistant 的 prepare 绑定所选 Model Service，并通过本地 describe 验证模型引用及能力。地址与密钥
+   由模型提供方私有配置拥有；准备阶段不做 DNS、HTTP、认证、网络模型发现或推理请求。
 6. 取消和关闭在读、绑定与 prepare 返回边界检查。readiness owner 只发布仍属于当前 generation 的结果；
    已取消或已关闭 worker 的晚到 session 不增加 revision，也不覆盖新会话。
 
@@ -67,8 +67,8 @@ retryable 是 boolean 元数据，初始化结果不触发自动 Core 重启或�
 | Provider 返回可用但降级的结果 | degraded | Provider 的稳定 code |
 | 读取、绑定或 prepare 出现未分类故障 | failed | ASSISTANT_INITIALIZATION_FAILED |
 
-CoreConfigReader 遇到模型配置不足时可以返回 PROVIDER_SETUP_REQUIRED；Adapter 将模型就绪判断交给
-实际 Assistant，不能据此阻止不需要远端模型的替代 Provider。配置结构损坏仍明确失败。
+CoreConfigReader 只读取系统版本和角色选择，不读取 API 配置。Adapter 将模型就绪判断交给
+实际 Assistant；模型缺失不能阻止不需要模型的替代 Assistant，或隐藏角色及插件管理。
 Provider 网络、认证和响应错误只在真实操作中发生，不是启动时自动探测的 readiness 条件。
 
 ## Snapshot 与秘密边界
@@ -78,10 +78,9 @@ Snapshot 继续由 Python 拥有，revision 单调递增，Rust 只缓存投影�
 [表现插件合同](visual-plugin-boundary.md) 中的 schemaVersion 2 可空 visual。
 公开投影不包含系统说明、模型凭据、角色包路径、内部对象或 generation credential。
 
-ApiSettings.api_key、ProviderSelection.api_settings、CoreConfigReadResult.provider_selection 和
-HostConfig.generation_credential 保持 repr 排除。含密 DTO 不交给通用日志序列化器。
-模型设置只通过公开 model_slots 的受控 Host 调用，或绑定 Assistant 的会话快照交给插件，用于实际模型请求；不得进入 WebView、
-Snapshot、错误或 Trace。generation credential 只允许进入既有 Core framed IPC envelope，不传入插件会话。
+HostConfig.generation_credential 保持 repr 排除。模型凭据只保存在提供方配置中，不进入 Core 配置读取结果或消费者 DTO。
+公开 model_slots 仅含 `serviceKey/profileId/modelId`，可以投影到用途设置；Assistant 会话另存已绑定实例 identity，
+不得因提供方重新加载而静默切换。generation credential 只允许进入既有 Core framed IPC envelope，不传入插件会话。
 
 ## 导入与清理
 

@@ -1,116 +1,81 @@
 export function validateProviderModelSnapshot(input) {
+  if (!input || input.schema_version !== 2 || !Array.isArray(input.providers) || !Array.isArray(input.model_slots)) {
+    throw new Error("MODEL_SETTINGS_SNAPSHOT_INVALID");
+  }
   return Object.freeze(structuredClone(input));
 }
 
 export function findProviderModelSelectionIssue({ providers, modelSlots, slotFields }) {
-  const providersById = new Map(
-    (Array.isArray(providers) ? providers : []).map((provider) => [provider.id, provider]),
-  );
-  for (const slot of Array.isArray(slotFields) ? slotFields : []) {
-    const selection = modelSlots?.[slot.id] || {};
-    const profileId = typeof selection.profile_id === "string" ? selection.profile_id : "";
-    const model = typeof selection.model === "string" ? selection.model : "";
-    if (Boolean(profileId) !== Boolean(model)) {
-      return Object.freeze({ type: "incomplete", slotId: slot.id, label: slot.label });
-    }
-    if (!profileId) {
-      if (slot.required) {
-        return Object.freeze({ type: "required", slotId: slot.id, label: slot.label });
-      }
+  for (const slot of slotFields || []) {
+    const ref = modelSlots?.[slot.id] || {};
+    const parts = [ref.serviceKey, ref.profileId, ref.modelId];
+    const filled = parts.filter(value => typeof value === "string" && value).length;
+    if (filled && filled !== 3) return { type: "incomplete", slotId: slot.id, label: slot.label };
+    if (!filled) {
+      if (slot.required) return { type: "required", slotId: slot.id, label: slot.label };
       continue;
     }
-    const provider = providersById.get(profileId);
-    if (!provider || !Array.isArray(provider.models) || !provider.models.includes(model)) {
-      return Object.freeze({ type: "reference", slotId: slot.id, label: slot.label });
+    const provider = providers?.find(item => item.serviceKey === ref.serviceKey);
+    const profile = provider?.profiles?.find(item => item.profileId === ref.profileId);
+    if (!profile?.models?.some(item => item.modelId === ref.modelId)) {
+      if (slot.selection && parts.every((value, index) => value === slot.selection[["serviceKey", "profileId", "modelId"][index]])) continue;
+      return { type: "reference", slotId: slot.id, label: slot.label };
     }
   }
   return null;
 }
 
-export function createProviderModelController({ invoke, readDraft, applySnapshot, onDirty, onError }) {
+export function createProviderModelController({ invoke, readDraft, applySnapshot, onDirty }) {
   let snapshot = null;
   let baseline = null;
-  const operations = new Set();
-
-  const operationId = () => globalThis.crypto?.randomUUID?.() || `provider-${Date.now()}-${Math.random()}`;
-  const currentDraft = () => readDraft();
-  const isDirty = () => Boolean(snapshot && baseline !== JSON.stringify(currentDraft()));
+  let disposed = false;
+  let refreshRevision = 0;
+  const isDirty = () => Boolean(snapshot && baseline !== JSON.stringify(readDraft()));
 
   async function initialize(raw) {
-    snapshot = validateProviderModelSnapshot(raw);
+    const value = validateProviderModelSnapshot(raw);
+    if (disposed) return;
+    snapshot = value;
     applySnapshot(snapshot);
-    baseline = JSON.stringify(currentDraft());
+    baseline = JSON.stringify(readDraft());
     onDirty();
   }
 
+  async function refreshCurrent() {
+    const revision = ++refreshRevision;
+    const next = validateProviderModelSnapshot(await invoke("settings_provider_model_get"));
+    if (disposed || revision !== refreshRevision) return next;
+    await initialize(next);
+    return next;
+  }
+
   async function save() {
-    if (!snapshot) throw new Error("provider settings are not initialized");
-    const draft = currentDraft();
+    if (!snapshot || disposed) throw new Error("模型设置尚未就绪。");
+    const draft = readDraft();
+    const issue = findProviderModelSelectionIssue({ providers: snapshot.providers, modelSlots: draft.model_slots,
+      slotFields: snapshot.model_slots.map(slot => ({ id: slot.identity, label: slot.label, required: slot.required, selection: slot.selection })) });
+    if (issue) throw new Error(`${issue.label}未通过校验，请重新选择模型。`);
+    const identity = snapshot.core_generation_id;
     const result = await invoke("settings_provider_model_save", {
       windowGeneration: snapshot.window_generation,
       coreGenerationId: snapshot.core_generation_id,
       draft,
     });
+    if (disposed || snapshot.core_generation_id !== identity) throw new Error("模型设置会话已变化，请重新保存。");
     if (result?.change_plan !== "applied") throw new Error("PROVIDER_SETTINGS_CHANGE_PLAN_INVALID");
-    await initialize(await invoke("settings_provider_model_get"));
-    if (result?.save_state === "partial") {
-      const failed = result.failed_slot?.identity || "未知槽位";
-      throw new Error(`部分模型设置已保存；${failed} 保存失败，页面已刷新为实际状态。`);
+    await refreshCurrent();
+    if (result.save_state === "partial") {
+      throw new Error(`部分模型设置已保存；${result.failed_slot?.identity || "未知槽位"} 保存失败，页面已刷新为实际状态。`);
     }
     return result;
   }
 
-  async function probe(kind, profile) {
-    if (!snapshot) throw new Error("provider settings are not initialized");
-    const id = operationId();
-    operations.add(id);
-    try {
-      return await invoke("settings_provider_model_probe", {
-        windowGeneration: snapshot.window_generation,
-        coreGenerationId: snapshot.core_generation_id,
-        operationId: id,
-        kind,
-        profile,
-      });
-    } finally {
-      operations.delete(id);
-    }
-  }
-
-  async function cancelOperations() {
-    const pending = [...operations];
-    if (!snapshot) return;
-    await Promise.allSettled(pending.map((id) => invoke("settings_provider_model_cancel", {
-      windowGeneration: snapshot.window_generation,
-      coreGenerationId: snapshot.core_generation_id,
-      operationId: id,
-    })));
-  }
-
-  async function refreshCurrent() {
-    const next = validateProviderModelSnapshot(await invoke("settings_provider_model_get"));
-    await initialize(next);
-    return next;
-  }
-
-  return Object.freeze({
-    initialize,
-    save,
-    isDirty,
-    listModels: (profile) => probe("list_models", profile),
-    testConnection: (profile) => probe("test_connection", profile),
-    cancelOperations,
-    refreshCurrent,
+  return Object.freeze({ initialize, save, isDirty, refreshCurrent,
     rebindIdentity(coreGenerationId) {
-      if (!snapshot || typeof coreGenerationId !== "string" || !coreGenerationId) {
-        throw new Error("invalid settings core generation");
-      }
+      if (!snapshot || typeof coreGenerationId !== "string" || !coreGenerationId) throw new Error("invalid settings core generation");
+      refreshRevision++;
       snapshot = Object.freeze({ ...snapshot, core_generation_id: coreGenerationId });
     },
-    dispose() {
-      cancelOperations().catch(onError);
-      snapshot = null;
-      baseline = null;
-    },
+    dispose() { disposed = true; refreshRevision++; snapshot = baseline = null; },
   });
 }

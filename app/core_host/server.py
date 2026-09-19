@@ -292,7 +292,13 @@ class ReadinessController:
                 raise
             current = None
         previous = session.assistant.identity if session is not None else None
-        if current != previous:
+        model_changed = False
+        for slot, identity in getattr(session, "model_bindings", {}).items():
+            try:
+                model_changed = model_changed or application.service_identity(session.model_slots[slot]["serviceKey"]) != identity
+            except PluginRuntimeError:
+                model_changed = True
+        if current != previous or model_changed:
             self.apply_provider_configuration()
 
     def apply_provider_configuration(self) -> None:
@@ -374,6 +380,11 @@ class ReadinessController:
                 valid = application.service_identity("sakura.assistant") == identity
             except PluginRuntimeError:
                 valid = False
+            for slot, model_identity in getattr(session, "model_bindings", {}).items():
+                try:
+                    valid = valid and application.service_identity(session.model_slots[slot]["serviceKey"]) == model_identity
+                except PluginRuntimeError:
+                    valid = False
         with self._lock:
             if self._closed or self._session is not session:
                 raise OperationCancelled()
@@ -1294,30 +1305,6 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, handler)(request), False
             except (ValueError, LookupError) as error:
                 return self._error_response(request, "SCREEN_ATTACHMENT_REJECTED", str(error)), False
-        elif name == "settings.provider_model.cancel":
-            if (
-                PROVIDER_SETTINGS_CAPABILITY not in self._negotiated_capabilities
-                or self._provider_settings_boundary is None
-            ):
-                return self._error_response(
-                    request,
-                    "CAPABILITY_NEGOTIATION_FAILED",
-                    "provider settings capability was not negotiated",
-                ), False
-            request_payload = request.get("payload")
-            if not isinstance(request_payload, Mapping) or set(request_payload) != {"operationId"}:
-                return self._error_response(
-                    request,
-                    "INVALID_SETTINGS_CANCEL",
-                    "settings cancellation payload is invalid",
-                ), False
-            payload = {
-                "cancelled": bool(
-                    getattr(self._provider_settings_boundary, "cancel")(
-                        request_payload.get("operationId")
-                    )
-                )
-            }
         elif name == "system.shutdown":
             payload = {"accepted": True}
         else:
@@ -1462,7 +1449,6 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
-    from app.config.app_version import read_app_version
     from app.config.character_packages import repair_character_packages
 
     from .character_settings import (
@@ -1543,7 +1529,6 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            app_version=read_app_version(config.distribution_root),
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
@@ -1669,7 +1654,7 @@ def run_host(
                             ),
                         )
                     result = plugin_settings.handle(request)
-                    if request.get("name") in {
+                    if result.get("ok") and request.get("name") in {
                         "plugins.settings.save", "plugins.enabled.set", "plugins.settings.action",
                         "plugins.install", "plugins.uninstall",
                     }:

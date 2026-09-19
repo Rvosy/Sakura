@@ -24,7 +24,6 @@ import shutil
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.real_chat import RealChatBoundary
 from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
-from sakura_assistant.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.plugin_sdk.sakura_context import ContextRequest
 from app.storage.runtime_roots import RuntimeRoots
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
@@ -142,8 +141,9 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
     user.mkdir()
     _write_plugin(distribution)
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / "builtin" / "sakura_assistant", distribution / "plugins" / "builtin" / "sakura_assistant", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_model_openai_compatible", distribution / "plugins/builtin/sakura_model_openai_compatible", ignore=shutil.ignore_patterns("__pycache__"))
     original_root = PluginDependencyRoots.verified_root
-    monkeypatch.setattr(PluginDependencyRoots, "verified_root", lambda self, plugin_id, *args, **kwargs: assistant_dependencies if plugin_id == "sakura.assistant.default" else original_root(self, plugin_id, *args, **kwargs))
+    monkeypatch.setattr(PluginDependencyRoots, "verified_root", lambda self, plugin_id, *args, **kwargs: assistant_dependencies if plugin_id == "sakura.model.openai_compatible" else original_root(self, plugin_id, *args, **kwargs))
     requests: list[dict[str, Any]] = []
     reject_noninitial_system = getattr(request, "param", False)
 
@@ -183,8 +183,12 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
     worker.start()
     registry = ToolRegistry()
     application = PluginApplicationHost(RuntimeRoots(distribution, user), GENERATION_ID, registry)
-    application._host_services._model_slots._active_resolver = lambda: {"chat": {"model": "fixture-model",
-        "base_url": f"http://127.0.0.1:{provider.server_port}/v1", "api_key": "LOCAL_TEST_KEY", "timeout_seconds": 5}, "vision_chat": None}
+    provider_config = {"profiles": [{"profileId": "fixture", "base_url": f"http://127.0.0.1:{provider.server_port}/v1", "api_key": "LOCAL_TEST_KEY", "timeout_seconds": 5, "models": ["fixture-model", "fixture-vision"]}]}
+    from app.storage.paths import StoragePaths
+    provider_path = StoragePaths(user).plugin_data_for("sakura.model.openai_compatible") / "config.json"
+    provider_path.parent.mkdir(parents=True, exist_ok=True)
+    provider_path.write_text(json.dumps(provider_config), encoding="utf-8")
+    application._host_services._model_slots._active_resolver = lambda: {"chat": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "fixture-model"}, "vision_chat": None}
     (user / "card.md").write_text("You are Sakura, a friendly language partner.", encoding="utf-8")
     session = AssistantSession(CharacterProfile("fixture", "Fixture", user, user / "card.md", ""), None, RuntimeLoopSettings(), "test")
     session.model_slots = application._host_services._model_slots._active_resolver()
@@ -203,11 +207,15 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
     try:
         application.start()
         assert application.wait_until_loaded(timeout=5)
+        assert any(item["pluginId"] == "sakura.assistant.default" and item["state"] == "active" for item in application.public_snapshot()["plugins"]), json.dumps(application.public_snapshot(), ensure_ascii=False)
         session.assistant = BoundAssistant(application, application.service_identity("sakura.assistant"))
+        readiness = session.assistant.prepare(session.descriptor())
+        assert readiness["state"] == "ready", readiness
+        session.model_bindings = readiness["modelBindings"]
         application.bind_session(session)
         assert application.wait_until_bound(timeout=5)
         snapshot = application.public_snapshot()
-        assert {item["pluginId"]: item["state"] for item in snapshot["plugins"]} == {PLUGIN_ID: "active", "sakura.assistant.default": "active"}, snapshot
+        assert {item["pluginId"]: item["state"] for item in snapshot["plugins"]} == {PLUGIN_ID: "active", "sakura.assistant.default": "active", "sakura.model.openai_compatible": "active"}, snapshot
         inspection = application.call_service(SERVICE_KEY, "inspect")
         assert inspection["pid"] != os.getpid()
         assert inspection["capabilities"] == {
@@ -377,7 +385,8 @@ def test_default_assistant_routes_large_attached_image_to_the_vision_slot(chat):
     import base64
 
     slots = chat.session.model_slots
-    slots["vision_chat"] = {**slots["chat"], "model": "fixture-vision"}
+    slots["vision_chat"] = {**slots["chat"], "modelId": "fixture-vision"}
+    chat.session.model_bindings = chat.session.assistant.prepare(chat.session.descriptor())["modelBindings"]
     assert chat.send("ordinary-text", "hello")["name"] == "chat.completed"
     image = "data:image/png;base64," + base64.b64encode(b"image" * 260_000).decode("ascii")
 
@@ -411,7 +420,7 @@ def test_default_assistant_keeps_committed_model_settings_until_session_replacem
     # session. A failed or busy application keeps both this turn and the next
     # turn on the published settings snapshot.
     chat.application._host_services._model_slots._active_resolver = lambda: {
-        "chat": {**previous, "model": "unapplied-model"}, "vision_chat": None,
+        "chat": {**previous, "modelId": "unapplied-model"}, "vision_chat": None,
     }
     assert chat.send("after-failed-settings-apply", "continue")["name"] == "chat.completed"
     assert [item["model"] for item in chat.requests] == ["fixture-model", "fixture-model"]

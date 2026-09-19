@@ -826,15 +826,14 @@ class _ModelSlotsHostService:
     def __init__(
         self,
         invoke_callback: Callable[..., Any],
-        catalog: Callable[[], list[dict[str, object]]] | None = None,
         resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
         active_resolver: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         self._invoke_callback = invoke_callback
-        self._catalog = catalog
         self._resolver = resolver
         self._active_resolver = active_resolver
         self._registrations: dict[str, _ModelSlotRegistration] = {}
+        self._providers: dict[str, tuple[str, str, str, str]] = {}
         self._lock = threading.RLock()
 
     def call(self, method: str, args: Sequence[Any]) -> object:
@@ -843,12 +842,26 @@ class _ModelSlotsHostService:
                 raise HostServiceError("MODEL_CATALOG_UNAVAILABLE")
             return self._active_resolver()
         if method == "catalog" and not args:
-            if self._catalog is None:
-                raise HostServiceError("MODEL_CATALOG_UNAVAILABLE")
-            try:
-                return self._catalog()
-            except Exception as error:
-                raise HostServiceError("MODEL_CATALOG_UNAVAILABLE") from error
+            return self.catalog()
+        if method == "register_provider" and len(args) == 3:
+            plugin_id = _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
+            descriptor = _mapping(args[1], "MODEL_PROVIDER_INVALID")
+            if set(descriptor) != {"serviceKey", "label"}:
+                raise HostServiceError("MODEL_PROVIDER_INVALID")
+            service_key = _bounded_identifier(descriptor["serviceKey"], "MODEL_PROVIDER_INVALID", 200)
+            label = descriptor["label"]
+            if not isinstance(label, str) or not 1 <= len(label) <= 120:
+                raise HostServiceError("MODEL_PROVIDER_INVALID")
+            handle = _callback_handle(args[2])
+            with self._lock:
+                if any(item[1] == service_key for item in self._providers.values()):
+                    raise HostServiceError("MODEL_PROVIDER_CONFLICT")
+                identity = _new_registration_id(self._providers)
+                self._providers[identity] = (plugin_id, service_key, label, handle)
+            return {"registrationId": identity}
+        if method == "unregister_provider" and len(args) == 1:
+            with self._lock:
+                return {"removed": self._providers.pop(_registration_id(args[0]), None) is not None}
         if method == "resolve" and len(args) == 1:
             if self._resolver is None:
                 raise HostServiceError("MODEL_CATALOG_UNAVAILABLE")
@@ -932,7 +945,7 @@ class _ModelSlotsHostService:
                     self._invoke_callback(item.load_handle, "model_slots.load")
                 )
             except Exception:
-                selection = {"profileId": "", "model": ""}
+                selection = {"serviceKey": "", "profileId": "", "modelId": ""}
                 reason_code = "MODEL_SLOT_LOAD_FAILED"
             result.append({
                 "identity": f"plugin:{item.plugin_id}:{item.slot_id}",
@@ -977,6 +990,31 @@ class _ModelSlotsHostService:
     def clear(self) -> None:
         with self._lock:
             self._registrations.clear()
+            self._providers.clear()
+
+    def catalog(self) -> list[dict[str, Any]]:
+        with self._lock:
+            providers = list(self._providers.values())
+        result = []
+        for plugin_id, service_key, label, callback in providers:
+            try:
+                profiles = self._invoke_callback(callback, "model_slots.catalog")
+                if not isinstance(profiles, list):
+                    raise HostServiceError("MODEL_CATALOG_INVALID")
+                public = []
+                for profile in profiles:
+                    profile = _mapping(profile, "MODEL_CATALOG_INVALID")
+                    profile_id = _bounded_identifier(profile.get("profileId"), "MODEL_CATALOG_INVALID", 64)
+                    models = profile.get("models", [])
+                    if not isinstance(models, list):
+                        raise HostServiceError("MODEL_CATALOG_INVALID")
+                    public.append({"profileId": profile_id, "label": str(profile.get("label", profile_id))[:120],
+                                   "models": [{"modelId": str(model["modelId"])[:256], "label": str(model.get("label", model["modelId"]))[:256]}
+                                              for model in models if isinstance(model, Mapping) and isinstance(model.get("modelId"), str)]})
+                result.append({"serviceKey": service_key, "pluginId": plugin_id, "label": label, "profiles": public, "reasonCode": "READY"})
+            except Exception:
+                result.append({"serviceKey": service_key, "pluginId": plugin_id, "label": label, "profiles": [], "reasonCode": "MODEL_CATALOG_UNAVAILABLE"})
+        return result
 
 
 class _SettingsHostService:
@@ -1373,7 +1411,9 @@ class _SettingsHostService:
                     item_id,
                     values,
                 )
-            return _collection_item(collection, result)
+            result, state = self._collection_application_state(registration, result)
+            item = _collection_item(collection, result)
+            return {**item, "applicationState": state} if state is not None else item
         if operation == "delete":
             if set(payload) != {"itemId"} or collection.delete_handle is None:
                 raise HostServiceError("SETTINGS_COLLECTION_OPERATION_UNAVAILABLE")
@@ -1382,12 +1422,23 @@ class _SettingsHostService:
                 "settings.collection.delete",
                 _collection_item_id(payload.get("itemId")),
             )
+            result, state = self._collection_application_state(registration, result)
             if not isinstance(result, Mapping) or set(result) != {"deleted"} or not isinstance(
                 result.get("deleted"), bool
             ):
                 raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
-            return {"deleted": result["deleted"]}
+            return {"deleted": result["deleted"], **({"applicationState": state} if state is not None else {})}
         raise HostServiceError("SETTINGS_COLLECTION_OPERATION_INVALID")
+
+    def _collection_application_state(self, registration, result):
+        if not isinstance(result, Mapping) or "applicationState" not in result:
+            return result, None
+        state = _application_state(result)
+        with self._lock:
+            if registration in self._registrations.values():
+                registration.application_state = state
+                registration.reason_code = {"applied": "READY", "restart_required": "CONFIG_RELOAD_REQUIRED", "error": "CONFIG_APPLY_FAILED"}[state]
+        return {key: value for key, value in result.items() if key != "applicationState"}, state
 
     def save(
         self,
@@ -1438,10 +1489,11 @@ class _SettingsHostService:
             raise HostServiceError("SETTINGS_ACTION_INVALID")
         result = self._invoke_callback(handle, "settings.action", editable)
         if not isinstance(result, Mapping) or any(
-            key not in {"values", "message"} for key in result
+            key not in {"values", "message", "applicationState"} for key in result
         ):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
         public = dict(result)
+        state = _application_state(public) if "applicationState" in public else None
         invalid_value = False
         if "values" in public:
             if not isinstance(public["values"], Mapping):
@@ -1458,7 +1510,12 @@ class _SettingsHostService:
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
         if not _json_compatible(public):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-        if "values" in public:
+        if state is not None:
+            with self._lock:
+                if registration in self._registrations.values():
+                    registration.application_state = state
+                    registration.reason_code = {"applied": "READY", "restart_required": "CONFIG_RELOAD_REQUIRED", "error": "CONFIG_APPLY_FAILED"}[state]
+        elif "values" in public:
             with self._lock:
                 if registration in self._registrations.values() and registration.reason_code in {
                     "READY", "SETTINGS_VALUE_INVALID",
@@ -1687,7 +1744,6 @@ class PluginHostServices:
         encode_context_request: Callable[[ContextRequest], dict[str, Any]],
         on_context_change: Callable[[list[ContextProviderContribution]], None],
         storage_root: Path | None = None,
-        model_catalog: Callable[[], list[dict[str, object]]] | None = None,
         model_resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
         active_model_resolver: Callable[[], dict[str, object]] | None = None,
         commit_plugin_scope: Callable[..., Any] | None = None,
@@ -1711,7 +1767,6 @@ class PluginHostServices:
         self._settings_collection_v0 = _SettingsCollectionV0HostService(self._settings)
         self._model_slots = _ModelSlotsHostService(
             invoke_callback,
-            catalog=model_catalog,
             resolver=model_resolver,
             active_resolver=active_model_resolver,
         )
@@ -1748,6 +1803,9 @@ class PluginHostServices:
 
     def context_providers(self) -> list[ContextProviderContribution]:
         return self._context.providers()
+
+    def model_catalog(self):
+        return self._model_slots.catalog()
 
     def grant_history(self, plugin_id: str, character_id: str, snapshot_cursor: str | None = None) -> dict[str, str]:
         return self._timeline.grant(plugin_id, character_id, snapshot_cursor)
@@ -1879,20 +1937,12 @@ def _mapping(value: object, code: str) -> Mapping[str, Any]:
 
 
 def _model_slot_selection(value: object) -> dict[str, str]:
-    raw = _mapping(value, "MODEL_SLOT_SELECTION_INVALID")
-    if set(raw) != {"profileId", "model"}:
-        raise HostServiceError("MODEL_SLOT_SELECTION_INVALID")
-    profile_id = raw.get("profileId")
-    model = raw.get("model")
-    if (
-        not isinstance(profile_id, str)
-        or len(profile_id) > 64
-        or not isinstance(model, str)
+    from app.config.model_references import model_reference
 
-        or bool(profile_id) != bool(model)
-    ):
-        raise HostServiceError("MODEL_SLOT_SELECTION_INVALID")
-    return {"profileId": profile_id, "model": model}
+    try:
+        return model_reference(value)
+    except ValueError as error:
+        raise HostServiceError("MODEL_SLOT_SELECTION_INVALID") from error
 
 
 def _bounded_identifier(value: object, code: str, maximum: int) -> str:
@@ -2438,7 +2488,7 @@ def _collection_cell_valid(spec: Mapping[str, Any], value: object) -> bool:
 
 
 def _collection_item_id(value: object) -> str:
-    if not isinstance(value, str) or not value or len(value) > 200:
+    if not isinstance(value, str) or not value or len(value) > 1024:
         raise HostServiceError("SETTINGS_COLLECTION_ITEM_INVALID")
     return value
 
