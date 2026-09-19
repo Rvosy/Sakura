@@ -82,9 +82,13 @@ RPC 路由在调用前和返回后验证身份，旧操作不能查询、取消�
 `ASSISTANT_BINDING_EXPIRED`。取消、角色切换和 generation 失效继续服从 Core 的唯一终态规则。
 
 begin 发生传输错误时可能已启动 worker，不能仅凭 ACK 丢失重试，也不能立即撤销它仍在读取的文件和历史。
+Core 在调用 Assistant 前的历史读取、输入保存或 Session 描述失败，不调用 release。适配器仅为 begin
+已确认受理的 operationId 承担 release；输入 artifact 创建失败、明确拒绝和已交给 abort 的操作不再重复释放。
 处理顺序如下：
 
-1. 已确认 begin 接收的操作先 cancel，再 poll 等待 worker 终态。cancel/poll 失败时进入精确实例回收。
+1. 已确认 begin 接收的操作先 cancel，再 poll 等待 worker 终态。cancel 和后续 release 共用 2 秒协作清理预算，
+   每次 RPC 使用剩余期限；响应持续 running 也不能延长预算。超时或 cancel/poll 失败后进入精确实例回收，
+   复用进程所有者的 0.8 秒关闭预算。正常生成没有这项总时长限制。
 2. begin 接收状态不明时，直接调用 Host 内部 `abort_bound_service(serviceKey, identity, reason)`。
    只有明确拒绝受理的 BUSY、CLOSED 或 INPUT_INVALID 可以直接释放尚未使用的输入。
 3. abort 重新检查 scope，停止该实例及其硬依赖；已有 cleanup owner 时等待其完成。旧 scope 已结束或已被

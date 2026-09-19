@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 from types import SimpleNamespace
+from time import monotonic
 from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
 
 from app.config.app_version import read_app_version
@@ -49,12 +50,35 @@ class AssistantFailure(RuntimeError):
 
 
 class BoundAssistant:
+    # Leave the existing 0.8s process-close budget within Core's 3s chat close.
+    CLEANUP_TIMEOUT_SECONDS = 2.0
+
     def __init__(self, application, identity):
         self.application = application
         self.identity = dict(identity)
+        self._operation_id = None
+        self._cleanup_deadline = None
 
-    def call(self, method, *args):
-        return self.application.call_bound_service("sakura.assistant", self.identity, method, *args)
+    def call(self, method, *args, timeout=None):
+        options = {} if timeout is None else {"timeout": timeout}
+        return self.application.call_bound_service("sakura.assistant", self.identity, method, *args, **options)
+
+    def _cleanup_call(self, method, *args):
+        if self._cleanup_deadline is None:
+            self._cleanup_deadline = monotonic() + self.CLEANUP_TIMEOUT_SECONDS
+        remaining = self._cleanup_deadline - monotonic()
+        if remaining <= 0:
+            from app.plugins.runtime_v4 import PluginRuntimeError
+            raise PluginRuntimeError("ASSISTANT_CLEANUP_TIMEOUT")
+        return self.call(method, *args, timeout=remaining)
+
+    def _abort_operation(self):
+        # Transfer cleanup to the process owner. A later release must not retry
+        # this operation, including when process cleanup itself failed.
+        self._operation_id = None
+        self._cleanup_deadline = None
+        return self.application.abort_bound_service("sakura.assistant", self.identity,
+            reason="ASSISTANT_CALL_UNCERTAIN")
 
     def prepare(self, descriptor):
         result = self.call("prepare", descriptor)
@@ -95,6 +119,8 @@ class BoundAssistant:
                     attempted = False
                 raise
             started = True
+            self._operation_id = operation_id
+            self._cleanup_deadline = None
             while True:
                 cancel_checker()
                 state = self.call("poll", operation_id, sequence, 500)
@@ -129,10 +155,10 @@ class BoundAssistant:
             if attempted and not stopped:
                 if started:
                     try:
-                        self.call("cancel", operation_id)
+                        self._cleanup_call("cancel", operation_id)
                         # Keep admission and history grants until the worker exits.
                         # A tool already executing is never sent a second time.
-                        while self.call("poll", operation_id, sequence, 500)["state"] == "running":
+                        while self._cleanup_call("poll", operation_id, sequence, 500)["state"] == "running":
                             pass
                         stopped = True
                     except Exception as error:
@@ -141,8 +167,7 @@ class BoundAssistant:
                     try:
                         # A missing begin acknowledgement cannot establish whether
                         # a worker exists. End that exact process lifetime.
-                        self.application.abort_bound_service("sakura.assistant", self.identity,
-                            reason="ASSISTANT_CALL_UNCERTAIN")
+                        self._abort_operation()
                         stopped = True
                     except Exception as error:
                         report_assistant_failure(error, stage="abort", code="ASSISTANT_CLEANUP_FAILED")
@@ -155,13 +180,15 @@ class BoundAssistant:
                     report_assistant_failure(error, stage="input_release", code="ASSISTANT_CLEANUP_FAILED")
 
     def release(self, operation_id, *, status):
+        if self._operation_id != operation_id:
+            return {"released": True}
         try:
-            result = self.call("release", operation_id, status)
+            result = self._cleanup_call("release", operation_id, status)
             if not result["released"]:
                 # release asks the worker to dispose itself on exit.
                 while True:
                     try:
-                        self.call("poll", operation_id, 0, 500)
+                        self._cleanup_call("poll", operation_id, 0, 500)
                     except Exception as error:
                         if getattr(error, "code", "") == "ASSISTANT_OPERATION_NOT_FOUND":
                             break
@@ -170,11 +197,13 @@ class BoundAssistant:
         except Exception as error:
             report_assistant_failure(error, stage="release", code="ASSISTANT_CLEANUP_FAILED")
             try:
-                self.application.abort_bound_service("sakura.assistant", self.identity,
-                    reason="ASSISTANT_CALL_UNCERTAIN")
+                self._abort_operation()
             except Exception as cleanup_error:
                 report_assistant_failure(cleanup_error, stage="abort", code="ASSISTANT_CLEANUP_FAILED")
             raise
+        finally:
+            self._operation_id = None
+            self._cleanup_deadline = None
 
 
 def apply_visual_reply(reply, binding):

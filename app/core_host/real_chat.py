@@ -316,6 +316,7 @@ class RealChatBoundary:
         terminal = "chat.failed"
         terminal_payload: dict[str, Any]
         assistant = None
+        assistant_invoked = False
         completed_fact: dict[str, Any] | None = None
         plugin_application: object | None = None
         stage = "prepare"
@@ -389,6 +390,7 @@ class RealChatBoundary:
                     raise _BoundaryFailure("TIMELINE_WRITE_FAILED", "Chat input could not be saved", False) from error
             execution.cancel.throw_if_cancelled()
             stage = "assistant"
+            assistant_invoked = True
             result = assistant.run_turn({"operationId": operation_id, "session": session_descriptor,
                 "turnId": turn_id, "message": message, "event": dict(proactive_event) if proactive_event else None,
                 "historyCursor": history_cursor, "historyNow": history_now.isoformat(),
@@ -589,7 +591,7 @@ class RealChatBoundary:
                         # plugin delivery; a late cancel can no longer win.
                         pass
             finish_trace = getattr(assistant, "release", None)
-            if callable(finish_trace):
+            if assistant_invoked and callable(finish_trace):
                 try:
                     finish_trace(
                         operation_id,
