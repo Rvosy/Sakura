@@ -1674,6 +1674,7 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "characters.visuals.get" | "settings_character_visuals_get" => "读取角色形态",
         "visual_renderer" | "visual_startup" => "加载角色表现",
         "visual_control" => "执行表现控制",
+        "visual.control.parse" | "visual_control_parse" => "准备角色表现",
         "visual_preview" => "预览角色",
         "visual_rebind" => "切换角色表现",
         "characters.settings.get" => "读取角色设置",

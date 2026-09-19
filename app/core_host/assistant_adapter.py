@@ -218,11 +218,10 @@ def apply_visual_reply(reply, binding):
     for segment in reply.segments:
         control = None
         if binding is not None:
-            parsed = binding.parse_control(segment.control, legacy={"portrait": segment.portrait, "tone": segment.tone}, segment={"tone": segment.tone})
-            control = parsed.control
-            if parsed.reason_code not in {"READY", "VISUAL_BINDING_EXPIRED"}:
-                log_event("Visual", "表现控制未应用", diagnostic_attributes(parsed.error or RuntimeError(parsed.reason_code),
-                    reason_code=parsed.reason_code, stage="visual.parse_control"), event="visual.control.failed", severity="warning")
+            # Optional provider work belongs to playback preparation. A slow parser
+            # must not hold the committed text or the Assistant operation open.
+            control = {"version": 1, "bindingId": binding.id, "resourceId": binding.resource_id,
+                "deferred": {"control": segment.control, "portrait": segment.portrait, "tone": segment.tone}}
         segments.append(replace(segment, control=control))
     return ChatReply(segments)
 

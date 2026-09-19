@@ -1,6 +1,6 @@
 import { normalizeVisualControl } from "./visual-control.js";
 
-export function createRendererHost({ container, loadModule = (url) => import(url), services = {}, onUnavailable = () => {}, onError = () => {}, timeoutMs = 10000 }) {
+export function createRendererHost({ container, loadModule = (url) => import(url), resolveControl, services = {}, onUnavailable = () => {}, onError = () => {}, timeoutMs = 10000 }) {
   let binding = null;
   let instance = null;
   let lifetime = null;
@@ -162,6 +162,30 @@ export function createRendererHost({ container, loadModule = (url) => import(url
       return false;
     }
   }
+  async function prepare(control, operationId) {
+    const current = operation;
+    const target = binding;
+    if (!target || !current || current.id !== operationId || current.abort.signal.aborted) return null;
+    if (!control || !Object.hasOwn(control, "deferred")) return control;
+    // A queued reply belongs to the binding that produced its prompt. Never
+    // reinterpret it using a replacement resource, even with the same plugin ID.
+    if (control.bindingId !== target.bindingId || control.resourceId !== target.resourceId) return null;
+    try {
+      const result = await resolveControl(control);
+      if (current !== operation || current.abort.signal.aborted || target !== binding) return null;
+      if (result.control == null) return null;
+      const parsed = normalizeVisualControl(result.control);
+      if (!parsed || parsed.bindingId !== target.bindingId || parsed.resourceId !== target.resourceId) {
+        throw new Error("VISUAL_CONTROL_INVALID");
+      }
+      return parsed;
+    } catch (error) {
+      if (current === operation && !current.abort.signal.aborted && target === binding) {
+        onError("VISUAL_CONTROL_REJECTED", error, "visual.control.prepare");
+      }
+      return null;
+    }
+  }
   async function play(control, operationId, segmentIndex, historyKey) {
     const current = operation;
     const target = binding;
@@ -191,5 +215,5 @@ export function createRendererHost({ container, loadModule = (url) => import(url
       return false;
     }
   }
-  return Object.freeze({ bind, begin, play, review, cancel, freeze, clear, destroy: () => clear("destroyed"), current: () => binding });
+  return Object.freeze({ bind, begin, prepare, play, review, cancel, freeze, clear, destroy: () => clear("destroyed"), current: () => binding });
 }

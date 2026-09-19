@@ -58,10 +58,11 @@ const typewriterBinding = appSource.slice(
   appSource.indexOf("\nconst waitingIndicator =", appSource.indexOf("const typewriter = createTypewriter({")),
 );
 
-function sequence(h, segments) {
+function sequence(h, segments, prepareVisual = async control => control) {
   const timers = [];
   const text = [];
   const portraits = [];
+  const controls = [];
   const opened = segments.map(() => deferred());
   const requested = segments.map(() => deferred());
   const pauses = segments.map(() => deferred());
@@ -81,7 +82,7 @@ function sequence(h, segments) {
     chatTiming: { subtitleTypingIntervalMs: 28, replySegmentPauseMs: 160 },
     subtitleLanguage: "zh", bubbleScroll: { beginReply() {} },
     presentation, ttsController: h.controller, waitingIndicator: waiting,
-    rendererHost: { play(_control, _operation, _index, segment) { portraits.push(segment.portrait); } },
+    rendererHost: { prepare: prepareVisual, play(control, _operation, _index, segment) { portraits.push(segment.portrait); controls.push(control); } },
     render() {},
     createTypewriter(options) {
       return createTypewriter({
@@ -111,10 +112,90 @@ function sequence(h, segments) {
   h.controller.beginReply("reply", segments);
   writer.start(segments);
   return {
-    writer, text, portraits, opened, requested, pauses, finished, waiting, presentation,
+    writer, text, portraits, controls, opened, requested, pauses, finished, waiting, presentation,
     drain() { while (timers.length) timers.shift()(); },
   };
 }
+
+test("slow visual preparation keeps segment presentation synchronized after chat completion", async () => {
+  const visual = deferred();
+  const entered = deferred();
+  const h = await harness(name => name === "tts_prepare_segment" ? descriptor : undefined);
+  const s = sequence(h, [{ text: "ready text", portrait: "smile" }], () => {
+    entered.resolve();
+    return visual.promise;
+  });
+  await entered.promise;
+  assert.equal(s.presentation.current().segments[0].text, "ready text");
+  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
+  assert.deepEqual(s.text, []);
+  assert.deepEqual(s.portraits, []);
+  visual.resolve(null);
+  await h.waitFor("tts_play_prepared");
+  h.emit("tts-1-0", "started");
+  await s.opened[0].promise;
+  assert.deepEqual(s.portraits, ["smile"]);
+  assert.deepEqual(s.text, [""]);
+  h.controller.dispose();
+});
+
+test("cancelling a segment releases pending visual preparation without playing late audio", async () => {
+  const visual = deferred();
+  const entered = deferred();
+  const h = await harness(name => name === "tts_prepare_segment" ? descriptor : undefined);
+  const segment = { text: "cancelled" };
+  h.controller.beginReply("reply", [segment]);
+  let started = 0;
+  const waiting = h.controller.beforeSegment(segment, 0, {
+    prepareVisual: () => { entered.resolve(); return visual.promise; },
+    onStarted: () => started++,
+  });
+  await entered.promise;
+  h.controller.cancel();
+  await waiting;
+  assert.equal(started, 0);
+  visual.resolve(null);
+  await visual.promise;
+  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
+  h.controller.dispose();
+});
+
+test("capture interrupts the current wait while later silent segments still prepare their visuals", async () => {
+  const visuals = [deferred(), deferred()];
+  const entered = [deferred(), deferred()];
+  const h = await harness(name => name === "tts_prepare_segment" ? descriptor : undefined);
+  let index = 0;
+  const s = sequence(h, [{ text: "one", portrait: "smile" }, { text: "two", portrait: "calm" }], () => {
+    const current = index++;
+    entered[current].resolve();
+    return visuals[current].promise;
+  });
+  try {
+    await entered[0].promise;
+    h.controller.setInputCaptureActive(true);
+    await s.opened[0].promise;
+    s.drain();
+    await s.pauses[0].promise;
+    h.controller.setInputCaptureActive(false);
+    s.drain();
+    await entered[1].promise;
+    await new Promise(setImmediate);
+    assert.deepEqual(s.portraits, ["smile"]);
+    assert.equal(s.text.at(-1), "one");
+    const control = { state: { expression: "calm" } };
+    visuals[1].resolve(control);
+    await s.opened[1].promise;
+    assert.deepEqual(s.portraits, ["smile", "calm"]);
+    assert.equal(s.controls[1], control);
+    visuals[0].resolve({ state: { expression: "late" } });
+    await visuals[0].promise;
+    assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
+    assert.equal(s.controls.length, 2);
+  } finally {
+    s.writer.dispose();
+    h.controller.dispose();
+  }
+});
 
 for (const audioFirst of [false, true]) {
   test(`each segment waits for synthesis and playback start, then both text and audio completion (${audioFirst})`, async () => {

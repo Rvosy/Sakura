@@ -581,10 +581,13 @@ def test_numeric_controls_follow_assistant_result_and_core_projection_into_histo
     assert projected[0]["text"] == "こんにちは"
     assert projected[0]["translation"] == "你好"
     assert projected[0]["suppressTts"] is False
-    assert ("control" in projected[0]) is expected
+    envelope = projected[0]["control"]
+    assert envelope["deferred"]["control"] == _control(resource, payload)
+    parsed = application.visuals.resolve_control(envelope)
+    assert (parsed.control is not None) is expected
     if expected:
-        assert projected[0]["control"]["state"] == {"angle": 10}
-        assert projected[0]["control"]["actions"] == [{"wave": True}]
+        assert parsed.control["state"] == {"angle": 10}
+        assert parsed.control["actions"] == [{"wave": True}]
     store = TimelineStore(tmp_path / "timeline.sqlite3")
     store.initialize()
     store.append(NewTimelineEntry(entry_id="assistant-1", turn_id="turn-1", character_id="character", kind=TimelineKind.ASSISTANT, origin="chat", created_at="2026-09-11T12:00:00+08:00", payload={"segments": projected}))
@@ -593,6 +596,7 @@ def test_numeric_controls_follow_assistant_result_and_core_projection_into_histo
     assert runtime.reply_visual is None
     # A retained response can still be read, but its target can no longer parse.
     assert binding.parse_control(_control(resource, payload)).control is None
+    assert application.visuals.resolve_control(envelope).reason_code == "VISUAL_BINDING_EXPIRED"
 
 
 def test_real_plugin_contributes_numeric_schema_and_parses_state_and_one_shot_action(visual_application) -> None:
@@ -713,9 +717,9 @@ def test_visual_plugin_failures_retain_remote_diagnostics(tmp_path, method, sign
                 binding = application.visuals.bind(profile.id, package, resource)
                 reply = _visual_reply(ChatReply([ChatSegment(text="still chatting", translation="", tone="", control=_control(resource, {"angle": 1}))]), binding)
                 assert reply.segments[0].text == "still chatting"
-                assert reply.segments[0].control is None
+                assert application.visuals.resolve_control(reply.segments[0].control).control is None
                 binding.close()
-                _visual_reply(reply, binding)  # Expired results stay quiet.
+                application.visuals.resolve_control(reply.segments[0].control)  # Expired results stay quiet.
             else:
                 boundary._dispatch("studio.character.open", {"characterId": "character"})
                 if method == "previewImage":

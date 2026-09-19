@@ -325,3 +325,42 @@ def test_control_projection_preserves_host_routing_and_all_actions(binding_host)
     assert result.control["bindingId"] == binding.id
     assert result.control["resourceId"] == resource.id
     assert len(result.control["actions"]) == 40
+
+
+@pytest.mark.parametrize("change", ["mixed", "missing", "portrait", "oversized"])
+def test_deferred_control_rejects_ambiguous_or_unbounded_input(binding_host, change):
+    host, runtime, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    calls = []
+    runtime.before_result = lambda: calls.append("parse")
+    envelope = {"version": 1, "bindingId": binding.id, "resourceId": resource.id,
+        "deferred": {"control": None, "portrait": "", "tone": ""}}
+    if change == "mixed":
+        envelope["state"] = {}
+    elif change == "missing":
+        del envelope["deferred"]["control"]
+    elif change == "portrait":
+        envelope["deferred"]["portrait"] = None
+    else:
+        envelope["deferred"]["control"] = "x" * 65536
+    parsed = host.resolve_control(envelope)
+    assert parsed.reason_code == "VISUAL_CONTROL_INVALID"
+    assert parsed.control is None
+    assert calls == []
+
+
+def test_deferred_control_requires_current_binding_and_rejects_late_result(binding_host):
+    host, runtime, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    envelope = {"version": 1, "bindingId": binding.id, "resourceId": resource.id,
+        "deferred": {"control": {"version": 1, "resourceId": resource.id, "payload": {}}, "portrait": "", "tone": ""}}
+    calls = []
+    runtime.before_result = lambda: calls.append("parse")
+    wrong_target = {**envelope, "resourceId": "other"}
+    assert host.resolve_control(wrong_target).reason_code == "VISUAL_BINDING_EXPIRED"
+    assert calls == []
+    runtime.before_result = host.clear
+    assert host.resolve_control(envelope).reason_code == "VISUAL_BINDING_EXPIRED"
+    runtime.before_result = lambda: calls.append("parse")
+    assert host.resolve_control(envelope).reason_code == "VISUAL_BINDING_EXPIRED"
+    assert calls == []

@@ -1620,6 +1620,22 @@ def run_host(
 
         class RequestBoundary:
             def handle(self, request: dict[str, Any]) -> object:
+                if request.get("name") == "visual.control.parse":
+                    credential = request.get("generationCredential")
+                    if not isinstance(credential, str) or not hmac.compare_digest(credential, config.generation_credential):
+                        raise TransportFailure("GENERATION_CREDENTIAL_MISMATCH", "request credential does not match the active generation")
+                    if request.get("kind") != "request":
+                        raise TransportFailure("INVALID_CONTROL", "visual control accepts requests only")
+                    if request.get("generationId") != config.generation_id:
+                        return response(request, generation_id=config.generation_id,
+                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload("GENERATION_MISMATCH", "request belongs to another generation"))
+                    application = dispatcher.published_plugin_application()
+                    parsed = application.visuals.resolve_control(request.get("payload")) if application is not None else None
+                    return response(request, generation_id=config.generation_id,
+                        generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
+                        payload={"control": parsed.control if parsed is not None else None,
+                            "reasonCode": parsed.reason_code if parsed is not None else "VISUAL_BINDING_EXPIRED"})
                 if request.get("name") in ASR_REQUEST_NAMES:
                     return asr_boundary.handle(request)
                 if request.get("name") == "chat.send":
@@ -1731,6 +1747,7 @@ def run_host(
             fixture_names=frozenset(
                 {
                     "chat.send",
+                    "visual.control.parse",
                     *SETTINGS_REQUEST_NAMES,
                     *TOOL_SETTINGS_REQUEST_NAMES,
                     *PLUGIN_SETTINGS_REQUEST_NAMES,

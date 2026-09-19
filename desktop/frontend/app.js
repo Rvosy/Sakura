@@ -863,6 +863,7 @@ function visualUnavailable(code, error, stage) {
 
 const rendererHost = createRendererHost({
   container: visualContainer,
+  resolveControl: (payload) => invoke("visual_control_parse", { payload }),
   onUnavailable: visualUnavailable,
   onError: reportVisualError,
   services: {
@@ -1279,14 +1280,16 @@ const typewriter = createTypewriter({
   onSegment: (segment, index) => {
     const state = presentation.current();
     if (state.phase === "typing" && state.segments[index] === segment) {
+      let control = null;
       return ttsController.beforeSegment(segment, index, {
+        prepareVisual: async () => { control = await rendererHost.prepare(segment.control, state.operationId); },
         onStarted: () => {
           const current = presentation.current();
           if (current.operationId !== state.operationId || current.segments[index] !== segment) return;
           if (index === 0) waitingIndicator.stop();
           const result = presentation.setTypingSegment(segment, index);
           if (result.applied) {
-            void rendererHost.play(segment.control, state.operationId, index, segment);
+            void rendererHost.play(control, state.operationId, index, segment);
             void render(result.state);
           }
         },

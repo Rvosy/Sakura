@@ -133,14 +133,20 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       };
       void prepare(reply, 0);
     },
-    async beforeSegment(segment, index, { onStarted = () => {} } = {}) {
+    async beforeSegment(segment, index, { prepareVisual = () => {}, onStarted = () => {} } = {}) {
       const current = reply;
       // Greetings are local, suppressed segments without a synthesis operation.
       if (!current || current.segments[index] !== segment) {
         if (!disposed && !playable(segment)) onStarted({ state: "skipped" });
         return;
       }
-      const descriptor = await Promise.race([prepare(current, index), current.interrupted]);
+      // Resolve optional visual control alongside synthesis at the presentation
+      // boundary. Chat completion is already published; interruption still opens
+      // the gate immediately and late preparation cannot start old playback.
+      const [descriptor] = await Promise.race([
+        Promise.all([prepare(current, index), prepareVisual()]),
+        current.interrupted.then(() => []),
+      ]);
       if (!isCurrent(current)) return;
       if (!descriptor || current.silent || !playable(segment)) {
         onStarted({ state: "skipped" });
@@ -187,6 +193,9 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       if (reply) {
         reply.silent = true;
         reply.resolveInterrupted();
+        // Release only the current segment's preparation. Later silent segments
+        // still prepare their own visual before starting subtitles together.
+        reply.interrupted = new Promise(resolve => { reply.resolveInterrupted = resolve; });
       }
       releasePlayback({ fallback: true });
       cancelSynthesis(reply?.operationId);

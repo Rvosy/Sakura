@@ -139,16 +139,30 @@ Service 调用前后检查 provider 与进程 scope，清理或重启后的在�
 {"version":1,"resourceId":"model-1","payload":{"angle":12.5,"wave":true}}
 ```
 
-宿主校验 version、resourceId 和顶层字段，插件解析 payload。插件返回持续状态 `state`、一次动作列表 `actions`，
-或两者；至少有一个字段。宿主只提取 state 和 actions，再添加自己管理的路由身份。JSON 合法性和帧预算由通信边界负责。
-宿主补上绑定身份后写入 segment 的可选 `control`：
+Core 回复处理只补上当前绑定身份，并把原始控制和旧字段封装到 segment 的可选 `control`：
+
+```json
+{"version":1,"resourceId":"model-1","bindingId":"32位随机十六进制ID","deferred":{"control":{"version":1,"resourceId":"model-1","payload":{"angle":12.5,"wave":true}},"portrait":"","tone":"中性"}}
+```
+
+该步骤不调用表现 Provider；正文写入 Timeline、发布回复终态及释放 Assistant 不等待可选控制解析。
+桌面准备播放片段时把完整封装作为 `visual.control.parse` 的 payload，通过现有并发请求队列解析。
+宿主核对当前 bindingId 与 resourceId 后调用该绑定的 `parseControl`；该请求不占用控制消息线程。
+返回值为 `{"control":规范化控制或null,"reasonCode":"READY或失败原因"}`。旧绑定正常返回
+`null / VISUAL_BINDING_EXPIRED`，真实解析失败保留 Provider 原始诊断，只放弃该段控制。
+
+解析时宿主校验原始 control 的 version、resourceId 和顶层字段，插件解析 payload。插件返回持续状态
+`state`、一次动作列表 `actions`，或两者；至少有一个字段。宿主只提取 state 和 actions，再添加自己管理的路由身份：
 
 ```json
 {"version":1,"resourceId":"model-1","bindingId":"32位随机十六进制ID","state":{"angle":12.5},"actions":[{"wave":true}]}
 ```
 
 普通聊天、工具回复与主动事件使用相同处理路径。公共文字、翻译、TTS tone 和 suppressTts 独立于表现控制。
-非法或过期控制只剥离控制，不丢文字、语音或整条历史。单条 Timeline 的紧凑 JSON 上限仍为 256 KiB；
+`deferred` 与 `state/actions` 是互斥形状，单个控制封装均限制为 64 KiB；`deferred` 必须且只能包含
+`control`、字符串 `portrait` 和字符串 `tone`，其中 control 保留原始模型值或 null。
+结构非法的控制在回复投影时剥离；Provider 拒绝或绑定过期时，播放阶段跳过控制，不改写已保存的回复。
+两者都保留文字、语音和历史。单条 Timeline 的紧凑 JSON 上限仍为 256 KiB；
 当可选控制累计超预算时剥离该回复的全部 control，保留原有文字片段。回复投影剥离非法控制或超预算控制时，
 记录失败原因和片段位置或数量，不静默丢弃。
 
@@ -169,6 +183,9 @@ RendererHost 在片段状态应用后通过可选 `snapshotState()` 保存完整
 宿主在 TTS 确认开始播放、或静音段开始展示时派发该段控制；不是合成开始时派发。同一 operation 的相同
 segmentIndex 最多执行一次。取消先中止 operation signal，再调用插件 cancel；新 generation、资源绑定、
 插件停用或重载撤销旧目标。首次 lifecycle 公告没有旧 generation，不得销毁刚完成初始挂载的实例。
+视觉解析与 TTS 合成并行准备，准备阶段不应用状态、不执行动作；两者准备结束后才开始播放并同步更新字幕与画面。
+解析失败按无控制片段播放文字和语音。取消立即结束桌面的准备等待，晚到解析结果复核 operation 与绑定身份后丢弃；
+不为解析建立独立后台任务表，历史回看仍只恢复已实际展示的状态快照，不重新解析或回写 Timeline。
 
 ## 前端挂载与原生服务
 

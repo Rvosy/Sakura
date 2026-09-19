@@ -3399,6 +3399,39 @@ fn runtime_lifecycle_snapshot(
 }
 
 #[tauri::command]
+async fn visual_control_parse(
+    window: WebviewWindow,
+    payload: Value,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".into());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "STALE_GENERATION".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "visual.control.parse",
+        payload,
+        std::time::Duration::from_secs(10),
+    )
+    .await?;
+    if handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .as_deref()
+        != Some(&generation)
+    {
+        return Err("STALE_GENERATION".into());
+    }
+    settings_response_payload(response)
+}
+
+#[tauri::command]
 async fn chat_send(
     window: WebviewWindow,
     payload: chat_bridge::ChatSendRequest,
@@ -8232,6 +8265,7 @@ fn main() {
             product_shell::reveal_settings_window,
             settings_characters_get,
             settings_character_visuals_get,
+            visual_control_parse,
             settings_character_choose_import,
             settings_character_choose_export,
             settings_character_import,

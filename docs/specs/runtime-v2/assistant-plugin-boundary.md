@@ -73,7 +73,8 @@ Host 在创建输入 artifact 时增加 `historyToken`，将读取许可固定�
 
 输出 JSON 为 `{reply: {segments: [...]}, actions: [...], visual_observation: object|null}`。
 segment 使用公开 DTO 的 `text/translation/tone/portrait/suppress_tts/control`。Core 验证结果形状，按表现
-插件合同解释 control，再投影为桌面协议中的 `suppressTts` 等公开字段。actions、模型 continuation、
+插件合同封装待解析 control，再投影为桌面协议中的 `suppressTts` 等公开字段。正文提交与 Assistant 释放
+不等待表现 Provider；桌面准备播放时另行请求解析控制。actions、模型 continuation、
 内部错误和工具参数不进入聊天终态。插件无权直接写入用户或助手 Timeline 条目。
 
 ## 固定实例与未知结果

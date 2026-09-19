@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from app.config.character_resources import CharacterVisualResource
+from app.core.runtime_log import diagnostic_attributes, log_event
+from app.plugin_sdk.sakura_visual_control import validate_visual_control
 from app.plugins.inventory import InstalledPluginRecord, PluginInventorySnapshot
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.plugins.visuals import VISUAL_CONTRACT_VERSION, VisualCapability, relative_resource_path, resolve_resource_path
@@ -202,6 +204,30 @@ class VisualHost:
     def presentation(self):
         with self._lock:
             return self._binding.presentation() if self._binding is not None else None
+
+    def resolve_control(self, envelope: object) -> VisualControlResult:
+        """Resolve one playback value without holding the visual publication lock."""
+        try:
+            value = validate_visual_control(envelope)
+            if "deferred" not in value:
+                raise VisualHostError("VISUAL_CONTROL_INVALID")
+            with self._lock:
+                binding = self._binding
+            if binding is None or (value["bindingId"], value["resourceId"]) != (binding.id, binding.resource_id):
+                return VisualControlResult(None, "VISUAL_BINDING_EXPIRED")
+            deferred = value["deferred"]
+            parsed = binding.parse_control(deferred["control"],
+                legacy={"portrait": deferred["portrait"], "tone": deferred["tone"]},
+                segment={"tone": deferred["tone"]})
+            if parsed.control is not None:
+                parsed = VisualControlResult(validate_visual_control(parsed.control))
+        except Exception as error:
+            reason = "VISUAL_CONTROL_INVALID" if isinstance(error, ValueError) else "VISUAL_CONTROL_REJECTED"
+            parsed = VisualControlResult(None, reason, error)
+        if parsed.reason_code not in {"READY", "VISUAL_BINDING_EXPIRED"}:
+            log_event("Visual", "表现控制未应用", diagnostic_attributes(parsed.error or RuntimeError(parsed.reason_code),
+                reason_code=parsed.reason_code, stage="visual.parse_control"), event="visual.control.failed", severity="warning")
+        return parsed
 
     def _clear_locked(self) -> None:
         self._revision += 1

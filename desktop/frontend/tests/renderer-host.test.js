@@ -12,6 +12,55 @@ const container = () => {
 };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test("deferred controls prepare without executing and cannot cross an operation or binding change", async () => {
+  const pending = deferred();
+  const events = [];
+  let parses = 0;
+  const host = createRendererHost({
+    container: container(),
+    resolveControl: () => { parses++; return pending.promise; },
+    loadModule: async () => ({ mount: () => ({
+      applyState: state => events.push(state), perform: action => events.push(action), destroy() {},
+    }) }),
+  });
+  await host.bind(binding());
+  host.begin("old");
+  const envelope = { version: 1, bindingId: "a".repeat(32), resourceId: "numeric-1",
+    deferred: { control: { version: 1, resourceId: "numeric-1", payload: { angle: 12 } }, portrait: "", tone: "中性" } };
+  const preparing = host.prepare(envelope, "old");
+  host.cancel();
+  host.begin("new");
+  pending.resolve({ control: control(), reasonCode: "READY" });
+  assert.equal(await preparing, null);
+  assert.deepEqual(events, []);
+  const prepared = await host.prepare(envelope, "new");
+  assert.deepEqual(events, [], "preparation never applies state or one-shot actions");
+  assert.equal(await host.play(prepared, "new", 0), true);
+  assert.deepEqual(events, [{ angle: 12 }, { wave: true }]);
+  await host.bind(binding("b"));
+  host.begin("replacement");
+  assert.equal(await host.prepare(envelope, "replacement"), null);
+  assert.equal(parses, 2, "old binding controls never reach the replacement parser");
+  host.destroy();
+});
+
+test("visual preparation failure falls back to the current picture with a diagnostic", async () => {
+  const errors = [];
+  const host = createRendererHost({ container: container(),
+    resolveControl: async () => { throw new Error("fixture parser unavailable"); },
+    onError: (...args) => errors.push(args),
+    loadModule: async () => ({ mount: () => ({ applyState() {}, destroy() {} }) }),
+  });
+  await host.bind(binding());
+  host.begin("reply");
+  const prepared = await host.prepare({ version: 1, bindingId: "a".repeat(32), resourceId: "numeric-1", deferred: {} }, "reply");
+  assert.equal(prepared, null);
+  assert.equal(await host.play(prepared, "reply", 0), true);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0][1].message, /fixture parser unavailable/);
+  host.destroy();
+});
+
 test("switching a form does not restore revoked resources from the retired renderer", async () => {
   let restores = 0;
   const host = createRendererHost({
