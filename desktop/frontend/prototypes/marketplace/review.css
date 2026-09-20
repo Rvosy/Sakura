@@ -1,0 +1,13 @@
+@import url("../../assets/fonts/fonts.css");
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; font: 11px "Sakura Noto Sans SC", "Microsoft YaHei", sans-serif; color: #54768b; }
+.review-bar { height: 44px; display: flex; justify-content: space-between; align-items: center; padding: 0 18px; gap: 12px; background: #eaf5fa; border-bottom: 1px solid #d6e7ef; }
+.review-bar > div { display: flex; gap: 12px; align-items: center; }
+.review-bar strong { color: #27445a; }
+button, select { font: inherit; color: inherit; border: 1px solid #c8dde8; border-radius: 5px; padding: 5px 9px; background: #f8fcfe; cursor: pointer; }
+button[aria-pressed="true"] { color: #337ba4; background: #dceef8; border-color: #8fc2df; }
+button:focus-visible, select:focus-visible { outline: 2px solid #4b9ac4; outline-offset: 2px; }
+iframe { width: 100%; height: calc(100dvh - 44px); border: 0; display: block; }
+#loading { position: absolute; inset: 44px 0 0; display: grid; place-items: center; background: #f8fcfe; }
+#loading[hidden] { display: none; }
+@media (max-width: 960px) { .review-bar > div { gap: 7px; } .review-bar > div > span { display: none; } }

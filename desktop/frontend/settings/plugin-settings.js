@@ -2368,7 +2368,7 @@ export function createPluginSettingsFeature({
       const result = await runtimePluginController.install(sourceKind);
       if (!result) return;
       installedId = result.installId;
-      notify("插件已安装。", "success");
+      notify("已安装", "success");
     } catch (error) {
       setError(String(error));
     } finally {
@@ -2385,7 +2385,7 @@ export function createPluginSettingsFeature({
       return;
     }
     const confirmed = await confirmAction(
-      `卸载“${plugin.name || plugin.id}”？插件设置和数据会保留。`,
+      `卸载“${plugin.name || plugin.id}”？`,
       { title: "卸载插件", confirmText: "卸载", cancelText: "取消", danger: true },
     );
     if (!confirmed) return;
@@ -2398,7 +2398,7 @@ export function createPluginSettingsFeature({
     renderPluginPage();
     try {
       await runtimePluginController.uninstall(plugin.install_id);
-      notify("插件已卸载，设置和数据已保留。", "success");
+      notify("已卸载", "success");
     } catch (error) {
       setError(String(error));
     } finally {
