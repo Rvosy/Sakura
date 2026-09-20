@@ -9,6 +9,8 @@ import threading
 import uuid
 from urllib.parse import urlparse
 
+from sakura_model_client import decode_model_result
+
 
 SERVICE_KEY = "sakura.model.openai_compatible"
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -21,7 +23,7 @@ class ProfileError(ValueError):
 
 
 def _text(value, *, required=False, maximum=16384):
-    if not isinstance(value, str) or "\x00" in value or len(value) > maximum:
+    if not isinstance(value, str) or "\x00" in value or (maximum is not None and len(value) > maximum):
         raise ProfileError("FIELD_INVALID")
     value = value.strip()
     if required and not value:
@@ -29,8 +31,8 @@ def _text(value, *, required=False, maximum=16384):
     return value
 
 
-def _url(value):
-    value = _text(value, required=True, maximum=2048).rstrip("/")
+def _url(value, *, maximum=2048):
+    value = _text(value, required=True, maximum=maximum).rstrip("/")
     try:
         parsed = urlparse(value)
         parsed.port
@@ -41,13 +43,15 @@ def _url(value):
     return value
 
 
-def _timeout(value):
+def _timeout(value, *, strict=True):
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 300:
+        if not strict:
+            return 60
         raise ProfileError("FIELD_INVALID", "请求超时须为 1 到 300 秒。")
     return value
 
 
-def _models(raw):
+def _models(raw, *, strict=True):
     if isinstance(raw, str):
         raw = raw.splitlines()
     if not isinstance(raw, list):
@@ -60,7 +64,9 @@ def _models(raw):
         if not model_id:
             continue
         if model_id in seen:
-            raise ProfileError("MODEL_DUPLICATE")
+            if strict:
+                raise ProfileError("MODEL_DUPLICATE")
+            continue
         seen.add(model_id)
         item.pop("name", None)
         item.update(modelId=model_id, label=_text(item.get("label", model_id), maximum=256))
@@ -76,7 +82,7 @@ def _models(raw):
     return result
 
 
-def _profiles(config):
+def _profiles(config, *, strict=False):
     raw = config.get("profiles", [])
     if not isinstance(raw, list):
         raise ProfileError("PROFILES_INVALID")
@@ -90,9 +96,15 @@ def _profiles(config):
         if not _ID.fullmatch(identity) or identity in seen:
             raise ProfileError("PROFILE_ID_INVALID")
         seen.add(identity)
-        item.update(profileId=identity, label=_text(item.get("label", identity), required=True, maximum=120),
-                    base_url=_url(item["base_url"]) if item.get("base_url") else "", api_key=_text(item.get("api_key", "")),
-                    timeout_seconds=_timeout(item.get("timeout_seconds", 60)), models=_models(item.get("models", [])))
+        # Earlier handoffs copied empty aliases and duplicate model names. Keep
+        # these files readable; only an explicit save writes normalized values.
+        label = item.get("label", identity)
+        if label is None and not strict:
+            label = ""
+        item.update(profileId=identity, label=_text(label, required=strict, maximum=120 if strict else None) or identity,
+                    base_url=_url(item["base_url"], maximum=2048 if strict else None) if item.get("base_url") else "",
+                    api_key=_text(item.get("api_key", ""), maximum=16384 if strict else None),
+                    timeout_seconds=_timeout(item.get("timeout_seconds", 60), strict=strict), models=_models(item.get("models", []), strict=strict))
         result.append(item)
     return result
 
@@ -156,10 +168,7 @@ class ProviderProfiles:
                     if result["state"] != "running":
                         break
                 completed = bound.invoke("result", operation_id, timeout_seconds=5)
-                if completed.get("failure"):
-                    code = completed["failure"].get("code", "MODEL_PROBE_FAILED")
-                    raise ProfileError(code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,80}", code) else "MODEL_PROBE_FAILED")
-                result = completed["response"]
+                result = decode_model_result(completed, self._context.get("sakura.host.artifacts"), bound.identity, operation_id)
                 if operation == "list_models":
                     result = {"models": _models(result["models"])}
                     message = ""
@@ -168,7 +177,8 @@ class ProviderProfiles:
                 state = {"state": "ready", "label": "已获取模型" if operation == "list_models" else "连接成功", "message": message}
             except Exception as error:
                 result = {}
-                state = {"state": "error", "label": "模型测试失败", "message": str(getattr(error, "code", "MODEL_PROBE_FAILED"))}
+                code = getattr(error, "code", "MODEL_PROBE_FAILED")
+                state = {"state": "error", "label": "模型测试失败", "message": code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,80}", code) else "MODEL_PROBE_FAILED"}
             finally:
                 try:
                     bound.invoke("release", operation_id, timeout_seconds=1)
@@ -212,7 +222,7 @@ class ProviderProfiles:
     def resolve(self, profile_id, model_id):
         profile = self._profile(profile_id)
         description = self.describe(profile_id, model_id)
-        return {"base_url": _url(profile["base_url"]), "api_key": profile["api_key"], "model": model_id,
+        return {"base_url": _url(profile["base_url"], maximum=None), "api_key": profile["api_key"], "model": model_id,
                 "timeout_seconds": profile["timeout_seconds"],
                 "context_window_tokens": description["contextWindowTokens"], "context_window_source": description["contextWindowSource"]}
 
@@ -222,7 +232,7 @@ class ProviderProfiles:
         saved = next((item for item in _profiles(self._config.get()) if item["profileId"] == profile_id), {})
         credential = values.get("credential", {"action": "keep"})
         key = self._credential(saved.get("api_key", ""), credential)
-        return {"base_url": _url(values.get("base_url", saved.get("base_url", ""))), "api_key": key,
+        return {"base_url": _url(values.get("base_url", saved.get("base_url", "")), maximum=2048 if "base_url" in values else None), "api_key": key,
                 "model": _text(values.get("modelId", values.get("model", "")), required=require_model, maximum=256),
                 "timeout_seconds": _timeout(values.get("timeout_seconds", saved.get("timeout_seconds", 60)))}
 
@@ -277,7 +287,7 @@ class ProviderProfiles:
                     timeout_seconds=_timeout(value.get("timeout_seconds", old.get("timeout_seconds", self.load_timeout()["timeout_seconds"]))),
                     api_key=self._credential(old.get("api_key", ""), {"action": value.get("credential_action", "keep"), "value": value.get("api_key", "")})))
             # Validate the entire set before its single write, including duplicate identities.
-            self._write(_profiles({"profiles": profiles}))
+            self._write(_profiles({"profiles": profiles}, strict=True))
         return {"applicationState": "restart_required"}
 
     def load_timeout(self):

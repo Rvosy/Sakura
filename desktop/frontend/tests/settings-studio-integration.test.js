@@ -523,6 +523,37 @@ test("Apply rejects disabling the owner of an edited global record before the sn
   }
 });
 
+test("an enabled incompatible plugin can be disabled but cannot be enabled again", async () => {
+  const data = pluginSnapshot();
+  const plugin = data.plugins[0];
+  Object.assign(plugin, { supported: false, state: "failed", reasonCode: "MODEL_API_UPDATE_REQUIRED", sections: [] });
+  const writes = [];
+  const fixture = featureFixture(async (command, args) => {
+    assert.equal(command, "settings_plugins_enabled_set");
+    assert.equal(args.enabled, false);
+    writes.push(args);
+    const disabled = { ...plugin, enabled: false, state: "disabled" };
+    return { ...data, plugins: [disabled], managementAction: "enabled_changed", installId: plugin.installId,
+      pluginId: plugin.pluginId, desiredSaved: true, applicationState: "applied", applicationReasonCode: "READY" };
+  });
+  try {
+    fixture.feature.initialize(data);
+    const toggle = fixture.document.querySelector(".plugin-enable-switch input");
+    assert.equal(toggle.checked, true);
+    assert.equal(toggle.disabled, false);
+    toggle.checked = false;
+    await toggle.fire("change");
+    await fixture.feature.save();
+    assert.equal(writes.length, 1);
+    const stopped = fixture.document.querySelector(".plugin-enable-switch input");
+    assert.equal(stopped.checked, false);
+    assert.equal(stopped.disabled, true);
+    assert.deepEqual(fixture.errors, []);
+  } finally {
+    fixture.feature.dispose();
+  }
+});
+
 test("same-character voice import retains a collection draft opened while importing", async () => {
   const snapshotFor = (generation) => {
     const value = pluginSnapshot(generation);

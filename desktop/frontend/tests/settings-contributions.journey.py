@@ -141,6 +141,46 @@ def run():
                 expect(page.locator('[data-plugin-field="top_p"]')).to_have_value('1')
                 expect(page.locator('[data-plugin-field="max_tokens"]')).to_have_value('2048')
                 expect(page.locator('[data-slot-inherit="core:vision_chat"]')).to_be_checked()
+                # The shared form must follow numeric field semantics, including
+                # schemas that omit step. Keep it mounted on an inactive page to
+                # exercise the production save function's cross-page validation.
+                page.evaluate("""async () => {
+                    const { createSettingsForm } = await import('./settings-form.js');
+                    const fields = [
+                        { key: 'decimal', type: 'number', minimum: 0, maximum: 1 },
+                        { key: 'nullableStep', type: 'number', step: null },
+                        { key: 'integer', type: 'integer', minimum: 0 },
+                        { key: 'decimalStep', type: 'number', minimum: 0, step: 0.25 },
+                        { key: 'integerStep', type: 'integer', minimum: 0, step: 2 },
+                    ];
+                    window.numericValues = { decimal: 0.5, nullableStep: 0.5,
+                        integer: 2, decimalStep: 0.5, integerStep: 2 };
+                    window.numericForm = createSettingsForm({ document,
+                        plugin: { id: 'numeric-fixture' },
+                        section: { section_id: 'numeric', fields },
+                        read: key => numericValues[key],
+                        write: (key, value) => { numericValues[key] = value; },
+                        enhanceSelect: () => {},
+                    });
+                    document.getElementById('page-model').append(numericForm.element);
+                }""")
+                for key in ('decimal', 'nullableStep', 'integer', 'decimalStep', 'integerStep'):
+                    control = page.locator(f'[data-plugin-field="{key}"]')
+                    assert control.evaluate('(input) => input.checkValidity()'), key
+                for key, value, reason in (
+                    ('decimal', '1.1', 'rangeOverflow'),
+                    ('decimal', '-0.1', 'rangeUnderflow'),
+                    ('integer', '0.5', 'stepMismatch'),
+                    ('decimalStep', '0.3', 'stepMismatch'),
+                    ('integerStep', '3', 'stepMismatch'),
+                ):
+                    control = page.locator(f'[data-plugin-field="{key}"]')
+                    control.fill(value)
+                    assert control.evaluate('(input) => !input.checkValidity()')
+                    assert control.evaluate('(input, reason) => input.validity[reason]', reason)
+                    control.fill('2' if key in ('integer', 'integerStep') else '0.5')
+                page.locator('[data-plugin-field="decimal"]').fill('0.375')
+                assert page.evaluate('numericValues.decimal') == 0.375
                 page.screenshot(animations="disabled", path=str(output/'model.png'))
                 page.evaluate("showPage('interaction')")
                 expect(page.get_by_text('最短搭话间隔',exact=True)).to_be_visible()
@@ -153,8 +193,9 @@ def run():
                 assert saved['api_key']=='fixture-draft-key' and saved['base_url']==origin+'/draft/v1'
                 assert [m['modelId'] for m in saved['models']]==['fixture-model','discovered-model','manual-model']
                 assert saved['models'][0]['contextWindowTokens']==96000
+                assert page.evaluate('numericValues.decimal') == 0.375
                 assert not errors, errors
-                page.evaluate('feature.dispose();models.dispose()');browser.close()
+                page.evaluate('numericForm.dispose();feature.dispose();models.dispose()');browser.close()
             finally: app.close()
     finally: server.shutdown(); server.server_close()
     print('Settings contribution journey passed; screenshots:', output)

@@ -845,11 +845,7 @@ export function createPluginSettingsFeature({
     if (field.maximum !== undefined) {
       input.max = String(field.maximum);
     }
-    if (field.step !== undefined) {
-      input.step = String(field.step);
-    } else if (field.type === "integer") {
-      input.step = "1";
-    }
+    if (["number", "integer"].includes(field.type)) input.step = String(field.step ?? (field.type === "integer" ? 1 : "any"));
     input.value = String(value ?? "");
     input.addEventListener("input", () => {
       if (field.type === "integer") {
@@ -1019,7 +1015,7 @@ export function createPluginSettingsFeature({
     input.disabled = Boolean(field.readonly);
     if (typeof field.minimum === "number") input.min = String(field.minimum);
     if (typeof field.maximum === "number") input.max = String(field.maximum);
-    if (typeof field.step === "number") input.step = String(field.step);
+    if (["number", "integer"].includes(field.type)) input.step = String(field.step ?? (field.type === "integer" ? 1 : "any"));
     input.addEventListener("input", () => {
       if (["integer", "number"].includes(field.type) && input.value === "") onChange(null);
       else if (field.type === "integer") onChange(Number.parseInt(input.value, 10));
@@ -1755,7 +1751,7 @@ export function createPluginSettingsFeature({
         control.type = ["integer", "number"].includes(field.type) ? "number" : "text";
         if (typeof field.minimum === "number") control.min = String(field.minimum);
         if (typeof field.maximum === "number") control.max = String(field.maximum);
-        if (typeof field.step === "number") control.step = String(field.step);
+        if (["number", "integer"].includes(field.type)) control.step = String(field.step ?? (field.type === "integer" ? 1 : "any"));
         if (Number.isSafeInteger(field.maxLength)) control.maxLength = field.maxLength;
         control.value = String(state.editor.values[field.key] ?? "");
         control.addEventListener("input", () => {
@@ -2314,7 +2310,7 @@ export function createPluginSettingsFeature({
       const track = pluginNode('span', 'plugin-enable-switch__track'); track.setAttribute('aria-hidden', 'true'); switchLabel.append(toggle, track);
     }
     const toggle = switchLabel.querySelector('input'); toggle.checked = enabled;
-    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id || plugin.reason_code === 'PLUGIN_ID_CONFLICT' || !plugin.supported);
+    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id || plugin.reason_code === 'PLUGIN_ID_CONFLICT' || (!plugin.supported && !enabled));
     enableControls.append(switchLabel); enableRow.append(enableCopy, enableControls); fields.pluginDetail.append(enableRow);
     const providers = pluginPresentation.requiredPluginProviders(plugin, pluginView.items);
     if (providers.length) {

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-18
+updated: 2026-09-20
 ---
 
 # 编写 Sakura 插件
@@ -347,7 +347,7 @@ ServiceProxy、回调、资源 descriptor 和文件 artifact 都会失效，不�
 | `sakura.host.settings.surface-v0` | 把设置区块放到现有宿主页面。 |
 | `sakura.host.settings.collection-v0` | 注册分页查询和 CRUD Collection。 |
 | `sakura.host.logging` | 提交插件运行日志，见下文日志示例。 |
-| `sakura.host.model_slots` | 注册模型用途，读取目录并解析用户选择。 |
+| `sakura.host.model_slots.v2` | 注册模型用途，读取目录并解析用户选择。 |
 | `sakura.host.character` | 读取当前角色、插件私有角色扩展和角色资源。 |
 | `sakura.host.timeline` | 按当前角色读取只读 Timeline。 |
 | `sakura.host.storage` | 取得明确授权的共享 data/cache 目录。 |
@@ -733,7 +733,7 @@ settings.place("schedule", page_id=context.plugin_id + ":schedule")
 字段可补充 `unit`、`placeholder`、`tooltip`、`displayDefault` 和 `optionalToggle`。`displayDefault` 只控制空值的显示，
 不会在读取时保存。数值字段的 `optionalToggle` 提供“自定义”开关，关闭写入 `null`。
 `data` 字段承载组件所需的 JSON 对象或数组，不渲染成普通输入框。复杂结构由拥有它的插件校验。
-模型选择继续使用 `sakura.host.model_slots` 的公开用途注册，复用宿主下拉选择与继承状态。
+模型选择继续使用 `sakura.host.model_slots.v2` 的公开用途注册，复用宿主下拉选择与继承状态。
 Collection 继续使用下面的公开注册与列表详情组件。
 
 `connection-editor` 声明 `valueField/requestField/resultField`（均为 `data`），以及
@@ -1031,11 +1031,15 @@ Context 目录保留 providerId、description、order、enabled、scope、failur
 
 ### 模型槽位
 
-插件需要用户选择一个 Chat Completion 模型时，向 `sakura.host.model_slots` 注册槽位，不要自己复制 Provider、
+插件需要用户选择一个 Chat Completion 模型时，向 `sakura.host.model_slots.v2` 注册槽位，不要自己复制 Provider、
 模型和 API key 设置页。
 
+manifest 的 `requires` 同样声明 `sakura.host.model_slots.v2`。旧服务名 `sakura.host.model_slots`
+已停止提供，插件页会提示更新；`api: 4` 只表示运行框架版本。旧模型消费者须同时迁移引用字段和请求方式，
+不能只替换服务名。迁移要求见[旧模型插件升级](../specs/runtime-v2/model-services.md#旧模型插件升级)。
+
 ```python
-model_slots = context.get("sakura.host.model_slots")
+model_slots = context.get("sakura.host.model_slots.v2")
 
 model_slots.register(
     {
@@ -1333,6 +1337,7 @@ Python 标准 `logging`、`print`、stderr 和外部程序输出不会自动进�
 | `PLUGIN_MANIFEST_INVALID` | 字段类型、入口路径和安装包布局。 |
 | `PLUGIN_DEPENDENCIES_MISSING/STALE` | 依赖是否安装，声明或 Python ABI 是否变化。 |
 | `MISSING_SERVICE` | `requires` 中的 Service 是否由已启用插件或 Host 提供。 |
+| `MODEL_API_UPDATE_REQUIRED` | 更新旧模型消费者，改用 `sakura.host.model_slots.v2`、三字段模型引用和 `ModelClient`。 |
 | `SERVICE_CONFLICT` | 是否同时启用了两个同名 Service 提供者。 |
 | `SERVICE_MISSING` | 动态查询或绑定时是否存在 active 服务，同进程内的服务是否已撤销。 |
 | `SERVICE_BINDING_EXPIRED` | 操作绑定的插件进程是否已经退出、停用或重载；旧操作不能改用新进程继续。 |

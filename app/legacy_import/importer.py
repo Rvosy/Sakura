@@ -341,7 +341,7 @@ def run_legacy_import(
                 fallbacks=compatibility_fallbacks,
             )
         except Exception as exc:
-            if isinstance(exc, LegacyImportError) and exc.code in {"LEGACY_IMPORT_CANCELLED", "LEGACY_MODEL_HANDOFF_ROLLBACK_FAILED"}:
+            if isinstance(exc, LegacyImportError) and exc.code in {"LEGACY_IMPORT_CANCELLED", "LEGACY_SETTINGS_HANDOFF_ROLLBACK_FAILED"}:
                 raise
             shutil.rmtree(payload / "config", ignore_errors=True)
             from app.plugins.inventory import PluginDesiredStateStore
@@ -1974,6 +1974,7 @@ def _validate_current_settings(
 
     service = AppSettingsService(staged)
     from app.config.model_references import OPENAI_SERVICE, ModelReferenceRepository, migrate_legacy_model_configuration
+    from app.core_host.screen_host import migrate_legacy_screen_settings
     loaders: tuple[tuple[str, str, Callable[[], object]], ...] = (
         ("model_selection", "config/model_slots.json", ModelReferenceRepository(staged).load),
         ("runtime_loop", "config/system_config.yaml", service.load_runtime_loop_settings),
@@ -2015,12 +2016,22 @@ def _validate_current_settings(
 
     # Finish validation before creating the plugin-owned handoff files. The
     # payload transaction inventories these files after this function returns.
+    screen_config = staged / "data" / "plugins" / "sakura.screen_awareness" / "config.json"
     destinations = [ModelReferenceRepository(staged).path,
                     staged / "data" / "plugins" / OPENAI_SERVICE / "config.json",
-                    staged / "data" / "plugins" / "sakura.assistant.default" / "config.json"]
+                    staged / "data" / "plugins" / "sakura.assistant.default" / "config.json",
+                    screen_config]
     originals = {path: path.read_bytes() if path.exists() else None for path in destinations}
+    handoff_source = "config/api.yaml"
     try:
-        migrate_legacy_model_configuration(staged)
+        if (staged / handoff_source).is_file():
+            migrate_legacy_model_configuration(staged)
+        # An explicit import must replace previously initialized target settings.
+        # Generate this file in the isolated payload so commit/rollback owns the
+        # overwrite. If configuration was quarantined, preserve the target file.
+        if service.system_config_path.is_file():
+            handoff_source = "config/system_config.yaml"
+            migrate_legacy_screen_settings(staged)
     except Exception as exc:
         try:
             for path, original in originals.items():
@@ -2029,9 +2040,9 @@ def _validate_current_settings(
                 else:
                     path.write_bytes(original)
         except OSError as rollback_error:
-            raise LegacyImportError("LEGACY_MODEL_HANDOFF_ROLLBACK_FAILED", "validating") from rollback_error
+            raise LegacyImportError("LEGACY_SETTINGS_HANDOFF_ROLLBACK_FAILED", "validating") from rollback_error
         raise LegacyImportError(
-            "LEGACY_SETTINGS_VALIDATION_FAILED", "validating", "config/api.yaml"
+            "LEGACY_SETTINGS_VALIDATION_FAILED", "validating", handoff_source
         ) from exc
 
 

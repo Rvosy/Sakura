@@ -1,6 +1,7 @@
 """The old Core credential repository is replaced by a one-time ownership handoff."""
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -104,6 +105,60 @@ def test_legacy_llm_only_configuration_is_retained(tmp_path):
     migrate_legacy_model_configuration(tmp_path)
     assert ModelReferenceRepository(tmp_path).active()["chat"]["modelId"] == "old-model"
     assert json.loads(_provider(tmp_path).read_text(encoding="utf-8"))["profiles"][0]["api_key"] == SECRET
+
+
+@pytest.mark.parametrize("alias", ["", None, "   "])
+def test_handoff_normalizes_legacy_profiles_before_provider_startup(tmp_path, alias):
+    from plugins.builtin.sakura_model_openai_compatible.profiles import ProviderProfiles
+
+    legacy = _legacy(tmp_path)
+    raw = yaml.safe_load(legacy.read_text(encoding="utf-8"))
+    raw["api_profiles"][0].update(id=" fixture ", alias=alias,
+        models=[{"name": " chat-model "}, {"name": "chat-model"}, {"name": "vision-model"}])
+    raw["model_slots"]["chat"].update(profile_id=" fixture ", model=" chat-model ")
+    raw["llm"]["timeout_seconds"] = None
+    legacy.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    before = legacy.read_bytes()
+
+    migrate_legacy_model_configuration(tmp_path)
+
+    provider = ProviderProfiles(SimpleNamespace(config=SimpleNamespace(get=lambda: module._read(_provider(tmp_path)))))
+    profile, = provider.catalog()
+    assert profile["label"] == "fixture"
+    assert [model["modelId"] for model in profile["models"]] == ["chat-model", "vision-model"]
+    assert provider.resolve("fixture", "chat-model")["timeout_seconds"] == 60
+    assert provider.describe("fixture", "chat-model")["contextWindowTokens"] == 128000
+    assert ModelReferenceRepository(tmp_path).active()["chat"] == REF
+    assert legacy.read_bytes() == before
+
+
+@pytest.mark.parametrize("change", [{"id": "invalid/id"}, {"base_url": "invalid"}, {"models": [{"name": "bad\x00model"}]}])
+def test_invalid_legacy_profile_does_not_commit_handoff_and_can_be_corrected(tmp_path, change):
+    legacy = _legacy(tmp_path)
+    original = legacy.read_text(encoding="utf-8")
+    raw = yaml.safe_load(original)
+    raw["api_profiles"][0].update(change)
+    legacy.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="CONFIG_DATA_INVALID"):
+        migrate_legacy_model_configuration(tmp_path)
+    assert not ModelReferenceRepository(tmp_path).path.exists()
+    assert not _provider(tmp_path).exists()
+    legacy.write_text(original, encoding="utf-8")
+    migrate_legacy_model_configuration(tmp_path)
+    assert ModelReferenceRepository(tmp_path).active()["chat"] == REF
+
+
+@pytest.mark.parametrize("generation,expected", [
+    ({"temperature": 3, "top_p": False, "max_tokens": -1}, {}),
+    ({"temperature": 0, "top_p": 0, "max_tokens": 1}, {"temperature": 0, "top_p": 0, "max_tokens": 1}),
+])
+def test_handoff_keeps_legacy_generation_defaults_and_explicit_zero(tmp_path, generation, expected):
+    legacy = _legacy(tmp_path)
+    raw = yaml.safe_load(legacy.read_text(encoding="utf-8"))
+    raw["llm"].update(generation)
+    legacy.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    migrate_legacy_model_configuration(tmp_path)
+    assert module._read(_assistant(tmp_path))["generation"] == expected
 
 
 def test_legacy_import_validation_discards_partial_handoff_before_optional_config_skip(tmp_path, monkeypatch):

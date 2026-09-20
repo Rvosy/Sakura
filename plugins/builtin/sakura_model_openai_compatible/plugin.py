@@ -54,7 +54,7 @@ class ModelPlugin:
         self.closed = False
         self.profiles.set_service(self)
         self.profiles.register_settings()
-        context.get("sakura.host.model_slots").register_provider({"serviceKey": SERVICE_KEY, "label": "OpenAI 兼容模型"}, catalog=self.profiles.catalog)
+        context.get("sakura.host.model_slots.v2").register_provider({"serviceKey": SERVICE_KEY, "label": "OpenAI 兼容模型"}, catalog=self.profiles.catalog)
         context.effect(self.close)
         context.on("sakura.host.scope.closed", self.scope_closed)
         context.provide(SERVICE_KEY, self, exports=("catalog", "describe", "begin", "begin_probe", "poll", "result", "cancel", "release"))

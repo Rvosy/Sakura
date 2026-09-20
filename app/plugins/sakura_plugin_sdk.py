@@ -1327,11 +1327,11 @@ class _ModelSlotsProxy:
         self._context = context
 
     def active(self) -> dict[str, object]:
-        return self._context._remote_call("sakura.host.model_slots", "active", [])
+        return self._context._remote_call("sakura.host.model_slots.v2", "active", [])
 
     def catalog(self) -> list[dict[str, object]]:
         result = self._context._remote_call(
-            "sakura.host.model_slots",
+            "sakura.host.model_slots.v2",
             "catalog",
             [],
         )
@@ -1343,11 +1343,11 @@ class _ModelSlotsProxy:
         handle, dispose = self._context._register_callback("model_slots.catalog", catalog)
 
         def activate():
-            result = self._context._remote_call("sakura.host.model_slots", "register_provider", [self._context.plugin_id, dict(descriptor), handle])
+            result = self._context._remote_call("sakura.host.model_slots.v2", "register_provider", [self._context.plugin_id, dict(descriptor), handle])
             registration_id = result.get("registrationId") if isinstance(result, Mapping) else None
             if not isinstance(registration_id, str):
                 raise PluginApiError("HOST_REGISTRATION_INVALID", plugin_id=self._context.plugin_id)
-            return lambda: self._context._remote_call("sakura.host.model_slots", "unregister_provider", [registration_id])
+            return lambda: self._context._remote_call("sakura.host.model_slots.v2", "unregister_provider", [registration_id])
 
         try:
             return self._context._stage(activate)
@@ -1362,7 +1362,7 @@ class _ModelSlotsProxy:
                 plugin_id=self._context.plugin_id,
             )
         result = self._context._remote_call(
-            "sakura.host.model_slots",
+            "sakura.host.model_slots.v2",
             "resolve",
             [dict(selection)],
         )
@@ -1394,7 +1394,7 @@ class _ModelSlotsProxy:
 
         def activate() -> Callable[[], object]:
             result = self._context._remote_call(
-                "sakura.host.model_slots",
+                "sakura.host.model_slots.v2",
                 "register",
                 [self._context.plugin_id, dict(descriptor), handles],
             )
@@ -1409,7 +1409,7 @@ class _ModelSlotsProxy:
 
             def cleanup() -> object:
                 return self._context._remote_call(
-                    "sakura.host.model_slots",
+                    "sakura.host.model_slots.v2",
                     "unregister",
                     [registration_id],
                 )
@@ -1457,6 +1457,9 @@ class PluginContext:
 
     def get(self, service_key: str) -> object:
         key = _identifier(service_key, "SERVICE_KEY_INVALID")
+        if key == "sakura.host.model_slots":
+            raise PluginApiError("MODEL_API_UPDATE_REQUIRED", "模型接口已更新，请更新插件。",
+                                 plugin_id=self.plugin_id, service_key=key)
         if key == "sakura.host.logging":
             with self._logger_lock:
                 if self._logger is None:
@@ -1475,7 +1478,7 @@ class PluginContext:
             return _SettingsSurfaceProxy(self)
         if key == "sakura.host.settings.collection-v0":
             return _SettingsCollectionProxy(self)
-        if key == "sakura.host.model_slots":
+        if key == "sakura.host.model_slots.v2":
             return _ModelSlotsProxy(self)
         if key == "sakura.host.storage":
             return _StorageProxy(self)

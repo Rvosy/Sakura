@@ -4,7 +4,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 from pathlib import Path
+import re
 import threading
+from urllib.parse import urlparse
 
 import yaml
 
@@ -41,6 +43,62 @@ def _read(path: Path) -> dict:
 
 def _write(path: Path, value: Mapping) -> None:
     atomic_write_text(path, json.dumps(dict(value), ensure_ascii=False, indent=2) + "\n")
+
+
+def _legacy_text(value: object) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str) or "\x00" in value:
+        raise ValueError("CONFIG_DATA_INVALID")
+    return value.strip()
+
+
+def _legacy_profiles(raw: list, slots: Mapping, llm: Mapping) -> list[dict]:
+    """Keep the old reader's normalization at the ownership handoff boundary."""
+    timeout = llm.get("timeout_seconds")
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 300:
+        timeout = 60
+    result, identities = [], set()
+    for old in raw:
+        if not isinstance(old, Mapping) or not isinstance(old.get("models", []), list):
+            raise ValueError("CONFIG_DATA_INVALID")
+        identity = _legacy_text(old.get("id"))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", identity) or identity in identities:
+            raise ValueError("CONFIG_DATA_INVALID")
+        identities.add(identity)
+        address = _legacy_text(old.get("base_url")).rstrip("/")
+        if address:
+            try:
+                parsed = urlparse(address)
+                parsed.port
+            except ValueError as error:
+                raise ValueError("CONFIG_DATA_INVALID") from error
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError("CONFIG_DATA_INVALID")
+        secret = old.get("api_key", "")
+        if not isinstance(secret, str) or "\x00" in secret:
+            raise ValueError("CONFIG_DATA_INVALID")
+        models, seen = [], set()
+        for old_model in old.get("models", []):
+            name = _legacy_text(old_model.get("name") if isinstance(old_model, Mapping) else old_model)
+            if not re.fullmatch(r"[^\x00-\x1f\x7f]{1,256}", name):
+                raise ValueError("CONFIG_DATA_INVALID")
+            if name in seen:
+                continue
+            seen.add(name)
+            model = {"modelId": name, "label": name}
+            for slot in slots.values():
+                if not isinstance(slot, Mapping) or _legacy_text(slot.get("profile_id")) != identity or _legacy_text(slot.get("model")) != name:
+                    continue
+                window = slot.get("context_window_tokens")
+                if window is not None:
+                    if isinstance(window, bool) or not isinstance(window, int) or not 4096 <= window <= 2_000_000:
+                        raise ValueError("CONFIG_DATA_INVALID")
+                    model["contextWindowTokens"] = window
+            models.append(model)
+        result.append({"profileId": identity, "label": _legacy_text(old.get("alias")) or identity,
+                       "base_url": address, "api_key": secret, "timeout_seconds": timeout, "models": models})
+    return result
 
 
 def migrate_legacy_model_configuration(user_root: Path) -> None:
@@ -90,32 +148,11 @@ def migrate_legacy_model_configuration(user_root: Path) -> None:
         llm = raw.get("llm", {}) or {}
         if not isinstance(legacy_profiles, list) or not isinstance(slots, Mapping) or not isinstance(llm, Mapping):
             raise ValueError("CONFIG_DATA_INVALID")
-        profiles = []
-        for old in legacy_profiles:
-            if not isinstance(old, Mapping):
-                raise ValueError("CONFIG_DATA_INVALID")
-            if not isinstance(old.get("models", []), list):
-                raise ValueError("CONFIG_DATA_INVALID")
-            models = []
-            for old_model in old.get("models", []):
-                name = old_model.get("name", "") if isinstance(old_model, Mapping) else old_model
-                if not isinstance(name, str) or not name:
-                    raise ValueError("CONFIG_DATA_INVALID")
-                model = {"modelId": name, "label": name}
-                for slot in slots.values():
-                    if not isinstance(slot, Mapping) or slot.get("profile_id") != old.get("id") or slot.get("model") != name:
-                        continue
-                    if slot.get("context_window_tokens") is not None:
-                        model["contextWindowTokens"] = slot["context_window_tokens"]
-                models.append(model)
-            profiles.append({"profileId": old.get("id", ""), "label": old.get("alias", old.get("id", "")),
-                             "base_url": old.get("base_url", ""), "api_key": old.get("api_key", ""),
-                             "timeout_seconds": llm.get("timeout_seconds", 60), "models": models})
-        if not profiles and llm.get("base_url") and llm.get("model"):
-            profiles = [{"profileId": "legacy", "label": "模型服务", "base_url": llm["base_url"],
-                         "api_key": llm.get("api_key", ""), "timeout_seconds": llm.get("timeout_seconds", 60),
-                         "models": [{"modelId": llm["model"], "label": llm["model"]}]}]
+        if not legacy_profiles and llm.get("base_url") and llm.get("model"):
+            legacy_profiles = [{"id": "legacy", "alias": "模型服务", "base_url": llm["base_url"],
+                                "api_key": llm.get("api_key", ""), "models": [{"name": llm["model"]}]}]
             slots = {**slots, "chat": {"profile_id": "legacy", "model": llm["model"]}}
+        profiles = _legacy_profiles(legacy_profiles, slots, llm)
         provider_path = paths.plugin_data_for(OPENAI_SERVICE) / "config.json"
         provider = _read(provider_path)
         assistant_path = paths.plugin_data_for("sakura.assistant.default") / "config.json"
@@ -125,13 +162,20 @@ def migrate_legacy_model_configuration(user_root: Path) -> None:
             old = slots.get(name) or {}
             if not isinstance(old, Mapping):
                 raise ValueError("CONFIG_DATA_INVALID")
-            references[name] = model_reference({"serviceKey": OPENAI_SERVICE if old.get("profile_id") else "",
-                                                "profileId": old.get("profile_id", ""), "modelId": old.get("model", "")})
+            identity, model_id = _legacy_text(old.get("profile_id")), _legacy_text(old.get("model"))
+            references[name] = model_reference({"serviceKey": OPENAI_SERVICE if identity else "",
+                                                "profileId": identity, "modelId": model_id})
         if "profiles" not in provider:
             _write(provider_path, {**provider, "profiles": profiles})
         original_assistant = dict(assistant)
         if "generation" not in assistant:
-            generation = {key: llm[key] for key in ("temperature", "top_p", "max_tokens") if llm.get(key) is not None}
+            generation = {}
+            for key, minimum, maximum, kind in (("temperature", 0, 2, (int, float)),
+                                                 ("top_p", 0, 1, (int, float)),
+                                                 ("max_tokens", 1, 1_000_000, int)):
+                value = llm.get(key)
+                if not isinstance(value, bool) and isinstance(value, kind) and minimum <= value <= maximum:
+                    generation[key] = value
             assistant["generation"] = generation
         assistant.setdefault("contextWindowTokens", (slots.get("chat") or {}).get("context_window_tokens"))
         if assistant != original_assistant:

@@ -1067,6 +1067,111 @@ servers:
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+@pytest.mark.parametrize("disabled_field", ["enabled", "screen_context_enabled"])
+def test_import_replaces_initialized_screen_settings_and_can_roll_back(
+    tmp_path: Path, disabled_field: str,
+) -> None:
+    from app.core_host.screen_host import migrate_legacy_screen_settings
+    from app.storage.paths import StoragePaths
+    from plugins.builtin.sakura_screen_awareness.policy import ScreenAwarenessPolicy
+    from plugins.builtin.sakura_screen_awareness.settings import ScreenAwarenessSettings
+
+    source = _legacy_fixture(tmp_path)
+    source_system = source / "data/config/system_config.yaml"
+    source_system.write_text(yaml.safe_dump({"screen_awareness": {
+        disabled_field: False,
+        "check_interval_minutes": 60,
+        "cooldown_minutes": 30,
+        "screen_context_batch_limit": 3,
+        "screen_context_resolution": "720p",
+    }}), encoding="utf-8")
+    source_original = source_system.read_bytes()
+    target = tmp_path / "target"
+    target_system = target / "config/system_config.yaml"
+    target_system.parent.mkdir(parents=True)
+    target_system.write_text("config_version: 1\n", encoding="utf-8")
+    migrate_legacy_screen_settings(target)
+    screen_config = StoragePaths(target).plugin_data_for("sakura.screen_awareness") / "config.json"
+    originals = {path: path.read_bytes() for path in (screen_config, target_system)}
+
+    report, pending = run_legacy_import(source, target, import_id="screen-settings-import")
+
+    assert pending is not None
+    assert not any(item["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED" for item in report.warnings)
+    migrate_legacy_screen_settings(target)
+    settings = ScreenAwarenessSettings.parse(json.loads(screen_config.read_text(encoding="utf-8")))
+    assert settings.values() == {
+        "enabled": False, "checkIntervalMinutes": 60, "cooldownMinutes": 30,
+        "batchLimit": 3, "resolution": "720p",
+    }
+    now = [0.0]
+    policy = ScreenAwarenessPolicy(settings, clock=lambda: now[0])
+    facts = {"sessionId": "Sakura", "activity": False, "idle": True}
+    assert policy.step(facts)["action"] == "clear"
+    now[0] = 7200
+    assert policy.step(facts)["action"] == "none"
+
+    rollback_commit(pending)
+    assert {path: path.read_bytes() for path in originals} == originals
+    assert source_system.read_bytes() == source_original
+
+
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+@pytest.mark.parametrize("failure", ["invalid-yaml", "screen-write"])
+def test_skipped_configuration_preserves_initialized_screen_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    from app.core_host.screen_host import migrate_legacy_screen_settings
+    from app.storage.paths import StoragePaths
+
+    source = _legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    target_system = target / "config/system_config.yaml"
+    target_system.parent.mkdir(parents=True)
+    target_system.write_text(
+        "config_version: 1\nscreen_awareness:\n  enabled: false\n", encoding="utf-8",
+    )
+    migrate_legacy_screen_settings(target)
+    screen_config = StoragePaths(target).plugin_data_for("sakura.screen_awareness") / "config.json"
+    references = ModelReferenceRepository(target)
+    references.save({
+        "chat": {"serviceKey": OPENAI_SERVICE, "profileId": "existing", "modelId": "existing-model"},
+        "vision_chat": {"serviceKey": "", "profileId": "", "modelId": ""},
+    })
+    provider_config = target / "data/plugins" / OPENAI_SERVICE / "config.json"
+    assistant_config = target / "data/plugins/sakura.assistant.default/config.json"
+    for path, values in (
+        (provider_config, {"profiles": [{"profileId": "existing", "label": "Existing", "base_url": "https://existing.invalid/v1"}]}),
+        (assistant_config, {"generation": {"temperature": 0.7}, "contextWindowTokens": 64000}),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(values), encoding="utf-8")
+    originals = {path: path.read_bytes() for path in (
+        screen_config, target_system, references.path, provider_config, assistant_config,
+    )}
+    if failure == "invalid-yaml":
+        (source / "data/config/system_config.yaml").write_text("[broken", encoding="utf-8")
+    else:
+        write_text = Path.write_text
+
+        def fail_screen_write(path: Path, *args: object, **kwargs: object) -> int:
+            if path.parent.name == "sakura.screen_awareness" and path.name.startswith(".config-"):
+                raise PermissionError("fixture screen write failed")
+            return write_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fail_screen_write)
+
+    report, pending = run_legacy_import(
+        source, target, import_id="screen-settings-skipped", finalize=True,
+    )
+
+    assert pending is None
+    assert any(item["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED" for item in report.warnings)
+    assert {path: path.read_bytes() for path in originals} == originals
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("Sakura")
+
+
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 def test_memory_model_preparation_failure_preserves_imported_memory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

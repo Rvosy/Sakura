@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-15
+updated: 2026-09-20
 ---
 
 # Sakura 0.9.x 到 Runtime v2 数据迁移合同
@@ -120,6 +120,10 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   当前角色选择和当前模型槽标量使用安全默认或字符串投影，并以 `LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED` warning
   记录修复数量；这些可重建兼容字段不得导致整棵配置被隔离。
   旧屏幕感知的 `enabled` 与 `screen_context_enabled` 合并为当前单一 `enabled` 字段。
+  配置校验通过后，必须在隔离 staging 中生成屏幕感知插件的 `data/plugins/sakura.screen_awareness/config.json`，
+  同时迁移检查间隔、冷却时间、截图批量和分辨率。该文件与模型提供者、Assistant 配置及模型槽一起进入导入事务，
+  覆盖目标已有值并支持回滚；导入旧版关闭设置后不得继续自动截图。正常启动时仍以已有插件配置为准。
+  配置被隔离或插件配置交接失败时，丢弃未完成的交接结果，保留目标已有配置；后续校验不得生成默认模型或屏幕配置覆盖目标。
   导入目标已有的联网插件开关优先；没有选择时使用插件默认值，不再从 MCP 配置推导。
 - Timeline和长期记忆必须先于其他域迁移。二者的角色身份来自旧聊天 scope、curation scope 和当前角色 ID；角色包
   只参与可唯一确定的大小写规范化，不拥有聊天或记忆。角色包随后尝试完整复制并由当前 `CharacterRegistry` 校验；

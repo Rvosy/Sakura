@@ -147,7 +147,7 @@ class PluginSettingsBoundary:
         application = self._application()
         inventory = self._refresh_inventory(application)
         if application is None:
-            plugins = [_preview_plugin(record) for record in inventory.records[:64]]
+            plugins = [_project_plugin({}, record=record) for record in inventory.records[:64]]
             state = "starting"
             reason = "PLUGIN_APPLICATION_NOT_READY"
         else:
@@ -233,7 +233,16 @@ class PluginSettingsBoundary:
             except Exception as error:
                 code = str(getattr(error, "code", "PLUGIN_LIFECYCLE_FAILED"))
                 raise PluginSettingsError(code, "插件启停未能应用。") from error
-        return dict(result)
+            result = dict(result)
+            result["plugins"] = _project_plugins(
+                [item for item in result.get("plugins", [])[:64] if isinstance(item, Mapping)],
+                self._refresh_inventory(application),
+            )
+            changed = next((item for item in result["plugins"] if item["installId"] == install_id), None)
+            if (result.get("applicationState") == "error" and changed is not None
+                    and changed["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"):
+                result["applicationReasonCode"] = changed["reasonCode"]
+        return result
 
     def action(self, payload: Mapping[str, Any]) -> dict[str, object]:
         application = self._application()
@@ -487,6 +496,10 @@ def _project_plugin(
     plugin_id = raw.get("pluginId")
     if plugin_id is not None:
         plugin_id = _identifier(plugin_id)
+    model_update_required = (
+        "sakura.host.model_slots" in _identifier_list(raw.get("requires"))
+        or raw.get("reasonCode") == "MODEL_API_UPDATE_REQUIRED"
+    )
     return {
         "installId": _install_identifier(raw.get("installId")),
         "pluginId": plugin_id,
@@ -499,16 +512,17 @@ def _project_plugin(
         "required": bool(raw.get("required")) and source != "user",
         "source": source,
         "canUninstall": source == "user",
-        "supported": bool(raw.get("supported")),
+        "supported": bool(raw.get("supported")) and not model_update_required,
         "provides": _identifier_list(raw.get("provides")),
         "requires": _identifier_list(raw.get("requires")),
         "missingServices": _identifier_list(raw.get("missingServices")),
         "state": (
-            "starting" if raw.get("enabled") and raw.get("reasonCode") in {"NOT_STARTED", "PLUGIN_STARTING"}
+            ("failed" if raw.get("enabled") else "disabled") if model_update_required
+            else "starting" if raw.get("enabled") and raw.get("reasonCode") in {"NOT_STARTED", "PLUGIN_STARTING"}
             else raw.get("state") if raw.get("state") in {"disabled", "starting", "active", "failed"}
             else "failed"
         ),
-        "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
+        "reasonCode": "MODEL_API_UPDATE_REQUIRED" if model_update_required else _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
         "pages": raw.get("pages", []),
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
     }

@@ -84,16 +84,16 @@ def test_unified_logging_two_real_plugins_keep_identity_and_flush_cleanup(tmp_pa
     for name in ("one", "two"):
         service_key = services[name]
         plugin_root = _plugin_source(roots.distribution_root / "plugins" / "builtin", f"fixture.{name}", service_key,
-            requires=("sakura.host.logging", "sakura.host.settings", "sakura.host.model_slots"), body=f'''
+            requires=("sakura.host.logging", "sakura.host.settings", "sakura.host.model_slots.v2"), body=f'''
 class Plugin:
     def setup(self, context):
         context.get("sakura.host.settings").register(
             {{"sectionId": "fixture_{name}", "title": "示例设置", "fields": []}},
             load=lambda: {{}},
         )
-        context.get("sakura.host.model_slots").register(
+        context.get("sakura.host.model_slots.v2").register(
             {{"slotId": "summary", "label": "摘要模型", "description": "", "modelKind": "chat_completion", "required": False, "order": 50}},
-            load=lambda: {{"profileId": "", "model": ""}},
+            load=lambda: {{"serviceKey": "", "profileId": "", "modelId": ""}},
             save=lambda values: None,
         )
         original_id = context.plugin_id
@@ -164,6 +164,92 @@ def test_plugin_start_failures_reach_log_bridge_with_identity(tmp_path: Path):
     assert "fixture setup failed" in broken["diagnostic"]
     assert "ValueError" in broken["exception_chain"]
     assert ":setup:" in broken["exception_stack"]
+
+
+def test_model_contract_upgrade_blocks_legacy_consumers_and_keeps_v4_plugins(tmp_path):
+    roots = _roots(tmp_path)
+    parent = roots.distribution_root / "plugins/builtin"
+    imported = tmp_path / "legacy-imported"
+    _plugin_source(StoragePaths(roots.user_root).user_plugins_dir, "fixture.legacy-model", "fixture.legacy.service",
+        requires=("sakura.host.model_slots",), body=f'''
+from pathlib import Path
+Path({str(imported)!r}).touch()
+from sakura_model import ApiSettings
+class Plugin:
+    def setup(self, context):
+        context.get("sakura.host.model_slots").resolve({{"profileId": "remote", "model": "chat"}})
+''')
+    _plugin_source(parent, "fixture.optional-model", "fixture.optional.service", body='''
+from sakura_model import ApiSettings
+class Plugin:
+    def setup(self, context):
+        context.get("sakura.host.model_slots")
+''')
+    _plugin_source(parent, "fixture.current-model", "fixture.current.service",
+        requires=("sakura.host.model_slots.v2",), body='''
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.current.service", context.get("sakura.host.model_slots.v2"), exports=("resolve",))
+''')
+    _plugin_source(parent, "fixture.unaffected", "fixture.unaffected.service", body='''
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.unaffected.service", object(), exports=())
+''')
+    host = PluginApplicationHost(roots, "model-contract-upgrade", ToolRegistry())
+    boundary = PluginSettingsBoundary("model-contract-upgrade", "credential", roots, application_provider=lambda: host)
+    preview = PluginSettingsBoundary("model-contract-upgrade", "credential", roots).snapshot()
+    legacy_preview = next(row for row in preview["plugins"] if row["pluginId"] == "fixture.legacy-model")
+    assert legacy_preview["supported"] is False
+    assert legacy_preview["state"] == "failed"
+    assert legacy_preview["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
+    try:
+        host.start()
+        assert host.wait_until_loaded(timeout=3)
+        assert not imported.exists(), "legacy consumer must stop before importing its entry"
+        records = {row["pluginId"]: row for row in boundary.snapshot()["plugins"]}
+        for plugin_id in ("fixture.legacy-model", "fixture.optional-model"):
+            assert records[plugin_id]["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
+            assert records[plugin_id]["supported"] is False
+        for plugin_id in ("fixture.current-model", "fixture.unaffected"):
+            assert records[plugin_id]["state"] == "active"
+        reference = {"serviceKey": "example.model", "profileId": "remote", "modelId": "chat"}
+        assert host.call_service("fixture.current.service", "resolve", reference) == reference
+
+        current = boundary.snapshot()
+        toggled = boundary.set_enabled(current["revision"], records["fixture.unaffected"]["installId"], False)
+        after_toggle = {row["pluginId"]: row for row in toggled["plugins"]}
+        for plugin_id in ("fixture.legacy-model", "fixture.optional-model"):
+            assert after_toggle[plugin_id]["supported"] is False
+            assert after_toggle[plugin_id]["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
+        legacy_install = records["fixture.legacy-model"]["installId"]
+        stopped = boundary.set_enabled(toggled["revision"], legacy_install, False)
+        legacy = next(row for row in stopped["plugins"] if row["pluginId"] == "fixture.legacy-model")
+        assert stopped["applicationState"] == "applied"
+        assert legacy["state"] == "disabled"
+        assert legacy["supported"] is False
+        assert legacy["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
+        blocked = boundary.set_enabled(stopped["revision"], legacy_install, True)
+        assert blocked["applicationState"] == "error"
+        assert blocked["applicationReasonCode"] == "MODEL_API_UPDATE_REQUIRED"
+        assert not imported.exists()
+
+        removed = boundary.uninstall(blocked["revision"], legacy_install)
+        updated_source = _plugin_source(tmp_path / "updated", "fixture.legacy-model", "fixture.legacy.service",
+            requires=("sakura.host.model_slots.v2",), body='''
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.legacy.service", context.get("sakura.host.model_slots.v2"), exports=("resolve",))
+''')
+        installed = boundary.install(removed["revision"], "folder", str(updated_source.resolve()))
+        updated = next(row for row in installed["plugins"] if row["pluginId"] == "fixture.legacy-model")
+        assert updated["supported"] is True
+        assert updated["reasonCode"] != "MODEL_API_UPDATE_REQUIRED"
+        activated = boundary.set_enabled(installed["revision"], installed["installId"], True)
+        assert activated["applicationState"] == "applied"
+        assert host.call_service("fixture.legacy.service", "resolve", reference) == reference
+    finally:
+        host.close()
 
 
 def test_plugin_stderr_is_forwarded_before_process_exit(tmp_path: Path, monkeypatch) -> None:

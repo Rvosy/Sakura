@@ -187,7 +187,7 @@ class FakeContext:
             "sakura.host.settings": Recorder(),
             "sakura.host.settings.collection-v0": Recorder(),
             "sakura.host.settings.surface-v0": Recorder(),
-            "sakura.host.model_slots": Recorder(),
+            "sakura.host.model_slots.v2": Recorder(),
         }
 
     def effect(self, cleanup):
@@ -248,7 +248,7 @@ def test_default_runtime_uses_only_declared_host_resources(
     services = {
         "sakura.host.storage": Storage(),
         "sakura.host.character": Character(),
-        "sakura.host.model_slots": Models(),
+        "sakura.host.model_slots.v2": Models(),
         "sakura.host.timeline": object(),
     }
 
@@ -297,7 +297,7 @@ def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path
         "sakura.host.settings",
         "sakura.host.settings.collection-v0",
         "sakura.host.settings.surface-v0",
-        "sakura.host.model_slots",
+        "sakura.host.model_slots.v2",
         "sakura.host.artifacts",
     )
 
@@ -337,7 +337,7 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
     assert collection_call[0][0] == "memory_management"
     assert collection_call[0][1]["collectionId"] == MEMORY_COLLECTION_ID
     assert collection_call[0][1]["scope"] == "character"
-    slot_call = context.services["sakura.host.model_slots"].calls[0]
+    slot_call = context.services["sakura.host.model_slots.v2"].calls[0]
     assert {key: value for key, value in slot_call[0][0].items() if key not in {"label", "description"}} == {
         "slotId": "curation",
         "modelKind": "chat_completion",

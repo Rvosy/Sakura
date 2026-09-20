@@ -31,7 +31,8 @@ class Context:
         pass
     def bind(self, key):
         assert key == SERVICE_KEY
-        return SimpleNamespace(invoke=lambda method, *args, timeout_seconds: getattr(self.service, method)(*args))
+        return SimpleNamespace(identity={"providerId": SERVICE_KEY, "scopeId": "fixture-scope"},
+                               invoke=lambda method, *args, timeout_seconds: getattr(self.service, method)(*args))
     def handle(self, callback):
         if callback is None:
             return None
@@ -39,6 +40,8 @@ class Context:
         self.callbacks[handle] = callback
         return handle
     def get(self, key):
+        if key == "sakura.host.artifacts":
+            return None
         assert key == "sakura.host.settings"
         def register(descriptor, *, load=None, save=None, actions=None):
             return self.host.call("register", [SERVICE_KEY, descriptor, {"load": self.handle(load), "save": self.handle(save),
@@ -85,6 +88,34 @@ def test_invalid_second_connection_does_not_partially_save(provider):
     with pytest.raises(ProfileError):
         profiles.save_editor(draft)
     assert context.config.get() == before
+
+
+@pytest.mark.parametrize("timeout", [None, "60", 0])
+def test_prior_handoff_profile_remains_editable_without_relaxing_new_saves(timeout):
+    context = Context()
+    context.config.value["profiles"][0].update(label="", models=[" model ", "model"], timeout_seconds=timeout)
+    before = context.config.get()
+    profiles = ProviderProfiles(context)
+    draft = profiles.load_editor()
+    assert draft["connections"][0]["alias"] == "fixture"
+    assert draft["connections"][0]["models"] == ["model"]
+    assert profiles.resolve("fixture", "model")["api_key"] == SECRET
+    assert profiles.resolve("fixture", "model")["timeout_seconds"] == 60
+    assert context.config.get() == before
+
+    draft["connections"][0]["models"].append("model")
+    with pytest.raises(ProfileError) as duplicate:
+        profiles.save_editor(draft)
+    assert duplicate.value.code == "MODEL_DUPLICATE"
+    draft["connections"][0].update(models=["model"], alias="")
+    with pytest.raises(ProfileError) as empty_label:
+        profiles.save_editor(draft)
+    assert empty_label.value.code == "FIELD_REQUIRED"
+    assert context.config.get() == before
+
+    profiles.save_editor(profiles.load_editor())
+    assert context.config.get()["profiles"][0]["label"] == "fixture"
+    assert [item["modelId"] for item in context.config.get()["profiles"][0]["models"]] == ["model"]
 
 
 def test_list_edit_retains_existing_model_metadata_and_unknown_profile_fields(provider):
@@ -177,7 +208,7 @@ def test_probe_cancel_is_request_scoped_and_releases_without_saving(provider):
         return {"sequence": 2, "state": "cancelled"}
     context.service = SimpleNamespace(begin_probe=lambda descriptor: None, poll=poll,
         cancel=lambda operation: cancelled.append(operation),
-        result=lambda operation: {"failure": {"code": "MODEL_CANCELLED"}}, release=lambda operation: released.set())
+        result=lambda operation: {"failure": {"code": "MODEL_CANCELLED", "message": "cancelled"}}, release=lambda operation: released.set())
     profiles.set_service(context.service)
     profiles.editor_probe({"probeRequest": {"operation": "list_models", "requestId": "current"}})
     assert polling.wait(2)

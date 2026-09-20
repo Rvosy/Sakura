@@ -155,7 +155,8 @@ class FixtureModelPlugin(ModelPlugin):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             requests.put({"listModels": True})
-            payload = json.dumps({"data": [{"id": "fixture"}, {"id": "discovered"}]}).encode()
+            models = [{"id": f"discovered-{index:04d}-" + "x" * 48} for index in range(700)] if self.path.startswith("/large/") else [{"id": "fixture"}, {"id": "discovered"}]
+            payload = json.dumps({"data": models}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -451,3 +452,25 @@ def test_provider_settings_actions_use_the_real_bound_job_lifecycle(model_proces
     if action == "list_models":
         assert "discovered" in [item["modelId"] for item in status["models"]]
         assert "discovered" not in [item["modelId"] for item in app.call_service(SERVICE, "catalog")[0]["models"]]
+
+
+def test_provider_settings_discovers_large_model_list_and_reclaims_response_artifact(model_process):
+    app, requests, _gate, config = model_process
+    before = config.read_bytes()
+    address = json.loads(before)["profiles"][0]["base_url"].replace("/v1", "/large/v1")
+    app.settings_action(SERVICE, "connections", "probe", {"probeRequest": {
+        "operation": "list_models", "requestId": "large-discovery", "profileId": "fixture", "base_url": address}})
+    assert requests.get(timeout=3) == {"listModels": True}
+    deadline = time.monotonic() + 3
+    while True:
+        row = next(item for item in app.settings_snapshot()["plugins"] if item["pluginId"] == SERVICE)
+        status = next(section for section in row["sections"] if section["sectionId"] == "connections")["values"]["probeResult"]
+        if status["state"] != "running":
+            break
+        assert time.monotonic() < deadline
+    assert status["state"] == "completed", status
+    assert status["requestId"] == "large-discovery"
+    assert len(status["models"]) == 700
+    assert status["models"][0]["modelId"] == "discovered-0000-" + "x" * 48
+    assert app._host_services.artifact_count == 0
+    assert config.read_bytes() == before

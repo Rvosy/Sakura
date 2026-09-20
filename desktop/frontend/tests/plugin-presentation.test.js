@@ -117,6 +117,14 @@ test("unknown plugin failures stay readable and retain the original code", () =>
   });
 });
 
+test("retired model contracts show an update action with their diagnostic", () => {
+  for (const state of ["failed", "disabled"]) {
+    const status = presentPluginStatus({ state, reasonCode: "MODEL_API_UPDATE_REQUIRED" });
+    assert.equal(status.label, "需要更新");
+    assert.match(status.diagnostic, /MODEL_API_UPDATE_REQUIRED/);
+  }
+});
+
 
 
 test("plugin activity keeps warning and failure stable", () => {

@@ -648,7 +648,7 @@ class SakuraMem0Plugin:
             update=runtime.update_collection_item,
             delete=runtime.delete_collection_item,
         )
-        getattr(context, "get")("sakura.host.model_slots").register(
+        getattr(context, "get")("sakura.host.model_slots.v2").register(
             {
                 "slotId": "curation",
                 "label": "记忆整理模型",
@@ -674,7 +674,7 @@ def _default_runtime(context: object) -> SakuraMem0Runtime:
     plugin_data_root = Path(getattr(context, "data_path")("."))
     storage = getattr(context, "get")("sakura.host.storage")
     character = getattr(context, "get")("sakura.host.character").current()
-    model_slots = getattr(context, "get")("sakura.host.model_slots")
+    model_slots = getattr(context, "get")("sakura.host.model_slots.v2")
     character_id = str(character.get("id", ""))
     system_prompt = str(character.get("systemPrompt", ""))
     if not character_id or not system_prompt:

@@ -22,6 +22,44 @@ class ModelError(RuntimeError):
         self.status_code = self.diagnostics.get("httpStatus")
 
 
+def decode_model_result(result, artifacts, provider_identity, operation_id):
+    """Decode generation and probe results using the same delivery ownership rules."""
+    if not isinstance(result, Mapping) or len(result) != 1:
+        raise ModelError("MODEL_RESULT_INVALID")
+    if "failure" in result:
+        failure = result["failure"]
+        if failure.get("code") == "OPERATION_CANCELLED":
+            raise OperationCancelled()
+        raise ModelError(failure["code"], failure["message"], diagnostics=failure.get("diagnostics"))
+    if "response" in result:
+        response = result["response"]
+    elif "responseArtifact" in result:
+        identity = result["responseArtifact"]["artifactId"]
+        artifact = artifacts.resolve(identity)
+        expected_delivery = {
+            "senderId": provider_identity["providerId"],
+            "senderScope": provider_identity["scopeId"],
+            "operationId": operation_id,
+        }
+        if artifact.get("delivery") != expected_delivery:
+            raise ModelError("MODEL_ARTIFACT_OWNER_INVALID")
+        try:
+            data = Path(artifact["path"]).read_bytes()
+            if artifact["mediaType"] != "application/json" or len(data) != artifact["byteLength"]:
+                raise ModelError("MODEL_RESULT_INVALID")
+            try:
+                response = json.loads(data)
+            except (ValueError, UnicodeDecodeError) as error:
+                raise ModelError("MODEL_RESULT_INVALID") from error
+        finally:
+            artifacts.release_received(identity, timeout_seconds=2)
+    else:
+        raise ModelError("MODEL_RESULT_INVALID")
+    if not isinstance(response, Mapping):
+        raise ModelError("MODEL_RESULT_INVALID")
+    return response
+
+
 class ModelClient:
     """Pins one provider instance; an uncertain begin acknowledgement is never replayed."""
 
@@ -90,26 +128,7 @@ class ModelClient:
             if state["state"] == "cancelled":
                 raise OperationCancelled()
             result = self._service.invoke("result", operation_id, timeout_seconds=5)
-            if "failure" in result:
-                failure = result["failure"]
-                if failure.get("code") == "OPERATION_CANCELLED":
-                    raise OperationCancelled()
-                raise ModelError(failure["code"], failure["message"], diagnostics=failure.get("diagnostics"))
-            if "responseArtifact" in result:
-                identity = result["responseArtifact"]["artifactId"]
-                artifact = self._artifacts.resolve(identity)
-                expected_delivery = {"senderId": self.identity["providerId"], "senderScope": self.identity["scopeId"], "operationId": operation_id}
-                if artifact.get("delivery") != expected_delivery:
-                    raise ModelError("MODEL_ARTIFACT_OWNER_INVALID")
-                try:
-                    data = Path(artifact["path"]).read_bytes()
-                    if artifact["mediaType"] != "application/json" or len(data) != artifact["byteLength"]:
-                        raise ModelError("MODEL_RESULT_INVALID")
-                    response = json.loads(data)
-                finally:
-                    self._artifacts.release_received(identity, timeout_seconds=2)
-            else:
-                response = result["response"]
+            response = decode_model_result(result, self._artifacts, self.identity, operation_id)
             check()
             return response
         finally:

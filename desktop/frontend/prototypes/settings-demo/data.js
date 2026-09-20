@@ -515,7 +515,7 @@ export function createState(scenario = "portrait") {
         "sakura.host.settings",
         "sakura.host.settings.collection-v0",
         "sakura.host.settings.surface-v0",
-        "sakura.host.model_slots",
+        "sakura.host.model_slots.v2",
       ],
     },
     {

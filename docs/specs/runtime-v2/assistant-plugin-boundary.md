@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-19
+updated: 2026-09-20
 ---
 
 # Assistant 插件与 Core 对话边界
@@ -117,7 +117,7 @@ Core 在调用 Assistant 前的历史读取、输入保存或 Session 描述失�
 | `sakura.host.timeline` | `read_turn_page(request)` | historyToken、characterId、snapshotCursor 必须匹配；按完整轮分页，只读 |
 | `sakura.host.tools` | `catalog()`、`execute(registrationId, name, arguments)` | 目录带真实登记身份；执行前复核并固定工具对象，同名新登记不能接管旧调用 |
 | `sakura.host.context` | `catalog()`、`collect(registrationId, request)` | 目录带真实插件和 Provider；回调失效明确失败，Host 不决定 Prompt 优先级 |
-| `sakura.host.model_slots` | `active()`、`catalog/resolve`、`register_provider` | active/resolve 只返回模型引用；目录由模型插件登记；默认 Assistant 使用 Core 传入的已发布引用与绑定 |
+| `sakura.host.model_slots.v2` | `active()`、`catalog/resolve`、`register_provider` | active/resolve 只返回模型引用；目录由模型插件登记；默认 Assistant 使用 Core 传入的已发布引用与绑定 |
 | `sakura.host.storage` | `resolve("data", "logs")` | 返回插件可使用的日志目录，由插件写自己的 Trace |
 | `sakura.host.logging` | 既有日志 SDK | 统一 Host 脱敏、身份绑定与落盘；模型调用统计沿既有遥测链路，不传播 Prompt 正文 |
 

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-18
+updated: 2026-09-20
 ---
 
 # Sakura Plugin Runtime v4
@@ -142,7 +142,7 @@ SDK 提供不依赖 Core 的 `sakura_http.urlopen_direct_for_loopback` 和 `prox
 插件不得从 `data_path()` 的物理位置反推 `user_root`。确需继续拥有现有共享用户数据的插件通过通用
 `sakura.host.storage` 取得有界的 data/cache 目录 descriptor；当前角色及角色卡正文通过
 `sakura.host.character.current()` 取得；Provider 公开目录、对话模型继承和三字段模型引用通过
-`sakura.host.model_slots.catalog()/resolve()/active()` 取得。默认 Assistant 读取 Core 发布的 session.modelSlots 快照，
+`sakura.host.model_slots.v2.catalog()/resolve()/active()` 取得。默认 Assistant 读取 Core 发布的 session.modelSlots 快照，
 并绑定所选 Model Service 实例，避免设置应用失败后隐式读取新值。推理消费者通过 SDK `ModelClient` 调用服务，
 凭据仅由模型提供方保管；模型网络请求不经过 Core 专用客户端。上述能力对 bundled 与 user 插件使用同一合同，Generic
 Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件私有配置和其他普通持久数据仍只使用

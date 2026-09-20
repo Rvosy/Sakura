@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import threading
 from types import SimpleNamespace
 
 import pytest
 
 from sakura_assistant import diagnostics
+from sakura_assistant import service as service_module
 from sakura_assistant.service import AssistantPlugin, Operation, RemoteTools
 from sakura_cancellation import OperationCancelled
+from sakura_model import ApiConfigError
 
 
 class ArtifactFailure(RuntimeError):
@@ -23,6 +26,75 @@ def provider(*, release=None):
         release_received=release or (lambda _artifact_id: True),
     ))
     return plugin
+
+
+@pytest.mark.parametrize("saved,expected,parameters", [
+    ({"temperature": 3, "top_p": False, "max_tokens": -1},
+     {"temperature": None, "top_p": None, "max_tokens": None}, {"temperature": 0.8}),
+    ({"temperature": "0.8", "top_p": float("nan"), "max_tokens": 2.5},
+     {"temperature": None, "top_p": None, "max_tokens": None}, {"temperature": 0.8}),
+    ({"temperature": 0, "top_p": 0, "max_tokens": 2048},
+     {"temperature": 0, "top_p": 0, "max_tokens": 2048},
+     {"temperature": 0, "top_p": 0, "max_tokens": 2048}),
+])
+def test_prior_generation_handoff_remains_usable_without_rewriting_configuration(tmp_path, monkeypatch, saved, expected, parameters):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"generation": saved, "custom": "keep"}), encoding="utf-8")
+    before = path.read_bytes()
+    sections, requests = {}, []
+    def update(values):
+        current = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**current, **values}), encoding="utf-8")
+    def register(descriptor, **callbacks):
+        sections[descriptor["sectionId"]] = callbacks
+    artifacts = SimpleNamespace(
+        allocate=lambda _descriptor: {"artifactId": "output", "path": str(tmp_path / "output.json")},
+        commit=lambda _identity: {"artifactId": "output"}, release_received=lambda _identity: None)
+    services = {
+        "sakura.host.settings": SimpleNamespace(register=register, place=lambda *_a, **_k: None),
+        "sakura.host.logging": None,
+        "sakura.host.storage": SimpleNamespace(resolve=lambda *_args: str(tmp_path / "logs")),
+        "sakura.host.context": SimpleNamespace(catalog=lambda: []),
+        "sakura.host.tools": SimpleNamespace(catalog=lambda: []),
+        "sakura.host.artifacts": artifacts,
+    }
+    context = SimpleNamespace(config=SimpleNamespace(
+        get=lambda: json.loads(path.read_text(encoding="utf-8")), update=update),
+        get=services.__getitem__, effect=lambda _callback: None, provide=lambda *_a, **_k: None)
+    class Model:
+        description = {"contextWindowTokens": 32768}
+        def __init__(self, _context, reference, **_kwargs): self.reference = reference
+        def close(self): pass
+        def complete(self, request, **_kwargs):
+            requests.append(request)
+            return {"message": {"role": "assistant", "content": '{"segments":[{"text":"已收到","tone":"中性"}]}'}}
+    monkeypatch.setattr(service_module, "ModelClient", Model)
+    monkeypatch.setattr(diagnostics, "_logger", None)
+    plugin = AssistantPlugin()
+    plugin.setup(context)
+    settings = sections["generation"]
+    assert settings["load"]() == expected
+    for invalid in (3, float("nan")):
+        with pytest.raises(ApiConfigError):
+            settings["save"]({"temperature": invalid})
+    reference = {"serviceKey": "fixture.model", "profileId": "fixture", "modelId": "model"}
+    request = {"session": {"modelSlots": {"chat": reference}, "modelBindings": {"chat": {"providerId": "fixture", "scopeId": "scope"}},
+        "character": {"id": "fixture", "displayName": "Fixture", "systemPrompt": "Fixture", "replyTones": ["中性"]},
+        "loopSettings": {}}, "event": {"type": "update_available", "payload": {"version": "2.0"}}}
+    monkeypatch.setattr(plugin, "_read_input", lambda _operation: request)
+    operation = Operation("prior-generation", {})
+    plugin.operations[operation.operation_id] = operation
+    plugin._run(operation)
+    assert operation.error is None
+    assert len(requests) == 1
+    assert requests[0]["parameters"] == parameters
+    assert path.read_bytes() == before
+    plugin.release(operation.operation_id, "completed")
+    assert settings["save"]({"temperature": 1, "top_p": 0.5, "max_tokens": 32}) == {"applicationState": "restart_required"}
+    assert settings["load"]() == {"temperature": 1, "top_p": 0.5, "max_tokens": 32}
+    assert plugin.generation == expected
+    assert json.loads(path.read_text(encoding="utf-8"))["custom"] == "keep"
+    plugin.close()
 
 
 def test_trace_flush_failure_still_releases_output_and_frees_the_operation(monkeypatch):

@@ -10,7 +10,7 @@ provides:
   - sakura.model.openai_compatible
 requires:
   - sakura.host.artifacts
-  - sakura.host.model_slots
+  - sakura.host.model_slots.v2
   - sakura.host.settings
 presentation:
   kind: infrastructure

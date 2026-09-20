@@ -5,7 +5,6 @@ import base64
 import json
 import re
 import threading
-from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -101,6 +100,18 @@ class RemoteTools(ToolRegistry):
         return ToolExecutionResult(name, bool(result["success"]), content, result.get("error", ""), result.get("reason_code", ""))
 
 
+def _read_generation(saved):
+    # Earlier handoffs copied optional values that the legacy reader ignored.
+    # Normalize the effective view without rewriting the user's configuration.
+    values = {}
+    for key, minimum, maximum in (("temperature", 0, 2), ("top_p", 0, 1), ("max_tokens", 1, 1000000)):
+        value = saved.get(key)
+        valid = (not isinstance(value, bool) and isinstance(value, (int, float))
+                 and minimum <= value <= maximum and (key != "max_tokens" or isinstance(value, int)))
+        values[key] = value if valid else None
+    return values
+
+
 class AssistantPlugin:
     def setup(self, context):
         self.context = context
@@ -108,7 +119,7 @@ class AssistantPlugin:
         self.operations = {}
         self.closed = False
         self.trace = None
-        self.generation = deepcopy(context.config.get().get("generation", {}))
+        self.generation = _read_generation(context.config.get().get("generation", {}))
         self.context_window_tokens = context.config.get().get("contextWindowTokens")
         self._register_settings()
         diagnostics.configure(context.get("sakura.host.logging"))
@@ -120,14 +131,13 @@ class AssistantPlugin:
                   {"key": "top_p", "label": "用词多样性 (top_p)", "type": "number", "default": None, "optionalToggle": True, "displayDefault": 1, "step": 0.01, "description": "值越低，用词范围越集中。", "minimum": 0, "maximum": 1},
                   {"key": "max_tokens", "label": "回复长度上限 (max_tokens)", "type": "integer", "default": None, "optionalToggle": True, "displayDefault": 2048, "minimum": 1, "maximum": 1000000}]
         def load():
-            saved = self.context.config.get().get("generation", {})
-            return {field["key"]: saved.get(field["key"]) for field in fields}
+            return _read_generation(self.context.config.get().get("generation", {}))
         def save(request):
             values = request.get("values", request)
             result = {}
             for field in fields:
                 value = values.get(field["key"])
-                if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value < field["minimum"] or ("maximum" in field and value > field["maximum"]) or (field["type"] == "integer" and not isinstance(value, int))):
+                if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not field["minimum"] <= value <= field["maximum"] or (field["type"] == "integer" and not isinstance(value, int))):
                     raise ApiConfigError("生成参数无效。")
                 result[field["key"]] = value
             if self.context.config.update({"generation": result}) == "error":

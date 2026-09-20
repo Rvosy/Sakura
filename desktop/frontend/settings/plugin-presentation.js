@@ -73,6 +73,9 @@ function result(label, message = "", reasonCode = "", unavailable = []) {
 }
 
 export function presentPluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
+  if (reasonCode === "MODEL_API_UPDATE_REQUIRED") {
+    return result("需要更新", "模型接口已更新，请安装这个插件的兼容版本。", reasonCode);
+  }
   if (NORMAL_REASONS.has(reasonCode) || state === "active") {
     return result("运行正常");
   }

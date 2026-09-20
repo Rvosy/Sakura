@@ -202,3 +202,32 @@ def test_close_reclaims_artifact_cleanup_skipped_by_an_unknown_release(tmp_path,
     assert released == [("input", service.calls[1][1][0]["operationId"], 2)]
     assert not value._operations
     assert not value._artifact_cleanups
+
+
+@pytest.mark.parametrize("field", ["senderId", "senderScope", "operationId"])
+def test_result_decoder_rejects_other_deliveries_without_reading_or_releasing(tmp_path, field):
+    released = []
+    delivery = {"senderId": "provider", "senderScope": "scope", "operationId": "operation"}
+    delivery[field] = "other"
+    artifacts = SimpleNamespace(
+        resolve=lambda _identity: {"delivery": delivery, "path": str(tmp_path / "must-not-be-opened")},
+        release_received=lambda *args, **kwargs: released.append(args))
+    with pytest.raises(ModelError) as caught:
+        module.decode_model_result({"responseArtifact": {"artifactId": "response"}}, artifacts, Service.identity, "operation")
+    assert caught.value.code == "MODEL_ARTIFACT_OWNER_INVALID"
+    assert released == []
+
+
+@pytest.mark.parametrize("payload,media_type,byte_length", [(b"{", "application/json", 1), (b"{}", "text/plain", 2), (b"{}", "application/json", 3)])
+def test_result_decoder_releases_its_delivery_when_result_is_invalid(tmp_path, payload, media_type, byte_length):
+    path = tmp_path / "response.json"
+    path.write_bytes(payload)
+    released = []
+    artifacts = SimpleNamespace(resolve=lambda _identity: {
+        "delivery": {"senderId": "provider", "senderScope": "scope", "operationId": "operation"},
+        "path": str(path), "mediaType": media_type, "byteLength": byte_length},
+        release_received=lambda identity, *, timeout_seconds: released.append(identity))
+    with pytest.raises(ModelError) as caught:
+        module.decode_model_result({"responseArtifact": {"artifactId": "response"}}, artifacts, Service.identity, "operation")
+    assert caught.value.code == "MODEL_RESULT_INVALID"
+    assert released == ["response"]

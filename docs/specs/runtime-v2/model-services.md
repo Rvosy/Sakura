@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-19
+updated: 2026-09-20
 ---
 
 # 模型 Service 与调用方边界
@@ -18,6 +18,19 @@ Assistant 和 Mem0 都通过公开 `sakura_model.ModelClient` 消费模型服务
 上下文预算、工具循环、ChatReply 分段解析、语义修复和 Trace；Mem0 保留整理规则、JSON 修复、
 去重、幂等来源和整理游标。模型缺失只阻止需要模型的操作，不阻止 Mem0 本地召回及手工管理。
 本轮默认实现连接远程 API，不提供本地推理进程、权重下载或离线发行。
+
+## 旧模型插件升级
+
+模型槽位能力使用 `sakura.host.model_slots.v2`，插件需在 manifest 的 `requires` 和
+`context.get()` 中使用同一服务名。Plugin API 仍为 4；能力服务名区分模型契约的两代版本。
+旧 `sakura.host.model_slots` 不再由宿主提供，声明该依赖的插件会在导入入口前被依赖检查阻止，
+设置页显示 `MODEL_API_UPDATE_REQUIRED` 和更新提示。未声明依赖而直接获取旧接口，也返回同一诊断。
+该提示在预览、刷新和启停结果中保持一致；已经启用的旧插件仍可停用，安装兼容版本后可重新启用。
+其他 v4 插件沿用原合同，不要求更改 API 版本。
+
+旧消费者须把 `{profileId, model}` 改为 `{serviceKey, profileId, modelId}`，通过 `ModelClient`
+执行请求，不再从 `resolve()` 取得地址、密钥或协议参数。SDK 仅保留 `ApiSettings` 纯数据类型的导入兼容，
+不恢复旧 HTTP 客户端或凭据解析路径。此版本不承诺旧模型消费者无需更新即可运行。
 
 ## 普通服务合同
 
@@ -87,4 +100,6 @@ describe 使用当前进程快照，底部统一保存链以 `restart_required` 
 Assistant 的 `generation` 配置也按自身插件进程冻结，独立于模型连接和引用。
 
 连接测试和获取模型列表属于 Provider 的通用 Settings actions，使用当前窗口草稿与相同任务生命周期和取消机制，不自动保存。发现结果由用户勾选后进入草稿。
+设置探测与生成请求共用结果解码，均支持内联结果和 `responseArtifact`；读取文件前核对提供者实例和任务身份，
+读取后释放资源。模型列表大小不会改变成功结果的语义。
 模型引用、生成参数和连接配置分别保存；旧 `api.yaml` 的一次性交接保持原文件不变，已有目标配置优先。

@@ -8,7 +8,7 @@ from tests.integration import test_core_host_real_chat_integration as fixture
 from tests.integration.test_core_host_real_chat_integration import _isolated_assistant_distribution
 
 
-def test_collection_save_keeps_old_connection_and_apply_publishes_new_chat_binding(tmp_path):
+def test_settings_draft_keeps_old_connection_and_save_publishes_new_chat_binding(tmp_path):
     original, original_worker = fixture._start_provider("complete")
 
     class Replacement(fixture._ProviderHandler):
@@ -28,31 +28,25 @@ def test_collection_save_keeps_old_connection_and_apply_publishes_new_chat_bindi
         legacy = (root / "config/api.yaml").read_bytes()
         process = fixture._start_host(root)
         fixture._wait_ready(process, ["transport.concurrent-router", "assistant.tools-v1", "assistant.plugins-v1"])
-        identity = {"pluginId": "sakura.model.openai_compatible", "sectionId": "connections", "collectionId": "profiles"}
-        queried = fixture._exchange(process, fixture._request("profiles", "plugins.collection.query", {
-            **identity, "cursor": None, "limit": 25, "search": "", "filters": {},
-        }))
+        identity = {"pluginId": "sakura.model.openai_compatible", "sectionId": "connections"}
+        queried = fixture._exchange(process, fixture._request("profiles", "plugins.settings.get", {}))
         assert queried["ok"], queried
-        item, = queried["payload"]["items"]
-        values = {key: value for key, value in item["values"].items() if key != "configured"}
-        values["base_url"] = f"http://127.0.0.1:{replacement.server_port}/v1"
-        saved = fixture._exchange(process, fixture._request("save-profile", "plugins.collection.update", {
-            **identity, "itemId": item["itemId"], "values": values,
-        }))
-        assert saved["ok"], saved
-        assert saved["payload"]["applicationState"] == "restart_required"
+        provider = next(item for item in queried["payload"]["plugins"] if item["pluginId"] == identity["pluginId"])
+        section = next(item for item in provider["sections"] if item["sectionId"] == identity["sectionId"])
+        values = {key: section["values"][key] for key in ("connections", "probeRequest")}
+        connection, = values["connections"]
+        connection["base_url"] = f"http://127.0.0.1:{replacement.server_port}/v1"
 
         def chat(operation):
             fixture._send(process, fixture._request(operation, "chat.send", {"operationId": operation, "message": "你好"}))
             frames = [fixture._read(process), fixture._read(process), fixture._read(process)]
             assert any(frame.get("name") == "chat.completed" for frame in frames), frames
 
-        chat("before-apply")
+        chat("before-save")
         assert len(fixture._ProviderHandler.requests) == 1
         assert Replacement.requests == []
-        applied = fixture._exchange(process, fixture._request("apply-profile", "plugins.settings.action", {
-            "pluginId": identity["pluginId"], "sectionId": identity["sectionId"],
-            "actionId": "applyProfiles", "values": {"profileId": "fixture", "modelId": "fixture-model"},
+        applied = fixture._exchange(process, fixture._request("save-profile", "plugins.settings.save", {
+            **identity, "values": values,
         }))
         assert applied["ok"], applied
         assert applied["payload"]["applicationState"] == "applied"

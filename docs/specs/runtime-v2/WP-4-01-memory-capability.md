@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-20
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -40,7 +40,7 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 - `plugins/builtin/sakura_mem0` 是 Runtime v2 Mem0 的唯一运行 owner。插件拥有 `MemoryBoundary`、`MemoryStore`、
   `MemoryRecallService`、整理状态、本地模型任务及相关资源；Core 不构造第二个 Memory owner。
 - 插件只使用普通 `sakura.host.context`、`sakura.host.tools`、`sakura.host.settings`、
-  `sakura.host.model_slots`、`sakura.host.storage`、`sakura.host.character`、`sakura.host.timeline` 和
+  `sakura.host.model_slots.v2`、`sakura.host.storage`、`sakura.host.character`、`sakura.host.timeline` 和
   `sakura.host.chat.completed`。不得增加 Memory 专用 Host Service、Generic Runtime 分支或公开
   `application_root`。
 - 共享 Memory 数据、cache、当前角色和模型引用只通过这些 Host Service 的受限 descriptor/resolve 合同取得。
@@ -74,7 +74,7 @@ data/plugins/sakura.memory.mem0/config.json
 字段为 `triggerTurns`、`backfillLimit` 和三字段引用 `curationModelRef`（`serviceKey/profileId/modelId`）。旧的
 `curationProfileId/curationModel` 可继续读取为 OpenAI 兼容服务引用；保存后只写新字段。缺失时使用 v2 插件默认值，
 不得从旧 Core 整理字段或旧 Memory 模型槽补齐。Provider 目录与解析后的选择通过
-`sakura.host.model_slots` 取得；不得直接读取 `user_root/config/api.yaml`，也不得把 Memory 数据或模型 cache
+`sakura.host.model_slots.v2` 取得；不得直接读取 `user_root/config/api.yaml`，也不得把 Memory 数据或模型 cache
 复制到 plugin-data。
 
 `triggerTurns` 只允许整数 `1..50`；`backfillLimit` 读取并保留，不在当前声明式设置页编辑。整理模型引用
@@ -190,7 +190,7 @@ Collection 状态或重绘页面；离开“记忆”页或得到稳定的 `disa
 - 未安装显示 `downloadEmbedding`，下载中只显示 `cancelEmbedding`，失败或取消只显示
   `retryEmbedding`，已安装且空闲不显示操作。独立 `refreshStatus` 不再公开。
 
-整理 Provider/模型不在插件详情中重复显示。Mem0 通过 `sakura.host.model_slots` 注册可选
+整理 Provider/模型不在插件详情中重复显示。Mem0 通过 `sakura.host.model_slots.v2` 注册可选
 `plugin:sakura.memory.mem0:curation` 槽位，统一显示在“模型 → 模型槽位”；保存仍写入插件私有
 `curationModelRef`。插件停用只隐藏槽位，不删除选择；重新启用后若引用已删除 Provider/模型，
 页面显示“原选择不可用”并要求重新选择。该可选槽位显示“继承”控件；空选择表示动态继承当前对话模型，

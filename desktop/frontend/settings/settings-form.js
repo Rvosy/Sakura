@@ -45,7 +45,7 @@ export function createSettingsForm({ document, plugin, section, read, write, enh
     for (const [attr, key] of [["min", "minimum"], ["max", "maximum"], ["step", "step"], ["maxLength", "maxLength"]]) {
       if (field[key] != null) input[attr] = String(field[key]);
     }
-    if (field.type === "integer") input.step = "1";
+    if (["number", "integer"].includes(field.type)) input.step = String(field.step ?? (field.type === "integer" ? 1 : "any"));
     input.placeholder = field.placeholder || "";
     input.required = Boolean(field.required); input.disabled = Boolean(field.readonly);
     const value = read(field.key);
