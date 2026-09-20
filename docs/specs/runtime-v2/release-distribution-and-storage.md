@@ -200,3 +200,10 @@ Portable 模式只显示清单中固定 HTTPS 资产的“下载新版 ZIP”。
   夹具内容不变，应用可启动。
 - macOS 从已签名的 1.0.0 `.app` 经 Updater 替换；确认 codesign/notarization、退出和替换完成，
   `Application Support/Sakura` 与外置 TTS 夹具内容不变，应用可重新启动。
+
+## GitHub 下载镜像
+
+Shell 的下载源配置保存在 `config/ui.json` 的 `settings.download_sources`，与插件市场共用。
+对发行配置已有的 GitHub 更新清单端点按源顺序展开，非 GitHub 地址保持原样；不覆盖发行构建提供的公钥和端点。
+安装版更新包仍由 Tauri updater 下载并验证签名，只有网络、HTTP 和超时错误切换下一源；签名失败立即终止。
+下载阶段在设置页显示当前源。便携版继续使用原有手动下载流程，镜像不改写浏览器中的人工下载事务。

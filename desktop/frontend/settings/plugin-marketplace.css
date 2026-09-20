@@ -1,9 +1,9 @@
-/* Demo-only market styling. Installed-page styling comes from production. */
+/* 插件市场使用主程序主题；规则限定在市场和详情弹窗内。 */
 #market-tabs { margin-right: auto; flex-shrink: 0; height: 38px; }
 #market-tabs .plugin-role-tab { min-height: 32px; padding-block: 5px; }
 #page-plugins[data-market-visible="true"] { grid-template-rows: auto minmax(0, 1fr); }
 #market-surface { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-@scope (#market-surface, #detail-dialog, #action-dialog) {
+@scope (#market-surface, #detail-dialog) {
 :scope { color: var(--sakura-text); }
 :scope button { min-height: 0; min-width: 0; }
 :scope .icon-button { display: inline-grid; place-items: center; padding: 8px; min-width: 32px; background: transparent; color: var(--sakura-secondary-text); border: 1px solid var(--hairline); border-radius: 8px; }
@@ -84,11 +84,6 @@ kbd { border: 1px solid var(--hairline); border-radius: 3px; color: var(--sakura
 .task-state { font-size: 12px; margin-bottom: 12px; line-height: 1.8; }
 .task-state .resource-progress { margin-top: 8px; }
 .task-error { color: #aa5b62; }
-:scope.action-dialog { border: 1px solid var(--hairline); border-radius: 15px; padding: 25px; width: 430px; max-width: calc(100vw - 32px); color: var(--sakura-text); background: var(--sakura-page-bg); }
-.action-dialog h2 { margin: 0 0 15px; font-size: 18px; }
-.action-dialog p { font-size: 12px; line-height: 1.9; color: var(--sakura-secondary-text); }
-.action-buttons { display: flex; justify-content: flex-end; gap: 9px; margin-top: 24px; }
-.action-buttons button { padding: 8px 15px; font-size: 12px; }
 button:not(.custom-select__trigger):focus-visible, a:focus-visible, input[type="checkbox"]:focus-visible { outline: 2px solid var(--sakura-primary); outline-offset: 3px; }
 @media (min-width: 1420px) { .catalog { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
@@ -99,3 +94,16 @@ button:not(.custom-select__trigger):focus-visible, a:focus-visible, input[type="
 .market-notice { margin: 0 0 12px; }
 @media (max-width: 1040px) { .market-card { padding: 14px; } .market-tools { gap: 10px; } }
 }
+
+dialog.download-sources-dialog { box-sizing: border-box; width: min(660px, calc(100vw - 40px)); max-height: calc(100dvh - 48px); overflow: auto; margin: auto; padding: 24px; color: var(--sakura-text); background: var(--surface-raised); border: 1px solid var(--hairline); border-radius: 14px; box-shadow: 0 20px 70px #0003; }
+.download-sources-dialog::backdrop { background: color-mix(in srgb, var(--sakura-text) 30%, transparent); backdrop-filter: blur(4px); }
+.download-sources-dialog h2 { margin: 0 0 20px; font-size: 20px; }
+.download-source-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--hairline); }
+.download-source-row input[type="text"] { min-width: 0; width: 100%; max-width: none; box-sizing: border-box; }
+.download-source-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; }
+.download-source-prefix { grid-column: 2 / -1; }
+.download-source-controls { display: flex; gap: 6px; }
+.download-sources-dialog .download-source-controls button { min-width: 34px; min-height: 34px; padding: 5px 10px; }
+.download-source-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.download-sources-dialog .download-source-actions button { min-width: 76px; }
+.download-source-actions button:first-child { margin-right: auto; }

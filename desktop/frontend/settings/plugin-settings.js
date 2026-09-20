@@ -26,6 +26,8 @@ export function createPluginSettingsFeature({
   isCharacterTransitioning,
   hasPendingCharacterSelection,
   onModelCatalogChanged = () => {},
+  onNavigatePlugin = () => {},
+  onCatalogChanged = () => {},
 }) {
   const fields = {
     pluginSearch: document.getElementById("pluginSearch"),
@@ -2351,6 +2353,7 @@ export function createPluginSettingsFeature({
     renderModelSurfaces();
     syncPluginSettingsDialog();
     schedulePluginActivityRefresh();
+    onCatalogChanged();
   }
 
   function renderCollections() {
@@ -2723,6 +2726,7 @@ export function createPluginSettingsFeature({
   function selectManagedPlugin(id, { reveal = false } = {}) {
     const plugin = pluginView.items.find((item) => item.id === id);
     if (!plugin) return;
+    if (reveal) onNavigatePlugin();
     if (reveal) clearPluginFilters();
     if (pluginPresentation.pluginMetadata(plugin).kind === 'infrastructure') pluginState.infrastructureCollapsed = false;
     pluginState.selectedId = id;
@@ -2882,6 +2886,7 @@ export function createPluginSettingsFeature({
   }
 
   return Object.freeze({
+    installedPlugins: () => runtimePluginController.snapshot()?.plugins || [],
     initialize: runtimePluginController.initialize,
     openPlugin(installId, configure = false) {
       const plugin = pluginView.items.find(item => item.id === installId);

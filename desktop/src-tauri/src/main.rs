@@ -29,6 +29,8 @@ mod macos_surface_viewport;
 mod managed_process_tree;
 mod platform;
 mod plugin_settings;
+mod download_sources;
+mod plugin_marketplace;
 mod product_shell;
 mod runtime_log;
 mod runtime_log_window;
@@ -7661,9 +7663,11 @@ fn main() {
             ui_config_repository.clone(),
             character_resource_root.join("config/system_config.yaml"),
         ))
+        .manage(download_sources::DownloadSources(ui_config_repository.clone()))
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
         ))
+        .manage(plugin_marketplace::MarketplaceState::default())
         .manage(update_coordinator)
         .manage(audio::AudioState::new(character_resource_root.clone()))
         .manage(asr::AsrState::default())
@@ -8039,6 +8043,11 @@ fn main() {
             settings_provider_model_save,
             tool_settings::settings_tools_get,
             tool_settings::settings_tools_save,
+            download_sources::settings_download_sources_get,
+            download_sources::settings_download_sources_save,
+            plugin_marketplace::settings_marketplace_catalog,
+            plugin_marketplace::settings_marketplace_install,
+            plugin_marketplace::settings_marketplace_cancel,
             plugin_settings::settings_plugins_get,
             plugin_settings::settings_plugins_save,
             plugin_settings::settings_plugins_enabled_set,

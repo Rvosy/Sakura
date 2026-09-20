@@ -695,3 +695,57 @@ def test_install_file_limit_rolls_back_promoted_code(
     assert not user_root.exists() or not [
         path for path in user_root.iterdir() if not path.name.startswith(".install-")
     ]
+
+
+def test_marketplace_install_checks_identity_before_writing(tmp_path):
+    root = tmp_path / "app"
+    package = _plugin_zip(tmp_path / "plugin.zip")
+    installer = LocalPluginInstaller(root)
+    with pytest.raises(PluginInstallError, match="PLUGIN_PACKAGE_IDENTITY_MISMATCH"):
+        installer.install(package, "zip", expected=("other.plugin", "1.0.0"))
+    assert not PluginDiscovery(root).discover()
+    assert not StoragePaths(root).plugins_config().exists()
+
+
+def test_marketplace_update_preserves_settings_and_rolls_back_invalid_package(tmp_path):
+    from app.core_host.plugin_settings import PluginSettingsError
+    root = tmp_path / "app"
+    worker = _BoundaryWorker(root)
+    boundary = _plugin_boundary(root, worker)
+    old = _plugin_zip(tmp_path / "old.zip")
+    boundary.install(boundary.snapshot()["revision"], "zip", str(old))
+    config = StoragePaths(root).plugins_config()
+    original_config = config.read_text(encoding="utf-8")
+    new = _plugin_zip(tmp_path / "new.zip", manifest=MANIFEST.replace("1.0.0", "1.1.0"))
+    request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(new), "pluginId": "com.example.local", "version": "1.1.0"}
+    result = boundary.marketplace_install(request)
+    assert result["managementAction"] == "updated"
+    spec = PluginDiscovery(root).discover()[0]
+    assert spec.version == "1.1.0" and not spec.enabled
+    assert config.read_text(encoding="utf-8") == original_config
+    with pytest.raises(PluginSettingsError, match="插件更新失败"):
+        boundary.marketplace_install({**request, "revision": boundary.snapshot()["revision"], "version": "2.0.0"})
+    assert PluginDiscovery(root).discover()[0].version == "1.1.0"
+    assert config.read_text(encoding="utf-8") == original_config
+
+
+def test_marketplace_update_rolls_back_runtime_failure(tmp_path):
+    from app.core_host.plugin_settings import PluginSettingsError
+    root = tmp_path / "app"
+    worker = _BoundaryWorker(root)
+    boundary = _plugin_boundary(root, worker)
+    old = _plugin_zip(tmp_path / "old.zip")
+    boundary.install(boundary.snapshot()["revision"], "zip", str(old))
+    new = _plugin_zip(tmp_path / "new.zip", manifest=MANIFEST.replace("1.0.0", "1.1.0"))
+    original = worker.install_plugin
+    attempts = []
+    def fail_once(install_id):
+        attempts.append(install_id)
+        if len(attempts) == 1:
+            raise RuntimeError("cannot register new plugin")
+        return original(install_id)
+    worker.install_plugin = fail_once
+    with pytest.raises(PluginSettingsError):
+        boundary.marketplace_install({"revision": boundary.snapshot()["revision"], "sourcePath": str(new), "pluginId": "com.example.local", "version": "1.1.0"})
+    assert len(attempts) == 2
+    assert PluginDiscovery(root).discover()[0].version == "1.0.0"

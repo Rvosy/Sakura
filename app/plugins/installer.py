@@ -88,7 +88,7 @@ class LocalPluginInstaller:
         self._paths = StoragePaths(self._user_root)
         self._dependencies = PluginDependencyRoots(self._user_root)
 
-    def install(self, source: Path, source_kind: str) -> InstalledPlugin:
+    def install(self, source: Path, source_kind: str, *, expected: tuple[str, str] | None = None) -> InstalledPlugin:
         source_path = Path(source)
         if not source_path.is_absolute():
             raise PluginInstallError("PLUGIN_INSTALL_SOURCE_INVALID")
@@ -131,6 +131,8 @@ class LocalPluginInstaller:
                 plugin_root = copied
 
             spec = self._validated_spec(plugin_root)
+            if expected is not None and (spec.plugin_id, spec.version) != expected:
+                raise PluginInstallError("PLUGIN_PACKAGE_IDENTITY_MISMATCH")
             self._reject_conflicts(spec)
             config_before = self._read_config_text()
             target = destination / sanitize_directory_component(spec.plugin_id)

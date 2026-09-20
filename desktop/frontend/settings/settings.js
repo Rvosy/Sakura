@@ -126,6 +126,7 @@ let runtimeChatTimingController = null;
 let runtimeBubbleAutoHideController = null;
 let runtimeToolsController = null;
 let runtimePluginController = null;
+let runtimePluginMarketplace = null;
 let latestUpdateSnapshot = null;
 let updateActionBusy = false;
 let runtimeVoiceController = null;
@@ -732,6 +733,7 @@ function showPage(page) {
   }
   runtimeProviderFeature?.onPageChanged(page);
   runtimePluginController?.onPageChanged(page);
+  runtimePluginMarketplace?.onPageChanged(page);
   runtimeAsrController?.onPageChanged(page);
   runtimeCharacterFeature?.onPageChanged(page);
 }
@@ -1634,6 +1636,9 @@ detailCard?.addEventListener("input", (event) => {
 // 关窗（X / OS）拦截：统一走「取消」路径；有未保存改动时二次确认。
 (function guardWindowClose() {
   try {
+    window.__TAURI__?.event?.listen?.("sakura://update-download-source", ({ payload }) => {
+      if (updateActionBusy) fields.updateStatus.textContent = `正在通过 ${payload.source} 下载`;
+    });
     window.__TAURI__?.event?.listen?.("sakura://settings-close-requested", requestCancelClose);
     window.__TAURI__?.event?.listen?.("sakura://settings-exit-requested", requestAppExitClose);
     window.__TAURI__?.event?.listen?.("sakura://settings-exit-timeout", () => {
@@ -1664,6 +1669,7 @@ window.addEventListener("beforeunload", () => {
   runtimeBubbleAutoHideController?.dispose();
   runtimeToolsController?.dispose();
   runtimePluginController?.dispose();
+  runtimePluginMarketplace?.dispose();
   runtimeVoiceController?.dispose();
   runtimeAsrController?.dispose();
   runtimeAutostartController?.dispose();
@@ -1814,6 +1820,8 @@ async function startSettingsFrontend() {
     await initializeRuntimeSettingsSection(async () => {
       const { createPluginSettingsFeature } = await import("./plugin-settings.js");
       runtimePluginController = createPluginSettingsFeature({
+        onNavigatePlugin: () => runtimePluginMarketplace?.setView("installed"),
+        onCatalogChanged: () => runtimePluginMarketplace?.sync(),
         onModelCatalogChanged: () => runtimeProviderFeature?.refreshChoices(),
         document,
         window,
@@ -1835,6 +1843,13 @@ async function startSettingsFrontend() {
         hasPendingCharacterSelection: () => Boolean(runtimeCharacterFeature?.pendingCharacterId()),
       });
       runtimePluginController.initialize(await invoke("settings_plugins_get"));
+      const { createPluginMarketplace } = await import("./plugin-marketplace.js");
+      const { createMarketplaceSource } = await import("./plugin-marketplace-source.js");
+      const { openDownloadSources } = await import("./download-source-settings.js");
+      runtimePluginMarketplace = createPluginMarketplace({ document, host: runtimePluginController, notify,
+        source: createMarketplaceSource({ invoke, Channel: window.__TAURI__.core.Channel, host: runtimePluginController }),
+        openSources: () => openDownloadSources({ document, invoke, notify }).catch(error => setError(String(error))),
+      });
     });
   }
   if (featureStatus(manifest, "voice.tts") === "available") {

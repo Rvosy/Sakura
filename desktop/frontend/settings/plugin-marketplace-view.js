@@ -1,7 +1,9 @@
+export const marketplaceMarkup = `
 <section id="market-surface" class="market-page" hidden>
       <div class="market-tools">
         <label class="market-search"><span class="sakura-icon icon-search" aria-hidden="true"></span><input id="search" type="search" placeholder="搜索名称、作者或功能" aria-label="搜索插件" autocomplete="off"><kbd>/</kbd></label>
         <label class="compatibility"><input id="compatible" type="checkbox" checked><span>仅看兼容</span></label>
+        <button id="market-sources" class="secondary-button">下载源</button>
         <button id="refresh" class="icon-button" aria-label="刷新市场"><span class="sakura-icon icon-refresh-cw" aria-hidden="true"></span></button>
       </div>
       <div id="categories" class="categories" aria-label="插件领域"></div>
@@ -13,4 +15,4 @@
       <div class="market-foot"><span id="catalog-state"></span><span>社区目录</span></div>
 </section>
   <dialog id="detail-dialog" class="market-drawer" aria-labelledby="detail-title"><div id="detail"></div></dialog>
-  <dialog id="action-dialog" class="action-dialog" aria-labelledby="action-title"><form method="dialog"><h2 id="action-title"></h2><div id="action-body"></div><div class="action-buttons"><button class="secondary-button" value="cancel">取消</button><button id="action-confirm" value="confirm">确认安装</button></div></form></dialog>
+`;

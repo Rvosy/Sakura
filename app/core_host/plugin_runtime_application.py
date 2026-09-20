@@ -322,6 +322,9 @@ class PluginRuntimeApplication:
         self._inventory_snapshot = self._inventory.scan()
         return self._inventory_snapshot
 
+    def marketplace_context(self) -> dict[str, Any]:
+        return {"api": 4, "services": self._manager.available_service_keys()}
+
     def settings_snapshot(self) -> dict[str, Any]:
         return self._host_services.decorate_settings_snapshot(self._manager.snapshot())
 

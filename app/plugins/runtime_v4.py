@@ -1021,6 +1021,10 @@ class PluginRuntimeManager:
                 self._log_lifecycle(record, "plugin.notification.dropped", "插件观察通知未入队",
                     diagnostics={"event_name": name, "notification_reason": error.code})
 
+    def available_service_keys(self) -> list[str]:
+        with self._lock:
+            return sorted(self._services)
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             plugins = [

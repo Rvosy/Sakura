@@ -23,6 +23,8 @@ PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
         "plugins.enabled.set",
         "plugins.settings.action",
         "plugins.install",
+        "plugins.marketplace.context",
+        "plugins.marketplace.install",
         "plugins.uninstall",
         "plugins.collection.query",
         "plugins.collection.create",
@@ -111,6 +113,15 @@ class PluginSettingsBoundary:
                 if set(payload) != {"pluginId", "sectionId", "actionId", "values"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置动作格式无效。")
                 result = self.action(payload)
+            elif name == "plugins.marketplace.context":
+                application = self._application()
+                if payload or application is None:
+                    raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件服务尚未就绪。")
+                result = application.marketplace_context()
+            elif name == "plugins.marketplace.install":
+                if set(payload) != {"revision", "sourcePath", "pluginId", "version"}:
+                    raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
+                result = self.marketplace_install(payload)
             elif name == "plugins.install":
                 if set(payload) != {"revision", "sourceKind", "sourcePath"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件安装请求格式无效。")
@@ -266,6 +277,7 @@ class PluginSettingsBoundary:
         raw_revision: object,
         raw_source_kind: object,
         raw_source_path: object,
+        *, expected: tuple[str, str] | None = None,
     ) -> dict[str, object]:
         revision = _revision_value(raw_revision)
         if raw_source_kind not in {"zip", "folder"}:
@@ -293,7 +305,7 @@ class PluginSettingsBoundary:
                 )
             installer = LocalPluginInstaller(self._roots)
             try:
-                installed = installer.install(Path(raw_source_path), str(raw_source_kind))
+                installed = installer.install(Path(raw_source_path), str(raw_source_kind), expected=expected)
             except PluginInstallError as error:
                 raise PluginSettingsError(error.code, "本地插件安装失败。") from error
             try:
@@ -321,6 +333,59 @@ class PluginSettingsBoundary:
             installId=installed.install_id,
             pluginId=installed.plugin_id,
         )
+        return result
+
+    def marketplace_install(self, payload: Mapping[str, Any]) -> dict[str, object]:
+        plugin_id = _identifier(payload["pluginId"])
+        version = payload["version"]
+        source_path = payload["sourcePath"]
+        if not isinstance(version, str) or not version or not isinstance(source_path, str):
+            raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
+        revision = _revision_value(payload["revision"])
+        existing = next((p for p in self.snapshot()["plugins"] if p["pluginId"] == plugin_id), None)
+        if existing is None:
+            return self.install(revision, "zip", source_path, expected=(plugin_id, version))
+        with self._save_lock:
+            if revision != self._revision():
+                raise PluginSettingsError("CONFIG_REVISION_CONFLICT", "插件列表已变化，请刷新后重试。")
+            application = self._application()
+            if application is None:
+                raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件服务尚未就绪。")
+            if existing["source"] != "user":
+                raise PluginSettingsError("BUNDLED_PLUGIN_LOCKED", "内置插件随应用更新。")
+            if existing["enabled"]:
+                raise PluginSettingsError("PLUGIN_UPDATE_REQUIRES_DISABLED", "请先停用插件再更新。")
+            installer = LocalPluginInstaller(self._roots)
+            pending = None
+            installed = None
+            try:
+                pending = installer.begin_uninstall(existing["installId"])
+                application.uninstall_plugin(plugin_id)
+                # Keep all plugin settings; installation will keep it disabled.
+                installer._restore_config_text(pending.config_before)
+                installed = installer.install(Path(source_path), "zip", expected=(plugin_id, version))
+                application.install_plugin(installed.install_id)
+            except Exception as error:
+                recovery_error = None
+                try:
+                    if installed is not None:
+                        application.uninstall_plugin(plugin_id)
+                        installer.remove_installed_code(installed)
+                    if pending is not None:
+                        installer.rollback_uninstall(pending)
+                        application.refresh_inventory()
+                        application.uninstall_plugin(plugin_id)
+                        application.install_plugin(existing["installId"])
+                except Exception as recovery:
+                    recovery_error = recovery
+                code = "PLUGIN_UPDATE_ROLLBACK_FAILED" if recovery_error else getattr(error, "code", "PLUGIN_UPDATE_FAILED")
+                raise PluginSettingsError(code, "插件更新失败。", recovery_error=recovery_error) from error
+            try:
+                installer.commit_uninstall(pending)
+            except PluginInstallError as error:
+                raise PluginSettingsError(error.code, "插件已更新，但旧文件清理失败。") from error
+        result = self.snapshot()
+        result.update(managementAction="updated", installId=installed.install_id, pluginId=plugin_id)
         return result
 
     def uninstall(self, raw_revision: object, raw_install_id: object) -> dict[str, object]:

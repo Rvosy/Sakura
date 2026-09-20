@@ -6,8 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::download_sources::{self, DownloadSources};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use tauri::Manager;
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -313,6 +315,70 @@ fn portable_download_url(raw: &Value) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+fn mirrored_updater(app: &AppHandle) -> Result<tauri_plugin_updater::UpdaterBuilder, String> {
+    let sources = app.state::<DownloadSources>().load()?;
+    let mut builder = app.updater_builder().configure_client(|client| {
+        client
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(20))
+    });
+    if let Some(endpoints) = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|value| value["endpoints"].as_array())
+    {
+        let mut resolved = Vec::new();
+        for endpoint in endpoints {
+            let url = download_sources::https_url(
+                endpoint.as_str().ok_or("UPDATE_CONFIGURATION_INVALID")?,
+            )?;
+            resolved.extend(
+                download_sources::candidates(&url, &sources)
+                    .into_iter()
+                    .map(|(_, url)| url),
+            );
+        }
+        if !resolved.is_empty() {
+            builder = builder
+                .endpoints(resolved)
+                .map_err(|_| "UPDATE_CONFIGURATION_INVALID")?;
+        }
+    }
+    Ok(builder)
+}
+
+async fn download_update(
+    app: &AppHandle,
+    update: &mut tauri_plugin_updater::Update,
+) -> Result<Vec<u8>, UpdaterError> {
+    let sources = app
+        .state::<DownloadSources>()
+        .load()
+        .map_err(UpdaterError::Network)?;
+    let original = update.download_url.clone();
+    let mut last_error = None;
+    for (name, url) in download_sources::candidates(&original, &sources) {
+        update.download_url = url;
+        let _ = app.emit("sakura://update-download-source", json!({"source": name}));
+        match update.download(|_, _| {}, || {}).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => {
+                // A signature or manifest error must not become a mirror retry.
+                if !matches!(
+                    classify_updater_error(&error, "download"),
+                    "NETWORK" | "HTTP" | "TIMEOUT"
+                ) {
+                    return Err(error);
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or(UpdaterError::EmptyEndpoints))
+}
+
 pub async fn check(
     app: &AppHandle,
     executable_directory: &Path,
@@ -329,8 +395,7 @@ pub async fn check(
         "Updater check started",
         check_started_attributes(trigger, mode),
     );
-    let updater = app
-        .updater_builder()
+    let updater = mirrored_updater(app)?
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .map_err(|error| {
@@ -580,8 +645,7 @@ pub async fn install(
         "Updater check started",
         check_started_attributes("install", mode),
     );
-    let updater = app
-        .updater_builder()
+    let updater = mirrored_updater(app)?
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .map_err(|error| {
@@ -672,7 +736,7 @@ pub async fn install(
             "version": version,
         }),
     );
-    let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| {
+    let bytes = download_update(app, &mut update).await.map_err(|error| {
         let details = updater_error_attributes(&error, "download");
         log_updater_failure_details(
             runtime_log,

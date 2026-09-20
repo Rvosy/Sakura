@@ -48,7 +48,7 @@ async function load() {
   loading.hidden = false; loading.textContent = "正在载入当前设置页面…";
   try {
     state ??= await makeState();
-    const response = await fetch("../../settings/index.html");
+    const response = await fetch("../../settings/index.html", { cache: "no-store" });
     if (!response.ok) throw Error(`HTTP ${response.status}`);
     const doc = new DOMParser().parseFromString(await response.text(), "text/html");
     const base = doc.createElement("base"); base.href = new URL("../../settings/", location.href).href; doc.head.prepend(base);
