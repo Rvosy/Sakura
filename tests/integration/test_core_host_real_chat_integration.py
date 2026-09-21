@@ -2029,9 +2029,16 @@ def test_studio_publish_updates_live_character_without_restarting_core_or_plugin
     server, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, server.server_address[1])
     distribution = tmp_path / "distribution"
-    for plugin in ("sakura_portrait", "sakura_spine", "sakura_gpt_sovits", "sakura_tts_hub"):
+    for plugin in ("sakura_portrait", "sakura_tts_hub"):
         shutil.copytree(REPO_ROOT / "plugins/builtin" / plugin, distribution / "plugins/builtin" / plugin)
-    dependencies = distribution / "plugins/dependencies/sakura.tts.gpt-sovits"
+    from app.plugins.inventory import PluginDesiredStateStore
+    from app.storage.paths import StoragePaths
+    for directory, plugin_id in (("sakura_spine", "sakura.visual.spine"),
+                                 ("sakura_gpt_sovits", "sakura.tts.gpt-sovits")):
+        shutil.copytree(REPO_ROOT / "plugins/optional" / directory, app_root / "plugins/user" / directory,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        PluginDesiredStateStore(app_root).set(plugin_id, True)
+    dependencies = StoragePaths(app_root).plugin_dependency_root_for("sakura.tts.gpt-sovits")
     dependencies.mkdir(parents=True)
     (dependencies / ".sakura-dependencies.json").write_text(json.dumps({
         "schemaVersion": 1, "kind": "requirements.txt",
