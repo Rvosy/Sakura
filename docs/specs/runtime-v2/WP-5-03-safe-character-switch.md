@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-14
+updated: 2026-09-21
 ---
 
 # WP-5-03 安全角色切换、Session 与历史分页
@@ -23,6 +23,10 @@ Assistant Session 的热配置：切换先阻止新聊天、取消并等待旧�
 导入角色包只有在首次导入并自动成为当前角色时要求重启；
 导入非当前角色不重启。
 
+设置页可以删除已安装的角色包。删除前必须确认。确认后 Core 只移除 `characters/` 下该角色的直接子目录，
+不删除聊天记录和记忆。删除当前角色时按显示名选择下一个角色并受控重启；删掉最后一个角色后当前角色为空，
+新 generation 以 `setup_required` 完成。删除非当前角色不重启。
+
 设置页可以给当前已提交角色导入 `.voice`，也可以导出完整角色包、单角色包或语音包。给当前角色导入语音返回
 `character_refresh`：支持资源更新协议的语音服务暂停任务并失效权重缓存，保留推理进程；其他语音服务局部重载。
 Core generation 保持不变。
@@ -33,7 +37,7 @@ Core generation 保持不变。
 
 ## 2. 配置提交与 restart 协议
 
-Python `characters.settings.select/import/import_voice` 在校验归档或目标角色后保存数据，返回固定 envelope：
+Python `characters.settings.select/import/import_voice/delete` 在校验归档或目标角色后保存数据，返回固定 envelope：
 
 ```json
 {
@@ -60,6 +64,9 @@ Core 记录尚未成功应用的选择；用户再次提交同一目标时重新
 `schemaVersion`、`outputPath` 和用户提示。Python Core 负责校验角色及语音模型，并通过临时文件替换目标归档；
 Rust 和 WebView 不直接读取角色目录。
 
+`characters.settings.delete` 只接收 `characterId`。成功时返回与 select/import 相同的 change envelope。
+最后一个角色删除后 `currentCharacterId` 可以为空，Rust 仍派发一次受控 restart。
+
 设置页的角色下拉不得直接调用 `characters.settings.select`。它可以通过独立的只读视觉预览命令加载目标角色
 已保存的主题、默认立绘和初始问候语，但不得改变 active character、Core generation、Chat reducer、Memory/Timeline、TTS
 或插件 identity。统一保存流程先提交当前 generation 的其他设置，
@@ -74,6 +81,7 @@ Rust 和 WebView 不直接读取角色目录。
 2. Core Snapshot 的 generation ID 与 Supervisor 一致；
 3. Snapshot readiness 为 `ready`、`degraded`，或带有效目标表现的 `setup_required`；
 4. Character Presentation 的 generation ID 一致且 `characterId` 等于已提交目标。
+   删除最后一个角色后目标为空：新 generation 为 `setup_required` 且没有角色 Presentation 也视为完成。
 
 任一条件缺失都不能显示新角色历史或宣告切换成功。目标到达 `failed` 时报告初始化失败，不自动恢复。
 
@@ -121,7 +129,8 @@ Core generation 表示进程寿命，角色 ID 表示会话归属。切换阻止
 - 收到已提交的角色切换回执后进入 switching，立即清空并隐藏旧角色 Memory 列表、编辑器、插件
   collection 页面状态和历史内容；切换期间禁用角色导入/选择及角色相关操作，不整页 reload。
 - 当前角色有未保存的外观、语音或 Memory 改动时禁止导入语音，避免导入后的刷新覆盖草稿。导出仍可读取已保存
-  的角色包；有待应用的角色切换时，导入语音和导出都保持禁用。
+  的角色包；有待应用的角色切换时，导入语音和导出都保持禁用。删除下拉中的角色包仍可用，但必须先确认；
+  切换进行中禁用删除。
 - Provider、Tools、Plugin 和 Screen Awareness 等全局设置草稿保留，并在新角色就绪后刷新控制器；
   外观、语音和 Memory 草稿不得迁移到另一角色。
 - 主桌宠只有在角色 ID 变化时替换 Chat Presentation reducer，清除旧回复浏览/打字/TTS 状态并显示新角色

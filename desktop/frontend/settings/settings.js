@@ -1714,6 +1714,8 @@ async function startSettingsFrontend() {
     clearCharacterState: () => runtimePluginController?.clearCharacterState(),
     renderMemorySurface: () => runtimePluginController?.renderMemorySurface(),
     openPlugin: (installId, configure) => { showPage("plugins"); runtimePluginController?.openPlugin(installId, configure); },
+    liveCharacterVisualPreview: manifest.liveCharacterVisualPreview !== false,
+    confirmAction,
   });
   window.__TAURI__?.event?.listen?.("sakura://character-catalog-changed", ({ payload } = {}) => {
     if (settingsWindowClosing) return;

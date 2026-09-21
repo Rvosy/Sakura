@@ -1091,15 +1091,33 @@ fn ready_character_generation(
 ) -> Option<String> {
     let generation_id = available_generation_id(publication)?;
     let snapshot = publication.snapshot.as_ref()?;
-    let presentation = publication.character_presentation.as_ref()?;
-    let ready = publication.supervisor.generation_number > previous_generation_number
+    let generation_advanced = publication.supervisor.generation_number > previous_generation_number
         && generation_id != previous_generation_id
         && snapshot.generation_id == generation_id
         && matches!(
             snapshot.readiness.as_str(),
             "ready" | "setup_required" | "degraded"
-        )
-        && presentation.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
+        );
+    if !generation_advanced {
+        return None;
+    }
+    if target_character_id.is_empty() {
+        let presentation = publication.character_presentation.as_ref();
+        let presented = presentation
+            .and_then(|value| value.get("characterId"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let generation_ok = match presentation {
+            None => true,
+            Some(value) => {
+                value.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
+            }
+        };
+        return (presented.is_empty() && generation_ok).then_some(generation_id);
+    }
+    let presentation = publication.character_presentation.as_ref()?;
+    let ready = presentation.get("generationId").and_then(Value::as_str)
+        == Some(generation_id.as_str())
         && presentation.get("characterId").and_then(Value::as_str) == Some(target_character_id);
     ready.then_some(generation_id)
 }
@@ -2021,6 +2039,18 @@ mod tests {
         );
         publication.snapshot.as_mut().expect("snapshot").readiness = "failed".to_string();
         assert!(ready_character_generation(&publication, "generation-a", 1, "beta").is_none());
+
+        publication.snapshot.as_mut().expect("snapshot").readiness = "setup_required".to_string();
+        publication.character_presentation = None;
+        assert_eq!(
+            ready_character_generation(&publication, "generation-a", 1, "").as_deref(),
+            Some("generation-b")
+        );
+        publication.character_presentation = Some(json!({
+            "generationId": generation,
+            "characterId": "beta",
+        }));
+        assert!(ready_character_generation(&publication, "generation-a", 1, "").is_none());
     }
 
     #[test]

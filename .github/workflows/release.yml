@@ -52,6 +52,9 @@ jobs:
           - target: macos-arm64
             runner: macos-15
             archive: python-runtime.tar.gz
+          - target: linux-x64
+            runner: ubuntu-24.04
+            archive: python-runtime.tar.gz
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 55
     env:
@@ -143,8 +146,22 @@ jobs:
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           Expand-Archive -LiteralPath (Join-Path $env:RUNNER_TEMP '${{ matrix.archive }}') -DestinationPath $root
 
-      - name: Extract bundled Python (macOS)
-        if: runner.os == 'macOS'
+      - name: Install Linux WebKit build prerequisites
+        if: runner.os == 'Linux'
+        timeout-minutes: 8
+        shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+            build-essential clang libclang-dev file libssl-dev libasound2-dev libgbm-dev \
+            libpipewire-0.3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev libxdo-dev librsvg2-dev patchelf
+
+      - name: Extract bundled Python (macOS/Linux)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -213,6 +230,32 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path portable-shell -Force | Out-Null
           Copy-Item desktop/src-tauri/target/release/sakura.exe portable-shell/sakura.exe
+
+      - name: Collect Linux release artifacts
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          appimage="$(find desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
+          update="$(find desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage.tar.gz' -print -quit)"
+          deb="$(find desktop/src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$appimage" && test -n "$deb" && test -n "$update" && test -f "${update}.sig"
+          appimage_out="artifacts/Sakura-${VERSION}-linux-x64.AppImage"
+          update_out="artifacts/Sakura-${VERSION}-linux-x64.AppImage.tar.gz"
+          deb_out="artifacts/Sakura-${VERSION}-linux-x64.deb"
+          cp "$appimage" "$appimage_out"
+          cp "$deb" "$deb_out"
+          cp "$update" "$update_out"
+          cp "${update}.sig" "${update_out}.sig"
+          "$RUNNER_TEMP/python-runtime/bin/python3" \
+            tools/release/verify_updater_signature.py \
+            "$update_out" "${update_out}.sig"
+          python tools/release/package_optional_plugin.py \
+            --source plugins/optional/playwright_browser \
+            --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
       - name: Collect macOS release artifacts
         if: runner.os == 'macOS'
@@ -372,7 +415,10 @@ jobs:
               "release-assets/Sakura-${VERSION}-windows-x64-setup.exe.sig" \
             --release macos-arm64 \
               "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz" \
-              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz.sig"
+              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz.sig" \
+            --release linux-x64 \
+              "release-assets/Sakura-${VERSION}-linux-x64.AppImage.tar.gz" \
+              "release-assets/Sakura-${VERSION}-linux-x64.AppImage.tar.gz.sig"
       - name: Publish the formal GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -422,7 +468,10 @@ jobs:
               "release-assets/Sakura-${VERSION}-windows-x64-setup.exe.sig" \
             --release macos-arm64 \
               "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz" \
-              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz.sig"
+              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz.sig" \
+            --release linux-x64 \
+              "release-assets/Sakura-${VERSION}-linux-x64.AppImage.tar.gz" \
+              "release-assets/Sakura-${VERSION}-linux-x64.AppImage.tar.gz.sig"
       - name: Append the Portable ZIP to the GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -468,7 +517,8 @@ jobs:
               downloads: {
                 windowsX64Setup: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-windows-x64-setup.exe"),
                 windowsX64Portable: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-windows-x64-portable.zip"),
-                macosArm64Dmg: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-macos-arm64.dmg")
+                macosArm64Dmg: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-macos-arm64.dmg"),
+                linuxX64AppImage: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-linux-x64.AppImage")
               },
               updaterManifestUrl: "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
             }' > service-releases.json

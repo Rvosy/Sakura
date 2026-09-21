@@ -770,5 +770,6 @@ export function capabilityManifest() {
       ]),
     ),
     unavailableReasons: {},
+    liveCharacterVisualPreview: true,
   };
 }

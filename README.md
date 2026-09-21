@@ -43,7 +43,7 @@ Sakura 最大的特点：**她会主动来找你**。
 
 推荐直接使用 **Release 里的最新版本**，不要只下载 GitHub 页面上的源码压缩包。
 
-> **平台提醒：** Windows 版本是当前主要测试目标。Mac 和 Linux 用户请先看 [完整安装指南](docs/userdocs/SETUP.md)。
+> **平台提醒：** Windows 版本是当前主要测试目标。macOS 见 [macOS 使用说明](docs/userdocs/MACOS_SETUP.md)，Linux x64 见 [Linux 使用说明](docs/userdocs/LINUX_SETUP.md)。
 
 1. 从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 下载适合当前平台的正式产物，不要下载 GitHub 自动生成的源码压缩包
 2. Runtime v2 的 Windows Setup 可直接安装；Portable ZIP 解压后运行 `sakura.exe`
@@ -101,6 +101,7 @@ Sakura 最大的特点：**她会主动来找你**。
 | [聊天、截图与屏幕感知](docs/userdocs/CHAT_SCREEN_AND_CONTEXT.md) | 普通聊天、手动截图、主动感知和上下文行为 |
 | [匿名统计与远程诊断](docs/userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md) | 默认状态、发送范围、关闭方式、诊断 ID 与数据删除 |
 | [macOS 安装指南](docs/userdocs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
+| [Linux 安装指南](docs/userdocs/LINUX_SETUP.md) | Ubuntu 24.04、WebKitGTK、从源码下载 Runtime |
 | [技术讲解 README](docs/devdocs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
 | [插件 SDK 文档](docs/devdocs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |
 | [文档总览](docs/README.md) | 按用户文档、开发文档、spec、ADR、plan、record 和 archive 分类的完整目录 |

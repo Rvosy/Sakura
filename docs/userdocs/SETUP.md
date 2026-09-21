@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-12
+updated: 2026-09-21
 ---
 
 # 安装与首次配置
@@ -26,7 +26,7 @@ Runtime v2 正式包已经包含冻结的 Python Core 依赖，用户安装时�
 
 ### Linux
 
-Linux 需要从源码构建 Tauri Shell，并准备项目自带布局的 Python Runtime。不同桌面环境对透明窗口、点击穿透和绝对定位的支持不完全相同。
+Linux x64 目前从源码运行。安装 WebKitGTK 4.1 开发包后执行 `bash scripts/install.sh`，脚本会下载冻结的 Python Runtime 并安装依赖。窗口、截图和 Wayland 限制见 [Linux 使用说明](LINUX_SETUP.md)。
 
 ## 从 1.1.0 升级
 
@@ -45,7 +45,7 @@ Linux 需要从源码构建 Tauri Shell，并准备项目自带布局的 Python 
 
 ## 从源码运行
 
-源码检出需要根目录下的 `runtime/`。先从 Releases 获取对应平台的 Runtime，再安装依赖并构建桌面端。
+源码检出默认不包含 `runtime/`。Windows 与 macOS 可从 Releases 拷贝对应平台 Runtime；Linux x64 以及没有现成 Runtime 的 macOS 可用 `scripts/install.sh` 按平台清单下载冻结的 CPython。不要使用系统 Python 替代。
 
 Windows：
 
@@ -85,7 +85,9 @@ bash scripts/start.sh
 
 ### 添加角色
 
-在“角色与布局”页导入 `.char` 文件。角色包可以包含角色卡、立绘、主题和语音参考资源。完成导入后，从“当前角色”选择要显示的角色。
+在“角色与布局”页导入 `.char` 文件。角色包可以包含角色卡、立绘、主题和语音参考资源。完成导入后，从“当前角色”选择要显示的角色。同一页可以删除已安装的角色包；删除前会确认。角色包从本机移除后无法恢复，聊天记录和记忆会保留。重新导入相同 ID 的角色包可以继续使用这些记录。
+
+从源码运行时，也可以把现成的角色目录放到仓库根下的 `base_characters/`（历史拼写 `base_charaters/` 同样有效）。Core 会扫描其中直接含有 `.char` / `.card.char` 的文件夹，包括像 `角色包/` 这样的嵌套目录。0.9.5 之后立绘和语音是分开的：同一角色若同时存在旧的整包 `.char` 和 `.card.char` + `.voice`，只导入后一种。已有逻辑 ID 不会重复导入。发行包仍然不附带默认角色。
 
 ![导入角色包](assets/setup_01.webp)
 
@@ -133,7 +135,7 @@ bash scripts/start.sh
 3. 填写该引擎需要的地址、路径或运行参数。
 4. 点击“测试语音”，成功后保存。
 
-GPT-SoVITS 可以使用 Sakura 管理的本地服务，也可以填写自定义服务地址。Genie 使用对应的服务接口。配置保存后若页面提示 `restart_required`，点击该引擎区块的重新加载动作。
+GPT-SoVITS 可以使用 Sakura 管理的本地服务，也可以填写自定义服务地址，不需要聊天用的 API Key。Genie 使用对应的服务接口。配置保存后若页面提示 `restart_required`，点击该引擎区块的重新加载动作。
 
 ![配置语音](assets/setup_03.webp)
 

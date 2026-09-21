@@ -1297,7 +1297,7 @@ pub(crate) fn translated_bridge_rectangles(
     Ok(translated)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 fn normalize_plain_hit_rectangles(
     rectangles: &[PhysicalHitRect],
 ) -> Result<Vec<PhysicalHitRect>, String> {
@@ -1409,6 +1409,69 @@ fn linux_cairo_rectangle_for_physical_hit(
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
+const LINUX_MAX_INPUT_RECTANGLES: usize = 256;
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_envelope_hit_rectangle(envelope: [u32; 2]) -> Option<PhysicalHitRect> {
+    if envelope[0] == 0 || envelope[1] == 0 {
+        return None;
+    }
+    Some(PhysicalHitRect {
+        x: 0,
+        y: 0,
+        width: envelope[0],
+        height: envelope[1],
+        corner_radius: 0,
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_input_hit_rectangles(
+    model: &PhysicalHitRegions,
+) -> Result<Vec<PhysicalHitRect>, String> {
+    // GTK's input-shape region is applied through cairo/XShape. A standing-portrait
+    // PNG silhouette (夜乃桜 is 1316×1376 with wispy hair) rasterizes into thousands
+    // of rectangles and has aborted WebKitGTK while the settings preview rebound
+    // the pet window. Pixel-accurate routing stays in the WebView; the native shape
+    // uses the already-cropped bounding boxes from apply_portrait_alpha_bounds.
+    //
+    // Character switch also stuffed that silhouette into extra_native_rectangles
+    // (prepare_portrait_transition / translated_bridge_rectangles). Clearing the
+    // mask alone was not enough: those extras still reached cairo.
+    let mut coarse = model.clone();
+    coarse.portrait_alpha_mask = None;
+    coarse.extra_native_rectangles.clear();
+    let rectangles = native_hit_rectangles(&coarse, coarse.envelope)?;
+
+    // Rounded rectangles are routed pixel-accurately inside the WebView; feeding
+    // their per-row silhouette into cairo/XShape can abort WebKitGTK during
+    // character switch or settings preview rebound. Treat every native region as
+    // an opaque bounding box on Linux and let normalize_plain_hit_rectangles merge
+    // overlaps, so GTK only receives a small set of plain rectangles.
+    let plain: Vec<PhysicalHitRect> = rectangles
+        .into_iter()
+        .map(|mut rect| {
+            rect.corner_radius = 0;
+            rect
+        })
+        .collect();
+    let normalized = normalize_plain_hit_rectangles(&plain)?;
+    if normalized.is_empty() {
+        // Never hand GTK an empty input-shape region; fall back to the whole envelope
+        // so the window remains interactive even when no controls are visible.
+        return Ok(linux_envelope_hit_rectangle(model.envelope)
+            .into_iter()
+            .collect());
+    }
+    if normalized.len() > LINUX_MAX_INPUT_RECTANGLES {
+        return Ok(linux_envelope_hit_rectangle(model.envelope)
+            .into_iter()
+            .collect());
+    }
+    Ok(normalized)
+}
+
 #[cfg(target_os = "linux")]
 pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
@@ -1420,8 +1483,29 @@ pub fn apply_native_hit_regions(
         .gtk_window()
         .map_err(|error| format!("failed to access GTK pet window: {error}"))?;
     let gdk_scale = f64::from(gtk_window.scale_factor());
-    let rectangles = native_hit_rectangles(model, model.envelope)?;
+    let rectangles = linux_input_hit_rectangles(model)?;
     let region = cairo::Region::create();
+    let mut unions = 0usize;
+    let fallback_region = || -> Result<cairo::Region, String> {
+        let Some(envelope) = linux_envelope_hit_rectangle(model.envelope) else {
+            return Ok(cairo::Region::create());
+        };
+        let envelope = linux_cairo_rectangle_for_physical_hit(envelope, gdk_scale)?;
+        let width = i32::try_from(envelope.width)
+            .map_err(|_| "native hit region width exceeds GTK limits".to_string())?;
+        let height = i32::try_from(envelope.height)
+            .map_err(|_| "native hit region height exceeds GTK limits".to_string())?;
+        let region = cairo::Region::create();
+        region
+            .union_rectangle(&cairo::RectangleInt::new(
+                envelope.x,
+                envelope.y,
+                width,
+                height,
+            ))
+            .map_err(|error| format!("failed to combine GTK input region: {error}"))?;
+        Ok(region)
+    };
     for rect in rectangles {
         let rows = if rect.corner_radius == 0 {
             vec![rect]
@@ -1445,18 +1529,38 @@ pub fn apply_native_hit_regions(
                 })
                 .collect()
         };
+        if unions.saturating_add(rows.len()) > LINUX_MAX_INPUT_RECTANGLES {
+            gtk_window.input_shape_combine_region(Some(&fallback_region()?));
+            return Ok(());
+        }
         for row in rows {
             let row = linux_cairo_rectangle_for_physical_hit(row, gdk_scale)?;
             let width = i32::try_from(row.width)
                 .map_err(|_| "native hit region width exceeds GTK limits".to_string())?;
             let height = i32::try_from(row.height)
                 .map_err(|_| "native hit region height exceeds GTK limits".to_string())?;
-            region
+            if region
                 .union_rectangle(&cairo::RectangleInt::new(row.x, row.y, width, height))
-                .map_err(|error| format!("failed to combine GTK input region: {error}"))?;
+                .is_err()
+            {
+                gtk_window.input_shape_combine_region(Some(&fallback_region()?));
+                return Ok(());
+            }
+            unions = unions.saturating_add(1);
         }
     }
     gtk_window.input_shape_combine_region(Some(&region));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn relax_native_hit_regions(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use gtk::prelude::WidgetExt;
+
+    let gtk_window = window
+        .gtk_window()
+        .map_err(|error| format!("failed to access GTK pet window: {error}"))?;
+    gtk_window.input_shape_combine_region(None);
     Ok(())
 }
 
@@ -3504,6 +3608,129 @@ mod tests {
         assert!(rectangles.len() > 4_096);
         assert!(!rectangles.iter().copied().any(|rect| rect.contains([1, 0])));
         assert!(rectangles.iter().copied().any(|rect| rect.contains([0, 0])));
+
+        let model = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [width, height],
+            interactive: Vec::new(),
+            drag: vec![PhysicalHitRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+                corner_radius: 0,
+            }],
+            neutral: Vec::new(),
+            portrait_alpha_mask: Some(mask),
+            extra_native_rectangles: Vec::new(),
+        };
+        let linux = linux_input_hit_rectangles(&model).unwrap();
+        assert!(linux.len() <= LINUX_MAX_INPUT_RECTANGLES);
+        assert!(linux.len() < rectangles.len());
+        assert!(linux.iter().any(|rect| rect.contains([0, 0])));
+        // Linux keeps the cropped bounding box, not per-pixel holes, so GTK/XShape
+        // cannot be given thousands of silhouette rectangles during character switch.
+        assert!(linux.iter().any(|rect| rect.contains([1, 0])));
+    }
+
+    #[test]
+    fn linux_input_regions_ignore_portrait_alpha_complexity() {
+        let mask = PortraitAlphaMask::new(64, 64, vec![255; 64 * 64]);
+        let drag = PhysicalHitRect {
+            x: 4,
+            y: 8,
+            width: 40,
+            height: 48,
+            corner_radius: 0,
+        };
+        let with_mask = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [64, 64],
+            interactive: Vec::new(),
+            drag: vec![drag],
+            neutral: Vec::new(),
+            portrait_alpha_mask: Some(mask),
+            extra_native_rectangles: Vec::new(),
+        };
+        let mut without_mask = with_mask.clone();
+        without_mask.portrait_alpha_mask = None;
+        assert_eq!(
+            linux_input_hit_rectangles(&with_mask).unwrap(),
+            linux_input_hit_rectangles(&without_mask).unwrap()
+        );
+    }
+
+    #[test]
+    fn linux_input_regions_drop_transition_silhouette_extras() {
+        let drag = PhysicalHitRect {
+            x: 8,
+            y: 12,
+            width: 40,
+            height: 48,
+            corner_radius: 0,
+        };
+        let extras = (0..2_000)
+            .map(|index| PhysicalHitRect {
+                x: i32::try_from(index % 40).unwrap(),
+                y: i32::try_from(index / 40).unwrap(),
+                width: 1,
+                height: 1,
+                corner_radius: 0,
+            })
+            .collect();
+        let with_extras = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [64, 64],
+            interactive: Vec::new(),
+            drag: vec![drag],
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: extras,
+        };
+        let mut bounding_boxes = with_extras.clone();
+        bounding_boxes.extra_native_rectangles.clear();
+        let linux = linux_input_hit_rectangles(&with_extras).unwrap();
+        assert_eq!(linux, linux_input_hit_rectangles(&bounding_boxes).unwrap());
+        assert!(linux.len() <= LINUX_MAX_INPUT_RECTANGLES);
+        assert!(linux.iter().any(|rect| rect.contains([8, 12])));
+        assert!(!linux.iter().any(|rect| rect.contains([0, 0])));
+    }
+
+    #[test]
+    fn linux_input_regions_coarsen_rounded_rectangles_to_bounding_boxes() {
+        // A standing-portrait-sized rounded control (e.g. a bubble) would otherwise be
+        // rasterized into one 1px-high row per line, which cairo/XShape then feeds back
+        // to WebKitGTK and can abort it during character switch. Linux keeps bounding boxes.
+        let rounded = PhysicalHitRect {
+            x: 100,
+            y: 200,
+            width: 300,
+            height: 600,
+            corner_radius: 20,
+        };
+        let model = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [500, 900],
+            interactive: vec![rounded],
+            drag: Vec::new(),
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+        let linux = linux_input_hit_rectangles(&model).unwrap();
+        assert!(linux.len() <= LINUX_MAX_INPUT_RECTANGLES);
+        // The rounded rectangle is represented by a single plain bounding box.
+        assert!(linux.iter().any(|rect| {
+            rect.corner_radius == 0
+                && rect.x <= rounded.x
+                && rect.y <= rounded.y
+                && rect.right() >= rounded.right()
+                && rect.bottom() >= rounded.bottom()
+        }));
     }
 
     #[test]

@@ -136,6 +136,7 @@ const chatBubble = document.querySelector("#chat-bubble");
 const bubbleCopy = document.querySelector("#bubble-copy");
 const bubbleBody = document.querySelector(".reply-body");
 const replyHistoryPrevious = document.querySelector("#reply-history-previous");
+const replyHistoryReplay = document.querySelector("#reply-history-replay");
 const replyHistoryNext = document.querySelector("#reply-history-next");
 const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
@@ -1333,6 +1334,7 @@ function render(state, bubbleUpdate = {}) {
     && !isChatReadyLifecycle(state.lifecycle)
   );
   replyHistoryPrevious.disabled = !state.canReviewPrevious;
+  replyHistoryReplay.disabled = !state.canReplayCurrentReply || asrController?.active() === true;
   replyHistoryNext.disabled = !state.canReviewNext;
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
@@ -2161,6 +2163,17 @@ function reviewReplyBy(offset) {
   }
 }
 replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));
+replyHistoryReplay.addEventListener("click", () => {
+  const state = presentation.current();
+  if (!state.canReplayCurrentReply || asrController?.active() === true) return;
+  const segment = state.replyHistorySegments[state.replyHistoryIndex];
+  if (!segment) return;
+  replyHistoryReplay.setAttribute("aria-busy", "true");
+  Promise.resolve(ttsController.replaySegment(segment)).finally(() => {
+    if (disposed) return;
+    replyHistoryReplay.removeAttribute("aria-busy");
+  });
+});
 replyHistoryNext.addEventListener("click", () => reviewReplyBy(1));
 window.addEventListener("focus", () => inputFocus.handleWindowFocus());
 window.addEventListener("blur", () => {

@@ -414,7 +414,8 @@ body.is-onboarding #cancelButton,
 body.is-onboarding #applyButton,
 body.is-onboarding #page-character .settings-group:not(:last-child),
 body.is-onboarding #ttsVoiceImportButton,
-body.is-onboarding #characterExportButton {
+body.is-onboarding #characterExportButton,
+body.is-onboarding #characterDeleteButton {
   display: none;
 }
 

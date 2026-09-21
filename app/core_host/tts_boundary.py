@@ -70,6 +70,7 @@ class _Authorization:
     expires_at: float
     state: str = "authorized"
     request_id: str = ""
+    recording_id: str = ""
 
 
 class _PluginSynthesisHandle:
@@ -405,7 +406,15 @@ class TTSBoundary:
 
     def _handle_start(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"operationId", "segmentIndex"}:
+        if not isinstance(payload, Mapping):
+            raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "invalid segment identity")
+        keys = set(payload)
+        replay = False
+        if keys == {"operationId", "segmentIndex", "replay"}:
+            if not isinstance(payload.get("replay"), bool):
+                raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "invalid segment identity")
+            replay = payload["replay"] is True
+        elif keys != {"operationId", "segmentIndex"}:
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "invalid segment identity")
         operation_id = payload.get("operationId")
         segment_index = payload.get("segmentIndex")
@@ -418,21 +427,53 @@ class TTSBoundary:
         ):
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "invalid segment identity")
         self._require_storage_root()
+        request_id = ""
+        recording_id = ""
         with self._lock:
             self._ensure_open_locked()
             self._expire_locked()
             authorization = self._authorizations.get((operation_id, segment_index))
-            if authorization is None or authorization.state != "authorized":
+            if authorization is None:
                 raise TTSBoundaryError(
                     "TTS_SEGMENT_NOT_AUTHORIZED", "segment is not authorized for synthesis"
                 )
-            if sum(item.state == "synthesizing" for item in self._authorizations.values()) >= MAX_ACTIVE_SYNTHESIS:
+            if authorization.state == "ready" and authorization.recording_id:
+                recording_id = authorization.recording_id
+            elif authorization.state in {"authorized", "failed"} or (
+                replay and authorization.state == "cancelled"
+            ):
+                if sum(item.state == "synthesizing" for item in self._authorizations.values()) >= MAX_ACTIVE_SYNTHESIS:
+                    raise TTSBoundaryError(
+                        "TTS_SERVICE_UNAVAILABLE", "TTS synthesis capacity is full", retryable=True
+                    )
+                request_id = f"tts-{uuid.uuid4().hex}"
+                authorization.state = "synthesizing"
+                authorization.request_id = request_id
+                authorization.expires_at = monotonic() + AUTHORIZATION_TTL_SECONDS
+                recording_id = ""
+            else:
                 raise TTSBoundaryError(
-                    "TTS_SERVICE_UNAVAILABLE", "TTS synthesis capacity is full", retryable=True
+                    "TTS_SEGMENT_NOT_AUTHORIZED", "segment is not authorized for synthesis"
                 )
-            request_id = f"tts-{uuid.uuid4().hex}"
-            authorization.state = "synthesizing"
-            authorization.request_id = request_id
+
+        if recording_id:
+            descriptor = self._playback_descriptor(recording_id)
+            log_event(
+                "TTS", "TTS recording replay prepared",
+                {
+                    "operation_id": operation_id,
+                    "segment_index": segment_index,
+                    "recording_id": recording_id,
+                    "bytes": descriptor["byteLength"],
+                },
+                event="tts.synthesis.ready",
+            )
+            self._publish(
+                request,
+                "tts.synthesis.ready",
+                {**descriptor, "operationId": operation_id, "segmentIndex": segment_index},
+            )
+            return descriptor
 
         started_at = monotonic()
         log_event(
@@ -466,6 +507,7 @@ class TTSBoundary:
                 if authorization.state == "cancelling" or self._authorizations.get((operation_id, segment_index)) is not authorization:
                     raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "角色语音任务已失效")
                 authorization.state = "ready"
+                authorization.recording_id = recording.recording_id
             log_event(
                 "TTS", "TTS synthesis ready",
                 {
@@ -542,6 +584,7 @@ class TTSBoundary:
                     authorization.state = (
                         "cancelling" if authorization.request_id else "cancelled"
                     )
+                    authorization.expires_at = monotonic() + AUTHORIZATION_TTL_SECONDS
             accepted = bool(authorizations)
             for request_id in request_ids:
                 accepted = self._cancel_request_id(request_id) or accepted
@@ -756,20 +799,7 @@ class TTSBoundary:
                 portrait=authorization.portrait,
                 provider=provider,
             )
-            expires = datetime.now(timezone.utc) + timedelta(seconds=PLAYBACK_TTL_SECONDS)
-            playback = self._recordings.create_playback_copy(
-                recording.recording_id,
-                generation_id=self._generation_id,
-                expires_at=expires.isoformat(timespec="seconds"),
-            )
-            public = {
-                "opaqueId": playback.opaque_id,
-                "recordingId": recording.recording_id,
-                "mediaType": playback.media_type,
-                "byteLength": playback.byte_length,
-                "expiresAt": playback.expires_at,
-            }
-            return public, recording
+            return self._playback_descriptor(recording.recording_id), recording
         except TTSBoundaryError:
             raise
         except (OSError, ValueError, VoiceRecordingError) as error:
@@ -784,6 +814,27 @@ class TTSBoundary:
             ) from error
         finally:
             self._release_plugin_artifact(application, artifact_id)
+
+    def _playback_descriptor(self, recording_id: str) -> dict[str, Any]:
+        try:
+            expires = datetime.now(timezone.utc) + timedelta(seconds=PLAYBACK_TTL_SECONDS)
+            playback = self._recordings.create_playback_copy(
+                recording_id,
+                generation_id=self._generation_id,
+                expires_at=expires.isoformat(timespec="seconds"),
+            )
+        except (OSError, ValueError, VoiceRecordingError) as error:
+            raise TTSBoundaryError(
+                "AUDIO_RECORDING_INVALID",
+                "recording is unavailable for playback",
+            ) from error
+        return {
+            "opaqueId": playback.opaque_id,
+            "recordingId": playback.recording_id,
+            "mediaType": playback.media_type,
+            "byteLength": playback.byte_length,
+            "expiresAt": playback.expires_at,
+        }
 
     @staticmethod
     def _release_plugin_artifact(application: object, artifact_id: str) -> None:
@@ -1149,6 +1200,8 @@ class TTSBoundary:
     def _expire_locked(self) -> None:
         now = monotonic()
         for key, item in tuple(self._authorizations.items()):
+            if item.state == "ready" and item.recording_id:
+                continue
             if item.expires_at <= now and item.state not in {
                 "synthesizing",
                 "cancelling",

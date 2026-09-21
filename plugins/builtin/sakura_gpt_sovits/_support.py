@@ -259,6 +259,9 @@ class _ManagedRuntime:
         if self._is_closed():
             return False
         process = self._server_process
+        if process is not None and process.poll() is not None:
+            self.close()
+            process = None
         if self._service_ready and process is not None and process.poll() is None:
             return True
         started_at = time.monotonic()
@@ -424,6 +427,8 @@ class _ManagedRuntime:
                 "elapsed_ms": _elapsed_ms(started_at),
             },
         )
+        if reason_code == "TTS_RUNTIME_EXITED":
+            self.close()
 
     def _report(
         self,
@@ -445,9 +450,12 @@ class _ManagedRuntime:
     def restart_after_failure(self, status: int, body: str) -> bool:
         if status != 400 or "tts failed" not in body.lower() or "broken pipe" not in body.lower():
             return False
+        return self.restart()
+
+    def restart(self) -> bool:
+        if self._is_closed():
+            return False
         self.close()
-        self._service_ready = False
-        self._weights_ready = False
         return True
 
     def _start(self, fail: Callable[[str], None]) -> bool:
@@ -537,6 +545,8 @@ class _ManagedRuntime:
     def close(self) -> None:
         process = self._server_process
         self._server_process = None
+        self._service_ready = False
+        self._weights_ready = False
         if process is not None and process.poll() is None:
             terminate_process_tree(process, timeout=0.5)
         if self._log_handle is not None:
@@ -605,6 +615,9 @@ class GptSovitsEndpointResolver:
     def restart_owned_after_http_failure(self, status: int, body: str) -> bool:
         return self.runtime is not None and self.runtime.restart_after_failure(status, body)
 
+    def restart_owned(self) -> bool:
+        return self.runtime is not None and self.runtime.restart()
+
     def close(self) -> None:
         if self.runtime is not None:
             self.runtime.close()
@@ -636,6 +649,9 @@ class GptSovitsEndpointSupervisor:
 
     def _restart_local_service_after_http_failure(self, status: int, body: str) -> bool:
         return self.resolver.restart_owned_after_http_failure(status, body)
+
+    def _restart_owned_runtime(self) -> bool:
+        return self.resolver.restart_owned()
 
 
 class GPTSoVITSSynthesisEngine:
@@ -739,10 +755,18 @@ class GPTSoVITSSynthesisEngine:
                 return None
             except (urllib.error.URLError, TimeoutError, OSError) as error:
                 cause = getattr(error, "reason", error)
+                timed_out = isinstance(error, TimeoutError) or isinstance(cause, TimeoutError)
+                if (
+                    not timed_out
+                    and not restart_attempted
+                    and supervisor._restart_owned_runtime()
+                ):
+                    restart_attempted = True
+                    continue
                 diagnose(
                     "TTS_RUNTIME_UNAVAILABLE",
                     "TTS_HTTP_TIMEOUT"
-                    if isinstance(cause, TimeoutError)
+                    if timed_out
                     else "TTS_HTTP_CONNECTION_FAILED",
                     "synthesis_http",
                     type(error).__name__,

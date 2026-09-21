@@ -292,9 +292,21 @@ test("reply history navigation crosses turns and only changes text", () => {
   reducer.finishTyping();
 
   assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["第一段", "第二段", "第三段"]);
+  assert.deepEqual(
+    reducer.current().replyHistorySegments.map(({ operationId, segmentIndex }) => ({
+      operationId,
+      segmentIndex,
+    })),
+    [
+      { operationId: "first", segmentIndex: 0 },
+      { operationId: "first", segmentIndex: 1 },
+      { operationId: "second", segmentIndex: 0 },
+    ],
+  );
   assert.equal(reducer.current().replyHistoryIndex, 2);
   assert.equal(reducer.current().canReviewPrevious, true);
   assert.equal(reducer.current().canReviewNext, false);
+  assert.equal(reducer.current().canReplayCurrentReply, true);
 
   let reviewed = reducer.reviewReplyAt(1, "第二段");
   assert.equal(reviewed.applied, true);
@@ -302,11 +314,29 @@ test("reply history navigation crosses turns and only changes text", () => {
 
   assert.equal(reviewed.state.canReviewPrevious, true);
   assert.equal(reviewed.state.canReviewNext, true);
+  assert.equal(reviewed.state.canReplayCurrentReply, true);
 
   reviewed = reducer.reviewReplyAt(0, "第一段");
 
   assert.equal(reviewed.state.canReviewPrevious, false);
+  assert.equal(reviewed.state.canReplayCurrentReply, true);
   assert.equal(reducer.reviewReplyAt(-1, "越界").applied, false);
+});
+
+test("suppressed history segments cannot be replayed", () => {
+  const reducer = readyReducer();
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "silent" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "silent",
+    reply: { segments: [{ text: "不朗读", suppressTts: true }] },
+  });
+  reducer.setTypingSegment(reducer.current().segments[0], 0);
+  reducer.setTypingText("不朗读");
+  reducer.finishTyping();
+  assert.equal(reducer.current().canReplayCurrentReply, false);
 });
 
 test("failed and cancelled terminals are operation-scoped and immediately retryable", () => {

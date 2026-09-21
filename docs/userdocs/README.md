@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-11
+updated: 2026-09-13
 ---
 
 # 用户文档
@@ -14,6 +14,7 @@ updated: 2026-09-11
 - [匿名统计与远程诊断](REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
 - [数据与存储](RUNTIME_V2_STORAGE.md)
 - [macOS 使用说明](MACOS_SETUP.md)
+- [Linux 使用说明](LINUX_SETUP.md)
 - [窗口交互](RUNTIME_V2_WINDOW_INTERACTION.md)
 - [外观设置](RUNTIME_V2_APPEARANCE.md)
 - [MCP 工具](RUNTIME_V2_MCP.md)

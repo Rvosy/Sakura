@@ -127,6 +127,108 @@ test("WP-4-05 suppressed and history-only segments never request synthesis", asy
   await controller.beforeSegment(segment, 0, { onStarted: () => { started = true; } });
   assert.equal(started, true);
   assert.deepEqual(calls, []);
+  await controller.replaySegment({ ...segment, operationId: "operation-3", segmentIndex: 0 });
+  assert.deepEqual(calls, []);
+  controller.dispose();
+});
+
+
+test("explicit replay requests the reviewed segment identity without auto-playing history", async () => {
+  let playbackListener;
+  const calls = [];
+  const controller = createTtsController({
+    listen: async (_name, listener) => { playbackListener = listener; return () => {}; },
+    invoke: async (name, args) => {
+      calls.push([name, args]);
+      if (name === "tts_prepare_segment") {
+        return {
+          opaqueId: "0123456789abcdef0123456789abcdef",
+          recordingId: "recording-1",
+          mediaType: "audio/wav",
+          byteLength: 128,
+          expiresAt: "2099-01-01T00:00:00Z",
+        };
+      }
+      return undefined;
+    },
+  });
+  await controller.start();
+  const current = [{ text: "最新一句", suppressTts: false }];
+  controller.beginReply("operation-new", current);
+  await Promise.resolve();
+  controller.cancel();
+
+  const previous = {
+    text: "刚才说的话",
+    suppressTts: false,
+    operationId: "operation-old",
+    segmentIndex: 1,
+  };
+  const replay = controller.replaySegment(previous);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  playbackListener({ payload: { playbackId: "tts-3-replay", state: "started" } });
+  playbackListener({ payload: { playbackId: "tts-3-replay", state: "finished" } });
+  await replay;
+
+  assert.deepEqual(
+    calls.filter(([name]) => name === "tts_prepare_segment").map(([, args]) => args),
+    [
+      { payload: { operationId: "operation-new", segmentIndex: 0 } },
+      { payload: { operationId: "operation-old", segmentIndex: 1, replay: true } },
+    ],
+  );
+  const playCalls = calls.filter(([name]) => name === "tts_play_prepared");
+  assert.equal(playCalls.length, 1);
+  assert.equal(playCalls[0][1].payload.opaqueId, "0123456789abcdef0123456789abcdef");
+  controller.dispose();
+});
+
+
+test("explicit replay retries a previously failed segment identity", async () => {
+  let playbackListener;
+  const calls = [];
+  let prepareAttempts = 0;
+  const controller = createTtsController({
+    listen: async (_name, listener) => { playbackListener = listener; return () => {}; },
+    invoke: async (name, args) => {
+      calls.push([name, args]);
+      if (name === "tts_prepare_segment") {
+        prepareAttempts += 1;
+        if (prepareAttempts === 1) throw new Error("TTS_SYNTHESIS_FAILED");
+        return {
+          opaqueId: "0123456789abcdef0123456789abcdef",
+          recordingId: "recording-retry",
+          mediaType: "audio/wav",
+          byteLength: 128,
+          expiresAt: "2099-01-01T00:00:00Z",
+        };
+      }
+      return undefined;
+    },
+  });
+  await controller.start();
+  const segment = {
+    text: "刚才说的话",
+    suppressTts: false,
+    operationId: "operation-retry",
+    segmentIndex: 0,
+  };
+  controller.beginReply("operation-retry", [segment]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const replay = controller.replaySegment(segment);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  playbackListener({ payload: { playbackId: "tts-2-replay", state: "started" } });
+  playbackListener({ payload: { playbackId: "tts-2-replay", state: "finished" } });
+  await replay;
+  assert.equal(prepareAttempts, 2);
+  assert.deepEqual(
+    calls.filter(([name]) => name === "tts_prepare_segment").map(([, args]) => args),
+    [
+      { payload: { operationId: "operation-retry", segmentIndex: 0 } },
+      { payload: { operationId: "operation-retry", segmentIndex: 0, replay: true } },
+    ],
+  );
+  assert.equal(calls.filter(([name]) => name === "tts_play_prepared").length, 1);
   controller.dispose();
 });
 

@@ -15,6 +15,11 @@ function validDescriptor(value) {
   );
 }
 
+function unexpired(descriptor) {
+  const expires = Date.parse(descriptor.expiresAt);
+  return Number.isFinite(expires) && expires - Date.now() > 5000;
+}
+
 export function createTtsController({ invoke, listen, onDiagnostic = () => {} } = {}) {
   if (typeof invoke !== "function" || typeof listen !== "function") {
     throw new Error("TTS_CONTROLLER_DEPENDENCY_INVALID");
@@ -25,6 +30,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
   let reply = null;
   let captureActive = false;
   const playback = new Map();
+  const prepared = new Map();
 
   function invokeBestEffort(name, args) {
     try {
@@ -64,13 +70,17 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
     playback.clear();
   }
 
+  function forgetPrepared() {
+    prepared.clear();
+  }
+
   function receive(nativeEvent) {
     const event = nativeEvent?.payload;
     const item = playback.get(event?.playbackId);
     if (!item || item.epoch !== epoch) return;
     if (event.state === "started") {
       notifyStarted(item, event);
-      if (reply && item.index + 1 < reply.segments.length) void prepare(item.index + 1);
+      if (reply && item.index >= 0 && item.index + 1 < reply.segments.length) void prepare(item.index + 1);
       return;
     }
     if (["finished", "stopped", "failed"].includes(event.state)) {
@@ -81,27 +91,91 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
     }
   }
 
+  function prepareIdentity(operationId, segmentIndex, diagnosticEpoch, replay = false) {
+    const key = `${operationId}:${segmentIndex}`;
+    if (!replay) {
+      const existing = prepared.get(key);
+      if (existing) return existing;
+    } else {
+      prepared.delete(key);
+    }
+    const payload = replay
+      ? { operationId, segmentIndex, replay: true }
+      : { operationId, segmentIndex };
+    const task = Promise.resolve(invoke("tts_prepare_segment", { payload })).then((descriptor) => {
+      if (!validDescriptor(descriptor)) {
+        prepared.delete(key);
+        return null;
+      }
+      return descriptor;
+    }).catch((error) => {
+      prepared.delete(key);
+      if (!disposed && diagnosticEpoch === epoch) {
+        onDiagnostic(String(error || "TTS_SERVICE_UNAVAILABLE").split("|")[0]);
+      }
+      return null;
+    });
+    prepared.set(key, task);
+    return task;
+  }
+
+  async function resolvePrepared(operationId, segmentIndex, diagnosticEpoch, replay = false) {
+    const key = `${operationId}:${segmentIndex}`;
+    if (replay) {
+      const existing = prepared.get(key);
+      if (existing) {
+        const first = await existing;
+        if (first && unexpired(first)) return first;
+        prepared.delete(key);
+      }
+    }
+    const first = await prepareIdentity(operationId, segmentIndex, diagnosticEpoch, replay);
+    if (first && unexpired(first)) return first;
+    prepared.delete(key);
+    if (!first) return null;
+    const retry = await prepareIdentity(operationId, segmentIndex, diagnosticEpoch, replay);
+    return retry && unexpired(retry) ? retry : null;
+  }
+
   function prepare(index) {
     const current = reply;
     if (captureActive || !current || current.epoch !== epoch || !playable(current.segments[index])) {
       return Promise.resolve(null);
     }
-    if (!current.prepared.has(index)) {
-      const task = Promise.resolve(invoke("tts_prepare_segment", { payload: {
-        operationId: current.operationId,
-        segmentIndex: index,
-      } })).then((descriptor) => {
-        if (captureActive || current !== reply || current.epoch !== epoch || !validDescriptor(descriptor)) return null;
-        return descriptor;
-      }).catch((error) => {
-        if (current === reply && current.epoch === epoch) {
-          onDiagnostic(String(error || "TTS_SERVICE_UNAVAILABLE").split("|")[0]);
-        }
-        return null;
-      });
-      current.prepared.set(index, task);
+    return resolvePrepared(current.operationId, index, current.epoch);
+  }
+
+  async function playDescriptor(descriptor, index, onStarted) {
+    const currentEpoch = epoch;
+    const startedHook = typeof onStarted === "function" ? onStarted : () => {};
+    const playbackId = `tts-${currentEpoch}-${index < 0 ? "replay" : index}`;
+    let resolveStarted;
+    let resolveSettled;
+    const started = new Promise((resolve) => { resolveStarted = resolve; });
+    const settled = new Promise((resolve) => { resolveSettled = resolve; });
+    const item = {
+      epoch: currentEpoch,
+      index,
+      started: false,
+      settled: false,
+      onStarted: startedHook,
+      resolveStarted,
+      resolveSettled,
+      settledPromise: settled,
+    };
+    playback.set(playbackId, item);
+    try {
+      await invoke("tts_play_prepared", { payload: {
+        opaqueId: descriptor.opaqueId,
+        playbackId,
+      } });
+    } catch (error) {
+      notifyStarted(item, { state: "failed" });
+      settle(item, { state: "failed" });
+      playback.delete(playbackId);
+      onDiagnostic(String(error || "AUDIO_PLAYBACK_FAILED").split("|")[0]);
     }
-    return current.prepared.get(index);
+    await started;
   }
 
   return Object.freeze({
@@ -117,7 +191,6 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         epoch,
         operationId,
         segments: Array.isArray(segments) ? segments : [],
-        prepared: new Map(),
       });
       void prepare(0);
     },
@@ -145,34 +218,25 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         }
         return;
       }
-      const playbackId = `tts-${currentEpoch}-${index}`;
-      let resolveStarted;
-      let resolveSettled;
-      const started = new Promise((resolve) => { resolveStarted = resolve; });
-      const settled = new Promise((resolve) => { resolveSettled = resolve; });
-      const item = {
-        epoch: currentEpoch,
-        index,
-        started: false,
-        settled: false,
-        onStarted: startedHook,
-        resolveStarted,
-        resolveSettled,
-        settledPromise: settled,
-      };
-      playback.set(playbackId, item);
-      try {
-        await invoke("tts_play_prepared", { payload: {
-          opaqueId: descriptor.opaqueId,
-          playbackId,
-        } });
-      } catch (error) {
-        notifyStarted(item, { state: "failed" });
-        settle(item, { state: "failed" });
-        playback.delete(playbackId);
-        onDiagnostic(String(error || "AUDIO_PLAYBACK_FAILED").split("|")[0]);
-      }
-      await started;
+      await playDescriptor(descriptor, index, startedHook);
+    },
+    async replaySegment(segment) {
+      if (disposed || captureActive || !playable(segment)) return;
+      const operationId = segment.operationId;
+      const segmentIndex = segment.segmentIndex;
+      if (
+        typeof operationId !== "string"
+        || !operationId
+        || !Number.isInteger(segmentIndex)
+        || segmentIndex < 0
+      ) return;
+      epoch += 1;
+      releaseAll();
+      invokeBestEffort("tts_stop_playback");
+      const currentEpoch = epoch;
+      const descriptor = await resolvePrepared(operationId, segmentIndex, currentEpoch, true);
+      if (!descriptor || captureActive || disposed || currentEpoch !== epoch) return;
+      await playDescriptor(descriptor, -1);
     },
     async afterSegment(index) {
       const item = playback.get(`tts-${epoch}-${index}`);
@@ -186,6 +250,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       const operationId = reply?.operationId;
       epoch += 1;
       reply = null;
+      forgetPrepared();
       releaseAll();
       cancelSynthesis(operationId);
       invokeBestEffort("tts_stop_playback");
@@ -194,6 +259,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       const operationId = reply?.operationId;
       epoch += 1;
       reply = null;
+      forgetPrepared();
       releaseAll();
       if (!disposed) {
         cancelSynthesis(operationId);
@@ -206,6 +272,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       disposed = true;
       epoch += 1;
       reply = null;
+      forgetPrepared();
       releaseAll();
       cancelSynthesis(operationId);
       invokeBestEffort("tts_stop_playback");

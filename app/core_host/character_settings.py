@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import shutil
 import threading
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -21,6 +22,7 @@ from app.config.character_loader import (
     CharacterProfile,
     CharacterRegistry,
 )
+from app.config.character_packages import remove_character_installation
 from app.config.settings_service import AppSettingsService
 from app.core.diagnostics import exception_diagnostics
 from app.core.runtime_log import log_event
@@ -33,6 +35,7 @@ CHARACTER_SETTINGS_REQUEST_NAMES = frozenset(
         "characters.settings.import_voice",
         "characters.settings.export",
         "characters.settings.select",
+        "characters.settings.delete",
         "characters.visuals.get",
     }
 )
@@ -131,6 +134,12 @@ class CharacterSettingsBoundary:
                         "INVALID_REQUEST", "角色选择请求格式无效。"
                     )
                 result = self.select(payload["characterId"], payload.get("visualSelections", {}))
+            elif name == "characters.settings.delete":
+                if set(payload) != {"characterId"}:
+                    raise CharacterSettingsError(
+                        "INVALID_REQUEST", "角色删除请求格式无效。"
+                    )
+                result = self.delete_archive(payload["characterId"])
             elif name == "characters.visuals.get":
                 if set(payload) != {"characterId"}:
                     raise CharacterSettingsError("INVALID_REQUEST", "角色形态读取请求格式无效。")
@@ -347,6 +356,53 @@ class CharacterSettingsBoundary:
             "message": f"角色包已导出到：{output}",
         }
 
+    def delete_archive(self, raw_character_id: object) -> dict[str, object]:
+        character_id = self._character_id(raw_character_id)
+        with self._lock:
+            registry = CharacterRegistry(self._user_root)
+            try:
+                profile = registry.get(character_id)
+            except CharacterConfigError as error:
+                raise CharacterSettingsError(
+                    "CHARACTER_NOT_FOUND",
+                    "选择的角色不存在。",
+                    field="characterId",
+                ) from error
+            current = self._settings.load_current_character_id(registry)
+            try:
+                remove_character_installation(registry.characters_dir, profile.package_dir)
+            except (OSError, ValueError) as error:
+                raise CharacterSettingsError(
+                    "CHARACTER_DELETE_FAILED",
+                    "角色包删除失败，现有角色保持不变。",
+                    field="characterId",
+                ) from error
+            remaining = CharacterRegistry(self._user_root)
+            remaining_profiles = remaining.all()
+            next_character_id = None
+            if current == character_id:
+                next_character_id = (
+                    remaining_profiles[0].id if remaining_profiles else None
+                )
+                change_plan = "core_restart_required"
+            elif not remaining_profiles:
+                change_plan = "core_restart_required"
+            else:
+                change_plan = "unchanged"
+            try:
+                self._settings.forget_character(
+                    remaining, character_id, next_character_id
+                )
+            except (OSError, ValueError, CharacterConfigError) as error:
+                raise CharacterSettingsError(
+                    "CHARACTER_CONFIG_SAVE_FAILED",
+                    "角色选择保存失败，原配置保持不变。",
+                    field="characterId",
+                ) from error
+            self._discard_studio_workspace(character_id)
+            self._revision += 1
+            return self._change_result(change_plan)
+
     def visual_snapshot(self, raw_character_id: object) -> dict[str, object]:
         character_id = self._character_id(raw_character_id)
         try:
@@ -456,6 +512,24 @@ class CharacterSettingsBoundary:
             "snapshot": self.snapshot(),
             "changePlan": change_plan,
         }
+
+    def _discard_studio_workspace(self, character_id: str) -> None:
+        from app.storage.paths import StoragePaths, sanitize_directory_component
+
+        drafts = StoragePaths(self._user_root).character_studio_drafts_dir
+        try:
+            if not drafts.is_dir():
+                return
+            root = drafts.resolve()
+            candidate = drafts / sanitize_directory_component(character_id)
+            if candidate.is_symlink():
+                return
+            target = candidate.resolve(strict=False)
+            if target == root or target.parent != root or not target.is_dir():
+                return
+            shutil.rmtree(target, ignore_errors=True)
+        except OSError:
+            return
 
     @staticmethod
     def _character_id(raw_character_id: object) -> str:

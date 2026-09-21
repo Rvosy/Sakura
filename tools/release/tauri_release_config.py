@@ -14,6 +14,16 @@ DEFAULT_UPDATER_ENDPOINT = (
 )
 
 
+def bundle_targets(target: str) -> list[str]:
+    if target == "windows-x64":
+        return ["nsis"]
+    if target == "macos-arm64":
+        return ["app", "dmg"]
+    if target == "linux-x64":
+        return ["appimage", "deb"]
+    raise ValueError("RELEASE_TARGET_UNSUPPORTED")
+
+
 def build_config(
     *,
     target: str,
@@ -40,10 +50,10 @@ def build_config(
             "active": True,
             "resources": resources,
             "createUpdaterArtifacts": create_updater_artifacts,
-            "targets": ["nsis"] if target == "windows-x64" else ["app", "dmg"],
+            "targets": bundle_targets(target),
         }
     }
-    if target not in {"windows-x64", "macos-arm64"}:
+    if target not in {"windows-x64", "macos-arm64", "linux-x64"}:
         raise ValueError("RELEASE_TARGET_UNSUPPORTED")
     if windows_certificate_thumbprint:
         if target != "windows-x64":
@@ -69,7 +79,9 @@ def build_config(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True, choices=("windows-x64", "macos-arm64"))
+    parser.add_argument(
+        "--target", required=True, choices=("windows-x64", "macos-arm64", "linux-x64")
+    )
     parser.add_argument("--output", required=True, type=Path)
     updater_mode = parser.add_mutually_exclusive_group()
     updater_mode.add_argument("--updater", action="store_true")

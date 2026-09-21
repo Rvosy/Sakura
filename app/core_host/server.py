@@ -1406,6 +1406,7 @@ def run_host(
 ) -> None:
     from app.config.app_version import read_app_version
     from app.config.character_packages import repair_character_packages
+    from app.config.seed_characters import import_seed_characters
 
     from .character_settings import (
         CHARACTER_SETTINGS_REQUEST_NAMES,
@@ -1440,6 +1441,7 @@ def run_host(
     try:
         writer = ResponseWriter(output_stream)
         repair_character_packages(config.user_root)
+        import_seed_characters(config.distribution_root, config.user_root)
         dispatcher = ControlDispatcher(config)
         asr_boundary = ASRBoundary(
             config.generation_id, config.generation_credential,

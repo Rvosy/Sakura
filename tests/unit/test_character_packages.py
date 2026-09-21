@@ -162,6 +162,30 @@ def test_repair_character_packages_moves_trailing_dot_and_resolves_duplicate_id(
             shutil.rmtree(ghost)
 
 
+def test_remove_character_installation_only_deletes_direct_package_dirs(
+    tmp_path: Path,
+) -> None:
+    from app.config.character_packages import remove_character_installation
+
+    characters = tmp_path / "characters"
+    package = _write_package(tmp_path, "alpha", "alpha")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("safe", encoding="utf-8")
+    with pytest.raises(ValueError, match="CHARACTER_PACKAGE_PATH_INVALID"):
+        remove_character_installation(characters, outside)
+    with pytest.raises(ValueError, match="CHARACTER_PACKAGE_PATH_INVALID"):
+        remove_character_installation(characters, characters)
+    linked = characters / "linked"
+    linked.symlink_to(outside)
+    with pytest.raises(ValueError, match="CHARACTER_PACKAGE_PATH_INVALID"):
+        remove_character_installation(characters, linked)
+    assert outside.is_dir()
+    remove_character_installation(characters, package)
+    assert not package.exists()
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "safe"
+
+
 def _write_package(
     root: Path,
     directory_name: str,

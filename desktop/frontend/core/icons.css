@@ -40,6 +40,7 @@
 .icon-monitor { --sakura-icon: url("../assets/lucide/monitor.svg"); }
 .icon-music { --sakura-icon: url("../assets/lucide/music.svg"); }
 .icon-palette { --sakura-icon: url("../assets/lucide/palette.svg"); }
+.icon-play { --sakura-icon: url("../assets/lucide/play.svg"); }
 .icon-plus { --sakura-icon: url("../assets/lucide/plus.svg"); }
 .icon-puzzle { --sakura-icon: url("../assets/lucide/puzzle.svg"); }
 .icon-scan-line { --sakura-icon: url("../assets/lucide/scan-line.svg"); }

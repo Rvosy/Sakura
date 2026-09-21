@@ -34,7 +34,7 @@ git remote add upstream https://github.com/Rvosy/Sakura.git
 git fetch upstream
 ```
 
-Development uses the bundled Python Runtime in the repository root. Do not replace it with the system Python installation. Source checkouts do not include `runtime/`; obtain the matching Runtime or full package from [Releases](https://github.com/Rvosy/sakura/releases).
+Development uses the bundled Python Runtime in the repository root. Do not replace it with the system Python installation. Source checkouts do not include `runtime/`. `scripts/install.sh` and `scripts/install.bat` download the pinned CPython archive for the current platform when Runtime is missing. Linux also needs the WebKitGTK 4.1 development packages; see the [Linux guide](../docs/userdocs/LINUX_SETUP.md).
 
 Windows:
 

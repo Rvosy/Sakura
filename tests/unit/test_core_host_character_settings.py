@@ -386,6 +386,103 @@ def test_select_save_failure_keeps_existing_character_config(
     assert config.read_bytes() == before
 
 
+def test_delete_inactive_character_keeps_current_selection(tmp_path: Path) -> None:
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
+    boundary.handle(
+        _request(
+            "characters.settings.import",
+            {"path": str(_archive(tmp_path / "alpha.char", "alpha"))},
+        )
+    )
+    boundary.handle(
+        _request(
+            "characters.settings.import",
+            {"path": str(_archive(tmp_path / "beta.char", "beta"))},
+        )
+    )
+    config = tmp_path / "config" / "characters.yaml"
+    saved = yaml.safe_load(config.read_text())
+    saved["visual_selections"] = {"alpha": "default", "beta": "default"}
+    config.write_text(yaml.safe_dump(saved), encoding="utf-8")
+    memory = tmp_path / "data" / "memory" / "beta"
+    memory.mkdir(parents=True)
+    (memory / "keep.txt").write_text("retained", encoding="utf-8")
+    drafts = tmp_path / "data" / "character_studio" / "drafts" / "beta"
+    drafts.mkdir(parents=True)
+    (drafts / "draft.json").write_text("{}", encoding="utf-8")
+
+    extra = boundary.handle(
+        _request(
+            "characters.settings.delete",
+            {"characterId": "beta", "path": str(tmp_path / "escape")},
+        )
+    )
+    assert extra["ok"] is False
+    assert extra["error"]["code"] == "INVALID_REQUEST"
+    assert (tmp_path / "characters" / "beta").is_dir()
+
+    result = boundary.handle(
+        _request("characters.settings.delete", {"characterId": "beta"})
+    )
+
+    assert result["ok"] is True
+    assert result["payload"]["changePlan"] == "unchanged"
+    assert result["payload"]["snapshot"]["currentCharacterId"] == "alpha"
+    assert [item["id"] for item in result["payload"]["snapshot"]["characters"]] == ["alpha"]
+    assert not (tmp_path / "characters" / "beta").exists()
+    assert (tmp_path / "characters" / "alpha").is_dir()
+    assert (memory / "keep.txt").read_text(encoding="utf-8") == "retained"
+    assert not drafts.exists()
+    saved = yaml.safe_load(config.read_text())
+    assert saved["current_character_id"] == "alpha"
+    assert saved.get("visual_selections") == {"alpha": "default"}
+
+
+def test_delete_current_character_restarts_to_remaining_or_empty(tmp_path: Path) -> None:
+    boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path)
+    boundary.handle(
+        _request(
+            "characters.settings.import",
+            {"path": str(_archive(tmp_path / "alpha.char", "alpha"))},
+        )
+    )
+    boundary.handle(
+        _request(
+            "characters.settings.import",
+            {"path": str(_archive(tmp_path / "beta.char", "beta"))},
+        )
+    )
+
+    switched = boundary.handle(
+        _request("characters.settings.delete", {"characterId": "alpha"})
+    )
+    assert switched["ok"] is True
+    assert switched["payload"]["changePlan"] == "core_restart_required"
+    assert switched["payload"]["snapshot"]["currentCharacterId"] == "beta"
+    assert not (tmp_path / "characters" / "alpha").exists()
+
+    last = boundary.handle(
+        _request("characters.settings.delete", {"characterId": "beta"})
+    )
+    assert last["ok"] is True
+    assert last["payload"]["changePlan"] == "core_restart_required"
+    assert last["payload"]["snapshot"] == {
+        "schemaVersion": 1,
+        "revision": 5,
+        "currentCharacterId": None,
+        "characters": [],
+    }
+    assert not (tmp_path / "characters" / "beta").exists()
+    saved = yaml.safe_load((tmp_path / "config" / "characters.yaml").read_text())
+    assert "current_character_id" not in saved
+
+    missing = boundary.handle(
+        _request("characters.settings.delete", {"characterId": "beta"})
+    )
+    assert missing["ok"] is False
+    assert missing["error"]["code"] == "CHARACTER_NOT_FOUND"
+
+
 def test_import_responses_report_missing_plugins_and_genie_compatibility(tmp_path):
     import shutil
     from types import SimpleNamespace

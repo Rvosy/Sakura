@@ -567,6 +567,7 @@ def _boundary(tmp_path: Path, events: list[dict]) -> TTSBoundary:
         plugin_application_provider=lambda: worker,
         event_publisher=events.append,
     )
+    boundary._test_plugin = worker
     return boundary
 
 
@@ -660,12 +661,155 @@ def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) ->
             request_id="request-duplicate",
         )
     )
-    assert duplicate["ok"] is False
-    assert duplicate["error"]["code"] == "TTS_SEGMENT_NOT_AUTHORIZED"
+    assert duplicate["ok"] is True
+    replay = duplicate["payload"]
+    assert replay["recordingId"] == descriptor["recordingId"]
+    assert replay["opaqueId"] != descriptor["opaqueId"]
+    assert "path" not in replay
+    replay_playback = (
+        tmp_path
+        / "data"
+        / "cache"
+        / "tts"
+        / "runtime-v2"
+        / GENERATION
+        / f"{replay['opaqueId']}.wav"
+    )
+    assert replay_playback.is_file()
+    assert boundary._test_plugin.calls.count("begin") == 1
+
+    authorization = boundary._authorizations[("operation-1", 0)]
+    authorization.expires_at = 0
+    expired_replay = boundary.handle(
+        _request(
+            "tts.synthesis.start",
+            {"operationId": "operation-1", "segmentIndex": 0},
+            request_id="request-expired-replay",
+        )
+    )
+    assert expired_replay["ok"] is True
+    assert expired_replay["payload"]["recordingId"] == descriptor["recordingId"]
+    assert boundary._test_plugin.calls.count("begin") == 1
 
     boundary.close()
     assert not playback.exists()
+    assert not replay_playback.exists()
     assert (recording_dir / "audio.wav").exists()
+
+
+def test_failed_segment_can_be_retried_for_explicit_replay(tmp_path: Path) -> None:
+    events: list[dict] = []
+    worker = _ImmediatePluginApplication(tmp_path)
+    original = worker.call_service
+    fail_next_poll = True
+
+    def call_service(service_key: str, method: str, *args):
+        nonlocal fail_next_poll
+        if method == "poll" and fail_next_poll:
+            fail_next_poll = False
+            return {
+                "state": "failed",
+                "requestId": args[0],
+                "providerId": worker.provider_id,
+                "errorCode": "TTS_RUNTIME_EXITED",
+            }
+        return original(service_key, method, *args)
+
+    worker.call_service = call_service  # type: ignore[method-assign]
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(
+            character=SimpleNamespace(id="sakura"),
+        ),
+        plugin_application_provider=lambda: worker,
+        event_publisher=events.append,
+    )
+    boundary.authorize_segment(
+        operation_id="operation-retry",
+        segment_index=0,
+        text="こんにちは",
+        tone="happy",
+        portrait="smile",
+        character_id="sakura",
+        history_entry_id="entry-retry",
+    )
+
+    first = boundary.handle(
+        _request(
+            "tts.synthesis.start",
+            {"operationId": "operation-retry", "segmentIndex": 0},
+            request_id="request-first-fail",
+        )
+    )
+    assert first["ok"] is False
+    assert first["error"]["code"] == "TTS_SYNTHESIS_FAILED"
+    assert boundary._authorizations[("operation-retry", 0)].state == "failed"
+
+    retry = boundary.handle(
+        _request(
+            "tts.synthesis.start",
+            {"operationId": "operation-retry", "segmentIndex": 0},
+            request_id="request-explicit-replay",
+        )
+    )
+    assert retry["ok"] is True
+    assert retry["payload"]["recordingId"]
+    assert boundary._authorizations[("operation-retry", 0)].state == "ready"
+    assert worker.calls.count("begin") == 2
+    boundary.close()
+
+
+def test_cancelled_segment_can_be_retried_with_explicit_replay(tmp_path: Path) -> None:
+    events: list[dict] = []
+    boundary = _boundary(tmp_path, events)
+    worker = boundary._test_plugin
+    boundary.authorize_segment(
+        operation_id="operation-cancelled-replay",
+        segment_index=0,
+        text="こんにちは",
+        tone="happy",
+        portrait="smile",
+        character_id="sakura",
+        history_entry_id="entry-cancelled-replay",
+    )
+    cancelled = boundary.handle(
+        _request(
+            "tts.synthesis.cancel",
+            {"operationId": "operation-cancelled-replay"},
+            request_id="request-cancel-unused",
+        )
+    )
+    assert cancelled["ok"] is True
+    assert boundary._authorizations[("operation-cancelled-replay", 0)].state == "cancelled"
+
+    prefetch = boundary.handle(
+        _request(
+            "tts.synthesis.start",
+            {"operationId": "operation-cancelled-replay", "segmentIndex": 0},
+            request_id="request-prefetch-cancelled",
+        )
+    )
+    assert prefetch["ok"] is False
+    assert prefetch["error"]["code"] == "TTS_SEGMENT_NOT_AUTHORIZED"
+
+    replay = boundary.handle(
+        _request(
+            "tts.synthesis.start",
+            {
+                "operationId": "operation-cancelled-replay",
+                "segmentIndex": 0,
+                "replay": True,
+            },
+            request_id="request-explicit-cancelled-replay",
+        )
+    )
+    assert replay["ok"] is True
+    assert replay["payload"]["recordingId"]
+    assert boundary._authorizations[("operation-cancelled-replay", 0)].state == "ready"
+    assert worker.calls.count("begin") == 1
+    boundary.close()
 
 
 def test_explicit_tts_service_disable_skips_segment_authorization(tmp_path: Path) -> None:
