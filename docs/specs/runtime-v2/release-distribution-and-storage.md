@@ -77,7 +77,7 @@ TTS 返回 `TTS_STORAGE_UNAVAILABLE`，设置快照通过 `TTS_ROOT_MISSING`、`
 
 主安装包预装 Assistant、远程模型提供方、主动屏幕感知、MCP、立绘、Spine、联网、Memory、Mobile、
 TTS Hub、ASR Hub、SenseVoice、Genie 和 GPT-SoVITS。它们允许禁用、不可卸载；不可卸载只表示文件由安装器拥有，不赋予私有 API 或实现优先级。
-新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天，其余插件沿用各自默认状态。
+新用户默认关闭 Genie 语音合成和 GPT-SoVITS 语音合成，其余预装插件沿用各自默认状态。手机聊天改为独立可选包，不随应用分发；升级后需要安装外部包并显式启用，原 `data/plugins/sakura_mobile/` 配置与数据保留。
 Shell 首次创建用户配置目录时，将这三个关闭状态写入 `config/plugins.yaml`。已有配置目录不补写或覆盖，
 包括尚未生成 `plugins.yaml`、一直沿用清单默认启用状态的老用户。清单保留原启用默认值用于升级兼容，
 用户之后手动启用或关闭的状态优先。初始化默认清单位于 `desktop/src-tauri/src/new_user_plugins.yaml`。

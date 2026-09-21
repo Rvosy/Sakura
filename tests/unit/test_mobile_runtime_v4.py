@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import shutil
 import socket
 import threading
 import time
@@ -17,7 +16,9 @@ from app.config.character_loader import CharacterRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
 from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
-from app.plugins.inventory import PluginInventory
+from app.plugins.inventory import PluginInventory, PluginDesiredStateStore
+from app.plugins.installer import LocalPluginInstaller
+from tools.release.package_optional_plugin import build
 from app.storage.runtime_roots import RuntimeRoots
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 from app.storage.paths import StoragePaths
@@ -28,11 +29,8 @@ def _roots(tmp_path: Path, port: int) -> RuntimeRoots:
     distribution = tmp_path / "distribution"
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
-    shutil.copytree(
-        repository / "plugins" / "builtin" / "sakura_mobile",
-        bundled / "sakura_mobile",
-    )
     user = tmp_path / "user"
+    roots = RuntimeRoots(distribution, user)
     character = user / "characters" / "sakura"
     character.mkdir(parents=True)
     (character / "card.md").write_text("system prompt", encoding="utf-8")
@@ -86,6 +84,16 @@ def _roots(tmp_path: Path, port: int) -> RuntimeRoots:
             }]},
         ),
     ])
+    package = tmp_path / "mobile.zip"
+    build(repository / "plugins" / "optional" / "sakura_mobile", package)
+    config_before = config.read_bytes()
+    PluginDesiredStateStore(user).write({"sakura_mobile": True})
+    LocalPluginInstaller(roots).install(package, "zip")
+    assert config.read_bytes() == config_before
+    record = next(item for item in PluginInventory(roots).scan().records if item.plugin_id == "sakura_mobile")
+    assert record.source == "user" and record.can_uninstall
+    assert not record.desired_enabled
+    PluginDesiredStateStore(user).write({"sakura_mobile": True})
     return RuntimeRoots(distribution, user)
 
 

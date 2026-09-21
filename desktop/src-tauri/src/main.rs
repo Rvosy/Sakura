@@ -8156,7 +8156,7 @@ mod tests {
         let defaults: serde_yaml::Value =
             serde_yaml::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(defaults, serde_yaml::from_str::<serde_yaml::Value>(
-            "- {id: sakura.tts.genie, enabled: false}\n- {id: sakura.tts.gpt-sovits, enabled: false}\n- {id: sakura_mobile, enabled: false}\n"
+            "- {id: sakura.tts.genie, enabled: false}\n- {id: sakura.tts.gpt-sovits, enabled: false}\n"
         ).unwrap());
         let saved = "# 用户选择\n- id: sakura.tts.genie\n  enabled: true\n- id: sakura_mobile\n  enabled: false\n";
         std::fs::write(&path, saved).unwrap();

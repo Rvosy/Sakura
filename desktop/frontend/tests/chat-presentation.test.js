@@ -481,3 +481,11 @@ test("changing subtitle language restarts only the active segment without mixed 
   assert.equal(rendered.at(-1), "か");
   assert.equal(rendered.includes("中か"), false);
 });
+
+test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {
+  const reducer = createChatPresentationReducer({ initialMessage: "新角色的问候" });
+  reducer.reduce(lifecycle("rehydrating", 1, 1));
+  reducer.reduce(lifecycle("setup_required", 1, 2));
+  assert.equal(reducer.current().lifecycle, "setup_required");
+  assert.equal(reducer.current().bubbleText, reducer.current().lifecycleHeadline);
+});

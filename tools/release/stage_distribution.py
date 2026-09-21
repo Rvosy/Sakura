@@ -29,7 +29,6 @@ BUILTIN_PLUGINS = {
     "sakura_spine",
     "sakura_web",
     "sakura_mem0",
-    "sakura_mobile",
     "sakura_tts_hub",
     "sakura_asr_hub",
     "sakura_asr_sensevoice",

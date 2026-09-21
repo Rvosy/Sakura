@@ -43,7 +43,7 @@ updated: 2026-09-16
    不把 docs/archive/ 中的旧 API 或前端原型当作当前合同。
 2. 按功能选择最接近的现有插件阅读：
    plugins/optional/playwright_browser/plugin.py：工具、Artifact、普通设置和日志。
-   plugins/builtin/sakura_mobile/plugin.py：后台服务、事件、配置热应用和清理。
+   plugins/optional/sakura_mobile/plugin.py：后台服务、事件、配置热应用和清理。
    plugins/builtin/sakura_mem0/plugin.py：记忆、Context、Collection、模型槽位。
    plugins/builtin/sakura_gpt_sovits/plugin.py：语音 Service、资源下载和页面放置。
    它们是参考实现，不是可从另一插件目录导入的公共库。

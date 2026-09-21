@@ -96,7 +96,7 @@ h1 {
 
 .history-scroll {
   min-height: 0;
-  overflow: auto;
+  overflow: auto; scrollbar-gutter: stable;
   overscroll-behavior: contain;
   border: 1px solid var(--hairline);
   border-radius: 15px;

@@ -178,7 +178,7 @@ button:focus-visible {
 .macos-open-help-view {
   width: min(620px, calc(100vw - 56px));
   max-height: calc(100vh - 56px);
-  overflow: auto;
+  overflow: auto; scrollbar-gutter: stable;
   border: 1px solid var(--hairline);
   border-radius: 16px;
   padding: 30px;

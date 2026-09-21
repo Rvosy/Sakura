@@ -427,8 +427,8 @@ export function createPluginSettingsFeature({
   }
 
   function pluginInstallMenuItems() {
-    return [fields.pluginInstallZipButton, fields.pluginInstallFolderButton]
-      .filter((item) => item && !item.disabled);
+    return [...fields.pluginInstallMenu.querySelectorAll('[role="menuitem"]')]
+      .filter((item) => !item.disabled && !item.hidden && item.getClientRects().length);
   }
 
   function setPluginInstallMenuOpen(open, { focusItem = false, restoreFocus = false } = {}) {
@@ -2344,10 +2344,9 @@ export function createPluginSettingsFeature({
   }
 
   function renderPluginPage() {
-    fields.pluginInstallMenuButton.disabled = pluginState.managementBusy || !runtimePluginController;
+    fields.pluginInstallMenuButton.disabled = false;
     fields.pluginInstallZipButton.disabled = pluginState.managementBusy || !runtimePluginController;
     fields.pluginInstallFolderButton.disabled = pluginState.managementBusy || !runtimePluginController;
-    if (fields.pluginInstallMenuButton.disabled) setPluginInstallMenuOpen(false);
     renderPluginList();
     renderPluginDetail();
     renderModelSurfaces();
@@ -2631,7 +2630,7 @@ export function createPluginSettingsFeature({
     fields.pluginList.scrollTop = 0;
   });
   listen(document, "keydown", (event) => {
-    if (!fields.pages.plugins.classList.contains("is-active") || pluginSettingsDialog) return;
+    if (!fields.pages.plugins.classList.contains("is-active") || fields.pages.plugins.dataset.marketVisible === "true" || pluginSettingsDialog) return;
     if (event.key === "/" && !/INPUT|SELECT|TEXTAREA/.test(event.target.tagName)) {
       event.preventDefault();
       fields.pluginSearch.focus();
@@ -2644,10 +2643,13 @@ export function createPluginSettingsFeature({
     if (event.key === "Escape" && !fields.pluginInstallMenu.hidden) {
       event.preventDefault();
       setPluginInstallMenuOpen(false, { restoreFocus: true });
-    } else if (["ArrowDown", "Enter", " "].includes(event.key) && fields.pluginInstallMenu.hidden) {
+    } else if ((event.key === "ArrowDown" || (["Enter", " "].includes(event.key) && fields.pluginInstallMenu.hidden))) {
       event.preventDefault();
       setPluginInstallMenuOpen(true, { focusItem: true });
     }
+  });
+  listen(fields.pluginInstallMenu, "click", (event) => {
+    if (event.target.closest('[role="menuitem"]')) setPluginInstallMenuOpen(false);
   });
   listen(fields.pluginInstallMenu, "keydown", (event) => {
     if (event.key === "Escape") {

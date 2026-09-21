@@ -460,9 +460,9 @@ prepare/begin/poll/result/cancel/release、输入与结果 artifact、历史分�
 `bundled` 可以让安装器拥有插件文件并禁止卸载，但不能隐含 privileged API。默认领域插件必须允许停用，以便
 替代实现接管能力；插件关闭后保留文件用于恢复默认是允许的。
 
-预装插件包括 `sakura_assistant`、`sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
-`sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天；已有用户的显式开关和沿用清单的
-隐式启用状态保持不变，初始化规则见[发行与存储](release-distribution-and-storage.md)。`playwright_browser` 改为可选插件，不进入主安装包。
+预装插件包括 `sakura_assistant`、`sakura_mem0`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
+`sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie 语音合成和 GPT-SoVITS 语音合成；已有用户的显式开关和沿用清单的
+隐式启用状态保持不变，初始化规则见[发行与存储](release-distribution-and-storage.md)。`playwright_browser` 和 `sakura_mobile` 为可选插件，不进入主安装包。手机聊天通过独立 ZIP 安装后显式启用；保留 `sakura_mobile` ID 和原用户配置路径，升级不删除其设置与数据。
 
 ## 8. 生命周期、失败与恢复
 

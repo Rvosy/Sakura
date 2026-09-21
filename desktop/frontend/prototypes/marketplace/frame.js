@@ -48,6 +48,7 @@ window.addEventListener("market-demo-ready", async () => {
     document.querySelector('[data-page="plugins"]').click();
     window.marketDemo.scenarioChanged = () => { window.demoMarketSource.reset(); window.marketDemo.setView("market", { load: false }); void window.marketDemo.refresh(); };
     window.marketDemo.info = (_title, text) => window.marketNotify(text);
+    window.marketDemo.setView("market");
     review.ready();
   } catch (error) { review.failed(error.message); }
 }, { once: true });

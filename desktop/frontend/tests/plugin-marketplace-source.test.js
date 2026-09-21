@@ -51,3 +51,13 @@ test("updates cannot replace enabled or bundled plugins or downgrade newer versi
     await assert.rejects(source.install(plugin, { signal: new AbortController().signal, onProgress() {} }));
   }
 });
+
+
+test("connection plugins keep their declared marketplace category", () => {
+  const mobile = release("1.0.0");
+  mobile.manifest.presentation.category = "connectivity";
+  const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "sakura_mobile", versions: [mobile] }] },
+    { api: 4, services: ["host.service"] });
+  assert.equal(plugin.category, "连接");
+  assert.equal(plugin.recommendedVersion, "1.0.0");
+});

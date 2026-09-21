@@ -4,7 +4,7 @@ const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
   initializing: ["正在准备", "正在准备聊天"],
   ready: ["在线", "可以开始对话"],
-  setup_required: ["需要设置", "请完成首次设置"],
+  setup_required: ["需要设置", "请检查模型服务与插件设置"],
   degraded: ["受限", "部分聊天功能暂不可用"],
   failed: ["不可用", "无法开始对话"],
   rehydrating: ["正在恢复", "正在恢复桌宠状态"],
@@ -168,9 +168,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
             ? state.bubbleText
             : chatReady || initialStartup
               ? state.bubbleText
-              : event.status === "failed" && typeof event.failure?.message === "string"
-                ? event.failure.message
-                : "正在准备聊天……",
+              : lifecycleHeadline,
           segments: preserveVisualState || preserveGreeting || chatReady ? state.segments : Object.freeze([]),
           replyHistorySegments: state.replyHistorySegments,
           replyHistoryIndex: state.replyHistoryIndex,

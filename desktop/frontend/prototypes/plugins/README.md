@@ -36,7 +36,7 @@ GPT-SoVITS、Genie 和 Mem0 都沿用原有资源动作。
 |---|---|---|
 | GPT-SoVITS | 服务来源、已有服务地址、接口路径、远程参考音频目录、内置服务工作目录、Python 解释器、推理配置、合成超时 | [plugin.py](../../../../plugins/builtin/sakura_gpt_sovits/plugin.py) |
 | Genie | 服务来源、已有服务地址、合成超时 | [plugin.py](../../../../plugins/builtin/sakura_genie/plugin.py) |
-| Sakura Mobile | 启用手机网页端、监听地址、端口、访问 token、只读运行状态与地址、错误、刷新状态 | [plugin.py](../../../../plugins/builtin/sakura_mobile/plugin.py) |
+| Sakura Mobile | 启用手机网页端、监听地址、端口、访问 token、只读运行状态与地址、错误、刷新状态 | [plugin.py](../../../../plugins/optional/sakura_mobile/plugin.py) |
 | Mem0 | 运行状态、自动整理间隔 | [plugin.py](../../../../plugins/builtin/sakura_mem0/plugin.py) |
 | Playwright Browser | 无头模式 | [plugin.py](../../../../plugins/optional/playwright_browser/plugin.py) |
 

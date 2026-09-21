@@ -238,11 +238,12 @@
         <section id="page-plugins" class="settings-page admin-page">
           <div class="plugin-page-heading"><div><h2>插件 <span id="pluginTotal" class="plugin-count" hidden></span></h2></div>
             <div id="pluginInstallMenuRoot" class="plugin-install-menu">
-              <button id="pluginInstallMenuButton" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
-                <span>安装插件…</span>
+              <button id="pluginInstallMenuButton" aria-label="更多插件操作" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+                <span>更多</span>
                 <span class="sakura-icon icon-chevron-down" aria-hidden="true"></span>
               </button>
               <div id="pluginInstallMenu" class="plugin-install-menu__panel" role="menu" hidden>
+                <div class="plugin-menu-label">从本地安装</div>
                 <button id="pluginInstallZipButton" type="button" role="menuitem">从 ZIP 安装…</button>
                 <button id="pluginInstallFolderButton" type="button" role="menuitem">从文件夹安装…</button>
               </div>

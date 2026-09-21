@@ -298,7 +298,7 @@ def test_new_user_plugin_defaults_disable_only_requested_plugins_and_keep_existi
     roots = RuntimeRoots(repository, tmp_path)
     desired = PluginDesiredStateStore(tmp_path)
     inventory = PluginInventory(roots, desired)
-    affected = {"sakura.tts.genie", "sakura.tts.gpt-sovits", "sakura_mobile"}
+    affected = {"sakura.tts.genie", "sakura.tts.gpt-sovits"}
     before = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
     assert all(before[plugin_id] for plugin_id in affected)
 
@@ -312,4 +312,5 @@ def test_new_user_plugin_defaults_disable_only_requested_plugins_and_keep_existi
     desired.write({"sakura.tts.genie": True, "sakura.tts.gpt-sovits": True, "sakura_mobile": False})
     existing = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
     assert existing["sakura.tts.genie"] and existing["sakura.tts.gpt-sovits"]
-    assert not existing["sakura_mobile"]
+    assert "sakura_mobile" not in existing
+    assert desired.read()["sakura_mobile"] is False

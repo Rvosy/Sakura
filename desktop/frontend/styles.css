@@ -265,7 +265,7 @@ body[data-chat-state="thinking"] .bubble::after {
   min-height: 0;
   padding-right: 4px;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
   color: var(--text);
   font-size: var(--speech-font-size);
   font-weight: var(--font-weight-regular);
@@ -485,7 +485,7 @@ body[data-chat-state="thinking"] .bubble::after {
   min-height: 0;
 }
 
-.composer textarea[data-overflow="true"] { overflow-y: auto; }
+.composer textarea[data-overflow="true"] { overflow-y: auto; scrollbar-gutter: stable; }
 
 .composer textarea::-webkit-scrollbar {
   width: 6px;
@@ -706,7 +706,7 @@ body[data-chat-state="thinking"] .bubble::after {
   scrollbar-width: thin;
 }
 
-.composer-tool-dock__list[data-scrollable="true"] { overflow-y: auto; }
+.composer-tool-dock__list[data-scrollable="true"] { overflow-y: auto; scrollbar-gutter: stable; }
 
 .composer-tool-dock__item {
   display: grid;
@@ -911,3 +911,6 @@ body[data-chat-state="thinking"] .bubble::after {
   from { opacity: 0; transform: translateY(-3px) scale(.985); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+
+/* The tool list becomes scrollable as tools are added. */
+.composer-tool-dock__list { scrollbar-gutter: stable; }

@@ -16,6 +16,12 @@ export function createPluginMarketplace({ document, host, notify, source = null,
   template.innerHTML = marketplaceMarkup;
   page.append(template.content.querySelector("#market-surface"));
   document.body.append(template.content);
+  $("pluginInstallMenu").append($("market-sources"), $("refresh"));
+  const filterPanel = $("market-filter-panel");
+  function closeFilters() {
+    closeSelects(filterPanel);
+    if (filterPanel.matches(":popover-open")) filterPanel.hidePopover();
+  }
   const tabs = document.createElement("div");
   tabs.id = "market-tabs"; tabs.className = "plugin-role-tabs";
   tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "插件页面");
@@ -98,6 +104,8 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     const unavailable = !["ready", "cached"].includes(catalogState);
     $("market-surface").querySelector(".market-foot").hidden = unavailable;
     $("result-count").textContent = unavailable ? "目录未加载" : `${matches.length} 个${view === "installed" ? "已安装插件" : "插件"}`;
+    $("market-filter").disabled = unavailable;
+    $("market-filter").textContent = !$("compatible").checked || $("sort").value !== "default" ? "筛选 · 已调整" : "筛选";
     $("sort").disabled = unavailable;
     $("refresh").disabled = catalogState === "loading" || !source;
     $("search").disabled = unavailable;
@@ -141,7 +149,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
       <div class="drawer-bottom">${taskMarkup}<div class="drawer-actions"><span class="version-hint">${escape(versionHint(p))}</span><div>${task?.state === "running" ? `<button class="secondary-button" data-cancel-task ${task.phase === "installing" || task.cancelling ? "disabled" : ""}>${task.cancelling && task.phase !== "installing" ? "正在取消" : "取消安装"}</button>` : task?.state === "failed" ? '<button data-retry>重试</button>' : !next ? '<button disabled>暂无兼容版本</button>' : updating(p) ? `<button data-install ${source?.canUpdate && source?.install && !p.updateBlocked ? '' : 'disabled'}>更新至 ${escape(next.number)}</button>` : p.installed ? '<button class="secondary-button" data-manage>在已安装中管理</button>' : `<button data-install ${source?.install ? '' : 'disabled'}>安装插件</button>`}</div></div></div>`;
   }
   function openDetail(id) {
-    closeSelects();
+    closeFilters(); closeSelects();
     selected = id;
     renderDetail();
     if (!$("detail-dialog").open) $("detail-dialog").showModal();
@@ -196,10 +204,10 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     task.cancelling = true; task.abort.abort();
     render(); refreshDetail();
   }
-  function clearFilters() { category = "全部"; $("search").value = ""; $("compatible").checked = true; render(); }
+  function clearFilters() { category = "全部"; $("search").value = ""; $("compatible").checked = true; $("sort").value = "default"; render(); }
   function setView(nextView, { load = true } = {}) {
     if (disposed) return;
-    closeSelects(); view = nextView;
+    closeFilters(); closeSelects(); view = nextView;
     render(); $("content").scrollTop = 0;
     if (load && view === "market" && catalogState === "unconfigured" && source) void loader.load();
   }
@@ -246,16 +254,25 @@ export function createPluginMarketplace({ document, host, notify, source = null,
   listen($("sort"), "change", render); listen($("refresh"), "click", () => void loader.load());
   if (openSources) listen($("market-sources"), "click", () => void openSources());
   else $("market-sources").hidden = true;
+  listen(filterPanel, "beforetoggle", event => {
+    if (event.newState !== "open") { closeSelects(filterPanel); return; }
+    const bounds = $("market-filter").getBoundingClientRect();
+    filterPanel.style.top = `${bounds.bottom + 8}px`;
+    filterPanel.style.left = `${Math.max(12, Math.min(bounds.right - 240, document.defaultView.innerWidth - 252))}px`;
+  });
+  listen(filterPanel, "toggle", () => $("market-filter").setAttribute("aria-expanded", String(filterPanel.matches(":popover-open"))));
+  listen(document.defaultView, "resize", closeFilters);
   enhanceSelect($("sort")); render();
   return {
     setView,
     refresh: () => loader.load(),
     sync() { if (!disposed) { render(); refreshDetail(); } },
-    onPageChanged(pageName) { if (pageName !== "plugins") { closeSelects($("market-surface")); $("detail-dialog").close(); } },
+    onPageChanged(pageName) { if (pageName !== "plugins") { closeFilters(); closeSelects($("market-surface")); $("detail-dialog").close(); } },
     dispose() {
       disposed = true; loader.dispose();
       for (const task of tasks.values()) task.abort.abort();
-      listeners.forEach(remove => remove()); closeSelects($("market-surface"));
+      listeners.forEach(remove => remove()); closeFilters(); closeSelects($("market-surface"));
+      filterPanel.remove(); $("market-sources").remove(); $("refresh").remove();
       $("detail-dialog").close(); $("detail-dialog").remove(); $("market-surface").remove(); tabs.remove();
     },
   };

@@ -37,7 +37,7 @@ export function catalogPlugins(catalog, context) {
     const presentation = manifest.presentation || {};
     return { id: plugin.id, name: manifest.name || plugin.id, author: manifest.author || "",
       description: manifest.description || "", body: manifest.description || "", repository: plugin.repository,
-      category: ({ tool: "工具", voice: "语音", memory: "记忆", connection: "连接", model: "表现", visual: "表现" })[presentation.category] || "工具",
+      category: ({ tool: "工具", tools: "工具", voice: "语音", memory: "记忆", connection: "连接", connectivity: "连接", model: "表现", visual: "表现" })[presentation.category] || "工具",
       kind: ({ provider: "服务", tool: "工具", extension: "扩展" })[presentation.kind] || "插件",
       icon: presentation.icon || "puzzle", versions, recommendedVersion: next?.number,
       compatibilityReason: next ? "" : display?.reason || "暂无可安装版本" };

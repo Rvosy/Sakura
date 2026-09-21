@@ -2,6 +2,21 @@
 
 `sakura_mobile` 是 Plugin API v4 插件，用于把手机浏览器接入桌面端 Sakura 的同一条聊天、历史和角色链。
 
+## 安装与升级
+
+此插件单独分发，不随 Sakura 安装包预装。通过设置中的本地插件安装入口导入 ZIP，然后启用“手机聊天”。
+插件只依赖 Python 标准库和宿主公开服务，无需额外 Python 依赖。
+
+```text
+runtime/bin/python tools/release/package_optional_plugin.py --source plugins/optional/sakura_mobile --output artifacts/plugins/sakura-mobile-1.0.0.zip
+```
+
+Windows 将上述 Python 路径替换为 `runtime\python.exe`。
+
+从内置版本升级后，插件 ID 仍为 `sakura_mobile`，已有 `data/plugins/sakura_mobile/config.json` 继续读取；
+不会删除配置或聊天历史。外部安装默认停用，需要重新显式启用。仍包含内置手机聊天的旧版 Sakura
+不能安装同 ID 的外部包，应先升级应用。便携版使用新发行目录并沿用用户数据，不要把新包覆盖解压到旧程序目录。
+
 ## Runtime v2 当前状态
 
 Runtime v2 通过普通 `sakura.host.mobile` Host Service 提供当前角色、Timeline 和聊天入口。聊天使用显式
@@ -27,7 +42,7 @@ Host Service 把任务绑定当前 generation 和插件 scope；插件停止时 
 插件自带默认配置：
 
 ```text
-plugins/sakura_mobile/config.json
+plugins/optional/sakura_mobile/config.json
 ```
 
 用户覆盖配置：

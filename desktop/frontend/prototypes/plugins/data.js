@@ -8,7 +8,7 @@ window.PLUGIN_DEMO = (() => {
     ...(fields.some((field) => field.placement === "advanced") ? [{ title: "高级设置", advanced: true, fields: fields.filter((field) => field.placement === "advanced") }] : []),
   ];
   const configurations = {
-    // plugins/builtin/sakura_mobile/plugin.py
+    // plugins/optional/sakura_mobile/plugin.py
     "mobile": [
       ...sections("手机端", [
       {"key": "enabled", "label": "启用手机网页端", "type": "boolean", "default": false, "wide": true},
