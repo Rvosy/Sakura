@@ -211,17 +211,6 @@ impl CoreSnapshotCache {
         let object = snapshot
             .as_object()
             .ok_or_else(|| "Core Snapshot must be an object".to_string())?;
-        let expected = [
-            "generationId",
-            "revision",
-            "readiness",
-            "currentCharacterSummary",
-            "characterPresentation",
-            "activeInteractionSummary",
-        ];
-        if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
-            return Err("Core Snapshot fields do not match the WP-2-02 shape".to_string());
-        }
         if object.get("generationId").and_then(Value::as_str) != Some(self.generation_id.as_str()) {
             return Err("Core Snapshot belongs to another generation".to_string());
         }
@@ -3601,7 +3590,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_2_02_snapshot_is_exact_monotonic_and_generation_scoped() {
+    fn wp_2_02_snapshot_allows_extensions_and_keeps_generation_ordering() {
         let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
         let first = json!({
             "generationId": GENERATION_ID,
@@ -3616,16 +3605,18 @@ mod tests {
         });
         cache
             .store_minimal_python_snapshot(&first)
-            .expect("six-field snapshot validates");
-        let mut extra = first.clone();
-        extra["schemaVersion"] = json!(1);
-        assert!(cache.store_minimal_python_snapshot(&extra).is_err());
+            .expect("minimal snapshot validates");
         let mut stale = first.clone();
         stale["revision"] = json!(0);
         assert!(cache.store_minimal_python_snapshot(&stale).is_err());
         let mut reused = first.clone();
         reused["activeInteractionSummary"] = Value::Null;
         assert!(cache.store_minimal_python_snapshot(&reused).is_err());
+        let mut extended = first.clone();
+        extended["revision"] = json!(2);
+        extended["pluginMigration"] = json!({"state": "running", "completed": 0,
+            "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"});
+        cache.store_minimal_python_snapshot(&extended).expect("additional progress fields are accepted");
         cache
             .begin_generation("00000000-0000-4000-8000-000000002203")
             .expect("new generation clears cache");

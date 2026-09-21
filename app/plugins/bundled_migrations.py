@@ -4,7 +4,11 @@ from __future__ import annotations
 import json
 import tempfile
 import urllib.request
+import uuid
+from collections.abc import Callable
 from pathlib import Path
+
+import yaml
 
 from app.plugin_sdk.sakura_http import urlopen_direct_for_loopback
 from app.storage.atomic import atomic_write_text
@@ -13,6 +17,11 @@ from app.storage.runtime_roots import RuntimeRoots
 SOURCES = json.loads(Path(__file__).with_name("migration_sources.json").read_text(encoding="utf-8"))
 MIGRATIONS = {key: value["directory"] for key, value in SOURCES.items()}
 STATE_NAME = "plugin-migrations.json"
+
+
+def uses_retired_model_api(root: Path) -> bool:
+    manifest = yaml.safe_load((root / "plugin.yaml").read_text(encoding="utf-8"))
+    return isinstance(manifest, dict) and "sakura.host.model_slots" in (manifest.get("requires") or [])
 
 
 def download_migration_package(plugin_id: str, output: Path) -> None:
@@ -43,7 +52,7 @@ def ensure_external_plugin(roots: RuntimeRoots, plugin_id: str, *, enabled: bool
     if not (source / "plugin.yaml").is_file() and (roots.distribution_root / "app/core_host").is_dir():
         source = roots.distribution_root / "plugins/optional" / directory
     installer = LocalPluginInstaller(roots)
-    if (source / "plugin.yaml").is_file():
+    if (source / "plugin.yaml").is_file() and not uses_retired_model_api(source):
         dependencies = PluginDependencyRoots(roots.user_root, distribution_root=roots.distribution_root)
         try:
             dependencies.verified_root(plugin_id, source, source="bundled")
@@ -65,7 +74,7 @@ def ensure_external_plugin(roots: RuntimeRoots, plugin_id: str, *, enabled: bool
                           expected=(plugin_id, SOURCES[plugin_id]["version"]), reuse_dependencies=True)
 
 
-def migrate_bundled_plugins(roots: RuntimeRoots) -> None:
+def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], None] | None = None) -> None:
     from app.plugins.inventory import PluginDesiredStateStore
 
     config = roots.user_root / "config"
@@ -75,20 +84,53 @@ def migrate_bundled_plugins(roots: RuntimeRoots) -> None:
     except FileNotFoundError:
         completed = {} if config.exists() else {key: "not_applicable" for key in MIGRATIONS}
     if not isinstance(completed, dict) or any(
-        not isinstance(key, str) or value not in ("completed", "not_applicable")
+        not isinstance(key, str) or value not in ("completed", "not_applicable", "repairing")
         for key, value in completed.items()
     ):
         raise ValueError("PLUGIN_MIGRATION_STATE_INVALID")
     desired = PluginDesiredStateStore(roots.user_root).read()
-    for plugin_id in MIGRATIONS:
-        if plugin_id in completed:
-            continue
+    # Repair only a retired official copy previously adopted by this migration.
+    # Keep its original code so local modifications remain recoverable.
+    from app.plugins.inventory import PluginInventory
+    repairs = {
+        record.plugin_id: roots.user_root / "plugins/user" / record.directory_name
+        for record in PluginInventory(roots).scan().records
+        if record.source == "user" and record.plugin_id in MIGRATIONS
+        and completed.get(record.plugin_id) in {"completed", "repairing"}
+        and "sakura.host.model_slots" in record.requires
+    }
+    pending = [key for key in MIGRATIONS if key not in completed or completed[key] == "repairing" or key in repairs]
+    def report(state, index, plugin_id=None):
+        if progress is not None:
+            progress({"state": state, "completed": index, "total": len(pending), "pluginId": plugin_id})
+    for index, plugin_id in enumerate(pending):
+        report("running", index, plugin_id)
+        backup = None
+        original = repairs.get(plugin_id)
         try:
+            if original is not None:
+                completed[plugin_id] = "repairing"
+                atomic_write_text(state_path, json.dumps(completed, ensure_ascii=False, indent=2) + "\n")
+                backup = roots.user_root / "plugins/migration-backups" / str(uuid.uuid4()) / original.name
+                backup.parent.mkdir(parents=True)
+                original.rename(backup)
             ensure_external_plugin(roots, plugin_id, enabled=desired.get(plugin_id, True))
         except Exception as error:
+            report("failed", index, plugin_id)
+            if backup is not None and backup.exists():
+                try:
+                    backup.rename(original)
+                except OSError as rollback_error:
+                    error.add_note(f"Original plugin backup could not be restored: {rollback_error}")
             # Keep original failure and do not mark complete or touch plugin data.
             raise RuntimeError(f"插件恢复失败（{plugin_id}）：{error}。请检查网络或磁盘后重新启动。") from error
         completed[plugin_id] = "completed"
-        atomic_write_text(state_path, json.dumps(completed, ensure_ascii=False, indent=2) + "\n")
+        try:
+            atomic_write_text(state_path, json.dumps(completed, ensure_ascii=False, indent=2) + "\n")
+        except Exception:
+            report("failed", index, plugin_id)
+            raise
     if not state_path.exists():
         atomic_write_text(state_path, json.dumps(completed, ensure_ascii=False, indent=2) + "\n")
+    if pending:
+        report("completed", len(pending))

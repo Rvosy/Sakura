@@ -6966,6 +6966,17 @@ fn retry_core(lifecycle: State<'_, ShellLifecycleState>) -> Result<(), &'static 
 }
 
 #[tauri::command]
+fn settings_restart_after_migration(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    settings_core_handle(&lifecycle)?
+        .restart()
+        .map_err(str::to_string)
+}
+
+#[tauri::command]
 fn exit_runtime(
     lifecycle: State<'_, ShellLifecycleState>,
     app_handle: tauri::AppHandle,
@@ -7984,6 +7995,7 @@ fn main() {
             record_interaction_latency_trace,
             record_runtime_diagnostics,
             retry_core,
+            settings_restart_after_migration,
             first_run_start_core,
             exit_runtime,
             product_shell::settings_capability_manifest,

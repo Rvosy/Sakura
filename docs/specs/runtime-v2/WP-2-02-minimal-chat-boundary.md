@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-09-22
 ---
 
 # WP-2-02：最小聊天取消、Gateway 与 Snapshot 边界
@@ -40,7 +40,7 @@ Rust 仅在内部把候选版本绑定到 operation，公开 `chat.started/compl
 只有对应 `chat.completed` 可确认主动播报成功；终态先于 send response、取消、失败和 generation 失效仍沿用
 本规范的唯一终态与幂等规则。
 
-Core 构造五字段 Snapshot：`generationId`、`revision`、`readiness`、`currentCharacterSummary`、`activeInteractionSummary`。
+Core Snapshot 包含 `generationId`、`revision`、`readiness`、`currentCharacterSummary`、`characterPresentation`、`activeInteractionSummary`，迁移期间还提供 `pluginMigration`。读取方解析所需字段，允许增加字段，不以字段总数或字段白名单拒绝快照。
 Rust 只读缓存；generation/revision 失配触发完整重取，Rust 不推导业务对象或 patch。
 早期的可取消 sleep/阻塞文件 I/O fixture 继续用于边界回归。
 
@@ -49,7 +49,7 @@ Rust 只读缓存；generation/revision 失配触发完整重取，Rust 不推�
 - send/cancel/complete、send/cancel/fail、完成/取消与失败/取消竞态、重复取消；
 - 半帧、EOF、未知 identity、旧 generation/credential、晚到 response/event、队列满、慢/失败 writer；
 - fixture 阻塞期间 health、cancel、shutdown 的既有 deadline；窗口关闭、Core crash、Retry、Exit 和 generation 切换后的 bounded cleanup；
-- Snapshot exact shape、敏感字段拒绝、revision 单调性、generation 清空和失配完整重取；
+- Snapshot 字段扩展、敏感字段拒绝、revision 单调性、generation 清空和失配完整重取；
 - protocol 2.1 lifecycle、protocol 2.2 request/response/event Router 回归。
 
 ## 非目标

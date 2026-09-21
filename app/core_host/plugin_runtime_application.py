@@ -115,6 +115,7 @@ class PluginRuntimeApplication:
         specs: Sequence[RuntimePluginSpec] | None = None,
         *,
         call_timeout: float | None = None,
+        migration_progress=None,
     ) -> None:
         self._roots = roots
         self._generation_id = generation_id
@@ -131,7 +132,7 @@ class PluginRuntimeApplication:
 
         # Classify the user before model migration creates config/model_slots.json.
         if specs is None:
-            migrate_bundled_plugins(roots)
+            migrate_bundled_plugins(roots, progress=migration_progress)
         try:
             migrate_legacy_model_configuration(roots.user_root)
         except (OSError, ValueError):

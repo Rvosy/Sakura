@@ -165,6 +165,7 @@ test("Studio publication merges only edited appearance fields and saves against 
     themeTokens: { ...themeTokens, primary: "#abcdef", accent: "#fedcba" },
   };
   let intervalCallback = null;
+  let startupPresentationReady = false;
   let nextFrame = null;
   const calls = [];
   const previousWindow = globalThis.window;
@@ -180,7 +181,8 @@ test("Studio publication merges only edited appearance fields and saves against 
       invoke: async (command, args) => {
         calls.push([command, args]);
         if (command === "runtime_lifecycle_snapshot") {
-          return { supervisor: { generationId: nextSnapshot.presentation.generationId } };
+          return { supervisor: { generationId: nextSnapshot.presentation.generationId },
+            characterPresentation: startupPresentationReady ? nextSnapshot.presentation : null };
         }
         if (command === "settings_character_appearance_get") return nextSnapshot;
         if (command === "settings_character_appearance_save") {
@@ -196,7 +198,15 @@ test("Studio publication merges only edited appearance fields and saves against 
       },
       wait: async () => {},
     });
-    await controller.initialize(makeSnapshot("generation-a"));
+    await controller.initialize();
+    await intervalCallback();
+    assert.equal(calls.some(([command]) => command === "settings_character_appearance_get"), false);
+    const afterRestart = nextSnapshot;
+    nextSnapshot = makeSnapshot("generation-a");
+    startupPresentationReady = true;
+    await intervalCallback();
+    assert.equal(controls.portraitScale.value, "125", "startup completion initializes sliders without reopening settings");
+    nextSnapshot = afterRestart;
     controls.portraitScale.value = "135";
     controls.portraitScale.fire("input");
     themes.accent_color.value = "#123456";

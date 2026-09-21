@@ -245,6 +245,73 @@ def test_new_desktop_seed_covers_all_retired_plugins(tmp_path, monkeypatch):
     assert not PluginInventory(roots).scan().records
 
 
+def test_retired_model_api_local_payload_uses_compatible_download(tmp_path):
+    roots = roots_for(tmp_path)
+    manifest = roots.distribution_root / "plugins/builtin/sakura_mobile/plugin.yaml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "\nrequires: [sakura.host.model_slots]\n", encoding="utf-8")
+    events = []
+    migrate_bundled_plugins(roots, progress=events.append)
+    record = PluginInventory(roots).scan().records[0]
+    assert "sakura.host.model_slots" not in record.requires
+    assert events == [
+        {"state": "running", "completed": 0, "total": 1, "pluginId": "sakura_mobile"},
+        {"state": "completed", "completed": 1, "total": 1, "pluginId": None},
+    ]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_completed_migration_repairs_retired_api_with_backup_and_rollback(tmp_path, monkeypatch, fails):
+    roots = roots_for(tmp_path)
+    migrate_bundled_plugins(roots)
+    installed = roots.user_root / "plugins/user/sakura_mobile"
+    manifest = installed / "plugin.yaml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "\nrequires: [sakura.host.model_slots]\n", encoding="utf-8")
+    old_manifest = manifest.read_bytes()
+    (installed / "local-notes.txt").write_text("preserve local edits")
+    PluginDesiredStateStore(roots.user_root).set("sakura_mobile", False)
+    config = roots.user_root / "data/plugins/sakura_mobile/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"port": 8888}')
+    events = []
+    if fails:
+        def fail(*args, **kwargs):
+            raise OSError("disk unavailable")
+        monkeypatch.setattr(LocalPluginInstaller, "install", fail)
+        with pytest.raises(RuntimeError):
+            migrate_bundled_plugins(roots, progress=events.append)
+        assert manifest.read_bytes() == old_manifest
+        assert (installed / "local-notes.txt").read_text() == "preserve local edits"
+        assert events[-1]["state"] == "failed"
+    else:
+        migrate_bundled_plugins(roots, progress=events.append)
+        assert "sakura.host.model_slots" not in PluginInventory(roots).scan().records[0].requires
+        backups = list((roots.user_root / "plugins/migration-backups").glob("*/sakura_mobile"))
+        assert len(backups) == 1
+        assert (backups[0] / "plugin.yaml").read_bytes() == old_manifest
+        assert (backups[0] / "local-notes.txt").read_text() == "preserve local edits"
+        assert events[-1]["state"] == "completed"
+        events.clear()
+        migrate_bundled_plugins(roots, progress=events.append)
+        assert not events
+    assert config.read_text() == '{"port": 8888}'
+    assert PluginDesiredStateStore(roots.user_root).read()["sakura_mobile"] is False
+
+
+def test_interrupted_repair_reinstalls_code_without_losing_backup(tmp_path):
+    roots = roots_for(tmp_path)
+    migrate_bundled_plugins(roots)
+    installed = roots.user_root / "plugins/user/sakura_mobile"
+    backup = roots.user_root / "plugins/migration-backups/interrupted/sakura_mobile"
+    backup.parent.mkdir(parents=True)
+    installed.rename(backup)
+    marker = roots.user_root / "config/plugin-migrations.json"
+    marker.write_text('{"sakura_mobile": "repairing"}')
+    migrate_bundled_plugins(roots)
+    assert (installed / "plugin.yaml").is_file()
+    assert (backup / "plugin.yaml").is_file()
+    assert json.loads(marker.read_text()) == {"sakura_mobile": "completed"}
+
+
 def test_legacy_worker_uses_installed_plugin_helpers_without_bundled_code(tmp_path, monkeypatch):
     import sys
     from app.legacy_import import plugin_support

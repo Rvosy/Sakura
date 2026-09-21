@@ -101,7 +101,7 @@ class Plugin:
         return True
 ''', requires=("fixture.startup.gate", "sakura.tts"))
     tts_config = user / "data/plugins/sakura.tts/config.json"
-    tts_config.parent.mkdir(parents=True)
+    tts_config.parent.mkdir(parents=True, exist_ok=True)
     tts_config.write_text(json.dumps({"selections": {"sakura": {"enabled": True, "provider": "fixture.voice"}}}), encoding="utf-8")
 
     entered = {stage: threading.Event() for stage in ("assistant", "optional", "tts")}
@@ -119,8 +119,8 @@ class Plugin:
         def warmed(self, character_id):
             warmed.append(character_id)
 
-    def create_application(*args):
-        application = PluginApplicationHost(*args)
+    def create_application(*args, **kwargs):
+        application = PluginApplicationHost(*args, **kwargs)
         application._manager.install_host_service("fixture.startup.gate", Gate(), exports=("wait", "warmed"))
         applications.append(application)
         return application
@@ -268,4 +268,42 @@ def test_malformed_character_configuration_keeps_its_stable_readiness_reason(tmp
         assert not controller._worker.is_alive()
         assert controller.snapshot()["components"]["assistant"]["code"] == "CONFIG_DATA_INVALID"
     finally:
+        controller.close()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_migration_progress_is_visible_before_runtime_and_failure_is_actionable(tmp_path, monkeypatch, fails):
+    entered, release = threading.Event(), threading.Event()
+
+    def migrate(roots, *, progress):
+        progress({"state": "running", "completed": 0, "total": 1, "pluginId": "sakura.memory.mem0"})
+        entered.set()
+        assert release.wait(5)
+        progress({"state": "failed" if fails else "completed", "completed": 0 if fails else 1,
+                  "total": 1, "pluginId": "sakura.memory.mem0" if fails else None})
+        if fails:
+            raise OSError("fixture download failed")
+
+    monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", migrate)
+    controller = ReadinessController(HostConfig(RuntimeRoots(tmp_path / "distribution", tmp_path / "user"), "migration-progress", "a" * 32))
+    try:
+        controller.begin({})
+        assert entered.wait(5)
+        pending = controller.snapshot()
+        assert pending["readiness"] == "initializing"
+        assert pending["pluginMigration"]["state"] == "running"
+        assert controller.minimal_snapshot(None)["pluginMigration"] == pending["pluginMigration"]
+        assert controller.published_plugin_application() is None
+        release.set()
+        controller._worker.join(5)
+        assert not controller._worker.is_alive()
+        settled = controller.snapshot()
+        assert settled["revision"] > pending["revision"]
+        assert settled["pluginMigration"]["state"] == ("failed" if fails else "completed")
+        if fails:
+            assert settled["readiness"] == "failed"
+        else:
+            assert controller.published_plugin_application() is not None
+    finally:
+        release.set()
         controller.close()

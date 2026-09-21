@@ -4482,3 +4482,18 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 #page-providers:has(.connection-editor) { grid-template-rows: minmax(0, 1fr); }
 
 .settings-form { display: contents; }
+/* Upgrade progress stays visible while switching settings pages. */
+.migration-status:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  border: 1px solid var(--sakura-border);
+  border-radius: 12px;
+  color: var(--sakura-text);
+  background: var(--sakura-panel-bg);
+  overflow-wrap: anywhere;
+}
+.migration-status > span { flex: 1 1 220px; }

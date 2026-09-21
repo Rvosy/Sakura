@@ -26,6 +26,7 @@ class PluginApplicationHost(PluginRuntimeApplication):
         tool_registry: object,
         *,
         call_timeout: float | None = None,
+        migration_progress=None,
     ) -> None:
         resolved = coerce_runtime_roots(roots)
         self._user_root = resolved.user_root
@@ -35,6 +36,7 @@ class PluginApplicationHost(PluginRuntimeApplication):
             generation_id,
             tool_registry,
             call_timeout=call_timeout,
+            migration_progress=migration_progress,
         )
 
     def bind_character_presentation(self, character_id: str) -> None:

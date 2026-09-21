@@ -181,6 +181,7 @@
       "cases": [
         "visual-plugin-browser-journey",
         "settings-visuals-browser-journey",
+        "settings-migration-browser-journey",
         "studio-visuals-browser-journey",
         "studio-save-browser-journey",
         "spine-plugin-browser-journey"
@@ -1183,6 +1184,13 @@
       "id": "settings-contributions-browser",
       "description": "使用真实插件、隔离配置和浏览器验证旧设置交互与统一保存",
       "argv": ["{python}", "desktop/frontend/tests/settings-contributions.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "settings-migration-browser-journey",
+      "description": "验证迁移进度、失败重启和角色自定义控件自动恢复",
+      "argv": ["{python}", "desktop/frontend/tests/settings-migration.journey.py"],
       "timeout_seconds": 120,
       "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
     },

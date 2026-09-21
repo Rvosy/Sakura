@@ -18,6 +18,7 @@ import {
   normalizeColorText,
 } from "../core/theme-runtime.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
+import { createMigrationStatus } from "./migration-status.js";
 
 installDevtoolsShortcutGuard();
 installClickIconMotion(document);
@@ -133,7 +134,7 @@ let runtimeVoiceController = null;
 let runtimeAsrController = null;
 let runtimeAutostartController = null;
 let firstRunGuideController = null;
-let runtimeAppearanceInitialized = false;
+let migrationStatusController = null;
 let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
@@ -168,6 +169,17 @@ function disableRuntimeControl(control, { markRow = true } = {}) {
 }
 
 function prepareRuntimeAppearance(snapshot, themeFields) {
+  for (const id of ["portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand",
+    "controlPanelOffset", "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
+    "resetThemeButton", "visualEffectMode"]) {
+    const control = fields[id];
+    control.disabled = false;
+    control.removeAttribute("aria-disabled");
+    delete control.dataset.tooltip;
+    const row = control.closest(".setting-row");
+    row?.classList.remove("is-disabled");
+    if (row) delete row.dataset.tooltip;
+  }
   const theme = Object.fromEntries(
     themeFields.map(([field, legacyField]) => [legacyField, snapshot.appearance.values.themeTokens[field]]),
   );
@@ -1663,6 +1675,7 @@ detailCard?.addEventListener("input", (event) => {
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
   runtimeAppearanceController?.dispose();
+  migrationStatusController?.dispose();
   runtimeCharacterFeature?.dispose();
   runtimeProviderFeature?.dispose();
   runtimeChatTimingController?.dispose();
@@ -1687,6 +1700,7 @@ async function initializeRuntimeSettingsSection(initialize) {
 
 async function startSettingsFrontend() {
   await runtimeDiagnosticsReady;
+  migrationStatusController = createMigrationStatus({ document, window, invoke, onError: setError });
   let manifest = await invoke("settings_capability_manifest");
   const { createCharacterSettingsFeature } = await import("./character-settings.js");
   runtimeCharacterFeature = createCharacterSettingsFeature({
@@ -1753,17 +1767,17 @@ async function startSettingsFrontend() {
       fillTheme: (theme) => setThemeValues(theme, { updateVisualEffect: false }),
       trace: interactionLatencyTrace,
     });
+    let appearanceSnapshot;
     if (runtimeCharacterFeature?.currentCharacterId()) {
       try {
-        const snapshot = await invoke("settings_character_appearance_get");
-        await runtimeAppearanceController.initialize(snapshot);
-        runtimeAppearanceInitialized = true;
+        appearanceSnapshot = await invoke("settings_character_appearance_get");
       } catch {
         prepareRuntimeCharacterOnly();
       }
     } else {
       prepareRuntimeCharacterOnly();
     }
+    await runtimeAppearanceController.initialize(appearanceSnapshot);
     await runtimeFontsReadyPromise;
     // 无角色时页面使用主程序默认浅蓝主题；有角色时由外观快照覆盖。
     await invoke("reveal_settings_window");

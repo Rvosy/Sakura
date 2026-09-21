@@ -134,6 +134,28 @@ pub struct SnapshotPublication {
     generation_id: String,
     revision: u64,
     readiness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_migration: Option<PluginMigrationPublication>,
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginMigrationPublication {
+    state: String,
+    completed: u64,
+    total: u64,
+    plugin_id: Option<String>,
+}
+
+fn plugin_migration(snapshot: &Value) -> Option<PluginMigrationPublication> {
+    serde_json::from_value(snapshot.get("pluginMigration")?.clone()).ok()
+}
+
+fn startup_expired(now: Instant, readiness_deadline: &mut Instant, migrating: bool) -> bool {
+    if migrating {
+        *readiness_deadline = now + READINESS_DEADLINE;
+    }
+    now >= *readiness_deadline
 }
 
 #[derive(Clone, Serialize)]
@@ -853,7 +875,7 @@ fn spawn_and_initialize(
         json!({"outcome": "completed"}),
     );
 
-    let readiness_deadline = Instant::now() + READINESS_DEADLINE;
+    let mut readiness_deadline = Instant::now() + READINESS_DEADLINE;
     state.chat_bridge = state
         .host
         .as_ref()
@@ -930,7 +952,12 @@ fn spawn_and_initialize(
             }
             return Ok(());
         }
-        if Instant::now() >= readiness_deadline {
+        let migrating = state
+            .snapshot
+            .as_ref()
+            .and_then(plugin_migration)
+            .is_some_and(|migration| migration.state == "running");
+        if startup_expired(Instant::now(), &mut readiness_deadline, migrating) {
             return Err(FailureReason::InitializeTimeout);
         }
         thread::sleep(SNAPSHOT_POLL_INTERVAL);
@@ -1055,6 +1082,7 @@ fn publish(state: &WorkerState, target: &Arc<Mutex<ShellLifecyclePublication>>) 
             return None;
         }
         Some(SnapshotPublication {
+            plugin_migration: plugin_migration(snapshot),
             generation_id,
             revision: snapshot.get("revision").and_then(Value::as_u64)?,
             readiness: snapshot
@@ -1190,6 +1218,28 @@ fn is_safe_version(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_progress_survives_publication_without_consuming_startup_deadline() {
+        let status = json!({"pluginMigration": {"state": "running", "completed": 0,
+            "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"}});
+        let migration = plugin_migration(&status).expect("public migration progress");
+        assert_eq!(migration.plugin_id.as_deref(), Some("sakura.memory.mem0"));
+        let start = Instant::now();
+        let mut readiness = start + READINESS_DEADLINE;
+        let downloading = start + Duration::from_secs(120);
+        assert!(!startup_expired(downloading, &mut readiness, true));
+        assert!(!startup_expired(
+            downloading + Duration::from_secs(1),
+            &mut readiness,
+            false
+        ));
+        assert!(startup_expired(
+            downloading + READINESS_DEADLINE,
+            &mut readiness,
+            false
+        ));
+    }
 
     #[test]
     fn hello_deadline_matches_the_validated_cold_start_budget() {
@@ -1352,6 +1402,7 @@ mod tests {
             publication.supervisor.generation_id = Some("generation-ready".to_string());
             publication.supervisor.generation_number = 1;
             publication.snapshot = Some(SnapshotPublication {
+                plugin_migration: None,
                 generation_id: "generation-ready".to_string(),
                 revision: 1,
                 readiness: "ready".to_string(),
@@ -1801,10 +1852,7 @@ mod tests {
             .join("../..")
             .canonicalize()
             .expect("repository root");
-        let user_root = repository_root
-            .join("tests/fixtures/runtime_v2/wp_3_01/ready")
-            .canonicalize()
-            .expect("ready Assistant fixture");
+        let user_root = isolated_ready_user_root(&repository_root);
         let executable_directory = std::env::current_exe()
             .expect("test executable")
             .parent()
@@ -1816,7 +1864,7 @@ mod tests {
             executable_directory,
             resource_directory: repository_root.clone(),
             explicit_development_root: Some(repository_root),
-            user_root,
+            user_root: user_root.clone(),
         });
         let handle = session.handle();
         let first = wait_for_stable_generation(&handle, 1);
@@ -1896,6 +1944,7 @@ mod tests {
         session
             .shutdown_and_join()
             .expect("recovered lifecycle should reclaim all resources");
+        std::fs::remove_dir_all(user_root).expect("remove isolated crash-recovery root");
     }
 
     #[test]
@@ -1982,6 +2031,7 @@ mod tests {
                 failure: None,
             },
             snapshot: Some(SnapshotPublication {
+                plugin_migration: None,
                 generation_id: generation.clone(),
                 revision: 7,
                 readiness: "ready".to_string(),
@@ -2022,6 +2072,7 @@ mod tests {
         publication.snapshot = None;
         assert!(available_generation_id(&publication).is_none());
         publication.snapshot = Some(SnapshotPublication {
+            plugin_migration: None,
             generation_id: "stale-generation".to_string(),
             revision: 8,
             readiness: "failed".to_string(),
@@ -2029,6 +2080,7 @@ mod tests {
         publication.character_presentation = None;
         assert!(available_generation_id(&publication).is_none());
         publication.snapshot = Some(SnapshotPublication {
+            plugin_migration: None,
             generation_id: "generation-safe".to_string(),
             revision: 9,
             readiness: "failed".to_string(),
@@ -2051,6 +2103,7 @@ mod tests {
                 failure: None,
             },
             snapshot: Some(SnapshotPublication {
+                plugin_migration: None,
                 generation_id: generation.clone(),
                 revision: 1,
                 readiness: "degraded".to_string(),

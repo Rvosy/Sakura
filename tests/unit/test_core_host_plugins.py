@@ -235,7 +235,7 @@ def test_session_is_published_only_after_application_binding(
             pass
 
     application = Application()
-    monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_: application)
+    monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_, **_kwargs: application)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), "session-binding-test", "a" * 32),
         initializer_factory=lambda *_: Initializer(),
@@ -276,7 +276,7 @@ def test_plugin_start_failure_closes_unpublished_application_resources(
     closed: list[str] = []
 
     class PluginApplication:
-        def __init__(self, *_args) -> None:
+        def __init__(self, *_args, **_kwargs) -> None:
             pass
 
         def start_character_presentation(self):
@@ -347,7 +347,7 @@ def test_shutdown_stops_starting_plugin_application_before_joining_initializer(
             initialize=lambda _: ReadinessResult("setup_required", "CHARACTER_REQUIRED", "", False, None),
             close=lambda: None,
         )
-    monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_: application)
+    monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_, **_kwargs: application)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), "shutdown-starting-plugin", "a" * 32),
         initializer_factory=create_initializer,
