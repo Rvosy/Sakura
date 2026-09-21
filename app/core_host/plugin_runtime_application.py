@@ -127,14 +127,15 @@ class PluginRuntimeApplication:
         self._loaded = threading.Event()
         self._bound = threading.Event()
         self._model_configuration_issue = None
+        from app.plugins.bundled_migrations import migrate_bundled_plugins
+
+        # Classify the user before model migration creates config/model_slots.json.
+        if specs is None:
+            migrate_bundled_plugins(roots)
         try:
             migrate_legacy_model_configuration(roots.user_root)
         except (OSError, ValueError):
             self._model_configuration_issue = "CONFIG_DATA_INVALID"
-        from app.plugins.bundled_migrations import migrate_bundled_plugins
-
-        if specs is None:
-            migrate_bundled_plugins(roots)
         self._inventory = PluginInventory(roots)
         self._inventory_snapshot = self._inventory.scan()
         manager_options = {} if call_timeout is None else {"call_timeout": call_timeout}

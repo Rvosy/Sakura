@@ -365,7 +365,10 @@ def _roots(tmp_path: Path) -> RuntimeRoots:
     user = tmp_path / "user"
     (distribution / "plugins" / "builtin").mkdir(parents=True)
     user.mkdir()
-    return RuntimeRoots(distribution, user)
+    roots = RuntimeRoots(distribution, user)
+    from app.plugins.bundled_migrations import migrate_bundled_plugins
+    migrate_bundled_plugins(roots)
+    return roots
 
 
 def _wheel(parent: Path, version: str) -> Path:

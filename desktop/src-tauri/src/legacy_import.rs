@@ -1710,7 +1710,10 @@ fn python_process_request(
         program: layout.python_executable,
         args,
         current_directory: Some(layout.core_root),
-        environment_overrides: vec![(OsString::from("SAKURA_DISTRIBUTION_ROOT"), layout.distribution_root.into_os_string())],
+        environment_overrides: vec![(
+            OsString::from("SAKURA_DISTRIBUTION_ROOT"),
+            layout.distribution_root.into_os_string(),
+        )],
         stdio: ProcessStdio::Piped,
     })
 }

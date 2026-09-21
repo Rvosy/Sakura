@@ -224,17 +224,18 @@ def _root(
     config_patch: dict[str, object] | None = None,
 ) -> Path:
     root = tmp_path / "assistant"
+    from app.storage.paths import StoragePaths
     plugins = root / "plugins" / "builtin"
     plugins.mkdir(parents=True)
     (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     (plugins / "__init__.py").write_text("", encoding="utf-8")
     repository = Path(__file__).parents[2]
     shutil.copytree(repository / "plugins" / "builtin" / "sakura_tts_hub", plugins / "sakura_tts_hub")
-    shutil.copytree(repository / "plugins" / "optional" / "sakura_genie", plugins / "sakura_genie")
-    plugin_root = plugins / "sakura_genie"
+    shutil.copytree(repository / "plugins" / "optional" / "sakura_genie", root / "plugins/user/sakura_genie")
+    plugin_root = root / "plugins/user/sakura_genie"
     declaration = PluginDependencyRoots(root).declaration(plugin_root)
     assert declaration is not None
-    dependency_root = root / "plugins/dependencies/sakura.tts.genie"
+    dependency_root = StoragePaths(root).plugin_dependency_root_for("sakura.tts.genie")
     dependency_root.mkdir(parents=True)
     (dependency_root / ".sakura-dependencies.json").write_text(
         json.dumps({
@@ -267,13 +268,6 @@ def _root(
         encoding="utf-8",
     )
     from app.plugins.inventory import PluginDesiredStateStore
-    from app.storage.paths import StoragePaths
-    destination = root / "plugins/user/sakura_genie"
-    destination.parent.mkdir(parents=True)
-    (plugins / "sakura_genie").rename(destination)
-    dependency_target = StoragePaths(root).plugin_dependency_root_for("sakura.tts.genie")
-    dependency_target.parent.mkdir(parents=True, exist_ok=True)
-    dependency_root.rename(dependency_target)
     PluginDesiredStateStore(root).set("sakura.tts.genie", True)
     return root
 

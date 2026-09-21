@@ -5285,7 +5285,10 @@ mod tests {
     #[test]
     fn managed_real_python_host_initializes_and_caches_its_snapshot() {
         let _test_lock = lifecycle_test_lock();
-        let layout = development_layout();
+        let mut layout = development_layout();
+        let user_root =
+            std::env::temp_dir().join(format!("sakura-initialize-{}", uuid::Uuid::new_v4()));
+        layout.user_root = crate::ensure_user_layout(&user_root).unwrap();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
         request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
@@ -5318,12 +5321,16 @@ mod tests {
             .expect("initialized Host should stop cleanly");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);
+        fs::remove_dir_all(user_root).unwrap();
     }
 
     #[test]
     fn real_python_initialize_keeps_health_and_shutdown_responsive() {
         let _test_lock = lifecycle_test_lock();
-        let layout = development_layout();
+        let mut layout = development_layout();
+        let user_root =
+            std::env::temp_dir().join(format!("sakura-responsive-{}", uuid::Uuid::new_v4()));
+        layout.user_root = crate::ensure_user_layout(&user_root).unwrap();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
         request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
@@ -5354,6 +5361,7 @@ mod tests {
             .expect("shutdown should cancel or close real initialize");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);
+        fs::remove_dir_all(user_root).unwrap();
     }
 }
 

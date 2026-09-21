@@ -316,7 +316,7 @@ def test_official_tts_v4_uses_three_processes_descriptor_and_job_ids(
 
 
 def test_tts_provider_crash_leaves_hub_and_unrelated_provider_running(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     genie = _TtsServer("genie")
     gpt = _TtsServer("gpt")
@@ -339,6 +339,7 @@ def test_tts_provider_crash_leaves_hub_and_unrelated_provider_running(
         PluginInventory(roots).scan().runtime_specs,
         call_timeout=0.3,
     )
+    cleanup_started, finish_cleanup = threading.Event(), threading.Event()
     try:
         application.start()
         before = {
@@ -361,14 +362,30 @@ def test_tts_provider_crash_leaves_hub_and_unrelated_provider_running(
         while application._host_services.artifact_count != 1:  # noqa: SLF001
             assert time.monotonic() < deadline
             time.sleep(0.01)
+        process = application._manager._records["sakura.tts.gpt-sovits"].process
+        terminate = process.terminate_after_transport_failure
+
+        def held_cleanup():
+            cleanup_started.set()
+            assert finish_cleanup.wait(3)
+            return terminate()
+
+        monkeypatch.setattr(process, "terminate_after_transport_failure", held_cleanup)
         os.kill(gpt_pid, 9)
+        assert cleanup_started.wait(3)
+        exiting = next(item for item in application.public_snapshot()["plugins"]
+                       if item["pluginId"] == "sakura.tts.gpt-sovits")
+        assert exiting["reasonCode"] == "PLUGIN_PROCESS_EXITING"
+        # Files remain owned until the process tree has finished cleanup.
+        assert application._host_services.artifact_count == 1
+        finish_cleanup.set()
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             after = {
                 item["pluginId"]: item
                 for item in application.public_snapshot()["plugins"]
             }
-            if after["sakura.tts.gpt-sovits"]["state"] == "failed":
+            if after["sakura.tts.gpt-sovits"]["reasonCode"] == "PLUGIN_PROCESS_EXITED":
                 break
             time.sleep(0.02)
         else:
@@ -385,6 +402,7 @@ def test_tts_provider_crash_leaves_hub_and_unrelated_provider_running(
             "available"
         ] is True
     finally:
+        finish_cleanup.set()
         application.close()
         genie.shutdown()
         gpt.shutdown()

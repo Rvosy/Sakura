@@ -16,7 +16,10 @@ def genie_record(tmp_path):
     source = Path(__file__).resolve().parents[2] / "plugins/optional/sakura_genie/plugin.yaml"
     plugin = tmp_path / "plugins/user/genie"
     plugin.mkdir(parents=True)
-    (plugin / "plugin.yaml").write_text(source.read_text().replace("enabled: false", "enabled: true"))
+    (plugin / "plugin.yaml").write_text(
+        source.read_text(encoding="utf-8").replace("enabled: false", "enabled: true"),
+        encoding="utf-8",
+    )
     # Compatibility discovery must never import the implementation or convert models.
     (plugin / "plugin.py").write_text('raise AssertionError("must not start Genie")')
     return PluginInventory(tmp_path).scan().records[0]

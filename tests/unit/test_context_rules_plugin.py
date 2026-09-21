@@ -34,6 +34,9 @@ def test_optional_rules_install_configure_and_disable_through_v4(
     (distribution / "plugins/builtin").mkdir(parents=True)
     user.mkdir()
     roots = RuntimeRoots(distribution, user)
+    # Model the desktop's new-user seed before installation creates config/.
+    from app.plugins.bundled_migrations import migrate_bundled_plugins
+    migrate_bundled_plugins(roots)
     installed = LocalPluginInstaller(roots).install(package.resolve(), "zip")
     config_path = StoragePaths(user).plugin_data_for(PLUGIN_ID) / "config.json"
     if legacy_config is not None:

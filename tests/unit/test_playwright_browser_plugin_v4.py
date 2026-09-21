@@ -67,6 +67,8 @@ def test_optional_playwright_installs_through_user_entry_and_runs_in_v4(
     (distribution / "plugins/builtin").mkdir(parents=True)
     user.mkdir()
     roots = RuntimeRoots(distribution, user)
+    from app.plugins.bundled_migrations import migrate_bundled_plugins
+    migrate_bundled_plugins(roots)
     source = tmp_path / "source"
     shutil.copytree(SOURCE_PLUGIN_ROOT, source)
     source_browser = source / "browser.py"

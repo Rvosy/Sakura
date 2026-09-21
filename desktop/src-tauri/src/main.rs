@@ -14,6 +14,7 @@ mod core_host_protocol;
 mod core_host_router;
 mod core_host_runtime;
 mod core_supervisor;
+mod download_sources;
 mod dynamic_hit_test;
 mod history_window;
 mod host_interaction;
@@ -28,9 +29,8 @@ mod macos_surface_viewport;
 #[cfg(windows)]
 mod managed_process_tree;
 mod platform;
-mod plugin_settings;
-mod download_sources;
 mod plugin_marketplace;
+mod plugin_settings;
 mod product_shell;
 mod runtime_log;
 mod runtime_log_window;
@@ -7675,11 +7675,15 @@ fn main() {
             ui_config_repository.clone(),
             character_resource_root.join("config/system_config.yaml"),
         ))
-        .manage(download_sources::DownloadSources(ui_config_repository.clone()))
+        .manage(download_sources::DownloadSources(
+            ui_config_repository.clone(),
+        ))
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
         ))
-        .manage(plugin_marketplace::MarketplaceState::new(character_resource_root.clone()))
+        .manage(plugin_marketplace::MarketplaceState::new(
+            character_resource_root.clone(),
+        ))
         .manage(update_coordinator)
         .manage(audio::AudioState::new(character_resource_root.clone()))
         .manage(asr::AsrState::default())
@@ -8166,13 +8170,23 @@ mod tests {
     fn new_user_plugin_defaults_are_written_once_and_preserve_later_choices() {
         let root = std::env::temp_dir().join(format!("sakura-new-user-{}", uuid::Uuid::new_v4()));
         ensure_user_layout(&root).unwrap();
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(root.join("config/plugin-migrations.json")).unwrap()).unwrap(), serde_json::from_str::<serde_json::Value>(include_str!("new_user_plugin_migrations.json")).unwrap());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(root.join("config/plugin-migrations.json")).unwrap()
+            )
+            .unwrap(),
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "new_user_plugin_migrations.json"
+            ))
+            .unwrap()
+        );
         let path = root.join("config/plugins.yaml");
         let defaults: serde_yaml::Value =
             serde_yaml::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(defaults, serde_yaml::from_str::<serde_yaml::Value>(
-            "[]\n"
-        ).unwrap());
+        assert_eq!(
+            defaults,
+            serde_yaml::from_str::<serde_yaml::Value>("[]\n").unwrap()
+        );
         let saved = "# 用户选择\n- id: sakura.tts.genie\n  enabled: true\n- id: sakura_mobile\n  enabled: false\n";
         std::fs::write(&path, saved).unwrap();
         ensure_user_layout(&root).unwrap();

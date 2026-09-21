@@ -67,6 +67,27 @@ def test_new_user_does_not_install_migration_payload(tmp_path, desktop_seeded):
     assert not PluginInventory(roots).scan().records
 
 
+def test_new_application_classifies_user_before_model_configuration_is_written(tmp_path, monkeypatch):
+    from app.core_host.plugin_application import PluginApplicationHost
+    from app.plugin_sdk.sakura_tools import ToolRegistry
+    from app.plugins import bundled_migrations
+
+    roots = roots_for(tmp_path, old=False)
+
+    def unexpected_restore(*args, **kwargs):
+        pytest.fail("A new user must not restore retired plugins")
+
+    monkeypatch.setattr(bundled_migrations, "ensure_external_plugin", unexpected_restore)
+    application = PluginApplicationHost(roots, "new-user", ToolRegistry())
+    try:
+        assert (roots.user_root / "config/model_slots.json").is_file()
+        state = json.loads((roots.user_root / "config/plugin-migrations.json").read_text())
+        assert state == {"sakura_mobile": "not_applicable"}
+        assert not application.inventory().records
+    finally:
+        application.close()
+
+
 def test_existing_external_by_id_is_not_overwritten_and_others_do_not_skip_migration(tmp_path):
     roots = roots_for(tmp_path)
     other = roots.user_root / "plugins/user/other"
