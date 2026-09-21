@@ -1185,16 +1185,62 @@ pub fn open_sponsor() -> Result<(), String> {
 
 pub(crate) fn open_https_url(url: &str, error_code: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("explorer.exe");
-    #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = std::process::Command::new("xdg-open");
-    command
-        .arg(url)
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| error_code.to_string())
+    {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+        open_windows_https_url(url, error_code, |target| {
+            // Let the HTTPS association select the browser. Explorer treats its
+            // argument as a shell location and may open a folder instead.
+            unsafe {
+                ShellExecuteW(
+                    None,
+                    w!("open"),
+                    PCWSTR(target.as_ptr()),
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    SW_SHOWNORMAL,
+                )
+                .0 as isize
+            }
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let mut command = std::process::Command::new("open");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let mut command = std::process::Command::new("xdg-open");
+        command
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| error_code.to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_https_url(
+    url: &str,
+    error_code: &str,
+    launch: impl FnOnce(&[u16]) -> isize,
+) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| error_code.to_string())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || url.chars().any(char::is_control)
+    {
+        return Err(error_code.to_string());
+    }
+    let target: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    // ShellExecute returns a value greater than 32 on success, not a process handle.
+    if launch(&target) > 32 {
+        Ok(())
+    } else {
+        Err(error_code.to_string())
+    }
 }
 
 fn current_executable_directory() -> Result<std::path::PathBuf, String> {
@@ -1360,6 +1406,49 @@ pub(crate) fn settings_update_open_portable_download(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn browser_launch_preserves_issue_query_and_reports_shell_failures() {
+        let url = "https://github.com/Rvosy/Sakura-Registry/issues/new?template=submit-plugin.yml&title=插件%20测试#details";
+        for status in [0, 2, 5, 31, 32, 33, 42] {
+            let result = super::open_windows_https_url(url, "OPEN_FAILED", |target| {
+                assert_eq!(target.last(), Some(&0));
+                assert_eq!(
+                    String::from_utf16(&target[..target.len() - 1]).unwrap(),
+                    url
+                );
+                status
+            });
+            assert_eq!(
+                result,
+                if status > 32 {
+                    Ok(())
+                } else {
+                    Err("OPEN_FAILED".into())
+                }
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn browser_launch_rejects_non_web_targets_before_calling_windows() {
+        for url in [
+            "file:///C:/Windows",
+            "C:\\Windows",
+            "https://example.com/\0ignored",
+            "https://user:password@example.com",
+            "javascript:alert(1)",
+        ] {
+            assert!(
+                super::open_windows_https_url(url, "OPEN_FAILED", |_| panic!(
+                    "invalid URL reached Windows"
+                ))
+                .is_err()
+            );
+        }
+    }
+
     use super::*;
     use std::{
         fs,

@@ -71,6 +71,7 @@ class PluginSettingsBoundary:
         roots: RuntimeRoots | Path,
         *,
         application_provider: Callable[[], object | None] | None = None,
+        initialization_failed: Callable[[], bool] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
@@ -78,6 +79,7 @@ class PluginSettingsBoundary:
         self._user_root = self._roots.user_root
         self._config_path = StoragePaths(self._user_root).plugins_config()
         self._application_provider = application_provider
+        self._initialization_failed = initialization_failed or (lambda: False)
         self._save_lock = threading.Lock()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -161,6 +163,12 @@ class PluginSettingsBoundary:
             plugins = [_project_plugin({}, record=record) for record in inventory.records[:64]]
             state = "starting"
             reason = "PLUGIN_APPLICATION_NOT_READY"
+            if self._initialization_failed():
+                state = "failed"
+                reason = "PLUGIN_APPLICATION_FAILED"
+                for plugin in plugins:
+                    if plugin["state"] == "starting":
+                        plugin.update(state="failed", reasonCode=reason)
         else:
             try:
                 state = getattr(application, "state", "degraded")

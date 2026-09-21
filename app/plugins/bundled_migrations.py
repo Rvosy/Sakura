@@ -38,10 +38,12 @@ def ensure_external_plugin(roots: RuntimeRoots, plugin_id: str, *, enabled: bool
         return
     directory = MIGRATIONS[plugin_id]
     source = roots.distribution_root / "plugins/builtin" / directory
-    if not source.is_dir() and (roots.distribution_root / "app/core_host").is_dir():
+    # In-place upgrades and git checkouts may leave only __pycache__ behind.
+    # A directory alone is not an installable plugin payload.
+    if not (source / "plugin.yaml").is_file() and (roots.distribution_root / "app/core_host").is_dir():
         source = roots.distribution_root / "plugins/optional" / directory
     installer = LocalPluginInstaller(roots)
-    if source.is_dir():
+    if (source / "plugin.yaml").is_file():
         dependencies = PluginDependencyRoots(roots.user_root, distribution_root=roots.distribution_root)
         try:
             dependencies.verified_root(plugin_id, source, source="bundled")

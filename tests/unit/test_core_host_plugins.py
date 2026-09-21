@@ -29,6 +29,11 @@ def _assistant_root(tmp_path: Path) -> Path:
     (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     shutil.copytree(FIXTURE_ROOT / "plugins", root / "plugins" / "builtin")
     (root / "plugins" / "builtin" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "config").mkdir()
+    shutil.copy2(
+        Path(__file__).parents[2] / "desktop/src-tauri/src/new_user_plugin_migrations.json",
+        root / "config/plugin-migrations.json",
+    )
     return root
 
 

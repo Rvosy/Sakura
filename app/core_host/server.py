@@ -1154,6 +1154,9 @@ class ControlDispatcher:
     def published_plugin_application(self) -> object | None:
         return self._readiness.published_plugin_application()
 
+    def plugin_initialization_failed(self) -> bool:
+        return self._readiness.readiness() == "failed"
+
     def bind_visual_selector(self, callback) -> None:
         self._readiness.bind_visual_selector(callback)
 
@@ -1564,6 +1567,7 @@ def run_host(
             application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
+            initialization_failed=getattr(dispatcher, "plugin_initialization_failed", lambda: False),
         )
         composer_tools = ComposerToolsBoundary(
             config.generation_id,

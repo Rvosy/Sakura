@@ -117,6 +117,33 @@ def test_missing_payload_does_not_silently_complete(tmp_path, monkeypatch):
     assert not (roots.user_root / "config/plugin-migrations.json").exists()
 
 
+@pytest.mark.parametrize("development", [False, True])
+def test_cache_only_old_directory_uses_complete_payload(tmp_path, monkeypatch, development):
+    from app.plugins import bundled_migrations
+    from tools.release.package_optional_plugin import build
+
+    roots = roots_for(tmp_path)
+    old = roots.distribution_root / "plugins/builtin/sakura_mobile"
+    shutil.rmtree(old)
+    (old / "__pycache__").mkdir(parents=True)
+    (old / "__pycache__/plugin.cpython-313.pyc").write_bytes(b"old cache")
+    downloaded = []
+
+    def download(plugin_id, output):
+        downloaded.append(plugin_id)
+        build(SOURCE, output)
+
+    monkeypatch.setattr(bundled_migrations, "download_migration_package", download)
+    if development:
+        (roots.distribution_root / "app/core_host").mkdir(parents=True)
+        shutil.copytree(SOURCE, roots.distribution_root / "plugins/optional/sakura_mobile")
+    migrate_bundled_plugins(roots)
+    records = PluginInventory(roots).scan().records
+    assert len(records) == 1
+    assert records[0].plugin_id == "sakura_mobile" and records[0].source == "user"
+    assert downloaded == ([] if development else ["sakura_mobile"])
+
+
 def test_all_retired_plugins_migrate_offline_before_core_inventory(tmp_path, monkeypatch):
     import sys
     from app.plugins import bundled_migrations

@@ -19,7 +19,7 @@ export function renderPluginReadme(markdown, base) {
     table(token) {
       const html = Renderer.prototype.table.call(this, token);
       const metadata = token.rows.some(row => /^(插件\s*ID|Plugin\s*ID|Plugin\s*API)$/i.test(row[0]?.text.trim()));
-      return metadata ? `<details class="detail-disclosure" data-disclosure="readme-metadata"><summary data-readme-metadata>项目资料（作者提供）</summary>${html}</details>` : html;
+      return metadata ? `<details class="detail-disclosure" data-disclosure="readme-metadata"><summary data-readme-metadata>项目资料</summary>${html}</details>` : html;
     },
     link({ href, tokens }) {
       const label = this.parser.parseInline(tokens), url = documentationUrl(href, base);

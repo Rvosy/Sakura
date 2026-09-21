@@ -6,6 +6,7 @@ import { documentationUrl, renderPluginReadme } from "./plugin-readme.js";
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const categories = ["全部", "工具", "语音", "记忆", "连接", "表现"];
+const submissionUrl = "https://github.com/Rvosy/Sakura-Registry/issues/new?template=submit-plugin.yml";
 
 // Source returns a display DTO. Compatibility and recommended version are resolved upstream.
 // No registry URL, sample catalog, or simulated task is used by the production default.
@@ -18,6 +19,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
   document.body.append(template.content);
   $("pluginInstallMenu").append($("market-sources"), $("refresh"));
   const filterPanel = $("market-filter-panel");
+  const submitDialog = $("market-submit-dialog");
   function closeFilters() {
     closeSelects(filterPanel);
     if (filterPanel.matches(":popover-open")) filterPanel.hidePopover();
@@ -137,8 +139,8 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     const next = recommended(p), task = tasks.get(p.id);
     const doc = documents.get(documentKey(p));
     const projectUrl = documentationUrl(p.repository);
-    const links = source?.openUrl ? `${projectUrl ? `<a href="${escape(projectUrl)}" data-document-link>项目主页${icon("external-link")}</a>` : ""}${doc?.url ? `<a href="${escape(doc.url)}" data-document-link>查看原文${icon("external-link")}</a>` : ""}` : "";
-    const readme = doc?.state === "ready" ? `<section class="detail-readme" aria-label="项目说明"><div class="detail-readme-heading"><h3>项目说明</h3><span>${doc.previous ? `来自 v${escape(doc.version)} README` : "来自项目 README"}</span></div><div class="plugin-readme">${doc.html}</div>${doc.refreshFailed ? '<div class="detail-document-state">新版说明未能加载<button class="plain" data-retry-document>重试</button></div>' : ""}</section>`
+    const links = source?.openUrl ? `${projectUrl ? `<a href="${escape(projectUrl)}" data-document-link>${icon("globe")}项目主页</a>` : ""}${doc?.url ? `<a href="${escape(doc.url)}" data-document-link>${icon("file-text")}查看原文</a>` : ""}` : "";
+    const readme = doc?.state === "ready" ? `<section class="detail-readme" aria-label="项目说明"><div class="detail-readme-heading"><h3>项目说明</h3>${doc.previous ? `<span>v${escape(doc.version)}</span>` : ""}</div><div class="plugin-readme">${doc.html}</div>${doc.refreshFailed ? '<div class="detail-document-state">新版说明未能加载<button class="plain" data-retry-document>重试</button></div>' : ""}</section>`
       : doc?.state === "loading" ? '<p class="detail-document-state" role="status">正在加载项目说明…</p>'
       : doc?.state === "failed" ? '<div class="detail-document-state" role="status">项目说明未能加载<button class="plain" data-retry-document>重试</button></div>' : "";
     const description = p.description?.trim() || "";
@@ -326,6 +328,20 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     if (button.hasAttribute("data-reconnect")) void loader.load();
   }
   listen(page, "click", handleClick); listen($("detail-dialog"), "click", handleClick);
+  listen($("market-submit"), "click", () => {
+    closeFilters(); closeSelects(); submitDialog.showModal();
+  });
+  $("market-submit-issue").disabled = !source?.openUrl;
+  listen($("market-submit-issue"), "click", () => {
+    void Promise.resolve().then(() => source.openUrl(submissionUrl)).catch(() => notify("无法打开网页", "error"));
+  });
+  listen(submitDialog, "click", event => {
+    if (event.target.closest("[data-close-submit]")) submitDialog.close();
+    else if (event.target === submitDialog) {
+      const rect = submitDialog.getBoundingClientRect();
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) submitDialog.close();
+    }
+  });
   listen($("detail-dialog"), "click", event => {
     if (event.target === $("detail-dialog")) {
       const rect = event.target.getBoundingClientRect();
@@ -361,13 +377,14 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     setView,
     refresh: () => loader.load(),
     sync() { if (!disposed) { render(); refreshDetail(); } },
-    onPageChanged(pageName) { if (pageName !== "plugins") { closeFilters(); closeSelects($("market-surface")); $("detail-dialog").close(); } },
+    onPageChanged(pageName) { if (pageName !== "plugins") { closeFilters(); closeSelects($("market-surface")); $("detail-dialog").close(); submitDialog.close(); } },
     dispose() {
       disposed = true; loader.dispose();
       for (const task of tasks.values()) task.abort.abort();
       for (const entry of documents.values()) entry.abort.abort();
       listeners.forEach(remove => remove()); closeFilters(); closeSelects($("market-surface"));
       filterPanel.remove(); $("market-sources").remove(); $("refresh").remove();
+      submitDialog.close(); submitDialog.remove();
       $("detail-dialog").close(); $("detail-dialog").remove(); $("market-surface").remove(); tabs.remove();
     },
   };

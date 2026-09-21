@@ -85,6 +85,9 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
   if (reasonCode === "PLUGIN_APPLICATION_NOT_READY") {
     return result("正在启动", "插件正在启动，请稍等。");
   }
+  if (reasonCode === "PLUGIN_APPLICATION_FAILED") {
+    return result("启动失败", "请查看运行日志中的启动错误，处理后重新启动 Sakura。", reasonCode);
+  }
   if (reasonCode === "API_VERSION_UNSUPPORTED") {
     return result(
       "版本不兼容",

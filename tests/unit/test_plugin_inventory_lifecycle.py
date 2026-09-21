@@ -10,6 +10,13 @@ from app.storage.runtime_roots import RuntimeRoots
 
 
 def _write_plugin(root: Path, plugin_id: str) -> None:
+    import shutil
+    config = root / "config"
+    config.mkdir(exist_ok=True, parents=True)
+    shutil.copy2(
+        Path(__file__).parents[2] / "desktop/src-tauri/src/new_user_plugin_migrations.json",
+        config / "plugin-migrations.json",
+    )
     directory = root / "plugins" / "user" / plugin_id
     directory.mkdir(parents=True)
     (directory / "plugin.yaml").write_text(
@@ -17,6 +24,27 @@ def _write_plugin(root: Path, plugin_id: str) -> None:
         encoding="utf-8",
     )
     (directory / "plugin.py").write_text("class Plugin: pass\n", encoding="utf-8")
+
+
+def test_unpublished_plugins_stop_starting_when_initialization_fails(tmp_path):
+    from app.plugins.inventory import PluginDesiredStateStore
+
+    _write_plugin(tmp_path, "fixture.enabled")
+    _write_plugin(tmp_path, "fixture.disabled")
+    PluginDesiredStateStore(tmp_path).write({"fixture.enabled": True, "fixture.disabled": False})
+    failed = False
+    settings = PluginSettingsBoundary(
+        "failed-generation", "credential", RuntimeRoots(tmp_path, tmp_path),
+        initialization_failed=lambda: failed,
+    )
+    assert settings.snapshot()["state"] == "starting"
+    failed = True
+    snapshot = settings.snapshot()
+    assert snapshot["state"] == "failed"
+    plugins = {p["pluginId"]: p for p in snapshot["plugins"]}
+    assert plugins["fixture.enabled"]["state"] == "failed"
+    assert plugins["fixture.enabled"]["reasonCode"] == "PLUGIN_APPLICATION_FAILED"
+    assert plugins["fixture.disabled"]["state"] == "disabled"
 
 
 def test_visual_and_public_queries_share_inventory_until_an_explicit_refresh(tmp_path, monkeypatch):
