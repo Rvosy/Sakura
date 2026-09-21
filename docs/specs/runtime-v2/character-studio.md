@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-14
+updated: 2026-09-18
 ---
 
 # Runtime v2 角色工坊
@@ -24,6 +24,10 @@ GPT-SoVITS 模型、参考语音试听、发布、放弃草稿和 `.char` 导出
 窗口、文件选择、受控请求、临时试听资源、取色覆盖层和发布后的 Core 重建。不得恢复旧 Qt Studio、
 `sakura-studio` 子进程或 JSONL stdout marker 协议。这个宿主决定见
 [ADR-0044](../../adr/0044-character-studio-same-app-window.md)。
+
+`CharacterStudioService` 负责读取工作区文档、合并角色清单、适配旧立绘草稿并准备导出文件。Core 边界只通过
+这些公开操作获取数据，不读取草稿状态文件的内部字段；运行时应用负责验证插件资源和应用已发布角色。
+导出前物化的编辑只写入草稿，不能隐式发布已安装角色。
 
 ## 窗口与设置
 
@@ -206,10 +210,9 @@ PNG 导入和标签文件解释由内置立绘插件提供。私有草稿以 `vi
 图片与模型文件在打开形态时一次授权资源根，随后由原生协议直接读取，不经 Core 逐文件请求或草稿写锁。
 重复点击当前形态保留编辑器；临时插件状态查询失败不能销毁编辑区。
 
-`.char` 角色包和 `.voice` 独立语音包导入允许单个文件最大 8 GiB、解压后总量最大 32 GiB，
-大小按 ZIP 中的未压缩字节数计算，上限值本身允许导入。仍限制 ZIP 成员不超过 4096 个，
-大于 1 MiB 的文件压缩比不超过 200，并检查目标磁盘空间、路径穿越和符号链接。
-这些大小限制仅适用于角色与语音归档，不改变其他归档的默认限制。
+`.char` 角色包和 `.voice` 独立语音包导入不设文件数量、压缩比和业务文件大小上限。
+按 ZIP 未压缩大小检查目标磁盘空间并预留 512 MiB；保留路径越界、符号链接保护以及失败清理。
+配置清单和扩展字段不另设容量上限，旧包无需重新打包或安装。
 
 `.char` 导出以原角色 manifest 为基线，只改写已知字段和资源路径。完整包必须携带 legacy `voice` 以及内建
 GPT-SoVITS、Genie extension 引用的模型、参考表和参考音频；导入后继续保留 `renderer`、`backchannel`、

@@ -1,8 +1,10 @@
+import { createSettingsUI, sectionDestination } from "./settings-ui.js";
+import { createSettingsForm } from "./settings-form.js";
+import { createConnectionEditor } from "./connection-editor.js";
 import { createIcon } from "../core/icons.js";
 import { animatedBrainMarkup } from "../core/animated-icons.js";
 import { createPluginController } from "./plugin-runtime.js";
 import * as pluginPresentation from "./plugin-presentation.js";
-import { countCharacterScopedCollectionDrafts } from "./character-switch-runtime.js";
 
 export function createPluginSettingsFeature({
   document,
@@ -21,8 +23,11 @@ export function createPluginSettingsFeature({
   getAsrController = () => null,
   removeOverlayAfterExit,
   showPage,
-  isMemoryTransitioning,
+  isCharacterTransitioning,
   hasPendingCharacterSelection,
+  onModelCatalogChanged = () => {},
+  onNavigatePlugin = () => {},
+  onCatalogChanged = () => {},
 }) {
   const fields = {
     pluginSearch: document.getElementById("pluginSearch"),
@@ -40,16 +45,22 @@ export function createPluginSettingsFeature({
     aboutComponentsState: document.getElementById("aboutComponentsState"),
     aboutComponentsList: document.getElementById("aboutComponentsList"),
     memorySurface: document.getElementById("memorySurface"),
+    screenAwarenessSurface: document.getElementById("screenAwarenessSurface"),
+    modelProviderSurface: document.getElementById("modelProviderSurface"),
+    modelSettingsSurface: document.getElementById("modelSettingsSurface"),
     pages: {
       memory: document.getElementById("page-memory"),
       plugins: document.getElementById("page-plugins"),
       about: document.getElementById("page-about"),
+      providers: document.getElementById("page-providers"),
+      model: document.getElementById("page-model"),
     },
   };
 
   const pluginState = {
     selectedId: "",
     role: "all",
+    infrastructureCollapsed: true,
     enabledById: {},
     initialEnabledById: {},
     settingsValues: {},
@@ -58,10 +69,102 @@ export function createPluginSettingsFeature({
     managementBusy: false,
   };
   let pluginSettingsDialog = null;
+  let uiEpoch = 0;
+  const probeCancels = new Set();
+  const pendingApplication = new Set();
+  const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
+
+  function createContributedSection(plugin, section) {
+    const read = key => pluginSectionValues(plugin.id, section.section_id)[key];
+    const write = (key, value) => { pluginSectionValues(plugin.id, section.section_id)[key] = value; refreshDirty(); };
+    const presentation = section.presentation || { component: "form" };
+    if (section.reason_code && !["READY", "CONFIG_RELOAD_REQUIRED", "CONFIG_APPLY_FAILED"].includes(section.reason_code)) {
+      const element = pluginNode("p", "error", section.reason_code === "SETTINGS_LOAD_FAILED" ? "设置加载失败。" : section.reason_code);
+      return { element, dispose: () => element.remove() };
+    }
+    if (presentation.component === "connection-editor") {
+      let request = null;
+      let cancelled = false;
+      const cancel = async () => {
+        cancelled = true;
+        if (!request) return;
+        try { await runtimePluginController.action({ pluginId: plugin.plugin_id, sectionId: section.section_id,
+          actionId: presentation.cancelAction, values: { [presentation.requestField]: request } }); } catch { /* scope cleanup is the final owner */ }
+      };
+      probeCancels.add(cancel);
+      const editor = createConnectionEditor({ document, window,
+        read: () => read(presentation.valueField), write: value => write(presentation.valueField, value),
+        onError: setError, notify, onCatalogChanged: onModelCatalogChanged, cancel,
+        async probe(operation, values) {
+          if (request) throw new Error("MODEL_PROBE_BUSY");
+          cancelled = false; const epoch = uiEpoch;
+          const snapshot = runtimePluginController.snapshot();
+          const generation = snapshot?.coreGenerationId;
+          const timeout = pluginSectionValues(plugin.id, presentation.timeoutSection)?.[presentation.timeoutField];
+          const currentRequest = { ...values, ...(timeout != null ? { timeout_seconds: timeout } : {}), operation, requestId: window.crypto.randomUUID() };
+          request = currentRequest;
+          const action = actionId => runtimePluginController.action({ pluginId: plugin.plugin_id, sectionId: section.section_id,
+            actionId, values: { [presentation.requestField]: currentRequest } });
+          try {
+            let result = await action(presentation.probeAction);
+            while (true) {
+              if (cancelled || epoch !== uiEpoch || generation !== runtimePluginController.snapshot()?.coreGenerationId) throw new Error("MODEL_PROBE_CANCELLED");
+              const value = result.values?.[presentation.resultField];
+              if (value?.requestId === currentRequest.requestId && value.state === "completed") return { models: (value.models || []).map(m => m.modelId) };
+              if (value?.requestId === currentRequest.requestId && value.state === "failed") {
+                throw new Error([value.code || "MODEL_PROBE_FAILED", value.message].filter(Boolean).join("|"));
+              }
+              await new Promise(resolve => window.setTimeout(resolve, 200));
+              result = await action(presentation.statusAction);
+            }
+          } finally { if (request === currentRequest) { await cancel(); request = null; } }
+        },
+      });
+      const dispose = editor.dispose;
+      editor.dispose = () => { probeCancels.delete(cancel); dispose(); };
+      return editor;
+    }
+    const component = createSettingsForm({ document, plugin, section, read, write, enhanceSelect, refreshSelect,
+      renderDisplay: field => pluginSettingControl(plugin, section, field),
+      renderAction(action) {
+        const button = pluginNode("button", action.danger ? "danger-button" : "secondary-button", action.label);
+        button.type = "button"; button.disabled = pluginState.managementBusy || Boolean(pluginState.actionBusyKey); button.addEventListener("click", () => runPluginSettingsAction(plugin, section, action)); return button;
+      }, renderCollection: collection => renderPluginCollection(plugin, section, collection),
+    });
+    return component;
+  }
+
   const pluginCollectionState = new Map();
 
+  function collectionHasDraft(state) {
+    return Boolean(state?.editor && !plainEqual(state.editor.values, state.editor.initialValues));
+  }
+
+  function collectionDraftCount(scope = null) {
+    let count = 0;
+    for (const state of pluginCollectionState.values()) {
+      if ((!scope || state.scope === scope) && collectionHasDraft(state)) count += 1;
+    }
+    return count;
+  }
+
   function hasCollectionDrafts() {
-    return Array.from(pluginCollectionState.values()).some((state) => Boolean(state.editor));
+    return collectionDraftCount() > 0;
+  }
+
+  function affectedPluginsHaveCollectionDrafts(plugin) {
+    const affected = [plugin, ...pluginPresentation.enabledPluginDependents(
+      plugin, pluginView.items, pluginState.initialEnabledById,
+    )];
+    return affected.some((item) => pluginSettingsSections(item).some((section) =>
+      (section.collections || []).some((collection) => collectionHasDraft(
+        pluginCollectionState.get(pluginCollectionKey(item, section, collection)),
+      ))));
+  }
+
+  function collectionInteractionBlocked(collection) {
+    return isCharacterTransitioning()
+      || (collection.scope === "character" && hasPendingCharacterSelection());
   }
   let pluginActivityRefreshTimer = null;
   let pluginActivityRefreshInFlight = false;
@@ -326,8 +429,8 @@ export function createPluginSettingsFeature({
   }
 
   function pluginInstallMenuItems() {
-    return [fields.pluginInstallZipButton, fields.pluginInstallFolderButton]
-      .filter((item) => item && !item.disabled);
+    return [...fields.pluginInstallMenu.querySelectorAll('[role="menuitem"]')]
+      .filter((item) => !item.disabled && !item.hidden && item.getClientRects().length);
   }
 
   function setPluginInstallMenuOpen(open, { focusItem = false, restoreFocus = false } = {}) {
@@ -442,6 +545,7 @@ export function createPluginSettingsFeature({
       tab.setAttribute('aria-controls', 'pluginList'); tab.tabIndex = pluginState.role === key ? 0 : -1;
       tab.addEventListener('click', () => {
         pluginState.role = key;
+        if (key === 'infrastructure') pluginState.infrastructureCollapsed = false;
         pluginState.selectedId = '';
         renderPluginPage();
         fields.pluginList.scrollTop = 0;
@@ -456,7 +560,9 @@ export function createPluginSettingsFeature({
       });
       fields.pluginRoleTabs.append(tab);
     });
-    if (!plugins.some((plugin) => plugin.id === pluginState.selectedId)) pluginState.selectedId = plugins[0]?.id || '';
+    const visiblePlugins = plugins.filter(plugin => !pluginState.infrastructureCollapsed
+      || pluginPresentation.pluginMetadata(plugin).kind !== 'infrastructure');
+    if (!visiblePlugins.some((plugin) => plugin.id === pluginState.selectedId)) pluginState.selectedId = visiblePlugins[0]?.id || '';
     for (const [kind, label] of Object.entries(pluginPresentation.pluginKinds)) {
       const entries = plugins.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === kind);
       if (!entries.length) continue;
@@ -467,10 +573,28 @@ export function createPluginSettingsFeature({
       const badge = pluginNode('span', 'plugin-group-label');
       badge.append(createIcon(document, { extension: 'puzzle', provider: 'audio-lines', infrastructure: 'layers' }[kind]),
         pluginNode('span', '', label), pluginNode('span', 'plugin-group-count', entries.length));
-      header.append(badge);
+      if (kind === 'infrastructure') {
+        const toggle = pluginNode('button', 'plugin-group-toggle');
+        toggle.type = 'button';
+        toggle.setAttribute('aria-expanded', String(!pluginState.infrastructureCollapsed));
+        toggle.setAttribute('aria-controls', 'plugin-infrastructure-items');
+        toggle.append(createIcon(document, pluginState.infrastructureCollapsed ? 'chevron-right' : 'chevron-down'), badge);
+        toggle.addEventListener('click', () => {
+          pluginState.infrastructureCollapsed = !pluginState.infrastructureCollapsed;
+          renderPluginPage();
+          fields.pluginList.querySelector('.plugin-group-toggle')?.focus();
+        });
+        header.append(toggle);
+      } else header.append(badge);
       const problems = pluginPresentation.filterPluginCatalog(entries, { status: 'problem' }).length;
       if (kind === 'infrastructure' && problems) header.append(pluginNode('span', 'plugin-system-problems', ` · ${problems} 个需要处理`));
       group.append(header);
+      const cards = kind === 'infrastructure' ? pluginNode('div', 'plugin-group-items') : group;
+      if (kind === 'infrastructure') {
+        cards.id = 'plugin-infrastructure-items';
+        cards.hidden = pluginState.infrastructureCollapsed;
+        group.append(cards);
+      }
       for (const plugin of entries) {
         const metadata = pluginPresentation.pluginMetadata(plugin);
         const activity = pluginLiveStatus(plugin);
@@ -494,7 +618,7 @@ export function createPluginSettingsFeature({
           card.append(pluginIcon(plugin), main);
           card.addEventListener('click', () => selectManagedPlugin(plugin.id));
         }
-        group.append(card);
+        cards.append(card);
       }
       fields.pluginList.append(group);
     }
@@ -725,11 +849,7 @@ export function createPluginSettingsFeature({
     if (field.maximum !== undefined) {
       input.max = String(field.maximum);
     }
-    if (field.step !== undefined) {
-      input.step = String(field.step);
-    } else if (field.type === "integer") {
-      input.step = "1";
-    }
+    if (["number", "integer"].includes(field.type)) input.step = String(field.step ?? (field.type === "integer" ? 1 : "any"));
     input.value = String(value ?? "");
     input.addEventListener("input", () => {
       if (field.type === "integer") {
@@ -751,7 +871,7 @@ export function createPluginSettingsFeature({
     const key = pluginCollectionKey(plugin, section, collection);
     if (!pluginCollectionState.has(key)) {
       pluginCollectionState.set(key, {
-        surface: section.surface,
+        scope: collection.scope,
         items: [], nextCursor: null, total: null, search: "", filters: {},
         loading: false, loaded: false, error: "", editor: null, editorError: "",
         selectedItemId: "", searchTimer: null, queryRevision: 0, queryPending: false,
@@ -768,11 +888,13 @@ export function createPluginSettingsFeature({
     { append = false, render = true } = {},
   ) {
     if (!pluginView?.items.includes(plugin)) return;
-    if (section.surface === "memory" && (
-      isMemoryTransitioning() || hasPendingCharacterSelection()
-    )) return;
-    if (section.surface === "memory" && memoryActivityBlocksCollection(projectPluginActivity(plugin))) return;
     const state = pluginCollectionRuntimeState(plugin, section, collection);
+    if (collectionInteractionBlocked(collection)) {
+      state.loaded = false;
+      state.error = "";
+      return;
+    }
+    if (section.surface === "memory" && memoryActivityBlocksCollection(projectPluginActivity(plugin))) return;
     if (!runtimePluginController) return;
     if (state.loading) {
       state.queryPending = true;
@@ -801,7 +923,7 @@ export function createPluginSettingsFeature({
         filters: queryFilters,
       });
       if (pluginCollectionState.get(collectionKey) !== state) return;
-      if (section.surface === "memory" && (isMemoryTransitioning())) return;
+      if (collectionInteractionBlocked(collection)) return;
       if (queryRevision !== state.queryRevision) {
         state.queryPending = true;
         return;
@@ -812,12 +934,14 @@ export function createPluginSettingsFeature({
       state.loaded = true;
     } catch (error) {
       if (pluginCollectionState.get(collectionKey) !== state) return;
+      if (collectionInteractionBlocked(collection)) return;
       if (queryRevision === state.queryRevision) state.error = String(error);
       else state.queryPending = true;
     } finally {
       if (pluginCollectionState.get(collectionKey) !== state) return;
       state.loading = false;
-      if (section.surface === "memory" && (isMemoryTransitioning())) {
+      if (collectionInteractionBlocked(collection)) {
+        state.loaded = false;
         state.queryPending = false;
         state.queryPendingRender = false;
         return;
@@ -895,9 +1019,10 @@ export function createPluginSettingsFeature({
     input.disabled = Boolean(field.readonly);
     if (typeof field.minimum === "number") input.min = String(field.minimum);
     if (typeof field.maximum === "number") input.max = String(field.maximum);
-    if (typeof field.step === "number") input.step = String(field.step);
+    if (["number", "integer"].includes(field.type)) input.step = String(field.step ?? (field.type === "integer" ? 1 : "any"));
     input.addEventListener("input", () => {
-      if (field.type === "integer") onChange(Number.parseInt(input.value, 10));
+      if (["integer", "number"].includes(field.type) && input.value === "") onChange(null);
+      else if (field.type === "integer") onChange(Number.parseInt(input.value, 10));
       else if (field.type === "number") onChange(Number.parseFloat(input.value));
       else onChange(input.value);
     });
@@ -911,7 +1036,7 @@ export function createPluginSettingsFeature({
     const isCurrent = () => pluginCollectionState.get(collectionKey) === state;
     const memorySurface = section.surface === "memory";
     if (!runtimePluginController || state.loading || !state.editor) return;
-    if (memorySurface && (isMemoryTransitioning() || hasPendingCharacterSelection())) return;
+    if (collectionInteractionBlocked(collection)) return;
     const editor = state.editor;
     if (operation !== "delete") {
       const invalid = (collection.fields || []).find((field) => {
@@ -929,12 +1054,12 @@ export function createPluginSettingsFeature({
     }
     if (operation === "delete") {
       const confirmed = await confirmAction(collection.delete_confirmation, {
-        title: "删除记忆",
+        title: memorySurface ? "删除记忆" : "删除记录",
         confirmText: "删除",
         cancelText: "保留",
         danger: true,
       });
-      if (!confirmed || !isCurrent() || state.editor !== editor) return;
+      if (!confirmed || !isCurrent() || state.editor !== editor || collectionInteractionBlocked(collection)) return;
     }
     const editorItemId = state.editor.itemId;
     state.loading = true;
@@ -988,6 +1113,7 @@ export function createPluginSettingsFeature({
       } else {
         state.loaded = false;
         await queryPluginCollection(plugin, section, collection);
+        if (result.applicationState === "restart_required") notify("已保存，应用后生效。", "info");
         completed = true;
       }
     } catch (error) {
@@ -1011,6 +1137,8 @@ export function createPluginSettingsFeature({
     const state = pluginCollectionRuntimeState(plugin, section, collection);
     const block = document.createElement("div");
     block.className = "plugin-collection";
+    block.inert = collectionInteractionBlocked(collection);
+    block.setAttribute("aria-disabled", String(block.inert));
     block.dataset.pluginCollection = collection.collection_id;
     const header = document.createElement("div");
     header.className = "plugin-collection-head";
@@ -1025,10 +1153,9 @@ export function createPluginSettingsFeature({
       add.addEventListener("click", () => {
         state.editor = {
           itemId: null,
-          values: Object.fromEntries((collection.fields || [])
-            .filter(pluginFieldEditable)
-            .map((field) => [field.key, field.default])),
+          values: collectionEditorValues(collection),
         };
+        state.editor.initialValues = clonePlain(state.editor.values);
         refreshDirty();
         renderPluginPage();
         renderMemorySurface();
@@ -1119,10 +1246,9 @@ export function createPluginSettingsFeature({
           row.addEventListener("click", () => {
             state.editor = {
               itemId: item.itemId,
-              values: Object.fromEntries((collection.fields || [])
-                .filter(pluginFieldEditable)
-                .map((field) => [field.key, item.values[field.key] ?? field.default])),
+              values: collectionEditorValues(collection, item),
             };
+            state.editor.initialValues = clonePlain(state.editor.values);
             refreshDirty();
             renderPluginPage();
             renderMemorySurface();
@@ -1156,7 +1282,7 @@ export function createPluginSettingsFeature({
         const control = pluginCollectionFieldControl(
           field,
           state.editor.values[field.key] ?? field.default,
-          (value) => { state.editor.values[field.key] = value; },
+          (value) => { state.editor.values[field.key] = value; refreshDirty(); },
         );
         row.append(label, control);
         editor.append(row);
@@ -1200,16 +1326,23 @@ export function createPluginSettingsFeature({
     return block;
   }
 
-  function renderPluginSettings(plugin) {
+  function renderPluginSettings(plugin, surface = null) {
     const allSections = pluginSettingsSections(plugin);
-    const knownSurfaces = new Set(["memory", "voice"]);
-    const sections = allSections.filter((section) => !knownSurfaces.has(section.surface));
+    const knownSurfaces = new Set(["memory", "voice", "model", "providers", "screen_awareness"]);
+    const sections = allSections.filter((section) => surface ? section.surface === surface : !sectionDestination(section) && !knownSurfaces.has(section.surface));
     const container = document.createElement("div");
     container.className = "plugin-settings";
+    container.components = [];
     if (!sections.length) {
       return container;
     }
     sections.forEach((section) => {
+      if (section.presentation) {
+        const component = createContributedSection(plugin, section); container.components.push(component);
+        const block = pluginNode(section.presentation.collapsible ? "details" : "fieldset", "settings-group");
+        block.append(pluginNode(section.presentation.collapsible ? "summary" : "legend", "", section.title), component.element);
+        container.append(block); return;
+      }
       const block = document.createElement("section");
       block.className = "plugin-settings-section";
       block.dataset.pluginSection = section.section_id;
@@ -1291,8 +1424,10 @@ export function createPluginSettingsFeature({
       }
       const syncAvailability = () => {
         for (const { field, input, row } of conditional) {
-          input.disabled = String(inputs.get(field.enabledWhen.field)?.value) !== field.enabledWhen.equals;
-          row.hidden = field.enabledWhen.hide === true && input.disabled;
+          const controller = inputs.get(field.enabledWhen.field);
+          const available = String(controller?.type === "checkbox" ? controller.checked : controller?.value) === field.enabledWhen.equals;
+          input.disabled = !available || Boolean(field.readonly);
+          row.hidden = field.enabledWhen.hide === true && !available;
           row.classList.toggle("is-disabled", input.disabled); refreshSelect(input);
         }
       };
@@ -1331,6 +1466,9 @@ export function createPluginSettingsFeature({
     return container;
   }
 
+  function renderModelSurfaces() { settingsUI.render(pluginView.items || []); }
+  function renderScreenAwarenessSurface() { settingsUI.render(pluginView.items || []); }
+
   function memorySurfaceIsTransitioning() {
     const snapshot = runtimePluginController?.snapshot();
     if (!snapshot) return false;
@@ -1354,7 +1492,9 @@ export function createPluginSettingsFeature({
   function pluginActivityPageVisible() {
     return fields.pages.memory.classList.contains("is-active")
       || fields.pages.plugins.classList.contains("is-active")
-      || fields.pages.about.classList.contains("is-active");
+      || fields.pages.about.classList.contains("is-active")
+      || fields.pages.providers?.classList.contains("is-active")
+      || fields.pages.model?.classList.contains("is-active");
   }
 
   function visiblePluginActivityIsTransient() {
@@ -1363,6 +1503,9 @@ export function createPluginSettingsFeature({
     if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning();
     if (fields.pages.plugins.classList.contains("is-active")) return selectedPluginHasTransientActivity();
     if (fields.pages.about.classList.contains("is-active")) return aboutComponentsRunning();
+    if (fields.pages.providers?.classList.contains("is-active") || fields.pages.model?.classList.contains("is-active")) {
+      return (pluginView.items || []).some(plugin => pluginPresentation.projectPluginActivity(plugin).isTransient);
+    }
     return false;
   }
 
@@ -1411,10 +1554,11 @@ export function createPluginSettingsFeature({
     }).format(date);
   }
 
-  function memoryEditorValues(collection, item = null) {
+  function collectionEditorValues(collection, item = null) {
     return Object.fromEntries((collection.fields || [])
       .filter(pluginFieldEditable)
-      .map((field) => [field.key, item?.values?.[field.key] ?? field.default ?? ""]));
+      .map((field) => [field.key, item?.values?.[field.key] ?? field.default
+        ?? (["integer", "number", "select"].includes(field.type) ? null : "")]));
   }
 
   function clearMemoryEditorPortal() {
@@ -1537,8 +1681,9 @@ export function createPluginSettingsFeature({
     const state = pluginCollectionRuntimeState(plugin, section, collection);
     state.editor = {
       itemId: item?.itemId || null,
-      values: memoryEditorValues(collection, item),
+      values: collectionEditorValues(collection, item),
     };
+    state.editor.initialValues = clonePlain(state.editor.values);
     state.editorError = "";
     state.selectedItemId = item?.itemId || "";
     refreshDirty();
@@ -1592,6 +1737,7 @@ export function createPluginSettingsFeature({
         control.addEventListener("change", () => {
           const option = (field.options || []).find((item) => String(item.value) === control.value);
           state.editor.values[field.key] = option ? option.value : control.value;
+          refreshDirty();
         });
         setTimer(() => enhanceSelect(control), 0);
       } else if (field.key === "content") {
@@ -1602,6 +1748,7 @@ export function createPluginSettingsFeature({
         control.placeholder = "例如：喜欢简洁的回答";
         control.addEventListener("input", () => {
           state.editor.values[field.key] = control.value;
+          refreshDirty();
           const counter = group.querySelector(".memory-character-count");
           if (counter) counter.textContent = `${control.value.length} / ${field.maxLength}`;
         });
@@ -1610,12 +1757,13 @@ export function createPluginSettingsFeature({
         control.type = ["integer", "number"].includes(field.type) ? "number" : "text";
         if (typeof field.minimum === "number") control.min = String(field.minimum);
         if (typeof field.maximum === "number") control.max = String(field.maximum);
-        if (typeof field.step === "number") control.step = String(field.step);
+        if (["number", "integer"].includes(field.type)) control.step = String(field.step ?? (field.type === "integer" ? 1 : "any"));
         if (Number.isSafeInteger(field.maxLength)) control.maxLength = field.maxLength;
         control.value = String(state.editor.values[field.key] ?? "");
         control.addEventListener("input", () => {
           state.editor.values[field.key] = ["integer", "number"].includes(field.type)
-            ? Number(control.value) : control.value;
+            ? (control.value === "" ? null : Number(control.value)) : control.value;
+          refreshDirty();
         });
       }
       group.append(label, control);
@@ -1797,6 +1945,8 @@ export function createPluginSettingsFeature({
     const motion = state.motion;
     const archive = document.createElement("section");
     archive.className = "memory-archive";
+    archive.inert = collectionInteractionBlocked(collection);
+    archive.setAttribute("aria-disabled", String(archive.inert));
     archive.classList.toggle("is-preparing", initializing);
 
     const head = document.createElement("header");
@@ -1978,7 +2128,7 @@ export function createPluginSettingsFeature({
     archive.append(head, toolbar, body);
     // 编辑器属于整个设置窗口，而不是记忆页。挂到 body 可避开页面切换动画建立的
     // containing block，确保 fixed 遮罩覆盖导航、内容和底栏。
-    if (!activityControlsDisabled && state.editor) {
+    if (!activityControlsDisabled && !archive.inert && state.editor) {
       mountMemoryEditorPortal(renderMemoryEditor(plugin, section, collection, state));
       syncMemoryEditorPortalState(state);
     }
@@ -1992,7 +2142,7 @@ export function createPluginSettingsFeature({
     if (!fields.memorySurface) return;
     clearMemoryEditorPortal();
     fields.memorySurface.textContent = "";
-    if (isMemoryTransitioning()) {
+    if (isCharacterTransitioning()) {
       const switching = document.createElement("div");
       switching.className = "memory-surface-state";
       switching.setAttribute("role", "status");
@@ -2120,13 +2270,23 @@ export function createPluginSettingsFeature({
     title.append(pluginNode('h2', '', plugin.name || plugin.id), pluginNode('p', 'plugin-detail-tags', `${pluginPresentation.pluginCategories[metadata.category]} · ${plugin.source === 'user' ? '用户安装' : '内置'}`));
     identity.append(pluginIcon(plugin), title);
     const aside = pluginNode('div', 'plugin-detail-aside');
-    if (pluginSettingsSections(plugin).some((section) => section.surface !== 'memory')
-        || getVoiceController()?.hasPluginSections(plugin.plugin_id)
-        || getAsrController()?.hasPluginControls(plugin.plugin_id)) {
+    if (pluginSettingsSections(plugin).some((section) => !sectionDestination(section))) {
       const configure = pluginNode('button', 'secondary-button plugin-configure', '插件设置');
       configure.prepend(createIcon(document, 'settings'));
       configure.type = 'button'; configure.setAttribute('aria-haspopup', 'dialog');
       configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); aside.append(configure);
+    }
+    const destinations = new Set(pluginSettingsSections(plugin).map(sectionDestination).filter(Boolean));
+    if (getVoiceController()?.hasPluginSections(plugin.plugin_id) || getAsrController()?.hasPluginControls(plugin.plugin_id)) destinations.add("host:voice");
+    const labels = { providers: "模型服务", model: "模型", voice: "语音", memory: "记忆", interaction: "交互" };
+    for (const destination of destinations) {
+      const target = destination.startsWith("host:") ? destination.slice(5) : destination;
+      const title = labels[target] || pluginView.items.flatMap(p => p.pages || []).find(p => p.pageId === destination)?.title;
+      const available = pluginSettingsSections(plugin).some(s => sectionDestination(s) === destination && s.placement?.available !== false)
+        || (destination === "host:voice" && (getVoiceController()?.hasPluginSections(plugin.plugin_id) || getAsrController()?.hasPluginControls(plugin.plugin_id)));
+      const link = pluginNode("button", "secondary-button plugin-settings-link", title && available ? `打开${title}设置` : "设置页面不可用");
+      link.type = "button"; link.disabled = !title || !available;
+      link.addEventListener("click", () => showPage(target)); aside.append(link);
     }
     heading.append(identity);
     if (aside.childElementCount) heading.append(aside);
@@ -2156,7 +2316,7 @@ export function createPluginSettingsFeature({
       const track = pluginNode('span', 'plugin-enable-switch__track'); track.setAttribute('aria-hidden', 'true'); switchLabel.append(toggle, track);
     }
     const toggle = switchLabel.querySelector('input'); toggle.checked = enabled;
-    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id || plugin.reason_code === 'PLUGIN_ID_CONFLICT' || !plugin.supported);
+    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id || plugin.reason_code === 'PLUGIN_ID_CONFLICT' || (!plugin.supported && !enabled));
     enableControls.append(switchLabel); enableRow.append(enableCopy, enableControls); fields.pluginDetail.append(enableRow);
     const providers = pluginPresentation.requiredPluginProviders(plugin, pluginView.items);
     if (providers.length) {
@@ -2188,14 +2348,20 @@ export function createPluginSettingsFeature({
   }
 
   function renderPluginPage() {
-    fields.pluginInstallMenuButton.disabled = pluginState.managementBusy || !runtimePluginController;
+    fields.pluginInstallMenuButton.disabled = false;
     fields.pluginInstallZipButton.disabled = pluginState.managementBusy || !runtimePluginController;
     fields.pluginInstallFolderButton.disabled = pluginState.managementBusy || !runtimePluginController;
-    if (fields.pluginInstallMenuButton.disabled) setPluginInstallMenuOpen(false);
     renderPluginList();
     renderPluginDetail();
+    renderModelSurfaces();
     syncPluginSettingsDialog();
     schedulePluginActivityRefresh();
+    onCatalogChanged();
+  }
+
+  function renderCollections() {
+    renderPluginPage();
+    renderMemorySurface();
   }
 
   async function installLocalPlugin(sourceKind) {
@@ -2208,7 +2374,7 @@ export function createPluginSettingsFeature({
       const result = await runtimePluginController.install(sourceKind);
       if (!result) return;
       installedId = result.installId;
-      notify("插件已安装。", "success");
+      notify("已安装", "success");
     } catch (error) {
       setError(String(error));
     } finally {
@@ -2220,17 +2386,25 @@ export function createPluginSettingsFeature({
 
   async function uninstallLocalPlugin(plugin) {
     if (!runtimePluginController || pluginState.managementBusy || !plugin?.can_uninstall) return;
+    if (affectedPluginsHaveCollectionDrafts(plugin)) {
+      setError("请先保存或还原受影响插件中正在编辑的集合记录，再卸载插件。");
+      return;
+    }
     const confirmed = await confirmAction(
-      `卸载“${plugin.name || plugin.id}”？插件设置和数据会保留。`,
+      `卸载“${plugin.name || plugin.id}”？`,
       { title: "卸载插件", confirmText: "卸载", cancelText: "取消", danger: true },
     );
     if (!confirmed) return;
+    if (affectedPluginsHaveCollectionDrafts(plugin)) {
+      setError("请先保存或还原受影响插件中正在编辑的集合记录，再卸载插件。");
+      return;
+    }
     pluginState.managementBusy = true;
     setError("");
     renderPluginPage();
     try {
       await runtimePluginController.uninstall(plugin.install_id);
-      notify("插件已卸载，设置和数据已保留。", "success");
+      notify("已卸载", "success");
     } catch (error) {
       setError(String(error));
     } finally {
@@ -2264,7 +2438,7 @@ export function createPluginSettingsFeature({
             section,
             pluginState.initialSettingsValues[plugin.id]?.[section.section_id] || {},
           );
-          if (!plainEqual(values, initial)) {
+          if (!plainEqual(values, initial) || pendingApplication.has(`${plugin.plugin_id}/${section.section_id}`)) {
             if (!plugin.plugin_id) return;
             settingsById[plugin.plugin_id] = settingsById[plugin.plugin_id] || {};
             settingsById[plugin.plugin_id][section.section_id] = values;
@@ -2275,16 +2449,61 @@ export function createPluginSettingsFeature({
     return { enabled_by_id: enabledById, settings_by_id: settingsById };
   }
 
+  function validateSettings() {
+    const draft = collectPluginSettings().settings_by_id;
+    for (const plugin of pluginView.items) for (const section of plugin.settings) {
+      const values = draft[plugin.plugin_id]?.[section.section_id];
+      if (!values) continue;
+      if (plugin.state !== "active" || (section.reason_code && !["READY", "CONFIG_RELOAD_REQUIRED", "CONFIG_APPLY_FAILED"].includes(section.reason_code))) {
+        throw new Error(`${plugin.name}设置暂不可用，修改已保留。`);
+      }
+      for (const field of section.fields) {
+        if (!pluginFieldEditable(field)) continue;
+        const value = values[field.key];
+        let invalid = field.required && (value == null || value === "");
+        if (value != null && ["integer", "number"].includes(field.type)) invalid ||= !Number.isFinite(value)
+          || (field.type === "integer" && !Number.isInteger(value))
+          || (field.minimum != null && value < field.minimum) || (field.maximum != null && value > field.maximum);
+        if (value != null && field.type === "select") invalid ||= !field.options.some(option => option.value === value);
+        if (invalid) throw new Error(`${section.title}：请检查${field.label}。`);
+      }
+      if (section.presentation?.component === "connection-editor") {
+        const identities = new Set();
+        for (const connection of values[section.presentation.valueField] || []) {
+          let url; try { url = new URL(connection.base_url); } catch { /* reported below */ }
+          if (!connection.alias?.trim() || !url || !["http:", "https:"].includes(url.protocol)
+              || url.username || url.password || url.search || url.hash || identities.has(connection.id)) {
+            throw new Error(`${section.title}：请检查连接名称和 API 地址。`);
+          }
+          identities.add(connection.id);
+        }
+      }
+    }
+  }
+
   function runtimePluginDraft() {
     const legacy = collectPluginSettings();
     return { enabledById: legacy.enabled_by_id, settingsById: legacy.settings_by_id };
   }
 
-  function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = null } = {}) {
+  function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = null, keepGlobalCollectionDrafts = false } = {}) {
     void getAsrController()?.refresh({ preserveDraft: true });
+    if (!preserveDraft) pendingApplication.clear();
+    const previousPlugins = pluginView.items || [];
+    const incoming = snapshot.plugins.map(plugin => {
+      const previous = previousPlugins.find(p => p.plugin_id === plugin.pluginId);
+      if (plugin.enabled && plugin.state !== "active" && previous && !plugin.sections.length) {
+        return { ...plugin, pages: previous.pages, sections: previous.settings.map(section => ({
+          sectionId: section.section_id, title: section.title, surface: section.surface, placement: section.placement,
+          presentation: section.presentation, order: section.order, reasonCode: plugin.reasonCode || "PLUGIN_NOT_ACTIVE",
+          fields: section.fields, values: section.values, actions: [], collections: [],
+        })) };
+      }
+      return plugin;
+    });
     pluginView = {
       permission_labels: pluginView?.permission_labels || {},
-      items: snapshot.plugins.map((plugin) => ({
+      items: incoming.map((plugin) => ({
         id: plugin.installId,
         install_id: plugin.installId,
         plugin_id: plugin.pluginId,
@@ -2303,10 +2522,15 @@ export function createPluginSettingsFeature({
         missing_services: clonePlain(plugin.missingServices),
         state: plugin.state,
         reason_code: plugin.reasonCode,
+        pages: clonePlain(plugin.pages || []),
         settings: plugin.sections.map((section) => ({
           section_id: section.sectionId,
+          instance_id: section.instanceId,
           title: section.title,
           surface: section.surface,
+          placement: section.placement,
+          presentation: section.presentation,
+          order: section.order,
           reason_code: section.reasonCode,
           fields: (section.fields || []).map((field) => ({
             ...field,
@@ -2321,6 +2545,7 @@ export function createPluginSettingsFeature({
           })),
           collections: (section.collections || []).map((collection) => ({
             collection_id: collection.collectionId,
+            scope: collection.scope,
             title: collection.title,
             description: collection.description,
             columns: clonePlain(collection.columns),
@@ -2342,13 +2567,15 @@ export function createPluginSettingsFeature({
     const previousCollections = new Map(pluginCollectionState);
     previousCollections.forEach((state) => clearTimer(state.searchTimer));
     pluginCollectionState.clear();
-    if (preserveDraft) {
+    if (preserveDraft || keepGlobalCollectionDrafts) {
       for (const plugin of pluginView.items) {
         for (const section of plugin.settings) {
           for (const collection of section.collections) {
             const key = pluginCollectionKey(plugin, section, collection);
             const previous = previousCollections.get(key);
             if (!previous) continue;
+            if (previous.scope !== collection.scope) continue;
+            if (!preserveDraft && collection.scope !== "global") continue;
             // A new state object detaches old queries while keeping the editor and filters.
             const current = pluginCollectionRuntimeState(plugin, section, collection);
             current.editor = previous.editor ? clonePlain(previous.editor) : null;
@@ -2388,6 +2615,12 @@ export function createPluginSettingsFeature({
     applySnapshot: applyRuntimePluginSnapshot,
     readDraft: runtimePluginDraft,
     onDirty: refreshDirty,
+    onSectionFailed(pluginId, sectionId) { pendingApplication.add(`${pluginId}/${sectionId}`); },
+    onSectionSaved(pluginId, sectionId, values) {
+      pendingApplication.delete(`${pluginId}/${sectionId}`);
+      const plugin = pluginView.items.find(p => p.plugin_id === pluginId);
+      if (plugin) pluginState.initialSettingsValues[plugin.id][sectionId] = clonePlain(values);
+    },
   });
 
   listen(fields.aboutComponentsRefresh, "click", () => {
@@ -2395,12 +2628,13 @@ export function createPluginSettingsFeature({
     void refreshPluginActivityCurrent();
   });
   listen(fields.pluginSearch, "input", () => {
+    if (fields.pluginSearch.value.trim()) pluginState.infrastructureCollapsed = false;
     pluginState.selectedId = "";
     renderPluginPage();
     fields.pluginList.scrollTop = 0;
   });
   listen(document, "keydown", (event) => {
-    if (!fields.pages.plugins.classList.contains("is-active") || pluginSettingsDialog) return;
+    if (!fields.pages.plugins.classList.contains("is-active") || fields.pages.plugins.dataset.marketVisible === "true" || pluginSettingsDialog) return;
     if (event.key === "/" && !/INPUT|SELECT|TEXTAREA/.test(event.target.tagName)) {
       event.preventDefault();
       fields.pluginSearch.focus();
@@ -2413,10 +2647,13 @@ export function createPluginSettingsFeature({
     if (event.key === "Escape" && !fields.pluginInstallMenu.hidden) {
       event.preventDefault();
       setPluginInstallMenuOpen(false, { restoreFocus: true });
-    } else if (["ArrowDown", "Enter", " "].includes(event.key) && fields.pluginInstallMenu.hidden) {
+    } else if ((event.key === "ArrowDown" || (["Enter", " "].includes(event.key) && fields.pluginInstallMenu.hidden))) {
       event.preventDefault();
       setPluginInstallMenuOpen(true, { focusItem: true });
     }
+  });
+  listen(fields.pluginInstallMenu, "click", (event) => {
+    if (event.target.closest('[role="menuitem"]')) setPluginInstallMenuOpen(false);
   });
   listen(fields.pluginInstallMenu, "keydown", (event) => {
     if (event.key === "Escape") {
@@ -2495,7 +2732,9 @@ export function createPluginSettingsFeature({
   function selectManagedPlugin(id, { reveal = false } = {}) {
     const plugin = pluginView.items.find((item) => item.id === id);
     if (!plugin) return;
+    if (reveal) onNavigatePlugin();
     if (reveal) clearPluginFilters();
+    if (pluginPresentation.pluginMetadata(plugin).kind === 'infrastructure') pluginState.infrastructureCollapsed = false;
     pluginState.selectedId = id;
     renderPluginPage();
     fields.pluginDetail.scrollTop = 0;
@@ -2505,8 +2744,8 @@ export function createPluginSettingsFeature({
   }
 
   function pluginDialogSchema(plugin) {
-    return JSON.stringify(pluginSettingsSections(plugin).filter((section) => section.surface !== 'memory')
-      .map((section) => [section.section_id, section.surface, section.fields.map((field) => [field.key, field.type, field.readonly])]));
+    return JSON.stringify(pluginSettingsSections(plugin).filter((section) => !sectionDestination(section))
+      .map((section) => [section.section_id, section.instance_id, section.presentation, section.surface, section.fields.map((field) => [field.key, field.type, field.readonly])]));
   }
 
   function syncPluginSettingsDialog() {
@@ -2519,6 +2758,7 @@ export function createPluginSettingsFeature({
       notify('插件状态已变化，请重新打开设置。', 'info');
       return;
     }
+    editor.general.components?.forEach(component => component.update?.());
     const focused = document.activeElement;
     const focusKey = focused?.dataset?.aboutActionKey;
     const focusedResourceKey = focused?.dataset?.aboutResourceKey;
@@ -2566,6 +2806,11 @@ export function createPluginSettingsFeature({
   }
 
   function openPluginSettingsDialog(plugin, { sectionId = "", fieldKey = "" } = {}) {
+    if (sectionId) {
+      const section = pluginSettingsSections(plugin).find(s => s.section_id === sectionId);
+      const target = section && sectionDestination(section);
+      if (target) { showPage(target.startsWith("host:") ? target.slice(5) : target); return; }
+    }
     if (pluginSettingsDialog) return;
     closeSelects();
     setPluginInstallMenuOpen(false);
@@ -2581,9 +2826,8 @@ export function createPluginSettingsFeature({
     const close = pluginNode('button', 'plugin-dialog-close'); close.append(createIcon(document, 'x')); close.type = 'button'; close.setAttribute('aria-label', '关闭插件设置');
     header.append(identity, close);
     const body = pluginNode('div', 'plugin-dialog-body');
-    const general = renderPluginSettings(plugin); const voice = pluginNode('div', 'plugin-dialog-voice');
-    const asr = pluginNode('div', 'plugin-dialog-asr');
-    body.append(general, voice, asr);
+    const general = renderPluginSettings(plugin);
+    body.append(general);
     const error = pluginNode('p', 'error plugin-dialog-error'); error.hidden = true; error.setAttribute('role', 'alert');
     const footer = pluginNode('footer', 'plugin-dialog-footer');
     footer.append(pluginNode('span', '', '应用设置后生效'));
@@ -2592,30 +2836,24 @@ export function createPluginSettingsFeature({
     const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);
     form.append(header, body, error, footer); dialog.append(form);
     const editor = {
-      dialog, general, voice, asr, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
+      dialog, general, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
       schema: pluginDialogSchema(plugin), error, closing: false,
-      initial: Object.fromEntries(pluginSettingsSections(plugin).filter((section) => !['memory', 'voice'].includes(section.surface))
+      initial: Object.fromEntries(pluginSettingsSections(plugin).filter((section) => !sectionDestination(section))
         .map((section) => [section.section_id, clonePlain(editablePluginSectionValues(section, pluginSectionValues(plugin.id, section.section_id)))])),
-      voiceDraft: getVoiceController()?.pluginDraft(plugin.plugin_id),
-      asrDraft: getAsrController()?.hasPluginControls(plugin.plugin_id) ? getAsrController()?.pluginDraft() : null,
       async close(accept = false, restore = true) {
         if (editor.closing) return;
         editor.closing = true; closeSelects(dialog);
-        void getAsrController()?.cancelTest();
         dialog.inert = true;
         if (!accept && restore && runtimePluginController?.snapshot()?.coreGenerationId === editor.generation) {
           for (const [sectionId, values] of Object.entries(editor.initial)) {
             const current = pluginState.settingsValues[plugin.id]?.[sectionId];
             if (current) Object.assign(current, values);
           }
-          if (editor.voiceDraft) getVoiceController()?.restorePluginDraft(editor.voiceDraft);
-          if (editor.asrDraft) getAsrController()?.restorePluginDraft(editor.asrDraft);
         }
         dialog.classList.add('is-closing');
         await Promise.allSettled(dialog.getAnimations().map((animation) => animation.finished));
         if (pluginSettingsDialog !== editor) return;
-        getVoiceController()?.unmountPluginSections();
-        getAsrController()?.unmountPluginControls();
+        general.components?.forEach(component => component.dispose());
         dialog.close(); dialog.remove(); pluginSettingsDialog = null;
         refreshDirty(); renderPluginPage();
         fields.pluginDetail.querySelector('.plugin-configure')?.focus({ preventScroll: true });
@@ -2623,9 +2861,9 @@ export function createPluginSettingsFeature({
     };
     pluginSettingsDialog = editor;
     document.body.append(dialog);
-    getVoiceController()?.mountPluginSections(plugin.plugin_id, voice);
-    getAsrController()?.mountPluginControls(plugin.plugin_id, asr);
+
     general.querySelectorAll('select').forEach(enhanceSelect);
+    general.components?.forEach(component => { component.update?.(); component.mounted?.(); });
     close.addEventListener('click', () => void editor.close()); cancel.addEventListener('click', () => void editor.close());
     dialog.addEventListener('cancel', (event) => { event.preventDefault(); void editor.close(); });
     form.addEventListener('submit', (event) => {
@@ -2654,62 +2892,88 @@ export function createPluginSettingsFeature({
   }
 
   return Object.freeze({
+    installedPlugins: () => runtimePluginController.snapshot()?.plugins || [],
     initialize: runtimePluginController.initialize,
     openPlugin(installId, configure = false) {
       const plugin = pluginView.items.find(item => item.id === installId);
       showPage("plugins");
       if (!plugin) return;
-      pluginState.selectedId = installId;
-      renderPluginPage();
-      if (configure && pluginSettingsSections(plugin).some(section => section.surface !== "memory")) openPluginSettingsDialog(plugin);
+      selectManagedPlugin(installId, { reveal: true });
+      if (configure && pluginSettingsSections(plugin).some(section => !sectionDestination(section))) openPluginSettingsDialog(plugin);
     },
     isDirty: () => runtimePluginController.isDirty() || hasCollectionDrafts(),
     hasCollectionDrafts,
-    async save() {
-      if (hasCollectionDrafts()) {
+    validate: validateSettings,
+    async save({ keepGlobalCollectionDrafts = false } = {}) {
+      validateSettings();
+      if (hasCollectionDrafts() && (!keepGlobalCollectionDrafts || collectionDraftCount("character") > 0)) {
         throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
       }
-      return runtimePluginController.save();
+      const disablingWithDrafts = pluginView.items.some((plugin) => !plugin.required
+        && pluginState.initialEnabledById[plugin.id] && !pluginState.enabledById[plugin.id]
+        && affectedPluginsHaveCollectionDrafts(plugin));
+      if (disablingWithDrafts) {
+        throw new Error("请先保存或还原受影响插件中正在编辑的集合记录，再停用插件。");
+      }
+      return runtimePluginController.save({ keepGlobalCollectionDrafts });
     },
     refreshCurrent: runtimePluginController.refreshCurrent,
     discard: runtimePluginController.discard,
-    characterDraftCount: () => countCharacterScopedCollectionDrafts(pluginCollectionState.values()),
+    collectionDraftCount,
+    characterCollectionDraftCount: () => collectionDraftCount("character"),
+    invalidateCollectionRequests() {
+      // A role session can change without a Core generation or settings change.
+      // Rebind the rendered callbacks and pending replies while retaining drafts.
+      const snapshot = runtimePluginController.snapshot();
+      if (snapshot) runtimePluginController.initialize(snapshot, { preserveDraft: true });
+    },
+    renderCollections,
+    providerCatalog() {
+      return pluginView.items.filter(p => p.enabled).flatMap(plugin => plugin.settings
+        .filter(section => section.presentation?.component === "connection-editor" && section.presentation.serviceKey)
+        .map(section => ({ serviceKey: section.presentation.serviceKey, label: plugin.name,
+          profiles: (pluginSectionValues(plugin.id, section.section_id)[section.presentation.valueField] || []).map(p => ({
+            profileId: p.id, label: p.alias, models: (p.models || []).map(modelId => ({ modelId, label: modelId })),
+          })) })));
+    },
+    async cancelOperations() { uiEpoch++; await Promise.allSettled([...probeCancels].map(cancel => cancel())); },
     renderMemorySurface,
     dialogElement: () => pluginSettingsDialog?.dialog,
     onVoiceSectionsRendered() {
-      if (pluginSettingsDialog && !pluginSettingsDialog.voice.childElementCount) {
-        const plugin = pluginView.items.find((item) => item.id === pluginSettingsDialog.installId);
-        if (plugin) getVoiceController()?.mountPluginSections(plugin.plugin_id, pluginSettingsDialog.voice);
-      }
       renderPluginPage();
     },
     onPageChanged(page) {
       clearPluginActivityRefresh();
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
+      if (page === "interaction") renderScreenAwarenessSurface();
+      if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {
-      pluginCollectionState.forEach((state) => {
+      const snapshot = runtimePluginController.snapshot();
+      if (snapshot) runtimePluginController.initialize(snapshot, { preserveDraft: true });
+      pluginCollectionState.forEach((state, key) => {
+        if (state.scope !== "character") return;
         clearTimer(state.searchTimer);
         state.queryRevision += 1;
         state.queryPending = false;
         state.queryPendingRender = false;
         state.editor = null;
         state.editorError = "";
+        pluginCollectionState.delete(key);
       });
       clearMemoryEditorPortal();
-      pluginCollectionState.clear();
-      renderMemorySurface();
+      renderCollections();
       refreshDirty();
     },
     dispose() {
+      uiEpoch++; settingsUI.dispose();
       const editor = pluginSettingsDialog;
       pluginSettingsDialog = null;
       if (editor) {
         editor.closing = true;
         closeSelects(editor.dialog);
-        getVoiceController()?.unmountPluginSections();
-        getAsrController()?.unmountPluginControls();
+        editor.general.components?.forEach(component => component.dispose());
         editor.dialog.close();
         editor.dialog.remove();
       }

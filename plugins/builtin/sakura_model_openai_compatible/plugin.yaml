@@ -1,0 +1,18 @@
+api: 4
+id: sakura.model.openai_compatible
+name: OpenAI 兼容模型
+author: Rvosy
+description: 连接远程 OpenAI 兼容 API，提供文本、图像输入和工具调用。
+version: 0.1.0
+entry: plugin:ModelPlugin
+enabled: true
+provides:
+  - sakura.model.openai_compatible
+requires:
+  - sakura.host.artifacts
+  - sakura.host.model_slots.v2
+  - sakura.host.settings
+presentation:
+  kind: infrastructure
+  category: model
+  icon: brain

@@ -65,6 +65,8 @@ class ConcurrentHostRouter:
         dispatcher: Any,
         *,
         fixture_handler: Callable[[dict[str, Any]], Mapping[str, Any]] | None = None,
+        fixture_reserve: Callable[[dict[str, Any]], None] | None = None,
+        fixture_abandon: Callable[[dict[str, Any]], None] | None = None,
         fixture_names: frozenset[str] = frozenset(),
         read_frame_fn: Callable[[BinaryIO], dict[str, Any] | None] = read_frame,
     ) -> None:
@@ -72,6 +74,8 @@ class ConcurrentHostRouter:
         self._writer = writer
         self._dispatcher = dispatcher
         self._fixture_handler = fixture_handler
+        self._fixture_reserve = fixture_reserve
+        self._fixture_abandon = fixture_abandon
         self._fixture_names = fixture_names
         self._read_frame = read_frame_fn
         self._dispatch: queue.Queue[_Ticket | object] = queue.Queue(maxsize=DISPATCH_QUEUE_LIMIT)
@@ -209,20 +213,15 @@ class ConcurrentHostRouter:
                     # Workers bound execution; the queue absorbs short bursts
                     # from settings, Studio and chat instead of rejecting a
                     # fifth request while its waiting queue is still empty.
-                    fixture_owner = getattr(self._fixture_handler, "__self__", None)
-                    reserve = getattr(fixture_owner, "reserve_send", None)
-                    abandon = getattr(fixture_owner, "abandon_send", None)
                     try:
-                        if callable(reserve):
-                            reserve(request)
+                        if self._fixture_reserve is not None:
+                            self._fixture_reserve(request)
                         self._fixtures.put_nowait(item)
                     except (ValueError, RuntimeError) as error:
-                        if callable(abandon):
-                            abandon(request)
+                        self._abandon_fixture(request)
                         self._send_fixture_rejection(request, item, error)
                     except queue.Full:
-                        if callable(abandon):
-                            abandon(request)
+                        self._abandon_fixture(request)
                         self._send_overload(request, item)
                     continue
                 message, should_stop = self._dispatcher.dispatch(request)
@@ -267,8 +266,15 @@ class ConcurrentHostRouter:
                     item.done.set()
                     continue
                 try:
-                    with _request_interaction_context(item.request):
-                        result = self._fixture_handler(item.request)  # type: ignore[misc]
+                    try:
+                        with _request_interaction_context(item.request):
+                            result = self._fixture_handler(item.request)  # type: ignore[misc]
+                    except Exception as error:
+                        if self.fatal_error is not None:
+                            raise
+                        self._abandon_fixture(item.request)
+                        self._send_fixture_rejection(item.request, item, error, fallback_code="REQUEST_FAILED")
+                        continue
                     self._send(result)
                 finally:
                     item.done.set()
@@ -281,10 +287,8 @@ class ConcurrentHostRouter:
                 self._fixtures.task_done()
 
     def _abandon_fixture(self, request: dict[str, Any]) -> None:
-        owner = getattr(self._fixture_handler, "__self__", None)
-        abandon = getattr(owner, "abandon_send", None)
-        if callable(abandon):
-            abandon(request)
+        if self._fixture_abandon is not None:
+            self._fixture_abandon(request)
 
     def _is_fixture(self, request: Mapping[str, Any]) -> bool:
         name = request.get("name")
@@ -313,13 +317,15 @@ class ConcurrentHostRouter:
         request: dict[str, Any],
         ticket: _Ticket,
         error: BaseException,
+        *,
+        fallback_code: str = "INVALID_CHAT_PAYLOAD",
     ) -> None:
         code = str(getattr(error, "code", "")) or (
             "CHAT_EXECUTION_LIMIT_EXCEEDED"
             if str(error) == "CHAT_EXECUTION_LIMIT_EXCEEDED"
-            else "INVALID_CHAT_PAYLOAD"
+            else fallback_code
         )
-        public_message = str(getattr(error, "public_message", "")) or "chat request was rejected"
+        public_message = str(getattr(error, "public_message", "")) or "请求执行失败。"
         retryable = bool(getattr(error, "retryable", code == "CHAT_EXECUTION_LIMIT_EXCEEDED"))
         message = response(
             request,
@@ -341,7 +347,9 @@ class ConcurrentHostRouter:
 
     def _set_fatal(self, error: BaseException) -> None:
         if not isinstance(error, RouterFailure) and not hasattr(error, "code"):
-            error = RouterFailure("ROUTER_WORKER_FAILED", "router worker failed")
+            failure = RouterFailure("ROUTER_WORKER_FAILED", "router worker failed")
+            failure.__cause__ = error
+            error = failure
         with self._lock:
             if self._fatal is None:
                 self._fatal = error

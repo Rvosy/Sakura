@@ -98,6 +98,39 @@ test("scheduled screen summaries fold into one humanized observation record", ()
   );
 });
 
+test("plugin screen observations retain the character perspective and fold only their own summaries", () => {
+  for (const trigger of ["插件分享了 3 张图片。", "刚才留意了一下屏幕状态。"]) {
+    const visual = { imageCount: 3, capturedAt: NOW };
+    const sourcePluginId = "sakura.screen_awareness";
+    const entries = [
+      entry("observation", { text: trigger, sourcePluginId, visual }, { origin: "host", entryId: "trigger" }),
+      entry("observation", {
+        text: "画面摘要：用户正在检查界面。", sourcePluginId,
+        visual: { ...visual, analysisStatus: "succeeded" },
+      }, { origin: "host", entryId: "summary" }),
+      entry("observation", { text: "另一次观察", sourcePluginId, visual },
+        { origin: "host", turnId: "turn-2", entryId: "other-turn" }),
+      entry("observation", { text: "插件发起了一次互动。", sourcePluginId },
+        { origin: "host", entryId: "non-visual" }),
+      entry("observation", { text: "你分享了 1 张屏幕截图。", visual },
+        { origin: "manual_screen", entryId: "manual" }),
+      entry("human", { text: trigger }),
+    ];
+    const saved = structuredClone(entries);
+    const projected = projectHistoryEntries(entries);
+    assert.equal(projected.length, 5);
+    assert.equal(projected[0].roleName, "屏幕观察");
+    assert.equal(projected[0].content, "刚才留意了一下屏幕状态。");
+    assert.equal(projected[0].detailsContent, "画面摘要：用户正在检查界面。");
+    assert.equal(projected[1].detailsContent, "另一次观察");
+    assert.equal(projected[2].content, "想和你聊聊。");
+    assert.equal(projected[2].roleName, "主动互动");
+    assert.equal(projected[3].content, "你分享了 1 张屏幕截图。");
+    assert.equal(projected[4].content, trigger);
+    assert.deepEqual(entries, saved);
+  }
+});
+
 test("page validation keeps generation identity and cursor shape strict", () => {
   const page = {
     schemaVersion: 1,

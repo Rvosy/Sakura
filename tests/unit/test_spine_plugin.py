@@ -7,10 +7,19 @@ from pathlib import Path
 
 import pytest
 
-from plugins.builtin.sakura_spine.plugin import (
+from plugins.optional.sakura_spine.plugin import (
     SpineService, atlas_pages, describe_resource, parse_control, parse_preview_control,
 )
 from tools.spine_preview import export_components, prepare, resolve_inside
+
+
+def _install_spine(roots):
+    from app.plugins.inventory import PluginDesiredStateStore
+    repository = Path(__file__).resolve().parents[2]
+    shutil.copytree(repository / "plugins/optional/sakura_spine", roots.user_root / "plugins/user/sakura_spine", ignore=shutil.ignore_patterns("__pycache__"))
+    PluginDesiredStateStore(roots.user_root).set("sakura.visual.spine", True)
+    (roots.user_root / "config/plugin-migrations.json").write_bytes((repository / "desktop/src-tauri/src/new_user_plugin_migrations.json").read_bytes())
+
 
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=')
@@ -205,7 +214,7 @@ def test_preparation_keeps_source_and_copies_only_component_dependencies(spine_r
 
 
 def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_resource, tmp_path):
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.config.character_resources import CharacterVisualResource
     from app.core_host.plugin_application import PluginApplicationHost
     from app.plugins.inventory import PluginInventory
@@ -221,11 +230,11 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
     (package / 'character.json').write_text(json.dumps({
         'id': 'alice', 'display_name': 'Alice', 'card': 'card.md', 'portrait': {'default': 'default.png'},
     }), encoding='utf-8')
-    plugin = Path(__file__).resolve().parents[2] / 'plugins/builtin/sakura_spine'
-    shutil.copytree(plugin, roots.distribution_root / 'plugins/builtin/sakura_spine')
+    plugin = Path(__file__).resolve().parents[2] / 'plugins/optional/sakura_spine'
+    _install_spine(roots)
     installed = next(record for record in PluginInventory(roots).scan().records
                      if record.plugin_id == 'sakura.visual.spine')
-    assert installed.source == 'bundled'
+    assert installed.source == 'user'
     assert installed.desired_enabled
     import io
     from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
@@ -235,7 +244,7 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
     application = PluginApplicationHost(roots, 'spine-test', ToolRegistry())
     try:
         application.start()
-        host = application.application.visuals
+        host = application.visuals
         assert host.candidates('spine.json@1')[0]['reasonCode'] == 'READY'
         resource = CharacterVisualResource('model', 'spine.json@1', 'visual', 'spine-resource.json')
         binding = host.bind('alice', package, resource)
@@ -256,7 +265,7 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
         assert invalid.reason_code == 'VISUAL_CONTROL_REJECTED'
         (package / 'visual/texture.png').unlink()
         with pytest.raises(PluginRuntimeError):
-            application.application.call_service('sakura.visual.spine', 'describe', {'characterId': 'alice', 'resource': resource.to_mapping()})
+            application.call_service('sakura.visual.spine', 'describe', {'characterId': 'alice', 'resource': resource.to_mapping()})
         application.set_enabled(installed.install_id, False)
         assert binding.parse_control(envelope).reason_code == 'VISUAL_BINDING_EXPIRED'
     finally:
@@ -271,7 +280,7 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
 
 
 def test_v110_role_imports_spine_publishes_and_keeps_selection_after_restart(spine_resource, tmp_path):
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.config.character_loader import CharacterRegistry
     from app.config.settings_service import AppSettingsService
     from app.core_host.character_settings import CharacterSettingsBoundary
@@ -284,7 +293,8 @@ def test_v110_role_imports_spine_publishes_and_keeps_selection_after_restart(spi
     prepare(source, prepared)
     component = export_components(prepared, tmp_path / "exports")[0]
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
-    for name in ("sakura_portrait", "sakura_spine"):
+    _install_spine(roots)
+    for name in ("sakura_portrait",):
         shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin" / name,
                         roots.distribution_root / "plugins/builtin" / name)
     package = roots.user_root / "characters/alice"
@@ -337,7 +347,7 @@ def test_v110_role_imports_spine_publishes_and_keeps_selection_after_restart(spi
         assert settings_service.load_current_character_id(CharacterRegistry(roots.user_root)) == "alice"
         restarted.bind_character_presentation("alice")
         assert restarted.visual_presentation()["visual"]["resourceId"] == resource_id
-        binding = restarted.application._visual_binding
+        binding = restarted._visual_binding
         result = binding.parse_control({"version": 1, "resourceId": resource_id,
                                         "payload": {"skin": "smile", "action": "wave"}})
         assert result.reason_code == "READY"
@@ -487,7 +497,7 @@ def test_skin_labels_are_data_and_keep_control_ids(spine_resource):
     assert json.loads(cleared['prompt'].split('\n', 1)[1])['skinLabels'] == {}
 
 
-@pytest.mark.parametrize('labels', [None, [], {'unknown': '说明'}, {'normal': 42}, {'normal': '字' * 121}])
+@pytest.mark.parametrize('labels', [None, [], {'unknown': '说明'}, {'normal': 42}])
 def test_invalid_skin_labels_are_rejected(spine_resource, labels):
     root, config, _ = spine_resource
     with pytest.raises(ValueError, match='SPINE_CONFIG_INVALID'):

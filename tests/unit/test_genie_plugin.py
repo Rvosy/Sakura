@@ -18,14 +18,14 @@ from dataclasses import replace
 import psutil
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.tts_boundary import TTSBoundary
 from app.plugins.dependencies import PluginDependencyRoots
 from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
-from plugins.builtin.sakura_genie import _bundle as genie_bundle
-from plugins.builtin.sakura_genie import _support as genie_support
+from plugins.optional.sakura_genie import _bundle as genie_bundle
+from plugins.optional.sakura_genie import _support as genie_support
 
 
 GENERATION = "generation-genie-plugin"
@@ -34,7 +34,7 @@ CREDENTIAL = "5" * 32
 
 @pytest.mark.skipif(sys.platform != "win32", reason="verbatim paths are Windows-only")
 def test_genie_process_boundaries_remove_verbatim_paths() -> None:
-    from plugins.builtin.sakura_genie import plugin as provider_module
+    from plugins.optional.sakura_genie import plugin as provider_module
 
     python = Path(r"\\?\D:\Sakura\tts\cpu\runtime\python.exe")
 
@@ -82,7 +82,7 @@ def test_genie_process_boundaries_remove_verbatim_paths() -> None:
 def test_installed_managed_genie_binds_bundle_without_verbatim_path(
     tmp_path: Path,
 ) -> None:
-    from plugins.builtin.sakura_genie import plugin as provider_module
+    from plugins.optional.sakura_genie import plugin as provider_module
 
     user_root = tmp_path / "user"
     runtime = user_root / "tts" / "cpu" / "runtime"
@@ -102,7 +102,7 @@ def test_installed_managed_genie_binds_bundle_without_verbatim_path(
 def test_managed_genie_uses_internal_endpoint_and_standard_character_layout(
     tmp_path: Path,
 ) -> None:
-    from plugins.builtin.sakura_genie import plugin as provider_module
+    from plugins.optional.sakura_genie import plugin as provider_module
 
     config = provider_module._parse_config(
         {
@@ -224,17 +224,18 @@ def _root(
     config_patch: dict[str, object] | None = None,
 ) -> Path:
     root = tmp_path / "assistant"
+    from app.storage.paths import StoragePaths
     plugins = root / "plugins" / "builtin"
     plugins.mkdir(parents=True)
     (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     (plugins / "__init__.py").write_text("", encoding="utf-8")
     repository = Path(__file__).parents[2]
     shutil.copytree(repository / "plugins" / "builtin" / "sakura_tts_hub", plugins / "sakura_tts_hub")
-    shutil.copytree(repository / "plugins" / "builtin" / "sakura_genie", plugins / "sakura_genie")
-    plugin_root = plugins / "sakura_genie"
+    shutil.copytree(repository / "plugins" / "optional" / "sakura_genie", root / "plugins/user/sakura_genie")
+    plugin_root = root / "plugins/user/sakura_genie"
     declaration = PluginDependencyRoots(root).declaration(plugin_root)
     assert declaration is not None
-    dependency_root = root / "plugins/dependencies/sakura.tts.genie"
+    dependency_root = StoragePaths(root).plugin_dependency_root_for("sakura.tts.genie")
     dependency_root.mkdir(parents=True)
     (dependency_root / ".sakura-dependencies.json").write_text(
         json.dumps({
@@ -266,6 +267,8 @@ def _root(
         }}),
         encoding="utf-8",
     )
+    from app.plugins.inventory import PluginDesiredStateStore
+    PluginDesiredStateStore(root).set("sakura.tts.genie", True)
     return root
 
 
@@ -685,7 +688,7 @@ def test_managed_genie_serializes_model_reference_and_tts_by_character(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_genie import plugin as provider_module
+    from plugins.optional.sakura_genie import plugin as provider_module
 
     server = _GenieServer()
     server.delay = {"load_character": 0.03, "set_reference_audio": 0.03, "tts": 0.03}
@@ -764,7 +767,7 @@ def test_state_change_cancel_waits_for_response_before_next_character(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_genie import plugin as provider_module
+    from plugins.optional.sakura_genie import plugin as provider_module
 
     server = _GenieServer()
     server.delay["load_character"] = 0.3
@@ -850,7 +853,7 @@ def test_onnx_conversion_failure_never_promotes_partial_cache(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_genie import plugin as provider_module
+    from plugins.optional.sakura_genie import plugin as provider_module
 
     work_dir = tmp_path / "runtime"
     work_dir.mkdir()
@@ -902,7 +905,7 @@ def test_partial_character_warmup_converts_and_synthesis_reuses_cache(
 ) -> None:
     from app.config.character_packages import repair_character_packages
     from app.core_host.plugin_character import PluginCharacterStore
-    from plugins.builtin.sakura_genie import plugin as p
+    from plugins.optional.sakura_genie import plugin as p
 
     server = _GenieServer()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -986,7 +989,7 @@ def test_partial_character_warmup_converts_and_synthesis_reuses_cache(
 
 
 def test_genie_voice_inheritance_preserves_explicit_values() -> None:
-    from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+    from plugins.optional.sakura_genie.plugin import _effective_voice_extension
 
     manifest = {"voice": {"gpt_model": "legacy.ckpt", "sovits_model": "legacy.pth", "ref_lang": "ja"},
                 "extensions": {"sakura.tts.gpt-sovits": {"gptModel": "studio.ckpt", "toneRefs": "studio.txt"}}}
@@ -996,7 +999,7 @@ def test_genie_voice_inheritance_preserves_explicit_values() -> None:
 
 
 def test_genie_background_warmup_reports_conversion_failure(tmp_path: Path) -> None:
-    from plugins.builtin.sakura_genie import plugin as p
+    from plugins.optional.sakura_genie import plugin as p
 
     diagnostics = []
     config = p._ProviderConfig(True, "managed", "http://127.0.0.1:9881/", 5, tmp_path)
@@ -1015,7 +1018,7 @@ def test_genie_background_warmup_reports_conversion_failure(tmp_path: Path) -> N
 
 
 def test_conversion_cancelled_at_export_completion_does_not_commit(tmp_path: Path, monkeypatch) -> None:
-    from plugins.builtin.sakura_genie import plugin as p
+    from plugins.optional.sakura_genie import plugin as p
 
     config = p._ProviderConfig(True, "managed", "http://127.0.0.1:9881/", 5, tmp_path)
     cache = tmp_path / "cache"
@@ -1041,7 +1044,7 @@ def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Pa
     from app.core_host.plugin_host_services import _DiagnosticsHostService
     from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
     from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
-    from plugins.builtin.sakura_genie import plugin as p
+    from plugins.optional.sakura_genie import plugin as p
 
     work = tmp_path / "work"
     work.mkdir()
@@ -1130,7 +1133,7 @@ def test_onnx_conversion_cancel_kills_child_tree_and_cleans_staging(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_genie import plugin as provider_module
+    from plugins.optional.sakura_genie import plugin as provider_module
 
     work_dir = tmp_path / "runtime"
     work_dir.mkdir()
@@ -1188,7 +1191,7 @@ def test_managed_genie_warmup_prepares_character_without_synthesis(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_genie import plugin as provider_module
+    from plugins.optional.sakura_genie import plugin as provider_module
 
     config = provider_module._ProviderConfig(
         enabled=True,
@@ -1222,7 +1225,7 @@ def test_managed_genie_warmup_prepares_character_without_synthesis(
 
 
 def test_legacy_conversion_requires_source_identity_or_explicit_onnx(tmp_path: Path, monkeypatch) -> None:
-    from plugins.builtin.sakura_genie import plugin as p
+    from plugins.optional.sakura_genie import plugin as p
 
     voice = _conversion_voice(p, tmp_path)
     cache = tmp_path / "cache"

@@ -60,7 +60,7 @@ jobs:
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       PYTHONUTF8: "1"
-      SAKURA_UPDATER_ENDPOINT: https://github.com/Rvosy/Sakura/releases/latest/download/latest.json
+      SAKURA_UPDATER_ENDPOINT: https://api.sakura.cialloo.cn/service/v1/latest.json
       SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v6

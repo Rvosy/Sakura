@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +29,11 @@ def _assistant_root(tmp_path: Path) -> Path:
     (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     shutil.copytree(FIXTURE_ROOT / "plugins", root / "plugins" / "builtin")
     (root / "plugins" / "builtin" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "config").mkdir()
+    shutil.copy2(
+        Path(__file__).parents[2] / "desktop/src-tauri/src/new_user_plugin_migrations.json",
+        root / "config/plugin-migrations.json",
+    )
     return root
 
 
@@ -68,7 +75,7 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
         )
     )
     assert required["enabled"] is True
-    assert required["state"] == "failed"
+    assert required["state"] == "starting"
     assert required["reasonCode"] == "PLUGIN_APPLICATION_NOT_READY"
 
     invalid_user_required = _preview_plugin(
@@ -86,20 +93,21 @@ def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
 
 
 def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
 
     registry = ToolRegistry()
     runtime = _Runtime()
     application = PluginApplicationHost(_assistant_root(tmp_path), "generation-a", registry)
     session = type("Session", (), {
-        "runtime": runtime,
+        "assistant": object(),
+        "visual_binding": None,
         "character": CharacterProfile("fixture", "Fixture", tmp_path, tmp_path / "card.md", ""),
     })()
     try:
         application.start()
         application.bind_session(session)
-        application.application.wait_until_loaded(timeout=5)
+        application.wait_until_loaded(timeout=5)
         snapshot = application.public_snapshot()
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
 
@@ -113,16 +121,16 @@ def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> No
         }
         assert "entry" not in repr(snapshot)
         assert str(tmp_path) not in repr(snapshot)
-        assert application.application.wait_until_bound(timeout=5)
+        assert application.wait_until_bound(timeout=5)
 
         result = registry.execute("fixture_echo", {"value": "hello"})
         assert result.success is True
         assert result.content == {"echo": "hello"}
     finally:
         application.close()
-    assert application.application.state == "stopped"
+    assert application.state == "stopped"
     assert registry.get("fixture_echo") is None
-    assert runtime.context_providers == []
+    assert registry.get("fixture_echo") is None
 
 
 def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -> None:
@@ -138,7 +146,7 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
     root = _assistant_root(tmp_path)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(root, root), "generation-plugin-application", "a" * 32),
-        initializer_factory=lambda _root, _tools, _mcp: FailingInitializer(),
+        initializer_factory=lambda _root, _tools: FailingInitializer(),
     )
     controller.enable_plugins()
     try:
@@ -146,7 +154,7 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
         _wait_until(lambda: controller.readiness() == "failed")
         application = controller.published_plugin_application()
         assert application is not None
-        application.application.wait_until_loaded(timeout=5)
+        application.wait_until_loaded(timeout=5)
 
         snapshot = application.settings_snapshot()
         fixture = next(
@@ -174,25 +182,104 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
         controller.close()
 
 
+@pytest.mark.parametrize("binding_fails", [False, True])
+def test_session_is_published_only_after_application_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binding_fails: bool,
+) -> None:
+    from app.core_host import plugin_application
+    from app.core_host.assistant_adapter import ReadinessResult
+    from app.core_host.server import HostConfig, ReadinessController
+
+    entered = threading.Event()
+    release = threading.Event()
+    retired = []
+    published = []
+    session = SimpleNamespace()
+
+    class Initializer:
+        def initialize(self, _cancel):
+            return ReadinessResult(
+                state="ready", code="READY", message="", retryable=False,
+                current_character_summary=None, current_character_presentation=None,
+                session=session,
+            )
+
+        def retire_session(self):
+            retired.append(True)
+
+        def close(self):
+            release.set()
+
+    class Application:
+        unbound = 0
+
+        def start_character_presentation(self):
+            return None
+
+        def start_assistant(self):
+            pass
+
+        def start(self):
+            pass
+
+        def bind_session(self, _session):
+            entered.set()
+            assert release.wait(3)
+            if binding_fails:
+                raise RuntimeError("binding failed")
+
+        def unbind_session(self):
+            self.unbound += 1
+
+        def close(self):
+            pass
+
+    application = Application()
+    monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_: application)
+    controller = ReadinessController(
+        HostConfig(RuntimeRoots(tmp_path, tmp_path), "session-binding-test", "a" * 32),
+        initializer_factory=lambda *_: Initializer(),
+    )
+    controller.set_session_published_callback(lambda: published.append(controller.published_session()))
+    controller.enable_plugins()
+    try:
+        controller.begin({})
+        assert entered.wait(2)
+        assert controller.published_session() is None
+        assert controller.readiness() == "initializing"
+        assert published == []
+        release.set()
+        controller._worker.join(2)
+        assert not controller._worker.is_alive()
+        if binding_fails:
+            assert controller.published_session() is None
+            assert controller.snapshot()["components"]["assistant"]["code"] == "SESSION_BIND_FAILED"
+            assert retired == [True]
+            assert application.unbound == 1
+            assert published == []
+        else:
+            assert controller.published_session() is session
+            assert retired == []
+            assert published == [session]
+    finally:
+        release.set()
+        controller.close()
+
+
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_plugin_start_failure_closes_unpublished_application_resources(
     tmp_path: Path, monkeypatch, cleanup_fails: bool,
 ) -> None:
-    from app.agent.mcp import provider
     from app.core_host import plugin_application
     from app.core_host.server import HostConfig, ReadinessController
 
     closed: list[str] = []
 
-    class MCP:
-        def close(self) -> None:
-            closed.append("mcp")
-
     class PluginApplication:
         def __init__(self, *_args) -> None:
             pass
 
-        def start(self) -> None:
+        def start_character_presentation(self):
             raise RuntimeError("plugin start failed")
 
         def close(self) -> None:
@@ -200,23 +287,83 @@ def test_plugin_start_failure_closes_unpublished_application_resources(
             if cleanup_fails:
                 raise RuntimeError("plugin cleanup failed")
 
-    monkeypatch.setattr(provider, "start_mcp_tools_from_config", lambda *_args, **_kwargs: MCP())
     monkeypatch.setattr(plugin_application, "PluginApplicationHost", PluginApplication)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), "generation-failed-start", "a" * 32),
     )
-    controller.enable_mcp()
     controller.enable_plugins()
     controller.begin({})
     controller._worker.join(2)
     assert not controller._worker.is_alive()
     assert controller.readiness() == "failed"
     assert controller.published_plugin_application() is None
-    assert closed == ["plugins", "mcp"]
+    assert closed == ["plugins"]
     if cleanup_fails:
         with pytest.raises(RuntimeError, match="plugin cleanup failed"):
             controller.close()
     else:
         controller.close()
     controller.close()
-    assert closed == ["plugins", "mcp"]
+    assert closed == ["plugins"]
+
+
+@pytest.mark.parametrize("phase", ["visual", "assistant", "optional"])
+def test_shutdown_stops_starting_plugin_application_before_joining_initializer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
+) -> None:
+    from app.core_host import plugin_application
+    from app.core_host.assistant_adapter import ReadinessResult
+    from app.core_host.server import HostConfig, ReadinessController
+
+    started = threading.Event()
+    stopped = threading.Event()
+    calls: list[str] = []
+
+    class Application:
+        def enter(self, stage):
+            calls.append(stage)
+            if phase == stage:
+                started.set()
+                assert stopped.wait(3)
+                calls.append("start_returned")
+
+        def start_character_presentation(self):
+            self.enter("visual")
+
+        def start_assistant(self):
+            self.enter("assistant")
+
+        def start(self):
+            self.enter("optional")
+
+        def close(self) -> None:
+            calls.append("close")
+            stopped.set()
+
+    application = Application()
+    def create_initializer(*_):
+        assert phase == "optional", "shutdown must not initialize Assistant"
+        return SimpleNamespace(
+            initialize=lambda _: ReadinessResult("setup_required", "CHARACTER_REQUIRED", "", False, None),
+            close=lambda: None,
+        )
+    monkeypatch.setattr(plugin_application, "PluginApplicationHost", lambda *_: application)
+    controller = ReadinessController(
+        HostConfig(RuntimeRoots(tmp_path, tmp_path), "shutdown-starting-plugin", "a" * 32),
+        initializer_factory=create_initializer,
+    )
+    controller.enable_plugins()
+    try:
+        controller.begin({})
+        assert started.wait(2)
+        assert controller.published_plugin_application() is (None if phase == "visual" else application)
+        controller.close()
+        assert not controller._worker.is_alive()
+        assert controller.published_plugin_application() is None
+        controller.close()
+        expected = ["visual", "assistant", "optional"][:["visual", "assistant", "optional"].index(phase) + 1]
+        assert calls == [*expected, "close", "start_returned"]
+    finally:
+        stopped.set()
+        controller._worker.join(3)
+        controller.close()

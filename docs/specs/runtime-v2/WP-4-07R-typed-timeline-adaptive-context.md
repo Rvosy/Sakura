@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-09
+updated: 2026-09-16
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -86,7 +86,7 @@ payload 只允许以下形状：
 |---|---|---|
 | `human` | `{ "text": string }` | 仅用户实际提交的文字；Host 引导语不得混入 |
 | `assistant` | `{ "segments": Segment[1..N] }` | 一个 generation 一条；Segment 保留 text/translation/tone/portrait/suppressTts，可选 control 见表现插件合同 |
-| `observation` | `{ "text": string, "visual": object? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata |
+| `observation` | `{ "text": string, "visual": object?, "sourcePluginId": string? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata；插件来源由宿主绑定，最多 64 字符 |
 | `system` | `{ "text": string, "eventType": string? }` | 仅需要进入未来关系连续性的 Host 已确认事实，不是普通日志 |
 
 所有字符串和数组必须有界。`payload_json` 不得含图片/音频字节、data URL、base64、绝对路径、临时资源 token、
@@ -96,11 +96,15 @@ API key 或 Provider 原始异常。
 
 - Core 接受一次外部或主动交互时生成一个 `turn_id`。用户文字与手动截图可以是同一 Turn 内的 `human` 和
   `observation` 两个条目；定时截图只有 `observation` 触发条目。
+- 普通插件通过 `sakura.host.chat` 提交的互动使用 `origin=host` 的 observation，记录 `sourcePluginId`，
+  不写 human，也不把插件业务提示词保存为观察正文。旧 `scheduled_screen` 条目保持可读。
 - 只有真正提交给对话模型的 observation 才进入 Timeline。单纯捕获、批次替换、繁忙跳过和提交前取消只
   进入现有日志/Trace。
 - human/observation 输入在 Provider 调用前提交。Provider 失败或取消时不伪造 assistant 条目；下一轮投影
   可以看到真实未回答的人类输入。成功语义分析且不早于当前时间两小时的定时 observation-only Turn 作为
   独立 Host observation 候选进入统一预算；更早、只有捕获占位或分析失败的观察不进入候选。
+  `origin=host` 且带非空 `sourcePluginId`、正整数 `visual.imageCount` 和成功分析状态的插件观察遵循同一规则。
+  数据库分页、候选读取和 Assistant 投影均识别新旧来源；关联回复随观察整轮进入预算，不再作为主动发言重复注入。
 - 定时截图的捕获占位 observation 不属于可整理证据。Provider 成功返回视觉分析后，Host 追加一条同
   `turn_id` 的有界脱敏语义 observation；它只保存摘要/OCR 文本投影、置信度和脱敏标记，不保存原图。
 - Provider 最终回复完成解析、segment 校验和授权后，在一个事务中写一条 assistant entry。多个气泡、语气、
@@ -112,7 +116,10 @@ API key 或 Provider 原始异常。
 - 历史 UI 从同一 Timeline 投影；assistant segments 可以显示为多个气泡，但它们共享一个 entry/turn，删除、
   计数和 Memory 整理不得把它们当作多次回复。
 - 历史窗口只展示当前绑定角色。human 在右侧、assistant 在左侧，observation 和 system 作为居中系统记录；
-  同一 Turn 的定时观察触发记录与语义摘要合并为“刚才留意了一下屏幕状态。”，详细摘要默认折叠；UI 投影不得
+  同一 Turn 的定时观察触发记录与语义摘要合并为“刚才留意了一下屏幕状态。”，详细摘要默认折叠。
+  插件通过宿主截图资源提交的 `origin=host` 观察沿用这一展示，按 `sourcePluginId` 和 `visual` 元数据识别；
+  已保存的“插件分享了 N 张图片。”也在展示时折叠，不改写历史数据。无图片的插件互动以“主动互动”展示，
+  触发文案为“想和你聊聊。”，旧“插件发起了一次互动。”在展示时转换，不归入屏幕观察。UI 投影不得
   携带 visual ID、图片元数据、tone、portrait 或其他不参与显示的内部字段。
 - 历史窗口是只读界面，不提供清空、删除、编辑、搜索或跨角色读取。首次读取最近 50 条，更早记录使用绑定
   当前角色和数据库 lineage 的 opaque cursor 向前分页。
@@ -163,7 +170,8 @@ sakura.host.chat.completed {
 
 ## 6. 轻量 Turn 投影
 
-上下文构建读取当前角色候选条目后，通过无状态函数按 `turn_id` 分组并按 `seq` 排序。它遵守：
+上下文构建按完整 Turn 从新到旧分页读取当前角色的候选条目，通过无状态函数投影；轮内按 `seq` 排序，
+轮次顺序取该 Turn 首条记录的位置。交错写入的轮次也不能被分页切开。它遵守：
 
 - `human` 投影为真实 user history；`assistant` 的 segments 按顺序合成一个历史 assistant message；
 - 当前 observation 可以按 Provider 约束使用 user-role 容器，但必须携带内部 observation provenance；历史
@@ -176,6 +184,15 @@ sakura.host.chat.completed {
   它们不恢复内部 observation prompt、不变成普通聊天 Turn，也不单独写入长期记忆；
 - 选中 Turn 最终按旧到新输出，不颠倒真实会话顺序；
 - 不创建有状态 TurnAssembler、Turn cache 或 Turn lifecycle。投影失败只影响对应候选，不修改 Timeline。
+
+同一次请求的聊天、观察和主动发言候选共享 Timeline 高水位游标。游标绑定角色与数据库；分页间新写入的
+记录，包括补到旧 Turn 的回复，留给下一次请求。数据库先筛选候选和完整轮次，才解码该页 payload；
+页大小只控制每次传输，不是总历史上限。观察与主动发言候选可以重叠，最终由投影语义决定归属，避免重复注入。
+
+默认助手通过 `sakura.host.timeline.read_turn_page` 获取完整轮次。Host 为本轮授权的插件、角色与快照发放
+临时 `historyToken`，请求结束或插件退出后撤销；更换角色或伪造快照不能扩大读取范围。分页优先在 RPC
+预算内返回完整轮次；单轮超过帧预算时使用现有 Artifact 临时文件，读取后释放，取消时由 Host 回收。
+同轮工具步骤只复用已经读取的投影，再按当前剩余预算续读，不创建持久历史缓存。
 
 ## 7. 自适应 Token Budget
 
@@ -219,13 +236,18 @@ tokenizer；不可用时使用现有保守估算器，并在 Trace 标明 estima
 
 `ContextPolicy` 在同一个预算账本中处理历史 Turn 和 Context Fragment：
 
-1. 保留必需 Host facts 和当前 Turn；
+1. 保留必需 Host facts、必需插件片段和当前 Turn；
 2. 在能完整容纳时优先保护最近 8 个真实 human/assistant 完整 Turn；8 是保护尾部，不是历史上限；
 3. 尝试完整选择最新的近期 observation Turn；空间不足时整 Turn 丢弃，不截断摘要或 assistant 回复；
 4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；每个可选 Fragment 的
-   `token_budget` 只约束自身正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 再分配共享额度；
+   `token_budget` 只约束自身正文，包装与正文共同消耗全局预算，不按插件、Provider 或 source 再分配共享额度；必需片段必须完整保留；
 5. 用剩余预算从近到远选择其余两小时内 observation Turn，再选择更早的真实对话 Turn；
 6. 输出前恢复为旧到新，并由 Provider adapter 进行最终 role/placement 兼容。
+
+聊天和观察分别提供倒序候选流，预算策略按上述优先级按需读取下一页。某轮放不下时继续尝试更旧的小轮次，
+不得用首个超限轮次或固定页数代替预算判断。剩余预算低于有效轮次的最低估算成本时停止读取；极端情况下，
+为寻找能放下的小轮次仍可能读完候选。Trace 只统计实际检查过的候选与丢弃原因，未读取的历史不伪装成
+`budget_exhausted` 或损坏记录，也不为补齐诊断而额外加载全部历史。
 
 旧 Turn 超大时只允许类型化降级：使用已经存在的安全摘要/引用，或丢弃整个 Turn 并记录原因；不得在请求
 路径临时调用另一个 LLM 总结，也不得截出破坏 role/tool 原子性的半个 Turn。
@@ -240,6 +262,14 @@ WP-4-07R 的 Runtime v2 路径不得继续把以下值作为总上限：
 ```
 
 Legacy Qt 可以暂时保留旧限制，但不得影响 Runtime v2 resolved budget。
+
+### 7.4 行为贡献与本轮采集
+
+插件通过统一 Context 入口提供自行组织的文本，不声明用途或信任分类；当前合同见
+[Runtime v4 §6.4](sakura-plugin-runtime-v4.md#64-context-行为贡献)。可选内容只按逐片段 budgetHint 与模型全局预算裁剪。
+Host 传递完整贡献并保留来源与有界传输检查。必需内容完整保留，放不下时报告模型预算不足。
+本轮内容的临时缓存只属于活动调用，供模型各步骤复用；它不改变第 6 节历史投影的无状态要求，也不创建持久 Turn cache。
+回调失败、复用和片段完整性是默认对话实现的消费约定，旧无分类插件保持可选内容行为；默认对话策略尚未迁入独立插件。
 
 ## 8. Memory 与其他插件
 

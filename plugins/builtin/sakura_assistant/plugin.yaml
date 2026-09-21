@@ -1,0 +1,22 @@
+api: 4
+id: sakura.assistant.default
+name: Assistant
+author: Rvosy
+description: 提供默认模型对话、上下文选择与工具调用。
+version: 0.1.0
+entry: plugin:AssistantPlugin
+enabled: true
+provides:
+  - sakura.assistant
+requires:
+  - sakura.host.logging
+  - sakura.host.tools
+  - sakura.host.context
+  - sakura.host.timeline
+  - sakura.host.storage
+  - sakura.host.artifacts
+  - sakura.host.settings
+presentation:
+  kind: infrastructure
+  category: model
+  icon: sparkles

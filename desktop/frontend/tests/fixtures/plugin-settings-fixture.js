@@ -122,17 +122,21 @@ function browserFixture() {
   }
   const document = new Element("document");
   document.createElement = (tagName) => new Element(tagName);
-  document.getElementById = (id) => document.querySelector(`#${id}`);
+  document.getElementById = (id) => document.querySelectorAll("*").find(element => element.id === String(id)) || null;
   document.body = new Element("body");
   document.append(document.body);
   const shell = new Element("main");
   shell.className = "settings-shell";
   document.body.append(shell);
+  const scroll = new Element("div"); scroll.className = "page-scroll"; shell.append(scroll);
+  for (const name of ["character", "ai", "behavior", "system"]) {
+    const group = new Element("div"); const label = new Element("h3"); label.id = `navgrp-${name}`; group.append(label); shell.append(group);
+  }
   for (const id of [
     "pluginTotal", "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
     "pluginInstallZipButton", "pluginInstallFolderButton", "pluginList", "pluginDetail",
     "aboutComponentsSummary", "aboutComponentsRefresh", "aboutComponentsState", "aboutComponentsList",
-    "memorySurface", "page-memory", "page-plugins", "page-about",
+    "memorySurface", "screenAwarenessSurface", "page-memory", "page-plugins", "page-about",
   ]) {
     const element = new Element("div");
     element.id = id;
@@ -183,7 +187,7 @@ export function snapshot(coreGenerationId = "generation-a", label = "fixture") {
       }, {
         sectionId: "archive", title: "Memory", surface: "memory", reasonCode: "READY",
         fields: [], values: {}, actions: [], collections: [{
-          collectionId: "entries", title: "Memory", description: "",
+          collectionId: "entries", scope: "character", title: "Memory", description: "",
           columns: [{ key: "content", label: "内容", type: "string", maxLength: 1000 }],
           fields: [field("content", { required: true })], filters: [], searchable: true,
           pageSize: 20, canCreate: true, canUpdate: true, canDelete: true, deleteConfirmation: "删除？",
@@ -202,7 +206,7 @@ export function featureFixture(invoke, options = {}) {
     onDirty: () => { dirtyNotifications += 1; }, onError: (error) => { if (error) errors.push(error); },
     notify() {}, confirmAction: async () => true, enhanceSelect() {},
     removeOverlayAfterExit: async (overlay) => overlay.remove(), showPage() {},
-    isMemoryTransitioning: () => false, hasPendingCharacterSelection: () => false,
+    isCharacterTransitioning: () => false, hasPendingCharacterSelection: () => false,
     refreshSelect() {}, closeSelects() {}, focusSelect: (control) => control?.focus(),
     replayMotion() {}, getVoiceController: () => null,
     ...options,

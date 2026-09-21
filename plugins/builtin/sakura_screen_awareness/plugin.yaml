@@ -1,0 +1,18 @@
+api: 4
+id: sakura.screen_awareness
+name: 主动屏幕感知
+author: Rvosy
+description: 定时观察屏幕并与当前角色自然接话。
+version: 1.0.0
+entry: plugin:ScreenAwarenessPlugin
+enabled: true
+provides: []
+requires:
+  - sakura.host.screen
+  - sakura.host.chat
+  - sakura.host.settings
+  - sakura.host.logging
+presentation:
+  kind: extension
+  category: other
+  icon: monitor

@@ -20,7 +20,7 @@ def load(name, path):
 
 
 def run():
-    plugin = load('spine_plugin', ROOT / 'plugins/builtin/sakura_spine/plugin.py')
+    plugin = load('spine_plugin', ROOT / 'plugins/optional/sakura_spine/plugin.py')
     journey = load('spine_journey', Path(__file__).with_name('spine-plugin.journey.py'))
     model = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'artifacts/spine/196104-room/spine-1'
     config = json.loads((model / 'spine-resource.json').read_text(encoding="utf-8"))
@@ -38,7 +38,7 @@ def run():
                 document.body.replaceChildren(); document.body.style.margin='0';
                 const container = document.createElement('div');
                 Object.assign(container.style, {width:'480px', height:'640px'}); document.body.append(container);
-                const {createRenderer} = await import('/plugins/builtin/sakura_spine/renderer.mjs');
+                const {createRenderer} = await import('/plugins/optional/sakura_spine/renderer.mjs');
                 const renderer = await createRenderer({container, rendererData:data, bindingId:'hit', resourceId:'hit',
                     signal:new AbortController().signal, enableHitTest:true,
                     resolveAssetUrl: path => '/hit-model/' + Array.from(new TextEncoder().encode(path), c=>c.toString(16).padStart(2,'0')).join('')});
@@ -74,7 +74,7 @@ def run():
                 outer.style.setProperty('--visual-surface-width','330px');
                 outer.style.setProperty('--visual-surface-height','510px');
                 document.body.append(outer);
-                const {createRenderer}=await import('/plugins/builtin/sakura_spine/renderer.mjs');
+                const {createRenderer}=await import('/plugins/optional/sakura_spine/renderer.mjs');
                 const {createRendererHost}=await import('/desktop/frontend/pet/renderer-host.js');
                 const {attachDynamicHitTest}=await import('/desktop/frontend/pet/dynamic-hit-test.js');
                 let renderer, handler, session, answer;

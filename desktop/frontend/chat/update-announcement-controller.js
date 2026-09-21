@@ -7,9 +7,7 @@ const TRANSIENT_DISPATCH_CODES = new Set([
   "CHAT_NOT_READY",
   "CHAT_BRIDGE_UNAVAILABLE",
   "CHAT_GENERATION_INVALIDATED",
-  "CHAT_GENERATION_MISMATCH",
   "CHAT_DISPATCH_ABORTED",
-  "CHAT_START_TIMEOUT",
 ]);
 
 function errorCode(error) {
@@ -119,6 +117,7 @@ export function createUpdateAnnouncementController({
       onDiagnostic("update.announcement.completed", {});
       return;
     }
+    if (event.error?.code === "CHAT_DELIVERY_UNCONFIRMED") pending = false;
     if (event.type === "chat.failed") failedAttempts += 1;
     if (failedAttempts >= 2) pending = false;
     onDiagnostic("update.announcement.retry_waiting", {

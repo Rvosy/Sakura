@@ -18,7 +18,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app/plugin_sdk"))
 from sakura_downloads import uv_download_environment
 
-PLUGIN_DIRECTORIES = ("sakura_genie", "sakura_gpt_sovits", "sakura_mem0", "sakura_asr_sensevoice", "sakura_web")
+PLUGIN_DIRECTORIES = ("sakura_model_openai_compatible", "sakura_genie", "sakura_gpt_sovits", "sakura_mem0", "sakura_asr_sensevoice", "sakura_web", "sakura_mcp")
 _PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
@@ -51,6 +51,8 @@ def prepare(repo: Path, python: Path) -> None:
         uv = _uv_executable(python)
         for directory_name in PLUGIN_DIRECTORIES:
             plugin_root = plugins / "builtin" / directory_name
+            if not plugin_root.is_dir():
+                plugin_root = plugins / "optional" / directory_name
             requirements = plugin_root / "requirements.txt"
             manifest = yaml.safe_load((plugin_root / "plugin.yaml").read_text(encoding="utf-8"))
             plugin_id = manifest.get("id") if isinstance(manifest, dict) else None

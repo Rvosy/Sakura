@@ -19,9 +19,9 @@ import app.legacy_import.files as legacy_files
 import app.legacy_import.importer as legacy_importer
 import app.legacy_import.inspector as legacy_inspector
 import app.legacy_import.__main__ as legacy_cli
+from app.config.model_references import ModelReferenceRepository, OPENAI_SERVICE
 from app.config.settings_service import AppSettingsService
 from app.legacy_import.configuration import (
-    _migrate_mcp,
     _write_tts_plugin_config,
     migrate_configuration,
 )
@@ -345,8 +345,6 @@ def _migrate_api_document(
     return migrated, AppSettingsService(staged)
 
 
-
-
 def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
     tmp_path: Path,
 ) -> None:
@@ -371,13 +369,11 @@ def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
         "api_key": "fixture-yaml-credential",
         "model": "yaml-model",
     }
-    providers = service.load_api_profiles()
-    selection = service.load_model_selection()
-    assert providers[0].api_key == "fixture-yaml-credential"
-    assert providers[0].base_url == "https://yaml.example/v1"
-    assert selection.chat.model == "yaml-model"
-
-
+    profiles = json.loads((service.base_dir / "data/plugins" / OPENAI_SERVICE / "config.json").read_text(encoding="utf-8"))["profiles"]
+    selection = ModelReferenceRepository(service.base_dir).load()
+    assert profiles[0]["api_key"] == "fixture-yaml-credential"
+    assert profiles[0]["base_url"] == "https://yaml.example/v1"
+    assert selection["chat"]["modelId"] == "yaml-model"
 
 
 @pytest.mark.parametrize(
@@ -444,19 +440,12 @@ def test_configuration_import_converts_pr110_selection_without_model_slots(
         {"name": expected_vision_model},
     ]
 
-    loaded_providers = service.load_api_profiles()
-    selection = service.load_model_selection()
-    assert loaded_providers[0].models == (expected_text_model, expected_vision_model)
-    assert loaded_providers[0].api_key == "text-provider-secret"
-    assert selection.chat.profile_id == "text-provider"
-    assert selection.chat.model == expected_text_model
-    assert selection.vision_chat is not None
-    assert selection.vision_chat.profile_id == "vision-provider"
-    assert selection.vision_chat.model == expected_vision_model
-
-
-
-
+    loaded = json.loads((service.base_dir / "data/plugins" / OPENAI_SERVICE / "config.json").read_text(encoding="utf-8"))["profiles"]
+    selection = ModelReferenceRepository(service.base_dir).load()
+    assert [model["modelId"] for model in loaded[0]["models"]] == [expected_text_model, expected_vision_model]
+    assert loaded[0]["api_key"] == "text-provider-secret"
+    assert selection["chat"] == {"serviceKey": OPENAI_SERVICE, "profileId": "text-provider", "modelId": expected_text_model}
+    assert selection["vision_chat"] == {"serviceKey": OPENAI_SERVICE, "profileId": "vision-provider", "modelId": expected_vision_model}
 
 
 def test_exception_diagnostics_do_not_include_free_form_private_messages() -> None:
@@ -542,7 +531,7 @@ def _tree_state(root: Path) -> dict[str, tuple[int, int, bytes]]:
 def _install_fake_memory_model_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[object, list[str]]:
-    import plugins.builtin.sakura_mem0.memory as memory_runtime
+    import plugins.optional.sakura_mem0.memory as memory_runtime
 
     calls: list[str] = []
 
@@ -614,12 +603,6 @@ def _install_fake_memory_model_runtime(
     )
     monkeypatch.setattr(memory_runtime, "download_embedding_model", fake_download)
     return SimpleNamespace(write_model=write_model), calls
-
-
-
-
-
-
 
 
 def test_partial_legacy_source_without_config_imports_surviving_history(
@@ -776,8 +759,6 @@ def test_internal_symlink_copy_rejects_lexical_escape(tmp_path: Path) -> None:
     assert raised.value.code == "LEGACY_NESTED_LINK_UNSUPPORTED"
 
 
-
-
 def test_memory_copy_uses_consistent_sqlite_snapshot_with_open_wal(tmp_path: Path) -> None:
     source = tmp_path / "legacy"
     memory = source / "data/memory"
@@ -818,8 +799,6 @@ def test_memory_copy_uses_consistent_sqlite_snapshot_with_open_wal(tmp_path: Pat
     connection.close()
 
 
-
-
 def test_memory_validation_uses_runtime_schema_migration_for_legacy_variants(
     tmp_path: Path,
 ) -> None:
@@ -844,7 +823,7 @@ def test_memory_validation_uses_runtime_schema_migration_for_legacy_variants(
     staged = tmp_path / "staged-memory"
     copy_tree_checked(source, staged, cancelled=lambda: False)
 
-    from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
+    from plugins.optional.sakura_mem0.memory import normalize_existing_history_database
     normalize_existing_history_database(staged / "mem0_history.db")
 
     with sqlite3.connect(staged / "mem0_history.db") as connection:
@@ -897,7 +876,7 @@ def test_memory_validation_rebuilds_only_unidentifiable_message_cache(
         connection.execute("CREATE TABLE messages (role TEXT, content TEXT)")
         connection.execute("INSERT INTO messages VALUES ('human', 'disposable cache')")
 
-    from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
+    from plugins.optional.sakura_mem0.memory import normalize_existing_history_database
     normalize_existing_history_database(database)
 
     with sqlite3.connect(database) as connection:
@@ -1032,7 +1011,7 @@ servers:
     assert entries[-1].origin == "proactive"
     manifest = json.loads((target / "characters/Sakura/character.json").read_text(encoding="utf-8"))
     assert "sakura.tts" not in manifest["extensions"]
-    from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+    from plugins.optional.sakura_genie.plugin import _effective_voice_extension
     genie = manifest["extensions"]["sakura.tts.genie"]
     assert _effective_voice_extension(manifest, genie)["toneRefs"] == "voice/refs/ref.txt"
     assert "gptModel" not in genie
@@ -1073,10 +1052,7 @@ servers:
         "enabled": False,
         "check_interval_minutes": 2,
     }
-    migrated_mcp = yaml.safe_load((target / "config/mcp.yaml").read_text(encoding="utf-8"))
-    assert migrated_mcp["servers"]["web"]["args"] == [
-        "{core_root}/app/agent/mcp/web_search_server.py"
-    ]
+    assert not (target / "config/mcp.yaml").exists()
     report_text = (target / "data/legacy-imports/test-import-0001/report.json").read_text(encoding="utf-8")
     assert "secret-key" not in report_text
     assert str(source) not in report_text
@@ -1090,6 +1066,109 @@ servers:
     assert not (target / "data/memory/curation_state").exists()
 
 
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+@pytest.mark.parametrize("disabled_field", ["enabled", "screen_context_enabled"])
+def test_import_replaces_initialized_screen_settings_and_can_roll_back(
+    tmp_path: Path, disabled_field: str,
+) -> None:
+    from app.core_host.screen_host import migrate_legacy_screen_settings
+    from app.storage.paths import StoragePaths
+    from plugins.builtin.sakura_screen_awareness.policy import ScreenAwarenessPolicy
+    from plugins.builtin.sakura_screen_awareness.settings import ScreenAwarenessSettings
+
+    source = _legacy_fixture(tmp_path)
+    source_system = source / "data/config/system_config.yaml"
+    source_system.write_text(yaml.safe_dump({"screen_awareness": {
+        disabled_field: False,
+        "check_interval_minutes": 60,
+        "cooldown_minutes": 30,
+        "screen_context_batch_limit": 3,
+        "screen_context_resolution": "720p",
+    }}), encoding="utf-8")
+    source_original = source_system.read_bytes()
+    target = tmp_path / "target"
+    target_system = target / "config/system_config.yaml"
+    target_system.parent.mkdir(parents=True)
+    target_system.write_text("config_version: 1\n", encoding="utf-8")
+    migrate_legacy_screen_settings(target)
+    screen_config = StoragePaths(target).plugin_data_for("sakura.screen_awareness") / "config.json"
+    originals = {path: path.read_bytes() for path in (screen_config, target_system)}
+
+    report, pending = run_legacy_import(source, target, import_id="screen-settings-import")
+
+    assert pending is not None
+    assert not any(item["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED" for item in report.warnings)
+    migrate_legacy_screen_settings(target)
+    settings = ScreenAwarenessSettings.parse(json.loads(screen_config.read_text(encoding="utf-8")))
+    assert settings.values() == {
+        "enabled": False, "checkIntervalMinutes": 60, "cooldownMinutes": 30,
+        "batchLimit": 3, "resolution": "720p",
+    }
+    now = [0.0]
+    policy = ScreenAwarenessPolicy(settings, clock=lambda: now[0])
+    facts = {"sessionId": "Sakura", "activity": False, "idle": True}
+    assert policy.step(facts)["action"] == "clear"
+    now[0] = 7200
+    assert policy.step(facts)["action"] == "none"
+
+    rollback_commit(pending)
+    assert {path: path.read_bytes() for path in originals} == originals
+    assert source_system.read_bytes() == source_original
+
+
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+@pytest.mark.parametrize("failure", ["invalid-yaml", "screen-write"])
+def test_skipped_configuration_preserves_initialized_screen_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    from app.core_host.screen_host import migrate_legacy_screen_settings
+    from app.storage.paths import StoragePaths
+
+    source = _legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    target_system = target / "config/system_config.yaml"
+    target_system.parent.mkdir(parents=True)
+    target_system.write_text(
+        "config_version: 1\nscreen_awareness:\n  enabled: false\n", encoding="utf-8",
+    )
+    migrate_legacy_screen_settings(target)
+    screen_config = StoragePaths(target).plugin_data_for("sakura.screen_awareness") / "config.json"
+    references = ModelReferenceRepository(target)
+    references.save({
+        "chat": {"serviceKey": OPENAI_SERVICE, "profileId": "existing", "modelId": "existing-model"},
+        "vision_chat": {"serviceKey": "", "profileId": "", "modelId": ""},
+    })
+    provider_config = target / "data/plugins" / OPENAI_SERVICE / "config.json"
+    assistant_config = target / "data/plugins/sakura.assistant.default/config.json"
+    for path, values in (
+        (provider_config, {"profiles": [{"profileId": "existing", "label": "Existing", "base_url": "https://existing.invalid/v1"}]}),
+        (assistant_config, {"generation": {"temperature": 0.7}, "contextWindowTokens": 64000}),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(values), encoding="utf-8")
+    originals = {path: path.read_bytes() for path in (
+        screen_config, target_system, references.path, provider_config, assistant_config,
+    )}
+    if failure == "invalid-yaml":
+        (source / "data/config/system_config.yaml").write_text("[broken", encoding="utf-8")
+    else:
+        write_text = Path.write_text
+
+        def fail_screen_write(path: Path, *args: object, **kwargs: object) -> int:
+            if path.parent.name == "sakura.screen_awareness" and path.name.startswith(".config-"):
+                raise PermissionError("fixture screen write failed")
+            return write_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fail_screen_write)
+
+    report, pending = run_legacy_import(
+        source, target, import_id="screen-settings-skipped", finalize=True,
+    )
+
+    assert pending is None
+    assert any(item["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED" for item in report.warnings)
+    assert {path: path.read_bytes() for path in originals} == originals
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("Sakura")
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
@@ -1097,7 +1176,7 @@ def test_memory_model_preparation_failure_preserves_imported_memory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import plugins.builtin.sakura_mem0.memory as memory_runtime
+    import plugins.optional.sakura_mem0.memory as memory_runtime
 
     source = _legacy_fixture(tmp_path)
     target = tmp_path / "target"
@@ -1132,12 +1211,6 @@ def test_memory_model_preparation_failure_preserves_imported_memory(
     assert (target / "data/memory/mem0_history.db").is_file()
     assert not list(target.glob(".legacy-import-staging-*"))
     assert not list(target.glob(".legacy-import-journal-*"))
-
-
-
-
-
-
 
 
 def test_first_import_merges_and_preserves_all_atomic_target_trees(
@@ -1276,10 +1349,6 @@ def test_first_import_merges_and_preserves_all_atomic_target_trees(
     assert (target_memory / "target-extra.bin").read_bytes() == b"target extra"
     assert (target_memory / "legacy-extra.bin").read_bytes() == b"legacy extra"
     assert not (target_memory / "curation_state").exists()
-
-
-
-
 
 
 def test_first_import_never_overwrites_cross_role_timeline_identity(
@@ -1504,8 +1573,6 @@ def test_optional_domain_does_not_swallow_user_cancellation(
     assert list(target.iterdir()) == []
 
 
-
-
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 def test_import_rejects_invalid_target_timeline_and_keeps_existing_files(tmp_path: Path) -> None:
     source = _legacy_fixture(tmp_path)
@@ -1540,18 +1607,6 @@ def test_import_rejects_invalid_target_timeline_and_keeps_existing_files(tmp_pat
     assert unrelated.read_text(encoding="utf-8") == "keep me"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="Windows retry")
 def test_journal_replace_retries_brief_windows_file_locks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1574,12 +1629,6 @@ def test_journal_replace_retries_brief_windows_file_locks(
 
     assert attempts == 3
     assert json.loads(journal.read_text(encoding="utf-8")) == {"state": "committing"}
-
-
-
-
-
-
 
 
 @pytest.mark.parametrize("cut", ["after_backup", "after_install"])
@@ -1674,8 +1723,6 @@ def test_interrupted_finalize_is_resumed_without_rolling_back_valid_data(
     assert recover_pending_commits(target) == ["test-finalize-resume"]
     assert (target / "config/ui.json").read_text(encoding="utf-8") == "new"
     assert not list(target.glob(".legacy-import-*"))
-
-
 
 
 def test_history_quarantines_unknown_role_at_exact_source_line(tmp_path: Path) -> None:
@@ -1785,245 +1832,6 @@ def test_large_history_streams_binary_lines_with_stable_chunks_and_raw_quarantin
     assert base64.b64decode(issue["rawBase64"]) == invalid_raw
 
 
-def test_mcp_migration_drops_deprecated_confirmation_fields_recursively(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "legacy"
-    config = source / "data/config/mcp.yaml"
-    config.parent.mkdir(parents=True)
-    config.write_text(
-        """enabled: true
-servers:
-  web:
-    transport: stdio
-    command: python
-    args: []
-    risk: low
-    requires_confirmation: false
-    tool_policies:
-      Snapshot:
-        risk: medium
-        requires_confirmation: true
-""",
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 0
-    assert migrated["servers"]["web"]["risk"] == "low"
-    assert "requires_confirmation" not in json.dumps(migrated)
-
-
-def test_mcp_migration_quarantines_source_paths_in_executable_fields(
-    tmp_path: Path,
-) -> None:
-    source = Path(r"C:\foo")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "enabled": True,
-                "servers": {
-                    "command-source": {
-                        "transport": "stdio",
-                        "command": r"C:\foo\tools\server.exe",
-                    },
-                    "args-source": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["--directory", "c:/FOO/tools/server"],
-                    },
-                    "env-source": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "env": {"PYTHONPATH": r"C:\foo\packages"},
-                    },
-                    "source-sibling": {
-                        "transport": "stdio",
-                        "command": r"C:\foobar\tools\server.exe",
-                    },
-                    "source-space-sibling": {
-                        "transport": "stdio",
-                        "command": r"C:\foo archive\tools\server.exe",
-                    },
-                    "unrelated": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["https://example.test/C:/foo/docs", "foo is a label"],
-                        "env": {"DOCS_URL": "https://example.test/legacy-root"},
-                    },
-                },
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 3
-    assert set(migrated["servers"]) == {
-        "source-sibling",
-        "source-space-sibling",
-        "unrelated",
-    }
-
-
-
-
-def test_mcp_migration_quarantines_source_path_in_shell_command(
-    tmp_path: Path,
-) -> None:
-    source = Path(r"C:\legacy-root")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "legacy": {
-                        "transport": "stdio",
-                        "command": "powershell",
-                        "args": ["-Command", r"& C:\legacy-root\server.ps1"],
-                    },
-                    "sibling": {
-                        "transport": "stdio",
-                        "command": "powershell",
-                        "args": ["-Command", r"& C:\legacy-root archive\server.ps1"],
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 1
-    assert set(migrated["servers"]) == {"sibling"}
-
-
-def test_mcp_migration_quarantines_drive_file_uri_but_not_http_or_sibling(
-    tmp_path: Path,
-) -> None:
-    source = Path(r"C:\foo")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "legacy": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["--script=file:///C:/foo/server.py"],
-                    },
-                    "http": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["https://example.test/C:/foo/docs"],
-                    },
-                    "sibling": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["file:///C:/foo%20archive/server.py"],
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 1
-    assert set(migrated["servers"]) == {"http", "sibling"}
-
-
-
-
-
-
-def test_mcp_migration_quarantines_posix_colon_path_list_entries(
-    tmp_path: Path,
-) -> None:
-    source = Path("/legacy-root")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "source-last": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "env": {"PATH": "/other:/legacy-root/bin"},
-                    },
-                    "source-first": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "env": {"PATH": "/legacy-root:/other"},
-                    },
-                    "http": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["https://example.test/legacy-root/docs"],
-                    },
-                    "sibling": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "env": {"PATH": "/legacy-root-backup:/other"},
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 2
-    assert set(migrated["servers"]) == {"http", "sibling"}
-
-
-
-
-def test_mcp_migration_rebinds_legacy_web_server_tokens(
-    tmp_path: Path,
-) -> None:
-    separator = "\\"
-    source = Path(r"C:\legacy-root")
-    config = tmp_path / "mcp.yaml"
-    web_path = separator.join(
-        ["{base_dir}", "app", "agent", "mcp", "web_search_server.py"]
-    )
-    python_path = separator.join(["{base_dir}", "runtime", "python.exe"])
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "web": {
-                        "transport": "stdio",
-                        "command": python_path,
-                        "args": [web_path],
-                    }
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 0
-    assert migrated["servers"]["web"]["command"] == "{python}"
-    assert migrated["servers"]["web"]["args"] == [
-        "{core_root}/app/agent/mcp/web_search_server.py"
-    ]
-
-
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 @pytest.mark.parametrize(
     ("relative", "content", "_legacy_code"),
@@ -2032,7 +1840,7 @@ def test_mcp_migration_rebinds_legacy_web_server_tokens(
         (
             "data/config/mcp.yaml",
             "enabled: true\ndefault_call_timeout: invalid\nservers: {}\n",
-            "LEGACY_MCP_VALIDATION_FAILED",
+            "RETIRED_CONFIGURATION_IGNORED",
         ),
     ],
 )
@@ -2060,10 +1868,7 @@ def test_current_validators_quarantine_invalid_auxiliary_or_configuration_data(
             warning["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED"
             for warning in report.warnings
         )
-        migrated = yaml.safe_load(
-            (target / "config/mcp.yaml").read_text(encoding="utf-8")
-        )
-        assert migrated["default_call_timeout"] == 20
+        assert not (target / "config/mcp.yaml").exists()
     else:
         assert any(
             warning["code"] == "LEGACY_AUXILIARY_DATA_QUARANTINED"
@@ -2292,12 +2097,6 @@ def test_chunked_copy_cancellation_removes_partial_file(tmp_path: Path) -> None:
     assert not target.exists()
 
 
-
-
-
-
-
-
 @pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")
 def test_windows_fast_copy_normalizes_extended_paths_and_reports_robocopy_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2411,8 +2210,6 @@ def test_tts_profile_adaptation_removes_old_install_paths(tmp_path: Path) -> Non
         migrated = yaml.safe_load((config_root / name).read_text(encoding="utf-8"))
         assert migrated["custom"]["t2s_weights_path"] == migrated["v2ProPlus"]["t2s_weights_path"]
         assert migrated["custom"]["vits_weights_path"] == migrated["v2ProPlus"]["vits_weights_path"]
-
-
 
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")

@@ -86,9 +86,16 @@ class LocalPluginInstaller:
         self._roots = coerce_runtime_roots(roots)
         self._user_root = self._roots.user_root
         self._paths = StoragePaths(self._user_root)
-        self._dependencies = PluginDependencyRoots(self._user_root)
+        self._dependencies = PluginDependencyRoots(self._user_root, distribution_root=self._roots.distribution_root)
 
-    def install(self, source: Path, source_kind: str) -> InstalledPlugin:
+    def install(
+        self, source: Path, source_kind: str, *,
+        expected: tuple[str, str] | None = None,
+        initial_enabled: bool = False,
+        expected_plugin_id: str | None = None,
+        offline_dependencies: bool = False,
+        reuse_dependencies: bool = False,
+    ) -> InstalledPlugin:
         source_path = Path(source)
         if not source_path.is_absolute():
             raise PluginInstallError("PLUGIN_INSTALL_SOURCE_INVALID")
@@ -114,7 +121,7 @@ class LocalPluginInstaller:
         staging = Path(tempfile.mkdtemp(prefix=".install-", dir=destination))
         promoted: Path | None = None
         config_before: str | None | object = _MISSING
-        disabled_reserved = False
+        state_reserved = False
         dependency_promoted = False
         rollback_error: PluginInstallError | None = None
         completed = False
@@ -131,6 +138,10 @@ class LocalPluginInstaller:
                 plugin_root = copied
 
             spec = self._validated_spec(plugin_root)
+            if expected is not None and (spec.plugin_id, spec.version) != expected:
+                raise PluginInstallError("PLUGIN_PACKAGE_IDENTITY_MISMATCH")
+            if expected_plugin_id is not None and spec.plugin_id != expected_plugin_id:
+                raise PluginInstallError("PLUGIN_PACKAGE_IDENTITY_MISMATCH")
             self._reject_conflicts(spec)
             config_before = self._read_config_text()
             target = destination / sanitize_directory_component(spec.plugin_id)
@@ -140,14 +151,16 @@ class LocalPluginInstaller:
                 if child != staging
             ):
                 raise PluginInstallError("PLUGIN_ID_CONFLICT")
-            self._write_disabled_override(spec.plugin_id)
-            disabled_reserved = True
-            dependency_root = self._dependencies.install(
-                spec.plugin_id,
-                plugin_root,
-                entry=spec.entry,
-            )
-            dependency_promoted = dependency_root is not None
+            self._write_enabled_override(spec.plugin_id, initial_enabled)
+            state_reserved = True
+            dependency_existed = self._paths.plugin_dependency_root_for(spec.plugin_id).exists()
+            if reuse_dependencies and dependency_existed:
+                dependency_root = self._dependencies.verified_root(spec.plugin_id, plugin_root)
+                self._dependencies._validate_entry(spec.plugin_id, plugin_root, dependency_root, spec.entry)
+            else:
+                dependency_install = self._dependencies.install_bundled if offline_dependencies else self._dependencies.install
+                dependency_root = dependency_install(spec.plugin_id, plugin_root, entry=spec.entry)
+            dependency_promoted = dependency_root is not None and not dependency_existed
             self._replace_path(plugin_root, target)
             promoted = target
             completed = True
@@ -179,7 +192,7 @@ class LocalPluginInstaller:
         ) as error:
             raise PluginInstallError("PLUGIN_INSTALL_IO_FAILED") from error
         finally:
-            if not completed and disabled_reserved:
+            if not completed and state_reserved:
                 code_removed = promoted is None
                 if promoted is not None:
                     try:
@@ -364,9 +377,11 @@ class LocalPluginInstaller:
         except OSError as error:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
 
-    def _write_disabled_override(self, plugin_id: str) -> None:
+    def _write_enabled_override(self, plugin_id: str, enabled: bool) -> None:
         try:
-            PluginDesiredStateStore(self._user_root).set(plugin_id, False)
+            store = PluginDesiredStateStore(self._user_root)
+            if store.read().get(plugin_id) != enabled:
+                store.set(plugin_id, enabled)
         except (OSError, ValueError) as error:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
 

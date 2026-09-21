@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from plugins.builtin.sakura_web import web as web_search_server
-from app.agent.tools.registry import Tool, ToolRegistry
+from app.plugin_sdk.sakura_tools import Tool, ToolRegistry
 from app.config.character_loader import CharacterRegistry
 from app.storage import chat_history
 from app.storage.chat_history import ChatHistoryStore

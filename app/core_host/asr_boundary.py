@@ -6,6 +6,7 @@ import hmac
 import re
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -23,6 +24,7 @@ ASR_REQUEST_NAMES = frozenset({
     "asr.input.availability",
 })
 _ACTIVE = {"preparing", "ready", "recording", "recognizing"}
+_BINDING_UNAVAILABLE = {"SERVICE_MISSING", "SERVICE_BINDING_EXPIRED", "PLUGIN_PROCESS_UNAVAILABLE", "GENERATION_INVALIDATED"}
 
 
 @dataclass
@@ -67,6 +69,7 @@ class ASRBoundary:
         self._tasks: dict[str, _Input] = {}
         self._cancelled_ids: OrderedDict[str, None] = OrderedDict()
         self._closed = False
+        self._switching_character = False
 
     def handle(self, request: dict) -> dict:
         try:
@@ -144,11 +147,7 @@ class ASRBoundary:
                     with self._lock:
                         if task.state in _ACTIVE | {"succeeded"}:
                             self._require_context(task)
-                        result = self._snapshot(task)
-                        if task.state == "succeeded":
-                            # One delivery opportunity per recording, even with concurrent polls.
-                            task.state = "consumed"
-                            task.text = ""
+                        result = self._deliver_transcript(task) if task.state == "succeeded" else self._snapshot(task)
                 elif name == "asr.input.capture_status":
                     with self._lock:
                         result = {"recordingId": task.recording_id, "state": task.state}
@@ -190,6 +189,8 @@ class ASRBoundary:
         with self._lock:
             if self._closed:
                 raise AudioInputError("STALE_GENERATION")
+            if self._switching_character:
+                raise AudioInputError("ASR_BUSY")
             if recording_id in self._cancelled_ids:
                 raise AudioInputError("ASR_CANCELLED")
             if recording_id in self._tasks:
@@ -211,10 +212,13 @@ class ASRBoundary:
             return self._snapshot(task)
 
     def _run(self, task: _Input) -> None:
-        call = task.application.call_service
+        call = lambda method, *args: self._call_hub(task, method, *args)
         try:
-            status = (call("sakura.asr", "status", task.requested_provider_id) if task.requested_provider_id
-                      else call("sakura.asr", "status"))
+            with self._lock:
+                self._require_context(task)
+                task.hub_scope = task.application.service_identity("sakura.asr")
+            status = (call("status", task.requested_provider_id) if task.requested_provider_id
+                      else call("status"))
             if not isinstance(status, Mapping) or not status.get("providerId") or not status.get("serviceKey"):
                 raise AudioInputError(status.get("reasonCode", status.get("errorCode", "ASR_PROVIDER_NOT_SELECTED")) if isinstance(status, Mapping) else "ASR_PROVIDER_UNAVAILABLE")
             if task.requested_provider_id and status["providerId"] != task.requested_provider_id:
@@ -229,13 +233,12 @@ class ASRBoundary:
                 if identity["providerId"] != task.provider_id:
                     raise AudioInputError("ASR_PROVIDER_IDENTITY_INVALID")
                 task.scope_id = identity["scopeId"]
-                task.hub_scope = task.application.service_identity("sakura.asr")
-            call("sakura.asr", "warmup", task.provider_id)
+            call("warmup", task.provider_id)
             deadline = monotonic() + 120
             while True:
                 self._require_context(task)
                 self._require_binding(task)
-                status = call("sakura.asr", "status", task.provider_id)
+                status = call("status", task.provider_id)
                 if status.get("configVersion") != task.config_version:
                     raise AudioInputError("ASR_PROVIDER_CONFIGURATION_CHANGED")
                 if status.get("state") == "ready" and status.get("available"):
@@ -261,7 +264,7 @@ class ASRBoundary:
             self._require_context(task)
             audio = task.application.audio_input.commit(task.resource_id)
             self._require_context(task)
-            started = call("sakura.asr", "begin", {"requestId": task.recording_id, "providerId": task.provider_id,
+            started = call("begin", {"requestId": task.recording_id, "providerId": task.provider_id,
                                                    "configVersion": task.config_version, "language": task.language,
                                                    "audio": audio})
             if started.get("state") != "running":
@@ -270,18 +273,16 @@ class ASRBoundary:
             while True:
                 self._require_context(task)
                 self._require_binding(task)
-                result = call("sakura.asr", "poll", task.recording_id)
+                result = call("poll", task.recording_id)
                 if result.get("requestId") != task.recording_id or result.get("providerId") != task.provider_id:
                     raise AudioInputError("ASR_RESULT_INVALID")
                 state = result.get("state")
                 if state == "succeeded":
                     text = result.get("text")
-                    if not isinstance(text, str) or not text.strip() or len(text) > 32000:
+                    if not isinstance(text, str) or not text.strip():
                         raise AudioInputError("ASR_NO_SPEECH")
                     with self._lock:
-                        self._require_context(task)
-                        task.text = text.strip()
-                        task.state = "succeeded"
+                        self._commit_transcript(task, text.strip())
                         self._log_state(task, "succeeded")
                     break
                 if state != "running":
@@ -297,6 +298,8 @@ class ASRBoundary:
                     task.error_code = getattr(error, "code", "ASR_PROVIDER_UNAVAILABLE")
                     if not isinstance(task.error_code, str) or not re.fullmatch(r"[A-Z0-9_]{1,80}", task.error_code):
                         task.error_code = "ASR_PROVIDER_UNAVAILABLE"
+                    elif task.error_code in _BINDING_UNAVAILABLE:
+                        task.error_code = "ASR_PROVIDER_UNAVAILABLE"
                     task.diagnostics = diagnostic_attributes(error, reason_code=task.error_code, stage=failed_stage)
         finally:
             with self._lock:
@@ -310,7 +313,7 @@ class ASRBoundary:
                     task.application.audio_input.producer_done(task.resource_id)
             if task.state not in {"succeeded", "consumed"}:
                 try:
-                    call("sakura.asr", "cancel", task.recording_id)
+                    call("cancel", task.recording_id)
                 except Exception:
                     pass
 
@@ -360,6 +363,17 @@ class ASRBoundary:
             for task in self._tasks.values():
                 self._cancel(task)
 
+    @contextmanager
+    def suspend_for_character_change(self):
+        with self._lock:
+            self._switching_character = True
+        try:
+            self.cancel_all()
+            yield
+        finally:
+            with self._lock:
+                self._switching_character = False
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -400,13 +414,54 @@ class ASRBoundary:
             fields.update(task.diagnostics)
         log_message("warning" if state == "failed" else "info", messages[state], fields=fields, component="core")
 
+    def _call_hub(self, task: _Input, method: str, *args: object) -> object:
+        return task.application.call_bound_service("sakura.asr", task.hub_scope, method, *args)
+
+    def _commit_transcript(self, task: _Input, text: str) -> None:
+        self._require_context(task)
+
+        def commit() -> None:
+            task.text = text
+            task.state = "succeeded"
+
+        self._bound_sources(task, commit)
+
+    def _deliver_transcript(self, task: _Input) -> dict:
+        def consume() -> dict:
+            result = self._snapshot(task)
+            # One delivery opportunity per recording, even with concurrent polls.
+            task.state = "consumed"
+            task.text = ""
+            return result
+
+        try:
+            return self._bound_sources(task, consume)
+        except Exception as error:
+            code = getattr(error, "code", None)
+            if not isinstance(code, str) or code not in _BINDING_UNAVAILABLE:
+                raise
+            task.state = "failed"
+            task.text = ""
+            task.error_code = "ASR_PROVIDER_UNAVAILABLE"
+            task.diagnostics = diagnostic_attributes(error, reason_code=task.error_code, stage="succeeded")
+            self._log_state(task, "failed")
+            return self._snapshot(task)
+
+    def _bound_sources(self, task: _Input, commit):
+        # Both source identities and the local result update share the runtime's
+        # existing lifecycle lock. Callbacks only touch local task state.
+        # Context checks and audio cleanup must stay outside that lock.
+        return task.application.commit_bound_service("sakura.asr", task.hub_scope, lambda:
+            task.application.commit_bound_service(task.service_key,
+                {"providerId": task.provider_id, "scopeId": task.scope_id}, commit))
+
     def _require_binding(self, task: _Input) -> None:
         if (task.application.service_identity(task.service_key) != {"providerId": task.provider_id, "scopeId": task.scope_id}
                 or task.application.service_identity("sakura.asr") != task.hub_scope):
             raise AudioInputError("ASR_PROVIDER_UNAVAILABLE")
 
     def _require_context(self, task: _Input) -> None:
-        if (self._closed or task.cancelled.is_set()
+        if (self._closed or self._switching_character or task.cancelled.is_set()
                 or (task.purpose == "draft" and self._character_id() != task.character_id)):
             self._cancel(task)
             raise AudioInputError("ASR_CANCELLED")

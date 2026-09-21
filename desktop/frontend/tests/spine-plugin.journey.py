@@ -124,7 +124,7 @@ def verify_alpha_compositing(browser, origin, root):
         page.evaluate("""async ({assets,pma}) => {
             document.body.replaceChildren(); Object.assign(document.body.style,{margin:'0',background:'#19262a'});
             const container=document.createElement('div');Object.assign(container.style,{width:'160px',height:'160px'});document.body.append(container);
-            const {createRenderer}=await import('/plugins/builtin/sakura_spine/renderer.mjs');
+            const {createRenderer}=await import('/plugins/optional/sakura_spine/renderer.mjs');
             window.alphaRenderer=await createRenderer({container,rendererData:{runtimeVersion:'3.6.53',textures:{'texture.png':'texture.png'},
               config:{skeleton:'skeleton.json',atlas:'skeleton.atlas',defaultSkin:'default',defaultAnimation:'idle',speed:1,premultipliedAlpha:pma}},
               bindingId:'alpha',resourceId:'alpha',signal:new AbortController().signal,resolveAssetUrl:path=>assets[path]});
@@ -163,7 +163,7 @@ def run(components=None):
             (package / 'card.md').write_text('隔离验证角色', encoding="utf-8")
             (package / 'character.json').write_text(json.dumps({'id': 'sample', 'display_name': 'Spine 验证',
                 'card': 'card.md', 'portrait': {'default': 'default.png'}}), encoding="utf-8")
-            shutil.copytree(ROOT / 'plugins/builtin/sakura_spine', roots.distribution_root / 'plugins/builtin/sakura_spine')
+            shutil.copytree(ROOT / 'plugins/optional/sakura_spine', roots.distribution_root / 'plugins/optional/sakura_spine')
             application = PluginApplicationHost(roots, 'spine-browser', ToolRegistry())
             application.start()
             try:
@@ -311,7 +311,7 @@ def run(components=None):
                     raw_resource = next(item for item in saved['visuals']['resources'] if item.get('name') == name)
                     resource = CharacterVisualResource.from_mapping(raw_resource)
                     from app.config.character_loader import _load_profile
-                    projection = application.application.export_visual_resource(_load_profile(package / 'character.json'), resource)
+                    projection = application.export_visual_resource(_load_profile(package / 'character.json'), resource)
                     assert projection['pluginRequirements'][0]['plugins'][0]['id'] == 'sakura.visual.spine'
                     assert projection['data']['defaultSkin'] == 'smile' and projection['data']['speed'] == 1.5
                     assert projection['data']['premultipliedAlpha'] == (saved_alpha == 'true')
@@ -319,10 +319,10 @@ def run(components=None):
                     assert projection['data']['skinLabels']['smile'] == '开心'
                     assert projection['data']['skinLabels']['normal'] == '认真'
                     assert len(projection['assets']) >= 3
-                    binding = application.application.visuals.bind('sample', package, resource)
+                    binding = application.visuals.bind('sample', package, resource)
                     assert json.loads(binding.description['prompt'].split('\n', 1)[1])['skinLabels']['smile'] == '开心'
                     visual = binding.presentation()
-                    visual['renderer'] = origin + '/plugins/builtin/sakura_spine/renderer.mjs'
+                    visual['renderer'] = origin + '/plugins/optional/sakura_spine/renderer.mjs'
                     prefix = '/runtime/' + binding.id; Handler.assets[prefix] = package
                     visual['assets'] = {key: origin + prefix + '/' + path.encode().hex() for key, path in visual['assets'].items()}
                     control = binding.parse_control({'version': 1, 'resourceId': resource.id, 'payload': {'skin': 'normal'}}).control
@@ -422,7 +422,7 @@ def run(components=None):
                 assert page.evaluate("thumbnailRequests === thumbnailRequestsBeforeSave")
                 # Editor-owned catches must forward both preview failures to the host.
                 page.evaluate("""async () => {
-                  const {createEditor}=await import('/plugins/builtin/sakura_spine/editor.mjs');
+                  const {createEditor}=await import('/plugins/optional/sakura_spine/editor.mjs');
                   const container=document.createElement('div'); document.body.append(container);
                   window.editorFailures=[];
                   window.errorEditor=createEditor({container,rendererData:{config:{defaultSkin:'normal',defaultAnimation:'idle',speed:1,premultipliedAlpha:false},skins:['normal'],animations:['idle']},

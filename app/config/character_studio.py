@@ -8,7 +8,7 @@ import shutil
 import time
 import uuid
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -391,6 +391,62 @@ class CharacterStudioService:
         self._write_state(safe_id, doc, origin="new", dirty=True, imported_assets=[])
         return self._opened_payload(package_dir, doc, source="draft", resumed=False)
 
+    def workspace_document(self, workspace_id: str) -> tuple[Path, CharacterStudioDoc]:
+        state = self._require_state(workspace_id)
+        return self._workspace_package(workspace_id), CharacterStudioDoc.from_payload(state["doc"])
+
+    def workspace_manifest(self, workspace_id: str) -> dict[str, Any]:
+        package, doc = self.workspace_document(workspace_id)
+        return _merge_character_manifest(package, doc)
+
+    def prepare_visual_export(self, workspace_id: str, resource_id: str):
+        from app.config.character_resources import character_visual_resources
+
+        package, doc = self.workspace_document(workspace_id)
+        resources, selected = character_visual_resources(doc.to_manifest(), package)
+        resource = next(item for item in resources if item.id == resource_id)
+        if resource.type == "sakura.visual.portrait@1" and resource.root == "." and resource.entry == "character.json" and resource.id not in doc.visual_data:
+            # Materialize pending legacy portrait edits only in the draft.
+            _, raw = self.visual_editor_input(package, doc, resource)
+            atomic_write_text(package / "character.json", json.dumps(raw, ensure_ascii=False, indent=2))
+        _write_visual_draft(package, doc)
+        resources, selected = character_visual_resources(doc.to_manifest(), package)
+        character = replace(
+            _load_profile(package / "character.json"), visual_resources=resources,
+            default_visual_id=selected, visual_providers=(doc.visuals or {}).get("providers", {}),
+        )
+        return character, next(item for item in resources if item.id == resource_id)
+
+    @staticmethod
+    def visual_editor_input(package, doc, resource):
+        import json
+        from app.config.character_resources import CharacterVisualResource
+        if resource.id in doc.visual_data:
+            editor_resource = resource
+            # The saved draft already contains the plugin's private projection.
+            if resource.root == "." and resource.entry == "character.json":
+                editor_resource = CharacterVisualResource(resource.id, resource.type, ".", f"visuals/{resource.id}.json")
+            return editor_resource, doc.visual_data[resource.id]
+        relative = resource.entry if resource.root == "." else f"{resource.root}/{resource.entry}"
+        path = resolve_workspace_path(package, relative, "表现入口")
+        raw = None
+        if path.is_file() and path.stat().st_size <= 256 * 1024:
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (UnicodeError, ValueError):
+                pass
+        if resource.type == "sakura.visual.portrait@1" and resource.root == "." and resource.entry == "character.json":
+            # v1.1.0 autosave kept edits in the document, not the copied manifest.
+            # Preserve opaque fields while presenting those pending edits to the adapter.
+            raw = dict(raw) if isinstance(raw, dict) else {}
+            portrait = raw.get("portrait")
+            raw["portrait"] = {
+                **(portrait if isinstance(portrait, dict) else {}),
+                "default": doc.default_portrait,
+                "expressions": dict(doc.expressions),
+            }
+        return resource, raw
+
     def save_workspace_draft(self, workspace_id: str, doc_payload: dict[str, Any]) -> dict[str, Any]:
         safe_id = _validate_character_id(workspace_id)
         state = self._require_state(safe_id)
@@ -580,7 +636,7 @@ class CharacterStudioService:
             # Only changed files are staged; the full old package remains a recoverable backup.
             staging.mkdir()
             for relative in changed:
-                source = _resolve_workspace_path(draft_dir, relative, "角色资源")
+                source = resolve_workspace_path(draft_dir, relative, "角色资源")
                 if source.is_file():
                     destination = staging / relative
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -659,7 +715,7 @@ class CharacterStudioService:
         if resource is None:
             raise ValueError("VISUAL_RESOURCE_MISSING")
         subdir = f"visuals/{resource_id}/assets" if resource.root == "." else f"{resource.root}/assets"
-        _resolve_workspace_path(package_dir, subdir, "表现资源")
+        resolve_workspace_path(package_dir, subdir, "表现资源")
         source = Path(source_path)
         if source.is_symlink() or source.is_junction():
             raise ValueError("VISUAL_ASSET_INVALID")
@@ -667,18 +723,13 @@ class CharacterStudioService:
             source = source.resolve(strict=True)
             # A fresh import directory preserves filenames and model-relative
             # references without renaming collisions with earlier imports.
-            imported_root = _resolve_workspace_path(package_dir, f"{subdir}/{_safe_filename(source.name)}-{uuid.uuid4().hex[:12]}", "表现资源")
+            imported_root = resolve_workspace_path(package_dir, f"{subdir}/{_safe_filename(source.name)}-{uuid.uuid4().hex[:12]}", "表现资源")
             items = []
             copied = []
-            total_bytes = 0
-            directory_count = 0
             try:
                 def walk_error(error):
                     raise error
                 for directory, dirs, names in os.walk(source, followlinks=False, onerror=walk_error):
-                    directory_count += 1
-                    if directory_count > 512:
-                        raise ValueError("VISUAL_ASSET_LIMIT")
                     dirs.sort()
                     for name in [*dirs, *sorted(names)]:
                         _operation_checkpoint(cancel_check)
@@ -686,15 +737,12 @@ class CharacterStudioService:
                         if file.is_symlink() or file.is_junction():
                             raise ValueError("VISUAL_ASSET_INVALID")
                         relative_source = file.resolve(strict=True).relative_to(source)
-                        if len(relative_source.parts) > 32:
-                            raise ValueError("VISUAL_ASSET_LIMIT")
                         if name in dirs:
                             continue
                         size = file.stat().st_size
-                        total_bytes += size
-                        if not file.is_file() or size > 64 * 1024 * 1024 or total_bytes > 256 * 1024 * 1024 or len(copied) >= 512:
+                        if not file.is_file():
                             raise ValueError("VISUAL_ASSET_LIMIT")
-                        target = _resolve_workspace_path(imported_root, relative_source.as_posix(), "表现资源")
+                        target = resolve_workspace_path(imported_root, relative_source.as_posix(), "表现资源")
                         target.parent.mkdir(parents=True, exist_ok=True)
                         _copy_file_cancellable(file, target, cancel_check=cancel_check)
                         relative = target.relative_to(package_dir).as_posix()
@@ -708,7 +756,7 @@ class CharacterStudioService:
                     shutil.rmtree(imported_root)
                 raise
             return {"items": items}
-        if not source.is_file() or source.stat().st_size > 64 * 1024 * 1024:
+        if not source.is_file():
             raise ValueError("VISUAL_ASSET_INVALID")
         result = _copy_workspace_asset(package_dir, source, subdir, cancel_check=cancel_check)
         self._commit_imported_assets(package_dir, [result], cancel_check=cancel_check, commit_started=commit_started)
@@ -1114,7 +1162,7 @@ class CharacterStudioService:
                 retained.append(relative_path)
                 continue
             try:
-                path = _resolve_workspace_path(package_dir, relative_path, "草稿资源")
+                path = resolve_workspace_path(package_dir, relative_path, "草稿资源")
             except ValueError:
                 continue
             if path.is_file():
@@ -1285,8 +1333,8 @@ class CharacterStudioService:
                 raise ValueError("角色发布中断，且原角色备份不可用。")
             _require_recovery_character(source, character_id)
             for relative in changed:
-                original = _resolve_workspace_path(source, relative, "角色恢复资源")
-                _resolve_workspace_path(target, relative, "角色恢复资源")
+                original = resolve_workspace_path(source, relative, "角色恢复资源")
+                resolve_workspace_path(target, relative, "角色恢复资源")
                 if original.is_file():
                     destination = recovery / relative
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1545,14 +1593,14 @@ def _changed_package_files(source: Path, target: Path, *, cancel_check=None) -> 
 def _apply_changed_files(source: Path, target: Path, changed) -> None:
     # Remove old leaves first so a resource may change between a file and directory.
     for relative in sorted(changed, key=lambda item: (-len(Path(item).parts), item)):
-        incoming = _resolve_workspace_path(source, relative, "角色发布资源")
-        destination = _resolve_workspace_path(target, relative, "角色发布资源")
+        incoming = resolve_workspace_path(source, relative, "角色发布资源")
+        destination = resolve_workspace_path(target, relative, "角色发布资源")
         if not incoming.is_file() and destination.is_file():
             destination.unlink()
     # Publish the manifest last, after every resource it can reference is in place.
     for relative in sorted(changed, key=lambda item: (item == "character.json", item)):
-        incoming = _resolve_workspace_path(source, relative, "角色发布资源")
-        destination = _resolve_workspace_path(target, relative, "角色发布资源")
+        incoming = resolve_workspace_path(source, relative, "角色发布资源")
+        destination = resolve_workspace_path(target, relative, "角色发布资源")
         if incoming.is_file():
             if destination.is_dir():
                 for directory in sorted(destination.rglob("*"), key=lambda item: len(item.parts), reverse=True):
@@ -1598,7 +1646,7 @@ def _cleanup_created_assets(package_dir: Path, copied_assets: list[dict[str, Any
         if not bool(item.get("_created")):
             continue
         try:
-            path = _resolve_workspace_path(
+            path = resolve_workspace_path(
                 package_dir,
                 str(item.get("relative_path") or ""),
                 "导入资源",
@@ -1666,9 +1714,6 @@ def _validate_visual_draft(package_dir: Path, doc: CharacterStudioDoc) -> None:
     resources, _ = character_visual_resources({"visuals": doc.visuals}, package_dir)
     if set(doc.visual_data) - {item.id for item in resources}:
         raise ValueError("VISUAL_DRAFT_INVALID")
-    encoded = json.dumps(doc.visual_data, ensure_ascii=False, allow_nan=False)
-    if len(encoded.encode("utf-8")) > 256 * 1024:
-        raise ValueError("VISUAL_DRAFT_TOO_LARGE")
 
 
 def _write_visual_draft(package_dir: Path, doc: CharacterStudioDoc) -> None:
@@ -1690,7 +1735,7 @@ def _write_visual_draft(package_dir: Path, doc: CharacterStudioDoc) -> None:
         else:
             entry = resource.entry
         relative = entry if resource.root == "." else f"{resource.root}/{entry}"
-        path = _resolve_workspace_path(package_dir, relative, "表现资源")
+        path = resolve_workspace_path(package_dir, relative, "表现资源")
         if path == package_dir / CARD_FILENAME or relative.startswith("voice/") or path == package_dir / "character.json":
             raise ValueError("VISUAL_DRAFT_TARGET_INVALID")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1879,13 +1924,13 @@ def _validate_reference_audios(package_dir: Path, references: list[ReferenceAudi
 
 
 def _resolve_workspace_file(package_dir: Path, relative_path: str, label: str) -> Path:
-    resolved = _resolve_workspace_path(package_dir, relative_path, label)
+    resolved = resolve_workspace_path(package_dir, relative_path, label)
     if not resolved.is_file():
         raise ValueError(f"{label}文件不存在：{relative_path}")
     return resolved
 
 
-def _resolve_workspace_path(package_dir: Path, relative_path: str, label: str) -> Path:
+def resolve_workspace_path(package_dir: Path, relative_path: str, label: str) -> Path:
     path = Path(str(relative_path or "").strip())
     if path.is_absolute():
         raise ValueError(f"{label}不能使用绝对路径：{relative_path}")
@@ -1950,7 +1995,7 @@ def _validate_package_local_paths(package_dir: Path) -> None:
             _check_local_path(package_dir, extension.get("sovitsModel"), f"{plugin_id} SoVITS 模型")
             onnx_dir = extension.get("onnxModelDir")
             if isinstance(onnx_dir, str) and onnx_dir.strip():
-                resolved = _resolve_workspace_path(
+                resolved = resolve_workspace_path(
                     package_dir,
                     onnx_dir,
                     f"{plugin_id} ONNX 模型目录",
@@ -1962,7 +2007,7 @@ def _validate_package_local_paths(package_dir: Path) -> None:
 def _check_local_path(package_dir: Path, value: object, label: str) -> None:
     if not isinstance(value, str) or not value.strip():
         return
-    _resolve_workspace_path(
+    resolve_workspace_path(
         package_dir,
         value.strip().strip('"').strip("'"),
         label,

@@ -14,14 +14,13 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
-from app.core.cancellation import OperationCancelled
+from app.plugin_sdk.sakura_cancellation import OperationCancelled
 from app.storage.runtime_roots import RuntimeRoots
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
 
 if TYPE_CHECKING:
-    from app.agent.mcp.provider import MCPToolProvider
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
 
 
 CORE_VERSION = "0.1.0"
@@ -35,16 +34,16 @@ CAPABILITIES = (
 ROUTER_CAPABILITY = "transport.concurrent-router"
 PROVIDER_SETTINGS_CAPABILITY = "settings.provider-model"
 TOOLS_CAPABILITY = "assistant.tools-v1"
-MCP_CAPABILITY = "assistant.mcp-v1"
 PLUGINS_CAPABILITY = "assistant.plugins-v1"
 TTS_CAPABILITY = "assistant.tts-v1"
 SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"
+HOST_DESKTOP_REQUESTS = frozenset({"host.interaction.current", "host.interaction.state", "host.interaction.detach",
+    "host.screen.result", "host.visual.claim", "host.visual.result"})
 SUPPORTED_CAPABILITIES = (
     *CAPABILITIES,
     ROUTER_CAPABILITY,
     PROVIDER_SETTINGS_CAPABILITY,
     TOOLS_CAPABILITY,
-    MCP_CAPABILITY,
     PLUGINS_CAPABILITY,
     TTS_CAPABILITY,
     SCREEN_CAPTURE_CAPABILITY,
@@ -132,11 +131,11 @@ class NegotiationError(ValueError):
 
 
 def _default_initializer_factory(
-    roots: RuntimeRoots, tool_registry: ToolRegistry, mcp_provider: MCPToolProvider | None,
+    roots: RuntimeRoots, tool_registry: ToolRegistry,
 ) -> object:
     from .assistant_adapter import AssistantAdapter
 
-    return AssistantAdapter(roots, tool_registry=tool_registry, mcp_provider=mcp_provider)
+    return AssistantAdapter(roots)
 
 
 @dataclass
@@ -154,7 +153,7 @@ class ReadinessController:
         config: HostConfig,
         *,
         initializer_factory: Callable[
-            [RuntimeRoots, ToolRegistry, MCPToolProvider | None], object
+            [RuntimeRoots, ToolRegistry], object
         ] = _default_initializer_factory,
     ) -> None:
         self._config = config
@@ -176,19 +175,26 @@ class ReadinessController:
         self._initializer_close_thread: threading.Thread | None = None
         self._background_close_error: BaseException | None = None
         self._tools_enabled = False
-        self._mcp_enabled = False
-        self._plugins_enabled = False
+        # The production Assistant is a plugin even when a client does not
+        # negotiate the optional plugin-management UI capability. Injected
+        # initializers may remain self-contained for boundary tests.
+        self._plugins_enabled = initializer_factory is _default_initializer_factory
         self._session_published_callback: Callable[[], None] | None = None
         self._application_tools: ToolRegistry | None = None
-        self._application_mcp: MCPToolProvider | None = None
+        self._starting_plugin_application: object | None = None
         self._plugin_application: object | None = None
         self._chat_boundary: object | None = None
+        self._visual_selector = None
 
     def set_session_published_callback(self, callback: Callable[[], None]) -> None:
         call_now = False
         with self._lock:
             self._session_published_callback = callback
             call_now = self._session is not None and self._readiness in {"ready", "degraded"}
+            application = self._plugin_application
+            loaded = getattr(application, "wait_until_loaded", None)
+            if call_now and callable(loaded):
+                call_now = loaded(timeout=0)
         if call_now:
             callback()
 
@@ -199,17 +205,19 @@ class ReadinessController:
         if application is not None:
             getattr(application, "bind_chat_boundary")(boundary)
 
+    def bind_visual_selector(self, callback) -> None:
+        with self._lock:
+            self._visual_selector = callback
+            application = self._plugin_application
+        if application is not None:
+            application.bind_visual_selector(callback)
+
     def enable_tools(self) -> None:
         with self._lock:
             if self._worker is not None:
                 raise RuntimeError("tools capability must be selected before initialization")
             self._tools_enabled = True
 
-    def enable_mcp(self) -> None:
-        with self._lock:
-            if self._worker is not None:
-                raise RuntimeError("MCP capability must be selected before initialization")
-            self._mcp_enabled = True
 
     def enable_plugins(self) -> None:
         with self._lock:
@@ -263,11 +271,7 @@ class ReadinessController:
 
         self._refresh_visual_presentation()
         with self._lock:
-            if self._closed or self._readiness not in {
-                "ready",
-                "setup_required",
-                "degraded",
-            }:
+            if self._closed:
                 return None
             return self._copy_presentation(self._current_character_presentation)
 
@@ -279,16 +283,36 @@ class ReadinessController:
                 return None
             return self._plugin_application
 
-    def published_mcp_provider(self) -> MCPToolProvider | None:
+
+    def refresh_assistant_binding(self) -> None:
+        """Publish a replacement at the plugin operation, never inside a send."""
+        from app.plugins.runtime_v4 import PluginRuntimeError
+
         with self._lock:
-            return None if self._closed else self._application_mcp
+            if self._closed or self._readiness == "initializing":
+                return
+            application = self._plugin_application
+            session = self._session
+        if application is None:
+            return
+        try:
+            current = application.service_identity("sakura.assistant")
+        except PluginRuntimeError as error:
+            if error.code != "SERVICE_MISSING":
+                raise
+            current = None
+        previous = session.assistant.identity if session is not None else None
+        model_changed = False
+        for slot, identity in getattr(session, "model_bindings", {}).items():
+            try:
+                model_changed = model_changed or application.service_identity(session.model_slots[slot]["serviceKey"]) != identity
+            except PluginRuntimeError:
+                model_changed = True
+        if current != previous or model_changed:
+            self.apply_provider_configuration()
 
     def apply_provider_configuration(self) -> None:
         """Apply Provider settings or replace/retire only the Assistant Session."""
-
-        from app.config.core_config_reader import CoreConfigReader
-
-        config = CoreConfigReader().read(self._config.user_root)
         with self._lock:
             if self._closed:
                 raise OperationCancelled()
@@ -299,104 +323,146 @@ class ReadinessController:
             session = self._session
             initializer = self._initializer
             plugin_application = self._plugin_application
-        if config.config_problem is not None:
-            if plugin_application is not None and session is not None:
-                getattr(plugin_application, "unbind_session")()
-            retire = getattr(initializer, "retire_session", None)
-            if callable(retire):
-                retire()
-            problem = config.config_problem
-            with self._lock:
-                self._session = None
-                self._readiness = problem.state
-                self._component = {
-                    "state": problem.state,
-                    "code": problem.code,
-                    "retryable": problem.retryable,
-                }
-                self._current_character_summary = None
-                if problem.code != "PROVIDER_SETUP_REQUIRED":
-                    self._current_character_presentation = None
-                self._revision += 1
-            return
-
-        assert config.provider_selection is not None
-        if session is not None:
-            provider = getattr(session, "provider", None)
-            update = getattr(provider, "update_settings", None)
-            if not callable(update):
-                raise RuntimeError("PROVIDER_HOT_APPLY_UNAVAILABLE")
-            update(config.provider_selection.api_settings)
-            return
-
         if initializer is None:
             raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
         result = getattr(initializer, "initialize")(self._cancel)
-        summary = self._project_summary(result.current_character_summary)
-        presentation = self._project_presentation(
-            result.current_character_presentation
-        )
-        if plugin_application is not None and result.session is not None:
-            getattr(plugin_application, "bind_session")(result.session)
-            project = getattr(plugin_application, "visual_presentation", None)
-            if callable(project):
-                presentation = self._project_presentation(project())
-        with self._lock:
-            if self._closed:
-                raise OperationCancelled()
-            self._readiness = result.state
-            self._component = {
-                "state": result.state,
-                "code": result.code,
-                "retryable": result.retryable,
-            }
-            self._current_character_summary = summary
-            self._current_character_presentation = presentation
-            self._session = result.session
-            self._revision += 1
-            callback = self._session_published_callback if result.session is not None else None
+        if result.state == "failed":
+            self._reject_provider_configuration(result, session, plugin_application)
+        candidate = None
+        try:
+            summary = self._project_summary(result.current_character_summary)
+            presentation = self._project_presentation(result.current_character_presentation)
+            prepare = getattr(plugin_application, "prepare_character", None)
+            if callable(prepare) and (result.session is not None or presentation is not None):
+                from app.config.character_loader import CharacterRegistry
+                character = (result.session.character if result.session is not None else
+                    CharacterRegistry(self._config.user_root).get(presentation["characterId"]))
+                candidate = prepare(character, strict=True)
+                presentation = self._project_presentation(candidate.presentation)
+            self._validate_character_projection(summary, presentation)
+            with self._lock:
+                if self._closed or self._session is not session:
+                    raise OperationCancelled()
+                if plugin_application is not None:
+                    if result.session is not None:
+                        if candidate is not None:
+                            plugin_application.bind_session(result.session, prepared_character=candidate)
+                        else:
+                            plugin_application.bind_session(result.session)
+                    elif candidate is not None:
+                        plugin_application.publish_character(candidate)
+                        plugin_application.retire_session()
+                    elif session is not None:
+                        plugin_application.unbind_session()
+                self._readiness = result.state
+                self._component = {"state": result.state, "code": result.code, "retryable": result.retryable}
+                self._current_character_summary = summary
+                self._current_character_presentation = presentation
+                self._session = result.session
+                self._revision += 1
+                callback = self._session_published_callback if result.session is not None else None
+                loaded = getattr(plugin_application, "wait_until_loaded", None)
+                if callback is not None and callable(loaded) and not loaded(timeout=0):
+                    callback = None
+        except BaseException as error:
+            if candidate is not None:
+                candidate.close()
+            if isinstance(error, OperationCancelled):
+                raise
+            from .assistant_adapter import ReadinessResult, report_assistant_failure
+            report_assistant_failure(error, stage="session_bind", code="SESSION_BIND_FAILED")
+            failed = ReadinessResult("failed", "SESSION_BIND_FAILED", "Assistant 会话未能完成绑定。", False, None)
+            self._reject_provider_configuration(failed, session, plugin_application)
         if callback is not None:
-            callback()
+            try:
+                callback()
+            except Exception:
+                # Optional warmup cannot turn an already-published save into failure.
+                pass
+
+    def _reject_provider_configuration(self, result, session, application):
+        """Keep the last usable Session; never retain a revoked provider scope."""
+        valid = session is not None
+        identity = getattr(getattr(session, "assistant", None), "identity", None)
+        if valid and application is not None and identity is not None:
+            from app.plugins.runtime_v4 import PluginRuntimeError
+            try:
+                valid = application.service_identity("sakura.assistant") == identity
+            except PluginRuntimeError:
+                valid = False
+            for slot, model_identity in getattr(session, "model_bindings", {}).items():
+                try:
+                    valid = valid and application.service_identity(session.model_slots[slot]["serviceKey"]) == model_identity
+                except PluginRuntimeError:
+                    valid = False
+        with self._lock:
+            if self._closed or self._session is not session:
+                raise OperationCancelled()
+            if not valid:
+                self._session = None
+                self._readiness = result.state
+                self._component = {"state": result.state, "code": result.code, "retryable": result.retryable}
+                self._current_character_summary = None
+                self._revision += 1
+        if not valid and application is not None and session is not None:
+            application.unbind_session()
+        raise RuntimeError(result.code)
+
+    @staticmethod
+    def _validate_character_projection(summary, presentation):
+        if summary is not None and presentation is not None and any(
+            presentation[field] != summary[summary_field]
+            for field, summary_field in (("characterId", "id"), ("displayName", "displayName"), ("initialMessage", "initialMessage"))
+        ):
+            raise RuntimeError("CHARACTER_PRESENTATION_NOT_READY")
+
+    def _bind_initialized_result(self, initializer: object, application: object | None, result: Any) -> Any:
+        """Publish a Session only after its application binding succeeds."""
+        if result.session is None:
+            return result
+        try:
+            if application is not None:
+                getattr(application, "bind_session")(result.session)
+            if self._cancel.is_set():
+                raise OperationCancelled()
+            return result
+        except Exception as error:
+            if application is not None:
+                try:
+                    getattr(application, "unbind_session")()
+                except Exception as cleanup_error:
+                    error.add_note(f"Session unbind failed: {type(cleanup_error).__name__}")
+            retire = getattr(initializer, "retire_session", None)
+            if callable(retire):
+                retire()
+            if isinstance(error, OperationCancelled):
+                raise
+            from .assistant_adapter import ReadinessResult, report_assistant_failure
+
+            report_assistant_failure(error, stage="session_bind", code="SESSION_BIND_FAILED")
+
+            return ReadinessResult(
+                state="failed",
+                code="SESSION_BIND_FAILED",
+                message="Assistant 会话未能完成绑定。",
+                retryable=False,
+                current_character_summary=None,
+                current_character_presentation=result.current_character_presentation,
+            )
 
     def switch_character_session(self) -> None:
-        from app.config.character_loader import CharacterRegistry
-        from app.config.settings_service import AppSettingsService
-        registry = CharacterRegistry(self._config.user_root)
-        character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
         with self._lock:
             if self._closed or self._switching_character or self._readiness == "initializing":
                 raise RuntimeError("CHARACTER_SWITCH_NOT_READY")
             self._switching_character = True
-            initializer = self._initializer
-            application = self._plugin_application
-            self._session = None
         try:
-            if application is not None:
-                application.unbind_session()
-                application.application.set_current_character(character_id)
-            if initializer is not None:
-                initializer.retire_session()
             self.apply_provider_configuration()
-            if self.readiness() == "failed":
-                raise RuntimeError("ASSISTANT_INITIALIZATION_FAILED")
-            # Provider setup can leave us without a Session, but the selected
-            # character must still be available in Settings and Studio.
-            if application is not None and self.published_session() is None:
-                application.bind_character_presentation(character_id)
-        except Exception:
-            with self._lock:
-                self._session = None
-                self._readiness = "failed"
-                self._component = {"state": "failed", "code": "ASSISTANT_INITIALIZATION_FAILED", "retryable": False}
-                self._current_character_summary = None
-                self._current_character_presentation = None
-                self._revision += 1
-            raise
         finally:
             with self._lock:
                 self._switching_character = False
 
     def apply_character_configuration(self) -> None:
+        from dataclasses import replace
         from app.config.character_loader import CharacterRegistry, load_character_system_prompt
         from app.config.settings_service import AppSettingsService
         from app.core_host.assistant_adapter import project_current_character_summary
@@ -415,39 +481,38 @@ class ReadinessController:
         if session is not None:
             if session.character.id != character_id:
                 raise ValueError("CHARACTER_SESSION_MISMATCH")
-            visual_binding = session.runtime.visual_binding
-            session.runtime.update_character(
-                load_character_system_prompt(character),
-                reply_tones=character.reply_tones,
-                character_id=character.id,
-                character_name=character.display_name,
-            )
-            session.runtime.set_visual_binding(visual_binding)
-            session.character = character
+            replacement = replace(session, character=character, system_prompt=load_character_system_prompt(character))
+        else:
+            replacement = None
         summary = project_current_character_summary(character) if session is not None else None
-        project = getattr(application, "visual_presentation", None)
-        presentation = self._project_presentation(
-            project() if callable(project) else project_character_presentation(character)
-        )
-        if summary is not None and presentation is not None and any(
-            presentation[field] != summary[summary_field]
-            for field, summary_field in (("characterId", "id"), ("displayName", "displayName"), ("initialMessage", "initialMessage"))
-        ):
-            raise RuntimeError("CHARACTER_PRESENTATION_NOT_READY")
-        with self._lock:
-            if self._closed or self._session is not session:
-                raise OperationCancelled()
-            self._current_character_summary = summary
-            self._current_character_presentation = presentation
-            self._revision += 1
+        prepare = getattr(application, "prepare_character", None)
+        candidate = prepare(character, strict=True) if callable(prepare) else None
+        try:
+            presentation = self._project_presentation(
+                candidate.presentation if candidate is not None else project_character_presentation(character))
+            self._validate_character_projection(summary, presentation)
+            with self._lock:
+                if self._closed or self._session is not session:
+                    raise OperationCancelled()
+                if candidate is not None:
+                    if replacement is not None:
+                        application.bind_session(replacement, prepared_character=candidate)
+                    else:
+                        application.publish_character(candidate)
+                self._session = replacement
+                self._current_character_summary = summary
+                self._current_character_presentation = presentation
+                self._revision += 1
+        except BaseException:
+            if candidate is not None:
+                candidate.close()
+            raise
 
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
             session = self._session
-        runtime = getattr(session, "runtime", None) if session is not None else None
-        update = getattr(runtime, "set_runtime_loop_settings", None)
-        if callable(update):
-            update(settings)
+        if session is not None:
+            session.loop_settings = settings
 
     def snapshot(self) -> dict[str, Any]:
         self._refresh_visual_presentation()
@@ -512,17 +577,19 @@ class ReadinessController:
             initializer = self._claim_initializer_close_locked()
             plugin_application = self._plugin_application
             self._plugin_application = None
-            application_mcp = self._application_mcp
-            self._application_mcp = None
+            starting_application = self._starting_plugin_application
+            self._starting_plugin_application = None
         if initializer is not None:
             self._start_initializer_close(initializer)
+        # Plugin startup can be waiting on its process. Stop that owned process
+        # before joining the initializer which is waiting for startup to finish.
+        self._close_application_resources([plugin_application, starting_application])
         if worker is not None:
             worker.join(timeout=max(0.0, deadline - monotonic()))
         with self._lock:
             close_thread = self._initializer_close_thread
         if close_thread is not None:
             close_thread.join(timeout=max(0.0, deadline - monotonic()))
-        self._close_application_resources([application_mcp, plugin_application])
         with self._lock:
             background_error = self._background_close_error
             self._background_close_error = None
@@ -560,37 +627,23 @@ class ReadinessController:
 
     def _initialize(self) -> None:
         initializer: object | None = None
+        plugin_application: object | None = None
         session_callback: Callable[[], None] | None = None
-        application_to_bind: object | None = None
         unpublished_resources: list[object | None] = []
+        presentation = None
+        stage = "plugin_application"
         try:
             with self._lock:
                 tools_enabled = self._tools_enabled
-                mcp_enabled = self._mcp_enabled
                 plugins_enabled = self._plugins_enabled
             if tools_enabled:
                 from app.core_host.tools import create_runtime_v2_tool_registry
 
                 application_tools = create_runtime_v2_tool_registry()
             else:
-                from app.agent.tools import ToolRegistry
+                from app.plugin_sdk.sakura_tools import ToolRegistry
 
                 application_tools = ToolRegistry([])
-            application_mcp: MCPToolProvider | None = None
-            if plugins_enabled:
-                from app.config.web_plugin_migration import prepare_bundled_web_plugin
-
-                prepare_bundled_web_plugin(self._config.roots)
-            if mcp_enabled:
-                from app.agent.mcp.provider import start_mcp_tools_from_config
-
-                application_mcp = start_mcp_tools_from_config(
-                    self._config.user_root,
-                    application_tools,
-                    distribution_root=self._config.distribution_root,
-                )
-                unpublished_resources.append(application_mcp)
-            plugin_application: object | None = None
             if plugins_enabled:
                 from app.core_host.plugin_application import PluginApplicationHost
 
@@ -602,21 +655,48 @@ class ReadinessController:
                 unpublished_resources.append(plugin_application)
                 with self._lock:
                     chat_boundary = self._chat_boundary
+                    visual_selector = self._visual_selector
                 if chat_boundary is not None:
                     plugin_application.bind_chat_boundary(chat_boundary)
-                plugin_application.start()
+                if visual_selector is not None:
+                    plugin_application.bind_visual_selector(visual_selector)
+                with self._lock:
+                    if self._closed:
+                        return
+                    self._starting_plugin_application = plugin_application
+                    unpublished_resources.clear()
+                try:
+                    presentation = self._project_presentation(
+                        plugin_application.start_character_presentation()
+                    )
+                except BaseException:
+                    with self._lock:
+                        if self._starting_plugin_application is plugin_application:
+                            self._starting_plugin_application = None
+                            unpublished_resources.append(plugin_application)
+                    raise
             with self._lock:
                 application_closed = self._closed
                 if not application_closed:
                     self._application_tools = application_tools
-                    self._application_mcp = application_mcp
                     self._plugin_application = plugin_application
+                    self._starting_plugin_application = None
+                    self._current_character_presentation = presentation
+                    self._revision += 1
                     unpublished_resources.clear()
             if application_closed:
                 return
 
+            stage = "assistant_plugin"
+            if plugin_application is not None:
+                plugin_application.start_assistant()
+            with self._lock:
+                if self._closed:
+                    return
+
+            stage = "assistant_initializer"
             initializer = self._initializer_factory(
-                self._config.roots, application_tools, application_mcp,
+                self._config.roots, application_tools,
             )
             with self._lock:
                 self._initializer = initializer
@@ -626,12 +706,17 @@ class ReadinessController:
                 self._start_initializer_close(claimed)
                 return
 
+            bind_application = getattr(initializer, "bind_application", None)
+            if callable(bind_application):
+                bind_application(plugin_application)
             initialize = getattr(initializer, "initialize")
             result = initialize(self._cancel)
+            result = self._bind_initialized_result(initializer, plugin_application, result)
             summary = self._project_summary(result.current_character_summary)
-            presentation = self._project_presentation(
-                result.current_character_presentation
-            )
+            presentation = self._project_presentation(result.current_character_presentation) or presentation
+            project = getattr(plugin_application, "visual_presentation", None)
+            if callable(project):
+                presentation = self._project_presentation(project()) or presentation
             with self._lock:
                 if self._closed:
                     claimed = self._claim_initializer_close_locked()
@@ -645,36 +730,18 @@ class ReadinessController:
                     self._current_character_summary = summary
                     self._current_character_presentation = presentation
                     self._session = result.session
-                    self._revision = 2
+                    self._revision += 1
                     claimed = None
-                    session_callback = (
-                        self._session_published_callback
-                        if self._session is not None and self._readiness in {"ready", "degraded"}
-                        else None
-                    )
-                    application_to_bind = (
-                        self._plugin_application
-                        if self._session is not None and self._readiness in {"ready", "degraded"}
-                        else None
-                    )
             if claimed is not None:
                 self._start_initializer_close(claimed)
-            elif application_to_bind is not None:
-                try:
-                    getattr(application_to_bind, "bind_session")(result.session)
-                except Exception:
-                    pass
-            elif claimed is None and plugin_application is not None and presentation is not None:
+            elif result.session is None and plugin_application is not None and presentation is not None:
                 bind_presentation = getattr(plugin_application, "bind_character_presentation", None)
                 if callable(bind_presentation):
                     bind_presentation(str(presentation["characterId"]))
-            if claimed is None and session_callback is not None:
-                try:
-                    session_callback()
-                except Exception:
-                    # TTS warmup is optional and must not alter Core readiness.
-                    pass
-        except BaseException:  # noqa: BLE001 - publish a stable, sanitized readiness
+        except BaseException as error:  # noqa: BLE001 - publish a stable, sanitized readiness
+            from .assistant_adapter import report_assistant_failure
+
+            report_assistant_failure(error, stage=stage, code="ASSISTANT_INITIALIZATION_FAILED")
             with self._lock:
                 if self._closed:
                     claimed = self._claim_initializer_close_locked()
@@ -686,15 +753,40 @@ class ReadinessController:
                         "retryable": False,
                     }
                     self._current_character_summary = None
-                    self._current_character_presentation = None
                     self._session = None
-                    self._revision = 2
+                    self._revision += 1
                     claimed = None
             if claimed is not None:
                 self._start_initializer_close(claimed)
 
         finally:
-            # Ownership transfers only when all Application resources are published.
+            # Finish optional startup on the same owned worker, after publishing
+            # visual and chat readiness. Its failures cannot revoke either.
+            with self._lock:
+                finish_plugins = not self._closed and self._plugin_application is plugin_application and plugin_application is not None
+            if finish_plugins:
+                try:
+                    plugin_application.start()
+                except BaseException:
+                    # The application records its original startup failure.
+                    # Already-published Assistant/visual state remains usable.
+                    pass
+            with self._lock:
+                session_callback = (
+                    self._session_published_callback
+                    if not self._closed and self._session is not None and self._readiness in {"ready", "degraded"}
+                    else None
+                )
+            if session_callback is not None:
+                try:
+                    # This worker already published chat readiness. Optional TTS
+                    # services must finish registering before startup warmup.
+                    session_callback()
+                except Exception:
+                    # TTS warmup is optional and must not alter Core readiness.
+                    pass
+            # The controller owns starting/published applications; only resources
+            # never claimed by it or returned after failed startup remain here.
             self._close_application_resources(unpublished_resources)
 
     def _claim_initializer_close_locked(self) -> object | None:
@@ -930,7 +1022,7 @@ class ControlDispatcher:
         config: HostConfig,
         *,
         initializer_factory: Callable[
-            [RuntimeRoots, ToolRegistry, MCPToolProvider | None], object
+            [RuntimeRoots, ToolRegistry], object
         ] = _default_initializer_factory,
         chat_boundary: object | None = None,
     ) -> None:
@@ -1002,7 +1094,7 @@ class ControlDispatcher:
         if application is None:
             yield []
         else:
-            with application.application.prepare_voice_resources() as errors:
+            with application.prepare_voice_resources() as errors:
                 yield errors
 
     @contextmanager
@@ -1010,13 +1102,12 @@ class ControlDispatcher:
         if self._readiness.readiness() == "initializing":
             raise ValueError("角色正在初始化，请稍后再切换。")
         chat_scope = self._chat_boundary.suspend_for_character_change() if self._chat_boundary else nullcontext()
-        with chat_scope:
+        asr_scope = self._asr_boundary.suspend_for_character_change() if self._asr_boundary else nullcontext()
+        with chat_scope, asr_scope:
             if self._tts_boundary is not None:
                 self._tts_boundary.reset_character()
-            if self._asr_boundary is not None:
-                self._asr_boundary.cancel_all()
             application = self.published_plugin_application()
-            scope = application.application.prepare_character_switch() if application else nullcontext()
+            scope = application.prepare_character_switch() if application else nullcontext()
             with scope as errors:
                 yield
             if errors:
@@ -1038,16 +1129,8 @@ class ControlDispatcher:
             yield []
 
     def apply_character_configuration(self) -> None:
-        from app.config.character_loader import CharacterRegistry
-        from app.config.settings_service import AppSettingsService
-        registry = CharacterRegistry(self._config.user_root)
-        character_id = AppSettingsService(self._config.user_root).load_current_character_id(registry)
-        application = self.published_plugin_application()
-        if application is not None and character_id:
-            application.bind_character_presentation(character_id)
-        schedule = getattr(self._chat_boundary, "schedule_runtime_update", None)
-        if callable(schedule):
-            schedule("character", self._readiness.apply_character_configuration)
+        if self._chat_boundary is not None:
+            self._chat_boundary.apply_runtime_update(self._readiness.apply_character_configuration)
         else:
             self._readiness.apply_character_configuration()
 
@@ -1071,11 +1154,18 @@ class ControlDispatcher:
     def published_plugin_application(self) -> object | None:
         return self._readiness.published_plugin_application()
 
-    def published_mcp_provider(self) -> MCPToolProvider | None:
-        return self._readiness.published_mcp_provider()
+    def plugin_initialization_failed(self) -> bool:
+        return self._readiness.readiness() == "failed"
+
+    def bind_visual_selector(self, callback) -> None:
+        self._readiness.bind_visual_selector(callback)
+
 
     def apply_provider_configuration(self) -> None:
         self._readiness.apply_provider_configuration()
+
+    def refresh_assistant_binding(self) -> None:
+        self._readiness.refresh_assistant_binding()
 
     def apply_tool_runtime_settings(self, settings: object) -> None:
         self._readiness.apply_tool_runtime_settings(settings)
@@ -1213,7 +1303,7 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, "handle_cancel")(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
-        elif name in {"screen.session", "screen.attach", "screen.attachBatch", "screen.remove", "screen.release"}:
+        elif name in {"screen.session", "screen.attach", "screen.remove", "screen.release"}:
             if (
                 SCREEN_CAPTURE_CAPABILITY not in self._negotiated_capabilities
                 or self._chat_boundary is None
@@ -1227,37 +1317,12 @@ class ControlDispatcher:
                 handler = {
                     "screen.session": "handle_screen_session",
                     "screen.attach": "handle_screen_attach",
-                    "screen.attachBatch": "handle_screen_attach_batch",
                     "screen.remove": "handle_screen_remove",
                     "screen.release": "handle_screen_release",
                 }[name]
                 return getattr(self._chat_boundary, handler)(request), False
             except (ValueError, LookupError) as error:
                 return self._error_response(request, "SCREEN_ATTACHMENT_REJECTED", str(error)), False
-        elif name == "settings.provider_model.cancel":
-            if (
-                PROVIDER_SETTINGS_CAPABILITY not in self._negotiated_capabilities
-                or self._provider_settings_boundary is None
-            ):
-                return self._error_response(
-                    request,
-                    "CAPABILITY_NEGOTIATION_FAILED",
-                    "provider settings capability was not negotiated",
-                ), False
-            request_payload = request.get("payload")
-            if not isinstance(request_payload, Mapping) or set(request_payload) != {"operationId"}:
-                return self._error_response(
-                    request,
-                    "INVALID_SETTINGS_CANCEL",
-                    "settings cancellation payload is invalid",
-                ), False
-            payload = {
-                "cancelled": bool(
-                    getattr(self._provider_settings_boundary, "cancel")(
-                        request_payload.get("operationId")
-                    )
-                )
-            }
         elif name == "system.shutdown":
             payload = {"accepted": True}
         else:
@@ -1352,8 +1417,6 @@ class ControlDispatcher:
             getattr(self._provider_settings_boundary, "enable")()
         if TOOLS_CAPABILITY in selected:
             self._readiness.enable_tools()
-        if MCP_CAPABILITY in selected:
-            self._readiness.enable_mcp()
         if PLUGINS_CAPABILITY in selected:
             self._readiness.enable_plugins()
         return {
@@ -1404,7 +1467,6 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
-    from app.config.app_version import read_app_version
     from app.config.character_packages import repair_character_packages
 
     from .character_settings import (
@@ -1417,13 +1479,8 @@ def run_host(
     )
     from .composer_tools import COMPOSER_TOOL_REQUEST_NAMES, ComposerToolsBoundary
     from .history import HISTORY_REQUEST_NAMES, HistoryBoundary
-    from .mcp_status import MCP_STATUS_REQUEST_NAMES, MCPStatusBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
-    from .screen_awareness_settings import (
-        SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
-        ScreenAwarenessSettingsBoundary,
-    )
     from .storage_settings import STORAGE_SETTINGS_REQUEST_NAMES, StorageSettingsBoundary
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
@@ -1486,12 +1543,10 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            app_version=read_app_version(config.distribution_root),
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
-            runtime_apply=lambda: chat_boundary.schedule_runtime_update(
-                "provider",
+            runtime_apply=lambda: chat_boundary.apply_runtime_update(
                 getattr(dispatcher, "apply_provider_configuration", lambda: None),
             ),
         )
@@ -1499,18 +1554,11 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            runtime_apply=lambda settings: chat_boundary.schedule_runtime_update(
-                "tools",
+            runtime_apply=lambda settings: chat_boundary.apply_runtime_update(
                 lambda: getattr(
                     dispatcher, "apply_tool_runtime_settings", lambda _settings: None
                 )(settings),
             ),
-        )
-        mcp_status = MCPStatusBoundary(
-            config.generation_id,
-            config.generation_credential,
-            config.user_root,
-            mcp_provider_getter=getattr(dispatcher, "published_mcp_provider", lambda: None),
         )
         plugin_settings = PluginSettingsBoundary(
             config.generation_id,
@@ -1519,6 +1567,7 @@ def run_host(
             application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
+            initialization_failed=getattr(dispatcher, "plugin_initialization_failed", lambda: False),
         )
         composer_tools = ComposerToolsBoundary(
             config.generation_id,
@@ -1526,11 +1575,6 @@ def run_host(
             application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
-        )
-        screen_awareness_settings = ScreenAwarenessSettingsBoundary(
-            config.generation_id,
-            config.generation_credential,
-            config.user_root,
         )
         character_settings = CharacterSettingsBoundary(
             config.generation_id,
@@ -1542,6 +1586,9 @@ def run_host(
             apply_switch=getattr(dispatcher, "switch_character_session", None),
             plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
         )
+        bind_visual_selector = getattr(dispatcher, "bind_visual_selector", None)
+        if callable(bind_visual_selector):
+            bind_visual_selector(character_settings.select_visual_resource)
         character_studio = CharacterStudioBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1571,6 +1618,70 @@ def run_host(
 
         class RequestBoundary:
             def handle(self, request: dict[str, Any]) -> object:
+                if request.get("name") in HOST_DESKTOP_REQUESTS:
+                    credential = request.get("generationCredential")
+                    if not isinstance(credential, str) or not hmac.compare_digest(credential, config.generation_credential):
+                        raise TransportFailure("GENERATION_CREDENTIAL_MISMATCH", "request credential does not match the active generation")
+                    if request.get("kind") != "request":
+                        raise TransportFailure("INVALID_CONTROL", "host interaction accepts requests only")
+                    try:
+                        if not isinstance(request.get("payload"), Mapping):
+                            raise ValueError("INVALID_REQUEST")
+                        payload = dict(request["payload"])
+                        if (request.get("generationId") != config.generation_id
+                                or payload.pop("generationId", None) != config.generation_id):
+                            raise ValueError("GENERATION_MISMATCH")
+                        application = dispatcher.published_plugin_application()
+                        if application is None:
+                            raise ValueError("HOST_INTERACTION_UNAVAILABLE")
+                        name = request["name"]
+                        if name == "host.interaction.current":
+                            if payload:
+                                raise ValueError("INVALID_REQUEST")
+                            result = application.chat.current()
+                        elif name == "host.interaction.state":
+                            result = application.chat.set_ui_state(payload)
+                        elif name == "host.interaction.detach":
+                            if payload:
+                                raise ValueError("INVALID_REQUEST")
+                            application.chat.invalidate_session()
+                            application.screen.invalidate_session()
+                            application.visual_controls.invalidate_activity()
+                            result = {"accepted": True}
+                        elif name == "host.screen.result":
+                            result = application.screen.complete(payload)
+                        elif name == "host.visual.claim":
+                            if set(payload) != {"requestId", "target"}:
+                                raise ValueError("INVALID_REQUEST")
+                            result = application.visual_controls.claim(payload.get("requestId"), payload.get("target"))
+                        else:
+                            result = application.visual_controls.complete(payload)
+                        return response(request, generation_id=config.generation_id,
+                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
+                            payload=result if isinstance(result, Mapping) else {"accepted": True})
+                    except Exception as error:
+                        code = getattr(error, "code", str(error) if isinstance(error, ValueError) else "HOST_INTERACTION_FAILED")
+                        if not isinstance(code, str) or len(code) > 80 or not code.replace("_", "").isalnum():
+                            code = "HOST_INTERACTION_FAILED"
+                        return response(request, generation_id=config.generation_id,
+                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload(code, "宿主操作未完成。"))
+                if request.get("name") == "visual.control.parse":
+                    credential = request.get("generationCredential")
+                    if not isinstance(credential, str) or not hmac.compare_digest(credential, config.generation_credential):
+                        raise TransportFailure("GENERATION_CREDENTIAL_MISMATCH", "request credential does not match the active generation")
+                    if request.get("kind") != "request":
+                        raise TransportFailure("INVALID_CONTROL", "visual control accepts requests only")
+                    if request.get("generationId") != config.generation_id:
+                        return response(request, generation_id=config.generation_id,
+                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload("GENERATION_MISMATCH", "request belongs to another generation"))
+                    application = dispatcher.published_plugin_application()
+                    parsed = application.visuals.resolve_control(request.get("payload")) if application is not None else None
+                    return response(request, generation_id=config.generation_id,
+                        generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
+                        payload={"control": parsed.control if parsed is not None else None,
+                            "reasonCode": parsed.reason_code if parsed is not None else "VISUAL_BINDING_EXPIRED"})
                 if request.get("name") in ASR_REQUEST_NAMES:
                     return asr_boundary.handle(request)
                 if request.get("name") == "chat.send":
@@ -1591,19 +1702,6 @@ def run_host(
                             ),
                         )
                     return tool_settings.handle(request)
-                if request.get("name") in MCP_STATUS_REQUEST_NAMES:
-                    if MCP_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "MCP capability was not negotiated",
-                            ),
-                        )
-                    return mcp_status.handle(request)
                 if request.get("name") in PLUGIN_SETTINGS_REQUEST_NAMES:
                     if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
                         return response(
@@ -1616,7 +1714,13 @@ def run_host(
                                 "Plugin settings capability was not negotiated",
                             ),
                         )
-                    return plugin_settings.handle(request)
+                    result = plugin_settings.handle(request)
+                    if (result.get("ok") or request.get("name") == "plugins.marketplace.install") and request.get("name") in {
+                        "plugins.settings.save", "plugins.enabled.set", "plugins.settings.action",
+                        "plugins.install", "plugins.uninstall", "plugins.marketplace.install",
+                    }:
+                        dispatcher.refresh_assistant_binding()
+                    return result
                 if request.get("name") in COMPOSER_TOOL_REQUEST_NAMES:
                     if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
                         return response(
@@ -1643,19 +1747,6 @@ def run_host(
                             ),
                         )
                     return tts_boundary.handle(request)
-                if request.get("name") in SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES:
-                    if SCREEN_CAPTURE_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "Screen awareness capability was not negotiated",
-                            ),
-                        )
-                    return screen_awareness_settings.handle(request)
                 if request.get("name") in CHARACTER_SETTINGS_REQUEST_NAMES:
                     return character_settings.handle(request)
                 if request.get("name") in CHARACTER_STUDIO_REQUEST_NAMES:
@@ -1684,17 +1775,19 @@ def run_host(
             writer,
             dispatcher,
             fixture_handler=request_boundary.handle,
+            fixture_reserve=request_boundary.reserve_send,
+            fixture_abandon=request_boundary.abandon_send,
             fixture_names=frozenset(
                 {
                     "chat.send",
+                    "visual.control.parse",
                     *SETTINGS_REQUEST_NAMES,
                     *TOOL_SETTINGS_REQUEST_NAMES,
-                    *MCP_STATUS_REQUEST_NAMES,
                     *PLUGIN_SETTINGS_REQUEST_NAMES,
                     *COMPOSER_TOOL_REQUEST_NAMES,
                     *TTS_REQUEST_NAMES,
                     *ASR_REQUEST_NAMES,
-                    *SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
+                    *HOST_DESKTOP_REQUESTS,
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_STUDIO_REQUEST_NAMES,
                     *STORAGE_SETTINGS_REQUEST_NAMES,

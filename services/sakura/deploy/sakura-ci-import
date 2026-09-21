@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec /opt/sakura-console-venv/bin/python -I /opt/sakura-service/current/ci_import.py

@@ -12,11 +12,11 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 use crate::{
     character_presentation,
-    chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
+    chat_bridge::{ChatBridge, ChatEventPublication},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
     core_supervisor::{
@@ -376,8 +376,13 @@ impl ShellLifecycleHandle {
 pub struct ShellLifecycleSession {
     handle: ShellLifecycleHandle,
     worker: Option<JoinHandle<()>>,
-    chat_events: Option<Receiver<ChatEventPublication>>,
+    chat_events: Option<Receiver<DesktopProjection>>,
     chat_projector: Option<JoinHandle<()>>,
+}
+
+enum DesktopProjection {
+    Chat(ChatEventPublication),
+    Host(Value),
 }
 
 impl ShellLifecycleSession {
@@ -466,10 +471,17 @@ impl ShellLifecycleSession {
             .take()
             .ok_or("CHAT_PROJECTOR_UNAVAILABLE")?;
         let update_coordinator = app.state::<UpdateCoordinator>().inner().clone();
+        let handle = self.handle.clone();
         self.chat_projector = Some(thread::spawn(move || {
             while let Ok(event) = events.recv() {
-                let _ = update_coordinator.observe_chat_event(&event);
-                let _ = app.emit_to("main", CHAT_EVENT, event);
+                match event {
+                    DesktopProjection::Chat(event) => {
+                        let _ = update_coordinator.observe_chat_event(&event);
+                    }
+                    DesktopProjection::Host(event) => {
+                        crate::host_interaction::dispatch(&app, &handle, event)
+                    }
+                }
             }
         }));
         Ok(())
@@ -521,7 +533,7 @@ fn run_worker(
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
-    chat_events: Sender<ChatEventPublication>,
+    chat_events: Sender<DesktopProjection>,
     runtime_log: Option<RuntimeLogService>,
     start_immediately: bool,
 ) {
@@ -689,7 +701,7 @@ fn run_worker(
     );
 }
 
-fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublication>) {
+fn drain_chat_events(state: &mut WorkerState, events: &Sender<DesktopProjection>) {
     let Some(host) = state.host.as_ref() else {
         return;
     };
@@ -701,13 +713,18 @@ fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublicati
         if event
             .get("name")
             .and_then(Value::as_str)
-            .is_some_and(|name| name.starts_with("chat."))
+            .is_some_and(|name| name.starts_with("chat.") || name.starts_with("host.chat."))
         {
             if let Some(bridge) = state.chat_bridge.as_ref() {
                 if let Ok(Some(publication)) = bridge.observe_event(&event) {
-                    let _ = events.send(publication);
+                    let _ = events.send(DesktopProjection::Chat(publication));
                 }
             }
+        } else if matches!(
+            event.get("name").and_then(Value::as_str),
+            Some("host.screen.capture" | "host.visual.apply" | "host.visual.cancel")
+        ) {
+            let _ = events.send(DesktopProjection::Host(event));
         }
     }
 }
@@ -840,10 +857,10 @@ fn spawn_and_initialize(
     state.chat_bridge = state
         .host
         .as_ref()
-        .and_then(|host| host.chat_gateway().ok())
-        .and_then(|gateway| {
+        .and_then(|host| host.concurrent_request_handle().ok())
+        .and_then(|transport| {
             ChatBridge::new(
-                gateway,
+                Arc::new(transport),
                 generation_text.clone(),
                 state.identity.map_or(0, |(_, number)| number),
             )
@@ -871,7 +888,7 @@ fn spawn_and_initialize(
         match commands.try_recv() {
             Ok(ShellCommand::Restart) => {
                 // Settings become writable as soon as Core transport is ready,
-                // while Assistant/MCP initialization may still be running.
+                // while Assistant initialization may still be running.
                 // Coalesce restarts until readiness is stable so shutdown does
                 // not race the initializer and report SHUTDOWN_DURING_INITIALIZE.
                 restart_after_readiness = true;
@@ -1095,10 +1112,6 @@ fn ready_character_generation(
     let ready = publication.supervisor.generation_number > previous_generation_number
         && generation_id != previous_generation_id
         && snapshot.generation_id == generation_id
-        && matches!(
-            snapshot.readiness.as_str(),
-            "ready" | "setup_required" | "degraded"
-        )
         && presentation.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
         && presentation.get("characterId").and_then(Value::as_str) == Some(target_character_id);
     ready.then_some(generation_id)
@@ -1217,8 +1230,6 @@ mod tests {
         std::fs::create_dir_all(beta.join("portraits")).expect("beta portrait directory");
         std::fs::write(beta.join("card.md"), "You are the isolated Beta fixture.")
             .expect("beta card");
-        std::fs::write(beta.join("portraits/neutral.txt"), "isolated beta portrait")
-            .expect("beta portrait");
         std::fs::write(
             beta.join("character.json"),
             r#"{
@@ -1227,13 +1238,39 @@ mod tests {
   "initial_message": "Beta greeting.",
   "card": "card.md",
   "portrait": {
-    "default": "portraits/neutral.txt",
-    "expressions": {"neutral": "portraits/neutral.txt"}
+    "default": "portraits/neutral.png",
+    "expressions": {"neutral": "portraits/neutral.png"}
   },
   "reply": {"tones": ["neutral"]}
 }"#,
         )
         .expect("beta character manifest");
+        // Candidate publication validates the actual image, including when
+        // switching back to the original role. Both fixtures need loadable PNGs.
+        for role in ["sakura", "beta"] {
+            let package = root.join("characters").join(role);
+            let image = std::fs::File::create(package.join("portraits/neutral.png"))
+                .expect("fixture portrait file");
+            let mut encoder = png::Encoder::new(image, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .expect("PNG header")
+                .write_image_data(&[144, 128, 112, 255])
+                .expect("PNG pixels");
+            let path = package.join("character.json");
+            let mut manifest: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("fixture manifest"))
+                    .expect("valid fixture manifest");
+            manifest["portrait"] = json!({"default": "portraits/neutral.png",
+                "expressions": {"neutral": "portraits/neutral.png"}});
+            std::fs::write(
+                path,
+                serde_json::to_vec(&manifest).expect("encode fixture manifest"),
+            )
+            .expect("write fixture manifest");
+        }
         root.canonicalize().expect("canonical isolated user root")
     }
 
@@ -1614,6 +1651,11 @@ mod tests {
             )
             .expect("persist beta selection");
         assert_eq!(
+            select_beta.get("ok"),
+            Some(&Value::Bool(true)),
+            "{select_beta}"
+        );
+        assert_eq!(
             select_beta
                 .pointer("/payload/changePlan")
                 .and_then(Value::as_str),
@@ -1630,6 +1672,15 @@ mod tests {
                     .and_then(Value::as_str)
                     == Some(role)
                 {
+                    assert_eq!(
+                        publication
+                            .character_presentation
+                            .as_ref()
+                            .and_then(|value| value.get("visualReasonCode"))
+                            .and_then(Value::as_str),
+                        Some("READY"),
+                        "selected character must have a validated visual"
+                    );
                     let bootstrap = handle
                         .settings_request(
                             None,
@@ -1708,6 +1759,11 @@ mod tests {
                 Duration::from_secs(5),
             )
             .expect("persist sakura selection");
+        assert_eq!(
+            select_sakura.get("ok"),
+            Some(&Value::Bool(true)),
+            "{select_sakura}"
+        );
         assert_eq!(
             select_sakura
                 .pointer("/payload/changePlan")
@@ -2014,12 +2070,15 @@ mod tests {
             ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
             Some("generation-b")
         );
-        publication.snapshot.as_mut().expect("snapshot").readiness = "setup_required".to_string();
-        assert_eq!(
-            ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
-            Some("generation-b")
-        );
-        publication.snapshot.as_mut().expect("snapshot").readiness = "failed".to_string();
+        for readiness in ["initializing", "setup_required", "failed"] {
+            publication.snapshot.as_mut().expect("snapshot").readiness = readiness.to_string();
+            assert_eq!(
+                ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
+                Some("generation-b"),
+                "an available character does not depend on Assistant readiness"
+            );
+        }
+        publication.character_presentation = None;
         assert!(ready_character_generation(&publication, "generation-a", 1, "beta").is_none());
     }
 

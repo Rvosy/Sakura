@@ -112,7 +112,7 @@ def run():
             other_doc = boundary._dispatch("studio.character.open", {"characterId": "other"})["doc"]
             assert other_doc["referenceAudios"][0]["audioPath"] == voice_paths["other"]
             assert other_doc["theme"]["primaryColor"] == "#445566"
-            assert (boundary._service._workspace_package("other") / voice_paths["other"]).is_file()
+            assert (boundary._service.workspace_document("other")[0] / voice_paths["other"]).is_file()
             assert all(saved["referenceAudios"][0]["audioPath"] == voice_paths[saved["id"]] for saved in saves if saved["referenceAudios"])
             page.evaluate("document.getElementById('studioCharacterSelect').value='character'; document.getElementById('studioCharacterSelect').dispatchEvent(new Event('change'))")
             expect(page.locator("#displayName")).to_have_value("角色")
@@ -132,7 +132,7 @@ def run():
             expect(page.locator("#visualResourceList .form-card")).to_have_count(1)
             expect(page.locator('#expressionList input[type="number"]')).to_have_value("28")
 
-            binding = application.application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
+            binding = application.visuals.bind(profile.id, profile.package_dir, profile.current_visual_resource)
             public = binding.presentation()
             public["renderer"] = origin + "/tests/fixtures/visual_numeric/frontend/renderer.js"
             raw = json.dumps({"segments": [{"ja": "こんにちは", "zh": "你好", "tone": "中性", "control": {"version": 1, "resourceId": resource.id, "payload": {"angle": 27, "wave": True}}}]})
@@ -240,7 +240,7 @@ def run():
                 const signal=new AbortController();
                 const instance=mount({container:target,signal:signal.signal,
                   resource:{assets:{A:location.origin+'/portrait-a.png',B:location.origin+(phase==='decode'?'/portrait-broken.png':'/portrait-b.png')},data:{defaultKey:'A',metadata:{A:{width:1,height:1},B:{width:1,height:1}}}},
-                  host:{prepareSurface:()=>true,setSurface:async ({assetKey})=>{if(assetKey==='B') throw new Error('commit failed'); active=assetKey; commits.push(assetKey); fallback=false; return true;},finishSurface:()=>true,cancelSurface:()=>{},reportError:code=>errors.push(code),unavailable:()=>{fallback=true;active='';}}});
+                  host:{prepareSurface:()=>true,setSurface:async ({assetKey})=>{if(assetKey==='B') throw new Error('commit failed'); active=assetKey; commits.push(assetKey); fallback=false; return true;},finishSurface:()=>true,cancelSurface:()=>{},reportError:(code,error,stage)=>errors.push({code,message:error.message,cause:error.cause?.message,stage}),unavailable:()=>{fallback=true;active='';}}});
                 await instance.ready;
                 await instance.applyState({key:'B'},{signal:signal.signal});
                 const clean=!target.shadowRoot.querySelector('.portrait-image--next').hasAttribute('src') && !target.shadowRoot.querySelector('.portrait-frame').classList.contains('is-transitioning');
@@ -251,8 +251,17 @@ def run():
               return observations;
             }""")
             for phase, observed in zip(["DECODE", "COMMIT"], portrait_failure):
-                assert observed == {"active": "A", "fallback": False, "clean": True, "commits": ["A"], "errors": [f"PORTRAIT_{phase}_FAILED"], "current": True}, observed
-            application.application.set_plugin_enabled("fixture.numeric", False)
+                reported = observed.pop("errors")
+                assert observed == {"active": "A", "fallback": False, "clean": True, "commits": ["A"], "current": True}, observed
+                assert len(reported) == 1, reported
+                error = reported[0]
+                assert error["code"] == f"PORTRAIT_{phase}_FAILED"
+                assert '"B"' in error["message"]
+                assert error["cause"] == ("PORTRAIT_LOAD_FAILED" if phase == "DECODE" else "commit failed")
+                assert error["cause"] in error["message"]
+                assert error["stage"] == "visual.portrait"
+                assert origin not in error["message"]
+            application.set_plugin_enabled("fixture.numeric", False)
             expect(page.locator('#expressionList input[type="number"]')).to_have_count(0)
             assert binding.parse_control({"version": 1, "resourceId": resource.id, "payload": {"angle": 1}}).control is None
             assert timeline.read_all(profile.id)[0].payload["segments"][0]["text"] == "こんにちは"

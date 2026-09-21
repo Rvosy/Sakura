@@ -24,7 +24,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
   let unlisten = null;
   let reply = null;
   let captureActive = false;
-  const playback = new Map();
+  let playback = null;
 
   function invokeBestEffort(name, args) {
     try {
@@ -39,66 +39,70 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
     invokeBestEffort("tts_cancel_synthesis", { payload: { operationId } });
   }
 
-  function settle(item, event) {
-    if (item.settled) return;
-    item.settled = true;
-    item.resolveSettled(event);
+  function isCurrent(current) {
+    return !disposed && current === reply && current?.epoch === epoch;
   }
 
-  function notifyStarted(item, event) {
+  function openPlayback(item, event) {
     if (item.started) return;
     item.started = true;
-    try {
-      item.onStarted(event);
-    } catch {
-      // A visual start hook must not prevent the audio gate from opening.
-    }
-    item.resolveStarted(event);
+    if (isCurrent(item.reply)) item.onStarted(event);
+    item.resolveStarted();
   }
 
-  function releaseAll(type = "playback.stopped") {
-    for (const item of playback.values()) {
-      item.resolveStarted({ type });
-      settle(item, { type });
-    }
-    playback.clear();
+  function releasePlayback({ fallback = false } = {}) {
+    const item = playback;
+    if (!item) return;
+    playback = null;
+    if (fallback) openPlayback(item, { state: "skipped" });
+    else item.resolveStarted();
+    item.resolveSettled();
   }
 
   function receive(nativeEvent) {
     const event = nativeEvent?.payload;
-    const item = playback.get(event?.playbackId);
-    if (!item || item.epoch !== epoch) return;
+    const item = playback;
+    if (!item || item.id !== event?.playbackId || !isCurrent(item.reply)) return;
     if (event.state === "started") {
-      notifyStarted(item, event);
-      if (reply && item.index + 1 < reply.segments.length) void prepare(item.index + 1);
-      return;
-    }
-    if (["finished", "stopped", "failed"].includes(event.state)) {
-      notifyStarted(item, event);
-      settle(item, event);
-      playback.delete(event.playbackId);
+      openPlayback(item, event);
+      // Prepare one segment ahead; only the subtitle sequencer may start it.
+      void prepare(item.reply, item.index + 1);
+    } else if (["finished", "stopped", "failed"].includes(event.state)) {
+      openPlayback(item, event);
+      releasePlayback();
       if (event.state === "failed") onDiagnostic(event.error?.code || "AUDIO_PLAYBACK_FAILED");
     }
   }
 
-  function prepare(index) {
-    const current = reply;
-    if (captureActive || !current || current.epoch !== epoch || !playable(current.segments[index])) {
+  function errorCode(error, fallback) {
+    return String(error?.message || error || fallback).split("|")[0];
+  }
+
+  function prepare(current, index) {
+    if (!isCurrent(current) || current.silent || !playable(current.segments[index])) {
       return Promise.resolve(null);
     }
     if (!current.prepared.has(index)) {
-      const task = Promise.resolve(invoke("tts_prepare_segment", { payload: {
-        operationId: current.operationId,
-        segmentIndex: index,
-      } })).then((descriptor) => {
-        if (captureActive || current !== reply || current.epoch !== epoch || !validDescriptor(descriptor)) return null;
-        return descriptor;
-      }).catch((error) => {
-        if (current === reply && current.epoch === epoch) {
-          onDiagnostic(String(error || "TTS_SERVICE_UNAVAILABLE").split("|")[0]);
+      const task = (async () => {
+        try {
+          const descriptor = await invoke("tts_prepare_segment", { payload: {
+            operationId: current.operationId,
+            segmentIndex: index,
+          } });
+          if (!isCurrent(current) || current.silent) return null;
+          if (!validDescriptor(descriptor)) {
+            onDiagnostic("AUDIO_RECORDING_INVALID");
+            return null;
+          }
+          return descriptor;
+        } catch (error) {
+          if (!isCurrent(current) || current.silent) return null;
+          const code = errorCode(error, "TTS_SERVICE_UNAVAILABLE");
+          if (code === "TTS_DISABLED") current.silent = true;
+          else onDiagnostic(code);
+          return null;
         }
-        return null;
-      });
+      })();
       current.prepared.set(index, task);
     }
     return current.prepared.get(index);
@@ -110,91 +114,99 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       unlisten = await listen("sakura://tts-playback-event", receive);
     },
     beginReply(operationId, segments) {
+      if (disposed) return;
       cancelSynthesis(reply?.operationId);
+      if (reply) invokeBestEffort("tts_stop_playback");
+      reply?.resolveInterrupted();
       epoch += 1;
-      releaseAll();
-      reply = Object.freeze({
+      releasePlayback();
+      let resolveInterrupted;
+      const interrupted = new Promise((resolve) => { resolveInterrupted = resolve; });
+      reply = {
         epoch,
         operationId,
         segments: Array.isArray(segments) ? segments : [],
         prepared: new Map(),
-      });
-      void prepare(0);
+        silent: captureActive,
+        interrupted,
+        resolveInterrupted,
+      };
+      void prepare(reply, 0);
     },
-    async beforeSegment(segment, index, { onStarted = () => {} } = {}) {
+    async beforeSegment(segment, index, { prepareVisual = () => {}, onStarted = () => {} } = {}) {
       const current = reply;
-      const currentEpoch = epoch;
-      const startedHook = typeof onStarted === "function" ? onStarted : () => {};
-      if (!current || current.segments[index] !== segment) return;
-      if (captureActive || !playable(segment)) {
-        try {
-          startedHook({ state: "skipped" });
-        } catch {
-          // A visual start hook must not prevent the subtitle fallback.
-        }
+      // Greetings are local, suppressed segments without a synthesis operation.
+      if (!current || current.segments[index] !== segment) {
+        if (!disposed && !playable(segment)) onStarted({ state: "skipped" });
         return;
       }
-      const descriptor = await prepare(index);
-      if (!descriptor || captureActive || disposed || current !== reply || currentEpoch !== epoch) {
-        if (descriptor === null && !disposed && current === reply && currentEpoch === epoch) {
-          try {
-            startedHook({ state: "failed" });
-          } catch {
-            // A visual start hook must not prevent the subtitle fallback.
-          }
-        }
+      // Resolve optional visual control alongside synthesis at the presentation
+      // boundary. Chat completion is already published; interruption still opens
+      // the gate immediately and late preparation cannot start old playback.
+      const [descriptor] = await Promise.race([
+        Promise.all([prepare(current, index), prepareVisual()]),
+        current.interrupted.then(() => []),
+      ]);
+      if (!isCurrent(current)) return;
+      if (!descriptor || current.silent || !playable(segment)) {
+        onStarted({ state: "skipped" });
         return;
       }
-      const playbackId = `tts-${currentEpoch}-${index}`;
+      const playbackId = `tts-${current.epoch}-${index}`;
       let resolveStarted;
       let resolveSettled;
       const started = new Promise((resolve) => { resolveStarted = resolve; });
       const settled = new Promise((resolve) => { resolveSettled = resolve; });
       const item = {
-        epoch: currentEpoch,
-        index,
-        started: false,
-        settled: false,
-        onStarted: startedHook,
-        resolveStarted,
-        resolveSettled,
-        settledPromise: settled,
+        id: playbackId, reply: current, index, started: false,
+        onStarted, resolveStarted, resolveSettled, settled,
       };
-      playback.set(playbackId, item);
+      playback = item;
+      // Playback events, including an early failure, own the visual start gate.
+      // Do not keep the gate blocked by a late native command acknowledgement.
       try {
-        await invoke("tts_play_prepared", { payload: {
+        Promise.resolve(invoke("tts_play_prepared", { payload: {
           opaqueId: descriptor.opaqueId,
           playbackId,
-        } });
+        } })).catch(failed);
       } catch (error) {
-        notifyStarted(item, { state: "failed" });
-        settle(item, { state: "failed" });
-        playback.delete(playbackId);
-        onDiagnostic(String(error || "AUDIO_PLAYBACK_FAILED").split("|")[0]);
+        failed(error);
+      }
+      function failed(error) {
+        if (!isCurrent(current) || playback !== item) return;
+        openPlayback(item, { state: "failed" });
+        releasePlayback();
+        onDiagnostic(errorCode(error, "AUDIO_PLAYBACK_FAILED"));
       }
       await started;
     },
     async afterSegment(index) {
-      const item = playback.get(`tts-${epoch}-${index}`);
-      if (item) await item.settledPromise;
+      const item = playback;
+      if (item && item.index === index && isCurrent(item.reply)) await item.settled;
     },
     setInputCaptureActive(value) {
       const next = Boolean(value);
       if (captureActive === next) return;
       captureActive = next;
       if (!next) return;
-      const operationId = reply?.operationId;
-      epoch += 1;
-      reply = null;
-      releaseAll();
-      cancelSynthesis(operationId);
+      // Keep the current visual sequence alive, but never resume its audio.
+      if (reply) {
+        reply.silent = true;
+        reply.resolveInterrupted();
+        // Release only the current segment's preparation. Later silent segments
+        // still prepare their own visual before starting subtitles together.
+        reply.interrupted = new Promise(resolve => { reply.resolveInterrupted = resolve; });
+      }
+      releasePlayback({ fallback: true });
+      cancelSynthesis(reply?.operationId);
       invokeBestEffort("tts_stop_playback");
     },
     cancel() {
       const operationId = reply?.operationId;
+      reply?.resolveInterrupted();
       epoch += 1;
       reply = null;
-      releaseAll();
+      releasePlayback();
       if (!disposed) {
         cancelSynthesis(operationId);
         invokeBestEffort("tts_stop_playback");
@@ -204,9 +216,10 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       if (disposed) return;
       const operationId = reply?.operationId;
       disposed = true;
+      reply?.resolveInterrupted();
       epoch += 1;
       reply = null;
-      releaseAll();
+      releasePlayback();
       cancelSynthesis(operationId);
       invokeBestEffort("tts_stop_playback");
       try {

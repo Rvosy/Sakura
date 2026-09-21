@@ -1,0 +1,6 @@
+[Unit]
+Description=Renew Sakura service TLS certificate
+
+[Service]
+Type=oneshot
+ExecStart=/opt/sakura-acme-venv/bin/certbot renew --cert-name sakura-console --quiet --deploy-hook "/usr/bin/nginx -t && /usr/bin/nginx -s reload"

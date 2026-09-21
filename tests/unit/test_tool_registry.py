@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.tools import (
+from app.plugin_sdk.sakura_tools import (
     Tool,
     ToolExecutionResult,
     ToolMetadata,

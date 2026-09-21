@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import unquote, urlparse, urlsplit
+from urllib.parse import urlparse
 
 import yaml
 
@@ -97,50 +97,27 @@ def migrate_configuration(
         {"current_character_id": current_character.strip()},
     )
 
-    mcp_metadata: dict[str, int] = {}
-    mcp, dropped_servers = _migrate_mcp(
-        source,
-        legacy_config / "mcp.yaml",
-        metadata=mcp_metadata,
-    )
-    if (legacy_config / "mcp.yaml").exists():
-        _write_yaml(target_config / "mcp.yaml", mcp)
-    counts["mcpServersQuarantined"] = dropped_servers
-    compatibility_fallbacks += mcp_metadata.get("fallbacks", 0)
-
     tts_provider = _legacy_tts_provider(tts)
     plugins = _migrate_plugins(legacy_config / "plugins.yaml", tts_provider=tts_provider)
-    from app.config.web_plugin_migration import PLUGIN_ID, migrate_web_configuration
+    web_plugin_id = "sakura.web"
     from app.plugins.inventory import PluginDesiredStateStore
 
     if existing_user_root is not None:
         existing = PluginDesiredStateStore(existing_user_root).read()
-        if PLUGIN_ID in existing:
-            plugins = [item for item in plugins if item["id"] != PLUGIN_ID]
-            plugins.append({"id": PLUGIN_ID, "enabled": existing[PLUGIN_ID]})
-            old_config = existing_user_root / "data/plugins" / PLUGIN_ID / "config.json"
+        if web_plugin_id in existing:
+            plugins = [item for item in plugins if item["id"] != web_plugin_id]
+            plugins.append({"id": web_plugin_id, "enabled": existing[web_plugin_id]})
+            old_config = existing_user_root / "data/plugins" / web_plugin_id / "config.json"
             if old_config.is_file():
-                destination = staged / "data/plugins" / PLUGIN_ID / "config.json"
+                destination = staged / "data/plugins" / web_plugin_id / "config.json"
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(old_config.read_bytes())
     _write_yaml(target_config / "plugins.yaml", plugins)
-    migrate_web_configuration(staged)
-    if mcp_metadata.get("webBlocked"):
-        # A source-bound Web command could not be carried over. Keep the
-        # original source untouched and do not silently activate a replacement.
-        if not any(item["id"] == PLUGIN_ID for item in plugins):
-            PluginDesiredStateStore(staged).set(PLUGIN_ID, False)
-        destination = staged / "data/plugins" / PLUGIN_ID / "config.json"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        values = json.loads(destination.read_text(encoding="utf-8")) if destination.exists() else {}
-        values["migration_error"] = "WEB_MIGRATION_CUSTOM_BEHAVIOR"
-        destination.write_text(json.dumps(values) + "\n", encoding="utf-8")
-
     ui = _migrate_ui(system)
     (target_config / "ui.json").write_text(
         json.dumps(ui, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    counts["config"] += 5
+    counts["config"] += 4
     counts["configCompatibilityFallbacks"] = compatibility_fallbacks
 
     if isinstance(tts, Mapping):
@@ -541,200 +518,6 @@ def _migrate_ui(system: Mapping[str, Any]) -> dict[str, object]:
         if isinstance(theme, Mapping):
             settings["character_theme_overrides"] = {}
     return {"schema_version": 1, "domain": "ui", "settings": settings}
-
-
-def _migrate_mcp(
-    source: Path,
-    path: Path,
-    *,
-    metadata: dict[str, int] | None = None,
-) -> tuple[dict[str, object], int]:
-    value = _load_yaml(path, required=False)
-    servers = value.get("servers")
-    if not isinstance(servers, Mapping):
-        return {"enabled": False, "default_call_timeout": 20, "servers": {}}, 0
-    kept: dict[str, object] = {}
-    dropped = 0
-    for name, raw in servers.items():
-        if not isinstance(name, str) or not isinstance(raw, Mapping):
-            dropped += 1
-            continue
-        server = _strip_deprecated_mcp_fields(raw)
-        if not isinstance(server, Mapping):
-            dropped += 1
-            continue
-        args = server.get("args")
-        known_web = isinstance(args, list) and any(
-            isinstance(item, str) and (
-                _is_legacy_web_search_path(item)
-                or _normalize_mcp_path(item) == _normalize_mcp_path(str(source / "app/agent/mcp/web_search_server.py"))
-            ) for item in args
-        )
-        if isinstance(args, list):
-            server["args"] = [
-                "{core_root}/app/agent/mcp/web_search_server.py"
-                if isinstance(item, str) and (
-                    _is_legacy_web_search_path(item)
-                    or _normalize_mcp_path(item) == _normalize_mcp_path(str(source / "app/agent/mcp/web_search_server.py"))
-                )
-                else item
-                for item in args
-            ]
-        command = server.get("command")
-        if (
-            isinstance(command, str)
-            and command.replace("\\", "/").casefold() == "{base_dir}/runtime/python.exe"
-        ):
-            server["command"] = "{python}"
-        if _mcp_server_references_source(server, source):
-            if known_web and metadata is not None:
-                metadata["webBlocked"] = 1
-            dropped += 1
-            continue
-        kept[name] = server
-    raw_timeout = value.get("default_call_timeout", 20)
-    timeout = _bounded_timeout(raw_timeout, default=20)
-    if metadata is not None:
-        metadata["fallbacks"] = int(timeout != raw_timeout)
-    return {
-        "enabled": bool(value.get("enabled", True)),
-        "default_call_timeout": timeout,
-        "servers": kept,
-    }, dropped
-
-
-def _mcp_server_references_source(server: Mapping[str, object], source: Path) -> bool:
-    source_root = _normalize_mcp_path(str(source)).rstrip("/")
-    if not source_root:
-        source_root = "/"
-
-    values: list[str] = []
-    command = server.get("command")
-    if isinstance(command, str):
-        values.append(command)
-    args = server.get("args")
-    if isinstance(args, list):
-        values.extend(item for item in args if isinstance(item, str))
-    env = server.get("env")
-    if isinstance(env, Mapping):
-        values.extend(item for item in env.values() if isinstance(item, str))
-    return any(_mcp_value_references_source(value, source_root) for value in values)
-
-
-def _mcp_value_references_source(value: str, source_root: str) -> bool:
-    if any(
-        _mcp_path_is_source_or_child(path, source_root)
-        for path in _mcp_local_file_uri_paths(value)
-    ):
-        return True
-
-    normalized = _normalize_mcp_path(value)
-    start = 0
-    while (index := normalized.find(source_root, start)) >= 0:
-        before = normalized[index - 1] if index else ""
-        end = index + len(source_root)
-        after = normalized[end : end + 1]
-        # Values may wrap a path in quotes, shell syntax, ``--key=...``, or a
-        # Windows/POSIX path list. A slash before the match is deliberately not
-        # a boundary: an HTTP URL containing the same text remains a URL.
-        prefix_boundary = (
-            not before or before.isspace() or before in "\"'=;:&|(<[{,@"
-        )
-        component_boundary = (
-            source_root == "/" or not after or after == "/" or after in "\"';:&|)>]}"
-        )
-        if (
-            prefix_boundary
-            and component_boundary
-            and not _mcp_match_is_http_authority(normalized, index)
-        ):
-            return True
-        start = index + 1
-    return False
-
-
-def _normalize_mcp_path(value: str) -> str:
-    normalized = value.strip().replace("\\", "/").casefold()
-    normalized = normalized.replace("//?/unc/", "//").replace("//?/", "")
-    return normalized
-
-
-def _mcp_path_is_source_or_child(value: str, source_root: str) -> bool:
-    candidate = _normalize_mcp_path(value)
-    if candidate != "/":
-        candidate = candidate.rstrip("/")
-    if source_root == "/":
-        return candidate.startswith("/")
-    return candidate == source_root or candidate.startswith(f"{source_root}/")
-
-
-def _mcp_local_file_uri_paths(value: str) -> list[str]:
-    paths: list[str] = []
-    folded = value.casefold()
-    start = 0
-    while (index := folded.find("file:", start)) >= 0:
-        before = value[index - 1] if index else ""
-        if before and not (before.isspace() or before in "\"'=;:&|(<[{,@"):
-            start = index + len("file:")
-            continue
-        try:
-            # Parse from each occurrence through the remaining value. URL
-            # paths may legally contain sub-delims, and legacy configs also
-            # contain unescaped spaces in Windows paths. A later ``file:`` is
-            # visited independently by the loop.
-            parsed = urlsplit(value[index:])
-        except ValueError:
-            start = index + len("file:")
-            continue
-        if parsed.scheme.casefold() != "file":
-            start = index + len("file:")
-            continue
-        authority = unquote(parsed.netloc)
-        path = unquote(parsed.path)
-        if len(authority) == 2 and authority[0].isalpha() and authority[1] == ":":
-            path = f"{authority}{path}"
-        elif authority and authority.casefold() != "localhost":
-            path = f"//{authority}{path}"
-        elif (
-            len(path) >= 3
-            and path[0] == "/"
-            and path[1].isalpha()
-            and path[2] in {":", "|"}
-        ):
-            path = f"{path[1]}:{path[3:]}"
-        paths.append(path)
-        start = index + len("file:")
-    return paths
-
-
-def _mcp_match_is_http_authority(value: str, index: int) -> bool:
-    for scheme in ("http:", "https:"):
-        scheme_start = index - len(scheme)
-        if scheme_start < 0 or value[scheme_start:index] != scheme:
-            continue
-        before = value[scheme_start - 1] if scheme_start else ""
-        if not before or before.isspace() or before in "\"'=;:&|(<[{,@":
-            return True
-    return False
-
-
-def _is_legacy_web_search_path(value: str) -> bool:
-    return _normalize_mcp_path(value) in {
-        f"{{{root}}}/app/agent/mcp/web_search_server.py"
-        for root in ("base_dir", "core_root", "distribution_root")
-    }
-
-
-def _strip_deprecated_mcp_fields(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {
-            key: _strip_deprecated_mcp_fields(child)
-            for key, child in value.items()
-            if key != "requires_confirmation"
-        }
-    if isinstance(value, list):
-        return [_strip_deprecated_mcp_fields(child) for child in value]
-    return value
 
 
 def _migrate_plugins(

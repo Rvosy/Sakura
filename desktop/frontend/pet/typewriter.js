@@ -47,8 +47,9 @@ export function createTypewriter({
 
   function scheduleNextSegment(run) {
     if (run.sequence !== sequence) return;
+    const revision = run.segmentRevision;
     const advance = () => {
-      if (run.sequence !== sequence) return;
+      if (run.sequence !== sequence || revision !== run.segmentRevision) return;
       if (run.segmentIndex + 1 >= run.segments.length) return complete(run);
       timer = setTimer(() => {
         timer = null;
@@ -67,8 +68,11 @@ export function createTypewriter({
     const segment = run.segments[run.segmentIndex];
     if (!segment) return complete(run);
     const segmentRevision = ++run.segmentRevision;
+    run.waitingForStart = true;
     const begin = () => {
       if (run.sequence !== sequence || segmentRevision !== run.segmentRevision) return;
+      run.waitingForStart = false;
+      run.openedIndex = run.segmentIndex;
       run.text = selectSegmentText(segment, selectedLanguage);
       run.visible = "";
       run.characters = Array.from(run.text);
@@ -90,7 +94,11 @@ export function createTypewriter({
       };
       timer = setTimer(tick, run.typingDelay);
     };
-    const prepared = onSegment(segment, run.segmentIndex);
+    if (run.gateIndex !== run.segmentIndex) {
+      run.gateIndex = run.segmentIndex;
+      run.segmentGate = onSegment(segment, run.segmentIndex);
+    }
+    const prepared = run.openedIndex === run.segmentIndex ? null : run.segmentGate;
     if (prepared && typeof prepared.then === "function") {
       Promise.resolve(prepared).then(begin, begin);
     } else begin();
@@ -124,7 +132,7 @@ export function createTypewriter({
       return true;
     },
     skip() {
-      if (!active) return false;
+      if (!active || active.waitingForStart) return false;
       const run = active;
       clearActiveTimer();
       run.segmentRevision += 1;

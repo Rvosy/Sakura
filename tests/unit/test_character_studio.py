@@ -652,7 +652,7 @@ def test_open_rejects_symlink_before_copying_formal_role(
 
 @pytest.mark.parametrize("old_selection", [{"enabled": False, "provider": "sakura.tts.gpt-sovits"}, {"enabled": True, "provider": "sakura.tts.genie"}])
 def test_studio_reads_and_updates_voice_resources_independent_of_old_selection(tmp_path: Path, old_selection) -> None:
-    from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+    from plugins.optional.sakura_genie.plugin import _effective_voice_extension
     package = _write_character(tmp_path)
     (package / "voice" / "models").mkdir(parents=True)
     (package / "voice" / "refs" / "tone_refs").mkdir(parents=True)

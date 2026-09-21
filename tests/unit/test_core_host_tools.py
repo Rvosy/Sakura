@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.tools import ToolExecutionResult
+from app.plugin_sdk.sakura_tools import ToolExecutionResult
 from app.core_host.tools import create_runtime_v2_tool_registry
 from app.core_host.tool_settings import ToolSettingsBoundary, load_tool_runtime_configuration
 

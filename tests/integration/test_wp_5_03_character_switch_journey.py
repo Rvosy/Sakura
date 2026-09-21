@@ -12,7 +12,7 @@ from app.core_host.history import HistoryBoundary
 from app.core_host.plugin_character import PluginCharacterStore
 from app.storage.paths import StoragePaths
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
-from plugins.builtin.sakura_mem0.boundary import MemoryBoundary
+from plugins.optional.sakura_mem0.boundary import MemoryBoundary
 
 
 GENERATION_A = "generation-character-a"

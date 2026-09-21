@@ -10,6 +10,7 @@
 @import url("../core/selection.css");
 @import url("./visual-settings.css");
 @import url("./legacy-data-import.css");
+@import url("./plugin-marketplace.css");
 @import url("../core/tooltip.css");
 
 :root {
@@ -183,7 +184,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   gap: 2px;
   min-height: 0;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--sakura-border) transparent;
 }
@@ -464,7 +465,7 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   flex-direction: column;
   width: min(300px, calc(100vw - 36px));
   max-height: calc(100vh - 36px);
-  overflow: auto;
+  overflow: auto; scrollbar-gutter: stable;
   border: 1px solid var(--hairline);
   border-radius: 12px;
   padding: 14px;
@@ -608,7 +609,7 @@ body.is-first-run-guide-active .settings-page.is-active > * {
 .page-scroll {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
   padding:
     clamp(16px, calc(-9.714px + 2.857vw), 20px)
     var(--settings-content-gutter);
@@ -1448,6 +1449,7 @@ select {
 }
 
 textarea {
+  scrollbar-gutter: stable;
   max-width: 460px;
   min-height: 92px;
   resize: vertical;
@@ -1562,7 +1564,7 @@ textarea:disabled {
   position: fixed;
   z-index: 2200;
   max-height: 260px;
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
   padding: 6px;
   border: 1px solid var(--sakura-border);
   border-radius: var(--radius-md);
@@ -2179,6 +2181,13 @@ input[type="checkbox"]:disabled + span {
   gap: 7px;
 }
 
+/* Keep the header action inside the page's clipped scroll boundary. */
+.plugin-install-menu__trigger:hover:not(:disabled),
+.plugin-install-menu__trigger:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
 .plugin-install-menu__trigger .sakura-icon {
   transition: transform var(--motion-base) var(--ease);
 }
@@ -2257,7 +2266,7 @@ input[type="checkbox"]:disabled + span {
   display: flex;
   flex-direction: column;
   gap: 9px;
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
   padding: 10px;
 }
 
@@ -2265,7 +2274,7 @@ input[type="checkbox"]:disabled + span {
   display: grid;
   align-content: start;
   gap: 12px;
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
   padding: 14px;
 }
 
@@ -2827,7 +2836,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
   display: grid;
   gap: 4px;
   max-height: min(46vh, 360px);
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
   padding-right: 2px;
 }
 
@@ -3336,7 +3345,7 @@ button:active:not(:disabled) {
   margin: 0;
   padding: 0;
   list-style: none;
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
 }
 
 .confirm-dialog-list li {
@@ -3452,7 +3461,7 @@ button:active:not(:disabled) {
   align-content: start;
   gap: 9px;
   min-height: 0;
-  overflow: auto;
+  overflow: auto; scrollbar-gutter: stable;
   padding: 1px 4px 10px 1px;
   scroll-padding-block: 1px 10px;
   scroll-snap-type: y proximity;
@@ -3665,7 +3674,7 @@ button:active:not(:disabled) {
   display: grid;
   place-items: center;
   padding: clamp(16px, 3vw, 32px);
-  overflow-y: auto;
+  overflow-y: auto; scrollbar-gutter: stable;
   background: color-mix(in srgb, var(--sakura-text) 32%, transparent);
   animation: overlay-in var(--motion-base) var(--ease) both;
 }
@@ -3683,7 +3692,7 @@ button:active:not(:disabled) {
   width: min(680px, 100%);
   max-height: calc(100vh - clamp(32px, 6vw, 64px));
   padding: clamp(18px, 3vw, 26px);
-  overflow: auto;
+  overflow: auto; scrollbar-gutter: stable;
   border: 1px solid var(--sakura-border);
   border-radius: calc(var(--radius-lg) + 2px);
   background: var(--surface-raised);
@@ -4041,36 +4050,6 @@ button:focus-visible,
   white-space: nowrap;
 }
 
-/* 主动屏幕感知的三个数字框和分辨率下拉框共用同一控件列。 */
-.screen-awareness-settings-group {
-  --screen-awareness-control-width: 120px;
-  --screen-awareness-unit-width: 2em;
-  --screen-awareness-control-gap: 8px;
-}
-
-.screen-awareness-settings-group .field-unit {
-  display: grid;
-  grid-template-columns: var(--screen-awareness-control-width) var(--screen-awareness-unit-width);
-  gap: var(--screen-awareness-control-gap);
-  width: calc(
-    var(--screen-awareness-control-width)
-    + var(--screen-awareness-unit-width)
-    + var(--screen-awareness-control-gap)
-  );
-}
-
-.screen-awareness-settings-group .field-unit input[type="number"] {
-  width: 100%;
-  max-width: none;
-}
-
-.screen-awareness-settings-group .setting-row > select,
-.screen-awareness-settings-group .setting-row > .custom-select {
-  width: var(--screen-awareness-control-width);
-  max-width: none;
-  margin-right: calc(var(--screen-awareness-unit-width) + var(--screen-awareness-control-gap));
-}
-
 /* 开关行右侧的裸复选框（标题与说明在左列）。 */
 .setting-toggle {
   display: inline-flex;
@@ -4342,6 +4321,7 @@ input.is-invalid:hover,
 
 /* 插件管理：沿用主题与动效 token，列表、详情和弹窗均展示真实贡献。 */
 body:has(#page-plugins.is-active) .page-head { display: none; }
+body:has(#page-plugins.is-active) footer { border-top: 0; }
 #page-plugins { grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; }
 #page-plugins > .plugin-page-heading { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 #page-plugins > .plugin-toolbar { z-index: 2; flex-wrap: wrap; }
@@ -4358,8 +4338,10 @@ body:has(#page-plugins.is-active) .page-head { display: none; }
 .plugin-group { --plugin-group-color: var(--sakura-primary); display: grid; flex-shrink: 0; gap: 8px; min-width: 0; }
 .plugin-group.kind-provider { --plugin-group-color: color-mix(in srgb, var(--sakura-primary) 50%, var(--sakura-accent)); }
 .plugin-group.kind-infrastructure { --plugin-group-color: var(--sakura-secondary-text); }
+.plugin-group-items { display: grid; gap: 8px; }
+.plugin-group-items[hidden] { display: none; }
+.plugin-group-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
 .plugin-group-heading { display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0; color: var(--sakura-secondary-text); font-size: 12px; font-weight: var(--font-weight-medium); }
-.plugin-group-heading::after { content: ""; flex: 1; border-top: 1px solid var(--hairline); }
 .plugin-group-label { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; color: color-mix(in srgb, var(--plugin-group-color) 80%, var(--sakura-text)); background: color-mix(in srgb, var(--plugin-group-color) 10%, var(--surface-raised)); }
 .plugin-group-count { margin-left: 2px; font-weight: var(--font-weight-regular); }
 #pluginList .plugin-card { grid-template-columns: 26px minmax(0, 1fr); align-items: start; gap: 9px; padding: 12px; cursor: pointer; white-space: normal; }
@@ -4384,7 +4366,7 @@ body:has(#page-plugins.is-active) .page-head { display: none; }
 .plugin-detail-aside { display: flex; flex-direction: column; align-items: flex-end; gap: 9px; flex-shrink: 0; }
 .plugin-detail-aside .plugin-configure { min-width: 0; padding: 7px 10px; font-size: 11px; }
 #pluginDetail .detail-desc { line-height: 1.85; }
-.plugin-enable-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; border-block: 1px solid var(--hairline); }
+.plugin-enable-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border-radius: var(--radius-md); background: var(--tint-faint); }
 .plugin-enable-row h3, .plugin-dependencies h3 { margin: 0; font-size: 12px; color: var(--sakura-secondary-text); }
 .plugin-enable-row p { margin: 6px 0 0; font-size: 11px; color: var(--sakura-muted-text); }
 .plugin-enable-controls { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
@@ -4393,7 +4375,7 @@ body:has(#page-plugins.is-active) .page-head { display: none; }
 .plugin-dependencies { display: grid; gap: 9px; }
 .plugin-dependency { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; background: var(--surface-soft); border: 1px solid var(--hairline); padding: 12px; color: var(--sakura-secondary-text); font-size: 12px; }
 .plugin-dependency .semantic-status { font-size: 10px; }
-.plugin-technical { border-top: 1px solid var(--hairline); padding-top: 14px; color: var(--sakura-muted-text); font-size: 11px; overflow-wrap: anywhere; }
+.plugin-technical { color: var(--sakura-muted-text); font-size: 11px; overflow-wrap: anywhere; }
 .plugin-technical summary { cursor: pointer; }
 .plugin-detail-enter { animation: plugin-detail-in var(--motion-medium) var(--ease) both; }
 .plugin-settings-dialog { width: min(640px, calc(100vw - 36px)); max-height: calc(100dvh - 48px); padding: 0; border: 1px solid var(--hairline); border-radius: var(--radius-lg); background: var(--surface-raised); color: var(--sakura-text); overflow: hidden; animation: plugin-dialog-in var(--motion-medium) var(--ease) both; }
@@ -4436,7 +4418,7 @@ body:has(#page-plugins.is-active) .page-head { display: none; }
 @keyframes plugin-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes plugin-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
 @media (max-width: 1000px) { #page-plugins .plugin-workbench { grid-template-columns: minmax(255px, 1fr) minmax(0, 1.2fr); } #pluginDetail { padding: 17px; } .plugin-detail-identity { gap: 9px; } .plugin-detail-identity .plugin-avatar { width: 37px; height: 37px; } .plugin-detail-title h2 { font-size: 17px; } .plugin-role-tab { padding: 7px 8px; } }
-@media (max-width: 700px) { #page-plugins .plugin-workbench { grid-template-columns: minmax(0, 1fr); overflow: auto; } .plugin-list-shell { min-height: 240px; } .plugin-dialog-footer { flex-wrap: wrap; } .plugin-dialog-footer > div { margin-left: auto; } }
+@media (max-width: 700px) { #page-plugins .plugin-workbench { grid-template-columns: minmax(0, 1fr); overflow: auto; scrollbar-gutter: stable; } .plugin-list-shell { min-height: 240px; } .plugin-dialog-footer { flex-wrap: wrap; } .plugin-dialog-footer > div { margin-left: auto; } }
 
 /* Shared Lucide sizing; labels retain the accessible name of each action. */
 .nav-item-icon .sakura-icon { width: 16px; height: 16px; }
@@ -4463,3 +4445,40 @@ body:has(#page-plugins.is-active) .page-head { display: none; }
 .provider-probe-error p {
   white-space: pre-wrap;
 }
+
+/* 主动屏幕感知的三个数字框和分辨率下拉框共用同一控件列。 */
+.aligned-controls {
+  --screen-awareness-control-width: 120px;
+  --screen-awareness-unit-width: 2em;
+  --screen-awareness-control-gap: 8px;
+}
+
+.aligned-controls .field-unit {
+  display: grid;
+  grid-template-columns: var(--screen-awareness-control-width) var(--screen-awareness-unit-width);
+  gap: var(--screen-awareness-control-gap);
+  width: calc(
+    var(--screen-awareness-control-width)
+    + var(--screen-awareness-unit-width)
+    + var(--screen-awareness-control-gap)
+  );
+}
+
+.aligned-controls .field-unit input[type="number"] {
+  width: 100%;
+  max-width: none;
+}
+
+.aligned-controls .setting-row > select,
+.aligned-controls .setting-row > .custom-select {
+  width: var(--screen-awareness-control-width);
+  max-width: none;
+  margin-right: calc(var(--screen-awareness-unit-width) + var(--screen-awareness-control-gap));
+}
+
+
+#modelProviderSurface, #modelSettingsSurface, #screenAwarenessSurface, .settings-contributions { display: contents; }
+.connection-editor { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; min-height: 0; height: 100%; }
+#page-providers:has(.connection-editor) { grid-template-rows: minmax(0, 1fr); }
+
+.settings-form { display: contents; }

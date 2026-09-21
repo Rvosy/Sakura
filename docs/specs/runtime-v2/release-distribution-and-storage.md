@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-12
+updated: 2026-09-13
 ---
 
 # Runtime v2 发行与存储合同
@@ -75,12 +75,23 @@ TTS 返回 `TTS_STORAGE_UNAVAILABLE`，设置快照通过 `TTS_ROOT_MISSING`、`
 
 ## 发行内容
 
-随主安装包预装的五个官方默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、
-`sakura_genie` 和 `sakura_gpt_sovits`。它们允许禁用、不可卸载；不可卸载只表示文件由安装器拥有，不赋予私有 API 或实现优先级。
-新用户默认关闭 Genie 语音合成、GPT-SoVITS 语音合成和手机聊天，其余插件沿用各自默认状态。
-Shell 首次创建用户配置目录时，将这三个关闭状态写入 `config/plugins.yaml`。已有配置目录不补写或覆盖，
-包括尚未生成 `plugins.yaml`、一直沿用清单默认启用状态的老用户。清单保留原启用默认值用于升级兼容，
-用户之后手动启用或关闭的状态优先。初始化默认清单位于 `desktop/src-tauri/src/new_user_plugins.yaml`。
+主安装包预装 Assistant、远程模型提供方、主动屏幕感知、MCP、立绘、联网、TTS Hub 和 ASR Hub。内置插件可停用，不可卸载；这只表示文件归安装器管理，不赋予私有 API 或实现优先级。
+
+手机聊天、SenseVoice、Mem0、GPT-SoVITS、Genie 和 Spine 改为外部插件，新用户按需安装。主包不携带这六个插件，也不携带四个语音与记忆插件的私有 Python 依赖，以缩小 EXE、ZIP 等发行文件。模型、角色和用户数据不随此次迁出移动或删除。
+
+### 内置插件迁出
+
+ZIP、EXE 和其他发行形式共用 Core 启动迁移，迁移发生在插件清单加载之前。老用户优先从旧程序目录恢复代码和可用依赖；只有包含 `plugin.yaml` 的目录才作为本地来源，升级后残留的空目录或 `__pycache__` 不算插件包。开发环境可使用 `plugins/optional` 中的完整插件；发行包文件已被替换时，从 `app/plugins/migration_sources.json` 固定的公开仓库 commit 下载对应版本，并按需安装依赖。新用户不执行这些下载。首次升级可能需要网络，不承诺所有升级方式离线可用。
+
+桌面入口以启动前 `config/` 是否存在识别旧用户。新用户默认配置与 `config/plugin-migrations.json` 一起发布，六个插件记录为 `not_applicable`；原有配置目录不补写此标记。Core 直接使用空用户根时也记录不适用，必须在模型配置迁移创建 `config/` 之前完成判断。该判断沿用既有用户目录初始化边界，不要求用户曾保存插件设置。
+
+迁移按插件 ID 逐项执行。同 ID 用户插件存在时保留该版本和启停状态；其他第三方插件不影响迁移。迁入用户目录时沿用 `plugins.yaml` 的明确选择，没有明确选择则保留旧内置清单默认启用的行为。插件业务配置、已下载模型与聊天历史不改写。用户主动安装外部包时仍默认停用。
+
+安装成功或确认已有同 ID 用户副本后，才原子记录 `completed`。失败保留原错误并报告恢复失败，不标记完成；用户修复网络或磁盘问题后可重新启动。插件运行时初始化失败且尚未发布时，插件设置显示失败，已启用插件以 `PLUGIN_APPLICATION_FAILED` 标记，不继续显示正在启动。已发布代码但尚未记录完成时，按同 ID 用户副本续接。完成后用户主动卸载的插件不会自动恢复。损坏的迁移记录报错，不按新用户处理。
+
+插件发现与安装冲突检查都忽略迁出清单中的旧内置副本，包括 ZIP 覆盖解压的残留文件；不删除旧程序目录，也不影响用户目录中的同 ID 插件。
+
+旧数据导入 worker 按需使用外部 Mem0 与 TTS 插件的兼容工具。缺失时先安装对应固定版本，原启停选择保持不变；仅为导入安装的插件默认停用。该步骤也可能需要网络。
 
 `playwright_browser` 是用户按需安装的可选插件，不进入主安装包。
 发行流程把它另行生成一个可由普通本地插件安装入口处理的 `.sakplugin.zip`，安装和启用仍使用与第三方插件
@@ -88,18 +99,19 @@ Shell 首次创建用户配置目录时，将这三个关闭状态写入 `config
 
 Plugin Runtime v4 的发行 Python 只携带 Core 必需依赖、Plugin SDK 和安装工具；官方插件依赖进入
 各自独立 dependency root，不进入主 Runtime 的全局 `site-packages`。预装插件可以携带已解析环境或
-wheelhouse 以保证首次启动离线可用；普通第三方插件不强制携带完整 wheelhouse。`uv`、`uvx`、`7zz` 位于
+wheelhouse，避免加载插件时安装依赖；普通第三方插件不强制携带完整 wheelhouse。默认对话仍使用远程 API，发行包不携带本地推理模型。`uv`、`uvx`、`7zz` 位于
 `python/tools/`，共享下载缓存只做物理去重，不改变插件 import 隔离。具体过渡合同见
 [Plugin Runtime v4](sakura-plugin-runtime-v4.md)。
 
 当前物理路径固定为：预装插件使用只读的 `distribution_root/plugins/dependencies/<plugin-id>/`，普通用户插件
-使用可写的 `user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用同一 marker、fingerprint 和
+使用可写的 `user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用相同的依赖就绪标记和
 Runner 校验；普通启动只读取并验证，不把预装环境复制到 user root，也不自动安装或修复。
 
-主 Python 运行时只读且不执行 pip。Memory 不携带约 91 MB 模型，Genie/GPT-SoVITS 不携带本体、环境或
+主 Python 运行时只读且不执行 pip；OpenAI SDK、HTTPX 与 SOCKS 传输依赖只进入远程模型插件环境，Assistant 无这些私有依赖。
+Memory 不携带约 91 MB 模型，Genie/GPT-SoVITS 不携带本体、环境或
 模型；Playwright 的 Python 包和浏览器资源都随可选插件流程取得。
 
-依赖隔离缩小并稳定的是 Core Runtime 依赖闭包，不等于五个预装插件的依赖从安装包消失。完整下载体积是否
+依赖隔离缩小并稳定的是 Core Runtime 依赖闭包，不等于预装插件的依赖从安装包消失。完整下载体积是否
 下降取决于预装插件集合；当前直接减少来自 Playwright 可选化，后续收益是增删插件不再改变 Core 依赖集合。
 
 Windows 生成 Setup 与带 `portable.flag` 的 ZIP；前者使用 Tauri Updater，后者只检查并下载新版 ZIP。
@@ -135,13 +147,14 @@ ZIP 只含程序域、`portable.flag` 和当前 `sakura.exe`，不得携带任�
 把 ZIP 追加到同一 Release，并用包含 Portable URL 的最终 `latest.json` 覆盖初始清单。Portable 条目不生成内容摘要。Portable 失败
 不得撤回已经发布的安装版资产；失败必须在 workflow 中明确可见，维护者修复后重新运行完整发行流程。
 
-稳定版的 Portable 与最终 `latest.json` 发布完成后，发行 workflow 必须把控制面版本元数据推送到
-`https://sakura.cialloo.cn/service/v1/releases.json`。该接口是公告、兼容性和下载入口使用的只读控制面，不替代
-Tauri Updater 的签名清单，也不由客户端据此安装更新。schema 1 固定包含 `latest`、可空的
+稳定版的 Portable 与最终 `latest.json` 发布完成后，发行 workflow 必须把版本资料与完整清单导入私人控制台草稿。
+维护者确认后，控制台更新 `https://api.sakura.cialloo.cn/service/v1/releases.json` 与同目录的 `latest.json`。`releases.json`
+供公告、兼容性和下载入口使用，不由客户端据此安装更新。schema 1 固定包含 `latest`、可空的
 `minimumSupported`、`releaseUrl`、`publishedAt`、`urgent`、三个公开下载 URL 和
-`updaterManifestUrl`；下载文件仍由 GitHub Release 托管。prerelease 不更新该接口，服务端拒绝格式错误和版本
-降级。部署凭据只能调用服务器端受限发布命令，不得获得通用 shell 或站点其他文件的写权限。完整接口 schema、
-失败降级和部署权限合同见 [Sakura Service 静态控制面合同](sakura-service.md)。
+`updaterManifestUrl`，后者指向国内 `latest.json`；下载文件及原始安装包签名仍由 GitHub Release 托管。
+prerelease 不更新该接口，服务端拒绝格式错误和版本
+降级。CI 凭据只能调用服务器端受限草稿导入命令，不得获得通用 shell 或站点其他文件的写权限。完整接口 schema、
+失败降级和部署权限合同见 [Sakura Service 与私人控制台合同](sakura-service.md)。
 
 Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递归删除安装器拥有的 `core/`、`python/`、
 `plugins/builtin/` 和 `plugins/dependencies/` 发行根，包括运行期间在其中产生的字节码缓存；大量小文件的删除
@@ -152,9 +165,9 @@ Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递
 
 ## 启动更新检测与用户操作
 
-正式安装包的 Tauri Updater endpoint 固定为主仓库的 GitHub 稳定版 Release：
-`https://github.com/Rvosy/Sakura/releases/latest/download/latest.json`。`releases/latest` 不包含 draft 和
-prerelease；客户端不调用 GitHub Releases API，也不自行比较版本。开发配置没有 endpoint 时直接跳过。
+新构建正式安装包的 Tauri Updater endpoint 为国内静态清单：
+`https://api.sakura.cialloo.cn/service/v1/latest.json`。CI 把已完成的稳定版导入控制台草稿，维护者确认后更新此入口；保留 GitHub 清单供旧客户端。
+客户端不调用 GitHub Releases API，也不自行比较版本。开发配置没有 endpoint 时直接跳过。
 Updater 负责 SemVer 比较、签名下载包选择和安装前验签。
 
 Updater 网络请求同时遵循 Windows/macOS 系统代理和标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、
@@ -198,3 +211,10 @@ Portable 模式只显示清单中固定 HTTPS 资产的“下载新版 ZIP”。
   夹具内容不变，应用可启动。
 - macOS 从已签名的 1.0.0 `.app` 经 Updater 替换；确认 codesign/notarization、退出和替换完成，
   `Application Support/Sakura` 与外置 TTS 夹具内容不变，应用可重新启动。
+
+## GitHub 下载镜像
+
+Shell 的下载源配置保存在 `config/ui.json` 的 `settings.download_sources`，与插件市场共用。
+对发行配置已有的 GitHub 更新清单端点按源顺序展开，非 GitHub 地址保持原样；不覆盖发行构建提供的公钥和端点。
+安装版更新包仍由 Tauri updater 下载并验证签名，只有网络、HTTP 和超时错误切换下一源；签名失败立即终止。
+下载阶段在设置页显示当前源。便携版继续使用原有手动下载流程，镜像不改写浏览器中的人工下载事务。

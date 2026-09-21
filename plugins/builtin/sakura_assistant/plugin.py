@@ -1,0 +1,1 @@
+from sakura_assistant.service import AssistantPlugin

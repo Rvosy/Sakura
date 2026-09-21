@@ -87,7 +87,7 @@ def test_worker_diagnostic_survives_host_exception_wrapping():
 
 @pytest.mark.parametrize("cleanup_failed", [False, True])
 def test_worker_active_error_type_survives_rpc_and_core_log_bridge(cleanup_failed):
-    from app.core.cancellation import OperationCancelled
+    from app.plugin_sdk.sakura_cancellation import OperationCancelled
     from app.plugins.runtime_v4 import PluginRuntimeError
 
     try:
@@ -129,7 +129,7 @@ def test_worker_active_error_type_survives_rpc_and_core_log_bridge(cleanup_faile
 
 
 def test_local_cleanup_type_is_not_overwritten_by_remote_cancellation():
-    from app.core.cancellation import OperationCancelled
+    from app.plugin_sdk.sakura_cancellation import OperationCancelled
 
     received = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=_exception_diagnostics(OperationCancelled()))
     try:
@@ -216,7 +216,7 @@ def test_exception_group_preserves_independent_failures():
 
 
 def test_provider_diagnostics_keep_error_fields_without_response_content():
-    from app.llm.api_client import ApiRequestError
+    from app.plugin_sdk.sakura_model import ApiRequestError
     error = ApiRequestError('API HTTP 401: {"error":{"message":"invalid credential","code":"invalid_api_key"},"choices":[{"message":{"content":"unrelated private output"}}]}')
     fields = exception_diagnostics(error, reason_code="API_FAILED", stage="request")
     assert "invalid credential" in fields["diagnostic"]
@@ -266,17 +266,23 @@ def test_plugin_callback_failures_are_logged_and_do_not_stop_other_callbacks(tmp
 
     delivered = []
     completed = []
+    failures = []
     def remote(service, method, args):
         delivered.extend(args[0])
         return True
     context = PluginContext("fixture.callbacks", tmp_path, tmp_path, remote, lambda *_: None)
     def fail(*_):
-        raise ValueError("callback original failure token=private-callback-token")
+        error = ValueError("callback original failure token=private-callback-token")
+        failures.append(error)
+        raise error
     context.on("fixture.event", fail)
     context.on("fixture.event", lambda _: completed.append("event"))
     context.effect(lambda: completed.append("cleanup"))
     context.effect(fail)
     context.emit("fixture.event", {})
+    with pytest.raises(ExceptionGroup) as caught:
+        context.close()
+    assert caught.value.exceptions == (failures[-1],)
     context.close()
     assert completed == ["event", "cleanup"]
     assert len(delivered) == 2

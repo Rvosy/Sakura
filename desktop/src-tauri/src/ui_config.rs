@@ -66,9 +66,6 @@ impl UiConfigRepository {
             }));
         }
         let bytes = fs::read(&self.path).map_err(|_| code(namespace, "READ_FAILED"))?;
-        if bytes.is_empty() || bytes.len() > 512 * 1024 {
-            return Err(code(namespace, "DOCUMENT_INVALID"));
-        }
         serde_json::from_slice(&bytes).map_err(|_| code(namespace, "DOCUMENT_INVALID"))
     }
 }

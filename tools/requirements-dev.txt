@@ -1,12 +1,14 @@
 -r ../requirements.txt
+-r ../plugins/builtin/sakura_model_openai_compatible/requirements.txt
 -r ../plugins/builtin/sakura_web/requirements.txt
--r ../plugins/builtin/sakura_genie/requirements.txt
--r ../plugins/builtin/sakura_gpt_sovits/requirements.txt
--r ../plugins/builtin/sakura_mem0/requirements.txt
+-r ../plugins/optional/sakura_genie/requirements.txt
+-r ../plugins/optional/sakura_gpt_sovits/requirements.txt
+-r ../plugins/optional/sakura_mem0/requirements.txt
 -r ../plugins/optional/playwright_browser/requirements.txt
 
 pytest>=8.0.0
 pytest-mock
 pytest-env
 pytest-timeout
+cryptography>=3.4
 psutil>=5.9.0

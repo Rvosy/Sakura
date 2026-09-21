@@ -129,6 +129,13 @@ pub struct StateLayout {
 }
 
 impl LayoutContract {
+    pub fn from_json(source: &str) -> Result<Self, String> {
+        let contract: Self = serde_json::from_str(source)
+            .map_err(|error| format!("invalid embedded pet layout contract: {error}"))?;
+        contract.validate()?;
+        Ok(contract)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != 1 {
             return Err(format!(
@@ -242,7 +249,6 @@ impl LayoutContract {
         state: PresentationState,
         surface: &ControlSurfaceLayout,
     ) -> Result<(), String> {
-        self.validate()?;
         let layout = self
             .states
             .get(state.key())
@@ -518,7 +524,6 @@ pub fn apply_window_layout_with_fit_bounds(
     visible_fit_bounds: [u32; 4],
     resident_backing_bounds: [u32; 4],
 ) -> Result<LayoutApplication, String> {
-    contract.validate()?;
     validate_fit_inside_backing(contract, visible_fit_bounds, resident_backing_bounds)?;
     if !monitor.scale_factor.is_finite() || monitor.scale_factor <= 0.0 {
         return Err("monitor scale factor must be positive and finite".to_string());
@@ -1028,8 +1033,24 @@ mod tests {
     use super::*;
 
     fn contract() -> LayoutContract {
-        serde_json::from_str(include_str!("../../frontend/pet/layout-contract.json"))
-            .expect("layout contract must parse")
+        LayoutContract::from_json(include_str!("../../frontend/pet/layout-contract.json"))
+            .expect("layout contract must be valid")
+    }
+
+    #[test]
+    fn loading_rejects_invalid_static_contracts_before_dynamic_geometry_runs() {
+        let original: serde_json::Value =
+            serde_json::from_str(include_str!("../../frontend/pet/layout-contract.json")).unwrap();
+        for (pointer, invalid) in [
+            ("/schemaVersion", serde_json::json!(2)),
+            ("/viewport/windowSize", serde_json::json!([0, 2000])),
+            ("/states/product/portraitAnchor", serde_json::json!([0, 0])),
+            ("/controlPanel/inputMaxHeight", serde_json::json!(0)),
+        ] {
+            let mut source = original.clone();
+            *source.pointer_mut(pointer).unwrap() = invalid;
+            assert!(LayoutContract::from_json(&source.to_string()).is_err());
+        }
     }
 
     fn monitor(work_area: PhysicalRect, scale_factor: f64) -> MonitorDescriptor {

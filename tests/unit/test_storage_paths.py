@@ -105,7 +105,6 @@ class TestStoragePathsSnapshot:
         assert self.paths.api_config() == self.base / "config" / "api.yaml"
         assert self.paths.system_config() == self.base / "config" / "system_config.yaml"
         assert self.paths.characters_config() == self.base / "config" / "characters.yaml"
-        assert self.paths.mcp_config() == self.base / "config" / "mcp.yaml"
         assert self.paths.plugins_config() == self.base / "config" / "plugins.yaml"
         assert self.paths.storage_config() == self.base / "config" / "storage.json"
         assert self.paths.user_plugins_dir == self.base / "plugins" / "user"

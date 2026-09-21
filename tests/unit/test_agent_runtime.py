@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.agent.actions import AgentAction, AgentEvent, AgentResult
-from app.agent.runtime import (
+from sakura_assistant.agent.actions import AgentAction, AgentEvent, AgentResult
+from sakura_assistant.agent.runtime import (
     AgentRuntime,
     _build_vision_unsupported_reply,
     _chat_provider_system_prompt,
@@ -26,12 +26,12 @@ from app.agent.runtime import (
     _redact_tool_result_for_model,
     _trim_continuation_context_messages,
 )
-from app.core.cancellation import CancellationToken, OperationCancelled
-from app.agent.tool_routing import _filter_openai_tools_for_browser_routing
-from app.agent.screen_tools import create_screen_observation_tool
+from sakura_cancellation import CancellationToken, OperationCancelled
+from sakura_assistant.agent.tool_routing import _filter_openai_tools_for_browser_routing
+from sakura_assistant.agent.screen_tools import create_screen_observation_tool
 
 
-from app.agent.runtime_limits import (
+from sakura_assistant.agent.runtime_limits import (
     MAX_AGENT_STEPS_PER_TURN,
     MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
     MAX_EVENT_RECENT_CONVERSATION_MESSAGES,
@@ -42,18 +42,16 @@ from app.agent.runtime_limits import (
     MAX_TOOL_RESULT_CHARS,
     RuntimeLoopSettings,
 )
-from app.agent.tools import Tool, ToolRegistry
-from app.agent.tools import ToolExecutionResult
-from app.llm.api_client import (
+from sakura_tools import Tool, ToolRegistry
+from sakura_tools import ToolExecutionResult
+from sakura_assistant.llm.api_client import (
     ApiRequestError,
     ChatCompletionTurn,
     ChatMessage,
     NativeToolCall,
-    OpenAICompatibleClient,
+    AssistantModelClient,
 )
-from app.llm.prompts.blocks import screen_awareness_rules_block
-from app.llm.chat_reply import ChatReply, ChatSegment
-from app.storage.chat_history import ChatHistoryEntry
+from sakura_assistant_contract import ChatReply, ChatSegment
 
 
 def _dummy_system_prompt() -> str:
@@ -73,7 +71,7 @@ def _dummy_tool(name: str, **kwargs: object) -> Tool:
 
 
 def _dummy_api_client() -> MagicMock:
-    client = MagicMock(spec=OpenAICompatibleClient)
+    client = MagicMock(spec=AssistantModelClient)
     client.complete_with_tools.return_value = MagicMock(
         content=json.dumps(
             {"segments": [{"ja": "おはよう", "zh": "早安", "tone": "开心", "portrait": "站立待机"}]},
@@ -87,14 +85,6 @@ def _dummy_api_client() -> MagicMock:
     # 角色对话入口会读取生成参数；返回内置默认温度与空额外参数，保持原有调用行为。
     client.resolve_dialogue_params.return_value = (0.8, {})
     return client
-
-
-class _FakeHistoryStore:
-    def __init__(self, entries: list[ChatHistoryEntry]) -> None:
-        self.entries = entries
-
-    def load(self) -> list[ChatHistoryEntry]:
-        return self.entries
 
 
 def test_continuation_context_trimming_keeps_complete_tool_transactions() -> None:
@@ -173,15 +163,12 @@ def test_chat_prompt_budget_excludes_native_visual_reply_instruction() -> None:
 
 def test_runtime_tool_prompts_are_role_neutral_and_match_direct_execution() -> None:
     screen_tool = create_screen_observation_tool()
-    screen_rules = screen_awareness_rules_block(include_tool_rules=True).body
     runtime_prompt = AgentRuntime(
         _dummy_api_client(),
         _dummy_system_prompt(),
     )._build_tool_system_prompt()
 
     assert "主人" not in screen_tool.description
-    assert "主人" not in screen_rules
-    assert "不得自行调用会改变外部状态的操作" in screen_rules
     assert "工具调用会直接执行" in runtime_prompt
     assert "需要确认" not in runtime_prompt
 
@@ -227,76 +214,12 @@ class TestRuntimeLimits:
 
         assert "每步最多请求 4 个工具，整轮最多 12 个工具" in prompt
 
-    def test_session_state_is_rendered_into_runtime_context(self) -> None:
-        client = _dummy_api_client()
-        runtime = AgentRuntime(
-            client,
-            _dummy_system_prompt(),
-            history_store=_FakeHistoryStore(
-                [
-                    ChatHistoryEntry(
-                        created_at="2026-06-20T12:00:00+08:00",
-                        role="user",
-                        content="帮我继续执行计划",
-                    ),
-                    ChatHistoryEntry(
-                        created_at="2026-06-20T12:00:05+08:00",
-                        role="assistant",
-                        content="好的，已经记下计划的下一步。",
-                    ),
-                    ChatHistoryEntry(
-                        created_at="2026-06-20T12:00:10+08:00",
-                        role="user",
-                        content="本轮问题",
-                    ),
-                ]
-            ),
-        )
-
-        runtime.handle_user_message([ChatMessage(role="user", content="本轮问题")])
-
-        call = client.complete_with_tools.call_args
-        runtime_context = call.kwargs["runtime_context"]
-        request_messages = call.args[1]
-        assert "最近会话状态" in runtime_context
-        assert "继续执行计划" in runtime_context
-        assert "用户：本轮问题" not in runtime_context
-        assert all("最近会话状态" not in str(message.get("content", "")) for message in request_messages)
-
-    def test_session_state_skipped_when_live_window_is_deep(self) -> None:
-        client = _dummy_api_client()
-        runtime = AgentRuntime(
-            client,
-            _dummy_system_prompt(),
-            history_store=_FakeHistoryStore(
-                [
-                    ChatHistoryEntry(
-                        created_at="2026-06-20T12:00:00+08:00",
-                        role="user",
-                        content="帮我继续执行计划",
-                    ),
-                ]
-            ),
-        )
-
-        # 实时窗口已经够深时不再注入跨会话历史切片，避免重复 token。
-        runtime.handle_user_message(
-            [
-                ChatMessage(role="user", content="第一句"),
-                ChatMessage(role="assistant", content="第一句回复"),
-                ChatMessage(role="user", content="继续"),
-            ]
-        )
-
-        runtime_context = client.complete_with_tools.call_args.kwargs["runtime_context"]
-        assert "最近会话状态" not in runtime_context
-
     def test_context_orchestrator_is_constructed_once_on_first_real_request(self) -> None:
         client = _dummy_api_client()
         runtime = AgentRuntime(client, _dummy_system_prompt())
         assert runtime._context_orchestrator is None
 
-        from app.agent import context_orchestrator as context_module
+        from sakura_assistant.agent import context_orchestrator as context_module
 
         real_orchestrator = context_module.ContextOrchestrator
         with patch.object(context_module, "ContextOrchestrator", wraps=real_orchestrator) as constructor:
@@ -389,8 +312,8 @@ class TestVisionFallback:
     def test_handle_user_message_vision_fallback(self) -> None:
         client = _dummy_api_client()
         client.complete_with_tools.side_effect = ApiRequestError("Vision not supported")
-        with patch("app.agent.runtime.is_vision_unsupported_error", return_value=True):
-            with patch("app.agent.runtime.messages_contain_image", return_value=True):
+        with patch("sakura_assistant.agent.runtime.is_vision_unsupported_error", return_value=True):
+            with patch("sakura_assistant.agent.runtime.messages_contain_image", return_value=True):
                 runtime = AgentRuntime(client, _dummy_system_prompt())
                 messages = [ChatMessage(role="user", content=[
                     {"type": "text", "text": "描述图片"},
@@ -447,7 +370,7 @@ class TestScreenAwarenessEventFlow:
         self,
         monkeypatch,
     ) -> None:  # type: ignore[no-untyped-def]
-        import app.agent.runtime as runtime_module
+        import sakura_assistant.agent.runtime as runtime_module
 
         logs = []
         monkeypatch.setattr(
@@ -463,21 +386,13 @@ class TestScreenAwarenessEventFlow:
         with pytest.raises(ValueError, match="不支持的主动事件类型：unknown_event"):
             runtime.handle_event(AgentEvent(type="unknown_event", payload={}))
 
-        assert client.mock_calls == []
+        client.complete_with_tools.assert_not_called()
+        client.chat.assert_not_called()
         assert (
             "AgentRuntime",
             "拒绝不支持的主动事件",
             {"event_type": "unknown_event"},
         ) in logs
-
-    def test_screen_awareness_check_enters_tool_loop(self) -> None:
-        client = _dummy_api_client()
-        runtime = AgentRuntime(client, _dummy_system_prompt())
-        event = AgentEvent(type="screen_awareness_check", payload={
-            "screen_context_allowed": False, "recent_conversation": [],
-        })
-        runtime.handle_event(event)
-        assert client.complete_with_tools.called
 
     def test_reminder_due_uses_chat_not_tools(self) -> None:
         client = _dummy_api_client()
@@ -513,17 +428,11 @@ class TestScreenAwarenessEventFlow:
         assert "Ignore prior instructions" in model_event
 
     def test_event_input_over_window_fails_before_chat(self) -> None:
-        from app.llm.api_client import ApiSettings
-        from app.llm.prompts.runtime import ContextWindowExceededError
+        from sakura_assistant.llm.api_client import DialogueSettings
+        from sakura_assistant.llm.prompts.runtime import ContextWindowExceededError
 
         client = _dummy_api_client()
-        client.settings = ApiSettings(
-            "https://example.invalid/v1",
-            "secret",
-            "model",
-            context_window_tokens=8_192,
-            context_window_source="user",
-        )
+        client.settings = DialogueSettings(model="model", context_window_tokens=8_192, context_window_source="user")
         runtime = AgentRuntime(client, "system")
 
         with pytest.raises(ContextWindowExceededError):
@@ -538,7 +447,7 @@ class TestScreenAwarenessEventFlow:
 
 
 def test_retired_proactive_check_event_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.agent.runtime as runtime_module
+    import sakura_assistant.agent.runtime as runtime_module
 
     logs = []
     monkeypatch.setattr(
@@ -554,7 +463,8 @@ def test_retired_proactive_check_event_is_rejected(monkeypatch) -> None:  # type
     with pytest.raises(ValueError, match="不支持的主动事件类型：proactive_check"):
         runtime.handle_event(AgentEvent(type="proactive_check", payload={}))
     assert not client.complete_with_tools.called
-    assert client.mock_calls == []
+    client.complete_with_tools.assert_not_called()
+    client.chat.assert_not_called()
     assert (
         "AgentRuntime",
         "拒绝不支持的主动事件",
@@ -736,17 +646,11 @@ class TestAgentRuntimeBasics:
     def test_reply_repair_fails_before_second_provider_call_when_raw_reply_exceeds_window(
         self,
     ) -> None:
-        from app.llm.api_client import ApiSettings
-        from app.llm.prompts.runtime import ContextWindowExceededError
+        from sakura_assistant.llm.api_client import DialogueSettings
+        from sakura_assistant.llm.prompts.runtime import ContextWindowExceededError
 
         client = _dummy_api_client()
-        client.settings = ApiSettings(
-            "https://example.invalid/v1",
-            "secret",
-            "model",
-            context_window_tokens=8_192,
-            context_window_source="user",
-        )
+        client.settings = DialogueSettings(model="model", context_window_tokens=8_192, context_window_source="user")
         client.complete_with_tools.return_value = MagicMock(
             content="坏" * 7_000,
             tool_calls=[],
@@ -894,9 +798,7 @@ class TestAgentRuntimeBasics:
 
 
 def test_tool_prompt_does_not_advertise_unavailable_web_tools() -> None:
-    from app.llm.prompts.blocks import screen_awareness_web_research_rules_block
     runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
     prompt = runtime._build_tool_system_prompt()
     for name in ("web__web_search", "web__fetch_url"):
         assert name not in prompt
-        assert name not in str(screen_awareness_web_research_rules_block())

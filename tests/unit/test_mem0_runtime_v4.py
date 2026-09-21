@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import yaml
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.config.character_loader import CharacterRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.dependencies import PluginDependencyRoots
@@ -23,13 +23,15 @@ def _roots(tmp_path: Path) -> RuntimeRoots:
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
     shutil.copytree(
-        repository / "plugins" / "builtin" / "sakura_mem0",
+        repository / "plugins" / "optional" / "sakura_mem0",
         bundled / "sakura_mem0",
     )
     user = tmp_path / "user"
     _write_character_and_config(user)
     _write_third_party_memory(user / "plugins" / "user" / "third_party_memory")
     _prepare_mem0_dependency_root(distribution, user, bundled / "sakura_mem0")
+    from app.plugins.bundled_migrations import MIGRATIONS
+    (user / "config/plugin-migrations.json").write_text(json.dumps({key: "not_applicable" for key in MIGRATIONS if key not in ['sakura.memory.mem0']}))
     return RuntimeRoots(distribution, user)
 
 
@@ -193,22 +195,16 @@ requires:
 
 def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
+    from app.plugins.bundled_migrations import migrate_bundled_plugins
+    migrate_bundled_plugins(roots)
     inventory = PluginInventory(roots).scan()
     records = {record.plugin_id: record for record in inventory.records}
-    assert records["sakura.memory.mem0"].source == "bundled"
+    assert records["sakura.memory.mem0"].source == "user"
     assert records["third.party.memory"].source == "user"
     registry = ToolRegistry()
-    context_providers = []
-    runtime = SimpleNamespace(
-        character_id="sakura",
-        set_context_providers=lambda values: (
-            context_providers.clear(),
-            context_providers.extend(values),
-        ),
-    )
     session = SimpleNamespace(
         character=CharacterRegistry(roots.user_root).get("sakura"),
-        runtime=runtime,
+        assistant=object(), visual_binding=None,
     )
     application = PluginRuntimeApplication(
         roots,
@@ -219,7 +215,7 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
     )
     try:
         application.start()
-        application.bind_runtime(registry, runtime, session=session)
+        application.bind_session(session)
         active = {
             item["pluginId"]: item
             for item in application.public_snapshot()["plugins"]
@@ -229,7 +225,7 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
         assert len({item["pid"] for item in active.values()}) == 2
         assert os.getpid() not in {item["pid"] for item in active.values()}
 
-        assert {provider.provider_id for provider in context_providers} == {
+        assert {provider["providerId"] for provider in application.call_service("sakura.host.context", "catalog")} == {
             "sakura.memory.mem0.recall",
             "third.party.memory.recall",
         }
@@ -253,11 +249,12 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
             "memory_embedding_component",
             "memory_management",
         }
-        assert all(item["reasonCode"] == "READY" for item in sections.values())
+        assert all(item["reasonCode"] == "READY" for item in sections.values()), sections
         assert "PRIVATE_MODEL_SECRET" not in str(mem0_snapshot)
         assert [item["collectionId"] for item in sections["memory_management"]["collections"]] == [
             "memories"
         ]
+        assert sections["memory_management"]["collections"][0]["scope"] == "character"
         slots = application.model_slots()
         assert [(item["ownerId"], item["slotId"]) for item in slots] == [
             ("sakura.memory.mem0", "curation")
@@ -267,7 +264,7 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
         disabled_records = {item["pluginId"]: item for item in disabled["plugins"]}
         assert disabled_records["sakura.memory.mem0"]["state"] == "disabled"
         assert disabled_records["third.party.memory"]["state"] == "active"
-        assert {provider.provider_id for provider in context_providers} == {
+        assert {provider["providerId"] for provider in application.call_service("sakura.host.context", "catalog")} == {
             "third.party.memory.recall"
         }
         assert registry.get("memory_search") is None

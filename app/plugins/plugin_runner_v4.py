@@ -81,6 +81,8 @@ class PluginRunner:
             generation_id=generation_id,
             plugin_id=plugin_id,
             request_handler=self._handle_request,
+            notification_handler=self._handle_notification,
+            notification_error_handler=self._notification_failed,
         )
 
     def run(self) -> int:
@@ -156,7 +158,10 @@ class PluginRunner:
             caller_id = payload.get("callerId")
             if not isinstance(caller_id, str) or not caller_id:
                 raise PluginApiError("PLUGIN_PROTOCOL_INVALID")
-            return context.call_local(service_key, method, args, caller_id=caller_id)
+            caller_scope = payload.get("callerScope")
+            if caller_scope is not None and not isinstance(caller_scope, str):
+                raise PluginApiError("PLUGIN_PROTOCOL_INVALID")
+            return context.call_local(service_key, method, args, caller_id=caller_id, caller_scope=caller_scope)
         if name == "event.emit":
             context = self._require_context()
             event_name = payload.get("name")
@@ -186,6 +191,18 @@ class PluginRunner:
             return None
         raise PluginApiError("PLUGIN_REQUEST_UNKNOWN")
 
+    def _handle_notification(self, name: str, payload: Mapping[str, Any]) -> None:
+        if name != "event.emit":
+            raise PluginApiError("PLUGIN_REQUEST_UNKNOWN")
+        self._handle_request(name, payload)
+
+    def _notification_failed(self, name: str, error: BaseException) -> None:
+        context = self._context
+        if context is not None:
+            context.get("sakura.host.logging").warning("插件观察通知未处理",
+                fields={"event": "plugin.notification.dropped", "stage": "notification",
+                        "event_name": name, "error_type": type(error).__name__})
+
     def _initialize(self) -> object:
         if self._initialized:
             raise PluginApiError("PLUGIN_ALREADY_INITIALIZED", plugin_id=self.plugin_id)
@@ -208,8 +225,13 @@ class PluginRunner:
                 raise PluginApiError("PLUGIN_ENTRY_INVALID", plugin_id=self.plugin_id)
             setup(context)
             context.commit()
-        except Exception:
-            context.close()
+        except Exception as error:
+            try:
+                context.close()
+            except Exception as cleanup_error:
+                raise ExceptionGroup(
+                    "Plugin initialization and cleanup failed", [error, cleanup_error]
+                ) from error
             raise
         self._context = context
         self._initialized = True
@@ -238,7 +260,10 @@ class PluginRunner:
         name: str,
         payload: Mapping[str, Any],
     ) -> object:
-        return self._peer.request(name, payload)
+        timeout = payload.get("timeoutSeconds")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 122):
+            raise PluginApiError("PLUGIN_DEADLINE_INVALID")
+        return self._peer.request(name, payload, **({"timeout": float(timeout)} if timeout is not None else {}))
 
     def _require_context(self) -> PluginContext:
         if self._context is None:

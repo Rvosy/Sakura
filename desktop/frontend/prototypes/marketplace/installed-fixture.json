@@ -1,0 +1,298 @@
+[
+  {
+    "id": "sakura.asr",
+    "name": "语音输入",
+    "author": "Rvosy",
+    "description": "选择语音输入引擎。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [
+      "sakura.asr"
+    ],
+    "requires": [
+      "sakura.host.audio_input"
+    ],
+    "presentation": {
+      "kind": "infrastructure",
+      "category": "voice",
+      "icon": "layers"
+    }
+  },
+  {
+    "id": "sakura.asr.sensevoice",
+    "name": "SenseVoice 语音识别",
+    "author": "Rvosy",
+    "description": "使用 SenseVoice 在本机识别语音。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [
+      "sakura.asr.provider.sensevoice"
+    ],
+    "requires": [
+      "sakura.asr",
+      "sakura.host.audio_input",
+      "sakura.host.settings",
+      "sakura.host.settings.surface-v0"
+    ],
+    "presentation": {
+      "kind": "provider",
+      "category": "voice",
+      "icon": "mic"
+    }
+  },
+  {
+    "id": "sakura.assistant.default",
+    "name": "Assistant",
+    "author": "Rvosy",
+    "description": "提供默认模型对话、上下文选择与工具调用。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [
+      "sakura.assistant"
+    ],
+    "requires": [
+      "sakura.host.logging",
+      "sakura.host.tools",
+      "sakura.host.context",
+      "sakura.host.timeline",
+      "sakura.host.storage",
+      "sakura.host.artifacts",
+      "sakura.host.settings"
+    ],
+    "presentation": {
+      "kind": "infrastructure",
+      "category": "model",
+      "icon": "sparkles"
+    }
+  },
+  {
+    "id": "sakura.tts.genie",
+    "name": "Genie 语音合成",
+    "author": "Rvosy",
+    "description": "使用 Genie 合成角色语音。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [
+      "sakura.tts.provider.genie"
+    ],
+    "requires": [
+      "sakura.tts",
+      "sakura.host.artifacts",
+      "sakura.host.character",
+      "sakura.host.diagnostics",
+      "sakura.host.settings",
+      "sakura.host.settings.surface-v0"
+    ],
+    "presentation": {
+      "kind": "provider",
+      "category": "voice",
+      "icon": "audio-lines"
+    }
+  },
+  {
+    "id": "sakura.tts.gpt-sovits",
+    "name": "GPT-SoVITS 语音合成",
+    "author": "Rvosy",
+    "description": "使用 GPT-SoVITS 合成角色语音。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [
+      "sakura.tts.provider.gpt-sovits"
+    ],
+    "requires": [
+      "sakura.tts",
+      "sakura.host.artifacts",
+      "sakura.host.character",
+      "sakura.host.settings",
+      "sakura.host.settings.surface-v0"
+    ],
+    "presentation": {
+      "kind": "provider",
+      "category": "voice",
+      "icon": "audio-lines"
+    }
+  },
+  {
+    "id": "sakura.mcp",
+    "name": "MCP",
+    "author": "Rvosy",
+    "description": "为插件提供 MCP 连接与调用接口。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [
+      "sakura.mcp"
+    ],
+    "requires": [
+      "sakura.host.logging"
+    ],
+    "presentation": {
+      "kind": "infrastructure",
+      "category": "connectivity",
+      "icon": "plug"
+    }
+  },
+  {
+    "id": "sakura.memory.mem0",
+    "name": "Mem0 长期记忆",
+    "author": "Rvosy",
+    "description": "让 Sakura 记住长期信息，并在需要时回想起来。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [],
+    "requires": [
+      "sakura.host.storage",
+      "sakura.host.character",
+      "sakura.host.timeline",
+      "sakura.host.context",
+      "sakura.host.tools",
+      "sakura.host.settings",
+      "sakura.host.settings.collection-v0",
+      "sakura.host.settings.surface-v0",
+      "sakura.host.model_slots.v2",
+      "sakura.host.artifacts"
+    ],
+    "presentation": {
+      "kind": "extension",
+      "category": "memory",
+      "icon": "brain"
+    }
+  },
+  {
+    "id": "sakura_mobile",
+    "name": "手机聊天",
+    "author": "pa1n9",
+    "description": "在局域网或 Tailscale 中，用手机网页和 Sakura 聊天。",
+    "version": "1.0.0",
+    "enabled": true,
+    "provides": [],
+    "requires": [
+      "sakura.host.mobile",
+      "sakura.host.artifacts",
+      "sakura.host.settings"
+    ],
+    "presentation": {
+      "kind": "extension",
+      "category": "connectivity",
+      "icon": "smartphone"
+    }
+  },
+  {
+    "id": "sakura.model.openai_compatible",
+    "name": "OpenAI 兼容模型",
+    "author": "Rvosy",
+    "description": "连接远程 OpenAI 兼容 API，提供文本、图像输入和工具调用。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [
+      "sakura.model.openai_compatible"
+    ],
+    "requires": [
+      "sakura.host.artifacts",
+      "sakura.host.model_slots.v2",
+      "sakura.host.settings"
+    ],
+    "presentation": {
+      "kind": "infrastructure",
+      "category": "model",
+      "icon": "brain"
+    }
+  },
+  {
+    "id": "sakura.portrait",
+    "name": "立绘",
+    "author": "Sakura",
+    "description": "显示、控制和编辑角色立绘。",
+    "version": "1.0.0",
+    "enabled": true,
+    "provides": [
+      "sakura.visual.portrait"
+    ],
+    "requires": [
+      "sakura.host.character",
+      "sakura.host.logging"
+    ],
+    "presentation": {
+      "kind": "provider",
+      "category": "visual",
+      "icon": "image"
+    }
+  },
+  {
+    "id": "sakura.screen_awareness",
+    "name": "主动屏幕感知",
+    "author": "Rvosy",
+    "description": "定时观察屏幕并与当前角色自然接话。",
+    "version": "1.0.0",
+    "enabled": true,
+    "provides": [],
+    "requires": [
+      "sakura.host.screen",
+      "sakura.host.chat",
+      "sakura.host.settings",
+      "sakura.host.logging"
+    ],
+    "presentation": {
+      "kind": "extension",
+      "category": "other",
+      "icon": "monitor"
+    }
+  },
+  {
+    "id": "sakura.visual.spine",
+    "name": "Spine",
+    "author": "Sakura",
+    "description": "Spine 3.6 角色的表情、动画和编辑。",
+    "version": "0.2.5",
+    "enabled": true,
+    "provides": [
+      "sakura.visual.spine"
+    ],
+    "requires": [
+      "sakura.host.character",
+      "sakura.host.logging"
+    ],
+    "presentation": {
+      "kind": "provider",
+      "category": "visual",
+      "icon": "person-standing"
+    }
+  },
+  {
+    "id": "sakura.tts",
+    "name": "语音输出",
+    "author": "Rvosy",
+    "description": "为角色选择语音输出引擎。",
+    "version": "0.1.0",
+    "enabled": true,
+    "provides": [
+      "sakura.tts"
+    ],
+    "requires": [
+      "sakura.host.logging"
+    ],
+    "presentation": {
+      "kind": "infrastructure",
+      "category": "voice",
+      "icon": "layers"
+    }
+  },
+  {
+    "id": "sakura.web",
+    "name": "联网工具",
+    "author": "Rvosy",
+    "description": "搜索公开网页和读取链接内容。",
+    "version": "1.1.0",
+    "enabled": true,
+    "provides": [],
+    "requires": [
+      "sakura.host.tools",
+      "sakura.host.logging",
+      "sakura.host.settings"
+    ],
+    "presentation": {
+      "kind": "extension",
+      "category": "tools",
+      "icon": "globe"
+    }
+  }
+]

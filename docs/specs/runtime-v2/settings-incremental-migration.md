@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-18
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -172,22 +172,21 @@ publication 保持 v1 并强制发布 `values.visualEffectMode`。Windows capabi
 
 ### 5.2 WP-5-03 角色切换设置契约
 
-角色选择是唯一需要完整 Core generation 重建的已开放设置切片。Python 保存成功只返回
-`unchanged | core_restart_required`；Rust 对后者只派发一次 restart，前端等待新的 Supervisor、Snapshot、
-readiness 和 Character Presentation identity 全部一致后再水合。保存失败不重启，restart 派发失败不回滚或
-重写配置。
+角色选择通常返回 `character_switch`，在同一 Core 内重建角色 Session 并保留可复用引擎。原生回执以
+`characterChanged` 标明切换，前端等待 Snapshot、readiness 和目标 Character Presentation 一致后再水合。
+只有 `core_restart_required` 返回值才派发一次受控 restart，并等待新的 generation。完整变更计划与失败语义见
+[角色切换合同](WP-5-03-safe-character-switch.md)。
 
-角色外观、语音和 Memory 草稿属于当前角色，存在未保存内容时阻止选择另一角色。Provider、Tools、Plugin、
-Screen Awareness 等全局草稿保留并绑定新 generation。switching 开始即清空旧 Memory/历史内容和游标，禁止
-旧 transport、旧分页或迟到事件重新显示。完整行为见
-[`WP-5-03-safe-character-switch.md`](WP-5-03-safe-character-switch.md)。
+角色外观、语音及 `scope=character` Collection 的实际修改会阻止选择另一角色。全局字段和 `scope=global` Collection 的草稿保留并绑定刷新后的设置状态；
+实际角色变化只清理角色集合，普通目录刷新和同角色重启不丢弃仍有效的草稿。Collection-v0 缺省归属和实际修改检测见
+[Plugin Runtime](sakura-plugin-runtime-v4.md#10-插件管理与设置窗口)，切换完整性见 [WP-5-03](WP-5-03-safe-character-switch.md)。
 
 角色下拉只形成设置窗口内草稿，允许在提交前反复改选；选择本身不得写配置、清空角色页面或启动 restart。
-它只可调用只读视觉预览命令，将桌宠主题、默认立绘和气泡问候语暂时投影为目标角色；Core、Memory、Timeline、
-TTS、名字与回复状态仍绑定正式角色，放弃时恢复正式角色当前应显示的视觉和气泡内容。
-“应用”和“保存并关闭”先保存当前 generation 的其他域，最后只提交一次最终角色。放弃设置或选回已提交角色
-会清除该草稿；暂存期间锁定仍属于当前正式角色的外观、语音和 Memory 页面。只有收到已提交的 restart
-receipt 后才进入 switching，并关闭 Memory editor portal、失效在途查询、清空角色级页面再重新水合。
+只读视觉预览仍使用既有命令，Core、Memory、Timeline 和 TTS 绑定正式角色。暂存期间锁定外观和语音页面，
+暂停角色 Collection；全局 Collection 可继续编辑。角色切换、同角色局部刷新或 Core 重启时，所有集合暂停旧请求，旧回调不能提交到新状态。
+
+“应用”先保存当前 generation 的其他域，最后提交角色选择，可保留全局 Collection 草稿；“保存并关闭”仍拒绝未保存的集合记录，
+两者均不会自动调用 Collection 的创建或更新。放弃或选回正式角色清除角色选择草稿；异步删除确认返回后仍须复核身份与当前可操作状态。
 
 ### 5.3 开机启动设置契约
 
@@ -348,4 +347,4 @@ Collection 只呈现在“记忆”页；整理间隔、embedding 下载/状态�
 不得用“关闭并重新打开设置”代替重绑定，也不得让旧 generation 的迟到结果覆盖当前页面。
 
 WP-4-02 只保留 `tools.runtime_limits`。Runtime v2 的确认策略、Action ID、原生确认和桌面 MCP 设置均已
-删除；WP-4-03 只保留通用 MCP 生命周期与只读状态边界。
+删除；旧 Core MCP 生命周期与只读状态边界也已退役。`sakura.mcp` 只提供 Service，没有独立设置页。

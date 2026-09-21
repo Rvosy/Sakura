@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-19
 ---
 
 # 运行日志与 Agent Trace
@@ -33,6 +33,10 @@ generation credential 和 API Key 不得进入运行日志或插件日志。
 ### Rust 事件
 
 Shell、Gateway、窗口后端、截图、音频和进程监管直接提交固定 event 名与字段。warning/error 优先进入队列；队列拥塞时低级别记录可以丢弃，但必须留下有界的 dropped 诊断。
+
+Core 请求在日志窗口和文本日志中按实际动作命名，例如“保存模型设置完成”“检查主动屏幕感知失败”。
+尚无中文名称的请求保留 command，避免不同操作都显示为“Core 请求完成”。屏幕共享状态、主动感知检查和
+语音输入等后台轮询成功时只记 debug，不占用用户日志列表；失败与取消仍保留原有级别和具体诊断。
 
 ### Python Core 事件
 
@@ -68,7 +72,10 @@ SDK 本地队列后台提交到 Core，再经同一 bridge 进入 Rust 服务；
 
 ## Agent Trace
 
-`app.agent.trace.AgentTraceRecorder` 写入 `data/logs/sakura-agent-trace.log`。默认设置由 `agent_trace.enabled` 控制。每个 operation 先写 staging，终态后在 commit lock 内追加完整 Request/Reply 文档。
+默认 Assistant 插件的 `sakura_assistant.agent.trace.AgentTraceRecorder` 写入 Host storage 提供的
+`data/logs/sakura-agent-trace.log`。Trace 固定启用，遗留 agent_trace.enabled 不再读取。每个 operation 先写
+staging，Core 最终裁决后通过 release 告知插件，recorder 再在 commit lock 内追加完整 Request/Reply 文档。
+Core 不导入默认模型或 Trace 实现；插件进程重载使旧操作失效，未提交 staging 下次恢复为 interrupted。
 
 模型客户端在发送最终 payload 前生成平行 provenance，然后删除 message 内部的 `_sakura_trace_provenance`。Trace 顺序必须与真实 Provider payload 一致。
 

@@ -702,15 +702,10 @@ impl SettingsCapabilityManifest {
             "providers".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
-                features: BTreeMap::from([
-                    ("providers.manage".to_string(), "available".to_string()),
-                    ("providers.credentials".to_string(), "available".to_string()),
-                    ("providers.list_models".to_string(), "available".to_string()),
-                    (
-                        "providers.test_connection".to_string(),
-                        "available".to_string(),
-                    ),
-                ]),
+                features: BTreeMap::from([(
+                    "providers.manage".to_string(),
+                    "available".to_string(),
+                )]),
             },
         );
         manifest.sections.insert(
@@ -1372,7 +1367,7 @@ mod tests {
             "available"
         );
         assert_eq!(
-            manifest.sections["providers"].features["providers.credentials"],
+            manifest.sections["providers"].features["providers.manage"],
             "available"
         );
         assert_eq!(

@@ -92,7 +92,7 @@ export function enhanceSelect(select) {
       return item;
     }));
     // Stay inside a modal's focus scope; the popover top layer avoids scroll/transform clipping.
-    (select.closest("dialog") || document.body).append(menu);
+    (select.closest("dialog, [popover]") || document.body).append(menu);
     menu.classList.add("is-open");
     menu.showPopover();
     const rect = trigger.getBoundingClientRect();

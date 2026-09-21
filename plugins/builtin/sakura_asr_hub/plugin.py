@@ -82,10 +82,11 @@ class SakuraASRHub:
         return {"removed": removed}
 
     def _proxy(self, descriptor):
+        proxy = self.context.bind(descriptor["serviceKey"])
         scope = self.audio.verifyProvider(descriptor["providerId"], descriptor["serviceKey"])["scopeId"]
         if scope != descriptor["scopeId"]:
             raise ValueError("ASR_PROVIDER_UNAVAILABLE")
-        return self.context.get(descriptor["serviceKey"])
+        return proxy
 
     def _status(self, descriptor):
         try:
@@ -194,7 +195,6 @@ class SakuraASRHub:
             if binding.terminal is None:
                 failure_reported = False
                 try:
-                    self._proxy(binding.descriptor)  # A restarted scope must never receive an old job.
                     value = binding.proxy.poll(binding.job_id)
                     state = value.get("state") if isinstance(value, Mapping) else None
                     if state == "succeeded" and isinstance(value.get("text"), str) and value["text"].strip() and len(value["text"]) <= 65536 and (value.get("language") is None or isinstance(value.get("language"), str)):
@@ -228,7 +228,6 @@ class SakuraASRHub:
             self.audio.revoke(binding.resource_id)
             self._log("asr.request.cancelled", "语音识别请求已取消", request_id=request_id, provider_id=binding.descriptor["providerId"], duration_ms=round((time.monotonic() - binding.started_at) * 1000))
             try:
-                self._proxy(binding.descriptor)
                 binding.proxy.cancel(binding.job_id)
             except Exception:
                 pass

@@ -28,7 +28,7 @@ macOS/Linux 将解释器路径替换为 `runtime/bin/python`。
 - `unit`、`core-host`、`python-full`：Python 单元、Core 和完整离线回归。
 - `release-distribution`：验证安装包、Portable、Updater 清单和发行镜像。
 - `runtime-v2-shell`、`runtime-v2-window-surface`：桌面壳、角色表现、窗口几何与交互。
-- `journey-mcp`、`journey-plugins`：MCP 和插件纵向产品链。
+- `journey-plugins`：插件纵向产品链。旧 MCP journey 已退役，新组件测试随实现建立。
 - `journey-visuals`：表现插件的资源、工坊、回复、播放、归档与授权。
 - `journey-visuals-browser`：正式角色设置、工坊形态与草稿、数值/立绘播放、Spine 导入与播放，以及桌面 CSP 和多图保存回归；五个入口使用隔离数据。保存回归使用真实有界 Core 路由。需要 Playwright，Windows 默认使用已安装 Edge；原生窗口及重启事件由测试桥代替。
 - `journey-tts`、`journey-character-studio`、`legacy-import`：TTS 播放链、角色工坊与 0.9.x 数据迁移安全边界。

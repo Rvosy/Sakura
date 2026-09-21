@@ -507,7 +507,7 @@ def test_character_voice_archive_imports_to_selected_character(existing_extensio
         "voice/models/sovits.pth"
     )
     if existing_extensions:
-        from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+        from plugins.optional.sakura_genie.plugin import _effective_voice_extension
         genie = manifest["extensions"]["sakura.tts.genie"]
         assert genie == {"refLang": "zh", "remoteCharacterName": "explicit"}
         assert _effective_voice_extension(manifest, genie)["gptModel"] == "voice/models/gpt.ckpt"
@@ -605,19 +605,16 @@ def test_character_voice_archive_rejects_unsafe_zip_and_missing_target() -> None
     assert not (root / "evil.txt").exists()
 
 
-def test_character_archive_rejects_resource_limit_violations(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_archive_accepts_many_compressible_files(tmp_path):
     import app.config.character_archive as archive_module
-
-    root = _runtime_root("resource_limits")
-    archive_path = root / "too-many.char"
-    with zipfile.ZipFile(archive_path, "w") as zf:
+    archive_path = tmp_path / "many.char"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", "{}")
-        zf.writestr("character/a.txt", "a")
-        zf.writestr("character/b.txt", "b")
-    monkeypatch.setattr(archive_module, "MAX_ARCHIVE_MEMBERS", 2)
-
-    with pytest.raises(CharacterArchiveError, match="文件数量过多"):
-        import_character_archive(archive_path, root)
+        for i in range(4100):
+            zf.writestr(f"character/{i}.txt", "a")
+        zf.writestr("character/large.txt", "a" * (2 * 1024 * 1024))
+    with zipfile.ZipFile(archive_path) as zf:
+        archive_module._validate_zip_members(zf, tmp_path)
 
 
 @pytest.mark.parametrize("archive_root", ["character", "voice"])
@@ -626,8 +623,8 @@ def test_character_archive_rejects_resource_limit_violations(monkeypatch) -> Non
     [
         ([3 * 1024**3], 64 * 1024**3, None),
         ([8 * 1024**3] * 4, 64 * 1024**3, None),
-        ([8 * 1024**3 + 1], 64 * 1024**3, "单个文件过大"),
-        ([8 * 1024**3] * 4 + [1], 64 * 1024**3, "总大小超过限制"),
+        ([8 * 1024**3 + 1], 64 * 1024**3, None),
+        ([8 * 1024**3] * 4 + [1], 64 * 1024**3, None),
         ([3 * 1024**3], 3 * 1024**3, "磁盘空间不足"),
     ],
 )
@@ -662,20 +659,6 @@ def test_archive_large_resource_limits(
         else:
             with pytest.raises(CharacterArchiveError, match=error):
                 validate(zf, tmp_path)
-
-
-def test_character_archive_rejects_extreme_compression_ratio(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.config.character_archive as archive_module
-
-    root = _runtime_root("compression_ratio")
-    archive_path = root / "bomb.char"
-    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.json", "{}")
-        zf.writestr("character/bomb.bin", b"0" * (2 * 1024 * 1024))
-    monkeypatch.setattr(archive_module, "MAX_ARCHIVE_COMPRESSION_RATIO", 2)
-
-    with pytest.raises(CharacterArchiveError, match="压缩比异常"):
-        import_character_archive(archive_path, root)
 
 
 def test_character_archive_rejects_non_sakura_format() -> None:

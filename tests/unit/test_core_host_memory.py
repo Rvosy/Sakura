@@ -11,17 +11,14 @@ from typing import Any, Mapping
 import pytest
 import yaml
 
-from plugins.builtin.sakura_mem0 import memory as memory_module
-from plugins.builtin.sakura_mem0 import support as memory_support_module
-from plugins.builtin.sakura_mem0.api_client import (
-    ApiSettings,
-    OpenAICompatibleClient,
-)
-from plugins.builtin.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
-from plugins.builtin.sakura_mem0.memory_recall import MemoryRecallService
-from plugins.builtin.sakura_mem0.plugin import _tool_registrations
-from plugins.builtin.sakura_mem0.domain_types import ContextRequest, ChatHistoryEntry
-from plugins.builtin.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
+from plugins.optional.sakura_mem0 import memory as memory_module
+from plugins.optional.sakura_mem0 import support as memory_support_module
+
+from plugins.optional.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
+from plugins.optional.sakura_mem0.memory_recall import MemoryRecallService
+from plugins.optional.sakura_mem0.plugin import _tool_registrations
+from plugins.optional.sakura_mem0.domain_types import ContextRequest, ChatHistoryEntry
+from plugins.optional.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
 from app.storage.timeline import (
     NewTimelineEntry,
     TimelineKind,
@@ -290,32 +287,27 @@ def _root(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _boundary(
-    root: Path,
-    store: FakeMemoryStore,
-    *,
-    config: dict[str, object] | None = None,
-) -> MemoryBoundary:
-    catalog = [{"id": "fixture", "alias": "Fixture", "models": ["curator"]}]
+MODEL_REF = {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}
+MODEL_CATALOG = [{"serviceKey": MODEL_REF["serviceKey"], "profiles": [{"profileId": "fixture", "label": "Fixture", "models": [{"modelId": "curator", "label": "curator"}]}]}]
 
-    def resolve_model(selection: Mapping[str, object]) -> dict[str, object]:
-        profile_id = str(selection.get("profileId", "")) or "fixture"
-        model = str(selection.get("model", "")) or "curator"
-        return {
-            "profileId": profile_id,
-            "model": model,
-            "baseUrl": "https://example.invalid/v1",
-            "apiKey": "PRIVATE_NOT_PUBLISHED",
-            "timeoutSeconds": 60,
-        }
 
+def _model_client_factory(_reference):
+    class Client:
+        def complete_raw(self, *_args, **_kwargs):
+            raise AssertionError("Unexpected model request")
+
+        def close(self):
+            pass
+    return Client()
+
+
+def _boundary(root, store, *, config=None):
     return MemoryBoundary(
-        root,
-        "sakura",
-        memory_store=store,  # type: ignore[arg-type]
+        root, "sakura", memory_store=store,
         curation_config_getter=lambda: dict(config or {}),
-        model_catalog_getter=lambda: catalog,
-        model_resolver=resolve_model,
+        model_catalog_getter=lambda: MODEL_CATALOG,
+        model_resolver=lambda reference: reference,
+        model_client_factory=lambda reference: _model_client_factory(reference),
     )
 
 
@@ -399,7 +391,7 @@ def test_startup_preload_failure_is_degraded_without_escaping_private_error(tmp_
 
 
 def test_plugin_owner_diagnostic_uses_host_logger_without_legacy_file(tmp_path: Path) -> None:
-    from plugins.builtin.sakura_mem0 import support
+    from plugins.optional.sakura_mem0 import support
     root = _root(tmp_path)
     path = root / "data" / "logs" / "memory-initialization.jsonl"
     path.parent.mkdir(parents=True)
@@ -561,7 +553,7 @@ def test_plugin_config_is_independent_from_core_curation_documents(tmp_path: Pat
         snapshot = boundary.settings_get()
         assert snapshot["curation"]["triggerTurns"] == 12  # type: ignore[index]
         assert snapshot["curation"]["backfillLimit"] == 321  # type: ignore[index]
-        assert snapshot["curationModelSlot"] == {"profileId": "fixture", "model": "curator"}
+        assert snapshot["curationModelSlot"] == MODEL_REF
         assert "PRIVATE_NOT_PUBLISHED" not in str(snapshot)
     finally:
         boundary.close()
@@ -607,8 +599,8 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
             calls.append(len(entries))
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
@@ -659,8 +651,8 @@ def test_scheduled_observation_counts_only_after_semantic_analysis_and_once_per_
             calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         timeline.store.append_many(
             [
@@ -786,8 +778,8 @@ def test_completion_arriving_during_curation_runs_one_followup_catchup(
                 assert release_first.wait(2)
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
         assert first_started.wait(1)
@@ -843,8 +835,8 @@ def test_plugin_restart_catches_up_from_saved_curation_cursor(
             calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     restarted = _boundary(root, FakeMemoryStore(), config=config)
     try:
         restarted.note_timeline_changed(timeline)
@@ -892,8 +884,8 @@ def test_failed_curation_keeps_cursor_and_retry_does_not_duplicate_success(
                 raise RuntimeError("fixture failure")
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
@@ -978,8 +970,8 @@ def test_curation_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
             calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     config = {
         "triggerTurns": 1,
         "backfillLimit": 2,
@@ -994,16 +986,9 @@ def test_curation_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
             character_id,
             memory_store=FakeMemoryStore(),  # type: ignore[arg-type]
             curation_config_getter=lambda: config,
-            model_catalog_getter=lambda: [
-                {"id": "fixture", "alias": "Fixture", "models": ["curator"]}
-            ],
-            model_resolver=lambda _selection: {
-                "profileId": "fixture",
-                "model": "curator",
-                "baseUrl": "https://example.invalid/v1",
-                "apiKey": "PRIVATE_NOT_PUBLISHED",
-                "timeoutSeconds": 60,
-            },
+            model_catalog_getter=lambda: MODEL_CATALOG,
+            model_resolver=lambda reference: reference,
+            model_client_factory=lambda reference: _model_client_factory(reference),
         )
         timeline = TimelineProxy(store, character_id)
         try:
@@ -1199,7 +1184,7 @@ def test_backend_write_failure_does_not_advance_curation_cursor(
             "curationModel": "curator",
         },
     )
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
     try:
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
@@ -1252,7 +1237,7 @@ def test_curation_preserves_completed_page_cursor_and_retries_only_failed_page(
         target()
         return object()
 
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     monkeypatch.setattr(boundary._curation_threads, "spawn", run_inline)  # noqa: SLF001
     first_page = [f"{role}-{index}" for index in range(1, 4) for role in ("human", "assistant")]
     second_page = [f"{role}-{index}" for index in range(4, 6) for role in ("human", "assistant")]
@@ -1305,7 +1290,7 @@ def test_failed_repair_stops_current_job_and_later_event_can_retry(
         },
     )
     monkeypatch.setattr(
-        "plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient",
+        __name__ + "._model_client_factory",
         FakeClient,
     )
     def run_inline(target, **_kwargs):
@@ -1331,31 +1316,15 @@ def test_each_curation_chunk_has_its_own_generation_and_repair(
 ) -> None:
     calls = 0
 
-    class Response:
-        def __enter__(self):
-            return self
+    class Client:
+        def complete_raw(self, _system, _messages, **kwargs):
+            nonlocal calls
+            assert kwargs["temperature"] == (0 if calls == 1 else 0.2)
+            assert kwargs["response_format"] == {"type": "json_object"}
+            calls += 1
+            return "not-json" if calls == 1 else '{"operations":[]}'
 
-        def __exit__(self, *_args):
-            return None
-
-        def read(self) -> bytes:
-            content = "not-json" if calls == 1 else '{"operations":[]}'
-            return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
-
-    def fake_urlopen(_request, timeout):
-        nonlocal calls
-        assert timeout == 60
-        calls += 1
-        return Response()
-
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.api_client.urlopen_current_proxy", fake_urlopen)
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="key",
-            model="curator",
-        )
-    )
+    client = Client()
     entries = [
         ChatHistoryEntry(
             created_at="2026-08-31T12:00:00+08:00",
@@ -1417,8 +1386,8 @@ def test_wp_5_03_generation_close_cancels_active_memory_curation_without_advanci
                     raise
                 time.sleep(0.005)
 
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", BlockingCurator)
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", BlockingCurator)
     boundary.note_timeline_changed(timeline)
     assert started.wait(1)
 
@@ -1605,3 +1574,21 @@ def test_fixed_model_snapshot_checks_sizes_without_reading_weights(tmp_path: Pat
     with pytest.raises(memory_module.MemoryModelImportError) as raised:
         memory_module._validate_fastembed_snapshot_artifacts(snapshot)
     assert raised.value.code == "DOWNLOAD_SIZE_MISMATCH"
+
+
+def test_missing_model_provider_does_not_disable_memory_crud_or_recall(tmp_path):
+    boundary = _boundary(_root(tmp_path), FakeMemoryStore(), config={"curationModelRef": MODEL_REF})
+    def unavailable():
+        raise RuntimeError("MODEL_PROVIDER_UNAVAILABLE")
+    boundary._model_catalog_getter = unavailable
+    try:
+        snapshot = boundary.settings_get()
+        assert snapshot["status"] == "ready"
+        assert snapshot["curation"]["available"] is False
+        created = boundary.upsert({"content": "Remember this", "layer": "semantic", "importance": 0.7, "confidence": 0.9})
+        assert created["memory"]["id"] == "created"
+        result = boundary.search({"query": "Remember", "limit": 5})
+        assert result["status"] == "ready"
+        assert boundary.delete({"id": "created"})["alreadyMissing"] is False
+    finally:
+        boundary.close()

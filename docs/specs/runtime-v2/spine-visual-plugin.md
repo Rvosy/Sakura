@@ -10,7 +10,7 @@ updated: 2026-09-14
 
 ## 范围
 
-`plugins/builtin/sakura_spine` 实现 Spine 3.6 JSON 表现，插件 ID 与 Service 均为 `sakura.visual.spine`，
+`plugins/optional/sakura_spine` 实现 Spine 3.6 JSON 表现，插件 ID 与 Service 均为 `sakura.visual.spine`，
 资源类型为 `spine.json@1`。后端遵循[表现插件边界](visual-plugin-boundary.md)，前端模块可由本地预览工具调用。
 插件使用公共 `mount` / `mountEditor` 接口接入桌面渲染器和角色工坊；独立预览与正式挂载复用同一运行库。
 插件随应用内置并默认启用，无需单独安装。用户仍需添加形态组件并选择显示方式，不自动改变当前角色。
@@ -74,7 +74,7 @@ Room 配置使用 `modelControls: ["skin"]`，始终循环 `defaultAnimation`，
 
 骨骼必须是完整的 `3.6.x` JSON，包含非空 bones、skins、animations；元数据缩略文件不可用。
 插件检查图集页面及其贴图是否存在，只接受资源内 PNG/JPEG 路径，禁止路径穿越、绝对路径、URL 和 NTFS 数据流。
-骨骼最多 16 MiB，图集最多 2 MiB，单张贴图最多 64 MiB，最多 32 页；皮肤和动画各最多 256 项。
+骨骼、图集、贴图及配置文件不设业务大小门槛，图集页、皮肤和动画不设数量上限。实际渲染遵守当前 GPU 纹理能力，命中检测保留独立内存预算。
 渲染端还会实际解码贴图、检查 WebGL 纹理尺寸上限及可绘制范围。版本不符不尝试转换。
 资源自带的 `hash` 不参与身份、缓存或完整性校验。
 
@@ -193,4 +193,4 @@ Spine 默认由内置插件提供。插件被禁用或旧版应用缺少兼容�
 [Spine 浏览器 journey](../../../desktop/frontend/tests/spine-plugin.journey.py)使用隔离角色、真实插件进程和正式工坊，
 覆盖组件与目录导入、表情速度保存重开，以及公共 RendererHost 的播放、去重、冻结和销毁；可传入实际组件目录。
 
-运行库来源与许可见[运行库说明](../../../plugins/builtin/sakura_spine/vendor/README.md)。
+运行库来源与许可见[运行库说明](../../../plugins/optional/sakura_spine/vendor/README.md)。

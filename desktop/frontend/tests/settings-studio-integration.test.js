@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 
 import { createCharacterSettingsFeature } from "../settings/character-settings.js";
 import { RUNTIME_THEME_FIELDS } from "../core/theme-runtime.js";
+import { featureFixture, snapshot as pluginSnapshot, queryResult } from "./fixtures/plugin-settings-fixture.js";
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+const settingsSource = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
+const saveSettingsSource = settingsSource.slice(settingsSource.indexOf("async function saveRuntimeSettings("),
+  settingsSource.indexOf("\nfunction collectThemeSettings("));
+const submitButtonsSource = settingsSource.slice(settingsSource.indexOf('fields.saveButton.addEventListener("click"'),
+  settingsSource.indexOf('fields.cancelButton.addEventListener("click"'));
 
 // Only the DOM boundary is replaced. Catalog, archive, preview, and generation
 // handling run through the imported production feature and typed clients.
@@ -133,7 +141,7 @@ async function characterSettings(options = {}) {
     applyPreviewTheme: (theme) => previews.push(theme),
     rebindSettings: async (generationId) => { transitions.push(["rebind", generationId]); },
     clearCharacterState: () => transitions.push(["clear"]),
-    renderMemorySurface: () => transitions.push(["render-memory"]),
+    renderPluginCollections() {},
     ...options.feature,
   });
   if (options.initialize !== false) await feature.initialize();
@@ -222,7 +230,7 @@ test("current-character publication rebinds only the announced ready generation 
   assert.equal(feature.isSwitching(), false);
   assert.equal(feature.isTransitioning(), false);
   assert.equal(fields.characterEditorButton.disabled, false);
-  assert.deepEqual(transitions, [["render-memory"]]);
+  assert.deepEqual(transitions, []);
   calls.length = 0;
   await feature.refreshCatalog({ generationId: "generation-a" });
   assert.deepEqual(rebinds, ["generation-b"], "an obsolete publication cannot rebind the current generation");
@@ -230,6 +238,456 @@ test("current-character publication rebinds only the announced ready generation 
   assert.equal(feature.pendingCharacterId(), "beta");
   feature.dispose();
 });
+
+for (const [surface, scope] of [[null, "character"], ["memory", "character"], [null, "global"], ["memory", "global"]]) {
+  test(`character changes respect ${scope} data ownership on the ${surface || "plugin"} surface`, async () => {
+    function snapshotFor(generation) {
+      const value = pluginSnapshot(generation);
+      value.plugins[0].sections[1].surface = surface;
+      value.plugins[0].sections[1].collections[0].scope = scope;
+      return value;
+    }
+    let nextPlugins = snapshotFor("generation-a");
+    let characters;
+    const plugins = featureFixture(async (command, args) => {
+      if (command === "settings_plugins_get") return nextPlugins;
+      assert.equal(args.operation, "query", "a role change must never submit a collection draft");
+      return queryResult("saved-note");
+    }, {
+      isCharacterTransitioning: () => characters?.feature.isTransitioning() || false,
+      hasPendingCharacterSelection: () => Boolean(characters?.feature.pendingCharacterId()),
+    });
+    plugins.feature.initialize(nextPlugins);
+    if (surface === null) await plugins.openSettings();
+    await plugins.runTimers(0);
+    await plugins.document.querySelector(surface === "memory" ? ".memory-add-button" : ".plugin-collection-head button").fire("click");
+    const editor = plugins.document.querySelector(surface === "memory" ? ".memory-editor-overlay textarea" : ".plugin-collection-editor textarea");
+    editor.value = "draft belonging to alpha";
+    await editor.fire("input");
+    characters = await characterSettings({ feature: {
+      hasCharacterDrafts: () => plugins.feature.characterCollectionDraftCount() > 0,
+      clearCharacterState: () => plugins.feature.clearCharacterState(),
+      invalidateCollectionRequests: () => plugins.feature.invalidateCollectionRequests(),
+      renderPluginCollections: () => plugins.feature.renderCollections(),
+      rebindSettings: async (generation) => {
+        nextPlugins = snapshotFor(generation);
+        await plugins.feature.refreshCurrent();
+      },
+    } });
+    try {
+      await select(characters, "beta");
+      assert.equal(characters.feature.pendingCharacterId(), scope === "character" ? null : "beta",
+        "only edits owned by the current character block choosing another character");
+      if (scope === "global") {
+        assert.equal(characters.fields["page-memory"].inert, false,
+          "the Memory page must not disable global collections during a pending choice");
+        assert.equal(plugins.document.querySelector(surface === "memory" ? ".memory-archive" : ".plugin-collection").inert, false);
+      }
+      await select(characters, "alpha");
+      await characters.feature.refreshCatalog({});
+      assert.equal(plugins.feature.hasCollectionDrafts(), true, "same-character catalog changes keep unfinished editing");
+      characters.state.lifecycle = lifecycle("generation-b", 2, "alpha");
+      await characters.feature.refreshCatalog({ generationId: "generation-b" });
+      assert.equal(plugins.feature.hasCollectionDrafts(), true, "same-character restarts keep unfinished editing");
+
+      // A catalog-only notification may learn the new role before its ready
+      // generation arrives. It must not hide the old editor's ownership.
+      characters.state.catalog = catalog(["alpha", "beta"], "beta");
+      await characters.feature.refreshCatalog({});
+      characters.state.lifecycle = lifecycle("generation-c", 3, "beta");
+      characters.state.catalog = catalog(["alpha", "beta"], "beta");
+      await characters.feature.refreshCatalog({ generationId: "generation-c" });
+      assert.equal(characters.feature.currentCharacterId(), "beta");
+      assert.equal(plugins.feature.hasCollectionDrafts(), scope === "global",
+        "character drafts are discarded while global drafts survive a character change");
+      await plugins.runTimers(0);
+      if (scope === "global") {
+        if (surface === null) await plugins.openSettings();
+        assert.equal(plugins.document.querySelector(surface === "memory" ? ".memory-editor-overlay textarea" : ".plugin-collection-editor textarea").value,
+          "draft belonging to alpha");
+      } else {
+        assert.equal(plugins.document.querySelector(".memory-editor-overlay"), null);
+        assert.equal(plugins.document.querySelector(".plugin-collection-editor"), null);
+      }
+    } finally {
+      characters.feature.dispose();
+      plugins.feature.dispose();
+    }
+  });
+}
+
+for (const transition of ["same-core-roundtrip", "same-character-refresh", "core-restart"]) {
+  test(`${transition} retains Collection drafts but detaches in-flight writes and old save callbacks`, async () => {
+    let generation = "generation-a", characters, completeWrite;
+    const writes = [];
+    const snapshotFor = () => {
+      const value = pluginSnapshot(generation);
+      value.plugins[0].sections[1].collections[0].scope = transition === "same-core-roundtrip" ? "global" : "character";
+      return value;
+    };
+    const plugins = featureFixture(async (command, args) => {
+      if (command === "settings_plugins_get") return snapshotFor();
+      if (args.operation === "query") return queryResult("note", "stored note");
+      writes.push(args);
+      return new Promise((resolve) => { completeWrite = () => resolve({ itemId: "note", values: args.payload.values }); });
+    }, {
+      isCharacterTransitioning: () => characters?.feature.isTransitioning() || false,
+      hasPendingCharacterSelection: () => Boolean(characters?.feature.pendingCharacterId()),
+    });
+    plugins.feature.initialize(snapshotFor());
+    characters = await characterSettings({ feature: {
+      hasCharacterDrafts: () => plugins.feature.characterCollectionDraftCount() > 0,
+      clearCharacterState: () => plugins.feature.clearCharacterState(),
+      invalidateCollectionRequests: () => plugins.feature.invalidateCollectionRequests(),
+      renderPluginCollections: () => plugins.feature.renderCollections(),
+      rebindSettings: async () => plugins.feature.refreshCurrent(),
+    } });
+    try {
+      await plugins.runTimers(0);
+      await plugins.document.querySelector(".memory-record-card").fire("dblclick");
+      const input = plugins.document.querySelector(".memory-editor-overlay textarea");
+      input.value = "unfinished note";
+      await input.fire("input");
+      const oldSave = plugins.document.querySelector('[data-memory-action="save"]');
+      const saving = oldSave.fire("click");
+      await settle();
+      assert.equal(writes.length, 1);
+      if (transition === "same-core-roundtrip") {
+        for (const characterId of ["beta", "alpha"]) {
+          await select(characters, characterId);
+          characters.handlers.settings_character_select = () => {
+            characters.state.catalog = catalog(["alpha", "beta"], characterId);
+            characters.state.lifecycle = lifecycle(generation, 1, characterId);
+            return { schemaVersion: 1, previousCoreGenerationId: generation, restartState: "not_required",
+              characterChanged: true, targetCharacterId: characterId, snapshot: characters.state.catalog };
+          };
+          await characters.feature.commit();
+          assert.equal(characters.feature.currentCharacterId(), characterId);
+        }
+      } else {
+        if (transition === "core-restart") generation = "generation-b";
+        characters.state.lifecycle = lifecycle(generation, transition === "core-restart" ? 2 : 1, "alpha");
+        await characters.feature.refreshCatalog({ generationId: generation });
+      }
+      completeWrite();
+      await saving;
+      await oldSave.fire("click");
+      assert.equal(writes.length, 1, "neither a rebind nor a detached button may replay the write");
+      assert.equal(plugins.feature.hasCollectionDrafts(), true);
+      assert.equal(plugins.document.querySelector(".memory-editor-overlay textarea")?.value, "unfinished note");
+      assert.deepEqual(characters.errors, []);
+    } finally {
+      completeWrite?.();
+      characters.feature.dispose();
+      plugins.feature.dispose();
+    }
+  });
+}
+
+test("Apply commits a character and ordinary settings while retaining global records; Save and close still protects them", async () => {
+  let generation = "generation-a", label = "fixture", characters;
+  const writes = [];
+  const snapshotFor = () => {
+    const value = pluginSnapshot(generation, label);
+    value.plugins[0].sections[1].surface = null;
+    value.plugins[0].sections[1].collections[0].scope = "global";
+    return value;
+  };
+  const plugins = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_get") return snapshotFor();
+    if (command === "settings_plugins_save") {
+      writes.push(args);
+      label = args.values.label;
+      return { saved: true, pluginId: "fixture_plugin", sectionId: "general", changePlan: "applied",
+        applicationState: "applied", applicationReasonCode: "READY" };
+    }
+    assert.equal(args.operation, "query", "Apply cannot silently save Collection records");
+    return queryResult("global-note");
+  }, {
+    isCharacterTransitioning: () => characters?.feature.isTransitioning() || false,
+    hasPendingCharacterSelection: () => Boolean(characters?.feature.pendingCharacterId()),
+  });
+  plugins.feature.initialize(snapshotFor());
+  characters = await characterSettings({ feature: {
+    hasCharacterDrafts: () => plugins.feature.characterCollectionDraftCount() > 0,
+    clearCharacterState: () => plugins.feature.clearCharacterState(),
+      invalidateCollectionRequests: () => plugins.feature.invalidateCollectionRequests(),
+    renderPluginCollections: () => plugins.feature.renderCollections(),
+    rebindSettings: async (nextGeneration) => {
+      generation = nextGeneration;
+      await plugins.feature.refreshCurrent();
+    },
+  } });
+  const { fields, state, handlers } = characters;
+  const errors = [], notices = [];
+  let closed = false;
+  // Run the shipping aggregate-save and button callbacks with actual character
+  // and plugin features. Only unrelated settings controllers and native close
+  // are replaced here.
+  vm.runInNewContext(`${saveSettingsSource}\n${submitButtonsSource}`, {
+    fields, document: plugins.document, runtimePluginController: plugins.feature, runtimeCharacterFeature: characters.feature,
+    runtimeAsrController: null, runtimeAppearanceController: null, runtimeScreenAwarenessController: null,
+    runtimeProviderFeature: null, runtimeChatTimingController: null, runtimeBubbleAutoHideController: null,
+    runtimeAutostartController: null, runtimeToolsController: null, runtimeVoiceController: null,
+    refreshRuntimeVoiceCurrent: async () => {}, setError: (error) => { if (error) errors.push(error); },
+    setSubmissionBusy: (value) => { state.submitting = value; characters.feature.syncControls(); },
+    notify: (message) => notices.push(message), closeSettingsWindow: async () => { closed = true; },
+    bypassCloseGuard: false,
+  });
+  try {
+    await plugins.openSettings();
+    const setting = plugins.document.querySelector(".plugin-settings-dialog .form-row input");
+    setting.value = "updated setting";
+    await setting.fire("input");
+    await plugins.runTimers(0);
+    await plugins.document.querySelector(".plugin-collection-table tbody tr").fire("click");
+    const input = plugins.document.querySelector(".plugin-collection-editor textarea");
+    input.value = "unsaved global record";
+    await input.fire("input");
+    await plugins.document.querySelector(".plugin-settings-dialog form").fire("submit");
+    await select(characters, "beta");
+    handlers.settings_character_select = () => {
+      state.catalog = catalog(["alpha", "beta"], "beta");
+      state.lifecycle = lifecycle("generation-b", 2, "beta");
+      return { schemaVersion: 1, previousCoreGenerationId: "generation-a", restartState: "requested",
+        targetCharacterId: "beta", snapshot: state.catalog };
+    };
+    await fields.applyButton.click();
+    assert.deepEqual(errors, []);
+    assert.equal(characters.feature.currentCharacterId(), "beta");
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].values.label, "updated setting");
+    assert.equal(plugins.feature.hasCollectionDrafts(), true);
+    assert.equal(closed, false);
+    await plugins.openSettings();
+    assert.equal(plugins.document.querySelector(".plugin-collection-editor textarea").value, "unsaved global record");
+    assert.equal(plugins.document.querySelector(".plugin-settings-dialog .form-row input").value, "updated setting");
+
+    const noticeCount = notices.length;
+    await fields.saveButton.click();
+    assert.equal(closed, false, "Save and close cannot silently discard the retained record");
+    assert.match(errors.at(-1), /集合记录/);
+    assert.equal(notices.length, noticeCount, "a rejected save does not report success");
+    assert.equal(writes.length, 1, "the ordinary field was already saved by Apply");
+  } finally {
+    characters.feature.dispose();
+    plugins.feature.dispose();
+  }
+});
+
+test("Apply rejects disabling the owner of an edited global record before the snapshot removes its sections", async () => {
+  const data = pluginSnapshot();
+  data.plugins[0].sections[1].surface = null;
+  data.plugins[0].sections[1].collections[0].scope = "global";
+  const writes = [];
+  const plugins = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_enabled_set") {
+      writes.push(args);
+      const disabled = { ...data.plugins[0], enabled: false, state: "disabled", reasonCode: "PLUGIN_DISABLED", sections: [] };
+      return { ...data, plugins: [disabled], managementAction: "enabled_changed", installId: disabled.installId,
+        pluginId: disabled.pluginId, desiredSaved: true, applicationState: "applied", applicationReasonCode: "READY" };
+    }
+    assert.equal(args.operation, "query");
+    return queryResult("global-note");
+  });
+  plugins.feature.initialize(data);
+  const fields = characterDocument().fields;
+  const errors = [];
+  vm.runInNewContext(`${saveSettingsSource}\n${submitButtonsSource}`, {
+    fields, document: plugins.document, runtimePluginController: plugins.feature, runtimeCharacterFeature: null,
+    runtimeAsrController: null, runtimeAppearanceController: null, runtimeScreenAwarenessController: null,
+    runtimeProviderFeature: null, runtimeChatTimingController: null, runtimeBubbleAutoHideController: null,
+    runtimeAutostartController: null, runtimeToolsController: null, runtimeVoiceController: null,
+    refreshRuntimeVoiceCurrent: async () => {}, setError: (error) => { if (error) errors.push(error); },
+    setSubmissionBusy() {}, notify() {}, closeSettingsWindow: async () => {}, bypassCloseGuard: false,
+  });
+  try {
+    await plugins.openSettings();
+    await plugins.runTimers(0);
+    await plugins.document.querySelector(".plugin-collection-table tbody tr").fire("click");
+    const input = plugins.document.querySelector(".plugin-collection-editor textarea");
+    input.value = "unsaved global record";
+    await input.fire("input");
+    await plugins.document.querySelector(".plugin-settings-dialog form").fire("submit");
+    const toggle = plugins.document.querySelector(".plugin-enable-switch input");
+    toggle.checked = false;
+    await toggle.fire("change");
+    await fields.applyButton.click();
+    assert.deepEqual(writes, [], "the plugin must remain active until its record is saved or reverted");
+    assert.match(errors.at(-1), /集合记录/);
+    assert.equal(plugins.feature.hasCollectionDrafts(), true);
+    await plugins.openSettings();
+    assert.equal(plugins.document.querySelector(".plugin-collection-editor textarea").value, "unsaved global record");
+  } finally {
+    plugins.feature.dispose();
+  }
+});
+
+test("an enabled incompatible plugin can be disabled but cannot be enabled again", async () => {
+  const data = pluginSnapshot();
+  const plugin = data.plugins[0];
+  Object.assign(plugin, { supported: false, state: "failed", reasonCode: "MODEL_API_UPDATE_REQUIRED", sections: [] });
+  const writes = [];
+  const fixture = featureFixture(async (command, args) => {
+    assert.equal(command, "settings_plugins_enabled_set");
+    assert.equal(args.enabled, false);
+    writes.push(args);
+    const disabled = { ...plugin, enabled: false, state: "disabled" };
+    return { ...data, plugins: [disabled], managementAction: "enabled_changed", installId: plugin.installId,
+      pluginId: plugin.pluginId, desiredSaved: true, applicationState: "applied", applicationReasonCode: "READY" };
+  });
+  try {
+    fixture.feature.initialize(data);
+    const toggle = fixture.document.querySelector(".plugin-enable-switch input");
+    assert.equal(toggle.checked, true);
+    assert.equal(toggle.disabled, false);
+    toggle.checked = false;
+    await toggle.fire("change");
+    await fixture.feature.save();
+    assert.equal(writes.length, 1);
+    const stopped = fixture.document.querySelector(".plugin-enable-switch input");
+    assert.equal(stopped.checked, false);
+    assert.equal(stopped.disabled, true);
+    assert.deepEqual(fixture.errors, []);
+  } finally {
+    fixture.feature.dispose();
+  }
+});
+
+test("same-character voice import retains a collection draft opened while importing", async () => {
+  const snapshotFor = (generation) => {
+    const value = pluginSnapshot(generation);
+    value.plugins[0].sections[1].surface = null;
+    return value;
+  };
+  let nextPlugins = snapshotFor("generation-a"), releaseImport;
+  const plugins = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_get") return nextPlugins;
+    assert.equal(args.operation, "query", "rebinding cannot submit the draft");
+    return queryResult("saved-note");
+  });
+  plugins.feature.initialize(nextPlugins);
+  const characters = await characterSettings({
+    handlers: {
+      settings_character_choose_import: () => "C:\\imports\\alpha.voice",
+      settings_character_import_voice: () => new Promise((resolve) => { releaseImport = resolve; }),
+    },
+    feature: {
+      hasCharacterDrafts: () => plugins.feature.characterCollectionDraftCount() > 0,
+      clearCharacterState: () => plugins.feature.clearCharacterState(),
+      invalidateCollectionRequests: () => plugins.feature.invalidateCollectionRequests(),
+      rebindSettings: async (generation) => {
+        nextPlugins = snapshotFor(generation);
+        await plugins.feature.refreshCurrent();
+      },
+    },
+  });
+  let importing;
+  try {
+    importing = characters.fields.ttsVoiceImportButton.click();
+    await settle();
+    assert.equal(typeof releaseImport, "function", "import started before any draft existed");
+    await plugins.openSettings();
+    await plugins.runTimers(0);
+    await plugins.document.querySelector(".plugin-collection-head button").fire("click");
+    const editor = plugins.document.querySelector(".plugin-collection-editor textarea");
+    editor.value = "unfinished alpha note";
+    await editor.fire("input");
+    characters.state.lifecycle = lifecycle("generation-b", 2, "alpha");
+    releaseImport({
+      schemaVersion: 1, previousCoreGenerationId: "generation-a", restartState: "requested",
+      targetCharacterId: "alpha", snapshot: characters.state.catalog,
+    });
+    await importing;
+    assert.deepEqual(characters.errors, []);
+    assert.equal(plugins.feature.hasCollectionDrafts(), true);
+    await plugins.openSettings();
+    assert.equal(plugins.document.querySelector(".plugin-collection-editor textarea").value, "unfinished alpha note");
+  } finally {
+    characters.feature.dispose();
+    plugins.feature.dispose();
+  }
+});
+
+test("overlapping catalog-only publications cannot leave a completed rebind locked", async () => {
+  let releaseRebind;
+  const fixture = await characterSettings({ feature: {
+    rebindSettings: () => new Promise((resolve) => { releaseRebind = resolve; }),
+  } });
+  try {
+    fixture.state.lifecycle = lifecycle("generation-b", 2);
+    const rebinding = fixture.feature.refreshCatalog({ generationId: "generation-b" });
+    await settle();
+    assert.equal(fixture.feature.isTransitioning(), true);
+    const catalogOnly = fixture.feature.refreshCatalog({});
+    await settle();
+    assert.equal(fixture.feature.isTransitioning(), true, "the active rebind retains its lock");
+    releaseRebind();
+    await Promise.all([rebinding, catalogOnly]);
+    assert.equal(fixture.feature.isTransitioning(), false);
+    assert.equal(fixture.fields.saveButton.disabled, false);
+    assert.equal(fixture.fields.characterSelect.disabled, false);
+  } finally {
+    releaseRebind?.();
+    fixture.feature.dispose();
+  }
+});
+
+for (const firstFinished of ["catalog", "local"]) {
+  test(`${firstFinished} completion cannot release the other character transition`, async () => {
+    let releaseLocal, releaseCatalog;
+    const fixture = await characterSettings({ feature: {
+      rebindSettings: () => new Promise((resolve) => { releaseLocal = resolve; }),
+    } });
+    const { feature, fields, state, handlers } = fixture;
+    let local, catalogRefresh;
+    try {
+      await select(fixture, "beta");
+      handlers.settings_character_select = () => {
+        state.catalog = catalog(["alpha", "beta"], "beta");
+        state.lifecycle = lifecycle("generation-b", 2, "beta");
+        return {
+          schemaVersion: 1, previousCoreGenerationId: "generation-a", restartState: "requested",
+          targetCharacterId: "beta", snapshot: state.catalog,
+        };
+      };
+      state.submitting = true;
+      local = feature.commit();
+      await settle();
+      assert.equal(typeof releaseLocal, "function");
+      handlers.runtime_lifecycle_snapshot = () => new Promise((resolve) => { releaseCatalog = resolve; });
+      catalogRefresh = feature.refreshCatalog({ generationId: "generation-a" });
+      await settle();
+      assert.equal(typeof releaseCatalog, "function");
+
+      if (firstFinished === "catalog") {
+        releaseCatalog(state.lifecycle);
+        await catalogRefresh;
+      } else {
+        releaseLocal();
+        await local;
+        state.submitting = false;
+        feature.syncControls();
+      }
+      assert.equal(feature.isTransitioning(), true, "the other hand-off still blocks collection operations");
+      assert.equal(fields.characterSelect.disabled, true);
+      assert.equal(fields.saveButton.disabled, true);
+      releaseCatalog(state.lifecycle);
+      releaseLocal();
+      await Promise.all([local, catalogRefresh]);
+      state.submitting = false;
+      feature.syncControls();
+      assert.equal(feature.isTransitioning(), false);
+      assert.equal(fields.characterSelect.disabled, false);
+      assert.equal(fields.saveButton.disabled, false);
+    } finally {
+      releaseLocal?.();
+      releaseCatalog?.(state.lifecycle);
+      await Promise.all([local, catalogRefresh]);
+      feature.dispose();
+    }
+  });
+}
 
 test("character drafts block changing roles and commit submits only the final unblocked selection", async () => {
   const fixture = await characterSettings();

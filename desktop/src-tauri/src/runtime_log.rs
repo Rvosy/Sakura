@@ -1426,10 +1426,13 @@ impl FileWriter {
 
 fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>> {
     let channel = display_channel(&record.channel, &record.event);
+    let request_message = viewer_ipc_request_message(record);
     let message = if record.custom {
         &record.message
     } else {
-        human_message(&record.event, &record.message)
+        request_message
+            .as_deref()
+            .unwrap_or_else(|| human_message(&record.event, &record.message))
     };
     let mut summary_parts = correlation_summary(record);
     if let Some(id) = &record.plugin_id {
@@ -1578,9 +1581,6 @@ fn viewer_record_default_message(record: &RuntimeLogRecord, severity: Severity) 
         "core.spawn.failed" | "first_run.core_start.failed" => "后台程序启动失败",
         "core.error.unhandled" | "shell.error.unhandled" => "后台程序发生错误",
         "ipc.request.failed" => "后台请求失败",
-        "mcp.server.failed" => "工具服务连接失败",
-        "mcp.config.failed" => "工具配置读取失败",
-        "mcp.tool.failed" => "工具调用失败",
         "tts.service.failed" | "tts.service.warmup_failed" => "语音服务启动失败",
         "tts.weights.failed" => "角色语音模型加载失败",
         "tts.service.probe.failed" => "语音服务尚未就绪",
@@ -1607,12 +1607,8 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "chat.cancel" => "取消对话",
         "settings.provider_model.get" => "读取模型设置",
         "settings.provider_model.save" => "保存模型设置",
-        "settings.provider_model.list_models" => "获取模型列表",
-        "settings.provider_model.test_connection" => "测试模型连接",
-        "settings.provider_model.cancel" => "取消模型测试",
         "tools.settings.get" => "读取工具设置",
         "tools.settings.save" => "保存工具设置",
-        "mcp.status.get" => "读取工具服务状态",
         "plugins.settings.get" => "读取插件设置",
         "plugins.settings.save" => "保存插件设置",
         "plugins.enabled.set" => "更改插件开关",
@@ -1631,25 +1627,54 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "tts.settings.save" => "保存语音设置",
         "tts.status.get" => "读取语音状态",
         "tts.playback.observe" => "更新语音播放状态",
-        "screen_awareness.settings.get" => "读取屏幕感知设置",
-        "screen_awareness.settings.save" => "保存屏幕感知设置",
+        "asr.input.prepare" => "准备语音输入",
+        "asr.input.poll" => "读取语音识别进度",
+        "asr.input.cancel" => "取消语音输入",
+        "asr.input.capture_target" => "准备录音文件",
+        "asr.input.capture_ready" => "提交录音",
+        "asr.input.capture_discarded" => "丢弃录音",
+        "asr.input.capture_status" => "读取录音状态",
+        "asr.input.submit" => "提交识别结果",
+        "asr.input.availability" => "检查语音输入状态",
+        "asr.settings.get" => "读取语音输入设置",
+        "asr.settings.save" => "保存语音输入设置",
+        "asr.settings.action" => "执行语音输入操作",
+        "screen.session" => "读取屏幕共享状态",
+        "screen.attach" => "附加截图",
+        "screen.remove" => "移除截图",
+        "screen.release" => "释放截图",
+        "host.interaction.current" => "读取角色互动状态",
+        "host.interaction.state" => "更新角色互动状态",
+        "host.interaction.detach" => "结束窗口互动",
+        "host.screen.result" => "接收屏幕截图",
+        "host.visual.claim" => "准备角色动作",
+        "host.visual.result" => "更新角色动作结果",
         "studio.bootstrap" => "打开角色工坊",
+        "studio.plugin.requirements" => "检查角色插件需求",
+        "studio.character.presentation" => "读取角色表现",
         "studio.character.open" => "打开角色草稿",
         "studio.character.create" => "新建角色",
         "studio.character.publish" => "保存角色",
         "studio.draft.save" => "保存角色草稿",
+        "studio.draft.discard" => "丢弃角色草稿",
+        "studio.workspace.release" => "关闭角色工作区",
+        "studio.reference.preview" => "预览参考音频",
+        "studio.archive.export" => "导出角色包",
+        "studio.operation.cancel" => "取消角色工坊操作",
         "studio.visual.catalog" => "读取形态插件目录",
         "studio.visual.open" | "studio_visual_open" | "studio_visual_editor" => "打开形态编辑器",
         "studio.visual.previews" | "studio_visual_previews" | "studio_visual_cover" => {
             "加载形态封面"
         }
         "studio.visual.create" => "添加形态",
+        "studio.visual.thumbnail" => "读取形态缩略图",
         "studio.visual.import" => "导入形态",
         "studio.visual.export" => "导出形态",
         "studio.asset.import" => "导入角色资源",
         "characters.visuals.get" | "settings_character_visuals_get" => "读取角色形态",
         "visual_renderer" | "visual_startup" => "加载角色表现",
         "visual_control" => "执行表现控制",
+        "visual.control.parse" | "visual_control_parse" => "准备角色表现",
         "visual_preview" => "预览角色",
         "visual_rebind" => "切换角色表现",
         "characters.settings.get" => "读取角色设置",
@@ -1661,7 +1686,9 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "storage.settings.choose_tts_root" => "更改语音数据目录",
         "storage.settings.reset_tts_root" => "恢复默认语音目录",
         "ui.history.page" => "读取对话记录",
-        _ => return None,
+        // Keep an unmapped command identifiable instead of making unrelated
+        // operations share the same generic request title.
+        _ => return Some(format!("请求{suffix}（{command}）")),
     };
     Some(
         if matches!(
@@ -1789,18 +1816,7 @@ fn viewer_problem_description(
         return Some("当前 Windows 版本不支持这项视觉效果，输入栏会使用普通背景。");
     }
 
-    if event.starts_with("mcp.")
-        && viewer_has_code(
-            record,
-            &["CONFIG_INVALID", "CONFIG_MISSING", "MCP_CONFIG_LOAD_FAILED"],
-        )
-    {
-        return Some("工具配置无法读取，相关工具没有加载。");
-    }
-    if event.starts_with("mcp.") && viewer_has_code(record, &["NO_READY_SERVERS"]) {
-        return Some("没有可用的 MCP 服务，相关工具没有加载。");
-    }
-    if (event.starts_with("mcp.") || event.starts_with("plugin."))
+    if event.starts_with("plugin.")
         && viewer_has_code(
             record,
             &[
@@ -1866,11 +1882,7 @@ fn viewer_problem_description(
         value if value.starts_with("appearance.") || value.starts_with("ui.") => {
             "界面效果已改用兼容模式。"
         }
-        value
-            if value.starts_with("tool.")
-                || value.starts_with("mcp.")
-                || value.starts_with("plugin.") =>
-        {
+        value if value.starts_with("tool.") || value.starts_with("plugin.") => {
             "相关工具没有正常完成，本次操作可能缺少对应结果。"
         }
         value if value.starts_with("memory.") || value.starts_with("context.") => {
@@ -2317,16 +2329,6 @@ fn business_message(event: &str) -> Option<&'static str> {
         "tts.conversion.finished" => "Genie ONNX 转换完成，模型已保存",
         "tts.conversion.failed" => "Genie ONNX 转换失败",
         "tts.conversion.cancelled" => "Genie ONNX 转换已取消",
-        "mcp.server.connecting" => "正在连接 MCP 服务器",
-        "mcp.server.ready" => "MCP 服务器已就绪",
-        "mcp.ready" => "MCP 工具已就绪",
-        "mcp.config.disabled" => "MCP 未启用",
-        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
-        "mcp.tool.skipped" => "MCP 工具已跳过",
-        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
-        "mcp.tool.failed" => "MCP 工具调用失败",
-        "mcp.close.failed" => "MCP 连接关闭失败",
-        "mcp.close.timeout" => "MCP 连接清理超时",
         "plugin.loaded" => "插件已加载",
         "settings.provider_model.slot_save_failed" => "插件模型槽位保存失败",
         "settings.provider_model.slot_save_reconciled" => "插件模型槽位已通过回读确认保存",
@@ -2488,16 +2490,6 @@ fn viewer_message(event: &str, severity: Severity) -> &'static str {
         "tts.service.stderr" => "TTS 服务发生错误",
         "tts.process.cleanup.failed" => "TTS 服务清理失败",
         "tts.recording.failed" => "语音录制保存失败",
-        "mcp.server.connecting" => "正在连接 MCP 服务器",
-        "mcp.server.ready" => "MCP 服务器已就绪",
-        "mcp.ready" => "MCP 工具已就绪",
-        "mcp.config.disabled" => "MCP 未启用",
-        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
-        "mcp.tool.skipped" => "MCP 工具已跳过",
-        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
-        "mcp.tool.failed" => "MCP 工具调用失败",
-        "mcp.close.failed" => "MCP 连接关闭失败",
-        "mcp.close.timeout" => "MCP 连接清理超时",
         "plugin.loaded" => "插件已加载",
         "python.logging.warning" => "Core 运行过程中出现提醒",
         "python.logging.error" => "Core 运行过程中发生错误",
@@ -2554,7 +2546,6 @@ fn display_channel(channel: &str, event: &str) -> String {
         "core" => "CORE".to_string(),
         "interaction" => "LATENCY".to_string(),
         "memory" => "MEMORY".to_string(),
-        "mcp" => "MCP".to_string(),
         "plugin" => "PLUGIN".to_string(),
         "storage" => "STORAGE".to_string(),
         "tool" | "toolregistry" => "TOOL".to_string(),
@@ -3657,16 +3648,6 @@ fn core_message(event: &str) -> &'static str {
         "tts.weights.loading" => "正在加载 TTS 角色权重",
         "tts.weights.ready" => "TTS 角色权重已就绪",
         "tts.weights.failed" => "TTS 角色权重加载失败",
-        "mcp.server.ready" => "MCP 服务器工具已就绪",
-        "mcp.ready" => "MCP 工具已就绪",
-        "mcp.config.disabled" => "MCP 未启用",
-        "mcp.server.connecting" => "正在连接 MCP 服务器",
-        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
-        "mcp.tool.skipped" => "MCP 工具名冲突，已跳过",
-        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
-        "mcp.tool.failed" => "MCP 工具调用失败",
-        "mcp.close.failed" => "MCP 连接关闭失败",
-        "mcp.close.timeout" => "MCP 连接清理超时",
         "plugin.loaded" => "插件已加载",
         "startup.window_services.created" => "窗口服务已创建",
         "startup.background_services.created" => "后台服务已创建",
@@ -4753,10 +4734,23 @@ mod tests {
             viewer_ipc_request_message(&record("ipc.request.failed", "plugins.install")).as_deref(),
             Some("安装插件失败")
         );
-        assert_eq!(
-            viewer_ipc_request_message(&record("ipc.request.completed", "future.command")),
-            None
-        );
+        let unknown = record("ipc.request.completed", "future.command");
+        let projected = project_viewer_record(&unknown, Severity::Info).unwrap();
+        assert!(projected.message.contains("future.command"));
+        let text = String::from_utf8(encode_record(&unknown, 4096).unwrap()).unwrap();
+        assert!(text.contains(&projected.message));
+        for (command, action) in [
+            ("screen.session", "屏幕共享"),
+            ("host.screen.result", "屏幕截图"),
+            ("host.visual.claim", "角色动作"),
+        ] {
+            let failed =
+                project_viewer_record(&record("ipc.request.failed", command), Severity::Warning)
+                    .unwrap();
+            assert!(failed.message.contains(action));
+            assert!(failed.message.contains("失败"));
+            assert!(failed.details.iter().any(|detail| detail.value == command));
+        }
     }
 
     #[test]

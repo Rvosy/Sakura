@@ -285,7 +285,6 @@ pub fn logical_hit_regions_with_control_surface(
     portrait_scale_percent: u16,
     control_surface: Option<&ControlSurfaceLayout>,
 ) -> Result<LogicalHitRegions, String> {
-    contract.validate()?;
     if let Some(surface) = control_surface {
         contract.validate_control_surface(state, surface)?;
     }
@@ -2513,8 +2512,8 @@ mod tests {
     use crate::window_geometry::{LayoutContract, PresentationState};
 
     fn contract() -> LayoutContract {
-        serde_json::from_str(include_str!("../../frontend/pet/layout-contract.json"))
-            .expect("layout contract must parse")
+        LayoutContract::from_json(include_str!("../../frontend/pet/layout-contract.json"))
+            .expect("layout contract must be valid")
     }
 
     #[test]

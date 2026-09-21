@@ -3,18 +3,19 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-18
 ---
 
 # Runtime v2 热应用规范
 
 ## 不变量
 
-- 普通设置保存返回 `applied`，不得改变 Core generation、目标插件 PID 或无关插件 PID/scope。
+- 普通配置保存不得改变 Core generation、目标插件 PID 或无关插件 PID/scope。
 - 聊天、Agent 轮次和 TTS 合成在开始时取得配置快照；进行中的操作不得混用新旧配置。
-- 保存发生在操作进行中时只保留该域最新待应用值，并在下一次操作被接受前应用。
-- 某域应用失败时，本次操作不被接受；保留失败域和尚未应用域的最新值，供下一次操作边界应用。
-  已成功应用的域从待办中移除。再次保存同一域时替换旧待办，不重放已经成功的更新。
+- Provider/Tools 保存时完成写盘与同步应用。当前对话或角色切换尚未结束时，应用明确返回失败；
+  响应说明设置已保存但尚未应用，用户可在空闲时重新保存或重启应用。已经发布的配置继续服务后续聊天。
+- 不存储设置应用回调，不在聊天受理时执行、修复或重试上次保存。普通应用异常保留原始原因；
+  保存成功与运行态应用成功是两个事实，不能把后者失败描述为磁盘保存失败。
 - `setup_required/ready/degraded` 可在同 generation 内转换；状态转换递增 Core snapshot revision，不重载桌宠
   WebView。
 - Core 整体替换只用于 Core crash 或协议损坏。插件调用、cleanup 或进程失败只影响目标插件及硬依赖
@@ -23,13 +24,16 @@ updated: 2026-09-09
 ## 域契约
 
 - Provider/模型：一次 `settings.provider_model.save` 完成 Provider、Core 模型槽和当前 PluginApplication 插件模型槽
-  保存。有效 Session 调用 client `update_settings()`；配置变为无效时只退休 Session，恢复有效时在同
-  generation 创建 Session 并绑定既有 PluginApplication。
-- Tools：保存后更新 `AgentRuntime` 的 loop settings；当前 Agent 轮使用其既有快照。
-- MCP：Application 持有 Provider 和工具注册，Session 退休与重建只借用该实例。当前只提供状态读取，
-  `mcp.yaml` 的修改在新 Core generation 启动时读取，不提供设置保存或热替换接口。
-- Agent Trace：新开关只控制新 trace operation；已开始 operation 必须继续记录并完成 staging commit。
-  同一设置通过 Host Event 同步给 Memory 插件 recorder。
+  保存。成功准备新 Session 后才发布 modelSlots 快照；默认 Assistant 的 prepare 和每轮请求只消费该快照，
+  不自行读取最新磁盘值。配置失效时退休 Session，恢复有效时在同 generation 重新准备并绑定既有 PluginApplication。
+- 正常聊天使用唯一 `sakura.assistant` 服务。默认实现可以停用并由第三方 Provider 替换；旧 session 固定 scope，
+  停用或重载使其失效，不自动重绑正在执行的轮次。`settings.executor.get/save` 不再提供，历史 chat_executor
+  字段仍被忽略；当前边界见 [Assistant 插件合同](assistant-plugin-boundary.md)。
+- Tools：空闲时保存并更新 Session 的 loopSettings；默认插件在 begin 时消费本轮快照，
+  此时保存返回 `CONFIG_APPLY_FAILED`，不会在下一次聊天自动发布设置。
+- MCP：`sakura.mcp` 只提供 Service，服务器配置与变更由消费插件处理；不读取旧 `mcp.yaml`。
+- Agent Trace：固定启用，不读取遗留 agent_trace.enabled，也不广播开关事件。默认 Assistant 拥有 recorder，
+  已开始 operation 随真实终态完成 staging commit，Trace 故障不得改变聊天结果。
 - 插件：enable、disable、install、uninstall、reload 和 `restart_required` 都是当前用户操作内的同步步骤。
   只停止目标、硬依赖 consumer 或 Service 冲突参与者；无关 scope、Memory owner 和 TTS Provider 保持不动。
   不发送完整 inventory，不运行后台 reconcile，也不自动恢复或重放调用。
@@ -48,5 +52,6 @@ updated: 2026-09-09
 ## 验证
 
 自动测试至少固定同 generation、无关插件 PID/scope、活动操作配置隔离、Snapshot revision、Session 重建时
-MCP 实例和状态不变、插件硬依赖 consumer reload、局部失败不影响无关插件、故障不自动恢复，以及 Memory/TTS 重资源在
-无关保存后持续可用。聊天边界还需覆盖跨域应用失败后的待办保留，以及同域重复保存只应用最新值。
+插件硬依赖 consumer reload、局部失败不影响无关插件、故障不自动恢复，以及 Memory/TTS 重资源在
+无关保存后持续可用。聊天边界需覆盖已保存但未应用的配置不会被下一次聊天隐式发布，
+以及应用异常不被聊天重试、用户显式重新保存后才发布新配置。

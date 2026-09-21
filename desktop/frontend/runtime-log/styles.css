@@ -111,7 +111,7 @@ h1 {
 .custom-select.is-open .custom-select__caret { transform: rotate(180deg); }
 .custom-select__trigger:hover, .custom-select.is-open .custom-select__trigger { border-color: var(--primary); }
 .custom-select__menu {
-  display: none; position: fixed; z-index: 2200; max-height: 260px; overflow-y: auto;
+  display: none; position: fixed; z-index: 2200; max-height: 260px; overflow-y: auto; scrollbar-gutter: stable;
   padding: 5px; border: 1px solid var(--border); border-radius: 9px;
   background: var(--input-background); color: var(--text); scrollbar-width: thin;
   box-shadow: 0 5px 18px color-mix(in srgb, var(--text) 12%, transparent);
@@ -196,7 +196,7 @@ h1 {
 
 .log-scroll {
   min-height: 0;
-  overflow: auto;
+  overflow: auto; scrollbar-gutter: stable;
   overscroll-behavior: contain;
   border: 1px solid var(--hairline);
   border-radius: 15px;

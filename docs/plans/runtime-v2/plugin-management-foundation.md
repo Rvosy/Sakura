@@ -54,10 +54,10 @@ updated: 2026-09-05
 
 | 插件 | 普通设置字段依据 |
 |---|---|
-| GPT-SoVITS | `plugins/builtin/sakura_gpt_sovits/plugin.py` 的 `runtime` 声明，共 8 项 |
-| Genie | `plugins/builtin/sakura_genie/plugin.py` 的 `runtime` 声明，共 3 项 |
+| GPT-SoVITS | `plugins/optional/sakura_gpt_sovits/plugin.py` 的 `runtime` 声明，共 8 项 |
+| Genie | `plugins/optional/sakura_genie/plugin.py` 的 `runtime` 声明，共 3 项 |
 | Sakura Mobile | `plugins/builtin/sakura_mobile/plugin.py` 的设置声明，含只读状态和刷新动作 |
-| Mem0 | `plugins/builtin/sakura_mem0/plugin.py` 的 `settings_descriptor()`，运行状态与自动整理间隔 |
+| Mem0 | `plugins/optional/sakura_mem0/plugin.py` 的 `settings_descriptor()`，运行状态与自动整理间隔 |
 | Playwright Browser | `plugins/optional/playwright_browser/plugin.py` 的设置声明，仅无头模式 |
 
 两款语音插件不增加声音模型、输出语言、语速、参考音频选择、分段或流式开关。GPT-SoVITS 原有的“远程参考音频目录”是已有服务的路径映射字段，继续保留。

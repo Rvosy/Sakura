@@ -9,11 +9,11 @@ import time
 import pytest
 import yaml
 
-from app.agent.context_orchestrator import ContextOrchestrator
-from app.llm.prompts.types import ContextFragment, ContextMessage, ContextRequest
+from sakura_assistant.agent.context_orchestrator import ContextOrchestrator
+from sakura_context import ContextFragment, ContextMessage, ContextRequest
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.models import ContextProviderContribution
-from plugins.builtin.sakura_mem0.plugin import (
+from plugins.optional.sakura_mem0.plugin import (
     HOST_CHAT_COMPLETED_EVENT,
     MEMORY_COLLECTION_ID,
     SakuraMem0Plugin,
@@ -22,65 +22,6 @@ from plugins.builtin.sakura_mem0.plugin import (
     _context_request,
     _tool_registrations,
 )
-from plugins.builtin.sakura_mem0.api_client import (
-    ApiSettings,
-    OpenAICompatibleClient,
-)
-
-
-def test_mem0_api_client_normalizes_google_openai_url_without_replay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[tuple[str, dict[str, object]]] = []
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def read(self) -> bytes:
-            return b'{"choices":[{"message":{"content":"{}"}}]}'
-
-    def fake_urlopen(request, timeout):
-        assert timeout == 60
-        captured.append((request.full_url, json.loads(request.data)))
-        return Response()
-
-    monkeypatch.setattr("plugins.builtin.sakura_mem0.api_client.urlopen_current_proxy", fake_urlopen)
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            base_url="https://generativelanguage.googleapis.com/v1beta",
-            api_key="key",
-            model="gemini-2.5-flash",
-        )
-    )
-    result = client.complete_raw(
-        "system",
-        [{"role": "user", "content": "curate"}],
-        temperature=0.2,
-        response_format={"type": "json_object"},
-        max_tokens=2000,
-    )
-
-    assert result == "{}"
-    assert len(captured) == 1
-    assert captured[0][0] == (
-        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-    )
-    assert captured[0][1] == {
-        "model": "gemini-2.5-flash",
-        "messages": [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "curate"},
-        ],
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
-        "max_tokens": 2000,
-    }
-
-
 def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
     request = _context_request(
         {
@@ -186,7 +127,7 @@ class FakeBoundary:
             "status": "ready",
             "message": "",
             "curation": {"triggerTurns": 8},
-            "curationModelSlot": {"profileId": "fixture", "model": "curator"},
+            "curationModelSlot": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"},
             "providerChoices": [
                 {"id": "fixture", "alias": "Fixture", "models": ["curator"]}
             ],
@@ -246,7 +187,7 @@ class FakeContext:
             "sakura.host.settings": Recorder(),
             "sakura.host.settings.collection-v0": Recorder(),
             "sakura.host.settings.surface-v0": Recorder(),
-            "sakura.host.model_slots": Recorder(),
+            "sakura.host.model_slots.v2": Recorder(),
         }
 
     def effect(self, cleanup):
@@ -307,7 +248,7 @@ def test_default_runtime_uses_only_declared_host_resources(
     services = {
         "sakura.host.storage": Storage(),
         "sakura.host.character": Character(),
-        "sakura.host.model_slots": Models(),
+        "sakura.host.model_slots.v2": Models(),
         "sakura.host.timeline": object(),
     }
 
@@ -316,7 +257,7 @@ def test_default_runtime_uses_only_declared_host_resources(
         return object()
 
     monkeypatch.setattr(
-        "plugins.builtin.sakura_mem0.plugin.SakuraMem0Runtime",
+        "plugins.optional.sakura_mem0.plugin.SakuraMem0Runtime",
         fake_runtime,
     )
     plugin_data = tmp_path / "plugin-data"
@@ -335,18 +276,20 @@ def test_default_runtime_uses_only_declared_host_resources(
     assert captured["memory_cache_dir"] == tmp_path / "cache" / "memory"
 
 
-def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path) -> None:
+def test_external_manifest_is_discoverable_and_disabled_on_fresh_install(tmp_path: Path) -> None:
     root = Path(__file__).parents[2]
+    import shutil
+    shutil.copytree(root / "plugins/optional/sakura_mem0", tmp_path / "plugins/user/mem0")
     spec = next(
         item
         for item in PluginDiscovery(
-            root,
+            tmp_path,
             config_path=tmp_path / "plugins.yaml",
         ).discover()
         if item.plugin_id == "sakura.memory.mem0"
     )
     assert spec.api_version == 4
-    assert spec.enabled is True
+    assert spec.enabled is False
     assert spec.requires == (
         "sakura.host.storage",
         "sakura.host.character",
@@ -356,7 +299,8 @@ def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path
         "sakura.host.settings",
         "sakura.host.settings.collection-v0",
         "sakura.host.settings.surface-v0",
-        "sakura.host.model_slots",
+        "sakura.host.model_slots.v2",
+        "sakura.host.artifacts",
     )
 
 
@@ -394,7 +338,8 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
     collection_call = context.services["sakura.host.settings.collection-v0"].calls[0]
     assert collection_call[0][0] == "memory_management"
     assert collection_call[0][1]["collectionId"] == MEMORY_COLLECTION_ID
-    slot_call = context.services["sakura.host.model_slots"].calls[0]
+    assert collection_call[0][1]["scope"] == "character"
+    slot_call = context.services["sakura.host.model_slots.v2"].calls[0]
     assert {key: value for key, value in slot_call[0][0].items() if key not in {"label", "description"}} == {
         "slotId": "curation",
         "modelKind": "chat_completion",
@@ -431,7 +376,7 @@ def test_plugin_setup_does_not_wait_for_initial_timeline_catch_up(tmp_path: Path
 
 
 def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_host_services import (
         _ModelSlotsHostService,
         _SettingsHostService,
@@ -537,7 +482,7 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
     assert component["values"]["embeddingResource"]["applicability"] == "required"
     assert component["values"]["embeddingResource"]["availableActionIds"] == []
 
-    slots = _ModelSlotsHostService(lambda *_args: {"profileId": "", "model": ""})
+    slots = _ModelSlotsHostService(lambda *_args: {"serviceKey": "", "profileId": "", "modelId": ""})
     slots.call(
         "register",
         [
@@ -668,11 +613,11 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
         "availableActionIds": [],
     }
     runtime.save_settings({"triggerTurns": 12})
-    assert runtime.load_model_slot() == {"profileId": "fixture", "model": "curator"}
-    runtime.save_model_slot({"profileId": "fixture", "model": "curator"})
+    assert runtime.load_model_slot() == {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}
+    runtime.save_model_slot({"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"})
     assert boundary.saved == [
         {"triggerTurns": 12},
-        {"curationProfileId": "fixture", "curationModel": "curator"},
+        {"curationModelRef": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}},
     ]
 
 

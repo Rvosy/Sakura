@@ -153,6 +153,28 @@ class PluginDependencyRoots:
                 except OSError:
                     pass
 
+    def install_bundled(self, plugin_id: str, plugin_root: Path, *, entry: str) -> Path | None:
+        """复制发行包已准备的依赖，不执行下载；用于内置插件迁移。"""
+        source = self.verified_root(plugin_id, plugin_root, source="bundled")
+        if source is None:
+            self._validate_entry(plugin_id, plugin_root, None, entry)
+            return None
+        final = self._paths.plugin_dependency_root_for(plugin_id)
+        if final.exists():
+            existing = self.verified_root(plugin_id, plugin_root)
+            self._validate_entry(plugin_id, plugin_root, existing, entry)
+            return existing
+        final.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".migrate-", dir=final.parent))
+        try:
+            payload = staging / "dependencies"
+            shutil.copytree(source, payload)
+            self._validate_entry(plugin_id, plugin_root, payload, entry)
+            os.replace(payload, final)
+            return final
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
     def verified_root(
         self,
         plugin_id: str,

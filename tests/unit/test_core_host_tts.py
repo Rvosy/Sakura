@@ -668,20 +668,22 @@ def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) ->
     assert (recording_dir / "audio.wav").exists()
 
 
-def test_explicit_tts_service_disable_skips_segment_authorization(tmp_path: Path) -> None:
-    class Worker:
-        def call_service(self, service_key: str, method: str, character_id: str):
-            assert (service_key, method, character_id) == ("sakura.tts", "status", "sakura")
-            return {
-                "configured": True,
-                "enabled": False,
-                "providerId": "com.example.tts-provider",
-                "available": False,
-                "providers": [],
-            }
+def test_authorization_never_probes_tts_and_disabled_begin_skips_without_failure_event(
+    tmp_path: Path,
+) -> None:
+    calls = []
+    events = []
 
-        def public_snapshot(self):
-            raise AssertionError("TTS enablement must come from the routed Service")
+    class Worker:
+        def call_service(self, service_key: str, method: str, request):
+            calls.append(method)
+            assert (service_key, method) == ("sakura.tts", "begin")
+            return {
+                "state": "failed",
+                "requestId": request["requestId"],
+                "providerId": "com.example.tts-provider",
+                "errorCode": "TTS_DISABLED",
+            }
 
     worker = Worker()
     boundary = TTSBoundary(
@@ -692,6 +694,7 @@ def test_explicit_tts_service_disable_skips_segment_authorization(tmp_path: Path
             character=SimpleNamespace(id="sakura"),
         ),
         plugin_application_provider=lambda: worker,
+        event_publisher=events.append,
     )
 
     authorized = boundary.authorize_segment(
@@ -704,8 +707,16 @@ def test_explicit_tts_service_disable_skips_segment_authorization(tmp_path: Path
         history_entry_id="entry-disabled",
     )
 
-    assert authorized is False
-    assert boundary._authorizations == {}
+    assert authorized is True
+    assert calls == []
+    result = boundary.handle(_request(
+        "tts.synthesis.start",
+        {"operationId": "operation-disabled", "segmentIndex": 0},
+    ))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "TTS_DISABLED"
+    assert calls == ["begin"]
+    assert events == []
     boundary.close()
 
 
@@ -769,7 +780,7 @@ def test_replacement_tts_service_failure_is_exposed_by_synthesis_start(
 
     assert result["ok"] is False
     assert result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
-    assert calls == ["status", "begin"]
+    assert calls == ["begin"]
     boundary.close()
 
 
@@ -881,7 +892,7 @@ def test_synthesis_rejects_disconnected_custom_tts_storage_without_fallback(
 
     assert result["ok"] is False
     assert result["error"]["code"] == "TTS_STORAGE_UNAVAILABLE"
-    assert worker.calls == ["status"]
+    assert worker.calls == []
     assert not (user_root / "tts").exists()
     boundary.close()
 
@@ -890,7 +901,7 @@ def test_tts_hub_selects_character_provider_and_core_owns_final_audio(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host import tts_boundary as tts_boundary_module
 
     root = tmp_path / "assistant"
@@ -1549,10 +1560,52 @@ def test_plugin_cutover_never_falls_back_when_tts_is_unavailable(
     )
 
     assert result["ok"] is False
-    assert result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+    assert result["error"]["code"] == (
+        "TTS_DISABLED" if mode == "character-disabled" else "TTS_SERVICE_UNAVAILABLE"
+    )
     assert not (tmp_path / "data" / "voice" / "recordings").exists()
     if worker is not None:
         assert worker.calls == ["begin"]
+
+
+@pytest.mark.parametrize("failure", [None, "TTS_REFERENCE_UNAVAILABLE"])
+def test_hub_begin_uses_actual_provider_result_without_status_probe(failure: str | None) -> None:
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+
+    calls = []
+
+    def status():
+        calls.append("status")
+        raise RuntimeError("status must not delay synthesis")
+
+    def begin(_request):
+        calls.append("begin")
+        if failure:
+            raise RuntimeError(failure)
+        return "job_one"
+
+    provider = SimpleNamespace(status=status, begin=begin)
+    hub = SakuraTTSHub(
+        SimpleNamespace(get=lambda _key: provider, bind=lambda _key: provider),
+        SimpleNamespace(get=lambda: {"selections": {"sakura": {
+            "enabled": True, "provider": "com.example.provider",
+        }}}),
+    )
+    hub.registerProvider({
+        "providerId": "com.example.provider",
+        "serviceKey": "com.example.provider.service",
+        "label": "Provider",
+    })
+    result = hub.begin({
+        "requestId": "request-direct",
+        "characterId": "sakura",
+        "text": "hello",
+        "options": {},
+    })
+    assert calls == ["begin"]
+    assert result["state"] == ("failed" if failure else "running")
+    if failure:
+        assert result["errorCode"] == failure
 
 
 def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> None:
@@ -1582,7 +1635,7 @@ def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> 
     )
     context = SimpleNamespace(get=lambda service_key: (
         provider if service_key == "com.example.provider.service" else None
-    ))
+    ), bind=lambda _service_key: provider)
     hub = SakuraTTSHub(context, Config())
     hub.registerProvider({
         "providerId": "com.example.provider",

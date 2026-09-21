@@ -5,11 +5,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
-from plugins.builtin.sakura_mobile import plugin as mobile_plugin
+from plugins.optional.sakura_mobile import plugin as mobile_plugin
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_PLUGIN_ROOT = REPOSITORY_ROOT / "plugins" / "builtin" / "sakura_mobile"
+SOURCE_PLUGIN_ROOT = REPOSITORY_ROOT / "plugins" / "optional" / "sakura_mobile"
 PLUGIN_ID = "sakura_mobile"
 
 
@@ -132,16 +132,14 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
     bundled = [spec for spec in specs if spec.source == "bundled"]
     assert bundled
     assert {spec.plugin_id for spec in bundled} == {
+        "sakura.assistant.default",
         "sakura.asr",
-        "sakura.asr.sensevoice",
-        "sakura.memory.mem0",
+        "sakura.mcp",
+        "sakura.model.openai_compatible",
         "sakura.portrait",
+        "sakura.screen_awareness",
         "sakura.tts",
-        "sakura.tts.genie",
-        "sakura.tts.gpt-sovits",
-        "sakura.visual.spine",
         "sakura.web",
-        "sakura_mobile",
     }
     assert all(spec.api_version == 4 for spec in bundled)
     assert all(spec.enabled and not spec.required for spec in bundled)
@@ -167,7 +165,7 @@ def test_mobile_status_is_quiet_and_bind_failure_is_logged(monkeypatch) -> None:
 
 def test_mobile_http_activity_uses_host_logger_without_access_file(tmp_path) -> None:
     import urllib.request
-    from plugins.builtin.sakura_mobile.server import run_mobile_server
+    from plugins.optional.sakura_mobile.server import run_mobile_server
 
     logger = Mock()
     server = run_mobile_server(tmp_path, object(), object(), host="127.0.0.1", port=0, token="private-token", logger=logger)

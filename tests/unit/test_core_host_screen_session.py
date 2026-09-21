@@ -10,9 +10,8 @@ def request(name, payload):
     return {"id": name, "name": name, "payload": payload}
 
 
-@pytest.mark.parametrize("batch", [False, True])
 @pytest.mark.parametrize("finish_during_read", [False, True])
-def test_character_switch_rejects_old_capture_even_after_switching_back(tmp_path, monkeypatch, batch, finish_during_read):
+def test_character_switch_rejects_old_capture_even_after_switching_back(tmp_path, monkeypatch, finish_during_read):
     role = ["alpha"]
     boundary = RealChatBoundary("generation", "a" * 32, tmp_path,
                                session_provider=lambda: role[0], timeline_store=object())
@@ -26,8 +25,8 @@ def test_character_switch_rejects_old_capture_even_after_switching_back(tmp_path
             assert release.wait(3)
         return SimpleNamespace(width=10, height=10)
     monkeypatch.setattr("app.core_host.screen_capture.consume_screen_resource", consume)
-    handler = boundary.handle_screen_attach_batch if batch else boundary.handle_screen_attach
-    payload = {"sessionId": token, "resources" if batch else "resource": [{}] if batch else {}}
+    handler = boundary.handle_screen_attach
+    payload = {"sessionId": token, "resource": {}}
     failures = []
     def attach():
         try:

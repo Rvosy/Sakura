@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-11
+updated: 2026-09-18
 ---
 
 # Runtime v2 Specs
@@ -19,9 +19,14 @@ updated: 2026-09-11
 - [产品功能等价规范与发布台账](product-capability-parity.md)
 - [设置功能增量迁移规范](settings-incremental-migration.md)
 - [Sakura Plugin Runtime v4](sakura-plugin-runtime-v4.md)
+- [Assistant 插件与 Core 对话边界](assistant-plugin-boundary.md)
+- [模型 Service 与调用方边界](model-services.md)
+- [MCP 系统组件](mcp-system-component.md)
 - [表现插件：资源、编辑、控制与渲染](visual-plugin-boundary.md)
 - [联网插件](web-plugin.md)
 - [Spine 表现插件](spine-visual-plugin.md)
+
+- [便签记忆](fact-memory.md)
 - [ASR Hub 与点击式语音输入](asr-voice-input.md)
 - [Sakura Plugin API v3（已取代）](sakura-plugin-kernel-v3.md)
 - [Runtime v2 热应用规范](runtime-hot-application.md)
