@@ -547,6 +547,10 @@ def test_real_host_failed_readiness_still_cleans_init_and_writer_threads(tmp_pat
     app_root = isolated_app_root(tmp_path)
     config_dir = app_root / "config"
     config_dir.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "desktop/src-tauri/src/new_user_plugin_migrations.json",
+        config_dir / "plugin-migrations.json",
+    )
     (config_dir / "system_config.yaml").write_text("not: [valid", encoding="utf-8")
     process = start_host(app_root)
     try:

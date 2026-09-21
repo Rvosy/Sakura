@@ -798,11 +798,13 @@ mod tests {
 
     #[test]
     fn accepted_host_interaction_replaces_only_an_unacknowledged_manual_send() {
-        let bridge = bridge();
+        let (bridge, requests) = controlled_bridge();
         bridge.listen_host("main", channel()).unwrap();
         let pending = bridge
             .send_with_attachment("main", "manual".into(), None, channel())
             .unwrap();
+        // Keep the manual request unacknowledged until the host event wins.
+        let request = next_request(&requests);
         let mut started = event("plugin-turn", "chat.started");
         started["name"] = json!("host.chat.started");
         started["payload"]["characterId"] = json!("sakura");
@@ -811,6 +813,7 @@ mod tests {
         assert!(bridge.observe_event(&stale).unwrap().is_none());
         assert!(bridge.observe_event(&started).unwrap().is_some());
         assert_eq!(pending.wait().unwrap_err(), "CHAT_INTERACTION_ACTIVE");
+        request.reply.send(Err("CHAT_BUSY".into())).unwrap();
         let mut second = started.clone();
         second["id"] = json!("second");
         second["payload"]["operationId"] = json!("second");
