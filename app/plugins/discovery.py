@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.models import PluginSpec
 from app.plugins.visuals import visual_capabilities_from_manifest
 from app.plugins.inventory import PluginDesiredStateStore
@@ -98,6 +99,8 @@ class PluginDiscovery:
                 continue
             spec = plugin_spec_from_manifest(raw, manifest_path.parent, source=source)
             if spec is not None:
+                if source == "bundled" and (spec.plugin_id in MIGRATIONS or manifest_path.parent.name in MIGRATIONS.values()):
+                    continue
                 specs.append(spec)
         return specs
 

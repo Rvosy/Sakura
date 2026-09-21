@@ -23,13 +23,15 @@ def _roots(tmp_path: Path) -> RuntimeRoots:
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
     shutil.copytree(
-        repository / "plugins" / "builtin" / "sakura_mem0",
+        repository / "plugins" / "optional" / "sakura_mem0",
         bundled / "sakura_mem0",
     )
     user = tmp_path / "user"
     _write_character_and_config(user)
     _write_third_party_memory(user / "plugins" / "user" / "third_party_memory")
     _prepare_mem0_dependency_root(distribution, user, bundled / "sakura_mem0")
+    from app.plugins.bundled_migrations import MIGRATIONS
+    (user / "config/plugin-migrations.json").write_text(json.dumps({key: "not_applicable" for key in MIGRATIONS if key not in ['sakura.memory.mem0']}))
     return RuntimeRoots(distribution, user)
 
 
@@ -193,9 +195,11 @@ requires:
 
 def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
+    from app.plugins.bundled_migrations import migrate_bundled_plugins
+    migrate_bundled_plugins(roots)
     inventory = PluginInventory(roots).scan()
     records = {record.plugin_id: record for record in inventory.records}
-    assert records["sakura.memory.mem0"].source == "bundled"
+    assert records["sakura.memory.mem0"].source == "user"
     assert records["third.party.memory"].source == "user"
     registry = ToolRegistry()
     session = SimpleNamespace(

@@ -3343,7 +3343,7 @@ mod tests {
                 "component": "tts", "event": "tts.service.failed",
                 "provider": "sakura.tts.gpt-sovits",
                 "stage": "runtime_start", "status": "failed",
-                "source_file": "plugins/builtin/sakura_gpt_sovits/_support.py",
+                "source_file": "plugins/optional/sakura_gpt_sovits/_support.py",
                 "source_line": 400, "code": code, "reason_code": code,
                 "timeout_ms": 90000, "error_type": "RuntimeError",
                 "elapsed_ms": elapsed,

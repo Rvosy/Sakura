@@ -90,7 +90,7 @@ def _runtime_root(
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
     for name in ("sakura_tts_hub", "sakura_genie", "sakura_gpt_sovits"):
-        shutil.copytree(repository / "plugins" / "builtin" / name, bundled / name)
+        shutil.copytree(repository / "plugins" / ("builtin" if name == "sakura_tts_hub" else "optional") / name, bundled / name)
     user = tmp_path / "user"
     dependencies = PluginDependencyRoots(user, distribution_root=distribution)
     for plugin_id, directory in (
@@ -136,6 +136,11 @@ def _runtime_root(
     }}), encoding="utf-8")
     _write_genie_character(user, "genie-character")
     _write_gpt_character(user, "gpt-character")
+    from app.plugins.bundled_migrations import MIGRATIONS
+    (user / "config").mkdir(parents=True, exist_ok=True)
+    (user / "config/plugin-migrations.json").write_text(json.dumps({key: "not_applicable" for key in MIGRATIONS if key not in ['sakura.tts.genie', 'sakura.tts.gpt-sovits']}))
+    from app.plugins.bundled_migrations import migrate_bundled_plugins
+    migrate_bundled_plugins(RuntimeRoots(distribution, user))
     return RuntimeRoots(distribution, user)
 
 
@@ -501,6 +506,7 @@ class Plugin:
     )
     PluginDesiredStateStore(roots.user_root).write({
         "sakura.tts": False,
+        "sakura.tts.genie": True,
         "sakura.tts.gpt-sovits": False,
         "com.example.tts-hub": True,
     })
@@ -560,7 +566,7 @@ class Plugin:
 
 
 def test_genie_bundle_action_installs_and_updates_plugin_config(tmp_path: Path) -> None:
-    from plugins.builtin.sakura_genie import _bundle
+    from plugins.optional.sakura_genie import _bundle
 
     updates: list[dict[str, object]] = []
     runtime_ready = threading.Event()
@@ -601,7 +607,7 @@ def test_genie_bundle_action_installs_and_updates_plugin_config(tmp_path: Path) 
 
 
 def test_gpt_sovits_bundle_action_updates_runtime_paths(tmp_path: Path) -> None:
-    from plugins.builtin.sakura_gpt_sovits import _bundle
+    from plugins.optional.sakura_gpt_sovits import _bundle
 
     updates: list[dict[str, object]] = []
     entry = _bundle.GPT_SOVITS_MACOS
@@ -653,7 +659,7 @@ def _wait_bundle_terminal(resource: object) -> dict[str, object]:
 
 
 def test_genie_bundle_failure_exposes_sanitized_network_code(tmp_path: Path) -> None:
-    from plugins.builtin.sakura_genie import _bundle
+    from plugins.optional.sakura_genie import _bundle
 
     def install(_entry, _user_root, **callbacks):  # type: ignore[no-untyped-def]
         callbacks["on_status"]("download")
@@ -680,7 +686,7 @@ def test_genie_bundle_failure_exposes_sanitized_network_code(tmp_path: Path) -> 
 
 
 def test_gpt_sovits_bundle_failure_exposes_sanitized_extract_code(tmp_path: Path) -> None:
-    from plugins.builtin.sakura_gpt_sovits import _bundle
+    from plugins.optional.sakura_gpt_sovits import _bundle
 
     def install(_entry, _user_root, **callbacks):  # type: ignore[no-untyped-def]
         callbacks["on_status"]("extract")
@@ -705,8 +711,8 @@ def test_gpt_sovits_bundle_failure_exposes_sanitized_extract_code(tmp_path: Path
 
 
 def test_tts_bundle_error_taxonomy_covers_integrity_and_extractor_failures() -> None:
-    from plugins.builtin.sakura_genie import _bundle as genie_bundle
-    from plugins.builtin.sakura_gpt_sovits import _bundle as gpt_bundle
+    from plugins.optional.sakura_genie import _bundle as genie_bundle
+    from plugins.optional.sakura_gpt_sovits import _bundle as gpt_bundle
 
     for bundle in (genie_bundle, gpt_bundle):
         assert bundle._failure_code(RuntimeError("TTS_BUNDLE_SIZE_MISMATCH"), "download") == "DOWNLOAD_SIZE_MISMATCH"
@@ -716,8 +722,8 @@ def test_tts_bundle_error_taxonomy_covers_integrity_and_extractor_failures() -> 
 def test_tts_bundle_reuses_complete_part_without_out_of_range_request(
     tmp_path: Path,
 ) -> None:
-    from plugins.builtin.sakura_genie import _bundle as genie_bundle
-    from plugins.builtin.sakura_gpt_sovits import _bundle as gpt_bundle
+    from plugins.optional.sakura_genie import _bundle as genie_bundle
+    from plugins.optional.sakura_gpt_sovits import _bundle as gpt_bundle
 
     payload = b"complete bundle"
     for bundle in (genie_bundle, gpt_bundle):

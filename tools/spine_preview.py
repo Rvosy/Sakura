@@ -16,11 +16,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from plugins.builtin.sakura_spine.plugin import (
+from plugins.optional.sakura_spine.plugin import (
     _read_json, describe_resource, parse_control, parse_preview_control, relative_path,
 )
 
-PLUGIN = Path(__file__).resolve().parents[1] / 'plugins/builtin/sakura_spine'
+PLUGIN = Path(__file__).resolve().parents[1] / 'plugins/optional/sakura_spine'
 
 
 def resolve_inside(root, relative):

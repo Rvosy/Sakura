@@ -13,7 +13,7 @@ from sakura_assistant.agent.context_orchestrator import ContextOrchestrator
 from sakura_context import ContextFragment, ContextMessage, ContextRequest
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.models import ContextProviderContribution
-from plugins.builtin.sakura_mem0.plugin import (
+from plugins.optional.sakura_mem0.plugin import (
     HOST_CHAT_COMPLETED_EVENT,
     MEMORY_COLLECTION_ID,
     SakuraMem0Plugin,
@@ -257,7 +257,7 @@ def test_default_runtime_uses_only_declared_host_resources(
         return object()
 
     monkeypatch.setattr(
-        "plugins.builtin.sakura_mem0.plugin.SakuraMem0Runtime",
+        "plugins.optional.sakura_mem0.plugin.SakuraMem0Runtime",
         fake_runtime,
     )
     plugin_data = tmp_path / "plugin-data"
@@ -276,18 +276,20 @@ def test_default_runtime_uses_only_declared_host_resources(
     assert captured["memory_cache_dir"] == tmp_path / "cache" / "memory"
 
 
-def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path) -> None:
+def test_external_manifest_is_discoverable_and_disabled_on_fresh_install(tmp_path: Path) -> None:
     root = Path(__file__).parents[2]
+    import shutil
+    shutil.copytree(root / "plugins/optional/sakura_mem0", tmp_path / "plugins/user/mem0")
     spec = next(
         item
         for item in PluginDiscovery(
-            root,
+            tmp_path,
             config_path=tmp_path / "plugins.yaml",
         ).discover()
         if item.plugin_id == "sakura.memory.mem0"
     )
     assert spec.api_version == 4
-    assert spec.enabled is True
+    assert spec.enabled is False
     assert spec.requires == (
         "sakura.host.storage",
         "sakura.host.character",

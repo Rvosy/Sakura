@@ -1,8 +1,7 @@
-import { compareVersions } from "./plugin-marketplace-source.js";
 import { iconMarkup as icon } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects } from "./select-control.js";
 import { marketplaceMarkup } from "./plugin-marketplace-view.js";
-import { recommended, canInstall, createCatalogLoader } from "./plugin-marketplace-runtime.js";
+import { recommended, hasUpdate as updating, canInstall, createCatalogLoader } from "./plugin-marketplace-runtime.js";
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const categories = ["全部", "工具", "语音", "记忆", "连接", "表现"];
@@ -32,7 +31,6 @@ export function createPluginMarketplace({ document, host, notify, source = null,
   const tasks = new Map(), listeners = [];
   const mark = p => `<span class="plugin-mark ${["blue", "pink", "gold", "green", "violet"].includes(p.color) ? p.color : "blue"}">${icon(p.icon || "puzzle")}</span>`;
   const example = p => p.example ? '<span class="example-label">构想示例</span>' : "";
-  const updating = p => p.installed && recommended(p) && compareVersions(recommended(p).number, p.installed) > 0;
   function listen(target, event, callback) {
     target.addEventListener(event, callback);
     listeners.push(() => target.removeEventListener(event, callback));
@@ -88,7 +86,6 @@ export function createPluginMarketplace({ document, host, notify, source = null,
       tab.tabIndex = active ? 0 : -1;
     });
     $("content").setAttribute("aria-labelledby", "market-tab");
-    document.querySelector(".compatibility").hidden = view !== "market";
     $("refresh").hidden = view !== "market";
     $("categories").innerHTML = categories.map(c => `<button aria-pressed="${category === c}" data-category="${c}">${c}</button>`).join("");
     const cached = view === "market" && catalogState === "cached";
@@ -97,6 +94,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     $("catalog-state").textContent = ["ready", "cached"].includes(catalogState) ? `${catalogState === "cached" ? "缓存目录" : "目录已更新"}${updatedAt ? " · " + updatedAt : ""}` : "";
     const query = $("search").value.trim().toLocaleLowerCase();
     let matches = plugins.filter(p => (!$("compatible").checked || recommended(p))
+      && (!$("hide-installed").checked || !p.installed || updating(p))
       && (category === "全部" || category === p.category)
       && (!query || [p.id, p.name, p.author, p.description].join(" ").toLocaleLowerCase().includes(query)));
     if ($("sort").value === "name") matches.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
@@ -105,11 +103,12 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     $("market-surface").querySelector(".market-foot").hidden = unavailable;
     $("result-count").textContent = unavailable ? "目录未加载" : `${matches.length} 个${view === "installed" ? "已安装插件" : "插件"}`;
     $("market-filter").disabled = unavailable;
-    $("market-filter").textContent = !$("compatible").checked || $("sort").value !== "default" ? "筛选 · 已调整" : "筛选";
+    $("market-filter").textContent = !$("compatible").checked || $("hide-installed").checked || $("sort").value !== "default" ? "筛选 · 已调整" : "筛选";
     $("sort").disabled = unavailable;
     $("refresh").disabled = catalogState === "loading" || !source;
     $("search").disabled = unavailable;
     $("compatible").disabled = unavailable;
+    $("hide-installed").disabled = unavailable;
     $("categories").querySelectorAll("button").forEach(button => button.disabled = unavailable);
     refreshSelect($("sort"));
     if (unavailable) {
@@ -146,7 +145,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
       ${compatibility}<section class="detail-section"><h3>介绍</h3><p>${escape(p.body || p.description)}</p>${p.consequence ? `<h3>使用前需了解</h3><p>${escape(p.consequence)}</p>` : ""}<h3>版本记录</h3>
       ${p.versions.map(v => `<div class="version-row"><div class="version-title"><strong>${escape(v.number)}</strong>${v === next ? '<span class="version-label">当前推荐</span>' : ""}${v.yanked ? '<span class="version-label warning">已撤回</span>' : v.prerelease ? '<span class="version-label warning">预发布</span>' : v.compatible === false ? '<span class="version-label warning">不兼容</span>' : ""}<time>${escape(v.date || "")}</time></div><p>${escape(v.yanked || v.notes)}</p><span class="version-hint">Plugin API ${escape(v.api ?? "—")}</span></div>`).join("")}
       </section><div class="plugin-id">${escape(p.id)}</div></div>
-      <div class="drawer-bottom">${taskMarkup}<div class="drawer-actions"><span class="version-hint">${escape(versionHint(p))}</span><div>${task?.state === "running" ? `<button class="secondary-button" data-cancel-task ${task.phase === "installing" || task.cancelling ? "disabled" : ""}>${task.cancelling && task.phase !== "installing" ? "正在取消" : "取消安装"}</button>` : task?.state === "failed" ? '<button data-retry>重试</button>' : !next ? '<button disabled>暂无兼容版本</button>' : updating(p) ? `<button data-install ${source?.canUpdate && source?.install && !p.updateBlocked ? '' : 'disabled'}>更新至 ${escape(next.number)}</button>` : p.installed ? '<button class="secondary-button" data-manage>在已安装中管理</button>' : `<button data-install ${source?.install ? '' : 'disabled'}>安装插件</button>`}</div></div></div>`;
+      <div class="drawer-bottom">${taskMarkup}<div class="drawer-actions"><span class="version-hint">${escape(versionHint(p))}</span><div>${task?.state === "running" ? `<button class="secondary-button" data-cancel-task ${task.phase === "installing" || task.cancelling ? "disabled" : ""}>${task.cancelling && task.phase !== "installing" ? "正在取消" : "取消安装"}</button>` : task?.state === "failed" ? '<button data-retry>重试</button>' : !next ? '<button disabled>暂无兼容版本</button>' : updating(p) ? `<button data-install ${source?.canUpdate && source?.install && !p.updateBlocked ? '' : 'disabled'}>更新至 ${escape(next.number)}</button>` : p.installed ? '<button class="secondary-button" data-manage>管理插件</button>' : `<button data-install ${source?.install ? '' : 'disabled'}>安装插件</button>`}</div></div></div>`;
   }
   function openDetail(id) {
     closeFilters(); closeSelects();
@@ -204,7 +203,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     task.cancelling = true; task.abort.abort();
     render(); refreshDetail();
   }
-  function clearFilters() { category = "全部"; $("search").value = ""; $("compatible").checked = true; $("sort").value = "default"; render(); }
+  function clearFilters() { category = "全部"; $("search").value = ""; $("compatible").checked = true; $("hide-installed").checked = false; $("sort").value = "default"; render(); }
   function setView(nextView, { load = true } = {}) {
     if (disposed) return;
     closeFilters(); closeSelects(); view = nextView;
@@ -251,6 +250,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     }
   });
   listen($("search"), "input", render); listen($("compatible"), "change", render);
+  listen($("hide-installed"), "change", render);
   listen($("sort"), "change", render); listen($("refresh"), "click", () => void loader.load());
   if (openSources) listen($("market-sources"), "click", () => void openSources());
   else $("market-sources").hidden = true;

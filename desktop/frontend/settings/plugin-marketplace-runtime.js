@@ -5,10 +5,15 @@ export function recommended(plugin) {
     && !version.yanked && !version.prerelease && version.compatible !== false);
 }
 
+export function hasUpdate(plugin) {
+  const version = recommended(plugin);
+  return Boolean(plugin?.installed && version && compareVersions(version.number, plugin.installed) > 0);
+}
+
 export function canInstall(plugin, source) {
   const version = recommended(plugin);
   return Boolean(source?.install && version && (!plugin.installed
-    || (source.canUpdate && !plugin.updateBlocked && compareVersions(version.number, plugin.installed) > 0)));
+    || (source.canUpdate && !plugin.updateBlocked && hasUpdate(plugin))));
 }
 
 export function createCatalogLoader(source, onChange) {

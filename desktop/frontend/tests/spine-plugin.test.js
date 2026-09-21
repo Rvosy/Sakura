@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spine } from '../../../plugins/builtin/sakura_spine/vendor/spine-webgl.mjs';
+import { spine } from '../../../plugins/optional/sakura_spine/vendor/spine-webgl.mjs';
 import { createRendererHost } from '../pet/renderer-host.js';
-import { createSpineController } from '../../../plugins/builtin/sakura_spine/controller.mjs';
+import { createSpineController } from '../../../plugins/optional/sakura_spine/controller.mjs';
 
 function fixture() {
   const skeletonData = new spine.SkeletonJson({}).readSkeletonData({

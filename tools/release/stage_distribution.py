@@ -26,23 +26,14 @@ BUILTIN_PLUGINS = {
     "sakura_screen_awareness",
     "sakura_mcp",
     "sakura_portrait",
-    "sakura_spine",
     "sakura_web",
-    "sakura_mem0",
     "sakura_tts_hub",
     "sakura_asr_hub",
-    "sakura_asr_sensevoice",
-    "sakura_genie",
-    "sakura_gpt_sovits",
 }
 BUNDLED_DEPENDENCY_DIRECTORIES = {
     "sakura_model_openai_compatible",
     "sakura_mcp",
     "sakura_web",
-    "sakura_asr_sensevoice",
-    "sakura_mem0",
-    "sakura_genie",
-    "sakura_gpt_sovits",
 }
 CORE_IMPORTS = (
     "yaml",
@@ -355,7 +346,7 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
         manifest = stage / "plugins/builtin" / plugin_id / "plugin.yaml"
         if _manifest_value(manifest, "api") != "4":
             raise ValueError(f"STAGING_PLUGIN_API_INVALID: {plugin_id}")
-    if (stage / "plugins/optional").exists():
+    if (stage / "plugins/optional").exists() or (stage / "plugins/migrations").exists():
         raise ValueError("STAGING_CONTAINS_OPTIONAL_PLUGINS")
     dependency_roots = stage / "plugins/dependencies"
     actual_dependency_roots = (

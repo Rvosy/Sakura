@@ -7,10 +7,19 @@ from pathlib import Path
 
 import pytest
 
-from plugins.builtin.sakura_spine.plugin import (
+from plugins.optional.sakura_spine.plugin import (
     SpineService, atlas_pages, describe_resource, parse_control, parse_preview_control,
 )
 from tools.spine_preview import export_components, prepare, resolve_inside
+
+
+def _install_spine(roots):
+    from app.plugins.inventory import PluginDesiredStateStore
+    repository = Path(__file__).resolve().parents[2]
+    shutil.copytree(repository / "plugins/optional/sakura_spine", roots.user_root / "plugins/user/sakura_spine", ignore=shutil.ignore_patterns("__pycache__"))
+    PluginDesiredStateStore(roots.user_root).set("sakura.visual.spine", True)
+    (roots.user_root / "config/plugin-migrations.json").write_bytes((repository / "desktop/src-tauri/src/new_user_plugin_migrations.json").read_bytes())
+
 
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=')
@@ -221,11 +230,11 @@ def test_bundled_spine_runs_through_real_v4_host_and_expires_on_disable(spine_re
     (package / 'character.json').write_text(json.dumps({
         'id': 'alice', 'display_name': 'Alice', 'card': 'card.md', 'portrait': {'default': 'default.png'},
     }), encoding='utf-8')
-    plugin = Path(__file__).resolve().parents[2] / 'plugins/builtin/sakura_spine'
-    shutil.copytree(plugin, roots.distribution_root / 'plugins/builtin/sakura_spine')
+    plugin = Path(__file__).resolve().parents[2] / 'plugins/optional/sakura_spine'
+    _install_spine(roots)
     installed = next(record for record in PluginInventory(roots).scan().records
                      if record.plugin_id == 'sakura.visual.spine')
-    assert installed.source == 'bundled'
+    assert installed.source == 'user'
     assert installed.desired_enabled
     import io
     from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
@@ -284,7 +293,8 @@ def test_v110_role_imports_spine_publishes_and_keeps_selection_after_restart(spi
     prepare(source, prepared)
     component = export_components(prepared, tmp_path / "exports")[0]
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
-    for name in ("sakura_portrait", "sakura_spine"):
+    _install_spine(roots)
+    for name in ("sakura_portrait",):
         shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin" / name,
                         roots.distribution_root / "plugins/builtin" / name)
     package = roots.user_root / "characters/alice"

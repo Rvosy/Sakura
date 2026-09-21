@@ -4,7 +4,7 @@
 
 ## 安装与升级
 
-此插件单独分发，不随 Sakura 安装包预装。通过设置中的本地插件安装入口导入 ZIP，然后启用“手机聊天”。
+此插件单独分发，新用户不预装。通过设置中的本地插件安装入口导入 ZIP，然后启用“手机聊天”。
 插件只依赖 Python 标准库和宿主公开服务，无需额外 Python 依赖。
 
 ```text
@@ -13,9 +13,10 @@ runtime/bin/python tools/release/package_optional_plugin.py --source plugins/opt
 
 Windows 将上述 Python 路径替换为 `runtime\python.exe`。
 
-从内置版本升级后，插件 ID 仍为 `sakura_mobile`，已有 `data/plugins/sakura_mobile/config.json` 继续读取；
-不会删除配置或聊天历史。外部安装默认停用，需要重新显式启用。仍包含内置手机聊天的旧版 Sakura
-不能安装同 ID 的外部包，应先升级应用。便携版使用新发行目录并沿用用户数据，不要把新包覆盖解压到旧程序目录。
+从内置版本升级时，新版 Sakura 优先使用旧文件迁移，文件缺失时联网恢复固定版本，保留原启用状态。
+已有同 ID 外部版本不会被覆盖，迁移后主动卸载也不会自动恢复。插件 ID 仍为 `sakura_mobile`，
+原 `data/plugins/sakura_mobile/config.json` 和聊天历史继续使用。新用户主动安装时默认停用，需要显式启用。
+迁移由主程序启动流程执行，EXE 和 ZIP 一致；便携版须沿用原用户目录才能识别升级。
 
 ## Runtime v2 当前状态
 

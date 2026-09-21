@@ -14,11 +14,11 @@ import pytest
 
 from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
-from app.plugins.inventory import PluginInventory
+from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
 from plugins.builtin.sakura_asr_hub.plugin import SakuraASRHub
-from plugins.builtin.sakura_asr_sensevoice import _resources
-from plugins.builtin.sakura_asr_sensevoice.plugin import SenseVoiceProvider
+from plugins.optional.sakura_asr_sensevoice import _resources
+from plugins.optional.sakura_asr_sensevoice.plugin import SenseVoiceProvider
 
 
 def wav(path):
@@ -325,7 +325,7 @@ def test_same_size_corrupt_model_exposes_explicit_retry_and_recovers(tmp_path, m
     resources.path.mkdir()
     (resources.path / "model").write_bytes(b"x" * len(content))
     (resources.path / "complete.json").write_text(json.dumps({"version": _resources.VERSION, "sha256": {"model": "legacy-unused-digest"}}))
-    from plugins.builtin.sakura_asr_sensevoice import plugin as provider_module
+    from plugins.optional.sakura_asr_sensevoice import plugin as provider_module
 
     def load_model(**_kwargs):
         if (resources.path / "model").read_bytes() != content:
@@ -353,7 +353,7 @@ def test_same_size_corrupt_model_exposes_explicit_retry_and_recovers(tmp_path, m
 
 
 def test_model_installation_cannot_race_an_active_reader_or_model_loading(tmp_path):
-    from plugins.builtin.sakura_asr_sensevoice.plugin import Job
+    from plugins.optional.sakura_asr_sensevoice.plugin import Job
 
     resources = _resources.ModelResources(tmp_path)
     provider = SenseVoiceProvider(SimpleNamespace(get=lambda _: None), resources)
@@ -391,8 +391,12 @@ def test_official_provider_unregisters_on_disable_and_reregisters_in_a_new_scope
     bundled.mkdir(parents=True)
     for name in ("sakura_asr_hub", "sakura_asr_sensevoice"):
         # Setup and teardown do not import inference dependencies or need model files.
-        shutil.copytree(root / "plugins/builtin" / name, bundled / name,
+        shutil.copytree(root / "plugins" / ("optional" if name == "sakura_asr_sensevoice" else "builtin") / name, bundled / name,
                         ignore=shutil.ignore_patterns("__pycache__", "requirements.txt"))
+    provider = tmp_path / "user/plugins/user/sakura_asr_sensevoice"
+    provider.parent.mkdir(parents=True)
+    (bundled / "sakura_asr_sensevoice").rename(provider)
+    PluginDesiredStateStore(tmp_path / "user").set("sakura.asr.sensevoice", True)
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     application = PluginRuntimeApplication(roots, "asr-unregister-test", ToolRegistry(),
                                            PluginInventory(roots).scan().runtime_specs)
@@ -509,7 +513,7 @@ def test_sensevoice_language_is_owned_by_plugin_and_survives_restart(tmp_path, s
     bundled = distribution / "plugins/builtin"
     bundled.mkdir(parents=True)
     for name in ("sakura_asr_hub", "sakura_asr_sensevoice"):
-        shutil.copytree(root / "plugins/builtin" / name, bundled / name, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(root / "plugins" / ("optional" if name == "sakura_asr_sensevoice" else "builtin") / name, bundled / name, ignore=shutil.ignore_patterns("__pycache__"))
     # This test exercises settings IPC only; inference dependencies are never imported.
     (bundled / "sakura_asr_sensevoice/requirements.txt").unlink()
     paths = StoragePaths(user)
@@ -520,6 +524,10 @@ def test_sensevoice_language_is_owned_by_plugin_and_survives_restart(tmp_path, s
         own_config = paths.plugin_data_for("sakura.asr.sensevoice") / "config.json"
         own_config.parent.mkdir(parents=True)
         own_config.write_text(json.dumps({"language": saved_language}))
+    provider = user / "plugins/user/sakura_asr_sensevoice"
+    provider.parent.mkdir(parents=True)
+    (bundled / "sakura_asr_sensevoice").rename(provider)
+    PluginDesiredStateStore(user).set("sakura.asr.sensevoice", True)
     roots = RuntimeRoots(distribution, user)
     application = PluginRuntimeApplication(roots, "asr-language-test", ToolRegistry(), PluginInventory(roots).scan().runtime_specs)
     try:

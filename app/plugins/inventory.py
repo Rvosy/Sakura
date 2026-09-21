@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.config.plugin_requirements import tts_resource_types
 from app.plugins.visuals import VisualCapability, visual_capabilities_from_manifest
@@ -252,7 +253,10 @@ class PluginInventory:
                     continue
                 if not directory.is_dir():
                     continue
-                records.append(self._record(source, directory, desired))
+                record = self._record(source, directory, desired)
+                if source == "bundled" and (record.plugin_id in MIGRATIONS or directory.name in MIGRATIONS.values()):
+                    continue
+                records.append(record)
 
         records = self._resolve_duplicates(records)
         runtime_specs = tuple(

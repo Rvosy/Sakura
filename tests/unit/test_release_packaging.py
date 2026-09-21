@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from app.plugins.inventory import PluginInventory
+from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.runtime_v4 import PluginRuntimeManager
 from app.storage.runtime_roots import RuntimeRoots
 from scripts import runtime_v2_archive
@@ -462,12 +463,18 @@ def _minimal_stage(root: Path, target: str) -> Path:
     }
     dependency_plugins = {"sakura_model_openai_compatible", "sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice", "sakura_web", "sakura_mcp"}
     for plugin, plugin_id in plugin_ids.items():
-        directory = stage / "plugins/builtin" / plugin
+        if plugin in MIGRATIONS.values():
+            continue
+        kind = "builtin"
+        directory = stage / "plugins" / kind / plugin
+        directory.parent.mkdir(exist_ok=True)
         directory.mkdir()
         (directory / "plugin.yaml").write_text(
             f"api: 4\nid: {plugin_id}\n",
             encoding="utf-8",
         )
+        if kind == "migrations":
+            (directory / "plugin.py").write_text("class Plugin: pass\n")
         if plugin in dependency_plugins:
             requirements = directory / "requirements.txt"
             requirements.write_text("fixture==1.0\n", encoding="utf-8")
@@ -521,6 +528,8 @@ def test_bundled_dependency_roots_use_manifest_ids_through_runtime_start(
     user.mkdir()
     expected_ids: set[str] = set()
     for directory_name in development_plugin_dependencies.PLUGIN_DIRECTORIES:
+        if directory_name in MIGRATIONS.values():
+            continue
         source = ROOT / "plugins/builtin" / directory_name
         plugin_root = distribution / "plugins/builtin" / directory_name
         plugin_root.mkdir(parents=True)
@@ -610,7 +619,7 @@ def test_distribution_validator_allows_python_pth_but_rejects_weights_and_model_
         "import _distutils_hack\n",
         encoding="utf-8",
     )
-    dependency_root = stage / "plugins/dependencies/sakura.memory.mem0"
+    dependency_root = stage / "plugins/dependencies/sakura.mcp"
     (dependency_root / "dependency-path.pth").write_text(
         "import dependency_bootstrap\n",
         encoding="utf-8",

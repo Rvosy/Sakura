@@ -10,7 +10,7 @@ updated: 2026-09-14
 
 ## 范围
 
-`plugins/builtin/sakura_spine` 实现 Spine 3.6 JSON 表现，插件 ID 与 Service 均为 `sakura.visual.spine`，
+`plugins/optional/sakura_spine` 实现 Spine 3.6 JSON 表现，插件 ID 与 Service 均为 `sakura.visual.spine`，
 资源类型为 `spine.json@1`。后端遵循[表现插件边界](visual-plugin-boundary.md)，前端模块可由本地预览工具调用。
 插件使用公共 `mount` / `mountEditor` 接口接入桌面渲染器和角色工坊；独立预览与正式挂载复用同一运行库。
 插件随应用内置并默认启用，无需单独安装。用户仍需添加形态组件并选择显示方式，不自动改变当前角色。
@@ -193,4 +193,4 @@ Spine 默认由内置插件提供。插件被禁用或旧版应用缺少兼容�
 [Spine 浏览器 journey](../../../desktop/frontend/tests/spine-plugin.journey.py)使用隔离角色、真实插件进程和正式工坊，
 覆盖组件与目录导入、表情速度保存重开，以及公共 RendererHost 的播放、去重、冻结和销毁；可传入实际组件目录。
 
-运行库来源与许可见[运行库说明](../../../plugins/builtin/sakura_spine/vendor/README.md)。
+运行库来源与许可见[运行库说明](../../../plugins/optional/sakura_spine/vendor/README.md)。

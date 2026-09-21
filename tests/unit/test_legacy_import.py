@@ -531,7 +531,7 @@ def _tree_state(root: Path) -> dict[str, tuple[int, int, bytes]]:
 def _install_fake_memory_model_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[object, list[str]]:
-    import plugins.builtin.sakura_mem0.memory as memory_runtime
+    import plugins.optional.sakura_mem0.memory as memory_runtime
 
     calls: list[str] = []
 
@@ -823,7 +823,7 @@ def test_memory_validation_uses_runtime_schema_migration_for_legacy_variants(
     staged = tmp_path / "staged-memory"
     copy_tree_checked(source, staged, cancelled=lambda: False)
 
-    from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
+    from plugins.optional.sakura_mem0.memory import normalize_existing_history_database
     normalize_existing_history_database(staged / "mem0_history.db")
 
     with sqlite3.connect(staged / "mem0_history.db") as connection:
@@ -876,7 +876,7 @@ def test_memory_validation_rebuilds_only_unidentifiable_message_cache(
         connection.execute("CREATE TABLE messages (role TEXT, content TEXT)")
         connection.execute("INSERT INTO messages VALUES ('human', 'disposable cache')")
 
-    from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
+    from plugins.optional.sakura_mem0.memory import normalize_existing_history_database
     normalize_existing_history_database(database)
 
     with sqlite3.connect(database) as connection:
@@ -1011,7 +1011,7 @@ servers:
     assert entries[-1].origin == "proactive"
     manifest = json.loads((target / "characters/Sakura/character.json").read_text(encoding="utf-8"))
     assert "sakura.tts" not in manifest["extensions"]
-    from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+    from plugins.optional.sakura_genie.plugin import _effective_voice_extension
     genie = manifest["extensions"]["sakura.tts.genie"]
     assert _effective_voice_extension(manifest, genie)["toneRefs"] == "voice/refs/ref.txt"
     assert "gptModel" not in genie
@@ -1176,7 +1176,7 @@ def test_memory_model_preparation_failure_preserves_imported_memory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import plugins.builtin.sakura_mem0.memory as memory_runtime
+    import plugins.optional.sakura_mem0.memory as memory_runtime
 
     source = _legacy_fixture(tmp_path)
     target = tmp_path / "target"

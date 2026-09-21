@@ -19,8 +19,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugins.builtin.sakura_asr_sensevoice._resources import ModelResources
-from plugins.builtin.sakura_asr_sensevoice.plugin import SenseVoiceProvider
+from plugins.optional.sakura_asr_sensevoice._resources import ModelResources
+from plugins.optional.sakura_asr_sensevoice.plugin import SenseVoiceProvider
 
 pytestmark = pytest.mark.skipif(not os.environ.get("SAKURA_ASR_TEST_MODELS"), reason="Native ASR resources must be explicitly installed in an isolated test root")
 
@@ -152,7 +152,7 @@ def test_real_model_through_host_hub_and_isolated_provider_process(tmp_path, mon
     from app.core_host.plugin_runtime_application import PluginRuntimeApplication
     from app.plugins.inventory import PluginInventory
     from app.storage.runtime_roots import RuntimeRoots
-    from plugins.builtin.sakura_asr_sensevoice._resources import VERSION
+    from plugins.optional.sakura_asr_sensevoice._resources import VERSION
     from app.core_host import plugin_host_services
 
     logs = []

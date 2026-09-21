@@ -460,9 +460,7 @@ prepare/begin/poll/result/cancel/release、输入与结果 artifact、历史分�
 `bundled` 可以让安装器拥有插件文件并禁止卸载，但不能隐含 privileged API。默认领域插件必须允许停用，以便
 替代实现接管能力；插件关闭后保留文件用于恢复默认是允许的。
 
-预装插件包括 `sakura_assistant`、`sakura_mem0`、`sakura_tts_hub`、`sakura_genie`、`sakura_gpt_sovits`、
-`sakura_asr_hub`、`sakura_asr_sensevoice` 和 [`sakura_web`](web-plugin.md)。新用户默认关闭 Genie 语音合成和 GPT-SoVITS 语音合成；已有用户的显式开关和沿用清单的
-隐式启用状态保持不变，初始化规则见[发行与存储](release-distribution-and-storage.md)。`playwright_browser` 和 `sakura_mobile` 为可选插件，不进入主安装包。手机聊天通过独立 ZIP 安装后显式启用；保留 `sakura_mobile` ID 和原用户配置路径，升级不删除其设置与数据。
+主包保留 Assistant、模型提供方、主动屏幕感知、MCP、立绘、联网、TTS Hub 和 ASR Hub。手机聊天、SenseVoice、Mem0、GPT-SoVITS、Genie、Spine 为可选插件；主包不携带这些插件或其私有依赖。新用户按需安装并启用，老用户启动时逐个迁出，保留插件 ID、配置和启停状态。原文件缺失时自动联网恢复固定版本。完成记录、重复安装和 ZIP 残留副本处理见[发行与存储](release-distribution-and-storage.md#内置插件迁出)。
 
 ## 8. 生命周期、失败与恢复
 
@@ -538,6 +536,7 @@ Runner 接收的仍只是当前插件自己的 dependency root。
 ## 10. 插件管理与设置窗口
 
 插件页提供“已安装 / 市场”两个入口，切换位置固定；安装数量只显示在已安装分类中。
+市场筛选提供默认不勾选的“隐藏已安装（有更新的除外）”：隐藏已安装且无兼容稳定更新的插件；有更新的插件即使因启用状态暂不能更新也继续显示。清除筛选时恢复显示全部安装状态。
 市场卡片统一提供“详情”，打开居中弹窗后才展示安装或更新操作。详情内容内部滚动，底部操作始终可达。
 分类、简介与资料通过留白和浅底色分组，不在卡片、资料与版本记录之间重复添加分割线。
 已安装管理继续使用本节的真实快照、草稿和本地安装流程；从市场进入管理或本地安装成功时，切回已安装并定位插件。

@@ -5,7 +5,7 @@ author: Rvosy
 description: 使用 SenseVoice 在本机识别语音。
 version: 0.1.0
 entry: plugin:SenseVoicePlugin
-enabled: true
+enabled: false
 priority: 120
 provides:
   - sakura.asr.provider.sensevoice

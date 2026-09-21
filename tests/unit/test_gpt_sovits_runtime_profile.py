@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from plugins.builtin.sakura_gpt_sovits import _bundle, _runtime_profile, _support
+from plugins.optional.sakura_gpt_sovits import _bundle, _runtime_profile, _support
 
 
 def _candidate(

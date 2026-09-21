@@ -1036,15 +1036,16 @@ def _prepare_memory_model(
     current downloader.
     """
 
-    from plugins.builtin.sakura_mem0.memory import (
-        DEFAULT_EMBEDDING_MODEL,
-        DEFAULT_EMBEDDING_MODEL_CACHE_NAME,
-        MemoryModelTaskCancelled,
-        _embedding_model_cached,
-        _embedding_model_snapshot,
-        _validate_fastembed_snapshot_artifacts,
-        download_embedding_model,
-    )
+    from app.legacy_import.plugin_support import migration_module
+    memory = migration_module("sakura_mem0.memory")
+    DEFAULT_EMBEDDING_MODEL = memory.DEFAULT_EMBEDDING_MODEL
+    DEFAULT_EMBEDDING_MODEL_CACHE_NAME = memory.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    MemoryModelTaskCancelled = memory.MemoryModelTaskCancelled
+    _embedding_model_cached = memory._embedding_model_cached
+    _embedding_model_snapshot = memory._embedding_model_snapshot
+    _validate_fastembed_snapshot_artifacts = memory._validate_fastembed_snapshot_artifacts
+    download_embedding_model = memory.download_embedding_model
+
 
     target_cache = target / "data" / "cache" / "memory"
     staged_cache = payload / "data" / "cache" / "memory"
@@ -2080,11 +2081,11 @@ def _validate_tts_configs(staged: Path) -> None:
     validators = (
         (
             staged / "data/plugins/sakura.tts.gpt-sovits/config.json",
-            "plugins.builtin.sakura_gpt_sovits.plugin",
+            "sakura_gpt_sovits.plugin",
         ),
         (
             staged / "data/plugins/sakura.tts.genie/config.json",
-            "plugins.builtin.sakura_genie.plugin",
+            "sakura_genie.plugin",
         ),
     )
     for path, module_name in validators:
@@ -2095,7 +2096,8 @@ def _validate_tts_configs(staged: Path) -> None:
             value = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(value, dict):
                 raise ValueError("invalid TTS config")
-            module = __import__(module_name, fromlist=["_parse_config"])
+            from app.legacy_import.plugin_support import migration_module
+            module = migration_module(module_name)
             module._parse_config(value)
         except Exception as exc:  # noqa: BLE001 - provider details remain private
             raise LegacyImportError(

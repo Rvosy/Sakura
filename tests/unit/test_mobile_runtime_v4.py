@@ -86,6 +86,8 @@ def _roots(tmp_path: Path, port: int) -> RuntimeRoots:
     ])
     package = tmp_path / "mobile.zip"
     build(repository / "plugins" / "optional" / "sakura_mobile", package)
+    (user / "config").mkdir(parents=True, exist_ok=True)
+    (user / "config/plugin-migrations.json").write_bytes((repository / "desktop/src-tauri/src/new_user_plugin_migrations.json").read_bytes())
     config_before = config.read_bytes()
     PluginDesiredStateStore(user).write({"sakura_mobile": True})
     LocalPluginInstaller(roots).install(package, "zip")

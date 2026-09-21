@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sampleAlpha, sampleTriangles } from '../../../plugins/builtin/sakura_spine/hit-test.mjs';
+import { sampleAlpha, sampleTriangles } from '../../../plugins/optional/sakura_spine/hit-test.mjs';
 import { attachDynamicHitTest } from '../pet/dynamic-hit-test.js';
 
 const mask = { width: 2, height: 2, alpha: new Uint8Array([0, 255, 0, 255]) };

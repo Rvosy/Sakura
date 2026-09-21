@@ -690,7 +690,7 @@ settings.register(
 `plugin` surface。总览只读，点击“前往下载设置”才跳到所属插件并定位资源；下载、重试和取消仍由插件
 设置里的 Action 执行。停用插件不会出现在总览中，未提交的启停草稿也不会提前改变总览。
 
-可参考 [GPT-SoVITS 资源管理器](../../plugins/builtin/sakura_gpt_sovits/_bundle.py)。该文件属于插件实现，
+可参考 [GPT-SoVITS 资源管理器](../../plugins/optional/sakura_gpt_sovits/_bundle.py)。该文件属于插件实现，
 不是公共 SDK；第三方插件应自行实现或使用公开依赖，不能跨目录导入它。
 
 ### 页面与区块贡献
@@ -1402,8 +1402,8 @@ runtime\python.exe -m harness run docs
 
 - [Playwright 浏览器](../../plugins/optional/playwright_browser/plugin.py)：工具、Artifact、配置和普通设置；
 - [手机聊天](../../plugins/optional/sakura_mobile/plugin.py)：事件、线程清理、配置热应用和只读状态；
-- [Sakura Mem0](../../plugins/builtin/sakura_mem0/plugin.py)：上下文、工具、surface、Collection 和模型槽位；
-- [GPT-SoVITS](../../plugins/builtin/sakura_gpt_sovits/plugin.py)：跨插件 Service、角色资源、资源 Action 和语音页面。
+- [Sakura Mem0](../../plugins/optional/sakura_mem0/plugin.py)：上下文、工具、surface、Collection 和模型槽位；
+- [GPT-SoVITS](../../plugins/optional/sakura_gpt_sovits/plugin.py)：跨插件 Service、角色资源、资源 Action 和语音页面。
 
 规范以 [Sakura Plugin Runtime v4](../specs/runtime-v2/sakura-plugin-runtime-v4.md) 为准。公共类型提示位于
 [`app/plugin_sdk/sakura_plugin_api.py`](../../app/plugin_sdk/sakura_plugin_api.py)；实际接口行为还应以 Runtime

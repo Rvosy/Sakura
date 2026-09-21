@@ -10,7 +10,7 @@ import pytest
 def test_fastembed_adapter_forwards_local_model_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plugin_root = Path(__file__).parents[2] / "plugins" / "builtin" / "sakura_mem0"
+    plugin_root = Path(__file__).parents[2] / "plugins" / "optional" / "sakura_mem0"
     imported_before = set(sys.modules)
     monkeypatch.syspath_prepend(str(plugin_root))
     try:

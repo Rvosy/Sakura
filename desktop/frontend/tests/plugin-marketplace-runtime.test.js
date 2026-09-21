@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canInstall, recommended, createCatalogLoader } from "../settings/plugin-marketplace-runtime.js";
+import { canInstall, hasUpdate, recommended, createCatalogLoader } from "../settings/plugin-marketplace-runtime.js";
 
 const deferred = () => {
   let resolve, reject;
@@ -57,4 +57,17 @@ test("installation respects upstream recommendation, withdrawn versions and upda
   delete p.installed;
   p.versions[1].yanked = "withdrawn"; assert.equal(canInstall(p, source), false);
   p.recommendedVersion = "2.0.0"; assert.equal(canInstall(p, source), false);
+});
+
+
+test("update visibility follows compatible stable recommendations even when updating is blocked", () => {
+  const plugin = { installed: "1.0.0", recommendedVersion: "1.1.0", versions: [{ number: "1.1.0" }], updateBlocked: "请先停用插件再更新" };
+  assert.equal(hasUpdate(plugin), true);
+  assert.equal(canInstall(plugin, { install() {}, canUpdate: true }), false);
+  for (const installed of [undefined, "1.1.0", "2.0.0"]) {
+    assert.equal(hasUpdate({ ...plugin, installed }), false);
+  }
+  for (const status of [{ compatible: false }, { yanked: "withdrawn" }, { prerelease: true }]) {
+    assert.equal(hasUpdate({ ...plugin, versions: [{ number: "1.1.0", ...status }] }), false);
+  }
 });

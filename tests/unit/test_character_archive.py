@@ -507,7 +507,7 @@ def test_character_voice_archive_imports_to_selected_character(existing_extensio
         "voice/models/sovits.pth"
     )
     if existing_extensions:
-        from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+        from plugins.optional.sakura_genie.plugin import _effective_voice_extension
         genie = manifest["extensions"]["sakura.tts.genie"]
         assert genie == {"refLang": "zh", "remoteCharacterName": "explicit"}
         assert _effective_voice_extension(manifest, genie)["gptModel"] == "voice/models/gpt.ckpt"

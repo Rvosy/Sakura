@@ -131,6 +131,10 @@ class PluginRuntimeApplication:
             migrate_legacy_model_configuration(roots.user_root)
         except (OSError, ValueError):
             self._model_configuration_issue = "CONFIG_DATA_INVALID"
+        from app.plugins.bundled_migrations import migrate_bundled_plugins
+
+        if specs is None:
+            migrate_bundled_plugins(roots)
         self._inventory = PluginInventory(roots)
         self._inventory_snapshot = self._inventory.scan()
         manager_options = {} if call_timeout is None else {"call_timeout": call_timeout}

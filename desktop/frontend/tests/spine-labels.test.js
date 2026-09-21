@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { labelFor } from '../../../plugins/builtin/sakura_spine/editor.mjs';
+import { labelFor } from '../../../plugins/optional/sakura_spine/editor.mjs';
 
 test('Spine names come only from the resource, with raw IDs for missing or empty labels', () => {
   const ids = ['anger', 'normal', 'sad', 'shy', 'smile', 'surprise', 'unique1', 'unique2'];

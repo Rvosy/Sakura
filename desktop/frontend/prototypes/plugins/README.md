@@ -34,10 +34,10 @@ GPT-SoVITS、Genie 和 Mem0 都沿用原有资源动作。
 
 | 插件 | 现有设置 | 声明来源 |
 |---|---|---|
-| GPT-SoVITS | 服务来源、已有服务地址、接口路径、远程参考音频目录、内置服务工作目录、Python 解释器、推理配置、合成超时 | [plugin.py](../../../../plugins/builtin/sakura_gpt_sovits/plugin.py) |
-| Genie | 服务来源、已有服务地址、合成超时 | [plugin.py](../../../../plugins/builtin/sakura_genie/plugin.py) |
+| GPT-SoVITS | 服务来源、已有服务地址、接口路径、远程参考音频目录、内置服务工作目录、Python 解释器、推理配置、合成超时 | [plugin.py](../../../../plugins/optional/sakura_gpt_sovits/plugin.py) |
+| Genie | 服务来源、已有服务地址、合成超时 | [plugin.py](../../../../plugins/optional/sakura_genie/plugin.py) |
 | Sakura Mobile | 启用手机网页端、监听地址、端口、访问 token、只读运行状态与地址、错误、刷新状态 | [plugin.py](../../../../plugins/optional/sakura_mobile/plugin.py) |
-| Mem0 | 运行状态、自动整理间隔 | [plugin.py](../../../../plugins/builtin/sakura_mem0/plugin.py) |
+| Mem0 | 运行状态、自动整理间隔 | [plugin.py](../../../../plugins/optional/sakura_mem0/plugin.py) |
 | Playwright Browser | 无头模式 | [plugin.py](../../../../plugins/optional/playwright_browser/plugin.py) |
 
 GPT-SoVITS、Genie 不增加音色、输出语言、语速、参考音频选择、分段或流式开关。Mem0 的向量模型下载和记忆内容管理保留现有入口。

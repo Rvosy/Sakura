@@ -134,16 +134,11 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
     assert {spec.plugin_id for spec in bundled} == {
         "sakura.assistant.default",
         "sakura.asr",
-        "sakura.asr.sensevoice",
         "sakura.mcp",
-        "sakura.memory.mem0",
         "sakura.model.openai_compatible",
         "sakura.portrait",
         "sakura.screen_awareness",
         "sakura.tts",
-        "sakura.tts.genie",
-        "sakura.tts.gpt-sovits",
-        "sakura.visual.spine",
         "sakura.web",
     }
     assert all(spec.api_version == 4 for spec in bundled)

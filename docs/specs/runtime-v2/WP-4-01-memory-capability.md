@@ -37,7 +37,7 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 
 ## 2. 所有权与运行边界
 
-- `plugins/builtin/sakura_mem0` 是 Runtime v2 Mem0 的唯一运行 owner。插件拥有 `MemoryBoundary`、`MemoryStore`、
+- `plugins/optional/sakura_mem0` 是 Runtime v2 Mem0 的唯一运行 owner。插件拥有 `MemoryBoundary`、`MemoryStore`、
   `MemoryRecallService`、整理状态、本地模型任务及相关资源；Core 不构造第二个 Memory owner。
 - 插件只使用普通 `sakura.host.context`、`sakura.host.tools`、`sakura.host.settings`、
   `sakura.host.model_slots.v2`、`sakura.host.storage`、`sakura.host.character`、`sakura.host.timeline` 和

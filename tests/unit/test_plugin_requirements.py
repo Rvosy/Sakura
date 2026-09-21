@@ -13,10 +13,10 @@ from app.plugins.inventory import PluginInventory
 
 
 def genie_record(tmp_path):
-    source = Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_genie/plugin.yaml"
-    plugin = tmp_path / "plugins/builtin/genie"
+    source = Path(__file__).resolve().parents[2] / "plugins/optional/sakura_genie/plugin.yaml"
+    plugin = tmp_path / "plugins/user/genie"
     plugin.mkdir(parents=True)
-    shutil.copyfile(source, plugin / "plugin.yaml")
+    (plugin / "plugin.yaml").write_text(source.read_text().replace("enabled: false", "enabled: true"))
     # Compatibility discovery must never import the implementation or convert models.
     (plugin / "plugin.py").write_text('raise AssertionError("must not start Genie")')
     return PluginInventory(tmp_path).scan().records[0]
@@ -81,7 +81,7 @@ def test_bad_optional_tts_entry_preserves_other_types_and_reports_its_cause(tmp_
     import yaml
 
     record = genie_record(tmp_path)
-    manifest = tmp_path / "plugins/builtin/genie/plugin.yaml"
+    manifest = tmp_path / "plugins/user/genie/plugin.yaml"
     raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     raw["ttsResources"] = [GPT_SOVITS_MODELS, "unversioned"]
     manifest.write_text(yaml.safe_dump(raw), encoding="utf-8")

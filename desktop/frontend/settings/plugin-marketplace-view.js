@@ -14,7 +14,7 @@ export const marketplaceMarkup = `
       </section>
       <div class="market-foot"><div class="market-summary"><span id="result-count" aria-live="polite"></span><span id="catalog-state"></span></div><span>社区目录</span></div>
 </section>
-  <div id="market-filter-panel" class="market-filter-panel" popover="auto" aria-label="浏览筛选"><label class="compatibility"><input id="compatible" type="checkbox" checked><span>仅看兼容</span></label><label class="market-sort"><span>排序</span><select id="sort" aria-label="插件排序"><option value="default">默认顺序</option><option value="updated">最近更新</option><option value="name">名称</option></select></label></div>
+  <div id="market-filter-panel" class="market-filter-panel" popover="auto" aria-label="浏览筛选"><label class="compatibility"><input id="compatible" type="checkbox" checked><span>仅看兼容</span></label><label class="compatibility"><input id="hide-installed" type="checkbox"><span>隐藏已安装（有更新的除外）</span></label><label class="market-sort"><span>排序</span><select id="sort" aria-label="插件排序"><option value="default">默认顺序</option><option value="updated">最近更新</option><option value="name">名称</option></select></label></div>
   <button id="market-sources" class="market-menu-action" type="button" role="menuitem">下载源…</button>
   <button id="refresh" class="market-menu-action" type="button" role="menuitem">刷新目录</button>
   <dialog id="detail-dialog" class="market-drawer" aria-labelledby="detail-title"><div id="detail"></div></dialog>

@@ -44,8 +44,8 @@ updated: 2026-09-16
 2. 按功能选择最接近的现有插件阅读：
    plugins/optional/playwright_browser/plugin.py：工具、Artifact、普通设置和日志。
    plugins/optional/sakura_mobile/plugin.py：后台服务、事件、配置热应用和清理。
-   plugins/builtin/sakura_mem0/plugin.py：记忆、Context、Collection、模型槽位。
-   plugins/builtin/sakura_gpt_sovits/plugin.py：语音 Service、资源下载和页面放置。
+   plugins/optional/sakura_mem0/plugin.py：记忆、Context、Collection、模型槽位。
+   plugins/optional/sakura_gpt_sovits/plugin.py：语音 Service、资源下载和页面放置。
    它们是参考实现，不是可从另一插件目录导入的公共库。
 3. 先确认哪些是 Host Service、哪些由其他插件提供、哪些是本插件业务。缺失信息只有在会实质改变
    功能、数据处理或外部操作范围时才询问；其余采用简单合理的默认值，并在交付中说明。

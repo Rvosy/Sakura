@@ -6,7 +6,7 @@ description: 使用 GPT-SoVITS 合成角色语音。
 version: 0.1.0
 entry: plugin:GPTSoVITSPlugin
 # 保留老用户未显式保存的启用状态；新用户由 Shell 的 new_user_plugins.yaml 初始化为关闭。
-enabled: true
+enabled: false
 priority: 110
 provides:
   - sakura.tts.provider.gpt-sovits

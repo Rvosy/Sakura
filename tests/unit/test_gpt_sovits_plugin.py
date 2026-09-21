@@ -27,7 +27,7 @@ CREDENTIAL = "4" * 32
 
 
 def test_resource_update_is_notified_when_running_task_finishes(tmp_path, monkeypatch):
-    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+    from plugins.optional.sakura_gpt_sovits import plugin as provider_module
 
     config = provider_module._ProviderConfig(
         enabled=True, custom_base_url=None, tts_path="/tts", timeout_seconds=5,
@@ -138,7 +138,7 @@ def _root(
     repository = Path(__file__).parents[2]
     shutil.copytree(repository / "plugins" / "builtin" / "sakura_tts_hub", plugins / "sakura_tts_hub")
     shutil.copytree(
-        repository / "plugins" / "builtin" / "sakura_gpt_sovits",
+        repository / "plugins" / "optional" / "sakura_gpt_sovits",
         plugins / "sakura_gpt_sovits",
     )
     plugin_root = plugins / "sakura_gpt_sovits"
@@ -178,6 +178,15 @@ def _root(
         }}),
         encoding="utf-8",
     )
+    from app.plugins.inventory import PluginDesiredStateStore
+    from app.storage.paths import StoragePaths
+    destination = root / "plugins/user/sakura_gpt_sovits"
+    destination.parent.mkdir(parents=True)
+    (plugins / "sakura_gpt_sovits").rename(destination)
+    dependency_target = StoragePaths(root).plugin_dependency_root_for("sakura.tts.gpt-sovits")
+    dependency_target.parent.mkdir(parents=True, exist_ok=True)
+    dependency_root.rename(dependency_target)
+    PluginDesiredStateStore(root).set("sakura.tts.gpt-sovits", True)
     return root
 
 
@@ -249,7 +258,7 @@ def _poll_terminal(worker: PluginRuntimeApplication, request_id: str) -> dict[st
 
 
 def test_gpt_provider_availability_requires_runtime_or_valid_custom_endpoint() -> None:
-    from plugins.builtin.sakura_gpt_sovits.plugin import _config_available, _parse_config
+    from plugins.optional.sakura_gpt_sovits.plugin import _config_available, _parse_config
 
     assert _config_available(_parse_config({})) is False
     assert _config_available(
@@ -384,7 +393,7 @@ def test_managed_gpt_warmup_prepares_service_and_weights_in_coordinator(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+    from plugins.optional.sakura_gpt_sovits import plugin as provider_module
 
     config = provider_module._ProviderConfig(
         enabled=True,
@@ -431,7 +440,7 @@ def test_managed_gpt_warmup_prepares_service_and_weights_in_coordinator(
 
 
 def test_managed_gpt_warmup_reports_configuration_failure_fallback(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+    from plugins.optional.sakura_gpt_sovits import plugin as provider_module
 
     config = provider_module._ProviderConfig(
         enabled=True,
@@ -479,7 +488,7 @@ def test_managed_gpt_warmup_reports_configuration_failure_fallback(tmp_path: Pat
 def test_managed_runtime_reports_five_stages_once_and_replays_after_restart(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_gpt_sovits import _support
+    from plugins.optional.sakura_gpt_sovits import _support
 
     diagnostics: list[tuple[str, str, dict[str, str]]] = []
     settings = SimpleNamespace(
@@ -533,7 +542,7 @@ def test_managed_runtime_reports_five_stages_once_and_replays_after_restart(
 
 
 def test_managed_runtime_reports_timeout_and_weight_failure_stage(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_gpt_sovits import _support
+    from plugins.optional.sakura_gpt_sovits import _support
 
     diagnostics: list[tuple[str, str, dict[str, str]]] = []
     settings = SimpleNamespace(
@@ -602,7 +611,7 @@ def test_managed_failure_keeps_evidence_through_diagnostics_and_core_log(
     from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
     from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
     from app.plugins.sakura_plugin_sdk import PluginContext
-    from plugins.builtin.sakura_gpt_sovits import _support, plugin as provider_module
+    from plugins.optional.sakura_gpt_sovits import _support, plugin as provider_module
 
     host = _DiagnosticsHostService()
 
@@ -779,8 +788,8 @@ def test_managed_bundle_binding_replaces_stale_optional_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from plugins.builtin.sakura_gpt_sovits import _bundle
-    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+    from plugins.optional.sakura_gpt_sovits import _bundle
+    from plugins.optional.sakura_gpt_sovits import plugin as provider_module
 
     work_dir = tmp_path / "tts" / "gpt"
     runtime = work_dir / "runtime"
@@ -818,7 +827,7 @@ def test_managed_bundle_binding_replaces_stale_optional_paths(
 
 
 def test_explicit_managed_mode_ignores_retained_custom_endpoint() -> None:
-    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+    from plugins.optional.sakura_gpt_sovits import plugin as provider_module
 
     assert provider_module._uses_custom_endpoint({
         "endpointMode": "managed",
@@ -830,7 +839,7 @@ def test_explicit_managed_mode_ignores_retained_custom_endpoint() -> None:
 
 
 def test_bundle_install_clears_stale_optional_runtime_overrides(tmp_path: Path) -> None:
-    from plugins.builtin.sakura_gpt_sovits import _bundle
+    from plugins.optional.sakura_gpt_sovits import _bundle
 
     updates: list[dict[str, object]] = []
     work_dir = tmp_path / "tts" / "gpt"
@@ -860,7 +869,7 @@ def test_bundle_install_clears_stale_optional_runtime_overrides(tmp_path: Path) 
 def test_installed_managed_bundle_with_stale_paths_is_available_after_startup(
     tmp_path: Path,
 ) -> None:
-    from plugins.builtin.sakura_gpt_sovits import _bundle
+    from plugins.optional.sakura_gpt_sovits import _bundle
 
     root = _root(
         tmp_path,
@@ -954,7 +963,7 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+    from plugins.optional.sakura_gpt_sovits import plugin as provider_module
 
     events: list[tuple[str, str]] = []
     resolvers: list[object] = []

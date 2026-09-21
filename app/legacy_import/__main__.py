@@ -124,6 +124,11 @@ def _exclusive_protocol_stdout() -> Iterator[None]:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    from app.legacy_import.plugin_support import configure_plugin_support
+    from app.storage.runtime_roots import RuntimeRoots
+    distribution = os.environ.get("SAKURA_DISTRIBUTION_ROOT")
+    if distribution:
+        configure_plugin_support(RuntimeRoots(Path(distribution), Path(args.target)))
     with _exclusive_protocol_stdout():
         return _run(args)
 
