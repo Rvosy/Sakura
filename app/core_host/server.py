@@ -1711,7 +1711,7 @@ def run_host(
                             ),
                         )
                     result = plugin_settings.handle(request)
-                    if result.get("ok") and request.get("name") in {
+                    if (result.get("ok") or request.get("name") == "plugins.marketplace.install") and request.get("name") in {
                         "plugins.settings.save", "plugins.enabled.set", "plugins.settings.action",
                         "plugins.install", "plugins.uninstall", "plugins.marketplace.install",
                     }:

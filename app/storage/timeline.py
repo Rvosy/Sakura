@@ -246,12 +246,22 @@ class TimelineStore:
                         if category == "observation"
                         else ("assistant", "proactive", proactive_text)
                     )
+                    origin_filter = "candidate.origin = :origin"
+                    if category == "observation":
+                        origin_filter = """(candidate.origin = :origin OR (
+                            candidate.origin = 'host'
+                            AND json_type(candidate.payload_json, '$.sourcePluginId') = 'text'
+                            AND length(json_extract(candidate.payload_json, '$.sourcePluginId')) > 0
+                            AND json_type(candidate.payload_json, '$.visual.imageCount') = 'integer'
+                            AND json_extract(candidate.payload_json, '$.visual.imageCount') > 0
+                            AND json_extract(candidate.payload_json, '$.visual.analysisStatus') = 'succeeded'
+                        ))"""
                     eligibility = f"""NOT {human_exists} AND EXISTS (
                         SELECT 1 FROM timeline_entries AS candidate
                         WHERE candidate.character_id = :character
                           AND candidate.turn_id = head.turn_id
                           AND candidate.seq <= :snapshot
-                          AND candidate.kind = :kind AND candidate.origin = :origin
+                          AND candidate.kind = :kind AND {origin_filter}
                           AND julianday(candidate.created_at) >= julianday(:cutoff)
                     )"""
                 else:
@@ -339,7 +349,14 @@ class TimelineStore:
                         FROM timeline_entries
                         WHERE character_id = ?
                           AND kind = 'observation'
-                          AND origin = 'scheduled_screen'
+                          AND (origin = 'scheduled_screen' OR (
+                            origin = 'host'
+                            AND json_type(payload_json, '$.sourcePluginId') = 'text'
+                            AND length(json_extract(payload_json, '$.sourcePluginId')) > 0
+                            AND json_type(payload_json, '$.visual.imageCount') = 'integer'
+                            AND json_extract(payload_json, '$.visual.imageCount') > 0
+                            AND json_extract(payload_json, '$.visual.analysisStatus') = 'succeeded'
+                          ))
                           AND julianday(created_at) >= julianday(?)
                         UNION
                         SELECT turn_id

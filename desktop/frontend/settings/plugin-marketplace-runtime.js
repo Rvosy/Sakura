@@ -17,22 +17,31 @@ export function canInstall(plugin, source) {
 }
 
 export function createCatalogLoader(source, onChange) {
-  let request = null, disposed = false;
+  let request = null, disposed = false, lastGood = null;
   return {
     async load() {
       request?.abort();
       const current = new AbortController(); request = current;
       if (disposed) return;
       if (!source) { onChange({ state: "unconfigured", plugins: [] }); return; }
-      onChange({ state: "loading" });
+      const active = () => !disposed && request === current && !current.signal.aborted;
+      const accept = result => {
+        if (!active()) return;
+        lastGood = { ...result, plugins: structuredClone(result.plugins) };
+        onChange(lastGood);
+      };
+      if (lastGood) onChange({ ...lastGood, refreshing: true, error: "" });
+      else onChange({ state: source.cacheFirst ? "restoring" : "loading" });
       try {
-        const result = await source.load({ signal: current.signal, onProgress(sourceName) {
-          if (!disposed && request === current && !current.signal.aborted) onChange({ state: "loading", sourceName });
+        const result = await source.load({ signal: current.signal, onCached(result) {
+          accept({ ...result, state: "cached", refreshing: true });
+        }, onProgress(sourceName) {
+          if (active() && !lastGood) onChange({ state: "loading", sourceName });
         } });
-        if (disposed || request !== current || current.signal.aborted) return;
-        onChange({ ...result, plugins: structuredClone(result.plugins) });
+        accept({ ...result, refreshing: false });
       } catch (error) {
-        if (!disposed && request === current && !current.signal.aborted) onChange({ state: "error", error: String(error.message || error) });
+        if (active()) onChange({ ...(lastGood || {}), state: lastGood ? "cached" : "error",
+          refreshing: false, error: String(error.message || error) });
       }
     },
     dispose() { disposed = true; request?.abort(); },

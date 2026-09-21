@@ -7679,7 +7679,7 @@ fn main() {
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
         ))
-        .manage(plugin_marketplace::MarketplaceState::default())
+        .manage(plugin_marketplace::MarketplaceState::new(character_resource_root.clone()))
         .manage(update_coordinator)
         .manage(audio::AudioState::new(character_resource_root.clone()))
         .manage(asr::AsrState::default())
@@ -8058,6 +8058,8 @@ fn main() {
             download_sources::settings_download_sources_get,
             download_sources::settings_download_sources_save,
             plugin_marketplace::settings_marketplace_catalog,
+            plugin_marketplace::settings_marketplace_readme,
+            plugin_marketplace::settings_marketplace_open_url,
             plugin_marketplace::settings_marketplace_install,
             plugin_marketplace::settings_marketplace_cancel,
             plugin_settings::settings_plugins_get,

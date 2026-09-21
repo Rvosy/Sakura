@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,8 @@ def entry(index: str, turn: str, *, kind: TimelineKind = TimelineKind.HUMAN,
     payload = {"text": text}
     if semantic:
         payload["visual"] = {"analysisStatus": "succeeded", "capturedAt": created_at.isoformat(), "imageCount": 1}
+    if origin == "host":
+        payload["sourcePluginId"] = "sakura.screen_awareness"
     if kind is TimelineKind.ASSISTANT:
         payload = {"segments": [{"text": text, "translation": "", "tone": "neutral",
                                  "portrait": "", "suppressTts": False}]}
@@ -129,11 +132,12 @@ def test_multiple_large_turns_use_bounded_pages_without_splitting_or_losing_them
     assert artifacts.count == 0
 
 
-def test_proactive_limit_ttl_and_observation_reply_do_not_duplicate_context(tmp_path):
+@pytest.mark.parametrize("origin", ["scheduled_screen", "host"])
+def test_proactive_limit_ttl_and_observation_reply_do_not_duplicate_context(tmp_path, origin):
     entries = [entry("old", "old", kind=TimelineKind.ASSISTANT, origin="proactive", created_at=NOW - timedelta(hours=2))]
     entries.extend(entry(f"proactive-{index}", f"proactive-{index}", kind=TimelineKind.ASSISTANT, origin="proactive", text=f"proactive {index}") for index in range(5))
     entries.extend([
-        entry("observation", "observation", kind=TimelineKind.OBSERVATION, origin="scheduled_screen", semantic=True, text="semantic observation"),
+        entry("observation", "observation", kind=TimelineKind.OBSERVATION, origin=origin, semantic=True, text="semantic observation"),
         entry("observed-reply", "observation", kind=TimelineKind.ASSISTANT, origin="proactive", text="observed reply"),
     ])
     _, _, _, _, history, _ = history_for(tmp_path, entries)
@@ -147,6 +151,35 @@ def test_proactive_limit_ttl_and_observation_reply_do_not_duplicate_context(tmp_
     assert [turn.turn_id for turn in selected.selected_turns] == ["observation"]
     assert [message["role"] for message in history.messages(selected)] == ["system", "assistant"]
     assert len(history.projected_drops) == 5
+
+
+def test_plugin_visual_history_filters_invalid_and_expired_summaries_and_keeps_snapshot(tmp_path):
+    def observation(name, **kwargs):
+        return entry(name, name, kind=TimelineKind.OBSERVATION, origin="host", semantic=True, **kwargs)
+
+    valid = observation("valid", text="画面摘要：正在修改角色界面。")
+    no_source = replace(observation("no-source"), payload={"text": "unattributed", "visual": valid.payload["visual"]})
+    # Unsuccessful analysis leaves only capture metadata; no failed semantic record is stored.
+    unanalyzed = replace(observation("unanalyzed"), payload={**valid.payload, "visual": {
+        "imageCount": 1, "capturedAt": NOW.isoformat(),
+    }})
+    store, _, _, _, history, _ = history_for(tmp_path, [
+        valid,
+        observation("boundary", created_at=NOW - timedelta(hours=2)),
+        observation("expired", created_at=NOW - timedelta(hours=2, seconds=1)),
+        no_source, unanalyzed,
+        entry("trigger", "trigger", kind=TimelineKind.OBSERVATION, origin="host"),
+        replace(observation("other-character"), character_id="other"),
+    ])
+    bounds = {"observation_since": NOW - timedelta(hours=2), "proactive_since": NOW - timedelta(hours=1)}
+    assert {row.turn_id for row in store.read_context_candidates("sakura", **bounds)} == {"valid", "boundary"}
+    store.append(observation("late"))
+    snapshot = select(history, 10_000)
+    assert {turn.turn_id for turn in snapshot.selected_turns} == {"valid", "boundary"}
+    messages = history.messages(snapshot)
+    assert all(message["role"] == "system" for message in messages)
+    assert any("正在修改角色界面" in message["content"] for message in messages)
+    assert all("不是用户输入" in message["content"] for message in messages)
 
 
 def test_corrupt_projected_turn_is_diagnosed_without_preventing_older_valid_turn(tmp_path):

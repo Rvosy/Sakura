@@ -29,7 +29,7 @@ from app.storage.runtime_roots import RuntimeRoots
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 
 
-GENERATION_ID = "context-plugin-chat"
+GENERATION_ID = "a6af3cc7-07d0-4f46-b8ce-3ab25181a483"
 GENERATION_CREDENTIAL = "54" * 16
 PLUGIN_ID = "fixture.context.rules"
 SERVICE_KEY = "fixture.context.inspection"
@@ -139,6 +139,10 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
     # Each test owns both the plugin distribution and all writable runtime data.
     distribution, user = tmp_path / "distribution", tmp_path / "user"
     user.mkdir()
+    # Match desktop new-user initialization; this fixture has no legacy plugins.
+    (user / "config").mkdir()
+    shutil.copy2(Path(__file__).resolve().parents[2] / "desktop/src-tauri/src/new_user_plugin_migrations.json",
+                 user / "config/plugin-migrations.json")
     _write_plugin(distribution)
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / "builtin" / "sakura_assistant", distribution / "plugins" / "builtin" / "sakura_assistant", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_model_openai_compatible", distribution / "plugins/builtin/sakura_model_openai_compatible", ignore=shutil.ignore_patterns("__pycache__"))
@@ -231,6 +235,47 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
         provider.server_close()
         worker.join(5)
         assert not worker.is_alive()
+
+
+def test_manual_screens_keep_added_order_and_metadata_through_real_assistant(chat, tmp_path, monkeypatch):
+    import base64
+    from app.core_host.screen_capture import generation_resource_root
+
+    monkeypatch.setattr("app.core_host.screen_capture.tempfile.gettempdir", lambda: str(tmp_path))
+    root = generation_resource_root(GENERATION_ID, temp_root=tmp_path)
+    root.mkdir(parents=True)
+    def request(name, payload):
+        return {"id": payload.get("operationId", name), "kind": "request", "name": name, "generationId": GENERATION_ID,
+                "generationCredential": GENERATION_CREDENTIAL, "payload": payload}
+    session_id = chat.boundary.handle_screen_session(request("screen.session", {}))["payload"]["sessionId"]
+    urls = []
+    for token_char, width, captured_at, screen in (
+        ("a", 3, "2026-08-18T01:02:04Z", "right monitor"),
+        ("b", 4, "2026-08-18T01:02:03Z", "left monitor"),
+    ):
+        image = (b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x02" + width.to_bytes(2, "big")
+                 + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+                 + b"\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00\x00\xff\xd9")
+        token = token_char * 32
+        (root / f"{token}.jpg").write_bytes(image)
+        attached = chat.boundary.handle_screen_attach(request("screen.attach", {"sessionId": session_id, "resource": {
+            "generationId": GENERATION_ID, "resourceToken": token, "mimeType": "image/jpeg", "width": width,
+            "height": 2, "byteLength": len(image), "capturedAt": captured_at, "screenName": screen}}))
+        urls.append("data:image/jpeg;base64," + base64.b64encode(image).decode())
+    send = request("chat.send", {"operationId": "manual-screens", "message": "比较第一张和第二张截图",
+                                 "attachmentId": attached["payload"]["attachmentId"]})
+    chat.boundary.reserve_send(send)
+    chat.boundary.handle_send(send)
+    assert chat.events[-1]["name"] == "chat.completed", chat.events[-1]
+    content = next(message["content"] for message in chat.requests[0]["messages"]
+                   if isinstance(message["content"], list) and any(part.get("type") == "image_url" for part in message["content"]))
+    assert [part["image_url"]["url"] for part in content if part["type"] == "image_url"] == urls
+    text = content[0]["text"]
+    assert "截图 1：3x2" in text and "截图 2：4x2" in text
+    assert text.index("right monitor") < text.index("left monitor")
+    assert "2026-08-18T01:02:04Z" in text and "2026-08-18T01:02:03Z" in text
+    assert chat.send("after-screens", "继续聊聊")["name"] == "chat.completed"
+    assert all(url not in json.dumps(chat.requests[-1]) for url in urls)
 
 
 def test_real_plugin_content_reaches_provider_and_disabling_removes_it(

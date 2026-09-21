@@ -177,6 +177,9 @@ def test_plugin_disabling_settings_cancels_accepted_and_inflight_submission(disa
     now, cancelled = [0.0], []
     entered, finish = threading.Event(), threading.Event()
     def submit(request):
+        from plugins.builtin.sakura_screen_awareness.prompts import PROACTIVE_PROMPT
+        assert request["message"] == PROACTIVE_PROMPT
+        assert request["resources"]
         entered.set()
         assert finish.wait(3)
         return {"accepted": True, "operationId": "plugin-operation"}

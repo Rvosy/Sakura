@@ -165,18 +165,28 @@ def test_discovery_uses_unsaved_connection_without_writing_and_releases(provider
     assert "draft-key" not in repr(result)
 
 
-def test_probe_failure_reports_safe_code_and_always_releases(provider):
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_probe_failure_preserves_reason_redacts_credentials_and_always_releases(provider, cleanup_fails):
     profiles, context = provider
     released = threading.Event()
+    draft_secret = 'draft-key-with-"quotes"'
+    def release(operation):
+        released.set()
+        if cleanup_fails:
+            raise RuntimeError("cleanup failed")
     context.service = SimpleNamespace(begin_probe=lambda descriptor: None, poll=lambda *args: {"sequence": 1, "state": "failed"},
-        result=lambda operation: {"failure": {"code": "AUTH_REQUIRED", "message": SECRET}}, release=lambda operation: released.set())
+        result=lambda operation: {"failure": {"code": "MODEL_AUTHENTICATION_FAILED",
+            "message": f"API HTTP 403: model access denied; {SECRET}; {draft_secret}"}}, release=release)
     profiles.set_service(context.service)
-    profiles.editor_probe({"probeRequest": {"operation": "test_connection", "requestId": "test", "profileId": "fixture", "modelId": "model"}})
+    profiles.editor_probe({"probeRequest": {"operation": "test_connection", "requestId": "test", "profileId": "fixture", "modelId": "model",
+                                           "credential": {"action": "replace", "value": draft_secret}}})
     assert released.wait(2)
     profiles.close()
     result = profiles.editor_probe_status({})
-    assert result["values"]["probeResult"]["code"] == "AUTH_REQUIRED"
+    assert result["values"]["probeResult"]["code"] == "MODEL_AUTHENTICATION_FAILED"
+    assert "API HTTP 403: model access denied" in result["values"]["probeResult"]["message"]
     assert SECRET not in repr(result)
+    assert draft_secret not in result["values"]["probeResult"]["message"]
 
 
 def test_global_timeout_is_applied_only_on_explicit_edit(provider):

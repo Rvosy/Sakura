@@ -82,6 +82,14 @@
         "runtime-v2-plugin-frontend-journey"
       ]
     },
+    "journey-plugin-marketplace": {
+      "description": "验证插件市场目录选择、安装门禁和详情交互",
+      "cases": [
+        "plugin-marketplace-update",
+        "plugin-marketplace-frontend",
+        "plugin-marketplace-browser"
+      ]
+    },
     "journey-tts": {
       "description": "验证 TTS 进程所有权、语音留存、Core 授权、默认设备播放门禁与字幕同步",
       "cases": [
@@ -650,6 +658,24 @@
         "NO_COLOR": "1",
         "CARGO_TERM_COLOR": "never"
       }
+    },
+    {
+      "id": "plugin-marketplace-frontend",
+      "description": "验证市场目录版本选择、加载取消和安装更新门禁",
+      "argv": ["node", "--test", "desktop/frontend/tests/plugin-marketplace-runtime.test.js", "desktop/frontend/tests/plugin-marketplace-source.test.js", "desktop/frontend/tests/plugin-readme.test.js"],
+      "timeout_seconds": 120
+    },
+    {
+      "id": "plugin-marketplace-update",
+      "description": "验证运行中插件自动更新、依赖恢复和失败回滚",
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py"],
+      "timeout_seconds": 120
+    },
+    {
+      "id": "plugin-marketplace-browser",
+      "description": "验证正式市场详情的管理入口、资料展开、长内容和窄窗口",
+      "argv": ["{python}", "desktop/frontend/tests/plugin-marketplace.journey.py"],
+      "timeout_seconds": 120
     },
     {
       "id": "runtime-v2-plugin-frontend-journey",

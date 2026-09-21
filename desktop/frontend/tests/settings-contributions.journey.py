@@ -57,6 +57,10 @@ def run():
         def do_GET(self):
             if self.path.endswith('/models'):
                 requests.append((self.path, self.headers.get('Authorization')))
+                if self.path.startswith('/denied/'):
+                    body = json.dumps({'error': {'message': 'model access denied; fixture-draft-key'}}).encode()
+                    self.send_response(403); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+                    return
                 body = json.dumps({'data': [{'id': 'fixture-model'}, {'id': 'discovered-model'}, {'id': 'unchecked-model'}]}).encode()
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
             else: super().do_GET()
@@ -68,6 +72,9 @@ def run():
         with tempfile.TemporaryDirectory(prefix='sakura-contributions-') as temporary, sync_playwright() as pw:
             roots = RuntimeRoots(Path(temporary)/'distribution', Path(temporary)/'user')
             roots.user_root.mkdir()
+            # Match desktop initialization instead of treating fixture config as a legacy install.
+            (roots.user_root/'config').mkdir()
+            shutil.copy2(ROOT/'desktop/src-tauri/src/new_user_plugin_migrations.json', roots.user_root/'config/plugin-migrations.json')
             for name in ('sakura_assistant', 'sakura_model_openai_compatible', 'sakura_screen_awareness'):
                 shutil.copytree(ROOT/'plugins/builtin'/name, roots.distribution_root/'plugins/builtin'/name, ignore=shutil.ignore_patterns('__pycache__'))
             config = roots.user_root/'data/plugins'/OPENAI_SERVICE/'config.json'; config.parent.mkdir(parents=True)
@@ -135,6 +142,16 @@ def run():
                 page.get_by_placeholder('手动添加模型 ID').fill('manual-model')
                 page.locator('.admin-detail').get_by_role('button',name='添加',exact=True).click()
                 expect(page.locator('.model-chip').filter(has_text='manual-model')).to_be_visible()
+                page.locator('[data-provider-field="base_url"]').fill(origin+'/denied/v1')
+                page.get_by_role('button',name='获取模型列表',exact=True).click()
+                expect(page.locator('.provider-probe-error')).to_be_visible()
+                page.locator('.provider-probe-error summary').click()
+                expect(page.locator('.provider-probe-error p')).to_contain_text('API HTTP 403: model access denied')
+                expect(page.locator('.provider-probe-error p')).not_to_contain_text('fixture-draft-key')
+                assert page.evaluate('window.lastError') == '服务拒绝访问。'
+                page.screenshot(animations="disabled", path=str(output/'probe-error.png'))
+                page.locator('[data-provider-field="base_url"]').fill(origin+'/draft/v1')
+                page.evaluate('window.lastError = null')
                 page.evaluate("showPage('model')")
                 page.locator('#page-model summary').click()
                 expect(page.locator('[data-plugin-field="contextWindowTokens"]')).to_have_value('96000')
@@ -186,6 +203,16 @@ def run():
                 expect(page.get_by_text('最短搭话间隔',exact=True)).to_be_visible()
                 page.screenshot(animations="disabled", path=str(output/'interaction.png'))
                 page.locator('[data-plugin-field="checkIntervalMinutes"]').fill('25')
+                enabled = page.locator('[data-plugin-field="enabled"]')
+                enabled.uncheck()
+                for key in ('checkIntervalMinutes', 'cooldownMinutes', 'batchLimit', 'resolution'):
+                    expect(page.locator(f'[data-plugin-field="{key}"]')).to_be_disabled()
+                expect(page.get_by_role('combobox', name='截图分辨率', exact=True)).to_be_disabled()
+                enabled.check()
+                for key in ('checkIntervalMinutes', 'cooldownMinutes', 'batchLimit', 'resolution'):
+                    expect(page.locator(f'[data-plugin-field="{key}"]')).to_be_enabled()
+                expect(page.get_by_role('combobox', name='截图分辨率', exact=True)).to_be_enabled()
+                expect(page.locator('[data-plugin-field="checkIntervalMinutes"]')).to_have_value('25')
                 page.locator('#applyButton').click()
                 expect(page.locator('#applyButton')).to_be_disabled()
                 assert not page.evaluate('window.lastError'), page.evaluate('window.lastError')

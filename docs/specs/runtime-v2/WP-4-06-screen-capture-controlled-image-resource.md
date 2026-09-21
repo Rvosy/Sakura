@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-14
+updated: 2026-09-21
 ---
 
 # WP-4-06 手动截图、受控图像资源与平台权限规范
@@ -46,6 +46,8 @@ updated: 2026-09-14
   和伪造 ID 必须拒绝或返回未接受，不能读取资源。
 - 聊天历史只保存手动截图 marker 和可追问视觉记录，不保存原图、base64、resource token 或
   `attachmentId`。Pipeline 使用现有多模态消息和视觉摘要链。
+- 默认 Assistant 按用户添加顺序发送手动截图，并在当前消息中保留每张截图的序号、尺寸、捕获时间和屏幕名称，
+  支持“第一张”“第二张”等追问；不能套用主动观察的批次消息而丢失这些信息。
 - 捕获开始前通过 `screen.session {}` 读取 `{ sessionId }`。该随机标记属于角色会话，每次开始切换就失效，
   即使随后切回同名角色也不复用。原生覆盖层保存此标记，`screen.attach` 接收 `{ resource, sessionId }`；
   Core 在读取资源前和接纳附件前都检查标记，切换期间或标记过期时返回 `SCREEN_ATTACHMENT_REJECTED`，

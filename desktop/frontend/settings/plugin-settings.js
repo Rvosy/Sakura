@@ -111,7 +111,9 @@ export function createPluginSettingsFeature({
               if (cancelled || epoch !== uiEpoch || generation !== runtimePluginController.snapshot()?.coreGenerationId) throw new Error("MODEL_PROBE_CANCELLED");
               const value = result.values?.[presentation.resultField];
               if (value?.requestId === currentRequest.requestId && value.state === "completed") return { models: (value.models || []).map(m => m.modelId) };
-              if (value?.requestId === currentRequest.requestId && value.state === "failed") throw new Error(value.code || "MODEL_PROBE_FAILED");
+              if (value?.requestId === currentRequest.requestId && value.state === "failed") {
+                throw new Error([value.code || "MODEL_PROBE_FAILED", value.message].filter(Boolean).join("|"));
+              }
               await new Promise(resolve => window.setTimeout(resolve, 200));
               result = await action(presentation.statusAction);
             }
@@ -1422,8 +1424,10 @@ export function createPluginSettingsFeature({
       }
       const syncAvailability = () => {
         for (const { field, input, row } of conditional) {
-          input.disabled = String(inputs.get(field.enabledWhen.field)?.value) !== field.enabledWhen.equals;
-          row.hidden = field.enabledWhen.hide === true && input.disabled;
+          const controller = inputs.get(field.enabledWhen.field);
+          const available = String(controller?.type === "checkbox" ? controller.checked : controller?.value) === field.enabledWhen.equals;
+          input.disabled = !available || Boolean(field.readonly);
+          row.hidden = field.enabledWhen.hide === true && !available;
           row.classList.toggle("is-disabled", input.disabled); refreshSelect(input);
         }
       };

@@ -26,9 +26,12 @@ export function catalogPlugins(catalog, context) {
       const manifest = release.manifest;
       const missing = (manifest?.requires || []).filter(key => !services.has(key));
       const compatible = manifest?.api === context.api && !missing.length;
-      return { number: release.version, api: manifest?.api, yanked: release.yanked ? release.yank_reason : "",
+      const bytes = release.package?.size;
+      const unit = bytes >= 1024 * 1024 ? [1024 * 1024, "MB"] : bytes >= 1024 ? [1024, "KB"] : [1, "B"];
+      return { number: release.version, commit: release.commit, api: manifest?.api, yanked: release.yanked ? release.yank_reason : "",
         prerelease: release.prerelease, compatible, package: release.package,
         manifest, date: release.date || "", notes: release.notes || "",
+        size: Number.isFinite(bytes) && bytes > 0 ? `${(bytes / unit[0]).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${unit[1]}` : "",
         reason: !manifest ? "该版本已撤回" : manifest.api !== context.api ? "插件 API 版本不匹配" : missing.length ? `需要先启用：${missing.join("、")}` : "" };
     }).sort((a, b) => compareVersions(b.number, a.number));
     const next = versions.find(v => !v.yanked && !v.prerelease && v.compatible && v.package);
@@ -36,7 +39,7 @@ export function catalogPlugins(catalog, context) {
     const manifest = display?.manifest || {};
     const presentation = manifest.presentation || {};
     return { id: plugin.id, name: manifest.name || plugin.id, author: manifest.author || "",
-      description: manifest.description || "", body: manifest.description || "", repository: plugin.repository,
+      description: manifest.description || "", repository: plugin.repository,
       category: ({ tool: "工具", tools: "工具", voice: "语音", memory: "记忆", connection: "连接", connectivity: "连接", model: "表现", visual: "表现" })[presentation.category] || "工具",
       kind: ({ provider: "服务", tool: "工具", extension: "扩展" })[presentation.kind] || "插件",
       icon: presentation.icon || "puzzle", versions, recommendedVersion: next?.number,
@@ -45,13 +48,50 @@ export function catalogPlugins(catalog, context) {
 }
 
 export function createMarketplaceSource({ invoke, Channel, host, randomUUID = () => crypto.randomUUID() }) {
+  const documents = new Map();
+  const versionOf = plugin => plugin.versions.find(v => v.number === plugin.recommendedVersion) || plugin.versions.find(v => v.package && !v.yanked);
+  const keyOf = (plugin, version) => JSON.stringify([plugin.id, plugin.repository, version?.number, version?.commit]);
+  const remember = entries => {
+    for (const entry of entries || []) documents.set(JSON.stringify([entry.id, entry.repository, entry.version, entry.commit]), entry.document);
+  };
   return {
     canUpdate: true,
-    async load({ signal, onProgress }) {
-      const progress = new Channel();
-      progress.onmessage = message => { if (!signal.aborted) onProgress?.(message.source); };
-      const { catalog, context } = await invoke("settings_marketplace_catalog", { progress });
+    cacheFirst: true,
+    prefetchReadmes: true,
+    peekReadme(plugin) {
+      const current = documents.get(keyOf(plugin, versionOf(plugin)));
+      if (current) return current;
+      for (const version of plugin.versions) {
+        const previous = documents.get(keyOf(plugin, version));
+        if (previous) return { ...previous, previous: true, version: version.number };
+      }
+    },
+    async readme(plugin, { signal }) {
+      const release = versionOf(plugin), version = release?.number;
+      if (!version) throw new Error("暂无可读取的版本说明。");
+      const key = keyOf(plugin, release);
+      if (documents.has(key)) return documents.get(key);
+      const result = await invoke("settings_marketplace_readme", { pluginId: plugin.id, version });
       signal.throwIfAborted();
+      documents.set(key, result);
+      return result;
+    },
+    openUrl: url => invoke("settings_marketplace_open_url", { url }),
+    async load({ signal, onProgress, onCached }) {
+      const progress = new Channel();
+      progress.onmessage = message => {
+        if (signal.aborted) return;
+        if (message.catalog) {
+          try {
+            const plugins = catalogPlugins(message.catalog, message.context);
+            remember(message.readmes);
+            onCached?.({ plugins });
+          } catch { /* Ignore an unusable cache and continue fetching the registry. */ }
+        } else onProgress?.(message.source);
+      };
+      const { catalog, context, readmes } = await invoke("settings_marketplace_catalog", { progress });
+      signal.throwIfAborted();
+      remember(readmes);
       return { state: "ready", plugins: catalogPlugins(catalog, context) };
     },
     async install(plugin, { signal, onProgress }) {
@@ -61,7 +101,6 @@ export function createMarketplaceSource({ invoke, Channel, host, randomUUID = ()
       const current = await invoke("settings_plugins_get");
       const existing = current.plugins.find(p => p.pluginId === plugin.id);
       if (existing?.source === "bundled") throw new Error("内置插件随应用更新。");
-      if (existing?.enabled) throw new Error("请先停用插件再更新。");
       if (existing && compareVersions(existing.version, version.number) >= 0) throw new Error("已安装当前版本或更新版本。");
       signal.throwIfAborted();
       const requestId = randomUUID(), progress = new Channel();

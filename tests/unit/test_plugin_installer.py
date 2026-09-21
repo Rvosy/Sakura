@@ -3,7 +3,7 @@ from __future__ import annotations
 import stat
 import threading
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import pytest
@@ -86,6 +86,12 @@ class _BoundaryWorker:
 
     def uninstall_plugin(self, _plugin_id: str) -> dict[str, object]:
         return self._apply_lifecycle()
+
+    def plugin_update(self, _plugin_id):
+        return nullcontext([])
+
+    def restore_update_dependents(self, _plugin_ids):
+        pass
 
     def settings_snapshot(self) -> dict[str, object]:
         plugins = []

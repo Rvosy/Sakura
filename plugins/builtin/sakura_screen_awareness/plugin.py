@@ -5,17 +5,12 @@ from time import monotonic
 
 try:
     from .policy import ScreenAwarenessPolicy
+    from .prompts import PROACTIVE_PROMPT
     from .settings import ScreenAwarenessSettings, settings_descriptor
 except ImportError:
     from policy import ScreenAwarenessPolicy
+    from prompts import PROACTIVE_PROMPT
     from settings import ScreenAwarenessSettings, settings_descriptor
-
-
-PROACTIVE_PROMPT = (
-    "这是一次由 Sakura 定时截图触发的主动屏幕观察。以下截图按时间顺序展示我最近正在做的事情。"
-    "请结合最近聊天历史和这些截图，以当前角色的语气自然接话：可以评论变化、接续任务、询问卡点或提供轻量帮助。"
-    "不要逐张复述，也不要因为时间或久坐机械地提醒休息；如果没有明显变化，就简短说出你能确认的具体内容。"
-)
 
 
 class ScreenAwarenessRuntime:

@@ -668,7 +668,7 @@ class PluginRuntimeManager:
         self._activation_order: list[str] = []
         self._lock = threading.RLock()
         self._start_lock = threading.Lock()
-        self._operation_lock = threading.Lock()
+        self._operation_lock = threading.RLock()
         self._closed = False
         self._draining_processes: dict[str, _DrainingProcess] = {}
         for value in specs:
@@ -871,6 +871,28 @@ class PluginRuntimeManager:
                             raise PluginRuntimeError(record.reason_code, plugin_id=plugin_id)
                     except Exception as error:
                         errors.append(error)
+
+    @contextmanager
+    def plugin_update(self, plugin_id: str):
+        """Keep replacement and rollback in one lifecycle operation."""
+        with self._operation_lock:
+            with self._lock:
+                if self._closed:
+                    raise PluginRuntimeError("GENERATION_INVALIDATED", plugin_id=plugin_id)
+                dependents = list(reversed(self._hard_dependents_locked(plugin_id))) if plugin_id in self._records else []
+            yield dependents
+
+    def restore_update_dependents(self, plugin_ids: list[str]) -> None:
+        with self._operation_lock:
+            for plugin_id in plugin_ids:
+                with self._lock:
+                    record = self._records[plugin_id]
+                    if record.state == "active":
+                        continue
+                    if not record.spec.enabled or any(key not in self._services for key in record.spec.requires):
+                        raise PluginRuntimeError("DEPENDENCY_FAILED", plugin_id=plugin_id)
+                if not self._start_one(record):
+                    raise PluginRuntimeError(record.reason_code, plugin_id=plugin_id)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         with self._operation_lock:

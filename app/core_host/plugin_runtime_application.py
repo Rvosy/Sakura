@@ -619,6 +619,17 @@ class PluginRuntimeApplication:
                and not any(key == "sakura.tts" or key == "sakura.assistant" or key.startswith(("sakura.tts.provider.", "sakura.visual.")) for key in item["provides"])]
         return self._manager.pause_plugins(ids)
 
+    @contextmanager
+    def plugin_update(self, plugin_id: str):
+        guard = self._chat_boundary.idle_runtime_update() if self._chat_boundary is not None else nullcontext()
+        with guard, self._manager.plugin_update(plugin_id) as dependents:
+            yield dependents
+
+    def restore_update_dependents(self, plugin_ids: list[str]) -> None:
+        self._manager.restore_update_dependents(plugin_ids)
+        for plugin_id in plugin_ids:
+            self._refresh_visual_provider(plugin_id)
+
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         result = self._manager.set_enabled(plugin_id, enabled)
         self._refresh_visual_provider(plugin_id)

@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-20
+updated: 2026-09-21
 ---
 
 # 模型服务、连接与模型选择
@@ -58,8 +58,10 @@ Core 引用写入 `config/model_slots.json`；插件选择交给对应插件保�
 请求 ID、当前实例和窗口生命周期隔离过期结果；关闭窗口、修改探测连接或撤下组件时取消仍在执行的任务。
 
 连接测试和模型发现由提供方的 `begin_probe/poll/result/cancel/release` 操作完成；Settings Action 返回后，后台任务更新状态。
-测试连接必须调用用户指定模型并取得有效消息，不能以目录可达代替模型调用。取消和插件退出须结束请求并释放其资源；失败只展示安全错误码，
-不回显密钥或未经清洗的供应商响应。Core 不保留专用 `list_models/test_connection/cancel` 设置命令。
+测试连接必须调用用户指定模型并取得有效消息，不能以目录可达代替模型调用。取消和插件退出须结束请求并释放其资源。
+失败时保留稳定错误码和经过清洗的具体原因，界面先显示简短提示，HTTP 状态及服务端说明放在可展开的错误详情中；403 不推断为密钥无效。
+清洗覆盖已保存和本次草稿中的密钥，不回显密钥或未经清洗的供应商响应。释放失败不能覆盖已经取得的请求失败原因。
+Core 不保留专用 `list_models/test_connection/cancel` 设置命令。
 
 Assistant 生成参数保存沿普通 Settings 保存链重新加载 Assistant。温度支持 0–2，Top P 支持 0–1，最大输出 Token 为正整数；
 缺省温度恢复为 0.8，缺省 Top P 和最大输出 Token 不发送。合法的数值 0 不得丢失。

@@ -5,6 +5,33 @@ import { field, snapshot, featureFixture, queryResult, settle } from "./fixtures
 
 const collectionSurfaces = ["memory", null, "custom_archive"];
 
+test("plugin field availability follows boolean toggles without losing values", async () => {
+  const data = snapshot();
+  const section = data.plugins[0].sections[0];
+  section.fields = [field("enabled", { type: "boolean", value: true }),
+    field("interval", { type: "integer", value: 25, enabledWhen: { field: "enabled", equals: "true" } })];
+  section.values = { enabled: true, interval: 25 };
+  const ui = featureFixture(async () => data);
+  ui.feature.initialize(data);
+  await ui.openSettings();
+  const block = ui.document.querySelector('[data-plugin-section="general"]');
+  const toggle = block.querySelectorAll('input').find(input => input.type === "checkbox");
+  const input = block.querySelectorAll('input').find(input => input.type === "number");
+  assert.equal(input.disabled, false);
+  toggle.checked = false;
+  await toggle.fire("change");
+  await block.fire("change", { target: toggle });
+  assert.equal(input.disabled, true);
+  assert.equal(input.value, "25");
+  toggle.checked = true;
+  await toggle.fire("change");
+  await block.fire("change", { target: toggle });
+  assert.equal(input.disabled, false);
+  assert.equal(input.value, "25");
+  assert.equal(ui.feature.isDirty(), false);
+  ui.feature.dispose();
+});
+
 function collectionSnapshot(surface, generation = "generation-a") {
   const data = snapshot(generation);
   data.plugins[0].sections[1].surface = surface;

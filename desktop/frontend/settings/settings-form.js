@@ -84,6 +84,7 @@ export function createSettingsForm({ document, plugin, section, read, write, enh
       const available = String(read(field.enabledWhen.field)) === field.enabledWhen.equals;
       input.disabled = !available || Boolean(field.readonly) || (toggle && !toggle.checked);
       if (toggle) toggle.disabled = !available || Boolean(field.readonly); row.hidden = !available && field.enabledWhen.hide === true;
+      if (field.type === "select") refreshSelect(input);
     }
   }
   syncConditions();

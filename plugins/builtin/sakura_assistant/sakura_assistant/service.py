@@ -19,7 +19,10 @@ from . import diagnostics
 from .agent.actions import AgentEvent
 from .agent.runtime import AgentRuntime
 from .agent.trace import AgentTraceRecorder, traced_message
-from .agent.screen_observation import build_screen_observation_batch_user_message
+from .agent.screen_observation import (
+    build_manual_screen_observation_batch_user_message,
+    build_screen_observation_batch_user_message,
+)
 from .llm.api_client import AssistantModelClient, DialogueSettings
 from .llm.prompts.blocks import with_desktop_pet_context
 from .history import PagedHistory
@@ -355,7 +358,9 @@ class AssistantPlugin:
                     message = {"role": "user", "content": request["message"]}
                     observations = tuple(ScreenObservation(**item) for item in attachment["observations"]) if attachment else ()
                     if attachment:
-                        message = build_screen_observation_batch_user_message(request["message"], observations)
+                        builder = (build_manual_screen_observation_batch_user_message
+                                   if attachment.get("source") == "manual" else build_screen_observation_batch_user_message)
+                        message = builder(request["message"], observations)
                     message = traced_message(message, "observation_input" if attachment else "user_input", turn_id=request["turnId"],
                         entry_ids=tuple(request["entryIds"]), human_entry_id=request.get("humanEntryId", ""),
                         observation_entry_ids=tuple(request.get("observationEntryIds", ())),

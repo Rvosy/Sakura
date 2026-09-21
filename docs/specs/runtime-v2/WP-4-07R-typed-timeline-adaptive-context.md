@@ -103,6 +103,8 @@ API key 或 Provider 原始异常。
 - human/observation 输入在 Provider 调用前提交。Provider 失败或取消时不伪造 assistant 条目；下一轮投影
   可以看到真实未回答的人类输入。成功语义分析且不早于当前时间两小时的定时 observation-only Turn 作为
   独立 Host observation 候选进入统一预算；更早、只有捕获占位或分析失败的观察不进入候选。
+  `origin=host` 且带非空 `sourcePluginId`、正整数 `visual.imageCount` 和成功分析状态的插件观察遵循同一规则。
+  数据库分页、候选读取和 Assistant 投影均识别新旧来源；关联回复随观察整轮进入预算，不再作为主动发言重复注入。
 - 定时截图的捕获占位 observation 不属于可整理证据。Provider 成功返回视觉分析后，Host 追加一条同
   `turn_id` 的有界脱敏语义 observation；它只保存摘要/OCR 文本投影、置信度和脱敏标记，不保存原图。
 - Provider 最终回复完成解析、segment 校验和授权后，在一个事务中写一条 assistant entry。多个气泡、语气、
@@ -114,7 +116,10 @@ API key 或 Provider 原始异常。
 - 历史 UI 从同一 Timeline 投影；assistant segments 可以显示为多个气泡，但它们共享一个 entry/turn，删除、
   计数和 Memory 整理不得把它们当作多次回复。
 - 历史窗口只展示当前绑定角色。human 在右侧、assistant 在左侧，observation 和 system 作为居中系统记录；
-  同一 Turn 的定时观察触发记录与语义摘要合并为“刚才留意了一下屏幕状态。”，详细摘要默认折叠；UI 投影不得
+  同一 Turn 的定时观察触发记录与语义摘要合并为“刚才留意了一下屏幕状态。”，详细摘要默认折叠。
+  插件通过宿主截图资源提交的 `origin=host` 观察沿用这一展示，按 `sourcePluginId` 和 `visual` 元数据识别；
+  已保存的“插件分享了 N 张图片。”也在展示时折叠，不改写历史数据。无图片的插件互动以“主动互动”展示，
+  触发文案为“想和你聊聊。”，旧“插件发起了一次互动。”在展示时转换，不归入屏幕观察。UI 投影不得
   携带 visual ID、图片元数据、tone、portrait 或其他不参与显示的内部字段。
 - 历史窗口是只读界面，不提供清空、删除、编辑、搜索或跨角色读取。首次读取最近 50 条，更早记录使用绑定
   当前角色和数据库 lineage 的 opaque cursor 向前分页。

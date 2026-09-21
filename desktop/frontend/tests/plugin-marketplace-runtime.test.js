@@ -47,6 +47,42 @@ test("unconfigured market cannot offer installation", async () => {
   assert.equal(canInstall({ versions: [{ number: "1.0.0" }], recommendedVersion: "1.0.0" }, null), false);
 });
 
+test("persistent cache is usable while fetching and survives a failed background refresh", async () => {
+  const pending = deferred(), states = [];
+  let callbacks;
+  const loader = createCatalogLoader({ cacheFirst: true, load(args) {
+    callbacks = args; return pending.promise;
+  } }, state => states.push(structuredClone(state)));
+  const request = loader.load();
+  callbacks.onCached({ plugins: [{ id: "local" }] });
+  callbacks.onProgress("direct");
+  assert.equal(states.at(-1).plugins[0].id, "local");
+  assert.equal(states.at(-1).refreshing, true);
+  assert.ok(states.every(state => state.state !== "loading"));
+  pending.reject(new Error("offline")); await request;
+  assert.equal(states.at(-1).state, "cached");
+  assert.equal(states.at(-1).plugins[0].id, "local");
+  assert.equal(states.at(-1).refreshing, false);
+  assert.equal(states.at(-1).error, "offline");
+});
+
+test("refresh retains visible results and ignores cached events from superseded requests", async () => {
+  const requests = [], states = [];
+  const loader = createCatalogLoader({ load(args) {
+    const request = { ...args, ...deferred() }; requests.push(request); return request.promise;
+  } }, state => states.push(state));
+  const initial = loader.load();
+  requests[0].resolve({ state: "ready", plugins: [{ id: "visible" }] }); await initial;
+  const old = loader.load(), fresh = loader.load();
+  requests[1].onCached({ plugins: [{ id: "stale" }] });
+  requests[2].onProgress("mirror");
+  assert.equal(states.at(-1).plugins[0].id, "visible");
+  assert.equal(states.at(-1).state, "ready");
+  requests[2].resolve({ state: "ready", plugins: [{ id: "new" }] }); await fresh;
+  requests[1].reject(new Error("old failure")); await old;
+  assert.equal(states.at(-1).plugins[0].id, "new");
+});
+
 test("installation respects upstream recommendation, withdrawn versions and update support", () => {
   const p = { versions: [{ number: "2.0.0", compatible: false }, { number: "1.0.0" }], recommendedVersion: "1.0.0" };
   const source = { install() {} };
@@ -61,7 +97,7 @@ test("installation respects upstream recommendation, withdrawn versions and upda
 
 
 test("update visibility follows compatible stable recommendations even when updating is blocked", () => {
-  const plugin = { installed: "1.0.0", recommendedVersion: "1.1.0", versions: [{ number: "1.1.0" }], updateBlocked: "请先停用插件再更新" };
+  const plugin = { installed: "1.0.0", recommendedVersion: "1.1.0", versions: [{ number: "1.1.0" }], updateBlocked: "内置插件随应用更新" };
   assert.equal(hasUpdate(plugin), true);
   assert.equal(canInstall(plugin, { install() {}, canUpdate: true }), false);
   for (const installed of [undefined, "1.1.0", "2.0.0"]) {

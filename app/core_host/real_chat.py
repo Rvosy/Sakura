@@ -413,14 +413,14 @@ class RealChatBoundary:
                     input_entries.append(NewTimelineEntry(entry_id=uuid.uuid4().hex, turn_id=turn_id,
                         character_id=str(character.id), kind=TimelineKind.OBSERVATION,
                         origin="host" if source_plugin_id else "manual_screen", created_at=created_at,
-                        payload={"text": (f"插件分享了 {len(screen_attachment.observations)} 张图片。" if source_plugin_id
+                        payload={"text": ("刚才留意了一下屏幕状态。" if source_plugin_id
                                           else f"你分享了 {len(screen_attachment.observations)} 张屏幕截图。"),
                                  "visual": visual, **({"sourcePluginId": source_plugin_id} if source_plugin_id else {})}))
                 elif source_plugin_id is not None:
                     input_entries.append(NewTimelineEntry(entry_id=uuid.uuid4().hex, turn_id=turn_id,
                         character_id=str(character.id), kind=TimelineKind.OBSERVATION,
                         origin="host", created_at=created_at,
-                        payload={"text": "插件发起了一次互动。", "sourcePluginId": source_plugin_id}))
+                        payload={"text": "想和你聊聊。", "sourcePluginId": source_plugin_id}))
                 stage = "timeline_write"
                 try:
                     execution.cancel.throw_if_cancelled()

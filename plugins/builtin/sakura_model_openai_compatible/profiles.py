@@ -10,6 +10,7 @@ import uuid
 from urllib.parse import urlparse
 
 from sakura_model_client import decode_model_result
+from sakura_provider_errors import sanitize_provider_diagnostic
 
 
 SERVICE_KEY = "sakura.model.openai_compatible"
@@ -140,6 +141,10 @@ class ProviderProfiles:
             if self._service is None:
                 raise ProfileError("MODEL_PROVIDER_UNAVAILABLE")
             operation_id = "probe-" + uuid.uuid4().hex
+            secrets = [profile["api_key"] for profile in self._saved()]
+            credential = values.get("credential", {})
+            if isinstance(credential, Mapping) and isinstance(credential.get("value"), str):
+                secrets.append(credential["value"])
             # Settings callbacks do not carry a model caller scope. Calling our
             # own published service through bind uses the same authenticated
             # owner contract as every other model consumer.
@@ -158,6 +163,8 @@ class ProviderProfiles:
             self._probe_cancel.clear()
 
         def run():
+            failure_code = ""
+            failure_message = ""
             try:
                 sequence = 0
                 while True:
@@ -178,18 +185,24 @@ class ProviderProfiles:
             except Exception as error:
                 result = {}
                 code = getattr(error, "code", "MODEL_PROBE_FAILED")
-                state = {"state": "error", "label": "模型测试失败", "message": code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,80}", code) else "MODEL_PROBE_FAILED"}
+                failure_code = code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,80}", code) else "MODEL_PROBE_FAILED"
+                failure_message = sanitize_provider_diagnostic(str(error), secrets=secrets)
+                state = {"state": "error", "label": "模型测试失败", "message": failure_message}
             finally:
                 try:
                     bound.invoke("release", operation_id, timeout_seconds=1)
                 except Exception:
-                    state = {"state": "error", "label": "模型测试失败", "message": "MODEL_PROBE_CLEANUP_FAILED"}
+                    if not failure_code:
+                        failure_code = "MODEL_PROBE_CLEANUP_FAILED"
+                        failure_message = "模型测试结束后未能释放请求。"
+                        state = {"state": "error", "label": "模型测试失败", "message": failure_message}
                 finally:
                     with self._lock:
                         self._probe = None
                         self._probe_result = {"requestId": values.get("requestId", ""),
                                               "state": "completed" if state["state"] == "ready" else "failed",
-                                              "code": state["message"] if state["state"] == "error" else "",
+                                              "code": failure_code,
+                                              "message": failure_message,
                                               "models": result.get("models", []) if state["state"] == "ready" else []}
 
         worker = threading.Thread(target=run, name="model-settings-probe", daemon=True)
