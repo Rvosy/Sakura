@@ -3616,7 +3616,9 @@ mod tests {
         extended["revision"] = json!(2);
         extended["pluginMigration"] = json!({"state": "running", "completed": 0,
             "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"});
-        cache.store_minimal_python_snapshot(&extended).expect("additional progress fields are accepted");
+        cache
+            .store_minimal_python_snapshot(&extended)
+            .expect("additional progress fields are accepted");
         cache
             .begin_generation("00000000-0000-4000-8000-000000002203")
             .expect("new generation clears cache");
