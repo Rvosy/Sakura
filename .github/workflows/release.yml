@@ -78,6 +78,12 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Prepare the updater signature verifier in the build Python
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: -r tools/release/requirements.txt
+          python tools/release/verify_updater_signature.py --help
+
       - name: Import the optional Windows Authenticode certificate
         if: runner.os == 'Windows'
         shell: pwsh
@@ -203,8 +209,7 @@ jobs:
           $setupOut = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-setup.exe"
           Copy-Item $installer.FullName $setupOut
           Copy-Item "$($installer.FullName).sig" "$setupOut.sig"
-          & (Join-Path $env:RUNNER_TEMP 'python-runtime/python.exe') `
-            tools/release/verify_updater_signature.py `
+          python tools/release/verify_updater_signature.py `
             $setupOut "$setupOut.sig"
 
       - name: Stage the Windows shell for the deferred Portable package
@@ -241,8 +246,7 @@ jobs:
           cp "$dmg" "$dmg_out"
           cp "$update" "$update_out"
           cp "${update}.sig" "${update_out}.sig"
-          "$RUNNER_TEMP/python-runtime/bin/python3" \
-            tools/release/verify_updater_signature.py \
+          python tools/release/verify_updater_signature.py \
             "$update_out" "${update_out}.sig"
           if [[ "$APPLE_CODE_SIGNING_ENABLED" == "true" ]]; then
             codesign --verify --deep --strict --verbose=2 "$app"

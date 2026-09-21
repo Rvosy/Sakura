@@ -317,9 +317,24 @@ def test_python_updater_signature_verifier_matches_the_tauri_outer_base64_contra
     encoded_prehashed_signature = base64.b64encode(prehashed_signature.encode()).decode()
     verify(encoded_public_key, artifact, encoded_prehashed_signature)
 
+    signature_path = tmp_path / "artifact.bin.sig"
+    signature_path.write_text(encoded_prehashed_signature, encoding="utf-8")
+    command = [
+        sys.executable,
+        str(ROOT / "tools/release/verify_updater_signature.py"),
+        str(artifact),
+        str(signature_path),
+    ]
+    environment = {**os.environ, "SAKURA_UPDATER_PUBLIC_KEY": encoded_public_key}
+    result = subprocess.run(command, env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
     artifact.write_bytes(b"changed")
     with pytest.raises(UpdaterSignatureError, match="UPDATER_SIGNATURE_VERIFICATION_FAILED"):
         verify(encoded_public_key, artifact, encoded_prehashed_signature)
+    result = subprocess.run(command, env=environment, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert result.stderr.strip() == "UPDATER_SIGNATURE_VERIFICATION_FAILED"
 
 
 def test_portable_1_0x_overlay_preserves_every_user_domain_byte_for_byte(
