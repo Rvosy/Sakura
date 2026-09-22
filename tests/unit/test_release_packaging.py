@@ -40,6 +40,28 @@ from tools.release.verify_updater_signature import UpdaterSignatureError, verify
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_release_smoke_audits_real_subprocess_arguments() -> None:
+    probe = r'''
+import subprocess
+import sys
+from pathlib import Path
+from tools.release.smoke_plugin_upgrade import subprocess_audit_command
+
+command = [sys.executable, "-c", "pass", "path with spaces", 'embedded"quote', "trailing\\"]
+observed = []
+def audit(event, args):
+    if event == "subprocess.Popen":
+        executable, arguments = subprocess_audit_command(args)
+        assert executable == Path(sys.executable).resolve()
+        assert arguments == command, (arguments, command)
+        observed.append(arguments)
+sys.addaudithook(audit)
+subprocess.run(command, check=True)
+assert len(observed) == 1
+'''
+    subprocess.run([sys.executable, "-c", probe], cwd=ROOT, check=True)
+
+
 def _runtime_zip() -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:

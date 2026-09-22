@@ -14,7 +14,9 @@ from typing import Any, Mapping, Sequence
 
 _PRIVATE_RUNTIME_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_PRIVATE_RUNTIME_ROOT))
+from process_paths import process_path
 from sakura_plugin_sdk import PluginApiError, PluginContext, RpcPeer
+sys.modules.pop("process_paths", None)
 sys.modules.pop("sakura_plugin_sdk", None)
 
 
@@ -64,9 +66,9 @@ class PluginRunner:
     ) -> None:
         self.plugin_id = plugin_id
         self.generation_id = generation_id
-        self.plugin_root = plugin_root
-        self.dependency_root = dependency_root
-        self.data_dir = data_dir
+        self.plugin_root = Path(process_path(plugin_root))
+        self.dependency_root = Path(process_path(dependency_root)) if dependency_root is not None else None
+        self.data_dir = Path(process_path(data_dir))
         self.entry = entry
         self._context: PluginContext | None = None
         self._initialized = False
@@ -105,7 +107,7 @@ class PluginRunner:
             importlib.import_module(module_name)
 
     def _prepare_import_path(self) -> None:
-        sdk_root = str(Path(__file__).resolve().parents[1] / "plugin_sdk")
+        sdk_root = process_path(Path(__file__).resolve().parents[1] / "plugin_sdk")
         roots = [sdk_root, str(self.plugin_root)]
         if self.dependency_root is not None:
             roots.extend(
@@ -116,7 +118,7 @@ class PluginRunner:
                 )
             )
         stdlib = [
-            item
+            process_path(item)
             for item in sys.path
             if item
             and "site-packages" not in item

@@ -1700,7 +1700,17 @@ async function initializeRuntimeSettingsSection(initialize) {
 
 async function startSettingsFrontend() {
   await runtimeDiagnosticsReady;
-  migrationStatusController = createMigrationStatus({ document, window, invoke, onError: setError });
+  let windowRevealed = false;
+  const reveal = async () => {
+    if (windowRevealed || settingsWindowClosing) return;
+    await runtimeFontsReadyPromise;
+    if (settingsWindowClosing) return;
+    await invoke("reveal_settings_window");
+    windowRevealed = true;
+  };
+  migrationStatusController = createMigrationStatus({ document, window, invoke, onError: setError, reveal });
+  await migrationStatusController.ready;
+  if (settingsWindowClosing) return;
   let manifest = await invoke("settings_capability_manifest");
   const { createCharacterSettingsFeature } = await import("./character-settings.js");
   runtimeCharacterFeature = createCharacterSettingsFeature({
@@ -1778,9 +1788,8 @@ async function startSettingsFrontend() {
       prepareRuntimeCharacterOnly();
     }
     await runtimeAppearanceController.initialize(appearanceSnapshot);
-    await runtimeFontsReadyPromise;
     // 无角色时页面使用主程序默认浅蓝主题；有角色时由外观快照覆盖。
-    await invoke("reveal_settings_window");
+    await reveal();
     if (!runtimeCharacterFeature?.currentCharacterId()) showPage("character");
   }
   if (
@@ -1930,6 +1939,7 @@ async function startSettingsFrontend() {
     await initializeRuntimeSettingsSection(refreshAboutSettings);
   }
   refreshDirty();
+  migrationStatusController.finishStartup();
   runtimeDiagnostics?.markReady({ settings: true });
 }
 
@@ -1947,6 +1957,7 @@ startSettingsFrontend()
   })
   .catch((error) => {
     if (!settingsWindowClosing && error?.code !== "MEMORY_INITIALIZATION_CANCELLED") {
+      migrationStatusController?.finishStartup();
       setError(String(error));
     }
   });

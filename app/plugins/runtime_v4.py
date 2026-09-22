@@ -20,6 +20,7 @@ from app.plugin_sdk.sakura_process import terminate_process_tree
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
+from app.plugins.process_paths import process_path
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer, json_value
 from app.storage.paths import StoragePaths
@@ -30,19 +31,6 @@ INITIALIZE_TIMEOUT_SECONDS = 8.0
 CALL_TIMEOUT_SECONDS = 3.0
 CLOSE_TIMEOUT_SECONDS = 0.8
 TERMINATE_TIMEOUT_SECONDS = 2.0
-
-
-def _process_working_directory(directory: Path) -> str:
-    # Rust canonical paths may retain the Windows verbatim namespace. As a
-    # process cwd it breaks root-relative probes such as distro's /etc lookup.
-    # Keep argument and resource paths unchanged; only normalize this boundary.
-    value = str(directory)
-    if os.name == "nt" and value.startswith("\\\\?\\"):
-        if value[4:8].upper() == "UNC\\":
-            return "\\\\" + value[8:]
-        if len(value) >= 7 and value[4].isalpha() and value[5:7] == ":\\":
-            return value[4:]
-    return value
 
 
 def _create_windows_kill_job(process: subprocess.Popen[bytes]) -> int:
@@ -231,6 +219,7 @@ class _PluginProcess:
             sys.executable,
             "-I",
             "-S",
+            "-B",
             str(runner),
             "--plugin-id",
             self._spec.plugin_id,
@@ -269,7 +258,7 @@ class _PluginProcess:
                     # directory open as its CWD. API v4 exposes explicit
                     # plugin data/config paths, so the private data directory
                     # is the stable working directory for the runner.
-                    cwd=_process_working_directory(data_dir),
+                    cwd=process_path(data_dir),
                     env=environment,
                     bufsize=0,
                     start_new_session=os.name != "nt",

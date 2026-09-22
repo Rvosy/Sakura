@@ -44,15 +44,16 @@ export function migrationStatus(publication) {
     "sakura.tts.genie": "Genie", "sakura.visual.spine": "Spine" };
   const name = names[migration.pluginId] || migration.pluginId || "插件";
   if (migration.state === "running") return {
-    state: "running", message: `正在恢复插件（${migration.completed}/${migration.total}）：${name}。`,
+    state: "running", message: `正在迁移插件（${migration.completed}/${migration.total}）：${name}`,
+    completed: migration.completed, total: migration.total,
   };
   if (migration.state === "failed") return {
-    state: "failed", message: "部分插件未恢复，请查看插件列表或运行日志。",
+    state: "failed", message: "部分插件迁移失败",
   };
   if (migration.state === "completed") return {
     state: "completed", message: ["ready", "degraded", "setup_required"].includes(snapshot.readiness)
-      ? "插件迁移已完成。" : snapshot.readiness === "failed"
-        ? "插件迁移已完成，但核心启动失败。请查看运行日志后重启核心。" : "插件迁移已完成，正在启动核心。",
+      ? "插件迁移已完成" : snapshot.readiness === "failed"
+        ? "插件迁移完成，启动失败" : "正在启动 Sakura",
   };
   return null;
 }
