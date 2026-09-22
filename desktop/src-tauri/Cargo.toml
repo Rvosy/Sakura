@@ -1,6 +1,6 @@
 [package]
 name = "sakura"
-version = "1.2.0"
+version = "1.2.1"
 authors = ["Rvosy"]
 edition = "2021"
 publish = false

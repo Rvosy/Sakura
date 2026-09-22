@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sys
 import threading
 import time
 import urllib.error
@@ -17,7 +16,6 @@ from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.tts_boundary import TTSBoundary
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
-from app.plugins.dependencies import PluginDependencyRoots
 from app.storage.runtime_roots import RuntimeRoots
 
 
@@ -91,24 +89,12 @@ def _runtime_root(
     bundled.mkdir(parents=True)
     for name in ("sakura_tts_hub", "sakura_genie", "sakura_gpt_sovits"):
         shutil.copytree(repository / "plugins" / ("builtin" if name == "sakura_tts_hub" else "optional") / name, bundled / name)
+    # These fixtures exercise custom HTTP endpoints only. Archive extraction
+    # and managed local runtimes are outside this test; their dependencies are
+    # deliberately absent instead of represented by an empty dependency marker.
+    for name in ("sakura_genie", "sakura_gpt_sovits"):
+        (bundled / name / "requirements.txt").unlink()
     user = tmp_path / "user"
-    dependencies = PluginDependencyRoots(user, distribution_root=distribution)
-    for plugin_id, directory in (
-        ("sakura.tts.genie", bundled / "sakura_genie"),
-        ("sakura.tts.gpt-sovits", bundled / "sakura_gpt_sovits"),
-    ):
-        declaration = dependencies.declaration(directory)
-        assert declaration is not None
-        dependency_root = distribution / "plugins" / "dependencies" / plugin_id
-        dependency_root.mkdir(parents=True)
-        (dependency_root / ".sakura-dependencies.json").write_text(
-            json.dumps({
-                "schemaVersion": 1,
-                "kind": declaration.kind,
-                "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-            }),
-            encoding="utf-8",
-        )
     (user / "data" / "plugins" / "sakura.tts.genie").mkdir(parents=True)
     (user / "data" / "plugins" / "sakura.tts.gpt-sovits").mkdir(parents=True)
     (user / "data" / "plugins" / "sakura.tts.genie" / "config.json").write_text(
@@ -140,7 +126,7 @@ def _runtime_root(
     (user / "config").mkdir(parents=True, exist_ok=True)
     (user / "config/plugin-migrations.json").write_text(json.dumps({key: "not_applicable" for key in MIGRATIONS if key not in ['sakura.tts.genie', 'sakura.tts.gpt-sovits']}))
     from app.plugins.bundled_migrations import migrate_bundled_plugins
-    migrate_bundled_plugins(RuntimeRoots(distribution, user))
+    assert migrate_bundled_plugins(RuntimeRoots(distribution, user)) == {}
     return RuntimeRoots(distribution, user)
 
 

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import stat
+import subprocess
+import sys
 import threading
 import zipfile
 from contextlib import contextmanager, nullcontext
@@ -14,6 +18,7 @@ from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.runtime_v4 import PluginRuntimeManager
 from app.storage.paths import StoragePaths
+from app.storage.runtime_roots import RuntimeRoots
 
 
 MANIFEST = """
@@ -60,6 +65,140 @@ def _plugin_zip(path: Path, *, manifest: str = MANIFEST) -> Path:
         archive.writestr("wrapper/plugin.py", PLUGIN_SOURCE)
         archive.writestr("wrapper/helper.py", HELPER_SOURCE)
     return path
+
+
+def _dependency_install_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[LocalPluginInstaller, Path, Path, Path]:
+    distribution = tmp_path / "distribution"
+    user = tmp_path / "user"
+    source = _plugin_folder(tmp_path / "source")
+    (source / "requirements.txt").write_text("fixture-dependency\n", encoding="utf-8")
+    (source / "plugin.py").write_text(
+        "from fixture_dependency import VALUE\n" + PLUGIN_SOURCE,
+        encoding="utf-8",
+    )
+    tools = distribution / "python" / "tools"
+    tools.mkdir(parents=True)
+    uv = tools / ("uv.exe" if os.name == "nt" else "uv")
+    uv.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\nfrom pathlib import Path\n"
+        "target = Path(sys.argv[sys.argv.index('--target') + 1])\n"
+        "(target / 'fixture_dependency.py').write_text('VALUE = 42\\n')\n"
+        "Path(__file__).with_name('invoked').write_text(str(target))\n",
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    if os.name == "nt":
+        # A Python fixture cannot be a native PE executable. Keep the selected
+        # uv.exe path in the command and let Python execute the fixture script.
+        run = subprocess.run
+
+        def run_fixture(command, **kwargs):
+            if command[0] == str(uv):
+                command = [sys.executable, *command]
+            return run(command, **kwargs)
+
+        monkeypatch.setattr("app.plugins.dependencies.subprocess.run", run_fixture)
+    dependency_root = StoragePaths(user).plugin_dependency_root_for("com.example.local")
+    installer = LocalPluginInstaller(RuntimeRoots(distribution, user))
+    return installer, source, dependency_root, uv
+
+
+def test_install_uses_bundled_uv_with_no_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    installer, source, dependency_root, uv = _dependency_install_fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("PATH", "")
+
+    installed = installer.install(source, "folder")
+
+    assert uv.with_name("invoked").is_file()
+    assert (dependency_root / "fixture_dependency.py").read_text() == "VALUE = 42\n"
+    assert (installed.code_dir / "imported.marker").is_file()
+
+
+@pytest.mark.parametrize("broken", ["missing_marker", "python", "kind", "import"])
+def test_reuse_rebuilds_invalid_dependency_root_before_switching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str,
+) -> None:
+    installer, source, dependency_root, uv = _dependency_install_fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("PATH", "")
+    dependency_root.mkdir(parents=True)
+    (dependency_root / "original.txt").write_text("preserve until ready", encoding="utf-8")
+    marker = {"schemaVersion": 1, "kind": "requirements.txt", "python": f"{sys.version_info.major}.{sys.version_info.minor}"}
+    if broken in {"python", "kind"}:
+        marker[broken] = "obsolete"
+    if broken != "missing_marker":
+        (dependency_root / ".sakura-dependencies.json").write_text(json.dumps(marker), encoding="utf-8")
+    original_validate = installer._dependencies._validate_entry
+
+    def validate(plugin_id: str, plugin_root: Path, root: Path | None, entry: str) -> None:
+        assert (dependency_root / "original.txt").read_text() == "preserve until ready"
+        original_validate(plugin_id, plugin_root, root, entry)
+
+    monkeypatch.setattr(installer._dependencies, "_validate_entry", validate)
+
+    installed = installer.install(source, "folder", reuse_dependencies=True)
+
+    assert uv.with_name("invoked").is_file()
+    assert (dependency_root / "fixture_dependency.py").read_text() == "VALUE = 42\n"
+    assert not (dependency_root / "original.txt").exists()
+    assert installed.code_dir.is_dir()
+
+
+@pytest.mark.parametrize("failure", ["build", "code_promotion"])
+def test_dependency_repair_failure_preserves_previous_root_and_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    installer, source, dependency_root, uv = _dependency_install_fixture(tmp_path, monkeypatch)
+    dependency_root.mkdir(parents=True)
+    (dependency_root / "original.txt").write_text("previous dependencies", encoding="utf-8")
+    config = StoragePaths(tmp_path / "user").plugins_config()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    original_config = "- id: com.example.local\n  enabled: true\n"
+    config.write_text(original_config, encoding="utf-8")
+    if failure == "build":
+        uv.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n", encoding="utf-8")
+    else:
+        original_replace = installer._replace_path
+
+        def replace(source_path: Path, target: Path) -> None:
+            if source_path.name == "folder":
+                raise OSError("code promotion failure")
+            original_replace(source_path, target)
+
+        monkeypatch.setattr(installer, "_replace_path", replace)
+
+    expected_error = "PLUGIN_DEPENDENCY_INSTALL_FAILED" if failure == "build" else "PLUGIN_INSTALL_IO_FAILED"
+    with pytest.raises(PluginInstallError, match=expected_error):
+        installer.install(source, "folder", reuse_dependencies=True)
+
+    assert list(dependency_root.iterdir()) == [dependency_root / "original.txt"]
+    assert (dependency_root / "original.txt").read_text() == "previous dependencies"
+    assert config.read_text() == original_config
+    assert not (StoragePaths(tmp_path / "user").user_plugins_dir / "com.example.local").exists()
+
+
+def test_offline_dependency_repair_copies_bundled_root_without_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer, source, dependency_root, uv = _dependency_install_fixture(tmp_path, monkeypatch)
+    dependency_root.mkdir(parents=True)
+    (dependency_root / "incomplete.txt").write_text("old", encoding="utf-8")
+    bundled = tmp_path / "distribution" / "plugins" / "dependencies" / "com.example.local"
+    bundled.mkdir(parents=True)
+    (bundled / "fixture_dependency.py").write_text("VALUE = 42\n", encoding="utf-8")
+    (bundled / ".sakura-dependencies.json").write_text(json.dumps({
+        "schemaVersion": 1, "kind": "requirements.txt", "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+    }), encoding="utf-8")
+    monkeypatch.setattr(installer._dependencies, "_uv_command", lambda: pytest.fail("offline repair invoked uv"))
+
+    installed = installer.install(source, "folder", reuse_dependencies=True, offline_dependencies=True)
+
+    assert (installed.code_dir / "imported.marker").is_file()
+    assert (dependency_root / "fixture_dependency.py").read_bytes() == (bundled / "fixture_dependency.py").read_bytes()
+    assert not (dependency_root / "incomplete.txt").exists()
+    assert not uv.with_name("invoked").exists()
 
 
 class _BoundaryWorker:

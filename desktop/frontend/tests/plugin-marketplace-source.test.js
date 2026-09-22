@@ -76,6 +76,22 @@ test("updates cannot replace bundled plugins or downgrade newer versions", async
   }
 });
 
+test("a missing migration entry can be installed through the market", async () => {
+  const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
+  const commands = [];
+  const source = createMarketplaceSource({ Channel, randomUUID: () => "repair", host: { isDirty: () => false },
+    invoke: async name => {
+      commands.push(name);
+      if (name === "settings_plugins_get") return { revision: "current", plugins: [{
+        pluginId: "demo", source: "bundled", version: "0.0.0", supported: false,
+        state: "failed", reasonCode: "PLUGIN_MIGRATION_SOURCE_MISSING",
+      }] };
+    },
+  });
+  await source.install(plugin, { signal: new AbortController().signal, onProgress() {} });
+  assert.deepEqual(commands, ["settings_plugins_get", "settings_marketplace_install"]);
+});
+
 test("enabled plugin updates are sent as one Core operation without toggling user settings", async () => {
   const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
   const commands = [];

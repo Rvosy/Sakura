@@ -121,11 +121,13 @@ class PluginApplicationHost(PluginRuntimeApplication):
             self._public_record(record, runtime_records.get(record.plugin_id))
             for record in inventory.records
         ]
+        migration_failed = any(record.reason_code.startswith("PLUGIN_MIGRATION_") for record in inventory.records)
+        state = runtime_snapshot.get("state", "ready")
         return {
             "schemaVersion": 1,
             "revision": inventory.revision,
-            "state": runtime_snapshot.get("state", "ready"),
-            "reasonCode": runtime_snapshot.get("reasonCode", "READY"),
+            "state": "degraded" if migration_failed and state == "ready" else state,
+            "reasonCode": "PLUGIN_MIGRATION_FAILED" if migration_failed and state == "ready" else runtime_snapshot.get("reasonCode", "READY"),
             "plugins": plugins,
         }
 

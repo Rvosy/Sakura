@@ -351,7 +351,8 @@ class PluginSettingsBoundary:
                 or not source_path or len(source_path) > 4096 or not Path(source_path).is_absolute()):
             raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
         revision = _revision_value(payload["revision"])
-        existing = next((p for p in self.snapshot()["plugins"] if p["pluginId"] == plugin_id), None)
+        existing = next((p for p in self.snapshot()["plugins"]
+                         if p["pluginId"] == plugin_id and not p["reasonCode"].startswith("PLUGIN_MIGRATION_")), None)
         if existing is None:
             return self.install(revision, "zip", source_path, expected=(plugin_id, version))
         with self._save_lock:

@@ -30,11 +30,13 @@ BUILTIN_PLUGINS = {
     "sakura_tts_hub",
     "sakura_asr_hub",
 }
-BUNDLED_DEPENDENCY_DIRECTORIES = {
-    "sakura_model_openai_compatible",
-    "sakura_mcp",
-    "sakura_web",
-}
+# Keep this payload in every release that supports direct upgrades from 1.1.x.
+# It is migration material, never part of the builtin plugin inventory.
+MIGRATION_PAYLOAD = Path("migration_payload/builtin-extraction-v1")
+MIGRATION_SOURCES = json.loads(
+    (Path(__file__).resolve().parents[2] / "app/plugins/migration_sources.json").read_text(encoding="utf-8")
+)
+MIGRATION_PLUGINS = {source["directory"] for source in MIGRATION_SOURCES.values()}
 CORE_IMPORTS = (
     "yaml",
     "py7zz",
@@ -146,13 +148,27 @@ def _python_version(executable: Path) -> str:
     return result.stdout.strip()
 
 
+def plugin_layouts(stage: Path) -> list[tuple[Path, set[str], Path]]:
+    payload = stage / MIGRATION_PAYLOAD
+    return [
+        (stage / "plugins/builtin", BUILTIN_PLUGINS, stage / "plugins/dependencies"),
+        (payload / "plugins", MIGRATION_PLUGINS, payload / "dependencies"),
+    ]
+
+
+def stage_migration_plugins(repo: Path, stage: Path) -> None:
+    for directory_name in sorted(MIGRATION_PLUGINS):
+        copy_tree(
+            repo / "plugins/optional" / directory_name,
+            stage / MIGRATION_PAYLOAD / "plugins" / directory_name,
+        )
+
+
 def stage_bundled_dependencies(stage: Path, target: str) -> None:
     executable = python_executable(stage / "python", target)
     suffix = ".exe" if target == "windows-x64" else ""
     uv = stage / "python/tools" / f"uv{suffix}"
     python_version = _python_version(executable)
-    dependency_parent = stage / "plugins/dependencies"
-    dependency_parent.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment.update(
         {
@@ -160,8 +176,14 @@ def stage_bundled_dependencies(stage: Path, target: str) -> None:
             "UV_PYTHON_DOWNLOADS": "never",
         }
     )
-    for directory_name in sorted(BUNDLED_DEPENDENCY_DIRECTORIES):
-        plugin_root = stage / "plugins/builtin" / directory_name
+    plugins = [
+        (plugin_parent / directory_name, dependency_parent)
+        for plugin_parent, directory_names, dependency_parent in plugin_layouts(stage)
+        for directory_name in sorted(directory_names)
+        if (plugin_parent / directory_name / "requirements.txt").is_file()
+    ]
+    for plugin_root, dependency_parent in plugins:
+        dependency_parent.mkdir(parents=True, exist_ok=True)
         plugin_id = _manifest_plugin_id(plugin_root / "plugin.yaml")
         requirements = plugin_root / "requirements.txt"
         dependency_root = dependency_parent / plugin_id
@@ -222,8 +244,12 @@ def smoke_bundled_entries(stage: Path, target: str) -> None:
     environment.pop("PYTHONHOME", None)
     environment["PYTHONNOUSERSITE"] = "1"
     with tempfile.TemporaryDirectory(prefix="sakura-release-plugin-smoke-") as data_root:
-        for directory_name in sorted(BUILTIN_PLUGINS):
-            plugin_root = stage / "plugins/builtin" / directory_name
+        plugins = [
+            (parent / name, dependencies)
+            for parent, names, dependencies in plugin_layouts(stage)
+            for name in sorted(names)
+        ]
+        for plugin_root, dependency_parent in plugins:
             plugin_id = _manifest_plugin_id(plugin_root / "plugin.yaml")
             command = [
                 str(executable),
@@ -243,7 +269,7 @@ def smoke_bundled_entries(stage: Path, target: str) -> None:
                 _manifest_value(plugin_root / "plugin.yaml", "entry"),
                 "--validate-entry",
             ]
-            dependency_root = stage / "plugins/dependencies" / plugin_id
+            dependency_root = dependency_parent / plugin_id
             if dependency_root.is_dir():
                 command.extend(["--dependency-root", str(dependency_root)])
             subprocess.run(
@@ -259,17 +285,14 @@ def smoke_bundled_entries(stage: Path, target: str) -> None:
 
 def forbidden_paths(stage: Path) -> list[str]:
     failures: list[str] = []
+    dependency_parents = {parent for _, _, parent in plugin_layouts(stage)}
     for path in stage.rglob("*"):
         relative = path.relative_to(stage)
         lowered = {part.lower() for part in relative.parts}
         suffix = path.suffix.lower()
         python_path_file = path.is_file() and suffix == ".pth" and (
             path.parent.name.lower() == "site-packages"
-            or (
-                len(relative.parts) == 4
-                and tuple(part.lower() for part in relative.parts[:2])
-                == ("plugins", "dependencies")
-            )
+            or path.parent.parent in dependency_parents
         )
         if lowered & FORBIDDEN_PARTS or (
             path.is_file()
@@ -283,9 +306,14 @@ def forbidden_paths(stage: Path) -> list[str]:
 def prune_non_runtime_files(stage: Path, target: str) -> None:
     """Remove installer artifacts that imports and plugin execution never consume."""
     roots = [site_packages(stage / "python", target)]
-    dependency_parent = stage / "plugins/dependencies"
-    if dependency_parent.is_dir():
-        roots.extend(path for path in dependency_parent.iterdir() if path.is_dir())
+    dependency_roots = [
+        path
+        for _, _, parent in plugin_layouts(stage)
+        if parent.is_dir()
+        for path in parent.iterdir()
+        if path.is_dir()
+    ]
+    roots.extend(dependency_roots)
     for root in roots:
         if not root.is_dir():
             continue
@@ -310,13 +338,9 @@ def prune_non_runtime_files(stage: Path, target: str) -> None:
         # calls Python modules directly and keeps the three supported tools in
         # python/tools instead.
         shutil.rmtree(stage / "python/Scripts", ignore_errors=True)
-    if dependency_parent.is_dir():
-        for dependency_root in dependency_parent.iterdir():
-            if dependency_root.is_dir():
-                # Plugin runners import dependency modules; none executes pip's
-                # generated console entry points. Nested package binaries such
-                # as py7zz/bin/7zz remain untouched.
-                shutil.rmtree(dependency_root / "bin", ignore_errors=True)
+    for dependency_root in dependency_roots:
+        # Keep nested package binaries such as py7zz/bin/7zz.
+        shutil.rmtree(dependency_root / "bin", ignore_errors=True)
 
 
 def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
@@ -335,52 +359,46 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
     missing = [path.relative_to(stage).as_posix() for path in required if not path.exists()]
     if missing:
         raise ValueError(f"STAGING_LAYOUT_INCOMPLETE: {', '.join(missing)}")
-    actual_plugins = {
-        path.parent.name for path in (stage / "plugins/builtin").glob("*/plugin.yaml")
-    }
-    if actual_plugins != BUILTIN_PLUGINS:
-        raise ValueError(
-            f"STAGING_PLUGIN_SET_INVALID: expected={sorted(BUILTIN_PLUGINS)!r}, actual={sorted(actual_plugins)!r}"
-        )
-    for plugin_id in sorted(BUILTIN_PLUGINS):
-        manifest = stage / "plugins/builtin" / plugin_id / "plugin.yaml"
-        if _manifest_value(manifest, "api") != "4":
-            raise ValueError(f"STAGING_PLUGIN_API_INVALID: {plugin_id}")
     if (stage / "plugins/optional").exists() or (stage / "plugins/migrations").exists():
         raise ValueError("STAGING_CONTAINS_OPTIONAL_PLUGINS")
-    dependency_roots = stage / "plugins/dependencies"
-    actual_dependency_roots = (
-        {path.name for path in dependency_roots.iterdir() if path.is_dir()}
-        if dependency_roots.is_dir()
-        else set()
-    )
-    expected_dependency_roots = {
-        _manifest_plugin_id(stage / "plugins/builtin" / directory_name / "plugin.yaml")
-        for directory_name in BUNDLED_DEPENDENCY_DIRECTORIES
-    }
-    if actual_dependency_roots != expected_dependency_roots:
-        raise ValueError(
-            "STAGING_PLUGIN_DEPENDENCIES_INVALID: "
-            f"expected={sorted(expected_dependency_roots)!r}, "
-            f"actual={sorted(actual_dependency_roots)!r}"
+    for plugin_parent, expected_plugins, dependency_roots in plugin_layouts(stage):
+        actual_plugins = {path.parent.name for path in plugin_parent.glob("*/plugin.yaml")}
+        if actual_plugins != expected_plugins:
+            raise ValueError(
+                f"STAGING_PLUGIN_SET_INVALID: {plugin_parent.relative_to(stage)} "
+                f"expected={sorted(expected_plugins)!r}, actual={sorted(actual_plugins)!r}"
+            )
+        dependency_plugins = []
+        for directory_name in sorted(expected_plugins):
+            plugin_root = plugin_parent / directory_name
+            if _manifest_value(plugin_root / "plugin.yaml", "api") != "4":
+                raise ValueError(f"STAGING_PLUGIN_API_INVALID: {directory_name}")
+            if (plugin_root / "requirements.txt").is_file():
+                dependency_plugins.append(plugin_root)
+        actual_dependencies = (
+            {path.name for path in dependency_roots.iterdir() if path.is_dir()}
+            if dependency_roots.is_dir()
+            else set()
         )
-    for directory_name in sorted(BUNDLED_DEPENDENCY_DIRECTORIES):
-        plugin_root = stage / "plugins/builtin" / directory_name
-        plugin_id = _manifest_plugin_id(plugin_root / "plugin.yaml")
-        requirements = plugin_root / "requirements.txt"
-        marker_path = dependency_roots / plugin_id / ".sakura-dependencies.json"
-        try:
-            marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")
-        if (
-            not requirements.is_file()
-            or not isinstance(marker, dict)
-            or marker.get("schemaVersion") != 1
-            or marker.get("kind") != "requirements.txt"
-            or marker.get("python") != "3.12"
-        ):
-            raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")
+        expected_dependencies = {_manifest_plugin_id(root / "plugin.yaml") for root in dependency_plugins}
+        if actual_dependencies != expected_dependencies:
+            raise ValueError(
+                "STAGING_PLUGIN_DEPENDENCIES_INVALID: "
+                f"expected={sorted(expected_dependencies)!r}, actual={sorted(actual_dependencies)!r}"
+            )
+        for plugin_id in sorted(expected_dependencies):
+            marker_path = dependency_roots / plugin_id / ".sakura-dependencies.json"
+            try:
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")
+            if (
+                not isinstance(marker, dict)
+                or marker.get("schemaVersion") != 1
+                or marker.get("kind") != "requirements.txt"
+                or marker.get("python") != "3.12"
+            ):
+                raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")
     for user_owned in ("config", "data", "characters", "tts"):
         if (stage / user_owned).exists():
             raise ValueError(f"STAGING_CONTAINS_USER_DATA: {user_owned}")
@@ -410,6 +428,7 @@ def smoke(stage: Path, target: str) -> None:
     )
     subprocess.run([str(executable), "-I", "-B", "-c", script], check=True, timeout=90)
     smoke_bundled_entries(stage, target)
+    smoke_plugin_upgrade(stage, target)
     suffix = ".exe" if target == "windows-x64" else ""
     for name, argument in (("uv", "--version"), ("uvx", "--version"), ("7zz", "-h")):
         subprocess.run(
@@ -419,6 +438,24 @@ def smoke(stage: Path, target: str) -> None:
             stderr=subprocess.DEVNULL,
             timeout=15,
         )
+
+
+def smoke_plugin_upgrade(stage: Path, target: str, *, historical_distribution: Path | None = None) -> None:
+    """Run only staged Core/runtime, outside the checkout, with no PATH fallback."""
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    environment.update(PATH="", PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1",
+                       UV_OFFLINE="1", UV_NO_CACHE="1", UV_NO_INDEX="1")
+    command = [
+        str(python_executable(stage / "python", target)), "-I", "-B",
+        str(Path(__file__).with_name("smoke_plugin_upgrade.py")),
+        "--stage", str(stage),
+    ]
+    if historical_distribution is not None:
+        command.extend(["--historical-distribution", str(historical_distribution)])
+    with tempfile.TemporaryDirectory(prefix="sakura-release-upgrade-smoke-") as work:
+        subprocess.run(command, check=True, cwd=work, env=environment, timeout=300)
 
 
 def inventory(stage: Path, target: str) -> dict[str, object]:
@@ -458,6 +495,7 @@ def assemble(repo: Path, python_source: Path, output: Path, target: str, *, port
     copy_tree(repo / "app", output / "core/app")
     (output / "plugins").mkdir(exist_ok=True)
     copy_tree(repo / "plugins/builtin", output / "plugins/builtin")
+    stage_migration_plugins(repo, output)
     move_tools(output / "python", target)
     stage_bundled_dependencies(output, target)
     prune_non_runtime_files(output, target)

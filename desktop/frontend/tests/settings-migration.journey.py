@@ -25,9 +25,9 @@ window.__TAURI__ = {core:{invoke:async(command,args)=>{
   window.nativeCalls.push({command,args});
   if(command==='runtime_lifecycle_snapshot') return {
     supervisor:{state:'running',generationId:'g',generationNumber:1},
-    snapshot:{generationId:'g',readiness:window.migrationPhase==='running'?'initializing':window.migrationPhase==='failed'?'failed':'ready',
+    snapshot:{generationId:'g',readiness:window.migrationPhase==='running'?'initializing':'ready',
       pluginMigration:{state:window.migrationPhase,completed:window.migrationPhase==='completed'?6:2,total:6,pluginId:'sakura.memory.mem0'}},
-    characterPresentation:window.migrationPhase==='completed'?presentation:null};
+    characterPresentation:window.migrationPhase==='running'?null:presentation};
   if(command==='settings_capability_manifest') {
     const sections={};
     for(const name of ['character','appearance']) {
@@ -41,7 +41,7 @@ window.__TAURI__ = {core:{invoke:async(command,args)=>{
     characters:[{id:'sakura',displayName:'Sakura',hasVoice:false,hasExportableVoice:false}]};
   if(command==='settings_character_visuals_get') return {schemaVersion:1,characterId:'sakura',resources:[],defaultResourceId:null,preferenceResourceId:null};
   if(command==='settings_character_appearance_get') {
-    if(window.migrationPhase!=='completed') throw new Error('CHARACTER_PRESENTATION_NOT_READY');
+    if(window.migrationPhase==='running') throw new Error('CHARACTER_PRESENTATION_NOT_READY');
     return {schemaVersion:1,windowGeneration:1,presentation,limits,appearance:{schemaVersion:1,coreGenerationId:'g',characterId:'sakura',values}};
   }
   if(command==='settings_asr_get') return {providers:[],preferences:{}};
@@ -76,8 +76,10 @@ def run():
             page.screenshot(path=str(output / "migration-running.png"))
             page.evaluate("window.migrationPhase='failed'")
             expect(banner.get_by_role("button", name="重启核心")).to_be_visible()
+            expect(page.locator("#portraitScale")).to_be_enabled()
+            expect(page.locator("#controlPanelWidth")).to_be_enabled()
             banner.get_by_role("button", name="重启核心").click()
-            expect(banner).to_contain_text("正在迁移")
+            expect(banner).to_contain_text("正在恢复")
             page.evaluate("window.migrationPhase='completed'")
             expect(page.locator("#portraitScale")).to_be_enabled()
             expect(page.locator("#controlPanelWidth")).to_be_enabled()
@@ -94,7 +96,7 @@ def run():
             page.screenshot(path=str(output / "migration-failed-narrow.png"))
             assert not errors, errors
             browser.close()
-            print("PASS: migration progress, failure restart, automatic slider recovery and narrow layout")
+            print("PASS: migration progress, usable settings after plugin failure, restart and narrow layout")
     finally:
         server.shutdown()
         server.server_close()

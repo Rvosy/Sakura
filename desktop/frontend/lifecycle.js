@@ -44,10 +44,10 @@ export function migrationStatus(publication) {
     "sakura.tts.genie": "Genie", "sakura.visual.spine": "Spine" };
   const name = names[migration.pluginId] || migration.pluginId || "插件";
   if (migration.state === "running") return {
-    state: "running", message: `正在迁移插件（${migration.completed}/${migration.total}）：${name}。首次迁移可能需要下载，请稍候。`,
+    state: "running", message: `正在恢复插件（${migration.completed}/${migration.total}）：${name}。`,
   };
   if (migration.state === "failed") return {
-    state: "failed", message: `${name} 迁移失败。请检查网络和磁盘空间后重启核心，已完成的迁移会保留。`,
+    state: "failed", message: "部分插件未恢复，请查看插件列表或运行日志。",
   };
   if (migration.state === "completed") return {
     state: "completed", message: ["ready", "degraded", "setup_required"].includes(snapshot.readiness)

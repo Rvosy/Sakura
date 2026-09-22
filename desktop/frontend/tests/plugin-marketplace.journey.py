@@ -124,6 +124,10 @@ def run():
             page.evaluate('fixture.savedLocal = fixture.local; fixture.local = []; fixture.market.sync()')
             expect(dialog.locator('[data-install]')).to_be_enabled()
             assert dialog.locator('[data-manage]').count() == 0
+            page.evaluate("""fixture.local = [{pluginId:'sakura.visual.spine',source:'bundled',
+              version:'0.0.0',state:'failed',reasonCode:'PLUGIN_MIGRATION_SOURCE_MISSING'}]; fixture.market.sync()""")
+            expect(dialog.locator('[data-install]')).to_be_enabled()
+            assert dialog.locator('[data-manage]').count() == 0
             page.evaluate('fixture.local = fixture.savedLocal; fixture.market.sync()')
             # An unavailable catalog version still permits managing the installed plugin.
             page.evaluate("async () => { fixture.plugins[0].recommendedVersion = undefined; await fixture.market.refresh(); }")

@@ -14,7 +14,7 @@ Runtime v2 只接受 `distribution_root` 与 `user_root`。Shell 必须通过
 `--distribution-root` 和 `--user-root` 把两者传给 Core；生产启动合同不存在 `--app-root`。
 
 `distribution_root` 包含 `VERSION`、`runtime-manifest.json`、`python/`、`core/` 和
-`plugins/builtin/` 和 `plugins/dependencies/`，由安装器和更新器拥有，运行时只读。`user_root` 包含 `config/`、`data/`、
+`plugins/builtin/`、`plugins/dependencies/` 和 `migration_payload/`，由安装器和更新器拥有，运行时只读。`user_root` 包含 `config/`、`data/`、
 `characters/`、`plugins/user/` 和默认 `tts/`，由用户拥有，不进入发行 staging。
 
 平台解析固定为：
@@ -77,29 +77,29 @@ TTS 返回 `TTS_STORAGE_UNAVAILABLE`，设置快照通过 `TTS_ROOT_MISSING`、`
 
 主安装包预装 Assistant、远程模型提供方、主动屏幕感知、MCP、立绘、联网、TTS Hub 和 ASR Hub。内置插件可停用，不可卸载；这只表示文件归安装器管理，不赋予私有 API 或实现优先级。
 
-手机聊天、SenseVoice、Mem0、GPT-SoVITS、Genie 和 Spine 改为外部插件，新用户按需安装。主包不携带这六个插件，也不携带四个语音与记忆插件的私有 Python 依赖，以缩小 EXE、ZIP 等发行文件。模型、角色和用户数据不随此次迁出移动或删除。
+手机聊天、SenseVoice、Mem0、GPT-SoVITS、Genie 和 Spine 为外部插件，新用户按需安装。发行包在兼容窗口内携带离线迁移材料，其中包含六个插件及四个语音与记忆插件的私有 Python 依赖；这些材料不进入内置插件清单，也不自动为新用户安装。模型、角色和用户数据不随此次迁出移动或删除。
 
 ### 内置插件迁出
 
-ZIP、EXE 和其他发行形式共用 Core 启动迁移，迁移发生在插件清单加载之前。老用户优先从旧程序目录恢复代码和可用依赖；只有包含 `plugin.yaml` 的目录才作为本地来源，升级后残留的空目录或 `__pycache__` 不算插件包。开发环境可使用 `plugins/optional` 中的完整插件；发行包文件已被替换时，从 `app/plugins/migration_sources.json` 固定的公开仓库 commit 下载对应版本，并按需安装依赖。新用户不执行这些下载。首次升级可能需要网络，不承诺所有升级方式离线可用。
+ZIP、EXE 和其他发行形式共用 Core 启动迁移，在插件清单加载前完成本地准备。迁移只使用已有文件，不访问网络、不执行 uv、不重新解析依赖。来源依次为已有用户插件、仍可用的旧程序目录、此前中断留下的备份和 `migration_payload/builtin-extraction-v1/`。开发环境还可使用 `plugins/optional/`；发行验收必须移除该来源，不能靠 checkout 补齐发行包。
 
-桌面入口以启动前 `config/` 是否存在识别旧用户。新用户默认配置与 `config/plugin-migrations.json` 一起发布，六个插件记录为 `not_applicable`；原有配置目录不补写此标记。Core 直接使用空用户根时也记录不适用，必须在模型配置迁移创建 `config/` 之前完成判断。该判断沿用既有用户目录初始化边界，不要求用户曾保存插件设置。
+兼容材料的代码位于 `plugins/<原目录名>/`，已解析依赖位于 `dependencies/<plugin-id>/`。两者均相对于 `migration_payload/builtin-extraction-v1/`，由发行流程针对目标平台构建。至少在 1.2.x 和 1.3.x 保留这项能力，支持 1.1.2 和第二版 1.2.0 直接升级；迁移不要求用户先安装 1.2.1。只有明确提高支持直接升级的最低版本、并提供旧用户恢复方式后，才能删除兼容材料。
 
-迁移按插件 ID 逐项执行。同 ID 用户插件存在时保留该版本和启停状态；其他第三方插件不影响迁移。迁入用户目录时沿用 `plugins.yaml` 的明确选择，没有明确选择则保留旧内置清单默认启用的行为。插件业务配置、已下载模型与聊天历史不改写。用户主动安装外部包时仍默认停用。
+桌面入口以启动前 `config/` 是否存在识别旧用户。新用户默认配置与 `config/plugin-migrations.json` 一起发布，六个插件记录为 `not_applicable`；原有配置目录不补写此标记。Core 直接使用空用户根时也记录不适用，必须在模型配置迁移创建 `config/` 之前完成判断。保留 1.2.0 的按插件 ID 记录格式，不另建版本升级图。
 
-旧目录的清单若仍依赖退役的 `sakura.host.model_slots`，不迁入该代码，改用固定的兼容版本。对于迁移记录已完成、却仍使用此旧接口的官方插件，启动时自动修复；原代码保留在用户目录 `plugins/migration-backups/<随机 ID>/`，安装失败恢复原目录。移动旧代码前记录 `repairing`，中途退出后继续修复，成功才改为 `completed`。未被此迁移接管的用户插件不自动替换。
+同 ID 用户插件存在时保留该版本和启停状态；其他第三方插件不影响迁移。迁入用户目录时沿用 `plugins.yaml` 的明确选择，没有明确选择则沿用旧内置插件默认启用的行为。插件业务配置、已下载模型与聊天历史不改写。用户主动安装外部包时仍默认停用。
 
-Core 的完整和最小快照增加可选 `pluginMigration`（无迁移时为空），包含 `state`（`running`、`completed`、`failed`）、`completed`、`total` 和 `pluginId`。桌面启动提示及设置页显示当前插件和已完成数量，迁移完成后继续在同一核心中加载插件。迁移耗时不计入普通初始化的 30 秒期限，下载和依赖安装沿用各自已有的超时，不另加总期限。迁移失败或迁移后核心启动失败时，设置页提供“重启核心”，直接使用已有生命周期重启流程，保留已完成记录。
+迁移已接管的官方副本若仍使用退役的 `sakura.host.model_slots`、代码入口缺失或依赖根不可用，则从本地兼容材料修复。先复制并检查清单、现有依赖标记及入口导入，准备好后再切换；不增加内容摘要或依赖重新解析。切换前记录 `repairing`，被替换的代码和依赖保存在 `plugins/migration-backups/<随机 ID>/`。普通异常恢复原目录，中断后按实际用户副本、备份和随包材料续接，成功才记录 `completed`。已安装的其他版本不自动降级。
 
-迁移状态由 Core 生成，桌面端只解析展示需要的字段，不重复限制插件 ID 格式、进度范围或插件数量。快照允许增加字段，仍保留核心代次隔离、版本顺序和用户数据保护。
+Core 的完整和最小快照保留可选 `pluginMigration`，包含 `state`（`running`、`completed`、`failed`）、`completed`、`total` 和 `pluginId`。每个插件独立处理，一项失败后继续其他项，汇总保留失败状态。迁移耗时不计入普通初始化的 30 秒期限；进度状态由 Core 生成，桌面端不重复限制插件 ID 格式、范围或数量。
+
+迁移失败不阻断 Core 初始化。没有实际安装的失败插件在插件列表保留只读诊断项（`source=bundled`、`supported=false`、`reasonCode=PLUGIN_MIGRATION_*`），不参与运行，也不作为市场的已安装插件；从已有安装入口安装用户副本后，该副本取代诊断项。已有用户副本的运行错误仍由插件运行时报告。设置、运行日志和不依赖失败插件的功能继续可用；本地故障排除后可用现有“重启核心”重新尝试迁移。
+
+损坏的迁移记录保留原文件并报告诊断，不按新用户处理，不阻止 Core 启动。未知单项状态只影响该项。完成记录只在发布成功或已有同 ID 用户副本时写入；已发布但尚未记录完成的副本可在下次启动续接。`completed` 后整个用户插件目录消失仍按用户主动卸载处理，不自动安装回来。
 
 设置页在角色表现尚未发布时暂时禁用自定义控件，持续观察当前核心的角色表现；就绪后自动初始化并启用控件，无需关闭设置或重启。已存在的外观草稿沿用原有跨核心恢复规则。
 
-安装成功或确认已有同 ID 用户副本后，才原子记录 `completed`。失败保留原错误并报告恢复失败，不标记完成；用户修复网络或磁盘问题后可重新启动。插件运行时初始化失败且尚未发布时，插件设置显示失败，已启用插件以 `PLUGIN_APPLICATION_FAILED` 标记，不继续显示正在启动。已发布代码但尚未记录完成时，按同 ID 用户副本续接。完成后用户主动卸载的插件不会自动恢复。损坏的迁移记录报错，不按新用户处理。
-
-插件发现与安装冲突检查都忽略迁出清单中的旧内置副本，包括 ZIP 覆盖解压的残留文件；不删除旧程序目录，也不影响用户目录中的同 ID 插件。
-
-旧数据导入 worker 按需使用外部 Mem0 与 TTS 插件的兼容工具。缺失时先安装对应固定版本，原启停选择保持不变；仅为导入安装的插件默认停用。该步骤也可能需要网络。
+插件发现与安装冲突检查忽略迁出清单中的旧内置副本，包括 ZIP 覆盖解压的残留文件；不删除旧程序目录。旧数据导入 worker 缺少 Mem0 或 TTS 兼容工具时也使用相同的离线来源，原启停选择保持不变，仅为导入安装的插件默认停用。
 
 `playwright_browser` 是用户按需安装的可选插件，不进入主安装包。
 发行流程把它另行生成一个可由普通本地插件安装入口处理的 `.sakplugin.zip`，安装和启用仍使用与第三方插件
@@ -108,12 +108,12 @@ Core 的完整和最小快照增加可选 `pluginMigration`（无迁移时为空
 Plugin Runtime v4 的发行 Python 只携带 Core 必需依赖、Plugin SDK 和安装工具；官方插件依赖进入
 各自独立 dependency root，不进入主 Runtime 的全局 `site-packages`。预装插件可以携带已解析环境或
 wheelhouse，避免加载插件时安装依赖；普通第三方插件不强制携带完整 wheelhouse。默认对话仍使用远程 API，发行包不携带本地推理模型。`uv`、`uvx`、`7zz` 位于
-`python/tools/`，共享下载缓存只做物理去重，不改变插件 import 隔离。具体过渡合同见
+`python/tools/`；普通插件安装优先使用该目录的 uv，再沿用解释器相邻工具、PATH 和 Python 模块的查找方式。已有依赖失效时先在 staging 准备并验证，成功后替换，后续发布失败恢复原依赖。共享下载缓存只做物理去重，不改变插件 import 隔离。具体过渡合同见
 [Plugin Runtime v4](sakura-plugin-runtime-v4.md)。
 
 当前物理路径固定为：预装插件使用只读的 `distribution_root/plugins/dependencies/<plugin-id>/`，普通用户插件
 使用可写的 `user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用相同的依赖就绪标记和
-Runner 校验；普通启动只读取并验证，不把预装环境复制到 user root，也不自动安装或修复。
+Runner 校验；正常插件加载只读取并验证。上述退役内置插件迁移可把已准备的依赖复制到用户域，不能借此执行在线安装。
 
 主 Python 运行时只读且不执行 pip；OpenAI SDK、HTTPX 与 SOCKS 传输依赖只进入远程模型插件环境，Assistant 无这些私有依赖。
 Memory 不携带约 91 MB 模型，Genie/GPT-SoVITS 不携带本体、环境或

@@ -460,7 +460,7 @@ prepare/begin/poll/result/cancel/release、输入与结果 artifact、历史分�
 `bundled` 可以让安装器拥有插件文件并禁止卸载，但不能隐含 privileged API。默认领域插件必须允许停用，以便
 替代实现接管能力；插件关闭后保留文件用于恢复默认是允许的。
 
-主包保留 Assistant、模型提供方、主动屏幕感知、MCP、立绘、联网、TTS Hub 和 ASR Hub。手机聊天、SenseVoice、Mem0、GPT-SoVITS、Genie、Spine 为可选插件；主包不携带这些插件或其私有依赖。新用户按需安装并启用，老用户启动时逐个迁出，保留插件 ID、配置和启停状态。原文件缺失时自动联网恢复固定版本。完成记录、重复安装和 ZIP 残留副本处理见[发行与存储](release-distribution-and-storage.md#内置插件迁出)。
+主包保留 Assistant、模型提供方、主动屏幕感知、MCP、立绘、联网、TTS Hub 和 ASR Hub。手机聊天、SenseVoice、Mem0、GPT-SoVITS、Genie、Spine 为可选插件；兼容窗口内，发行包另带其离线迁移代码与私有依赖，不作为内置插件加载。新用户按需安装并启用，老用户启动时逐个迁出，保留插件 ID、配置和启停状态。迁移不联网、不执行 uv，失败只影响对应插件，Core 和设置仍可用。跨版本兼容、完成记录和 ZIP 残留副本处理见[发行与存储](release-distribution-and-storage.md#内置插件迁出)。
 
 ## 8. 生命周期、失败与恢复
 

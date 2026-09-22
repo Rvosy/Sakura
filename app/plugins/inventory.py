@@ -211,11 +211,14 @@ class PluginInventory:
         self,
         roots: RuntimeRoots | Path,
         desired: PluginDesiredStateStore | None = None,
+        *,
+        migration_failures: Mapping[str, str] | None = None,
     ) -> None:
         self._roots = coerce_runtime_roots(roots)
         self._distribution = DistributionPaths(self._roots.distribution_root)
         self._paths = StoragePaths(self._roots.user_root)
         self._desired = desired or PluginDesiredStateStore(self._roots.user_root)
+        self._migration_failures = migration_failures or {}
 
     def scan(self) -> PluginInventorySnapshot:
         with _REVISION_LOCK:
@@ -258,6 +261,18 @@ class PluginInventory:
                     continue
                 records.append(record)
 
+        installed_ids = {record.plugin_id for record in records}
+        for plugin_id, reason in self._migration_failures.items():
+            if plugin_id not in MIGRATIONS or plugin_id in installed_ids:
+                continue
+            directory = MIGRATIONS[plugin_id]
+            # A missing migrated plugin must remain visible in Settings. An
+            # ordinary user installation replaces this diagnostic on refresh.
+            records.append(replace(
+                _invalid_record(_install_id("bundled", directory), "bundled", directory,
+                                plugin_id=plugin_id),
+                desired_enabled=desired.get(plugin_id, True), reason_code=reason,
+            ))
         records = self._resolve_duplicates(records)
         runtime_specs = tuple(
             spec

@@ -42,7 +42,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
   function syncInstalled() {
     const installed = host.installedPlugins();
     for (const p of plugins) {
-      const local = installed.find(item => item.pluginId === p.id);
+      const local = installed.find(item => item.pluginId === p.id && !item.reasonCode?.startsWith("PLUGIN_MIGRATION_"));
       p.installed = local?.version; p.enabled = local?.enabled;
       p.updateBlocked = local?.source === "bundled" ? "内置插件随应用更新" : "";
     }

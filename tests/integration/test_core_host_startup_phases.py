@@ -28,9 +28,12 @@ def _plugin(distribution, plugin_id, service, body, requires=()):
     (root / "plugin.py").write_text(body, encoding="utf-8")
 
 
-@pytest.mark.parametrize("outcome", ["ready", "optional_failed", "assistant_ack_lost", "assistant_release_stuck"])
+@pytest.mark.parametrize("outcome", ["ready", "optional_failed", "migration_failed", "assistant_ack_lost", "assistant_release_stuck"])
 def test_visual_and_real_chat_are_published_before_optional_start_finishes(tmp_path, monkeypatch, outcome):
     optional_fails = outcome == "optional_failed"
+    if outcome == "migration_failed":
+        monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins",
+            lambda roots, *, progress: {"sakura.memory.mem0": "PLUGIN_MIGRATION_SOURCE_MISSING"})
     user, distribution = tmp_path / "user", tmp_path / "distribution"
     shutil.copytree(REPO / "tests/fixtures/runtime_v2/wp_3_01/ready", user)
     # The portrait fixture must be a loadable image, not its placeholder text.
@@ -236,7 +239,11 @@ class Plugin:
         assert controller.readiness() == "ready"
         assert warmed == ["sakura"]
         settled = settings.snapshot()
-        assert settled["state"] == ("degraded" if optional_fails or outcome in {"assistant_ack_lost", "assistant_release_stuck"} else "ready"), json.dumps(settled, ensure_ascii=False)
+        assert settled["state"] == ("degraded" if optional_fails or outcome in {"migration_failed", "assistant_ack_lost", "assistant_release_stuck"} else "ready"), json.dumps(settled, ensure_ascii=False)
+        if outcome == "migration_failed":
+            missing = next(item for item in settled["plugins"] if item["pluginId"] == "sakura.memory.mem0")
+            assert missing["state"] == "failed"
+            assert missing["reasonCode"] == "PLUGIN_MIGRATION_SOURCE_MISSING"
         assert application.service_identity("sakura.visual.portrait") == visual_identity
         assert application.service_identity("fixture.visual.dep") == dependency_identity
         optional = next(item for item in application.public_snapshot()["plugins"] if item["pluginId"] == "aaa.optional")
@@ -281,8 +288,7 @@ def test_migration_progress_is_visible_before_runtime_and_failure_is_actionable(
         assert release.wait(5)
         progress({"state": "failed" if fails else "completed", "completed": 0 if fails else 1,
                   "total": 1, "pluginId": "sakura.memory.mem0" if fails else None})
-        if fails:
-            raise OSError("fixture download failed")
+        return {"sakura.memory.mem0": "PLUGIN_MIGRATION_FAILED"} if fails else {}
 
     monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", migrate)
     controller = ReadinessController(HostConfig(RuntimeRoots(tmp_path / "distribution", tmp_path / "user"), "migration-progress", "a" * 32))
@@ -300,10 +306,39 @@ def test_migration_progress_is_visible_before_runtime_and_failure_is_actionable(
         settled = controller.snapshot()
         assert settled["revision"] > pending["revision"]
         assert settled["pluginMigration"]["state"] == ("failed" if fails else "completed")
+        assert settled["readiness"] == "setup_required"
+        application = controller.published_plugin_application()
+        assert application is not None
+        settings = PluginSettingsBoundary("migration-progress", "a" * 32, controller._config.roots,
+            application_provider=controller.published_plugin_application)
+        snapshot = settings.snapshot()
         if fails:
-            assert settled["readiness"] == "failed"
-        else:
-            assert controller.published_plugin_application() is not None
+            assert snapshot["state"] == "degraded"
+            missing = next(item for item in snapshot["plugins"] if item["pluginId"] == "sakura.memory.mem0")
+            assert missing["state"] == "failed"
+            assert missing["reasonCode"] == "PLUGIN_MIGRATION_FAILED"
+            assert missing["supported"] is False
+            # The normal installation and enable paths repair the missing plugin
+            # in this same Core generation, without rerunning startup migration.
+            package_distribution = tmp_path / "repair-package"
+            _plugin(package_distribution, "sakura.memory.mem0", "fixture.memory", '''
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.memory", object(), exports=())
+''')
+            source = package_distribution / "plugins/builtin/sakura.memory.mem0"
+            archive = shutil.make_archive(str(tmp_path / "repair"), "zip", source)
+            settings.marketplace_install({"revision": snapshot["revision"], "sourcePath": archive,
+                                          "pluginId": "sakura.memory.mem0", "version": "1.0.0"})
+            installed = settings.snapshot()
+            memory = next(item for item in installed["plugins"] if item["pluginId"] == "sakura.memory.mem0")
+            assert memory["source"] == "user"
+            settings.set_enabled(installed["revision"], memory["installId"], True)
+            repaired = settings.snapshot()
+            assert repaired["state"] == "ready"
+            memory = next(item for item in repaired["plugins"] if item["pluginId"] == "sakura.memory.mem0")
+            assert memory["state"] == "active"
+            assert application.service_identity("fixture.memory")["providerId"] == "sakura.memory.mem0"
     finally:
         release.set()
         controller.close()

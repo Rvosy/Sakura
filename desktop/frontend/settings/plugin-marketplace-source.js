@@ -99,7 +99,7 @@ export function createMarketplaceSource({ invoke, Channel, host, randomUUID = ()
       const version = plugin.versions.find(v => v.number === plugin.recommendedVersion);
       if (!version || version.yanked || !version.compatible) throw new Error("该版本不可安装。");
       const current = await invoke("settings_plugins_get");
-      const existing = current.plugins.find(p => p.pluginId === plugin.id);
+      const existing = current.plugins.find(p => p.pluginId === plugin.id && !p.reasonCode?.startsWith("PLUGIN_MIGRATION_"));
       if (existing?.source === "bundled") throw new Error("内置插件随应用更新。");
       if (existing && compareVersions(existing.version, version.number) >= 0) throw new Error("已安装当前版本或更新版本。");
       signal.throwIfAborted();

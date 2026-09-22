@@ -34,6 +34,7 @@ def build_config(
         "release-staging/python": "python",
         "release-staging/core": "core",
         "release-staging/plugins": "plugins",
+        "release-staging/migration_payload": "migration_payload",
     }
     config: dict[str, object] = {
         "bundle": {

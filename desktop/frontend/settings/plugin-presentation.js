@@ -76,6 +76,12 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
   if (reasonCode === "MODEL_API_UPDATE_REQUIRED") {
     return result("需要更新", "模型接口已更新，请安装这个插件的兼容版本。", reasonCode);
   }
+  if (reasonCode === "PLUGIN_MIGRATION_SOURCE_MISSING") {
+    return result("需要安装", "缺少这个插件的恢复文件，请从插件市场安装。", reasonCode);
+  }
+  if (reasonCode === "PLUGIN_MIGRATION_FAILED") {
+    return result("恢复失败", "请查看运行日志，或从插件市场安装这个插件。", reasonCode);
+  }
   if (NORMAL_REASONS.has(reasonCode) || state === "active") {
     return result("运行正常");
   }

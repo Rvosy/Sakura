@@ -123,6 +123,7 @@ class LocalPluginInstaller:
         config_before: str | None | object = _MISSING
         state_reserved = False
         dependency_promoted = False
+        dependency_backup: Path | None = None
         rollback_error: PluginInstallError | None = None
         completed = False
         try:
@@ -153,17 +154,31 @@ class LocalPluginInstaller:
                 raise PluginInstallError("PLUGIN_ID_CONFLICT")
             self._write_enabled_override(spec.plugin_id, initial_enabled)
             state_reserved = True
-            dependency_existed = self._paths.plugin_dependency_root_for(spec.plugin_id).exists()
+            dependency_target = self._paths.plugin_dependency_root_for(spec.plugin_id)
+            dependency_existed = dependency_target.exists()
             if reuse_dependencies and dependency_existed:
-                dependency_root = self._dependencies.verified_root(spec.plugin_id, plugin_root)
-                self._dependencies._validate_entry(spec.plugin_id, plugin_root, dependency_root, spec.entry)
+                try:
+                    dependency_root = self._dependencies.verified_root(spec.plugin_id, plugin_root)
+                    self._dependencies._validate_entry(spec.plugin_id, plugin_root, dependency_root, spec.entry)
+                except PluginDependencyError:
+                    with self._dependencies.prepare(
+                        spec.plugin_id,
+                        plugin_root,
+                        entry=spec.entry,
+                        bundled=offline_dependencies,
+                    ) as prepared:
+                        if prepared is not None:
+                            backup = staging / "previous-dependencies"
+                            self._replace_path(dependency_target, backup)
+                            dependency_backup = backup
+                            self._replace_path(prepared, dependency_target)
+                            dependency_promoted = True
             else:
                 dependency_install = self._dependencies.install_bundled if offline_dependencies else self._dependencies.install
                 dependency_root = dependency_install(spec.plugin_id, plugin_root, entry=spec.entry)
-            dependency_promoted = dependency_root is not None and not dependency_existed
+                dependency_promoted = dependency_root is not None and not dependency_existed
             self._replace_path(plugin_root, target)
             promoted = target
-            completed = True
             assert config_before is None or isinstance(config_before, str)
             record = next(
                 (
@@ -173,6 +188,7 @@ class LocalPluginInstaller:
                 ),
                 None,
             )
+            completed = True
             return InstalledPlugin(
                 spec.plugin_id,
                 target,
@@ -216,7 +232,14 @@ class LocalPluginInstaller:
                         self._dependencies.remove(spec.plugin_id)
                     except OSError:
                         rollback_error = PluginInstallError("PLUGIN_INSTALL_ROLLBACK_FAILED")
-            shutil.rmtree(staging, ignore_errors=True)
+                if dependency_backup is not None:
+                    try:
+                        self._replace_path(dependency_backup, dependency_target)
+                        dependency_backup = None
+                    except OSError:
+                        rollback_error = PluginInstallError("PLUGIN_INSTALL_ROLLBACK_FAILED")
+            if completed or dependency_backup is None:
+                shutil.rmtree(staging, ignore_errors=True)
             if rollback_error is not None:
                 raise rollback_error
 

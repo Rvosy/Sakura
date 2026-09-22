@@ -1,136 +1,273 @@
-"""启动时迁出退役内置插件；旧文件优先，缺失时从固定源码版本恢复。"""
+"""退役内置插件的离线迁移；兼容材料随目标发行版本保留。"""
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import tempfile
-import urllib.request
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 import yaml
 
-from app.plugin_sdk.sakura_http import urlopen_direct_for_loopback
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.atomic import atomic_write_text
+from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
 
 SOURCES = json.loads(Path(__file__).with_name("migration_sources.json").read_text(encoding="utf-8"))
 MIGRATIONS = {key: value["directory"] for key, value in SOURCES.items()}
 STATE_NAME = "plugin-migrations.json"
+PAYLOAD_PATH = Path("migration_payload/builtin-extraction-v1")
 
 
-def uses_retired_model_api(root: Path) -> bool:
-    manifest = yaml.safe_load((root / "plugin.yaml").read_text(encoding="utf-8"))
-    return isinstance(manifest, dict) and "sakura.host.model_slots" in (manifest.get("requires") or [])
-
-
-def download_migration_package(plugin_id: str, output: Path) -> None:
-    source = SOURCES[plugin_id]
-    url = f"https://codeload.github.com/{source['repository']}/zip/{source['commit']}"
-    request = urllib.request.Request(url, headers={"User-Agent": "Sakura-Plugin-Migration/1"})
-    from app.plugins.installer import MAX_ARCHIVE_BYTES
-    with urlopen_direct_for_loopback(request, timeout=30) as response, output.open("wb") as target:
-        total = 0
-        while chunk := response.read(1024 * 1024):
-            total += len(chunk)
-            if total > MAX_ARCHIVE_BYTES:
-                raise ValueError("PLUGIN_INSTALL_ARCHIVE_TOO_LARGE")
-            target.write(chunk)
-
-
-def ensure_external_plugin(roots: RuntimeRoots, plugin_id: str, *, enabled: bool) -> None:
-    from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
-    from app.plugins.installer import LocalPluginInstaller
+def _record(roots: RuntimeRoots, root: Path, plugin_id: str):
     from app.plugins.inventory import PluginInventory
 
-    if any(r.source == "user" and r.plugin_id == plugin_id for r in PluginInventory(roots).scan().records):
-        return
+    record = PluginInventory(roots)._record("user", root, {})
+    if (record.plugin_id != plugin_id or not record.runtime_eligible
+            or "sakura.host.model_slots" in record.requires):
+        raise ValueError("PLUGIN_MIGRATION_SOURCE_INVALID")
+    return record
+
+
+def _user_plugin(roots: RuntimeRoots, plugin_id: str):
+    from app.plugins.inventory import PluginInventory
+
+    return next((r for r in PluginInventory(roots).scan().records
+                 if r.source == "user" and r.plugin_id == plugin_id), None)
+
+
+def _dependency_root(dependencies, code: Path, root: Path) -> Path | None:
+    from app.plugins.dependencies import PluginDependencyError
+
+    verified = dependencies.verified_path(code, root)
+    if verified is None:
+        return None
+    if any(path.name not in {".sakura-dependencies.json", "__pycache__"} for path in verified.iterdir()):
+        return verified
+    declaration = dependencies.declaration(code)
+    # A leftover marker alone is not an installed environment. Empty requirements
+    # are valid, however, and need no packages at all.
+    requires_packages = declaration.kind not in {"requirements.txt", "requirements.lock"} or any(
+        line.strip() and not line.lstrip().startswith("#")
+        for line in declaration.path.read_text(encoding="utf-8").splitlines()
+    )
+    if requires_packages:
+        raise PluginDependencyError("PLUGIN_DEPENDENCIES_MISSING")
+    return verified
+
+
+def _separate_user_version(root: Path, plugin_id: str) -> bool:
+    # Inventory substitutes an invalid record when the entry is missing. Use
+    # the manifest's version for ownership even if that user copy cannot run.
+    try:
+        raw = yaml.safe_load((root / "plugin.yaml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return False
+    return (isinstance(raw, dict) and raw.get("id") == plugin_id
+            and isinstance(raw.get("version"), str) and bool(raw["version"])
+            and raw["version"] != SOURCES[plugin_id]["version"])
+
+
+def _needs_repair(roots: RuntimeRoots, plugin_id: str) -> bool:
+    from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
+
+    record = _user_plugin(roots, plugin_id)
+    if record is None:
+        # A completed migration followed by uninstall must remain uninstalled.
+        return (StoragePaths(roots.user_root).user_plugins_dir / plugin_id).exists()
+    root = StoragePaths(roots.user_root).user_plugins_dir / record.directory_name
+    if _separate_user_version(root, plugin_id):
+        return False
+    try:
+        _record(roots, root, plugin_id)
+        dependencies = PluginDependencyRoots(roots.user_root)
+        dependency = _dependency_root(dependencies, root, StoragePaths(roots.user_root).plugin_dependency_root_for(plugin_id))
+        dependencies._validate_entry(plugin_id, root, dependency, record.entry)
+    except (ValueError, PluginDependencyError):
+        return True
+    return False
+
+
+def _prepare(roots: RuntimeRoots, plugin_id: str, staging: Path, original: Path | None):
+    """Select local code/dependencies, then prepare a complete replacement."""
+    from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
+
+    paths = StoragePaths(roots.user_root)
+    dependencies = PluginDependencyRoots(roots.user_root)
     directory = MIGRATIONS[plugin_id]
-    source = roots.distribution_root / "plugins/builtin" / directory
-    # In-place upgrades and git checkouts may leave only __pycache__ behind.
-    # A directory alone is not an installable plugin payload.
-    if not (source / "plugin.yaml").is_file() and (roots.distribution_root / "app/core_host").is_dir():
-        source = roots.distribution_root / "plugins/optional" / directory
-    installer = LocalPluginInstaller(roots)
-    if (source / "plugin.yaml").is_file() and not uses_retired_model_api(source):
-        dependencies = PluginDependencyRoots(roots.user_root, distribution_root=roots.distribution_root)
+    payload = roots.distribution_root / PAYLOAD_PATH
+    backups = roots.user_root / "plugins/migration-backups"
+    sources = [original] if original is not None else []
+    sources.append(roots.distribution_root / "plugins/builtin" / directory)
+    # 1.2.0 backups contain code under a random directory. They remain read-only.
+    sources.extend(path.parent for path in sorted(backups.glob("*/*/plugin.yaml"), reverse=True))
+    sources.append(payload / "plugins" / directory)
+    if (roots.distribution_root / "app/core_host").is_dir():
+        sources.append(roots.distribution_root / "plugins/optional" / directory)
+    dependency_sources = [
+        paths.plugin_dependency_root_for(plugin_id),
+        roots.distribution_root / "plugins/dependencies" / plugin_id,
+        *sorted(backups.glob(f"*/dependencies/{plugin_id}"), reverse=True),
+        payload / "dependencies" / plugin_id,
+    ]
+    last_error = ValueError("PLUGIN_MIGRATION_SOURCE_MISSING")
+    for source in sources:
+        if not (source / "plugin.yaml").is_file():
+            continue
         try:
-            dependencies.verified_root(plugin_id, source, source="bundled")
-            offline = True
-        except PluginDependencyError as error:
-            if error.code not in {"PLUGIN_DEPENDENCIES_MISSING", "PLUGIN_DEPENDENCIES_STALE"}:
-                raise
-            offline = False
-        installer.install(source, "folder", initial_enabled=enabled,
-                          expected_plugin_id=plugin_id, offline_dependencies=offline, reuse_dependencies=True)
+            record = _record(roots, source, plugin_id)
+            declaration = dependencies.declaration(source)
+        except (ValueError, PluginDependencyError) as error:
+            last_error = error
+            continue
+        code = staging / "code"
+        if code.exists():
+            shutil.rmtree(code)
+        shutil.copytree(source, code, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        candidates = [None] if declaration is None else dependency_sources
+        for candidate in candidates:
+            copied_dependencies = None
+            try:
+                dependency = None if candidate is None else _dependency_root(dependencies, code, candidate)
+                if dependency is not None and dependency != paths.plugin_dependency_root_for(plugin_id):
+                    copied_dependencies = staging / "dependencies"
+                    if copied_dependencies.exists():
+                        shutil.rmtree(copied_dependencies)
+                    shutil.copytree(dependency, copied_dependencies)
+                dependencies._validate_entry(plugin_id, code, copied_dependencies or dependency, record.entry)
+            except PluginDependencyError as error:
+                last_error = error
+                continue
+            return code, copied_dependencies
+    raise last_error
+
+
+def _publish(roots: RuntimeRoots, plugin_id: str, code: Path, dependencies: Path | None, target: Path) -> None:
+    """Keep originals until staging is ready; backups also survive process exit."""
+    dependency_target = StoragePaths(roots.user_root).plugin_dependency_root_for(plugin_id)
+    backup = roots.user_root / "plugins/migration-backups" / str(uuid.uuid4())
+    moved: list[tuple[Path, Path]] = []
+    published: list[Path] = []
+    replacements = [(dependencies, dependency_target), (code, target)]
+    try:
+        for prepared, destination in replacements:
+            if prepared is None:
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                saved = backup / (f"dependencies/{plugin_id}" if destination == dependency_target else target.name)
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(destination, saved)
+                moved.append((saved, destination))
+            os.replace(prepared, destination)
+            published.append(destination)
+    except Exception:
+        for destination in reversed(published):
+            try:
+                shutil.rmtree(destination)
+            except OSError as rollback_error:
+                _failure(rollback_error, "PLUGIN_MIGRATION_ROLLBACK_FAILED", plugin_id)
+        for saved, destination in reversed(moved):
+            try:
+                os.replace(saved, destination)
+            except OSError as rollback_error:
+                _failure(rollback_error, "PLUGIN_MIGRATION_ROLLBACK_FAILED", plugin_id)
+        raise
+
+
+def ensure_external_plugin(roots: RuntimeRoots, plugin_id: str, *, enabled: bool, repair: bool = False) -> None:
+    from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
+
+    paths = StoragePaths(roots.user_root)
+    existing = _user_plugin(roots, plugin_id)
+    if existing is not None and not repair:
         return
-    # No package or dependency is added to the main distribution for this fallback.
-    temporary_root = roots.user_root / "plugins"
-    temporary_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".migration-", dir=temporary_root) as temporary:
-        package = Path(temporary) / "plugin.zip"
-        download_migration_package(plugin_id, package)
-        installer.install(package, "zip", initial_enabled=enabled,
-                          expected=(plugin_id, SOURCES[plugin_id]["version"]), reuse_dependencies=True)
+    original = paths.user_plugins_dir / (existing.directory_name if existing is not None else plugin_id)
+    if existing is not None and _separate_user_version(original, plugin_id):
+        return
+    if existing is None and original.exists():
+        owner = PluginInventory(roots)._record("user", original, {}).plugin_id
+        if owner is not None and owner != plugin_id:
+            raise ValueError("PLUGIN_ID_CONFLICT")
+    paths.user_plugins_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".migration-", dir=paths.user_plugins_dir) as temporary:
+        code, dependencies = _prepare(roots, plugin_id, Path(temporary), original if original.exists() else None)
+        _publish(roots, plugin_id, code, dependencies, original)
+    desired = PluginDesiredStateStore(roots.user_root)
+    if plugin_id not in desired.read():
+        desired.set(plugin_id, enabled)
 
 
-def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], None] | None = None) -> None:
+def _failure(error: Exception, code: str, plugin_id: str | None = None) -> None:
+    log_event("PluginMigration", "插件迁移未完成", diagnostic_attributes(
+        error, reason_code=code, stage="builtin_extraction"),
+        event="plugin.migration.failed", severity="error", plugin_id=plugin_id)
+
+
+def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], None] | None = None) -> dict[str, str]:
     from app.plugins.inventory import PluginDesiredStateStore
 
     config = roots.user_root / "config"
     state_path = config / STATE_NAME
-    try:
-        completed = json.loads(state_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        completed = {} if config.exists() else {key: "not_applicable" for key in MIGRATIONS}
-    if not isinstance(completed, dict) or any(
-        not isinstance(key, str) or value not in ("completed", "not_applicable", "repairing")
-        for key, value in completed.items()
-    ):
-        raise ValueError("PLUGIN_MIGRATION_STATE_INVALID")
-    desired = PluginDesiredStateStore(roots.user_root).read()
-    # Repair only a retired official copy previously adopted by this migration.
-    # Keep its original code so local modifications remain recoverable.
-    from app.plugins.inventory import PluginInventory
-    repairs = {
-        record.plugin_id: roots.user_root / "plugins/user" / record.directory_name
-        for record in PluginInventory(roots).scan().records
-        if record.source == "user" and record.plugin_id in MIGRATIONS
-        and completed.get(record.plugin_id) in {"completed", "repairing"}
-        and "sakura.host.model_slots" in record.requires
-    }
-    pending = [key for key in MIGRATIONS if key not in completed or completed[key] == "repairing" or key in repairs]
-    def report(state, index, plugin_id=None):
+    failures: dict[str, str] = {}
+
+    def report(state, count, total, plugin_id=None):
         if progress is not None:
-            progress({"state": state, "completed": index, "total": len(pending), "pluginId": plugin_id})
-    for index, plugin_id in enumerate(pending):
-        report("running", index, plugin_id)
-        backup = None
-        original = repairs.get(plugin_id)
+            progress({"state": state, "completed": count, "total": total, "pluginId": plugin_id})
+
+    try:
         try:
-            if original is not None:
-                completed[plugin_id] = "repairing"
-                atomic_write_text(state_path, json.dumps(completed, ensure_ascii=False, indent=2) + "\n")
-                backup = roots.user_root / "plugins/migration-backups" / str(uuid.uuid4()) / original.name
-                backup.parent.mkdir(parents=True)
-                original.rename(backup)
-            ensure_external_plugin(roots, plugin_id, enabled=desired.get(plugin_id, True))
-        except Exception as error:
-            report("failed", index, plugin_id)
-            if backup is not None and backup.exists():
-                try:
-                    backup.rename(original)
-                except OSError as rollback_error:
-                    error.add_note(f"Original plugin backup could not be restored: {rollback_error}")
-            # Keep original failure and do not mark complete or touch plugin data.
-            raise RuntimeError(f"插件恢复失败（{plugin_id}）：{error}。请检查网络或磁盘后重新启动。") from error
-        completed[plugin_id] = "completed"
-        try:
-            atomic_write_text(state_path, json.dumps(completed, ensure_ascii=False, indent=2) + "\n")
-        except Exception:
-            report("failed", index, plugin_id)
-            raise
-    if not state_path.exists():
+            completed = json.loads(state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            completed = {} if config.exists() else {key: "not_applicable" for key in MIGRATIONS}
+        if not isinstance(completed, dict):
+            raise ValueError("PLUGIN_MIGRATION_STATE_INVALID")
+    except (OSError, UnicodeError, ValueError) as error:
+        _failure(error, "PLUGIN_MIGRATION_STATE_INVALID")
+        report("failed", 0, len(MIGRATIONS))
+        # Preserve damaged metadata and every user plugin; the Core can still run.
+        return {key: "PLUGIN_MIGRATION_STATE_INVALID" for key in (*MIGRATIONS, "__migration__")}
+
+    def save():
         atomic_write_text(state_path, json.dumps(completed, ensure_ascii=False, indent=2) + "\n")
-    if pending:
-        report("completed", len(pending))
+
+    pending = [plugin_id for plugin_id in MIGRATIONS if completed.get(plugin_id) != "not_applicable"]
+    count = 0
+    for plugin_id in pending:
+        # Include existing-copy import checks in the migration phase, outside
+        # the Core's ordinary initialization deadline.
+        report("running", count, len(pending), plugin_id)
+        state = completed.get(plugin_id)
+        if state not in (None, "completed", "repairing"):
+            failures[plugin_id] = "PLUGIN_MIGRATION_STATE_INVALID"
+            _failure(ValueError("PLUGIN_MIGRATION_STATE_INVALID"), failures[plugin_id], plugin_id)
+            continue
+        try:
+            repair = state == "repairing" or (state == "completed" and _needs_repair(roots, plugin_id))
+            if state == "completed" and not repair:
+                count += 1
+                continue
+            desired = PluginDesiredStateStore(roots.user_root).read()
+            # A persisted repair flag makes interrupted publication resumable.
+            completed[plugin_id] = "repairing"
+            save()
+            ensure_external_plugin(roots, plugin_id, enabled=desired.get(plugin_id, True), repair=repair)
+            completed[plugin_id] = "completed"
+            save()
+            count += 1
+        except Exception as error:
+            code = "PLUGIN_MIGRATION_SOURCE_MISSING" if str(error) == "PLUGIN_MIGRATION_SOURCE_MISSING" else "PLUGIN_MIGRATION_FAILED"
+            failures[plugin_id] = code
+            _failure(error, code, plugin_id)
+    if not state_path.exists():
+        try:
+            save()
+        except OSError as error:
+            failures["__migration__"] = "PLUGIN_MIGRATION_STATE_WRITE_FAILED"
+            _failure(error, failures["__migration__"])
+    if pending or failures:
+        report("failed" if failures else "completed", count, len(pending), next(iter(failures), None))
+    return failures
