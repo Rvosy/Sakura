@@ -406,7 +406,7 @@ export function createRuntimeAppearanceController({
   }
 
   function beginPortraitScaleGesture(event = undefined) {
-    if (portraitScaleGestureActive || disposed || rebinding) return;
+    if (!snapshot || portraitScaleGestureActive || disposed || rebinding) return;
     portraitScaleGestureActive = true;
     portraitScaleGestureRevision = 0;
     portraitScaleGestureTrace = trace.createGesture("portrait-scale");
@@ -472,7 +472,7 @@ export function createRuntimeAppearanceController({
   }
 
   function beginLayoutGesture(event = undefined) {
-    if (layoutGestureActive || disposed || rebinding) return;
+    if (!snapshot || layoutGestureActive || disposed || rebinding) return;
     layoutGestureActive = true;
     layoutGestureOwner = event?.currentTarget || null;
     layoutGestureRevision = 0;
@@ -541,6 +541,7 @@ export function createRuntimeAppearanceController({
   }
 
   function changed(event = undefined, field = undefined) {
+    if (!snapshot || disposed) return;
     try {
       let context = null;
       let tracePrefix = null;
@@ -655,7 +656,7 @@ export function createRuntimeAppearanceController({
   }
 
   async function initialize(input) {
-    applySnapshot(input);
+    if (input) applySnapshot(input);
     for (const [field, inputId] of Object.entries(scalarControls)) {
       document.getElementById(inputId).addEventListener("input", (event) => changed(event, field));
     }
@@ -686,6 +687,7 @@ export function createRuntimeAppearanceController({
     document.getElementById("visualEffectMode").addEventListener("change", changed);
     document.getElementById("bubbleAutoExpand").addEventListener("change", changed);
     document.getElementById("resetThemeButton").addEventListener("click", () => {
+      if (!snapshot || disposed) return;
       fill({ ...draft, themeTokens: clone(snapshot.presentation.themeTokens) });
       changed();
     });
@@ -696,7 +698,15 @@ export function createRuntimeAppearanceController({
         const lifecycle = await invoke("runtime_lifecycle_snapshot");
         const targetGeneration = lifecycle?.supervisor?.generationId;
         if (typeof targetGeneration === "string" && targetGeneration) {
-          await rebindGeneration(targetGeneration);
+          if (!snapshot) {
+            // Startup migration may take minutes. Observe presentation readiness
+            // instead of abandoning initialization after the first failed read.
+            if (lifecycle.characterPresentation?.generationId !== targetGeneration) return;
+            const next = await invoke("settings_character_appearance_get");
+            if (!disposed && next?.presentation?.generationId === targetGeneration) applySnapshot(next);
+          } else {
+            await rebindGeneration(targetGeneration);
+          }
         }
       } catch {
         // A transient lifecycle read must not mutate the draft or persisted baseline.

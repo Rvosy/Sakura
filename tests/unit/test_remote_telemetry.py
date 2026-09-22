@@ -1,13 +1,21 @@
 from __future__ import annotations
+from unittest.mock import MagicMock
 
 import io
 import json
+from types import SimpleNamespace
+from functools import partial
 
-from app.agent.trace import AgentTraceRecorder
+import pytest
+
+from sakura_assistant.agent.trace import AgentTraceRecorder
 from app.core_host import runtime_logging
 from app.core_host.runtime_logging import TELEMETRY_BRIDGE_PREFIX, install_runtime_logging
-from app.llm import api_client
-from app.llm.api_client import ApiRequestError, ApiSettings, OpenAICompatibleClient
+from sakura_assistant.llm import api_client
+from sakura_assistant import diagnostics
+from app.core_host.plugin_host_services import _LoggingHostService
+from app.plugins.host_services import HOST_CALLER
+from sakura_assistant.llm.api_client import ApiRequestError, DialogueSettings, AssistantModelClient
 
 
 SENTINELS = {
@@ -24,6 +32,24 @@ SENTINELS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def assistant_metric_host_bridge(monkeypatch):
+    host = _LoggingHostService()
+
+    def emit(severity, message, *, fields):
+        token = HOST_CALLER.set("sakura.assistant.default")
+        try:
+            return host.call("emit", [[{"severity": severity, "message": message, "fields": fields}], 0])
+        finally:
+            HOST_CALLER.reset(token)
+
+    def model_call(candidate):
+        return emit("debug", "模型请求已结束", fields={"event": "model.call.metric", "modelCall": candidate})
+
+    monkeypatch.setattr(diagnostics, "_logger", SimpleNamespace(model_call=model_call,
+        **{severity: partial(emit, severity) for severity in ("debug", "info", "warning", "error")}))
+
+
 def _telemetry_payloads(stream: io.BytesIO) -> list[dict[str, object]]:
     return [
         json.loads(line.removeprefix(TELEMETRY_BRIDGE_PREFIX))
@@ -36,14 +62,10 @@ def test_model_metric_bridge_is_body_free_and_projects_custom_model(monkeypatch,
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     recorder = AgentTraceRecorder(tmp_path)
-    client = OpenAICompatibleClient(
-        ApiSettings(
-            "https://provider.invalid/v1",
-            SENTINELS["api_key"],
-            SENTINELS["model"],
-        ),
+    client = AssistantModelClient(
+        DialogueSettings(model=SENTINELS["model"]),
         agent_trace_recorder=recorder,
-    )
+     model_client=MagicMock())
     monkeypatch.setattr(
         client,
         "_post_chat_completions",
@@ -75,10 +97,10 @@ def test_model_metric_bridge_is_body_free_and_projects_custom_model(monkeypatch,
 def test_unhandled_error_bridge_preserves_original_error_and_stack() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
-    client = OpenAICompatibleClient(ApiSettings("", "", ""))
+    client = AssistantModelClient(DialogueSettings(model=""), model_client=MagicMock())
     try:
         try:
-            client._ensure_chat_config(SENTINELS["exception"])  # noqa: SLF001
+            raise api_client.ApiConfigError(SENTINELS["exception"])
         except Exception as error:  # noqa: BLE001 - synthetic process-boundary error
             bridge.emit_unhandled("CORE_UNHANDLED_ERROR", error)
     finally:
@@ -97,10 +119,10 @@ def test_failed_model_metric_keeps_estimate_and_unknown_usage(monkeypatch, tmp_p
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     recorder = AgentTraceRecorder(tmp_path)
-    client = OpenAICompatibleClient(
-        ApiSettings("https://provider.invalid/v1", SENTINELS["api_key"], SENTINELS["model"]),
+    client = AssistantModelClient(
+        DialogueSettings(model=SENTINELS["model"]),
         agent_trace_recorder=recorder,
-    )
+     model_client=MagicMock())
     monkeypatch.setattr(
         client,
         "_post_chat_completions",
@@ -126,25 +148,16 @@ def test_failed_model_metric_keeps_estimate_and_unknown_usage(monkeypatch, tmp_p
     assert SENTINELS["exception"] not in json.dumps(metric, sort_keys=True)
 
 
-def test_compatibility_fallback_uses_existing_model_call_sequence(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_provider_compatibility_is_reported_in_one_semantic_model_call(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     recorder = AgentTraceRecorder(tmp_path)
-    client = OpenAICompatibleClient(
-        ApiSettings("https://provider.invalid/v1", "key", "gpt-5-mini"),
+    client = AssistantModelClient(
+        DialogueSettings(model="gpt-5-mini"),
         agent_trace_recorder=recorder,
-    )
-    attempts = 0
-
-    def post(payload, cancel_checker=None):  # type: ignore[no-untyped-def]
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise ApiRequestError("response_format is not supported")
-        assert "response_format" not in payload
-        return {"choices": [{"message": {"content": "ok"}}]}
-
-    monkeypatch.setattr(client, "_post_chat_completions", post)
+     model_client=MagicMock())
+    client._model_client.complete.return_value = {"message": {"content": "ok"},
+        "diagnostics": {"attemptCount": 2, "compatibilityFallbacks": ["response_format"]}}
     try:
         with recorder.operation("telemetry-fallback", finalize_external=True):
             client.complete_raw(
@@ -156,16 +169,17 @@ def test_compatibility_fallback_uses_existing_model_call_sequence(monkeypatch, t
         bridge.close()
 
     metrics = [payload["modelCall"] for payload in _telemetry_payloads(stream)]
-    assert [metric["modelCall"] for metric in metrics] == [1, 2]
-    assert [metric["outcome"] for metric in metrics] == ["failed", "success"]
+    assert [metric["modelCall"] for metric in metrics] == [1]
+    assert [metric["outcome"] for metric in metrics] == ["success"]
+    assert metrics[0]["request"]["attemptCount"] == 2
 
 
 def test_telemetry_bridge_failure_does_not_change_model_result(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     recorder = AgentTraceRecorder(tmp_path)
-    client = OpenAICompatibleClient(
-        ApiSettings("https://provider.invalid/v1", "key", "gpt-5-mini"),
+    client = AssistantModelClient(
+        DialogueSettings(model="gpt-5-mini"),
         agent_trace_recorder=recorder,
-    )
+     model_client=MagicMock())
     monkeypatch.setattr(
         client,
         "_post_chat_completions",
@@ -263,25 +277,16 @@ def test_plugin_source_and_deadline_survive_host_and_core_bridge():
     assert "fixture-secret" not in json.dumps(record)
 
 
-def test_model_failures_classify_http_timeout_and_wrapped_causes():
-    import urllib.error
-
-    for status, domain in [
-        (401, "authentication"),
-        (429, "rate_limit"),
-        (503, "provider"),
-    ]:
+def test_model_failures_classify_provider_diagnostics_and_wrapped_causes():
+    from sakura_model import ModelError
+    for status, domain in [(401, "authentication"), (429, "rate_limit"), (503, "provider")]:
         error = ApiRequestError("PRIVATE_EXCEPTION_MESSAGE")
-        error.__cause__ = urllib.error.HTTPError(
-            "https://PRIVATE_URL", status, "PRIVATE_BODY", {}, None
-        )
+        error.__cause__ = ModelError("MODEL_HTTP_FAILED", "PRIVATE_BODY", diagnostics={"httpStatus": status, "faultDomain": domain})
         result = api_client._request_failure(error)
         assert result["faultDomain"] == domain and result["httpStatus"] == status
         assert "PRIVATE" not in json.dumps(result)
-    timeout = TimeoutError("PRIVATE_EXCEPTION_MESSAGE")
-    assert api_client._request_failure(timeout)["stage"] == "unknown"
-    timeout.sakura_request_stage = "read"
-    assert api_client._request_failure(timeout)["reasonCode"] == "MODEL_READ_TIMEOUT"
+    timeout = ModelError("MODEL_REQUEST_TIMEOUT", "PRIVATE", diagnostics={"faultDomain": "transport"})
+    assert api_client._request_failure(timeout)["reasonCode"] == "MODEL_REQUEST_TIMEOUT"
 
 
 def test_mem0_logs_once_through_the_same_plugin_pipeline():

@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 
+from tests.integration import test_core_host_real_chat_integration as real_chat_fixture
 from tests.integration.test_core_host_real_chat_integration import (
     CAPABILITIES,
     GENERATION_CREDENTIAL,
@@ -14,29 +15,30 @@ from tests.integration.test_core_host_real_chat_integration import (
     _ProviderHandler,
     _configure_app_root,
     _exchange,
+    _isolated_assistant_distribution,
     _request,
     _read,
     _send,
-    _start_host,
     _start_provider,
     _stop,
     _stop_provider,
 )
 
 
-def _install_official_mem0(distribution_root: Path) -> None:
+def _install_official_mem0(distribution_root: Path, user_root: Path) -> None:
     (distribution_root / "app").mkdir(parents=True)
-    plugin_root = distribution_root / "plugins" / "builtin"
+    plugin_root = user_root / "plugins" / "user"
     plugin_root.mkdir(parents=True, exist_ok=True)
-    (plugin_root / "__init__.py").write_text("", encoding="utf-8")
     shutil.copytree(
-        REPO_ROOT / "plugins" / "builtin" / "sakura_mem0",
+        REPO_ROOT / "plugins" / "optional" / "sakura_mem0",
         plugin_root / "sakura_mem0",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     dependency_root = (
-        distribution_root / "plugins" / "dependencies" / "sakura.memory.mem0"
+        user_root / "data/plugin-runtime/dependencies" / "sakura.memory.mem0"
     )
+    from app.plugins.inventory import PluginDesiredStateStore
+    PluginDesiredStateStore(user_root).set("sakura.memory.mem0", True)
     dependency_root.mkdir(parents=True)
     (dependency_root / ".sakura-dependencies.json").write_text(
         json.dumps(
@@ -114,7 +116,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root)
+    _install_official_mem0(distribution_root, app_root)
     api_path = app_root / "config" / "api.yaml"
     system_path = app_root / "config" / "system_config.yaml"
     api_before = api_path.read_bytes()
@@ -136,7 +138,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
     protected_before = _file_contents(protected)
     isolated_cache = tmp_path / "isolated-fastembed-cache"
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(isolated_cache))
-    process = _start_host(app_root, distribution_root=distribution_root)
+    process = real_chat_fixture._start_host(app_root, distribution_root=distribution_root)
     try:
         _negotiate_mem0_plugin(process)
         settings = _exchange(
@@ -224,15 +226,35 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
 
 def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
     tmp_path: Path,
+    monkeypatch,
+    assistant_dependencies,
 ) -> None:
-    from app.agent.tools import ToolRegistry
+    from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
     from app.core_host.provider_settings import ProviderSettingsBoundary
+    from app.plugins.dependencies import PluginDependencyRoots
     from app.storage.runtime_roots import RuntimeRoots
 
     app_root = _configure_app_root(tmp_path, 9)
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root)
+    _install_official_mem0(distribution_root, app_root)
+    service_key = "sakura.model.openai_compatible"
+    shutil.copytree(
+        REPO_ROOT / "plugins" / "builtin" / "sakura_model_openai_compatible",
+        distribution_root / "plugins" / "builtin" / "sakura_model_openai_compatible",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    verified_root = PluginDependencyRoots.verified_root
+    monkeypatch.setattr(
+        PluginDependencyRoots,
+        "verified_root",
+        lambda self, plugin_id, *args, **kwargs: (
+            assistant_dependencies if plugin_id == service_key
+            else verified_root(self, plugin_id, *args, **kwargs)
+        ),
+    )
+    api_path = app_root / "config" / "api.yaml"
+    api_before = api_path.read_bytes()
     first_application = PluginApplicationHost(
         RuntimeRoots(distribution_root, app_root),
         "generation-before-provider-save",
@@ -252,24 +274,22 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
         )["payload"]
         identities = [slot["identity"] for slot in current["model_slots"]]
         assert "plugin:sakura.memory.mem0:curation" in identities
+        assert current["schema_version"] == 2
+        assert current["providers"][0]["serviceKey"] == service_key
+        assert "LOCAL_TEST_KEY" not in json.dumps(current)
         draft = {
-            "providers": [
-                {
-                    **current["providers"][0],
-                    "credential": {"action": "keep", "value": ""},
-                }
-            ],
             "model_slots": {
                 slot["identity"]: dict(slot["selection"])
                 for slot in current["model_slots"]
             },
-            "settings": dict(current["settings"]),
         }
-        draft["model_slots"]["plugin:sakura.memory.mem0:curation"] = {
-            "profile_id": "fixture",
-            "model": "fixture-model",
+        selection = {
+            "serviceKey": service_key,
+            "profileId": "fixture",
+            "modelId": "fixture-model",
         }
-        before = first_application.application.public_snapshot()
+        draft["model_slots"]["plugin:sakura.memory.mem0:curation"] = selection
+        before = first_application._manager.snapshot()
         plugin_pid = next(
             item["pid"]
             for item in before["plugins"]
@@ -291,7 +311,7 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
             "core:vision_chat",
             "plugin:sakura.memory.mem0:curation"
         ]
-        after = first_application.application.public_snapshot()
+        after = first_application._manager.snapshot()
         assert next(
             item["pid"]
             for item in after["plugins"]
@@ -306,9 +326,19 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
                 / "config.json"
             ).read_text(encoding="utf-8")
         )
-        assert plugin_config["curationProfileId"] == "fixture"
-        assert plugin_config["curationModel"] == "fixture-model"
+        assert plugin_config["curationModelRef"] == selection
+        assert "curationProfileId" not in plugin_config
+        assert "curationModel" not in plugin_config
+        refreshed = first_boundary.handle(
+            _request("model-slots-after", "settings.provider_model.get", {})
+        )["payload"]
+        assert next(
+            slot["selection"] for slot in refreshed["model_slots"]
+            if slot["identity"] == "plugin:sakura.memory.mem0:curation"
+        ) == selection
+        assert api_path.read_bytes() == api_before
     finally:
+        first_boundary.close()
         first_application.close()
 
 
@@ -318,8 +348,8 @@ def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root)
-    process = _start_host(app_root, distribution_root=distribution_root)
+    _install_official_mem0(distribution_root, app_root)
+    process = real_chat_fixture._start_host(app_root, distribution_root=distribution_root)
     try:
         hello = _request(
             "plain-hello",

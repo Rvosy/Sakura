@@ -13,7 +13,6 @@ from pathlib import Path, PureWindowsPath
 
 import yaml
 
-from app.agent.mcp.config import load_mcp_config
 from app.agent.reminders import ReminderStore
 from app.config.character_loader import CharacterRegistry
 from app.config.character_studio import CharacterStudioDoc, CharacterStudioService
@@ -312,7 +311,6 @@ def run_legacy_import(
                 import_id=import_id,
             )
             _validate_current_settings(payload, import_id=import_id)
-            load_mcp_config(payload / "config" / "mcp.yaml")
             compatibility_fallbacks = configuration_counts.get(
                 "configCompatibilityFallbacks", 0
             )
@@ -341,22 +339,17 @@ def run_legacy_import(
                 "completed",
                 files=configuration_counts.get("config", 0),
                 fallbacks=compatibility_fallbacks,
-                quarantined_servers=configuration_counts.get(
-                    "mcpServersQuarantined", 0
-                ),
             )
         except Exception as exc:
-            if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
+            if isinstance(exc, LegacyImportError) and exc.code in {"LEGACY_IMPORT_CANCELLED", "LEGACY_SETTINGS_HANDOFF_ROLLBACK_FAILED"}:
                 raise
             shutil.rmtree(payload / "config", ignore_errors=True)
             from app.plugins.inventory import PluginDesiredStateStore
-            from app.config.web_plugin_migration import PLUGIN_ID
+            web_plugin_id = "sakura.web"
 
-            # Configuration quarantine must not turn an unreadable old MCP
-            # switch into a fresh-install default on the next Core startup.
             existing_switches = PluginDesiredStateStore(target).read()
-            web_enabled = existing_switches.get(PLUGIN_ID, not (source / "data/config/mcp.yaml").exists())
-            PluginDesiredStateStore(payload).set(PLUGIN_ID, web_enabled)
+            web_enabled = existing_switches.get(web_plugin_id, True)
+            PluginDesiredStateStore(payload).set(web_plugin_id, web_enabled)
             quarantine = (
                 payload
                 / "data"
@@ -1043,15 +1036,16 @@ def _prepare_memory_model(
     current downloader.
     """
 
-    from plugins.builtin.sakura_mem0.memory import (
-        DEFAULT_EMBEDDING_MODEL,
-        DEFAULT_EMBEDDING_MODEL_CACHE_NAME,
-        MemoryModelTaskCancelled,
-        _embedding_model_cached,
-        _embedding_model_snapshot,
-        _validate_fastembed_snapshot_artifacts,
-        download_embedding_model,
-    )
+    from app.legacy_import.plugin_support import migration_module
+    memory = migration_module("sakura_mem0.memory")
+    DEFAULT_EMBEDDING_MODEL = memory.DEFAULT_EMBEDDING_MODEL
+    DEFAULT_EMBEDDING_MODEL_CACHE_NAME = memory.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    MemoryModelTaskCancelled = memory.MemoryModelTaskCancelled
+    _embedding_model_cached = memory._embedding_model_cached
+    _embedding_model_snapshot = memory._embedding_model_snapshot
+    _validate_fastembed_snapshot_artifacts = memory._validate_fastembed_snapshot_artifacts
+    download_embedding_model = memory.download_embedding_model
+
 
     target_cache = target / "data" / "cache" / "memory"
     staged_cache = payload / "data" / "cache" / "memory"
@@ -1872,12 +1866,6 @@ def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
         raise LegacyImportError(config.config_problem.code, "validating")
     _validate_current_settings(staged, import_id=import_id)
     try:
-        load_mcp_config(staged / "config" / "mcp.yaml")
-    except Exception as exc:  # noqa: BLE001 - expose only a stable, content-free code
-        raise LegacyImportError(
-            "LEGACY_MCP_VALIDATION_FAILED", "validating", "config/mcp.yaml"
-        ) from exc
-    try:
         ReminderStore(staged / "data" / "reminders.json").list_reminders({})
     except Exception as exc:  # noqa: BLE001 - legacy content must not cross the boundary
         raise LegacyImportError(
@@ -1986,10 +1974,10 @@ def _validate_current_settings(
     """
 
     service = AppSettingsService(staged)
+    from app.config.model_references import OPENAI_SERVICE, ModelReferenceRepository, migrate_legacy_model_configuration
+    from app.core_host.screen_host import migrate_legacy_screen_settings
     loaders: tuple[tuple[str, str, Callable[[], object]], ...] = (
-        ("api", "config/api.yaml", service.load_api_settings),
-        ("api_profiles", "config/api.yaml", service.load_api_profiles),
-        ("model_selection", "config/api.yaml", service.load_model_selection),
+        ("model_selection", "config/model_slots.json", ModelReferenceRepository(staged).load),
         ("runtime_loop", "config/system_config.yaml", service.load_runtime_loop_settings),
         ("debug_log", "config/system_config.yaml", service.load_debug_log_settings),
         ("startup", "config/system_config.yaml", service.load_startup_settings),
@@ -2027,6 +2015,37 @@ def _validate_current_settings(
                 "LEGACY_SETTINGS_VALIDATION_FAILED", "validating", relative
             ) from exc
 
+    # Finish validation before creating the plugin-owned handoff files. The
+    # payload transaction inventories these files after this function returns.
+    screen_config = staged / "data" / "plugins" / "sakura.screen_awareness" / "config.json"
+    destinations = [ModelReferenceRepository(staged).path,
+                    staged / "data" / "plugins" / OPENAI_SERVICE / "config.json",
+                    staged / "data" / "plugins" / "sakura.assistant.default" / "config.json",
+                    screen_config]
+    originals = {path: path.read_bytes() if path.exists() else None for path in destinations}
+    handoff_source = "config/api.yaml"
+    try:
+        if (staged / handoff_source).is_file():
+            migrate_legacy_model_configuration(staged)
+        # An explicit import must replace previously initialized target settings.
+        # Generate this file in the isolated payload so commit/rollback owns the
+        # overwrite. If configuration was quarantined, preserve the target file.
+        if service.system_config_path.is_file():
+            handoff_source = "config/system_config.yaml"
+            migrate_legacy_screen_settings(staged)
+    except Exception as exc:
+        try:
+            for path, original in originals.items():
+                if original is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(original)
+        except OSError as rollback_error:
+            raise LegacyImportError("LEGACY_SETTINGS_HANDOFF_ROLLBACK_FAILED", "validating") from rollback_error
+        raise LegacyImportError(
+            "LEGACY_SETTINGS_VALIDATION_FAILED", "validating", handoff_source
+        ) from exc
+
 
 def _validate_characters(
     staged: Path,
@@ -2062,11 +2081,11 @@ def _validate_tts_configs(staged: Path) -> None:
     validators = (
         (
             staged / "data/plugins/sakura.tts.gpt-sovits/config.json",
-            "plugins.builtin.sakura_gpt_sovits.plugin",
+            "sakura_gpt_sovits.plugin",
         ),
         (
             staged / "data/plugins/sakura.tts.genie/config.json",
-            "plugins.builtin.sakura_genie.plugin",
+            "sakura_genie.plugin",
         ),
     )
     for path, module_name in validators:
@@ -2077,7 +2096,8 @@ def _validate_tts_configs(staged: Path) -> None:
             value = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(value, dict):
                 raise ValueError("invalid TTS config")
-            module = __import__(module_name, fromlist=["_parse_config"])
+            from app.legacy_import.plugin_support import migration_module
+            module = migration_module(module_name)
             module._parse_config(value)
         except Exception as exc:  # noqa: BLE001 - provider details remain private
             raise LegacyImportError(

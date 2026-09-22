@@ -12,6 +12,73 @@ const container = () => {
 };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test("cancelling a retired plugin operation does not interrupt the next chat renderer", async () => {
+  const cancelled = [];
+  const host = createRendererHost({ container: container(),
+    loadModule: async () => ({ mount: () => ({ applyState() {}, cancel: value => cancelled.push(value.reason), destroy() {} }) }),
+  });
+  await host.bind(binding());
+  host.begin("plugin");
+  assert.equal(await host.play(control(), "plugin", 0), true);
+  host.begin("chat");
+  const before = cancelled.length;
+  assert.equal(host.cancelOperation("plugin", "scope_closed"), false);
+  assert.equal(cancelled.length, before);
+  assert.equal(await host.play(control(), "chat", 0), true);
+  assert.equal(host.cancelOperation("chat", "cancelled"), true);
+  assert.equal(await host.play(control(), "chat", 1), false);
+  host.destroy();
+});
+
+test("deferred controls prepare without executing and cannot cross an operation or binding change", async () => {
+  const pending = deferred();
+  const events = [];
+  let parses = 0;
+  const host = createRendererHost({
+    container: container(),
+    resolveControl: () => { parses++; return pending.promise; },
+    loadModule: async () => ({ mount: () => ({
+      applyState: state => events.push(state), perform: action => events.push(action), destroy() {},
+    }) }),
+  });
+  await host.bind(binding());
+  host.begin("old");
+  const envelope = { version: 1, bindingId: "a".repeat(32), resourceId: "numeric-1",
+    deferred: { control: { version: 1, resourceId: "numeric-1", payload: { angle: 12 } }, portrait: "", tone: "中性" } };
+  const preparing = host.prepare(envelope, "old");
+  host.cancel();
+  host.begin("new");
+  pending.resolve({ control: control(), reasonCode: "READY" });
+  assert.equal(await preparing, null);
+  assert.deepEqual(events, []);
+  const prepared = await host.prepare(envelope, "new");
+  assert.deepEqual(events, [], "preparation never applies state or one-shot actions");
+  assert.equal(await host.play(prepared, "new", 0), true);
+  assert.deepEqual(events, [{ angle: 12 }, { wave: true }]);
+  await host.bind(binding("b"));
+  host.begin("replacement");
+  assert.equal(await host.prepare(envelope, "replacement"), null);
+  assert.equal(parses, 2, "old binding controls never reach the replacement parser");
+  host.destroy();
+});
+
+test("visual preparation failure falls back to the current picture with a diagnostic", async () => {
+  const errors = [];
+  const host = createRendererHost({ container: container(),
+    resolveControl: async () => { throw new Error("fixture parser unavailable"); },
+    onError: (...args) => errors.push(args),
+    loadModule: async () => ({ mount: () => ({ applyState() {}, destroy() {} }) }),
+  });
+  await host.bind(binding());
+  host.begin("reply");
+  const prepared = await host.prepare({ version: 1, bindingId: "a".repeat(32), resourceId: "numeric-1", deferred: {} }, "reply");
+  assert.equal(prepared, null);
+  assert.equal(await host.play(prepared, "reply", 0), true);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0][1].message, /fixture parser unavailable/);
+  host.destroy();
+});
+
 test("switching a form does not restore revoked resources from the retired renderer", async () => {
   let restores = 0;
   const host = createRendererHost({
@@ -115,7 +182,7 @@ test("late mounts are destroyed and cannot invoke host services after replacemen
   assert.equal(destroyed, 1);
 });
 
-test("history reducer preserves segment identities and controls for visual review", () => {
+test("invalid controls survive presentation and are reported once at execution without losing text", async () => {
   const reducer = createChatPresentationReducer({ initialMessage: "你好" });
   const identity = { generationId: "g", generationNumber: 1, operationId: "op" };
   reducer.reduce({ ...identity, type: "lifecycle", status: "ready", revision: 1 });
@@ -124,8 +191,27 @@ test("history reducer preserves segment identities and controls for visual revie
   reducer.finishTyping();
   reducer.reviewReplyAt(0, "one");
   assert.deepEqual(reducer.current().replyHistorySegments[0].control, control());
-  assert.equal(Object.hasOwn(reducer.current().replyHistorySegments[1], "control"), false);
+  const invalid = reducer.current().replyHistorySegments[1];
+  assert.equal(invalid.text, "two");
+  assert.deepEqual(invalid.control, { broken: true });
   assert.equal(reducer.current().bubbleText, "one");
+  const errors = [], applied = [];
+  const host = createRendererHost({ container: container(), onError: (...args) => errors.push(args),
+    loadModule: async () => ({ mount: () => ({ applyState: state => applied.push(state), destroy() {} }) }),
+  });
+  await host.bind(binding());
+  host.begin("op");
+  assert.equal(await host.play(control(), "op", 0), true);
+  assert.equal(await host.play(invalid.control, "op", 1), false);
+  assert.equal(await host.play(invalid.control, "op", 1), false);
+  assert.deepEqual(applied, [{ angle: 12 }]);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0][0], "VISUAL_CONTROL_INVALID");
+  assert.equal(errors[0][2], "visual.control.validate");
+  host.cancel();
+  assert.equal(await host.play(invalid.control, "op", 2), false);
+  assert.equal(errors.length, 1);
+  host.destroy();
 });
 
 test("a rejected control preserves the renderer and reports a recoverable diagnostic", async () => {

@@ -85,12 +85,7 @@ fn png_metadata(bytes: &[u8], byte_length: u64) -> Result<PortraitMetadata, Stri
     }
     let width = u32::from_be_bytes(bytes[16..20].try_into().expect("PNG width slice"));
     let height = u32::from_be_bytes(bytes[20..24].try_into().expect("PNG height slice"));
-    if width == 0
-        || height == 0
-        || width > 8192
-        || height > 8192
-        || u64::from(width) * u64::from(height) > 40_000_000
-    {
+    if width == 0 || height == 0 {
         return Err("CHARACTER_RESOURCE_DIMENSIONS_REJECTED".to_string());
     }
     Ok(PortraitMetadata {

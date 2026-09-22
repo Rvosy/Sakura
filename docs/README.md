@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: all
 source_of_truth: self
-updated: 2026-09-13
+updated: 2026-09-22
 ---
 
 # Sakura 文档
@@ -16,12 +16,14 @@ updated: 2026-09-13
 - [安装与首次配置](userdocs/SETUP.md)
 - [API 供应商与模型](userdocs/API_CONFIG.md)
 - [聊天、截图与屏幕感知](userdocs/CHAT_SCREEN_AND_CONTEXT.md)
+- [数据与存储](userdocs/RUNTIME_V2_STORAGE.md)
+- [联网搜索与网页读取](userdocs/WEB_SEARCH.md)
 - [匿名统计与远程诊断](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
 - [macOS 使用说明](userdocs/MACOS_SETUP.md)
 - [Linux 使用说明](userdocs/LINUX_SETUP.md)
 - [窗口交互](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
 - [外观设置](userdocs/RUNTIME_V2_APPEARANCE.md)
-- [MCP 工具](userdocs/RUNTIME_V2_MCP.md)
+- [MCP 基础组件](userdocs/RUNTIME_V2_MCP.md)
 - [Python 插件](userdocs/RUNTIME_V2_PLUGINS.md)
 - [运行日志与故障排查](userdocs/RUNTIME_LOG_TROUBLESHOOTING.md)
 

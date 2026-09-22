@@ -11,7 +11,6 @@ use std::{
 };
 
 pub const CHARACTER_PROTOCOL: &str = "sakura-character";
-const ASSET_LIMIT: u64 = 64 * 1024 * 1024;
 const THEME_KEYS: [&str; 11] = [
     "primary",
     "primaryHover",
@@ -107,11 +106,7 @@ impl CharacterPresentation {
         if self.generation_id != generation {
             return Err("CHARACTER_PRESENTATION_GENERATION_STALE".into());
         }
-        if !identifier(&self.character_id)
-            || self.display_name.is_empty()
-            || self.display_name.len() > 512
-            || self.initial_message.len() > 65536
-        {
+        if !identifier(&self.character_id) || self.display_name.is_empty() {
             return Err("CHARACTER_PRESENTATION_INVALID".into());
         }
         if self.theme_tokens.len() != 11
@@ -127,10 +122,7 @@ impl CharacterPresentation {
             return Err("CHARACTER_PRESENTATION_THEME_INVALID".into());
         }
         if let Some(visual) = &self.visual {
-            if !hex_id(&visual.binding_id)
-                || !identifier(&visual.resource_id)
-                || visual.assets.len() > 256
-            {
+            if !hex_id(&visual.binding_id) || !identifier(&visual.resource_id) {
                 return Err("VISUAL_PRESENTATION_INVALID".into());
             }
             safe_relative(&visual.renderer)?;
@@ -138,7 +130,7 @@ impl CharacterPresentation {
                 safe_relative(editor)?;
             }
             for (key, path) in &visual.assets {
-                if key.is_empty() || key.len() > 1024 {
+                if key.is_empty() {
                     return Err("VISUAL_ASSET_INVALID".into());
                 }
                 safe_relative(path)?;
@@ -417,7 +409,7 @@ impl CharacterPresentationState {
             _ => "application/octet-stream",
         };
         Ok(CharacterResource {
-            bytes: read_bounded(&path, ASSET_LIMIT)?,
+            bytes: read_resource(&path)?,
             content_type,
         })
     }
@@ -572,7 +564,7 @@ impl CharacterPresentationState {
             _ => "application/octet-stream",
         };
         Ok(CharacterResource {
-            bytes: read_bounded(&path, ASSET_LIMIT)?,
+            bytes: read_resource(&path)?,
             content_type,
         })
     }
@@ -615,7 +607,7 @@ impl CharacterPresentationState {
             return Err("VISUAL_MODULE_REJECTED".into());
         }
         Ok(CharacterResource {
-            bytes: read_bounded(&path, 4 * 1024 * 1024)?,
+            bytes: read_resource(&path)?,
             content_type: "text/javascript; charset=utf-8",
         })
     }
@@ -654,7 +646,7 @@ impl CharacterPresentationState {
                 return Ok(mask);
             }
         }
-        let bytes = read_bounded(&path, 16 * 1024 * 1024)?;
+        let bytes = read_resource(&path)?;
         let metadata = inspect_png(&path, bytes.len() as u64)?;
         let mask = decode_png_alpha_mask(&bytes, metadata)?;
         let mut cache = active
@@ -715,7 +707,7 @@ fn find_package(user: &Path, id: &str) -> Result<PathBuf, String> {
         let Ok(path) = resolve(&root, "character.json") else {
             continue;
         };
-        let Ok(bytes) = read_bounded(&path, 256 * 1024) else {
+        let Ok(bytes) = read_resource(&path) else {
             continue;
         };
         let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) else {
@@ -767,21 +759,10 @@ fn resolve(root: &Path, value: &str) -> Result<PathBuf, String> {
     }
     Ok(path)
 }
-fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let file = fs::File::open(path).map_err(|error| {
+fn read_resource(path: &Path) -> Result<Vec<u8>, String> {
+    fs::read(path).map_err(|error| {
         crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_READ_FAILED", error)
-    })?;
-    let mut bytes = Vec::new();
-    file.take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_READ_FAILED", error)
-        })?;
-    if bytes.len() as u64 > limit {
-        return Err("CHARACTER_RESOURCE_SIZE_REJECTED".into());
-    }
-    Ok(bytes)
+    })
 }
 fn identifier(s: &str) -> bool {
     !s.is_empty()
@@ -1211,8 +1192,8 @@ mod tests {
                 .write_image_data(&[255, 0, 0, 0, 0, 255, 0, 255])
                 .unwrap();
         }
-        // Exercise the encoded size boundary while retaining a tiny alpha-mask fixture.
-        bytes.resize(16 * 1024 * 1024, 0);
+        // Encoded size does not determine decoded memory cost.
+        bytes.resize(16 * 1024 * 1024 + 1, 0);
         fs::write(dir.path().join("characters/model/assets/image.png"), &bytes).unwrap();
         input
             .visual
@@ -1228,12 +1209,9 @@ mod tests {
             state.active_portrait_alpha_mask("surface", "g").unwrap(),
             mask
         );
-        bytes.push(0);
-        fs::write(dir.path().join("characters/model/assets/image.png"), &bytes).unwrap();
-        assert!(state.active_portrait_alpha_mask("surface", "g").is_err());
     }
     #[test]
-    fn editor_assets_are_generic_bounded_and_revoked_with_the_provider() {
+    fn editor_assets_are_generic_and_revoked_with_the_provider() {
         let dir = Fixture::new();
         let state = CharacterPresentationState::new(dir.path().into());
         let mut input = fixture(dir.path());
@@ -1272,8 +1250,8 @@ mod tests {
             assert!(load(path).is_err());
         }
         let oversized = fs::File::create(root.join("large.bin")).unwrap();
-        oversized.set_len(ASSET_LIMIT + 1).unwrap();
-        assert!(load("large.bin").is_err());
+        oversized.set_len(64 * 1024 * 1024 + 1).unwrap();
+        assert_eq!(load("large.bin").unwrap().bytes.len(), 64 * 1024 * 1024 + 1);
         assert!(state
             .load_editor_asset("67", &binding, &hex_text("model.json"), "next")
             .is_err());

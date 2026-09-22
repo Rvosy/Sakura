@@ -23,6 +23,8 @@ PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
         "plugins.enabled.set",
         "plugins.settings.action",
         "plugins.install",
+        "plugins.marketplace.context",
+        "plugins.marketplace.install",
         "plugins.uninstall",
         "plugins.collection.query",
         "plugins.collection.create",
@@ -69,6 +71,7 @@ class PluginSettingsBoundary:
         roots: RuntimeRoots | Path,
         *,
         application_provider: Callable[[], object | None] | None = None,
+        initialization_failed: Callable[[], bool] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
@@ -76,6 +79,7 @@ class PluginSettingsBoundary:
         self._user_root = self._roots.user_root
         self._config_path = StoragePaths(self._user_root).plugins_config()
         self._application_provider = application_provider
+        self._initialization_failed = initialization_failed or (lambda: False)
         self._save_lock = threading.Lock()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -111,6 +115,15 @@ class PluginSettingsBoundary:
                 if set(payload) != {"pluginId", "sectionId", "actionId", "values"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置动作格式无效。")
                 result = self.action(payload)
+            elif name == "plugins.marketplace.context":
+                application = self._application()
+                if payload or application is None:
+                    raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件服务尚未就绪。")
+                result = application.marketplace_context()
+            elif name == "plugins.marketplace.install":
+                if set(payload) != {"revision", "sourcePath", "pluginId", "version"}:
+                    raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
+                result = self.marketplace_install(payload)
             elif name == "plugins.install":
                 if set(payload) != {"revision", "sourceKind", "sourcePath"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件安装请求格式无效。")
@@ -145,34 +158,32 @@ class PluginSettingsBoundary:
 
     def snapshot(self) -> dict[str, object]:
         application = self._application()
-        inventory = PluginInventory(self._roots).scan()
+        inventory = self._refresh_inventory(application)
         if application is None:
-            plugins = [_preview_plugin(record) for record in inventory.records[:64]]
+            plugins = [_project_plugin({}, record=record) for record in inventory.records[:64]]
             state = "starting"
             reason = "PLUGIN_APPLICATION_NOT_READY"
+            if self._initialization_failed():
+                state = "failed"
+                reason = "PLUGIN_APPLICATION_FAILED"
+                for plugin in plugins:
+                    if plugin["state"] == "starting":
+                        plugin.update(state="failed", reasonCode=reason)
         else:
             try:
                 state = getattr(application, "state", "degraded")
                 state = state if state in _PLUGIN_STATES else "degraded"
                 reason = getattr(application, "reason_code", "STATUS_INVALID")
-                if state == "starting":
-                    public = getattr(application, "public_snapshot")()
-                    plugins = [
-                        item
-                        for item in public.get("plugins", [])[:64]
-                        if isinstance(item, Mapping)
-                    ]
-                    if not plugins:
-                        plugins = [_preview_plugin(record) for record in inventory.records[:64]]
-                    else:
-                        plugins = _project_plugins(plugins, inventory)
-                else:
-                    raw = getattr(application, "settings_snapshot")()
-                    plugins = raw.get("plugins", []) if isinstance(raw, Mapping) else []
-                    plugins = _project_plugins(
-                        [item for item in plugins[:64] if isinstance(item, Mapping)],
-                        inventory,
-                    )
+                raw = getattr(application, "settings_snapshot")()
+                if isinstance(raw, Mapping):
+                    state = raw.get("state", state)
+                    state = state if state in _PLUGIN_STATES else "degraded"
+                    reason = raw.get("reasonCode", reason)
+                plugins = raw.get("plugins", []) if isinstance(raw, Mapping) else []
+                plugins = _project_plugins(
+                    [item for item in plugins[:64] if isinstance(item, Mapping)],
+                    inventory,
+                )
             except Exception:
                 public = getattr(application, "public_snapshot")()
                 plugins = _project_plugins(
@@ -197,8 +208,6 @@ class PluginSettingsBoundary:
         plugin_id = _identifier(payload.get("pluginId"))
         section_id = _identifier(payload.get("sectionId"))
         values = dict(_object(payload.get("values")))
-        if len(json.dumps(values, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
-            raise PluginSettingsError("INVALID_REQUEST", "插件设置内容过大。")
         with self._save_lock:
             application = self._application()
             if application is None:
@@ -243,7 +252,16 @@ class PluginSettingsBoundary:
             except Exception as error:
                 code = str(getattr(error, "code", "PLUGIN_LIFECYCLE_FAILED"))
                 raise PluginSettingsError(code, "插件启停未能应用。") from error
-        return dict(result)
+            result = dict(result)
+            result["plugins"] = _project_plugins(
+                [item for item in result.get("plugins", [])[:64] if isinstance(item, Mapping)],
+                self._refresh_inventory(application),
+            )
+            changed = next((item for item in result["plugins"] if item["installId"] == install_id), None)
+            if (result.get("applicationState") == "error" and changed is not None
+                    and changed["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"):
+                result["applicationReasonCode"] = changed["reasonCode"]
+        return result
 
     def action(self, payload: Mapping[str, Any]) -> dict[str, object]:
         application = self._application()
@@ -267,6 +285,7 @@ class PluginSettingsBoundary:
         raw_revision: object,
         raw_source_kind: object,
         raw_source_path: object,
+        *, expected: tuple[str, str] | None = None,
     ) -> dict[str, object]:
         revision = _revision_value(raw_revision)
         if raw_source_kind not in {"zip", "folder"}:
@@ -294,7 +313,7 @@ class PluginSettingsBoundary:
                 )
             installer = LocalPluginInstaller(self._roots)
             try:
-                installed = installer.install(Path(raw_source_path), str(raw_source_kind))
+                installed = installer.install(Path(raw_source_path), str(raw_source_kind), expected=expected)
             except PluginInstallError as error:
                 raise PluginSettingsError(error.code, "本地插件安装失败。") from error
             try:
@@ -305,6 +324,7 @@ class PluginSettingsBoundary:
                     installer.remove_installed_code(installed)
                 except PluginInstallError as error:
                     rollback_error = error
+                application.refresh_inventory()
                 code = (
                     rollback_error.code
                     if rollback_error is not None
@@ -321,6 +341,75 @@ class PluginSettingsBoundary:
             installId=installed.install_id,
             pluginId=installed.plugin_id,
         )
+        return result
+
+    def marketplace_install(self, payload: Mapping[str, Any]) -> dict[str, object]:
+        plugin_id = _identifier(payload["pluginId"])
+        version = payload["version"]
+        source_path = payload["sourcePath"]
+        if (not isinstance(version, str) or not version or not isinstance(source_path, str)
+                or not source_path or len(source_path) > 4096 or not Path(source_path).is_absolute()):
+            raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
+        revision = _revision_value(payload["revision"])
+        existing = next((p for p in self.snapshot()["plugins"]
+                         if p["pluginId"] == plugin_id and not p["reasonCode"].startswith("PLUGIN_MIGRATION_")), None)
+        if existing is None:
+            return self.install(revision, "zip", source_path, expected=(plugin_id, version))
+        with self._save_lock:
+            if revision != self._revision():
+                raise PluginSettingsError("CONFIG_REVISION_CONFLICT", "插件列表已变化，请刷新后重试。")
+            application = self._application()
+            if application is None:
+                raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件服务尚未就绪。")
+            if existing["source"] != "user":
+                raise PluginSettingsError("BUNDLED_PLUGIN_LOCKED", "内置插件随应用更新。")
+            installer = LocalPluginInstaller(self._roots)
+            try:
+                with application.plugin_update(plugin_id) as dependents:
+                    pending = None
+                    installed = None
+                    def activate(install_id):
+                        snapshot = application.install_plugin(install_id)
+                        current = next((p for p in snapshot.get("plugins", []) if p["pluginId"] == plugin_id), None)
+                        if existing["enabled"] and (current is None or current.get("state") != "active"):
+                            raise PluginSettingsError("PLUGIN_UPDATE_START_FAILED", "更新后的插件未能启动。")
+                        application.restore_update_dependents(dependents)
+
+                    try:
+                        # Release processes and file handles before moving code or dependencies.
+                        application.uninstall_plugin(plugin_id)
+                        pending = installer.begin_uninstall(existing["installId"])
+                        installer._restore_config_text(pending.config_before)
+                        installed = installer.install(Path(source_path), "zip", expected=(plugin_id, version),
+                                                      initial_enabled=existing["enabled"])
+                        activate(installed.install_id)
+                    except Exception as error:
+                        recovery_error = None
+                        try:
+                            application.uninstall_plugin(plugin_id)
+                            if installed is not None:
+                                installer.remove_installed_code(installed)
+                            if pending is not None:
+                                installer.rollback_uninstall(pending)
+                            application.refresh_inventory()
+                            activate(existing["installId"])
+                        except Exception as recovery:
+                            recovery_error = recovery
+                        code = "PLUGIN_UPDATE_ROLLBACK_FAILED" if recovery_error else getattr(error, "code", "PLUGIN_UPDATE_FAILED")
+                        message = "插件更新失败，旧版本恢复失败。" if recovery_error else "插件更新失败，已恢复旧版本。"
+                        raise PluginSettingsError(code, message, recovery_error=recovery_error) from error
+                    try:
+                        installer.commit_uninstall(pending)
+                    except PluginInstallError as error:
+                        raise PluginSettingsError(error.code, "插件已更新，但旧文件清理失败。") from error
+            except PluginSettingsError:
+                raise
+            except Exception as error:
+                code = getattr(error, "code", "PLUGIN_UPDATE_FAILED")
+                message = "当前互动尚未结束，请结束后重试更新。" if code == "RUNTIME_UPDATE_BUSY" else "插件更新失败。"
+                raise PluginSettingsError(code, message, retryable=code == "RUNTIME_UPDATE_BUSY") from error
+        result = self.snapshot()
+        result.update(managementAction="updated", installId=installed.install_id, pluginId=plugin_id)
         return result
 
     def uninstall(self, raw_revision: object, raw_install_id: object) -> dict[str, object]:
@@ -354,6 +443,7 @@ class PluginSettingsBoundary:
                     installer.rollback_uninstall(pending)
                 except PluginInstallError as error:
                     rollback_error = error
+                application.refresh_inventory()
                 code = (
                     rollback_error.code
                     if rollback_error is not None
@@ -403,8 +493,6 @@ class PluginSettingsBoundary:
             for key, value in payload.items()
             if key not in {"pluginId", "sectionId", "collectionId"}
         }
-        if len(json.dumps(arguments, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
-            raise PluginSettingsError("INVALID_REQUEST", "插件 Collection 请求内容过大。")
         try:
             result = getattr(application, "settings_collection")(
                 operation,
@@ -416,10 +504,7 @@ class PluginSettingsBoundary:
         except Exception as error:
             code = str(getattr(error, "code", "SETTINGS_COLLECTION_FAILED"))
             raise PluginSettingsError(code, "插件 Collection 操作失败。") from error
-        if (
-            not isinstance(result, Mapping)
-            or len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 256 * 1024
-        ):
+        if not isinstance(result, Mapping):
             raise PluginSettingsError(
                 "SETTINGS_COLLECTION_RESULT_INVALID",
                 "插件 Collection 响应无效。",
@@ -432,7 +517,14 @@ class PluginSettingsBoundary:
         return None
 
     def _revision(self) -> str:
-        return PluginInventory(self._roots).scan().revision
+        return self._refresh_inventory(self._application()).revision
+
+    def _refresh_inventory(self, application):
+        return (
+            application.refresh_inventory()
+            if application is not None
+            else PluginInventory(self._roots).scan()
+        )
 
 def _preview_plugin(spec: Any) -> dict[str, object]:
     supported = bool(spec.supported)
@@ -456,7 +548,7 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "requires": list(spec.requires),
         "missingServices": [],
         "state": (
-            "failed" if supported and enabled else "disabled" if supported else "failed"
+            "starting" if supported and enabled else "disabled" if supported else "failed"
         ),
         "reasonCode": "PLUGIN_APPLICATION_NOT_READY" if supported and enabled else spec.reason_code,
         "sections": [],
@@ -493,6 +585,10 @@ def _project_plugin(
     plugin_id = raw.get("pluginId")
     if plugin_id is not None:
         plugin_id = _identifier(plugin_id)
+    model_update_required = (
+        "sakura.host.model_slots" in _identifier_list(raw.get("requires"))
+        or raw.get("reasonCode") == "MODEL_API_UPDATE_REQUIRED"
+    )
     return {
         "installId": _install_identifier(raw.get("installId")),
         "pluginId": plugin_id,
@@ -505,12 +601,18 @@ def _project_plugin(
         "required": bool(raw.get("required")) and source != "user",
         "source": source,
         "canUninstall": source == "user",
-        "supported": bool(raw.get("supported")),
+        "supported": bool(raw.get("supported")) and not model_update_required,
         "provides": _identifier_list(raw.get("provides")),
         "requires": _identifier_list(raw.get("requires")),
         "missingServices": _identifier_list(raw.get("missingServices")),
-        "state": raw.get("state") if raw.get("state") in {"disabled", "active", "failed"} else "failed",
-        "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
+        "state": (
+            ("failed" if raw.get("enabled") else "disabled") if model_update_required
+            else "starting" if raw.get("enabled") and raw.get("reasonCode") in {"NOT_STARTED", "PLUGIN_STARTING"}
+            else raw.get("state") if raw.get("state") in {"disabled", "starting", "active", "failed"}
+            else "failed"
+        ),
+        "reasonCode": "MODEL_API_UPDATE_REQUIRED" if model_update_required else _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
+        "pages": raw.get("pages", []),
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
     }
 
@@ -523,8 +625,6 @@ def _object(value: object) -> Mapping[str, Any]:
 
 def _boolean_mapping(value: object) -> dict[str, bool]:
     raw = _object(value)
-    if len(raw) > 64:
-        raise PluginSettingsError("INVALID_REQUEST", "插件启停项过多。")
     result: dict[str, bool] = {}
     for key, item in raw.items():
         if not isinstance(key, str) or not isinstance(item, bool):
@@ -535,19 +635,13 @@ def _boolean_mapping(value: object) -> dict[str, bool]:
 
 def _settings_mapping(value: object) -> dict[str, dict[str, dict[str, Any]]]:
     raw = _object(value)
-    if len(raw) > 64:
-        raise PluginSettingsError("INVALID_REQUEST", "插件设置项过多。")
     result: dict[str, dict[str, dict[str, Any]]] = {}
     for plugin_id, sections in raw.items():
         section_map = _object(sections)
-        if len(section_map) > 16:
-            raise PluginSettingsError("INVALID_REQUEST", "插件设置区块过多。")
         result[_identifier(plugin_id)] = {
             _identifier(section_id): dict(_object(values))
             for section_id, values in section_map.items()
         }
-    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
-        raise PluginSettingsError("INVALID_REQUEST", "插件设置内容过大。")
     return result
 
 
@@ -569,7 +663,7 @@ def _install_identifier(value: object) -> str:
 
 
 def _identifier_list(value: object) -> list[str]:
-    if not isinstance(value, list) or len(value) > 64:
+    if not isinstance(value, list):
         return []
     result: list[str] = []
     for item in value:

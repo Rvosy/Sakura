@@ -23,8 +23,6 @@ def export_visual_archive(package: Path, resource: CharacterVisualResource, proj
     _check(cancel_check)
     entry = relative_resource_path(projection["entry"])
     data = json.dumps(projection["data"], ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
-    if len(data) > 256 * 1024:
-        raise CharacterArchiveError("表现资源配置过大。")
     assets = projection["assets"]
     root = resolve_resource_path(package, resource.root)
     sources = {}

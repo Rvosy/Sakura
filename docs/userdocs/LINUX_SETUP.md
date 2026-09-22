@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-21
+updated: 2026-09-22
 ---
 
 # 在 Linux 上使用 Sakura
@@ -57,7 +57,7 @@ Linux 使用 GTK 输入区域实现点击穿透：只有立绘和可见控件接
 
 ## 语音
 
-语音可以关闭。关闭后只显示字幕，不启动合成任务。Linux 可运行 `bash scripts/install_gpt_sovits_linux.sh` 安装本地 GPT-SoVITS（只创建名为 `sovits` 的 Python 3.10 conda 环境，其余用 pip；文件默认放在仓库根目录的 `envs/sovits` 与 `tts/`），也可以连接本机或局域网上已有的 GPT-SoVITS、Genie 服务：
+语音可以关闭。关闭后只显示字幕，不启动合成任务。先从插件市场安装 GPT-SoVITS 或 Genie 并启用，见[插件指南](RUNTIME_V2_PLUGINS.md)。Linux 可运行 `bash scripts/install_gpt_sovits_linux.sh` 安装本地 GPT-SoVITS（只创建名为 `sovits` 的 Python 3.10 conda 环境，其余用 pip；文件默认放在仓库根目录的 `envs/sovits` 与 `tts/`），也可以连接本机或局域网上已有的 GPT-SoVITS、Genie 服务：
 
 1. 安装本地组件，或先启动已有语音服务；
 2. 打开“设置 → 语音”；

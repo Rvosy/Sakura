@@ -1,17 +1,18 @@
 from __future__ import annotations
+from unittest.mock import MagicMock
 
 import json
 from pathlib import Path
 from typing import Any
 
-from app.agent.trace import (
+from sakura_assistant.agent.trace import (
     AgentTraceRecorder,
     PromptTraceMetadata,
     TRACE_PROVENANCE_KEY,
     traced_message,
 )
-from app.llm.api_client import ApiRequestError, ApiSettings, OpenAICompatibleClient
-from app.llm.prompts.types import (
+from sakura_assistant.llm.api_client import ApiRequestError, DialogueSettings, AssistantModelClient
+from app.plugin_sdk.sakura_context import (
     ContextFragment,
     ContextFragmentDecision,
     ContextRequest,
@@ -35,14 +36,15 @@ def _documents(recorder: CapturingTraceRecorder) -> list[dict[str, Any]]:
     return recorder.committed_documents
 
 
-class CapturingClient(OpenAICompatibleClient):
-    def __init__(self, recorder: AgentTraceRecorder, *, fail_response_format_once: bool = False) -> None:
+class CapturingClient(AssistantModelClient):
+    def __init__(self, recorder: AgentTraceRecorder, *, provider_compatibility_fallback: bool = False) -> None:
         super().__init__(
-            ApiSettings("https://provider.example/v1", "sk-private-fixture", "trace-model"),
+            DialogueSettings(model="trace-model"),
             agent_trace_recorder=recorder,
+            model_client=MagicMock(),
         )
         self.payloads: list[dict[str, Any]] = []
-        self.fail_response_format_once = fail_response_format_once
+        self.provider_compatibility_fallback = provider_compatibility_fallback
 
     def _post_chat_completions(
         self,
@@ -54,8 +56,8 @@ class CapturingClient(OpenAICompatibleClient):
         captured = json.loads(json.dumps(payload, ensure_ascii=False))
         self.payloads.append(captured)
         assert TRACE_PROVENANCE_KEY not in json.dumps(captured, ensure_ascii=False)
-        if self.fail_response_format_once and len(self.payloads) == 1:
-            raise ApiRequestError("response_format unsupported")
+        if self.provider_compatibility_fallback:
+            self._trace_local.request_diagnostic.update(attemptCount=2, compatibilityFallbacks=["response_format"])
         return {
             "choices": [
                 {
@@ -257,11 +259,11 @@ def test_runtime_context_tail_user_and_merged_system_follow_real_payload_positio
     assert appended["items"][1]["memory"]["id"] == "m-42"
 
 
-def test_compatibility_retry_creates_the_next_model_call_without_losing_operation_block(
+def test_provider_compatibility_keeps_one_semantic_trace_call(
     tmp_path: Path,
 ) -> None:
     recorder = CapturingTraceRecorder(tmp_path)
-    client = CapturingClient(recorder, fail_response_format_once=True)
+    client = CapturingClient(recorder, provider_compatibility_fallback=True)
     with recorder.operation("operation-compat", finalize_external=True):
         client.complete_with_tools(
             "system",
@@ -272,9 +274,7 @@ def test_compatibility_retry_creates_the_next_model_call_without_losing_operatio
     documents = _documents(recorder)
     assert [(item["type"], item["model_call"]) for item in documents] == [
         ("request", 1),
-        ("request", 2),
-        ("reply", 2),
+        ("reply", 1),
     ]
-    assert [item["purpose"] for item in documents] == ["final_reply"] * 3
+    assert [item["purpose"] for item in documents] == ["final_reply"] * 2
     assert "response_format" in documents[0]["parameters"]
-    assert "response_format" not in documents[1]["parameters"]

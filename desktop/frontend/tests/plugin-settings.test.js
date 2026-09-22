@@ -3,8 +3,259 @@ import test from "node:test";
 import { executeSettingsClose } from "../settings/close-flow.js";
 import { field, snapshot, featureFixture, queryResult, settle } from "./fixtures/plugin-settings-fixture.js";
 
+const collectionSurfaces = ["memory", null, "custom_archive"];
+
+test("plugin field availability follows boolean toggles without losing values", async () => {
+  const data = snapshot();
+  const section = data.plugins[0].sections[0];
+  section.fields = [field("enabled", { type: "boolean", value: true }),
+    field("interval", { type: "integer", value: 25, enabledWhen: { field: "enabled", equals: "true" } })];
+  section.values = { enabled: true, interval: 25 };
+  const ui = featureFixture(async () => data);
+  ui.feature.initialize(data);
+  await ui.openSettings();
+  const block = ui.document.querySelector('[data-plugin-section="general"]');
+  const toggle = block.querySelectorAll('input').find(input => input.type === "checkbox");
+  const input = block.querySelectorAll('input').find(input => input.type === "number");
+  assert.equal(input.disabled, false);
+  toggle.checked = false;
+  await toggle.fire("change");
+  await block.fire("change", { target: toggle });
+  assert.equal(input.disabled, true);
+  assert.equal(input.value, "25");
+  toggle.checked = true;
+  await toggle.fire("change");
+  await block.fire("change", { target: toggle });
+  assert.equal(input.disabled, false);
+  assert.equal(input.value, "25");
+  assert.equal(ui.feature.isDirty(), false);
+  ui.feature.dispose();
+});
+
+function collectionSnapshot(surface, generation = "generation-a") {
+  const data = snapshot(generation);
+  data.plugins[0].sections[1].surface = surface;
+  return data;
+}
+
+function collectionControls(document, surface) {
+  const memory = surface === "memory";
+  return {
+    add: () => document.querySelector(memory ? ".memory-add-button" : ".plugin-collection-head button"),
+    record: () => document.querySelector(memory ? ".memory-record-card" : ".plugin-collection-table tbody tr"),
+    input: () => document.querySelector(memory ? ".memory-editor-overlay textarea" : ".plugin-collection-editor textarea"),
+    save: () => document.querySelector(memory ? '[data-memory-action="save"]' : ".plugin-collection-editor .secondary-button"),
+    remove: () => document.querySelector(memory ? '[data-memory-action="delete"]' : ".plugin-collection-editor .danger-button"),
+    search: () => document.querySelector(memory ? ".memory-search-input" : ".plugin-collection-toolbar input"),
+    async openRecord() { await this.record().fire(memory ? "dblclick" : "click"); },
+  };
+}
+
 for (const surface of ["memory", null]) {
-  test(`an open ${surface || "plugin"} collection draft prevents silent Settings close`, async () => {
+  test(`unchanged ${surface || "plugin"} editors remain clean and reverting edits removes the draft`, async () => {
+    const ui = featureFixture(async () => queryResult("note", "saved content"));
+    const { feature, document, runTimers, dirtyNotifications } = ui;
+    const controls = collectionControls(document, surface);
+    feature.initialize(collectionSnapshot(surface));
+    if (surface !== "memory") await ui.openSettings();
+    await runTimers(0);
+    await controls.openRecord();
+    assert.equal(feature.isDirty(), false, "opening a saved record is not a change");
+    assert.equal(feature.collectionDraftCount(), 0);
+    const before = dirtyNotifications();
+    controls.input().value = "changed content";
+    await controls.input().fire("input");
+    assert.equal(feature.isDirty(), true);
+    assert.equal(feature.collectionDraftCount(), 1);
+    assert.ok(dirtyNotifications() > before, "typing updates the settings dirty state");
+    controls.input().value = "saved content";
+    await controls.input().fire("input");
+    assert.equal(feature.isDirty(), false, "restoring the initial fields removes the draft");
+    await feature.save();
+    await controls.add().fire("click");
+    assert.equal(feature.isDirty(), false, "a new untouched editor is not a change");
+    feature.dispose();
+  });
+}
+
+test("global collections remain usable during a pending character selection", async () => {
+  const calls = [];
+  const ui = featureFixture(async (command, args) => {
+    calls.push(args);
+    if (args.operation === "query") return queryResult("global-note");
+    return { itemId: "global-note", values: args.payload.values };
+  }, { hasPendingCharacterSelection: () => true });
+  const { feature, document, runTimers } = ui;
+  const controls = collectionControls(document, null);
+  const data = collectionSnapshot(null);
+  data.plugins[0].sections[1].collections[0].scope = "global";
+  feature.initialize(data);
+  await ui.openSettings();
+  await runTimers(0);
+  assert.ok(calls.length > 0, "pending character choices do not block global reads");
+  await controls.openRecord();
+  controls.input().value = "global draft";
+  await controls.input().fire("input");
+  assert.equal(feature.characterCollectionDraftCount(), 0);
+  feature.clearCharacterState();
+  assert.equal(feature.hasCollectionDrafts(), true, "character changes do not discard global drafts");
+  await controls.save().fire("click");
+  assert.equal(calls.filter((call) => call.operation === "update").length, 1);
+  feature.dispose();
+});
+
+test("a pending character choice locks only character-owned Memory collections in the DOM", async () => {
+  const data = collectionSnapshot("memory");
+  const collections = data.plugins[0].sections[1].collections;
+  collections[0].scope = "character";
+  collections.push({ ...structuredClone(collections[0]), collectionId: "global_entries", scope: "global" });
+  const ui = featureFixture(async (command, args) => {
+    assert.equal(args.collectionId, "global_entries", "character-owned queries stay paused");
+    return queryResult("global-note");
+  }, { hasPendingCharacterSelection: () => true });
+  try {
+    ui.feature.initialize(data);
+    await ui.runTimers(0);
+    assert.deepEqual(ui.document.querySelectorAll(".memory-archive").map((archive) => archive.inert), [true, false]);
+  } finally {
+    ui.feature.dispose();
+  }
+});
+
+for (const [operation, target] of [["disable", "dependency"], ["uninstall", "owner"], ["uninstall", "dependency"]]) {
+  test(`${operation} of the ${target} protects affected Collection edits`, async () => {
+    const data = collectionSnapshot(null);
+    const owner = data.plugins[0];
+    owner.installId = owner.installId.replace("bundled", "user");
+    owner.source = "user";
+    owner.canUninstall = true;
+    owner.sections[1].collections[0].scope = "global";
+    const provider = { ...owner, pluginId: "fixture_dependency", installId: "pi_user_646570656e64656e6379",
+      name: "Fixture dependency", sections: [], provides: ["fixture.dependency"], requires: [] };
+    owner.requires = ["fixture.dependency"];
+    data.plugins.push(provider);
+    const calls = [];
+    const ui = featureFixture(async (command, args) => {
+      calls.push(command);
+      assert.equal(command, "settings_plugins_collection", "deactivation must not reach the host");
+      return queryResult("note");
+    });
+    const { feature, document } = ui;
+    try {
+      feature.initialize(data);
+      await ui.openSettings();
+      await ui.runTimers(0);
+      await document.querySelector(".plugin-collection-table tbody tr").fire("click");
+      const input = document.querySelector(".plugin-collection-editor textarea");
+      input.value = "unsaved record";
+      await input.fire("input");
+      await document.querySelector(".plugin-settings-dialog form").fire("submit");
+      feature.openPlugin(target === "owner" ? owner.installId : provider.installId);
+      const previousCalls = calls.length;
+      if (operation === "disable") {
+        const toggle = document.querySelector(".plugin-enable-switch input");
+        toggle.checked = false;
+        await toggle.fire("change");
+        await assert.rejects(() => feature.save({ keepGlobalCollectionDrafts: true }), /集合记录/);
+      } else {
+        await document.querySelector("#pluginDetail .danger-button").fire("click");
+        assert.match(ui.errors.at(-1), /集合记录/);
+      }
+      assert.equal(calls.length, previousCalls);
+      assert.equal(feature.hasCollectionDrafts(), true);
+    } finally {
+      feature.dispose();
+    }
+  });
+}
+
+test("uninstalling an unrelated plugin retains another plugin's global Collection draft", async () => {
+  const data = collectionSnapshot(null);
+  const owner = data.plugins[0];
+  owner.sections[1].collections[0].scope = "global";
+  const unrelated = { ...owner, pluginId: "unrelated", installId: "pi_user_756e72656c61746564",
+    name: "Unrelated", source: "user", canUninstall: true, sections: [], provides: [], requires: [] };
+  data.plugins.push(unrelated);
+  let uninstalls = 0;
+  const ui = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_collection") return queryResult("note");
+    assert.equal(command, "settings_plugins_uninstall");
+    assert.equal(args.installId, unrelated.installId);
+    uninstalls += 1;
+    return { ...data, plugins: [owner], managementAction: "uninstalled", installId: unrelated.installId,
+      pluginId: unrelated.pluginId };
+  });
+  try {
+    ui.feature.initialize(data);
+    await ui.openSettings();
+    await ui.runTimers(0);
+    const controls = collectionControls(ui.document, null);
+    await controls.openRecord();
+    controls.input().value = "retained draft";
+    await controls.input().fire("input");
+    await ui.document.querySelector(".plugin-settings-dialog form").fire("submit");
+    ui.feature.openPlugin(unrelated.installId);
+    await ui.document.querySelector("#pluginDetail .danger-button").fire("click");
+    assert.equal(uninstalls, 1);
+    assert.equal(ui.feature.hasCollectionDrafts(), true);
+    ui.feature.openPlugin(owner.installId);
+    await ui.openSettings();
+    assert.equal(controls.input().value, "retained draft");
+    assert.deepEqual(ui.errors, []);
+  } finally {
+    ui.feature.dispose();
+  }
+});
+
+for (const initialScope of ["character", "global"]) {
+  test(`reloading a Collection with changed ${initialScope} ownership does not reuse its old editor`, async () => {
+    const data = collectionSnapshot(null);
+    data.plugins[0].sections[1].collections[0].scope = initialScope;
+    const next = structuredClone(data);
+    next.plugins[0].sections[1].collections[0].scope = initialScope === "global" ? "character" : "global";
+    const ui = featureFixture(async (command) => command === "settings_plugins_get" ? next : queryResult("note"));
+    try {
+      ui.feature.initialize(data);
+      await ui.openSettings();
+      await ui.runTimers(0);
+      await ui.document.querySelector(".plugin-collection-table tbody tr").fire("click");
+      const input = ui.document.querySelector(".plugin-collection-editor textarea");
+      input.value = "old scope draft";
+      await input.fire("input");
+      await ui.feature.refreshCurrent();
+      assert.equal(ui.feature.hasCollectionDrafts(), false);
+      assert.equal(ui.document.querySelector(".plugin-collection-editor"), null);
+    } finally {
+      ui.feature.dispose();
+    }
+  });
+}
+
+for (const surface of [null, "memory"]) {
+  test(`clearing an optional number restores the clean ${surface || "plugin"} editor`, async () => {
+    const data = collectionSnapshot(surface);
+    data.plugins[0].sections[1].collections[0].fields.push(field("score", { type: "number", default: null, maxLength: null }));
+    const ui = featureFixture(async () => queryResult("note"));
+    try {
+      ui.feature.initialize(data);
+      if (surface === null) await ui.openSettings();
+      await ui.runTimers(0);
+      await collectionControls(ui.document, surface).openRecord();
+      const input = ui.document.querySelector(surface === "memory" ? ".memory-dialog-form input" : ".plugin-collection-editor input");
+      input.value = "5";
+      await input.fire("input");
+      assert.equal(ui.feature.hasCollectionDrafts(), true);
+      input.value = "";
+      await input.fire("input");
+      assert.equal(ui.feature.hasCollectionDrafts(), false);
+    } finally {
+      ui.feature.dispose();
+    }
+  });
+}
+
+for (const surface of collectionSurfaces) {
+  test(`a modified ${surface || "plugin"} collection draft prevents silent Settings close`, async () => {
     const data = snapshot();
     data.plugins[0].sections[1].surface = surface;
     const { feature, document, dirtyNotifications } = featureFixture(async () => {
@@ -16,8 +267,11 @@ for (const surface of ["memory", null]) {
     const beforeEdit = dirtyNotifications();
     const add = document.querySelector(surface === "memory" ? ".memory-add-button" : ".plugin-collection-head button");
     await add.fire("click");
+    const input = collectionControls(document, surface).input();
+    input.value = "unsaved content";
+    await input.fire("input");
     assert.equal(feature.hasCollectionDrafts(), true);
-    assert.equal(feature.characterDraftCount(), surface === "memory" ? 1 : 0);
+    assert.equal(feature.collectionDraftCount(), 1);
     let choices = 0;
     let closed = false;
     const decision = await executeSettingsClose({
@@ -32,6 +286,7 @@ for (const surface of ["memory", null]) {
     assert.equal(closed, false);
     assert.ok(dirtyNotifications() > beforeEdit);
     await assert.rejects(() => feature.save(), /集合/);
+    await assert.rejects(() => feature.save({ keepGlobalCollectionDrafts: true }), /集合/);
     assert.equal(feature.isDirty(), true);
     feature.discard();
     assert.equal(feature.hasCollectionDrafts(), false);
@@ -67,7 +322,7 @@ test("plugin feature retains Memory editors and detaches old-generation queries 
 
   nextSnapshot = snapshot("generation-b");
   await feature.refreshCurrent();
-  assert.equal(feature.characterDraftCount(), 1);
+  assert.equal(feature.collectionDraftCount(), 1);
   assert.equal(document.querySelector(".memory-search-input").value, "旅行");
   assert.equal(document.querySelector(".memory-editor-overlay textarea").value, "未保存的记忆");
   resolveOldQuery(queryResult("stale"));
@@ -87,12 +342,12 @@ test("plugin feature retains Memory editors and detaches old-generation queries 
   await document.querySelector(".memory-dialog-close").fire("click");
   nextSnapshot = snapshot("generation-c");
   await feature.refreshCurrent();
-  assert.equal(feature.characterDraftCount(), 0, "refreshing a closed editor must not create a phantom draft");
+  assert.equal(feature.collectionDraftCount(), 0, "refreshing a closed editor must not create a phantom draft");
   assert.equal(document.querySelector(".memory-editor-overlay"), null);
   await document.querySelector(".memory-add-button").fire("click");
-  assert.equal(feature.characterDraftCount(), 1);
+  assert.equal(feature.collectionDraftCount(), 0);
   feature.discard();
-  assert.equal(feature.characterDraftCount(), 0);
+  assert.equal(feature.collectionDraftCount(), 0);
   assert.equal(document.querySelector(".memory-editor-overlay"), null);
   feature.dispose();
   assert.equal(timers.size, 0);
@@ -147,11 +402,14 @@ test("a detached collection save callback cannot submit into the next generation
   feature.initialize(snapshot());
   await runTimers(0);
   await document.querySelector(".memory-record-card").fire("dblclick");
+  const input = document.querySelector(".memory-editor-overlay textarea");
+  input.value = "unsaved content";
+  await input.fire("input");
   const oldSave = document.querySelector('[data-memory-action="save"]');
   await feature.refreshCurrent();
   await oldSave.fire("click");
   assert.deepEqual(writes, []);
-  assert.equal(feature.characterDraftCount(), 1);
+  assert.equal(feature.collectionDraftCount(), 1);
   feature.dispose();
 });
 
@@ -235,49 +493,194 @@ test("plugin feature owns page polling and removes mounted listeners and pending
   assert.deepEqual(calls, ["settings_plugins_get"], "disposal cancels queued collection queries");
 });
 
-test("character transitions clear the Memory editor and invalidate outstanding collection reads", async () => {
+for (const surface of collectionSurfaces) {
+  test(`character transitions clear ${surface || "plugin"} drafts and invalidate outstanding collection reads`, async () => {
+    let transitioning = false;
+    let pendingSelection = true;
+    let resolveOldQuery;
+    const queries = [];
+    const fixture = featureFixture(async (command, args) => {
+      if (command === "settings_plugins_get") return collectionSnapshot(surface, "generation-b");
+      assert.equal(command, "settings_plugins_collection");
+      queries.push(args);
+      if (queries.length === 1) return new Promise((resolve) => { resolveOldQuery = resolve; });
+      return queryResult("new-character");
+    }, {
+      isCharacterTransitioning: () => transitioning,
+      hasPendingCharacterSelection: () => pendingSelection,
+    });
+    const { feature, document, runTimers } = fixture;
+    const controls = collectionControls(document, surface);
+    feature.initialize(collectionSnapshot(surface));
+    if (surface !== "memory") await fixture.openSettings();
+    await runTimers(0);
+    assert.equal(queries.length, 0, "a pending character choice blocks reads for the old character");
+    pendingSelection = false;
+    feature.renderMemorySurface();
+    await controls.add().fire("click");
+    controls.input().value = "unsaved character content";
+    await controls.input().fire("input");
+    await runTimers(0);
+    assert.equal(queries.length, 1);
+    assert.equal(feature.collectionDraftCount(), 1);
+    transitioning = true;
+    feature.clearCharacterState();
+    assert.equal(feature.collectionDraftCount(), 0);
+    assert.equal(controls.input(), null);
+    assert.equal(document.querySelector(".memory-editor-overlay"), null);
+    assert.equal(document.querySelector(".settings-shell").hasAttribute("inert"), false);
+    resolveOldQuery(queryResult("old-character"));
+    await settle();
+    await runTimers(0);
+    assert.equal(queries.length, 1);
+    assert.equal(controls.record(), null);
+    transitioning = false;
+    await feature.refreshCurrent();
+    if (surface !== "memory") await fixture.openSettings();
+    await runTimers(0);
+    assert.equal(queries.at(-1).coreGenerationId, "generation-b");
+    assert.equal(controls.record().textContent.includes("new-character"), true);
+    assert.equal(feature.collectionDraftCount(), 0);
+    feature.dispose();
+  });
+
+  test(`${surface || "plugin"} collection operations pause for character changes, including delete confirmation`, async () => {
+    let transitioning = false;
+    let pendingSelection = false;
+    let confirmDelete;
+    const calls = [];
+    const ui = featureFixture(async (command, args) => {
+      assert.equal(command, "settings_plugins_collection");
+      calls.push(args);
+      if (args.operation === "query") return queryResult("note");
+      if (args.operation === "delete") return { deleted: true };
+      return { itemId: "note", values: args.payload.values };
+    }, {
+      isCharacterTransitioning: () => transitioning,
+      hasPendingCharacterSelection: () => pendingSelection,
+      confirmAction: () => new Promise((resolve) => { confirmDelete = resolve; }),
+    });
+    const { feature, document, runTimers } = ui;
+    const controls = collectionControls(document, surface);
+    feature.initialize(collectionSnapshot(surface));
+    if (surface !== "memory") await ui.openSettings();
+    await runTimers(0);
+    await controls.openRecord();
+    controls.input().value = "draft";
+    await controls.input().fire("input");
+    const callsBeforeSwitch = calls.length;
+
+    for (const state of ["pending", "transitioning"]) {
+      pendingSelection = state === "pending";
+      transitioning = state === "transitioning";
+      controls.search().value = state;
+      await controls.search().fire(surface === "memory" ? "input" : "change");
+      await runTimers(220);
+      assert.equal(calls.length, callsBeforeSwitch, "blocked queries must not reach the plugin");
+      await controls.save().fire("click");
+      assert.equal(calls.length, callsBeforeSwitch, "blocked updates must not reach the plugin");
+      await controls.remove().fire("click");
+      assert.equal(confirmDelete, undefined, "blocked deletion must not open a confirmation");
+      assert.equal(calls.length, callsBeforeSwitch, "blocked collection operations must not reach the plugin");
+      pendingSelection = false;
+      transitioning = false;
+
+      const deleting = controls.remove().fire("click");
+      await settle();
+      assert.equal(typeof confirmDelete, "function");
+      pendingSelection = state === "pending";
+      transitioning = state === "transitioning";
+      confirmDelete(true);
+      await deleting;
+      confirmDelete = undefined;
+      assert.equal(calls.length, callsBeforeSwitch, "a confirmed deletion must recheck the character state");
+      assert.equal(controls.input().value, "draft");
+      pendingSelection = false;
+      transitioning = false;
+    }
+
+    await controls.save().fire("click");
+    assert.equal(calls.filter((call) => call.operation === "update").length, 1);
+    assert.equal(feature.hasCollectionDrafts(), false);
+    feature.dispose();
+  });
+}
+
+test("global collections pause during Core transitions and resume interrupted reads afterwards", async () => {
   let transitioning = false;
-  let pendingSelection = true;
-  let resolveOldQuery;
+  let finishOldQuery;
   const queries = [];
-  const fixture = featureFixture(async (command, args) => {
-    if (command === "settings_plugins_get") return snapshot("generation-b");
+  const ui = featureFixture(async (command, args) => {
     assert.equal(command, "settings_plugins_collection");
     queries.push(args);
-    if (queries.length === 1) return new Promise((resolve) => { resolveOldQuery = resolve; });
-    return queryResult("new-character");
-  }, {
-    isMemoryTransitioning: () => transitioning,
-    hasPendingCharacterSelection: () => pendingSelection,
-  });
-  const { feature, document, runTimers } = fixture;
-  feature.initialize(snapshot());
-  await runTimers(0);
-  assert.equal(queries.length, 0, "a pending character choice blocks reads for the old character");
-  pendingSelection = false;
-  feature.renderMemorySurface();
-  await document.querySelector(".memory-add-button").fire("click");
+    if (queries.length === 1) return new Promise((resolve) => { finishOldQuery = resolve; });
+    return queryResult("current-record");
+  }, { isCharacterTransitioning: () => transitioning });
+  const { feature, document, runTimers } = ui;
+  const controls = collectionControls(document, null);
+  const data = collectionSnapshot(null);
+  data.plugins[0].sections[1].collections[0].scope = "global";
+  feature.initialize(data);
+  await ui.openSettings();
   await runTimers(0);
   assert.equal(queries.length, 1);
-  assert.equal(feature.characterDraftCount(), 1);
+
   transitioning = true;
-  feature.clearCharacterState();
-  assert.equal(feature.characterDraftCount(), 0);
-  assert.equal(document.querySelector(".memory-editor-overlay"), null);
-  assert.equal(document.querySelector(".settings-shell").hasAttribute("inert"), false);
-  resolveOldQuery(queryResult("old-character"));
+  finishOldQuery(queryResult("old-record"));
   await settle();
+  feature.renderCollections();
   await runTimers(0);
   assert.equal(queries.length, 1);
-  assert.equal(document.querySelector(".memory-record-card"), null);
+  assert.equal(controls.record(), null);
+
   transitioning = false;
-  await feature.refreshCurrent();
+  feature.renderCollections();
   await runTimers(0);
-  assert.equal(queries.at(-1).coreGenerationId, "generation-b");
-  assert.equal(document.querySelector(".memory-record-card").dataset.itemId, "new-character");
-  assert.equal(feature.characterDraftCount(), 0);
+  assert.equal(queries.length, 2);
+  assert.equal(controls.record().textContent, "current-record");
   feature.dispose();
 });
+
+for (const interruption of ["before query", "during query"]) {
+  test(`loaded collection searches resume after interruption ${interruption}`, async () => {
+    let transitioning = false;
+    let finishSearch;
+    const searches = [];
+    const ui = featureFixture(async (command, args) => {
+      assert.equal(command, "settings_plugins_collection");
+      if (!args.payload.search) return queryResult("unfiltered-record");
+      searches.push(args.payload.search);
+      if (interruption === "during query" && searches.length === 1) {
+        return new Promise((resolve) => { finishSearch = resolve; });
+      }
+      return queryResult("matching-record");
+    }, { isCharacterTransitioning: () => transitioning });
+    const { feature, document, runTimers } = ui;
+    const controls = collectionControls(document, null);
+    feature.initialize(collectionSnapshot(null));
+    await ui.openSettings();
+    await runTimers(0);
+    assert.equal(controls.record().textContent, "unfiltered-record");
+
+    transitioning = interruption === "before query";
+    controls.search().value = "needle";
+    await controls.search().fire("change");
+    transitioning = true;
+    finishSearch?.(queryResult("matching-record"));
+    await settle();
+    const interruptedSearches = searches.length;
+    feature.renderCollections();
+    await runTimers(0);
+    assert.equal(searches.length, interruptedSearches, "the search stays paused during transition");
+
+    transitioning = false;
+    feature.renderCollections();
+    await runTimers(0);
+    assert.deepEqual(searches, interruption === "before query" ? ["needle"] : ["needle", "needle"]);
+    assert.equal(controls.record().textContent, "matching-record");
+    feature.dispose();
+  });
+}
 
 test("About component actions use the owning plugin section and refresh its rendered resource", async () => {
   const resourceValue = (ready) => ({
@@ -320,7 +723,7 @@ test("About component actions use the owning plugin section and refresh its rend
   feature.dispose();
 });
 
-test("voice sections initialized after opening the dialog mount once and cancel restores their draft", async () => {
+test("private settings never borrow or restore functional voice controls", async () => {
   let voice = null;
   const calls = [];
   const ui = featureFixture(async () => snapshot(), { getVoiceController: () => voice });
@@ -338,14 +741,11 @@ test("voice sections initialized after opening the dialog mount once and cancel 
   };
   ui.feature.onVoiceSectionsRendered();
   ui.feature.onVoiceSectionsRendered();
-  assert.deepEqual(calls, [["mount", "fixture_plugin"]]);
+  assert.deepEqual(calls, []);
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
   await ui.openSettings();
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
-  assert.deepEqual(calls, [
-    ["mount", "fixture_plugin"], ["unmount"], ["mount", "fixture_plugin"],
-    ["restore", { pluginId: "fixture_plugin", values: { timeout: 60 } }], ["unmount"],
-  ]);
+  assert.deepEqual(calls, []);
   ui.feature.dispose();
 });
 
@@ -367,7 +767,7 @@ test("disposing during dialog exit releases it once and ignores the late animati
   assert.equal(ui.timers.size, 0);
 });
 
-test("ASR provider dialog mounts shared input controls, cancels capture on close and restores microphone draft", async () => {
+test("private settings leave microphone controls and capture ownership on the voice page", async () => {
   const calls = [];
   const asr = {
     refresh: async () => {}, hasPluginControls: (id) => id === "fixture_plugin",
@@ -382,10 +782,8 @@ test("ASR provider dialog mounts shared input controls, cancels capture on close
   const ui = featureFixture(async () => snapshot(), { getAsrController: () => asr });
   ui.feature.initialize(snapshot());
   await ui.openSettings();
-  assert.ok(ui.document.querySelector(".plugin-dialog-asr select"));
+  assert.equal(ui.document.querySelector(".plugin-dialog-asr select"), null);
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
-  assert.deepEqual(calls, [
-    ["mount", "fixture_plugin"], ["cancel"], ["restore", { inputDeviceId: "saved-mic" }], ["unmount"],
-  ]);
+  assert.deepEqual(calls, []);
   ui.feature.dispose();
 });

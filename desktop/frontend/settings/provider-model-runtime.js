@@ -1,191 +1,92 @@
-const SENSITIVE_KEY = /(password|api.?key|credential$|secret|(^|_)token($|_))/i;
-
-function assertObject(value, message) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(message);
-  return value;
-}
-
-function assertNoSensitiveKeys(value) {
-  if (!value || typeof value !== "object") return;
-  for (const [key, child] of Object.entries(value)) {
-    if (SENSITIVE_KEY.test(key)) throw new Error("provider snapshot contains a sensitive field");
-    assertNoSensitiveKeys(child);
-  }
-}
-
 export function validateProviderModelSnapshot(input) {
-  const snapshot = assertObject(input, "invalid provider settings snapshot");
-  assertNoSensitiveKeys(snapshot);
-  if (snapshot.schema_version !== 1) throw new Error("unsupported provider settings schema");
-  if (!Number.isSafeInteger(snapshot.window_generation) || snapshot.window_generation < 1) {
-    throw new Error("invalid settings window generation");
+  if (!input || input.schema_version !== 2 || !Array.isArray(input.providers) || !Array.isArray(input.model_slots)) {
+    throw new Error("MODEL_SETTINGS_SNAPSHOT_INVALID");
   }
-  if (typeof snapshot.core_generation_id !== "string" || !snapshot.core_generation_id) {
-    throw new Error("invalid settings core generation");
-  }
-  if (!Array.isArray(snapshot.providers)) throw new Error("invalid providers");
-  const ids = new Set();
-  const providers = snapshot.providers.map((provider) => {
-    assertObject(provider, "invalid provider");
-    if (
-      typeof provider.id !== "string" || !provider.id
-      || ids.has(provider.id)
-      || typeof provider.alias !== "string"
-      || typeof provider.base_url !== "string"
-      || typeof provider.configured !== "boolean"
-      || !Array.isArray(provider.models)
-      || provider.models.some((model) => typeof model !== "string" || !model)
-    ) throw new Error("invalid provider");
-    ids.add(provider.id);
-    return Object.freeze({ ...provider, models: Object.freeze([...provider.models]) });
-  });
-  if (!Array.isArray(snapshot.model_slots) || snapshot.model_slots.length < 2) {
-    throw new Error("invalid model slots");
-  }
-  const identities = new Set();
-  const modelSlots = snapshot.model_slots.map((slot) => {
-    assertObject(slot, "invalid model slot");
-    const selection = assertObject(slot.selection, "invalid model slot selection");
-    const contextWindow = selection.context_window_tokens;
-    if (
-      typeof slot.identity !== "string" || !slot.identity || identities.has(slot.identity)
-      || !["core", "plugin"].includes(slot.ownerType)
-      || typeof slot.ownerId !== "string" || !slot.ownerId
-      || typeof slot.slotId !== "string" || !slot.slotId
-      || typeof slot.label !== "string" || !slot.label
-      || typeof slot.description !== "string"
-      || slot.modelKind !== "chat_completion"
-      || typeof slot.required !== "boolean"
-      || typeof slot.order !== "number"
-      || typeof slot.reasonCode !== "string"
-      || typeof selection.profile_id !== "string" || typeof selection.model !== "string"
-      || (
-        contextWindow !== undefined
-        && contextWindow !== null
-        && (!Number.isSafeInteger(contextWindow) || contextWindow < 4096 || contextWindow > 2000000)
-      )
-    ) throw new Error("invalid model slot");
-    identities.add(slot.identity);
-    return Object.freeze({ ...slot, selection: Object.freeze({ ...selection }) });
-  });
-  const settings = assertObject(snapshot.settings, "invalid model settings");
-  return Object.freeze({
-    ...snapshot,
-    providers: Object.freeze(providers),
-    model_slots: Object.freeze(modelSlots),
-    settings: Object.freeze({ ...settings }),
-  });
+  return Object.freeze(structuredClone(input));
 }
 
 export function findProviderModelSelectionIssue({ providers, modelSlots, slotFields }) {
-  const providersById = new Map(
-    (Array.isArray(providers) ? providers : []).map((provider) => [provider.id, provider]),
-  );
-  for (const slot of Array.isArray(slotFields) ? slotFields : []) {
-    const selection = modelSlots?.[slot.id] || {};
-    const profileId = typeof selection.profile_id === "string" ? selection.profile_id : "";
-    const model = typeof selection.model === "string" ? selection.model : "";
-    if (Boolean(profileId) !== Boolean(model)) {
-      return Object.freeze({ type: "incomplete", slotId: slot.id, label: slot.label });
-    }
-    if (!profileId) {
-      if (slot.required) {
-        return Object.freeze({ type: "required", slotId: slot.id, label: slot.label });
-      }
+  for (const slot of slotFields || []) {
+    const ref = modelSlots?.[slot.id] || {};
+    const parts = [ref.serviceKey, ref.profileId, ref.modelId];
+    const filled = parts.filter(value => typeof value === "string" && value).length;
+    if (filled && filled !== 3) return { type: "incomplete", slotId: slot.id, label: slot.label };
+    if (!filled) {
+      if (slot.required) return { type: "required", slotId: slot.id, label: slot.label };
       continue;
     }
-    const provider = providersById.get(profileId);
-    if (!provider || !Array.isArray(provider.models) || !provider.models.includes(model)) {
-      return Object.freeze({ type: "reference", slotId: slot.id, label: slot.label });
+    const provider = providers?.find(item => item.serviceKey === ref.serviceKey);
+    const profile = provider?.profiles?.find(item => item.profileId === ref.profileId);
+    if (!profile?.models?.some(item => item.modelId === ref.modelId)) {
+      if (slot.selection && parts.every((value, index) => value === slot.selection[["serviceKey", "profileId", "modelId"][index]])) continue;
+      return { type: "reference", slotId: slot.id, label: slot.label };
     }
   }
   return null;
 }
 
-export function createProviderModelController({ invoke, readDraft, applySnapshot, onDirty, onError }) {
+export function createProviderModelController({ invoke, readDraft, applySnapshot, onDirty, readProviders }) {
   let snapshot = null;
   let baseline = null;
-  const operations = new Set();
-
-  const operationId = () => globalThis.crypto?.randomUUID?.() || `provider-${Date.now()}-${Math.random()}`;
-  const currentDraft = () => readDraft();
-  const isDirty = () => Boolean(snapshot && baseline !== JSON.stringify(currentDraft()));
+  let disposed = false;
+  let refreshRevision = 0;
+  const isDirty = () => Boolean(snapshot && baseline !== JSON.stringify(readDraft()));
 
   async function initialize(raw) {
-    snapshot = validateProviderModelSnapshot(raw);
+    const value = validateProviderModelSnapshot(raw);
+    if (disposed) return;
+    snapshot = value;
     applySnapshot(snapshot);
-    baseline = JSON.stringify(currentDraft());
+    baseline = JSON.stringify(readDraft());
     onDirty();
   }
 
+  async function refreshCurrent({ preserveDraft = false } = {}) {
+    const revision = ++refreshRevision;
+    const next = validateProviderModelSnapshot(await invoke("settings_provider_model_get"));
+    if (disposed || revision !== refreshRevision) return next;
+    const preserved = preserveDraft && isDirty() ? structuredClone(readDraft()) : null;
+    await initialize(next);
+    if (preserved) { applySnapshot(next, { draft: preserved }); onDirty(); }
+    return next;
+  }
+
+  function validate() {
+    if (!snapshot || disposed) throw new Error("模型设置尚未就绪。");
+    const draft = readDraft();
+    const issue = findProviderModelSelectionIssue({ providers: readProviders ? readProviders() : snapshot.providers, modelSlots: draft.model_slots,
+      slotFields: snapshot.model_slots.map(slot => ({ id: slot.identity, label: slot.label, required: slot.required, selection: slot.selection })) });
+    if (issue) throw new Error(`${issue.label}未通过校验，请重新选择模型。`);
+    return draft;
+  }
+
   async function save() {
-    if (!snapshot) throw new Error("provider settings are not initialized");
-    const draft = currentDraft();
+    const draft = validate();
+    const identity = snapshot.core_generation_id;
     const result = await invoke("settings_provider_model_save", {
       windowGeneration: snapshot.window_generation,
       coreGenerationId: snapshot.core_generation_id,
       draft,
     });
+    if (disposed || snapshot.core_generation_id !== identity) throw new Error("模型设置会话已变化，请重新保存。");
     if (result?.change_plan !== "applied") throw new Error("PROVIDER_SETTINGS_CHANGE_PLAN_INVALID");
-    await initialize(await invoke("settings_provider_model_get"));
-    if (result?.save_state === "partial") {
-      const failed = result.failed_slot?.identity || "未知槽位";
-      throw new Error(`部分模型设置已保存；${failed} 保存失败，页面已刷新为实际状态。`);
+    await refreshCurrent();
+    if (result.save_state === "partial") {
+      const saved = new Set(result.saved_slots || []);
+      const pending = { model_slots: Object.fromEntries(snapshot.model_slots.map(slot => [slot.identity,
+        saved.has(slot.identity) ? slot.selection : draft.model_slots[slot.identity] || slot.selection])) };
+      applySnapshot(snapshot, { draft: pending }); onDirty();
+      throw new Error(`部分模型设置已保存；${result.failed_slot?.identity || "未知槽位"} 保存失败，未完成的修改已保留。`);
     }
     return result;
   }
 
-  async function probe(kind, profile) {
-    if (!snapshot) throw new Error("provider settings are not initialized");
-    const id = operationId();
-    operations.add(id);
-    try {
-      return await invoke("settings_provider_model_probe", {
-        windowGeneration: snapshot.window_generation,
-        coreGenerationId: snapshot.core_generation_id,
-        operationId: id,
-        kind,
-        profile,
-      });
-    } finally {
-      operations.delete(id);
-    }
-  }
-
-  async function cancelOperations() {
-    const pending = [...operations];
-    if (!snapshot) return;
-    await Promise.allSettled(pending.map((id) => invoke("settings_provider_model_cancel", {
-      windowGeneration: snapshot.window_generation,
-      coreGenerationId: snapshot.core_generation_id,
-      operationId: id,
-    })));
-  }
-
-  async function refreshCurrent() {
-    const next = validateProviderModelSnapshot(await invoke("settings_provider_model_get"));
-    await initialize(next);
-    return next;
-  }
-
-  return Object.freeze({
-    initialize,
-    save,
-    isDirty,
-    listModels: (profile) => probe("list_models", profile),
-    testConnection: (profile) => probe("test_connection", profile),
-    cancelOperations,
-    refreshCurrent,
+  return Object.freeze({ initialize, save, validate, isDirty, refreshCurrent,
     rebindIdentity(coreGenerationId) {
-      if (!snapshot || typeof coreGenerationId !== "string" || !coreGenerationId) {
-        throw new Error("invalid settings core generation");
-      }
+      if (!snapshot || typeof coreGenerationId !== "string" || !coreGenerationId) throw new Error("invalid settings core generation");
+      refreshRevision++;
       snapshot = Object.freeze({ ...snapshot, core_generation_id: coreGenerationId });
     },
-    dispose() {
-      cancelOperations().catch(onError);
-      snapshot = null;
-      baseline = null;
-    },
+    dispose() { disposed = true; refreshRevision++; snapshot = baseline = null; },
   });
 }

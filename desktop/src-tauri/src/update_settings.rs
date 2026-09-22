@@ -6,8 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::download_sources::{self, DownloadSources};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use tauri::Manager;
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -313,6 +315,70 @@ fn portable_download_url(raw: &Value) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+fn mirrored_updater(app: &AppHandle) -> Result<tauri_plugin_updater::UpdaterBuilder, String> {
+    let sources = app.state::<DownloadSources>().load()?;
+    let mut builder = app.updater_builder().configure_client(|client| {
+        client
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(20))
+    });
+    if let Some(endpoints) = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|value| value["endpoints"].as_array())
+    {
+        let mut resolved = Vec::new();
+        for endpoint in endpoints {
+            let url = download_sources::https_url(
+                endpoint.as_str().ok_or("UPDATE_CONFIGURATION_INVALID")?,
+            )?;
+            resolved.extend(
+                download_sources::candidates(&url, &sources)
+                    .into_iter()
+                    .map(|(_, url)| url),
+            );
+        }
+        if !resolved.is_empty() {
+            builder = builder
+                .endpoints(resolved)
+                .map_err(|_| "UPDATE_CONFIGURATION_INVALID")?;
+        }
+    }
+    Ok(builder)
+}
+
+async fn download_update(
+    app: &AppHandle,
+    update: &mut tauri_plugin_updater::Update,
+) -> Result<Vec<u8>, UpdaterError> {
+    let sources = app
+        .state::<DownloadSources>()
+        .load()
+        .map_err(UpdaterError::Network)?;
+    let original = update.download_url.clone();
+    let mut last_error = None;
+    for (name, url) in download_sources::candidates(&original, &sources) {
+        update.download_url = url;
+        let _ = app.emit("sakura://update-download-source", json!({"source": name}));
+        match update.download(|_, _| {}, || {}).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => {
+                // A signature or manifest error must not become a mirror retry.
+                if !matches!(
+                    classify_updater_error(&error, "download"),
+                    "NETWORK" | "HTTP" | "TIMEOUT"
+                ) {
+                    return Err(error);
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or(UpdaterError::EmptyEndpoints))
+}
+
 pub async fn check(
     app: &AppHandle,
     executable_directory: &Path,
@@ -329,8 +395,7 @@ pub async fn check(
         "Updater check started",
         check_started_attributes(trigger, mode),
     );
-    let updater = app
-        .updater_builder()
+    let updater = mirrored_updater(app)?
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .map_err(|error| {
@@ -580,8 +645,7 @@ pub async fn install(
         "Updater check started",
         check_started_attributes("install", mode),
     );
-    let updater = app
-        .updater_builder()
+    let updater = mirrored_updater(app)?
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .map_err(|error| {
@@ -672,7 +736,7 @@ pub async fn install(
             "version": version,
         }),
     );
-    let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| {
+    let bytes = download_update(app, &mut update).await.map_err(|error| {
         let details = updater_error_attributes(&error, "download");
         log_updater_failure_details(
             runtime_log,
@@ -1121,16 +1185,62 @@ pub fn open_sponsor() -> Result<(), String> {
 
 pub(crate) fn open_https_url(url: &str, error_code: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("explorer.exe");
-    #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = std::process::Command::new("xdg-open");
-    command
-        .arg(url)
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| error_code.to_string())
+    {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+        open_windows_https_url(url, error_code, |target| {
+            // Let the HTTPS association select the browser. Explorer treats its
+            // argument as a shell location and may open a folder instead.
+            unsafe {
+                ShellExecuteW(
+                    None,
+                    w!("open"),
+                    PCWSTR(target.as_ptr()),
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    SW_SHOWNORMAL,
+                )
+                .0 as isize
+            }
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let mut command = std::process::Command::new("open");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let mut command = std::process::Command::new("xdg-open");
+        command
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| error_code.to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_https_url(
+    url: &str,
+    error_code: &str,
+    launch: impl FnOnce(&[u16]) -> isize,
+) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| error_code.to_string())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || url.chars().any(char::is_control)
+    {
+        return Err(error_code.to_string());
+    }
+    let target: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    // ShellExecute returns a value greater than 32 on success, not a process handle.
+    if launch(&target) > 32 {
+        Ok(())
+    } else {
+        Err(error_code.to_string())
+    }
 }
 
 fn current_executable_directory() -> Result<std::path::PathBuf, String> {
@@ -1210,6 +1320,7 @@ pub(crate) async fn startup_update_check(
 #[tauri::command]
 pub(crate) async fn chat_update_announce(
     window: WebviewWindow,
+    on_event: tauri::ipc::Channel<chat_bridge::ChatEventPublication>,
     lifecycle: State<'_, ShellLifecycleState>,
     coordinator: State<'_, UpdateCoordinator>,
 ) -> Result<chat_bridge::ChatSendPublication, String> {
@@ -1221,9 +1332,10 @@ pub(crate) async fn chat_update_announce(
         .handle
         .as_ref()
         .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
-    let pending = handle
-        .chat_bridge()?
-        .send_update_available(window.label(), event, version)?;
+    let pending =
+        handle
+            .chat_bridge()?
+            .send_update_available(window.label(), event, version, on_event)?;
     tauri::async_runtime::spawn_blocking(move || pending.wait())
         .await
         .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
@@ -1294,6 +1406,49 @@ pub(crate) fn settings_update_open_portable_download(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn browser_launch_preserves_issue_query_and_reports_shell_failures() {
+        let url = "https://github.com/Rvosy/Sakura-Registry/issues/new?template=submit-plugin.yml&title=插件%20测试#details";
+        for status in [0, 2, 5, 31, 32, 33, 42] {
+            let result = super::open_windows_https_url(url, "OPEN_FAILED", |target| {
+                assert_eq!(target.last(), Some(&0));
+                assert_eq!(
+                    String::from_utf16(&target[..target.len() - 1]).unwrap(),
+                    url
+                );
+                status
+            });
+            assert_eq!(
+                result,
+                if status > 32 {
+                    Ok(())
+                } else {
+                    Err("OPEN_FAILED".into())
+                }
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn browser_launch_rejects_non_web_targets_before_calling_windows() {
+        for url in [
+            "file:///C:/Windows",
+            "C:\\Windows",
+            "https://example.com/\0ignored",
+            "https://user:password@example.com",
+            "javascript:alert(1)",
+        ] {
+            assert!(
+                super::open_windows_https_url(url, "OPEN_FAILED", |_| panic!(
+                    "invalid URL reached Windows"
+                ))
+                .is_err()
+            );
+        }
+    }
+
     use super::*;
     use std::{
         fs,
@@ -1433,6 +1588,9 @@ mod tests {
                 marker_barrier.wait();
                 marker_coordinator
                     .observe_chat_event(&ChatEventPublication {
+                        character_id: None,
+                        presentation: None,
+                        cancel_handle: None,
                         event_type: "chat.completed".to_string(),
                         generation_id: "generation".to_string(),
                         generation_number: 1,
@@ -1478,6 +1636,9 @@ mod tests {
             snapshot: available_snapshot("1.2.0"),
         });
         let event = ChatEventPublication {
+            character_id: None,
+            presentation: None,
+            cancel_handle: None,
             event_type: "chat.completed".to_string(),
             generation_id: "generation".to_string(),
             generation_number: 1,
@@ -1511,6 +1672,9 @@ mod tests {
         ] {
             coordinator
                 .observe_chat_event(&ChatEventPublication {
+                    character_id: None,
+                    presentation: None,
+                    cancel_handle: None,
                     event_type: event_type.to_string(),
                     generation_id: "generation".to_string(),
                     generation_number: 1,

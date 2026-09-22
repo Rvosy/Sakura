@@ -221,7 +221,9 @@ export function mount({ container, resource, host, signal }) {
         try {
           const key = Object.keys(assets).find((key) => assets[key] === source);
           const expected = data.metadata[key];
-          if (image.naturalWidth !== expected.width || image.naturalHeight !== expected.height) throw new Error("PORTRAIT_DIMENSION_MISMATCH");
+          if (image.naturalWidth !== expected.width || image.naturalHeight !== expected.height) {
+            throw new Error(`PORTRAIT_DIMENSION_MISMATCH: 图片尺寸 ${image.naturalWidth}×${image.naturalHeight}，预期 ${expected.width}×${expected.height}`);
+          }
           resolve({ width: image.naturalWidth, height: image.naturalHeight });
         } catch (error) { reject(error); }
       };
@@ -256,7 +258,10 @@ export function mount({ container, resource, host, signal }) {
       return true;
     },
     showFallback: () => host.unavailable("PORTRAIT_DECODE_FAILED"),
-    reportError: ({ code, error }) => { loadError = error; host.reportError(code, error); },
+    reportError: ({ code, requestedKey, error }) => {
+      loadError = new Error(`立绘 ${JSON.stringify(requestedKey)}：${error?.message || code}`, { cause: error });
+      host.reportError(code, loadError, "visual.portrait");
+    },
   });
   controller.beginGeneration(String(generation));
   const ready = controller.show(data.defaultKey, { immediate: true, generation: String(generation) }).then((result) => {

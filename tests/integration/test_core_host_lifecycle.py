@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import shutil
 import struct
@@ -67,30 +68,78 @@ def isolated_app_root(tmp_path: Path, *, ready: bool = False) -> Path:
     return root
 
 
-def start_host(app_root: Path, generation_id: str = GENERATION_ID) -> subprocess.Popen[bytes]:
+@pytest.fixture(autouse=True)
+def _isolated_lifecycle_distribution(tmp_path, assistant_dependencies, monkeypatch):
+    """Lifecycle checks own their required plugins and never load local installs."""
+    original_start = start_host
+
+    def start(app_root, generation_id=GENERATION_ID):
+        distribution = tmp_path / "lifecycle-distribution"
+        if not distribution.exists():
+            for name in ("sakura_assistant", "sakura_model_openai_compatible", "sakura_tts_hub"):
+                shutil.copytree(
+                    REPO_ROOT / "plugins/builtin" / name,
+                    distribution / "plugins/builtin" / name,
+                    ignore=shutil.ignore_patterns("__pycache__"),
+                )
+            dependencies = distribution / "plugins/dependencies/sakura.model.openai_compatible"
+            shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
+            (dependencies / ".sakura-dependencies.json").write_text(
+                json.dumps({"schemaVersion": 1, "kind": "requirements.txt",
+                            "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
+                encoding="utf-8",
+            )
+        return original_start(app_root, generation_id, distribution_root=distribution)
+
+    monkeypatch.setattr(sys.modules[__name__], "start_host", start)
+
+
+def start_host(
+    app_root: Path, generation_id: str = GENERATION_ID, *, distribution_root: Path = REPO_ROOT,
+) -> subprocess.Popen[bytes]:
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     process = subprocess.Popen(
         [
             sys.executable,
             "-m",
             "app.core_host",
             "--distribution-root",
-            str(REPO_ROOT),
+            str(distribution_root),
             "--user-root",
             str(app_root),
             "--generation-id",
             generation_id,
         ],
         cwd=REPO_ROOT,
+        env=environment,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         creationflags=flags,
     )
+    _capture_stderr(process)
     assert process.stdin is not None
     process.stdin.write(bytes.fromhex(GENERATION_CREDENTIAL))
     process.stdin.flush()
     return process
+
+
+def _capture_stderr(process):
+    process._stderr_lines = []
+    process._stderr_thread = threading.Thread(
+        target=lambda: process._stderr_lines.extend(iter(process.stderr.readline, b"")),
+        name="lifecycle-test-diagnostics", daemon=True,
+    )
+    process._stderr_thread.start()
+
+
+def _stderr_text(process):
+    if process.poll() is not None:
+        process._stderr_thread.join(2)
+        assert not process._stderr_thread.is_alive()
+    return b"".join(process._stderr_lines).decode("utf-8", errors="replace")
 
 
 def read_with_deadline(
@@ -139,6 +188,8 @@ def stop_host(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=5)
         raise AssertionError("Core Host required forced cleanup")
     finally:
+        process._stderr_thread.join(2)
+        assert not process._stderr_thread.is_alive(), "Core Host diagnostic reader survived process cleanup"
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
@@ -255,7 +306,7 @@ def test_real_host_fails_closed_without_writing_unframed_stdout(
             decode_frame(stdout)
         assert stdout == b""
         assert process.stderr is not None
-        stderr = process.stderr.read().decode("utf-8", errors="replace")
+        stderr = _stderr_text(process)
         assert "CORE_HOST_PROTOCOL_ERROR" in stderr
     finally:
         stop_host(process)
@@ -292,7 +343,7 @@ def test_real_host_rejects_missing_or_wrong_message_credential_without_echo(
         assert process.stdout is not None
         assert process.stdout.read() == b""
         assert process.stderr is not None
-        stderr = process.stderr.read().decode("utf-8", errors="replace")
+        stderr = _stderr_text(process)
         assert "CORE_HOST_TRANSPORT_ERROR TransportFailure" in stderr
         assert GENERATION_CREDENTIAL not in stderr
         if credential:
@@ -323,6 +374,7 @@ def test_real_host_rejects_missing_bootstrap_credential_without_protocol_output(
         stderr=subprocess.PIPE,
         creationflags=flags,
     )
+    _capture_stderr(process)
     assert process.stdin is not None
     process.stdin.close()
     try:
@@ -330,7 +382,7 @@ def test_real_host_rejects_missing_bootstrap_credential_without_protocol_output(
         assert process.stdout is not None
         assert process.stdout.read() == b""
         assert process.stderr is not None
-        assert "TransportFailure" in process.stderr.read().decode(errors="replace")
+        assert "TransportFailure" in _stderr_text(process)
     finally:
         stop_host(process)
 
@@ -348,14 +400,20 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
         assert time.monotonic() - started < 0.5
         assert initialize["payload"]["readiness"] == "initializing"
 
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
+        revisions = []
         while True:
             snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
+            revisions.append(snapshot["revision"])
             if snapshot["readiness"] == "ready":
                 break
-            assert time.monotonic() < deadline
+            assert time.monotonic() < deadline, (snapshot, _stderr_text(process))
         assert snapshot["generationId"] == GENERATION_ID
-        assert snapshot["revision"] == 2
+        # Assistant publication and the visual-provider result may advance the
+        # snapshot separately; revisions stay monotonic and settled reads agree.
+        assert revisions == sorted(revisions)
+        assert snapshot["revision"] > 1
+        assert exchange(process, request("settled-snapshot", "core.snapshot"))["payload"] == snapshot
         assert snapshot["components"] == {
             "assistant": {"state": "ready", "code": "READY", "retryable": False}
         }
@@ -383,7 +441,7 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
         # This lifecycle fixture initializes the Assistant without binding a
         # visual provider. Character information remains available to the UI.
         assert presentation["visual"] is None
-        assert presentation["visualReasonCode"] == "VISUAL_NOT_BOUND"
+        assert presentation["visualReasonCode"] == "VISUAL_PROVIDER_MISSING"
         assert str(app_root) not in repr(presentation)
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0
@@ -416,12 +474,12 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
         assert hello["ok"] is True
         assert exchange(process, request("initialize", "core.initialize"))["ok"] is True
 
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
         while True:
             snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
             if snapshot["readiness"] == "setup_required":
                 break
-            assert time.monotonic() < deadline
+            assert time.monotonic() < deadline, (snapshot, _stderr_text(process))
 
         assert snapshot["components"]["assistant"] == {
             "state": "setup_required",
@@ -430,11 +488,23 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
         }
         assert snapshot["currentCharacterSummary"] is None
         assert snapshot["characterPresentation"]["characterId"] == "sakura"
+        # Character/Assistant publication precedes optional TTS startup. Wait
+        # for the capability this assertion consumes, within the same deadline.
+        sequence = 0
+        while True:
+            plugins = exchange(process, request(f"voice-plugin-{sequence}", "plugins.settings.get"))
+            assert plugins["ok"] is True, plugins
+            tts = next(item for item in plugins["payload"]["plugins"] if item["pluginId"] == "sakura.tts")
+            if tts["state"] == "active":
+                break
+            assert tts["state"] in {"starting", "waiting"}, tts
+            assert time.monotonic() < deadline, (tts, _stderr_text(process))
+            sequence += 1
         voice = exchange(
             process,
             request("voice-settings", "tts.settings.get"),
         )
-        assert voice["ok"] is True
+        assert voice["ok"] is True, voice
         assert voice["payload"]["character"] == {
             "characterId": "sakura",
             "displayName": "Sakura Fixture",
@@ -477,6 +547,10 @@ def test_real_host_failed_readiness_still_cleans_init_and_writer_threads(tmp_pat
     app_root = isolated_app_root(tmp_path)
     config_dir = app_root / "config"
     config_dir.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "desktop/src-tauri/src/new_user_plugin_migrations.json",
+        config_dir / "plugin-migrations.json",
+    )
     (config_dir / "system_config.yaml").write_text("not: [valid", encoding="utf-8")
     process = start_host(app_root)
     try:

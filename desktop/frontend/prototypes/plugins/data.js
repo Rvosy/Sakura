@@ -8,7 +8,7 @@ window.PLUGIN_DEMO = (() => {
     ...(fields.some((field) => field.placement === "advanced") ? [{ title: "高级设置", advanced: true, fields: fields.filter((field) => field.placement === "advanced") }] : []),
   ];
   const configurations = {
-    // plugins/builtin/sakura_mobile/plugin.py
+    // plugins/optional/sakura_mobile/plugin.py
     "mobile": [
       ...sections("手机端", [
       {"key": "enabled", "label": "启用手机网页端", "type": "boolean", "default": false, "wide": true},
@@ -27,14 +27,14 @@ window.PLUGIN_DEMO = (() => {
       {"key": "headless", "label": "无头模式", "type": "boolean", "default": false, "description": "无头模式（Headless）", "restartRequired": true, "wide": true},
       ]),
     ],
-    // plugins/builtin/sakura_mem0/plugin.py
+    // plugins/optional/sakura_mem0/plugin.py
     "memory": [
       ...sections("长期记忆", [
       {"key": "status", "label": "运行状态", "type": "status", "placement": "section_header", "default": {"state": "neutral", "label": "状态未知", "message": ""}, "description": "记忆故障不会阻断普通聊天。", "wide": true},
       {"key": "triggerTurns", "label": "自动整理间隔", "type": "integer", "default": 8, "minimum": 1, "maximum": 50, "step": 1, "description": "完成多少轮对话后尝试整理一次长期记忆。", "wide": false},
       ]),
     ],
-    // plugins/builtin/sakura_genie/plugin.py
+    // plugins/optional/sakura_genie/plugin.py
     "sakura.tts.genie": [
       { title: "本地运行组件", fields: [{"key": "bundleResource", "label": "Genie TTS 本地运行组件", "type": "resource", "subtitle": "Genie TTS CPU 整合包", "value": {"state": "succeeded", "progress": 100}, "notRequiredWhen": {"key": "endpointMode", "value": "custom"}, "wide": true}] },
       ...sections("Genie TTS 语音服务", [
@@ -43,7 +43,7 @@ window.PLUGIN_DEMO = (() => {
       {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced", "wide": false},
       ]),
     ],
-    // plugins/builtin/sakura_gpt_sovits/plugin.py
+    // plugins/optional/sakura_gpt_sovits/plugin.py
     "sakura.tts.gpt-sovits": [
       { title: "本地运行组件", fields: [{"key": "bundleResource", "label": "GPT-SoVITS 本地运行组件", "type": "resource", "subtitle": "GPT-SoVITS v2pro 通用整合包 · 示例推荐", "value": {"state": "idle", "progress": 0}, "notRequiredWhen": {"key": "endpointMode", "value": "custom"}, "wide": true}] },
       ...sections("GPT-SoVITS 语音服务", [

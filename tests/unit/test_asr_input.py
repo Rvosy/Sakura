@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.asr_boundary import ASRBoundary
 from app.core_host import asr_boundary
 from app.core_host.audio_input import AudioInputError, AudioInputResources

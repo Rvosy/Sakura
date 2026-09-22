@@ -504,15 +504,55 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             }
             let pending = requests.pending.get(&id);
             let pending_chat = pending.is_some_and(|pending| pending.name == "chat.send");
-            let active_chat = requests.active_chat_events.contains(&id);
-            if pending.is_none() && !active_chat {
-                return Err("UNKNOWN_REQUEST_ID: event id is not pending".to_string());
-            }
+            let mut active_chat = requests.active_chat_events.contains(&id);
             let event_name = object.get("name").and_then(Value::as_str);
+            let host_request = matches!(
+                event_name,
+                Some("host.screen.capture" | "host.visual.apply" | "host.visual.cancel")
+            );
+            let host_start = event_name == Some("host.chat.started");
+            if pending.is_none() && !active_chat {
+                if host_start {
+                    if object
+                        .get("payload")
+                        .and_then(|p| p.get("operationId"))
+                        .and_then(Value::as_str)
+                        != Some(id.as_str())
+                        || requests.pending.len() + requests.active_chat_events.len()
+                            >= PENDING_LIMIT
+                    {
+                        return Err(
+                            "INVALID_HOST_EVENT: chat identity or capacity is invalid".into()
+                        );
+                    }
+                    requests.active_chat_events.insert(id.clone());
+                    active_chat = true;
+                } else if !host_request {
+                    return Err("UNKNOWN_REQUEST_ID: event id is not pending".to_string());
+                }
+            }
+            if host_request
+                && object
+                    .get("payload")
+                    .and_then(|p| p.get("requestId"))
+                    .and_then(Value::as_str)
+                    != Some(id.as_str())
+            {
+                return Err("INVALID_HOST_EVENT: request identity is invalid".into());
+            }
             if active_chat
                 && !matches!(
                     event_name,
-                    Some("chat.started" | "chat.completed" | "chat.failed" | "chat.cancelled")
+                    Some(
+                        "chat.started"
+                            | "chat.completed"
+                            | "chat.failed"
+                            | "chat.cancelled"
+                            | "host.chat.started"
+                            | "host.chat.completed"
+                            | "host.chat.failed"
+                            | "host.chat.cancelled"
+                    )
                 )
             {
                 return Err("INVALID_CHAT_EVENT: event name is not allowlisted".to_string());
@@ -525,7 +565,14 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             }
             let critical = matches!(
                 event_name,
-                Some("chat.completed" | "chat.failed" | "chat.cancelled")
+                Some(
+                    "chat.completed"
+                        | "chat.failed"
+                        | "chat.cancelled"
+                        | "host.chat.completed"
+                        | "host.chat.failed"
+                        | "host.chat.cancelled"
+                )
             );
             let target = if critical {
                 &shared.critical_events
@@ -806,6 +853,110 @@ mod tests {
             .write(true)
             .open("NUL")
             .expect("null stdin sink")
+    }
+
+    fn host_event(id: &str, name: &str) -> Value {
+        let mut message = request(id, name);
+        message["kind"] = json!("event");
+        message["payload"] = if name.starts_with("host.chat.") {
+            json!({"operationId": id, "characterId": "sakura", "sessionId": "session"})
+        } else {
+            json!({"requestId": id})
+        };
+        message
+    }
+
+    #[test]
+    fn unsolicited_host_events_require_negotiation_identity_and_allowlisted_names() {
+        let (mut router, _) = router_with_messages(Vec::new());
+        let capture = host_event("capture", "host.screen.capture");
+        assert!(super::route_message(&router.shared, capture.clone())
+            .unwrap_err()
+            .starts_with("CAPABILITY_NEGOTIATION_FAILED:"));
+        router.enable_events(true);
+        let mut wrong_credential = capture.clone();
+        wrong_credential["generationCredential"] = json!("wrong");
+        assert!(super::route_message(&router.shared, wrong_credential).is_err());
+        let mut stale = capture.clone();
+        stale["generationId"] = json!("00000000-0000-4000-8000-000000002200");
+        assert!(super::route_message(&router.shared, stale).is_err());
+        let mut wrong_id = capture.clone();
+        wrong_id["payload"]["requestId"] = json!("another");
+        assert!(super::route_message(&router.shared, wrong_id)
+            .unwrap_err()
+            .starts_with("INVALID_HOST_EVENT:"));
+        assert!(
+            super::route_message(&router.shared, host_event("unknown", "host.shell.execute"))
+                .is_err()
+        );
+        super::route_message(&router.shared, capture).unwrap();
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_millis(10))
+                .unwrap()
+                .unwrap()["name"],
+            "host.screen.capture"
+        );
+        router.close().unwrap();
+    }
+
+    #[test]
+    fn host_chat_terminal_preserves_started_order_and_retires_the_operation() {
+        let (mut router, _) = router_with_messages(Vec::new());
+        router.enable_events(true);
+        super::route_message(&router.shared, host_event("turn", "host.chat.started")).unwrap();
+        assert!(router
+            .shared
+            .requests
+            .lock()
+            .unwrap()
+            .active_chat_events
+            .contains("turn"));
+        super::route_message(&router.shared, host_event("turn", "host.chat.completed")).unwrap();
+        assert!(!router
+            .shared
+            .requests
+            .lock()
+            .unwrap()
+            .active_chat_events
+            .contains("turn"));
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_millis(10))
+                .unwrap()
+                .unwrap()["name"],
+            "host.chat.started"
+        );
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_millis(10))
+                .unwrap()
+                .unwrap()["name"],
+            "host.chat.completed"
+        );
+        super::route_message(&router.shared, host_event("turn", "host.chat.completed")).unwrap();
+        assert!(router
+            .recv_event_timeout(Duration::from_millis(1))
+            .unwrap()
+            .is_none());
+        assert!(
+            super::route_message(&router.shared, host_event("missing", "host.chat.completed"))
+                .is_err()
+        );
+        {
+            let mut requests = router.shared.requests.lock().unwrap();
+            for index in 0..PENDING_LIMIT {
+                requests
+                    .active_chat_events
+                    .insert(format!("occupied-{index}"));
+            }
+        }
+        assert!(
+            super::route_message(&router.shared, host_event("overflow", "host.chat.started"))
+                .unwrap_err()
+                .starts_with("INVALID_HOST_EVENT:")
+        );
+        router.close().unwrap();
     }
 
     #[test]

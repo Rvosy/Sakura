@@ -46,10 +46,12 @@ def _wait_plugins(process, timeout: float = 10) -> dict[str, object]:
         )
         assert response["ok"] is True
         last = response["payload"]
-        if last["state"] in {"ready", "degraded"} and last["plugins"]:
-            return last
+        target = next((item for item in last["plugins"] if item["pluginId"] == "fixture_plugin"), None)
+        if target is not None:
+            assert target["state"] in {"starting", "active"}, target
+            if target["state"] == "active":
+                return last
         sequence += 1
-        time.sleep(0.05)
     raise TimeoutError(f"plugin application did not publish status: {last!r}")
 
 
@@ -67,7 +69,7 @@ def test_real_core_plugin_application_settings_and_shutdown_are_generation_scope
         assert _exchange(process, _request("plugins-init", "core.initialize", {}))["ok"] is True
         snapshot = _wait_plugins(process)
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
-        assert by_id["fixture_plugin"]["state"] == "active"
+        assert by_id["fixture_plugin"]["state"] == "active", (by_id["fixture_plugin"]["reasonCode"], by_id["fixture_plugin"]["sections"])
         assert by_id["broken_plugin"]["state"] == "failed"
         assert by_id["broken_plugin"]["reasonCode"] == "API_VERSION_UNSUPPORTED"
         assert "entry" not in repr(snapshot)

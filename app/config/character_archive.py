@@ -23,7 +23,7 @@ from app.config.character_packages import (
     ensure_legacy_voice_extensions,
 )
 from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
-from app.storage.archive_security import ArchiveLimits, validate_zip_resource_limits
+from app.storage.archive_security import validate_zip_resource_limits
 
 
 ARCHIVE_FORMAT = "sakura.character.archive"
@@ -33,13 +33,6 @@ ARCHIVE_CHARACTER_ROOT = PurePosixPath("character")
 VOICE_ARCHIVE_FORMAT = "sakura.character.voice"
 VOICE_ARCHIVE_VERSION = 1
 VOICE_ARCHIVE_ROOT = PurePosixPath("voice")
-MAX_ARCHIVE_MEMBERS = 4096
-MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024 * 1024
-MAX_ARCHIVE_TOTAL_BYTES = 32 * 1024 * 1024 * 1024
-MAX_ARCHIVE_COMPRESSION_RATIO = 200
-MAX_CHARACTER_EXTENSIONS_BYTES = 256 * 1024
-MAX_CHARACTER_EXTENSION_BYTES = 64 * 1024
-MAX_CHARACTER_MANIFEST_BYTES = 1024 * 1024
 _COPY_CHUNK_SIZE = 1024 * 1024
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -565,12 +558,6 @@ def _validate_zip_resource_limits(
             zf,
             destination=destination or Path.cwd(),
             label=archive_label,
-            limits=ArchiveLimits(
-                max_members=MAX_ARCHIVE_MEMBERS,
-                max_member_bytes=MAX_ARCHIVE_MEMBER_BYTES,
-                max_total_bytes=MAX_ARCHIVE_TOTAL_BYTES,
-                max_compression_ratio=MAX_ARCHIVE_COMPRESSION_RATIO,
-            ),
         )
     except ValueError as exc:
         raise CharacterArchiveError(str(exc)) from exc
@@ -999,8 +986,6 @@ def _clone_character_data(value: Any) -> dict[str, Any]:
         cloned = json.loads(encoded)
     except (TypeError, ValueError) as exc:
         raise CharacterArchiveError("角色清单必须是 JSON-compatible 对象。") from exc
-    if len(encoded) > MAX_CHARACTER_MANIFEST_BYTES:
-        raise CharacterArchiveError("角色清单超过大小限制。")
     if not isinstance(cloned, dict):
         raise CharacterArchiveError("角色清单必须是 JSON 对象。")
     _opaque_extensions(cloned.get("extensions"))
@@ -1024,26 +1009,13 @@ def _opaque_extensions(value: Any) -> dict[str, Any]:
         cloned = json.loads(encoded)
     except (TypeError, ValueError) as exc:
         raise CharacterArchiveError("character.extensions 必须是 JSON-compatible 对象。") from exc
-    if len(encoded) > MAX_CHARACTER_EXTENSIONS_BYTES:
-        raise CharacterArchiveError("character.extensions 超过大小限制。")
     for plugin_id, extension in cloned.items():
         if (
             not isinstance(plugin_id, str)
-            or len(plugin_id) > 200
             or _SAFE_CHARACTER_ID_RE.fullmatch(plugin_id) is None
             or not isinstance(extension, dict)
         ):
             raise CharacterArchiveError("character.extensions 包含无效插件数据。")
-        extension_size = len(
-            json.dumps(
-                extension,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8")
-        )
-        if extension_size > MAX_CHARACTER_EXTENSION_BYTES:
-            raise CharacterArchiveError("character.extensions 单个插件数据超过大小限制。")
     return cloned
 
 

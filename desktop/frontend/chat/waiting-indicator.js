@@ -43,12 +43,6 @@ export function createWaitingIndicator({
       schedule(generation);
     },
     stop,
-    stopWhenSettled(gate) {
-      const token = generation;
-      return Promise.resolve(gate).finally(() => {
-        if (running && token === generation) stop();
-      });
-    },
     active() {
       return running;
     },

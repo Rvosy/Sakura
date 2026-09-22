@@ -1,11 +1,10 @@
 import { isChatReadyLifecycle } from "../lifecycle.js";
-import { normalizeVisualControl } from "../pet/visual-control.js";
 
 const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
   initializing: ["正在准备", "正在准备聊天"],
   ready: ["在线", "可以开始对话"],
-  setup_required: ["需要设置", "请完成首次设置"],
+  setup_required: ["需要设置", "请检查模型服务与插件设置"],
   degraded: ["受限", "部分聊天功能暂不可用"],
   failed: ["不可用", "无法开始对话"],
   rehydrating: ["正在恢复", "正在恢复桌宠状态"],
@@ -82,7 +81,8 @@ function normalizedSegments(reply, operationId) {
           suppressTts: segment.suppressTts === true,
           operationId: identity,
           segmentIndex,
-          ...(normalizeVisualControl(segment.control) ? { control: normalizeVisualControl(segment.control) } : {}),
+          // The renderer owns control validation; keep invalid input visible there.
+          ...(segment.control != null ? { control: segment.control } : {}),
         }),
       ),
   );
@@ -180,9 +180,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
             ? state.bubbleText
             : chatReady || initialStartup
               ? state.bubbleText
-              : event.status === "failed" && typeof event.failure?.message === "string"
-                ? event.failure.message
-                : "正在准备聊天……",
+              : lifecycleHeadline,
           segments: preserveVisualState || preserveGreeting || chatReady ? state.segments : Object.freeze([]),
           replyHistorySegments: state.replyHistorySegments,
           replyHistoryIndex: state.replyHistoryIndex,
@@ -239,7 +237,16 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
       if (!event.operationId || event.operationId !== state.operationId) return result(false);
       if (event.type === "chat.completed" && (state.phase === "thinking" || state.silentInteraction)) {
         const segments = normalizedSegments(event.reply, event.operationId);
-        if (!segments.length) return result(false);
+        if (!segments.length) {
+          if (!state.silentInteraction) return result(false);
+          state = freezeState({
+            ...state,
+            operationId: null,
+            silentInteraction: false,
+            canCancel: false,
+          });
+          return result(true);
+        }
         const currentReplyHistoryStart = state.replyHistorySegments.length;
         const replyHistorySegments = Object.freeze([...state.replyHistorySegments, ...segments]);
         state = freezeState({

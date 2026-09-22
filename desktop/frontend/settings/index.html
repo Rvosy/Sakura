@@ -237,13 +237,14 @@
         </section>
 
         <section id="page-plugins" class="settings-page admin-page">
-          <div class="plugin-page-heading"><div><h2>插件 <span id="pluginTotal" class="plugin-count"></span></h2></div>
+          <div class="plugin-page-heading"><div><h2>插件 <span id="pluginTotal" class="plugin-count" hidden></span></h2></div>
             <div id="pluginInstallMenuRoot" class="plugin-install-menu">
-              <button id="pluginInstallMenuButton" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
-                <span>安装插件…</span>
+              <button id="pluginInstallMenuButton" aria-label="更多插件操作" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+                <span>更多</span>
                 <span class="sakura-icon icon-chevron-down" aria-hidden="true"></span>
               </button>
               <div id="pluginInstallMenu" class="plugin-install-menu__panel" role="menu" hidden>
+                <div class="plugin-menu-label">从本地安装</div>
                 <button id="pluginInstallZipButton" type="button" role="menuitem">从 ZIP 安装…</button>
                 <button id="pluginInstallFolderButton" type="button" role="menuitem">从文件夹安装…</button>
               </div>
@@ -260,15 +261,7 @@
         </section>
 
         <section id="page-providers" class="settings-page admin-page">
-          <div id="providerStatusStrip" class="admin-strip"></div>
-          <div class="admin-toolbar">
-            <input id="providerSearch" class="admin-search" type="text" placeholder="搜索模型服务、API 地址" />
-            <button id="addProviderButton" class="secondary-button" type="button">添加模型服务</button>
-          </div>
-          <div class="admin-workbench">
-            <div id="providerList" class="admin-list"></div>
-            <aside id="providerDetail" class="admin-detail"></aside>
-          </div>
+          <div id="modelProviderSurface" class="plugin-surface"></div>
         </section>
 
         <section id="page-model" class="settings-page">
@@ -277,50 +270,7 @@
             <div id="modelSlots" class="dynamic-list"></div>
           </fieldset>
 
-          <details class="settings-group advanced-section">
-            <summary>高级参数</summary>
-            <div class="setting-row">
-              <div class="setting-row-text setting-row-help">
-                <label class="setting-title" for="contextWindowTokens">上下文上限</label>
-                <button class="setting-help" type="button" aria-label="上下文上限说明" data-tooltip="默认 32K tokens">?</button>
-              </div>
-              <span class="field-unit"><input id="contextWindowTokens" type="number" min="4096" max="2000000" step="1" inputmode="numeric" placeholder="例如 1000000" /><span class="unit">tokens</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="apiTimeout">
-                <span class="setting-title">请求超时时间</span>
-              </label>
-              <span class="field-unit"><input id="apiTimeout" type="number" step="1" /><span class="unit">秒</span></span>
-            </div>
-            <div class="setting-row">
-              <div class="setting-row-text setting-row-help">
-                <label class="setting-title" for="apiTemperature">创造性 (temperature)</label>
-                <button class="setting-help" type="button" aria-label="创造性 (temperature)说明" data-tooltip="越高越多变，越低越稳定。">?</button>
-              </div>
-              <input id="apiTemperature" type="number" min="0" max="2" step="0.01" />
-            </div>
-            <div class="setting-row">
-              <div class="setting-row-text setting-row-help">
-                <label class="setting-title" for="apiTopP">用词多样性 (top_p)</label>
-                <button class="setting-help" type="button" aria-label="用词多样性 (top_p)说明" data-tooltip="值越低，用词范围越集中。">?</button>
-              </div>
-              <label class="inline-input">
-                <input id="apiTopPEnabled" type="checkbox" />
-                <span>自定义</span>
-                <input id="apiTopP" type="number" min="0" max="1" step="0.01" />
-              </label>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="apiMaxTokens">
-                <span class="setting-title">回复长度上限 (max_tokens)</span>
-              </label>
-              <label class="inline-input">
-                <input id="apiMaxTokensEnabled" type="checkbox" />
-                <span>自定义</span>
-                <input id="apiMaxTokens" type="number" step="1" />
-              </label>
-            </div>
-          </details>
+          <div id="modelSettingsSurface" class="plugin-surface"></div>
         </section>
 
         <section id="page-voice" class="settings-page">
@@ -400,45 +350,7 @@
             </div>
           </fieldset>
 
-          <fieldset class="settings-group screen-awareness-settings-group">
-            <legend>主动屏幕感知</legend>
-            <div class="setting-row">
-              <label class="setting-row-text" for="enabled">
-                <span class="setting-title">启用主动屏幕感知</span>
-                <span class="setting-desc">定时截屏，判断是否主动搭话。</span>
-              </label>
-              <span class="setting-toggle"><input id="enabled" type="checkbox" /></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="checkInterval">
-                <span class="setting-title">截图检查间隔</span>
-              </label>
-              <span class="field-unit"><input id="checkInterval" type="number" step="1" /><span class="unit">分钟</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="cooldown">
-                <span class="setting-title">最短搭话间隔</span>
-              </label>
-              <span class="field-unit"><input id="cooldown" type="number" step="1" /><span class="unit">分钟</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="batchLimit">
-                <span class="setting-title">单次最多发送截图</span>
-              </label>
-              <span class="field-unit"><input id="batchLimit" type="number" step="1" /><span class="unit">张</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="screenResolution">
-                <span class="setting-title">截图分辨率</span>
-              </label>
-              <select id="screenResolution" data-tooltip="发送前按比例缩小，不放大截图">
-                <option value="fullscreen">全屏分辨率</option>
-                <option value="720p">720p</option>
-                <option value="1080p">1080p</option>
-                <option value="2160p">2160p</option>
-              </select>
-            </div>
-          </fieldset>
+          <div id="screenAwarenessSurface"></div>
         </section>
 
         <section id="page-system" class="settings-page">

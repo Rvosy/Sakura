@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-22
 ---
 
 # 文档职责与维护规范
@@ -35,8 +35,8 @@ Plan 与 Record 只在确有实施或历史价值时使用，不是每次开发�
 Spec 以当前产品真相为中心，优先包含 Purpose、Invariants、Compatibility、Verification 和 Related
 Decisions。不要写修改文件、开发步骤、Agent 流程或 Work Package 权限。
 
-用户要求改变产品行为时，随实现更新对应契约；已有 Spec 不是拒绝已授权改动的理由。尚未交付的设计应说明
-实现状态，不能把规划写成当前产品能力。文档和代码冲突时先核实调用链与测试，不凭日期或标题机械取舍。
+产品行为变化时，随实现更新对应契约。尚未交付的设计放在 Plan 或 draft Spec 中，注明实现状态。
+文档和代码冲突时先核实调用链与测试，不凭日期或标题机械取舍。
 
 历史 WP 中的文件白名单、激活前置条件、固定提交顺序和任务级 required profiles 已由
 [ADR-0021](../adr/0021-product-harness-outcome-verification.md) 废止。维护现行 Spec 时删除这些流程限制；
@@ -45,6 +45,20 @@ Decisions。不要写修改文件、开发步骤、Agent 流程或 Work Package 
 
 ADR 记录 Context、Decision、Alternatives、Reasons 和 Consequences。已接受的 ADR 被新方向替代时，
 新增 ADR 并明确 supersedes 关系；旧 ADR 标为 `superseded` 后移入 archive，不直接改写历史理由。
+
+## 内容与来源
+
+正式文档用项目作者的口吻说明有效用法、规则和决定。助手与作者的对话、授权和工作汇报留在协作记录中；
+UI、提示、日志说明、配置注释和生成模板也遵循这一要求。界面文本的具体判断见[界面文案规范](UI_COPY_GUIDELINES.md)。
+
+README 负责项目介绍和快速上手，详细步骤进入对应指南。每项事实保留一个详细来源，其他入口用简短介绍和
+具体链接引导；官网也引用仓库指南，不复制整份字段表、默认值或安装流程。代码拥有的规则引用文件与符号。
+
+长期文档说明如何查询版本、产物和状态。带日期的 Record 保存当次版本、环境、实测结果、失败与结论；
+尝试和未完成方案留在 Plan，已结束的过程归档。移出历史段落时保留原始证据并更新引用。
+
+用具体的测量条件、适用范围和操作后果代替反复的免责声明。保留许可证原文与第三方归属。
+改动生成文本时检查模板、生成器、示例和分发副本，副本与对应版本保持一致；实现、验证和发布分别依据其记录。
 
 ## 元数据与索引
 

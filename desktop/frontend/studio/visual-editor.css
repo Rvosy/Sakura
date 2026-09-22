@@ -24,7 +24,7 @@
 .forms-empty h2 { font-size: 15px; margin: 0; }
 .forms-empty > .sakura-icon { width: 34px; height: 34px; }
 .form-meta[hidden], .forms-empty[hidden] { display: none; }
-.studio-visual-dialog { width: min(570px, calc(100vw - 36px)); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--sakura-border); border-radius: var(--radius-lg); background: var(--sakura-page-bg); color: var(--sakura-text); padding: 24px; box-shadow: 0 20px 60px #27445a26; }
+.studio-visual-dialog { width: min(570px, calc(100vw - 36px)); max-height: calc(100vh - 40px); overflow: auto; scrollbar-gutter: stable; border: 1px solid var(--sakura-border); border-radius: var(--radius-lg); background: var(--sakura-page-bg); color: var(--sakura-text); padding: 24px; box-shadow: 0 20px 60px #27445a26; }
 .studio-visual-dialog::backdrop { background: #27445a45; backdrop-filter: blur(3px); }
 .studio-visual-dialog h2 { margin: 0 0 22px; font-size: 20px; }
 .visual-dialog-body { display: grid; gap: 18px; }

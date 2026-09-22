@@ -3,18 +3,16 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 
-from app.agent.context_orchestrator import (
+from sakura_assistant.agent.context_orchestrator import (
     ContextOrchestrator,
     build_context_request,
     messages_for_context_snapshot,
 )
-from app.agent.runtime import AgentRuntime, _build_tool_role_message
-from app.agent.tools import ToolExecutionResult
-from app.agent.trace import traced_message
-from app.config.model_slots import resolve_model_slot
-from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
-from app.llm.api_client import ApiSettings, NativeToolCall, OpenAICompatibleClient
-from app.llm.prompts.runtime import (
+from sakura_assistant.agent.runtime import AgentRuntime, _build_tool_role_message
+from sakura_tools import ToolExecutionResult
+from sakura_assistant.agent.trace import traced_message
+from sakura_assistant.llm.api_client import DialogueSettings, NativeToolCall, AssistantModelClient
+from sakura_assistant.llm.prompts.runtime import (
     ContextBudget,
     ContextPolicy,
     ContextWindowExceededError,
@@ -24,8 +22,8 @@ from app.llm.prompts.runtime import (
     estimate_prompt_tokens,
     truncate_to_token_budget,
 )
-from app.llm.prompts.types import ContextFragment, ContextRequest, ContextTurn, PromptRecipe, PromptSection
-from app.llm.token_estimation import (
+from sakura_context import ContextFragment, ContextRequest, ContextTurn, PromptRecipe, PromptSection
+from sakura_assistant.llm.token_estimation import (
     estimate_message_image_tokens,
     estimate_message_tokens,
 )
@@ -199,31 +197,13 @@ def test_required_host_facts_are_full_or_fail_with_their_rendered_envelope() -> 
     assert "必需上下文" in caught.value.public_message()
 
 
-def test_chat_model_slot_propagates_explicit_window_without_model_name_guessing() -> None:
-    resolved = resolve_model_slot(
-        [
-            ApiConfigProfile(
-                id="provider",
-                alias="Provider",
-                base_url="https://example.invalid/v1",
-                api_key="secret",
-                models=("opaque-model-name",),
-            )
-        ],
-        ModelSelectionSettings(
-            chat=ModelSlotSelection(
-                profile_id="provider",
-                model="opaque-model-name",
-                context_window_tokens=131_072,
-            )
-        ),
-        "chat",
-        ApiSettings("", "", ""),
-    )
-
-    assert resolved is not None
-    assert resolved.settings.context_window_tokens == 131_072
-    assert resolved.settings.context_window_source == "user"
+def test_model_description_propagates_explicit_window_without_model_name_guessing():
+    from plugins.builtin.sakura_model_openai_compatible.profiles import ProviderProfiles
+    context = MagicMock()
+    context.config.get.return_value = {"profiles": [{"profileId": "fixture", "base_url": "https://example.invalid/v1", "api_key": "secret", "models": [{"modelId": "opaque", "contextWindowTokens": 131072}]}]}
+    result = ProviderProfiles(context).describe("fixture", "opaque")
+    assert result["contextWindowTokens"] == 131072
+    assert result["contextWindowSource"] == "user"
 
 
 def test_current_tool_result_over_window_fails_without_truncation() -> None:
@@ -249,14 +229,8 @@ def test_current_tool_result_over_window_fails_without_truncation() -> None:
 
 
 def test_agent_runtime_rejects_required_atoms_before_provider_call() -> None:
-    client = MagicMock(spec=OpenAICompatibleClient)
-    client.settings = ApiSettings(
-        "https://example.invalid/v1",
-        "secret",
-        "model",
-        context_window_tokens=4_096,
-        context_window_source="user",
-    )
+    client = MagicMock(spec=AssistantModelClient)
+    client.settings = DialogueSettings(model="model", context_window_tokens=4_096, context_window_source="user")
     runtime = AgentRuntime(client, "system")
 
     with pytest.raises(ContextWindowExceededError):

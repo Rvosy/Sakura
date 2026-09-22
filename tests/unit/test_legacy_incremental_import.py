@@ -1097,7 +1097,7 @@ def test_explicit_role_mapping_imports_history_points_and_profiles_under_existin
     try:
         assert points[point_id][1]["user_id"] == active.id
         assert points[point_id][1]["scope"] == active.id
-        from plugins.builtin.sakura_mem0.memory import _normalize_memory_record
+        from plugins.optional.sakura_mem0.memory import _normalize_memory_record
         assert _normalize_memory_record({**points[point_id][1], "id": point_id})["scope"] == active.id
     finally:
         client.close()

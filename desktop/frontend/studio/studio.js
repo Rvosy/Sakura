@@ -971,7 +971,7 @@ function renderVisualMeta(resource) {
   document.getElementById("visualEditorTitle").textContent = visualProvider(resource)?.name || "形态编辑";
   const field = document.createElement("label"); field.className = "form-name-field"; field.htmlFor = "visualName";
   const label = document.createElement("span"); label.textContent = "形态名称";
-  const name = document.createElement("input"); name.type = "text"; name.id = "visualName"; name.maxLength = 80; name.value = visualName(resource);
+  const name = document.createElement("input"); name.type = "text"; name.id = "visualName"; name.value = visualName(resource);
   name.oninput = () => {
     const current = visualReferences().resources.find(item => item.id === resource.id);
     if (!current) return;
@@ -1080,7 +1080,7 @@ async function addVisualResource() {
   const types = document.createElement("div"); types.className = "visual-type-options"; types.setAttribute("aria-label", "形态类型");
   const nameLabel = document.createElement("label"); nameLabel.className = "modal-field"; nameLabel.htmlFor = "newVisualName";
   const label = document.createElement("span"); label.textContent = "形态名称";
-  const name = document.createElement("input"); name.type = "text"; name.id = "newVisualName"; name.maxLength = 80;
+  const name = document.createElement("input"); name.type = "text"; name.id = "newVisualName";
   const uniqueName = base => { let title = base, number = 2; while (visualReferences().resources.some(item => visualName(item) === title)) title = `${base} ${number++}`; return title; };
   name.value = chosen ? uniqueName(chosen.name) : "";
   for (const item of available) {

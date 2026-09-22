@@ -152,7 +152,7 @@ def _safe_exception_message(error: BaseException) -> str:
         return f"{type(error).__name__}: exception message could not be formatted"
 
 
-def _exception_diagnostics(error: BaseException) -> dict[str, str]:
+def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | None = None) -> dict[str, str]:
     """Stdlib-only worker diagnostics; never serialize exception objects/locals."""
     chain, stacks, seen = [], [], set()
     current = error
@@ -197,24 +197,35 @@ def _exception_diagnostics(error: BaseException) -> dict[str, str]:
         for key in ("exception_chain", "exception_stack"):
             if isinstance(remote.get(key), str):
                 result[key] = _diagnostic_text(result[key] + "\nRemote:\n" + remote[key])
+    if isinstance(error, BaseExceptionGroup):
+        # A failed initialization and its cleanup are distinct evidence. Keep
+        # every bounded group member's traceback without serializing locals.
+        budget = [16] if _group_budget is None else _group_budget
+        for index, child in enumerate(error.exceptions, 1):
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            child_diagnostics = _exception_diagnostics(child, _group_budget=budget)
+            for key in ("exception_chain", "exception_stack"):
+                result[key] = _diagnostic_text(
+                    result[key] + f"\nGroup member {index}:\n" + child_diagnostics[key]
+                )
     return result
 
 
-def json_value(value: object) -> object:
-    """Return a detached JSON value or fail at the process boundary."""
-
+def _encode_json(value: object) -> bytes:
     try:
-        encoded = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        payload = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
     except (TypeError, ValueError, OverflowError) as error:
         raise PluginApiError("SERVICE_PAYLOAD_INVALID") from error
-    if len(encoded) > MAX_FRAME_BYTES:
+    if len(payload) > MAX_FRAME_BYTES:
         raise PluginApiError("PLUGIN_FRAME_TOO_LARGE")
-    return json.loads(encoded.decode("utf-8"))
+    return payload
+
+
+def json_value(value: object) -> object:
+    """Detach values for local consumers using the transport's JSON contract."""
+    return json.loads(_encode_json(value))
 
 
 def read_frame(stream: BinaryIO) -> dict[str, Any]:
@@ -233,14 +244,7 @@ def read_frame(stream: BinaryIO) -> dict[str, Any]:
 
 
 def write_frame(stream: BinaryIO, value: Mapping[str, Any]) -> None:
-    detached = json_value(dict(value))
-    assert isinstance(detached, dict)
-    payload = json.dumps(
-        detached,
-        ensure_ascii=False,
-        allow_nan=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    payload = _encode_json(value)
     stream.write(struct.pack(">I", len(payload)))
     stream.write(payload)
     stream.flush()
@@ -277,6 +281,8 @@ class RpcPeer:
         plugin_id: str,
         request_handler: Callable[[str, Mapping[str, Any]], object],
         on_eof: Callable[[], None] | None = None,
+        notification_handler: Callable[[str, Mapping[str, Any]], object] | None = None,
+        notification_error_handler: Callable[[str, BaseException], None] | None = None,
     ) -> None:
         self._input = input_stream
         self._output = output_stream
@@ -284,16 +290,22 @@ class RpcPeer:
         self._plugin_id = plugin_id
         self._request_handler = request_handler
         self._on_eof = on_eof
+        self._notification_handler = notification_handler
+        self._notification_error_handler = notification_error_handler
+        self._notifications: queue.Queue[tuple[str, Mapping[str, Any]] | None] = queue.Queue(
+            maxsize=MAX_PENDING_REQUESTS
+        )
         self._state_lock = threading.Lock()
         self._pending: dict[str, _Pending] = {}
         self._outgoing_slots = threading.BoundedSemaphore(MAX_PENDING_REQUESTS)
         self._incoming_slots = threading.BoundedSemaphore(MAX_PENDING_REQUESTS)
-        self._outgoing: queue.Queue[Mapping[str, Any] | None] = queue.Queue(
+        self._outgoing: queue.Queue[bytes | None] = queue.Queue(
             maxsize=MAX_PENDING_REQUESTS * 2
         )
         self._closed = threading.Event()
         self._reader: threading.Thread | None = None
         self._writer: threading.Thread | None = None
+        self._observer: threading.Thread | None = None
 
     @property
     def closed(self) -> bool:
@@ -308,12 +320,24 @@ class RpcPeer:
             daemon=True,
         )
         self._writer.start()
+        if self._notification_handler is not None:
+            self._observer = threading.Thread(
+                target=self._notification_loop, name=f"{thread_name}-observer", daemon=True
+            )
+            self._observer.start()
         self._reader = threading.Thread(
             target=self._read_loop,
             name=thread_name,
             daemon=True,
         )
         self._reader.start()
+
+    def notify(self, name: str, payload: Mapping[str, Any]) -> None:
+        """Accept a best-effort wakeup locally without waiting for its observer."""
+        self._write({
+            "type": "notification", "generationId": self._generation_id,
+            "pluginId": self._plugin_id, "name": name, "payload": dict(payload),
+        })
 
     def request(
         self,
@@ -389,6 +413,10 @@ class RpcPeer:
             self._outgoing.put_nowait(None)
         except queue.Full:
             pass
+        try:
+            self._notifications.put_nowait(None)
+        except queue.Full:
+            pass
         with self._state_lock:
             pending = list(self._pending.values())
         for item in pending:
@@ -402,7 +430,7 @@ class RpcPeer:
         if self.closed:
             raise PluginApiError("PLUGIN_PROCESS_UNAVAILABLE")
         try:
-            self._outgoing.put(dict(value), timeout=max(0.0, timeout))
+            self._outgoing.put(_encode_json(value), timeout=max(0.0, timeout))
         except queue.Full as error:
             raise PluginApiError("PLUGIN_QUEUE_FULL") from error
 
@@ -412,7 +440,9 @@ class RpcPeer:
                 value = self._outgoing.get()
                 if value is None:
                     return
-                write_frame(self._output, value)
+                self._output.write(struct.pack(">I", len(value)))
+                self._output.write(value)
+                self._output.flush()
         except (BrokenPipeError, OSError, ValueError, PluginApiError):
             self.close()
 
@@ -435,6 +465,16 @@ class RpcPeer:
         ):
             raise PluginApiError("GENERATION_INVALIDATED")
         message_type = message.get("type")
+        if message_type == "notification":
+            name, payload = message.get("name"), message.get("payload")
+            if (self._notification_handler is None or not isinstance(name, str)
+                    or not isinstance(payload, Mapping)):
+                raise PluginApiError("PLUGIN_PROTOCOL_INVALID")
+            try:
+                self._notifications.put_nowait((name, dict(payload)))
+            except queue.Full as error:
+                self._report_notification_error(name, error)
+            return
         request_id = message.get("id")
         if not isinstance(request_id, str) or not request_id:
             raise PluginApiError("PLUGIN_PROTOCOL_INVALID")
@@ -444,7 +484,7 @@ class RpcPeer:
             if pending is None:
                 return
             if message.get("ok") is True:
-                pending.result = json_value(message.get("result"))
+                pending.result = message.get("result")
             else:
                 raw = message.get("error")
                 if not isinstance(raw, Mapping):
@@ -475,6 +515,25 @@ class RpcPeer:
             daemon=True,
         ).start()
 
+    def _report_notification_error(self, name: str, error: BaseException) -> None:
+        if self._notification_error_handler is not None:
+            try:
+                self._notification_error_handler(name, error)
+            except Exception:
+                # An unavailable log sink cannot stop the RPC reader/observer.
+                pass
+
+    def _notification_loop(self) -> None:
+        while not self.closed:
+            item = self._notifications.get()
+            if item is None or self.closed:
+                return
+            name, payload = item
+            try:
+                self._notification_handler(name, payload)
+            except Exception as error:
+                self._report_notification_error(name, error)
+
     def _dispatch_request(
         self,
         request_id: str,
@@ -483,7 +542,7 @@ class RpcPeer:
     ) -> None:
         try:
             result = self._request_handler(name, payload)
-            result = json_value(result)
+            self.respond(request_id, result=result)
         except PluginApiError as error:
             try:
                 self.respond(request_id, error=error)
@@ -502,19 +561,37 @@ class RpcPeer:
                 )
             except PluginApiError:
                 pass
-        else:
-            try:
-                self.respond(request_id, result=result)
-            except PluginApiError:
-                pass
         finally:
             self._incoming_slots.release()
 
 
 class ServiceProxy:
-    def __init__(self, service_key: str, call: Callable[[str, str, Sequence[Any]], object]) -> None:
+    def __init__(self, service_key: str, call: Callable[[str, str, Sequence[Any]], object],
+                 *, identity: Mapping[str, str] | None = None,
+                 timed_call: Callable[..., object] | None = None) -> None:
         self._service_key = service_key
         self._call = call
+        self._identity = dict(identity) if identity is not None else None
+        self._timed_call = timed_call
+
+    @property
+    def identity(self) -> dict[str, str]:
+        """Return the exact bound process identity for explicit artifact delivery."""
+        if self._identity is None:
+            raise PluginApiError("SERVICE_BINDING_REQUIRED", service_key=self._service_key)
+        return dict(self._identity)
+
+    def invoke(self, method: str, *args: object, timeout_seconds: float | None = None) -> object:
+        """Call a remote method with an optional end-to-end RPC deadline."""
+        method = _method(method)
+        if self._timed_call is None:
+            raise PluginApiError("SERVICE_BINDING_REQUIRED", service_key=self._service_key)
+        if timeout_seconds is not None and (
+            isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+            or not 0 < timeout_seconds <= 122
+        ):
+            raise PluginApiError("PLUGIN_DEADLINE_INVALID", service_key=self._service_key)
+        return self._timed_call(method, args, timeout_seconds)
 
     def __getattr__(self, method: str) -> Callable[..., object]:
         if not method or method.startswith("_"):
@@ -684,6 +761,27 @@ class _HostRegistrationProxy:
         self._service_key = service_key
         self._callback_shape = callback_shape
 
+    def describe(self) -> dict[str, Any]:
+        result = self._context._remote_call(self._service_key, "describe", [])
+        if not isinstance(result, Mapping):
+            raise PluginApiError("HOST_DESCRIPTOR_INVALID", plugin_id=self._context.plugin_id)
+        return dict(result)
+
+    def catalog(self) -> list[dict[str, Any]]:
+        return self._context._remote_call(self._service_key, "catalog", [])
+
+    def collect(self, registration_id: str, request: Mapping[str, Any]) -> object:
+        return self._context._remote_call(self._service_key, "collect", [registration_id, dict(request)])
+
+    def execute(self, registration_id: str, name: str, arguments: Mapping[str, Any], *, timeout_seconds: float = 15.0) -> object:
+        if not 0 < timeout_seconds <= 120:
+            raise PluginApiError("TOOL_DEADLINE_INVALID")
+        # The advertised tool deadline includes callback work. Never replay a timed-out side effect.
+        return self._context._remote_request("service.call", {
+            "serviceKey": self._service_key, "method": "execute",
+            "args": [registration_id, name, dict(arguments)], "timeoutSeconds": timeout_seconds + 2,
+        })
+
     def register(
         self,
         descriptor: Mapping[str, Any],
@@ -738,18 +836,6 @@ class _CharacterProxy:
             "current",
             [self._context.plugin_id],
         )
-        if (
-            not isinstance(result, Mapping)
-            or set(result) != {"id", "systemPrompt"}
-            or not isinstance(result.get("id"), str)
-            or not result.get("id")
-            or not isinstance(result.get("systemPrompt"), str)
-            or not result.get("systemPrompt")
-        ):
-            raise PluginApiError(
-                "CHARACTER_RESPONSE_INVALID",
-                plugin_id=self._context.plugin_id,
-            )
         return {"id": result["id"], "systemPrompt": result["systemPrompt"]}
 
     def get(self, character_id: str) -> dict[str, Any]:
@@ -800,7 +886,33 @@ class _CharacterProxy:
 class _ArtifactsProxy:
     def __init__(self, context: "PluginContext") -> None:
         self._context = context
-        self._allocations: dict[str, tuple[Callable[[], None], dict[str, bool]]] = {}
+        self._allocations: dict[str, tuple[Callable[[], None], dict[str, Any]]] = {}
+
+    def resolve(self, artifact_id: str) -> dict[str, Any]:
+        return self._context._remote_call("sakura.host.artifacts", "resolve", [artifact_id])
+
+    def _release_call(self, method, args, timeout_seconds):
+        if timeout_seconds is None:
+            return self._context._remote_call("sakura.host.artifacts", method, args)
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+                or not 0 < timeout_seconds <= 122):
+            raise PluginApiError("PLUGIN_DEADLINE_INVALID")
+        return self._context._remote_request("service.call", {
+            "serviceKey": "sakura.host.artifacts", "method": method, "args": args,
+            "timeoutSeconds": timeout_seconds,
+        })
+
+    def release_received(self, artifact_id: str, *, timeout_seconds: float | None = None) -> object:
+        return self._release_call("release_received", [artifact_id], timeout_seconds)
+
+    def deliver(self, artifact_id: str, receiver: Mapping[str, str], operation_id: str) -> dict[str, Any]:
+        return self._context._remote_call(
+            "sakura.host.artifacts", "deliver", [artifact_id, dict(receiver), operation_id],
+        )
+
+    def release_delivered(self, artifact_id: str, operation_id: str,
+                          *, timeout_seconds: float | None = None) -> object:
+        return self._release_call("release_delivered", [artifact_id, operation_id], timeout_seconds)
 
     def allocate(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(descriptor, Mapping):
@@ -826,11 +938,7 @@ class _ArtifactsProxy:
             self._allocations.pop(artifact_id, None)
             if ownership["transferred"]:
                 return
-            self._context._remote_call(
-                "sakura.host.artifacts",
-                "release",
-                [self._context.plugin_id, artifact_id],
-            )
+            self._release_call("release", [self._context.plugin_id, artifact_id], ownership.get("timeout_seconds"))
 
         disposer = self._context.effect(cleanup)
         self._allocations[artifact_id] = (disposer, ownership)
@@ -855,10 +963,11 @@ class _ArtifactsProxy:
         disposer()
         return dict(result)
 
-    def release(self, artifact_id: str) -> bool:
+    def release(self, artifact_id: str, *, timeout_seconds: float | None = None) -> bool:
         binding = self._allocations.pop(artifact_id, None)
         if binding is None:
             return False
+        binding[1]["timeout_seconds"] = timeout_seconds
         binding[0]()
         return True
 
@@ -905,6 +1014,9 @@ class _LoggingProxy:
                 self._worker.start()
             except RuntimeError:
                 self._stopping = True
+
+    def model_call(self, candidate: Mapping[str, Any]) -> object:
+        return self._emit("debug", "模型请求已结束", {"event": "model.call.metric", "modelCall": dict(candidate)})
 
     def debug(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
         return self._emit("debug", message, fields)
@@ -1082,6 +1194,24 @@ class _SettingsRegistrationProxy:
             raise
 
 
+    def _register_ui(self, descriptor):
+        def activate():
+            result = self._context._remote_call("sakura.host.settings", "register",
+                                               [self._context.plugin_id, descriptor, {}])
+            identity = result["registrationId"]
+            return lambda: self._context._remote_call("sakura.host.settings", "unregister", [identity])
+        return self._context._stage(activate)
+
+    def register_page(self, descriptor):
+        """Register a namespaced navigation page using host components."""
+        return self._register_ui({**dict(descriptor), "kind": "page"})
+
+    def place(self, section_id, *, page_id, region="content", order=100):
+        """Place one owned section in one explicitly available page region."""
+        return self._register_ui({"kind": "placement", "sectionId": section_id,
+                                 "pageId": page_id, "region": region, "order": order})
+
+
 class _SettingsSurfaceProxy:
     def __init__(self, context: "PluginContext") -> None:
         self._context = context
@@ -1196,21 +1326,34 @@ class _ModelSlotsProxy:
     def __init__(self, context: "PluginContext") -> None:
         self._context = context
 
+    def active(self) -> dict[str, object]:
+        return self._context._remote_call("sakura.host.model_slots.v2", "active", [])
+
     def catalog(self) -> list[dict[str, object]]:
         result = self._context._remote_call(
-            "sakura.host.model_slots",
+            "sakura.host.model_slots.v2",
             "catalog",
             [],
         )
-        detached = json_value(result)
-        if not isinstance(detached, list) or any(
-            not isinstance(item, dict) for item in detached
-        ):
-            raise PluginApiError(
-                "MODEL_CATALOG_INVALID",
-                plugin_id=self._context.plugin_id,
-            )
-        return detached
+        return result
+
+    def register_provider(self, descriptor: Mapping[str, Any], *, catalog: Callable[[], object]) -> Callable[[], None]:
+        if not isinstance(descriptor, Mapping) or not callable(catalog):
+            raise PluginApiError("MODEL_PROVIDER_INVALID", plugin_id=self._context.plugin_id)
+        handle, dispose = self._context._register_callback("model_slots.catalog", catalog)
+
+        def activate():
+            result = self._context._remote_call("sakura.host.model_slots.v2", "register_provider", [self._context.plugin_id, dict(descriptor), handle])
+            registration_id = result.get("registrationId") if isinstance(result, Mapping) else None
+            if not isinstance(registration_id, str):
+                raise PluginApiError("HOST_REGISTRATION_INVALID", plugin_id=self._context.plugin_id)
+            return lambda: self._context._remote_call("sakura.host.model_slots.v2", "unregister_provider", [registration_id])
+
+        try:
+            return self._context._stage(activate)
+        except Exception:
+            dispose()
+            raise
 
     def resolve(self, selection: Mapping[str, Any]) -> dict[str, object]:
         if not isinstance(selection, Mapping):
@@ -1219,17 +1362,11 @@ class _ModelSlotsProxy:
                 plugin_id=self._context.plugin_id,
             )
         result = self._context._remote_call(
-            "sakura.host.model_slots",
+            "sakura.host.model_slots.v2",
             "resolve",
             [dict(selection)],
         )
-        detached = json_value(result)
-        if not isinstance(detached, dict):
-            raise PluginApiError(
-                "MODEL_CATALOG_INVALID",
-                plugin_id=self._context.plugin_id,
-            )
-        return detached
+        return result
 
     def register(
         self,
@@ -1257,7 +1394,7 @@ class _ModelSlotsProxy:
 
         def activate() -> Callable[[], object]:
             result = self._context._remote_call(
-                "sakura.host.model_slots",
+                "sakura.host.model_slots.v2",
                 "register",
                 [self._context.plugin_id, dict(descriptor), handles],
             )
@@ -1272,7 +1409,7 @@ class _ModelSlotsProxy:
 
             def cleanup() -> object:
                 return self._context._remote_call(
-                    "sakura.host.model_slots",
+                    "sakura.host.model_slots.v2",
                     "unregister",
                     [registration_id],
                 )
@@ -1300,6 +1437,7 @@ class PluginContext:
     ) -> None:
         self.plugin_id = plugin_id
         self._caller_id: ContextVar[str | None] = ContextVar("sakura_service_caller", default=None)
+        self._caller_scope: ContextVar[str | None] = ContextVar("sakura_service_scope", default=None)
         self._plugin_root = plugin_root
         self._data_dir = data_dir
         self._remote_call = remote_call
@@ -1308,6 +1446,8 @@ class PluginContext:
         self._events: dict[str, list[Callable[[object], object]]] = {}
         self._effects: list[Callable[[], object]] = []
         self._staged: list[_StagedEffect] = []
+        self._stage_lock = threading.RLock()
+        self._committed = False
         self._callbacks: dict[str, tuple[str, Callable[..., object]]] = {}
         self._closed = False
         self.config = PluginConfig(plugin_id, plugin_root, data_dir, self.effect)
@@ -1317,6 +1457,9 @@ class PluginContext:
 
     def get(self, service_key: str) -> object:
         key = _identifier(service_key, "SERVICE_KEY_INVALID")
+        if key == "sakura.host.model_slots":
+            raise PluginApiError("MODEL_API_UPDATE_REQUIRED", "模型接口已更新，请更新插件。",
+                                 plugin_id=self.plugin_id, service_key=key)
         if key == "sakura.host.logging":
             with self._logger_lock:
                 if self._logger is None:
@@ -1335,7 +1478,7 @@ class PluginContext:
             return _SettingsSurfaceProxy(self)
         if key == "sakura.host.settings.collection-v0":
             return _SettingsCollectionProxy(self)
-        if key == "sakura.host.model_slots":
+        if key == "sakura.host.model_slots.v2":
             return _ModelSlotsProxy(self)
         if key == "sakura.host.storage":
             return _StorageProxy(self)
@@ -1347,7 +1490,39 @@ class PluginContext:
         }.get(key)
         if callback_shape is not None:
             return _HostRegistrationProxy(self, key, callback_shape)
-        return ServiceProxy(service_key, self._remote_call)
+        def timed_call(method, args, timeout):
+            payload = {"serviceKey": key, "method": method, "args": list(args)}
+            if timeout is not None:
+                payload["timeoutSeconds"] = timeout
+            return self._remote_request("service.call", payload)
+
+        return ServiceProxy(service_key, self._remote_call, timed_call=timed_call)
+
+    def bind(self, service_key: str) -> ServiceProxy:
+        """Hold one active plugin process; never adopt a replacement instance."""
+        key = _identifier(service_key, "SERVICE_KEY_INVALID")
+        binding = self._remote_request("service.bind", {"serviceKey": key})
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding) != {"providerId", "scopeId"}
+            or any(not isinstance(value, str) or not value for value in binding.values())
+        ):
+            raise PluginApiError("PLUGIN_RESPONSE_INVALID", service_key=key)
+        identity = dict(binding)
+
+        def call(service: str, method: str, args: Sequence[Any]) -> object:
+            return self._remote_request("service.call", {
+                "serviceKey": service, "method": method, "args": list(args),
+                "binding": identity,
+            })
+
+        def timed_call(method, args, timeout):
+            payload = {"serviceKey": key, "method": method, "args": list(args), "binding": identity}
+            if timeout is not None:
+                payload["timeoutSeconds"] = timeout
+            return self._remote_request("service.call", payload)
+
+        return ServiceProxy(key, call, identity=identity, timed_call=timed_call)
 
     def provide(
         self,
@@ -1394,37 +1569,49 @@ class PluginContext:
         return remove
 
     def effect(self, cleanup: Callable[[], object]) -> Callable[[], None]:
-        if self._closed or not callable(cleanup):
-            raise PluginApiError("EFFECT_INVALID", plugin_id=self.plugin_id)
         active = True
-        self._effects.append(cleanup)
 
         def dispose() -> None:
             nonlocal active
-            if not active:
-                return
-            active = False
-            try:
-                self._effects.remove(cleanup)
-            except ValueError:
-                pass
+            with self._stage_lock:
+                if not active:
+                    return
+                active = False
+                if dispose in self._effects:
+                    self._effects.remove(dispose)
             cleanup()
 
+        with self._stage_lock:
+            if self._closed or not callable(cleanup):
+                raise PluginApiError("EFFECT_INVALID", plugin_id=self.plugin_id)
+            self._effects.append(dispose)
         return dispose
 
     def _stage(
         self,
         activate: Callable[[], Callable[[], object]],
     ) -> Callable[[], None]:
-        if self._closed or not callable(activate):
-            raise PluginApiError("EFFECT_INVALID", plugin_id=self.plugin_id)
-        staged = _StagedEffect(activate)
-        self._staged.append(staged)
-        return self.effect(staged.dispose)
+        with self._stage_lock:
+            if self._closed or not callable(activate):
+                raise PluginApiError("EFFECT_INVALID", plugin_id=self.plugin_id)
+            staged = _StagedEffect(activate)
+            disposer = self.effect(staged.dispose)
+            if self._committed:
+                try:
+                    staged.commit()
+                except Exception:
+                    disposer()
+                    raise
+            else:
+                self._staged.append(staged)
+            return disposer
 
     def commit(self) -> None:
-        for staged in self._staged:
-            staged.commit()
+        with self._stage_lock:
+            for staged in self._staged:
+                staged.commit()
+            self._staged.clear()
+            self._committed = True
 
     def _register_callback(
         self,
@@ -1478,11 +1665,16 @@ class PluginContext:
         }
 
     @property
+    def caller_scope(self) -> str | None:
+        """Core-authenticated process lifetime of the incoming Service caller."""
+        return self._caller_scope.get()
+
+    @property
     def caller_id(self) -> str | None:
         """Core-authenticated caller during an incoming Service invocation."""
         return self._caller_id.get()
 
-    def call_local(self, service_key: str, method: str, args: Sequence[Any], *, caller_id: str | None = None) -> object:
+    def call_local(self, service_key: str, method: str, args: Sequence[Any], *, caller_id: str | None = None, caller_scope: str | None = None) -> object:
         binding = self._services.get(service_key)
         if binding is None:
             raise PluginApiError("SERVICE_MISSING", service_key=service_key)
@@ -1494,10 +1686,12 @@ class PluginContext:
                 service_key=service_key,
             )
         token = self._caller_id.set(caller_id)
+        scope_token = self._caller_scope.set(caller_scope)
         try:
             return getattr(service, method)(*args)
         finally:
             self._caller_id.reset(token)
+            self._caller_scope.reset(scope_token)
 
     def emit(self, name: str, payload: object) -> None:
         for handler in list(self._events.get(name, ())):
@@ -1509,14 +1703,18 @@ class PluginContext:
                 continue
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        while self._effects:
-            cleanup = self._effects.pop()
+        with self._stage_lock:
+            if self._closed:
+                return
+            self._closed = True
+            effects = list(reversed(self._effects))
+            self._effects.clear()
+        failures = []
+        for cleanup in effects:
             try:
                 cleanup()
-            except Exception:
+            except Exception as error:
+                failures.append(error)
                 self.get("sakura.host.logging").warning("插件资源清理失败",
                     fields={"event": "plugin.cleanup.failed", "stage": "cleanup"})
         if self._logger is not None:
@@ -1525,6 +1723,8 @@ class PluginContext:
         self._services.clear()
         self._events.clear()
         self._callbacks.clear()
+        if failures:
+            raise ExceptionGroup("Plugin resource cleanup failed", failures)
 
 
 def _identifier(value: object, code: str) -> str:

@@ -1,0 +1,144 @@
+export function labelFor(name, type, labels = {}) {
+  if (type === 'skin' && Object.hasOwn(labels, name) && labels[name].trim()) return labels[name].trim();
+  return name;
+}
+
+export function createEditor({ container, rendererData, onChange = () => {}, onPreview = () => {}, onRenderingChange = () => {}, onError = () => {} }) {
+  let draft = structuredClone(rendererData.config);
+  let selectedSkin = draft.defaultSkin;
+  const doc = container.ownerDocument;
+  const element = doc.createElement('div');
+  element.className = 'spine-editor';
+  const root = element;
+  const style = new doc.defaultView.CSSStyleSheet();
+  style.replaceSync(`
+    .spine-editor { display:block; min-width:0; color:inherit; font:inherit; }
+    .spine-editor h3 { font-size:14px; margin:25px 0 12px; font-weight:600; }
+    .spine-editor h3:first-child { margin-top:0; }
+    .spine-editor .spine-choices { display:flex; flex-wrap:wrap; gap:8px; }
+    .spine-editor .spine-choices button { min-width:0; max-width:100%; overflow-wrap:anywhere; }
+    .spine-editor .spine-field { display:grid; gap:9px; font-size:13px; margin:20px 0; }
+    .spine-editor .spine-field select, .spine-editor .spine-field input[type="text"] { max-width:none; min-width:0; width:100%; }
+    .spine-editor .spine-default { grid-template-columns:auto minmax(0,1fr); align-items:center; gap:16px; margin:0 0 20px; padding-bottom:20px; border-bottom:1px solid var(--sakura-border); }
+    .spine-editor .spine-default + h3 { margin-top:0; }
+    .spine-editor .layout-slider { width:100%; }
+    .spine-editor .spine-error { color:var(--sakura-accent); font-size:13px; }
+  `);
+  doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, style];
+  const events = new AbortController();
+  let disposed = false;
+  const buttons = [];
+  const error = doc.createElement('p');
+  error.className = 'spine-error';
+  error.setAttribute('role', 'alert');
+  async function preview(payload) {
+    error.textContent = '';
+    try { await onPreview(payload); }
+    catch (failure) { if (!disposed) { error.textContent = '预览失败，请重新加载'; onError(failure, 'studio.spine.preview'); } }
+  }
+  function changed() { onChange(structuredClone(draft)); }
+  function heading(text) { const h = doc.createElement('h3'); h.textContent = text; root.append(h); }
+  const skins = doc.createElement('div');
+  skins.className = 'spine-choices';
+  for (const name of rendererData.skins) {
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.className = name === selectedSkin ? 'primary-button compact-button' : 'secondary-button compact-button';
+    button.value = name;
+    button.textContent = labelFor(name, 'skin', draft.skinLabels);
+    button.setAttribute('aria-pressed', String(name === selectedSkin));
+    button.addEventListener('click', () => selectSkin(name), { signal: events.signal });
+    buttons.push([name, button]);
+    skins.append(button);
+  }
+  function selectSkin(name) {
+    selectedSkin = name;
+    for (const [value, node] of buttons) {
+      node.setAttribute('aria-pressed', String(name === value));
+      node.className = name === value ? 'primary-button compact-button' : 'secondary-button compact-button';
+    }
+    skinName.value = labelFor(name, 'skin', draft.skinLabels);
+    void preview({ skin: name });
+  }
+  const nameLabel = doc.createElement('label');
+  nameLabel.className = 'spine-field'; nameLabel.textContent = '当前表情名称';
+  const skinName = doc.createElement('input');
+  skinName.type = 'text'; skinName.setAttribute('aria-label', '当前表情名称');
+  skinName.value = labelFor(selectedSkin, 'skin', draft.skinLabels);
+  skinName.addEventListener('input', () => {
+    draft.skinLabels = { ...draft.skinLabels, [selectedSkin]: skinName.value };
+    for (const [name, button] of buttons) button.textContent = labelFor(name, 'skin', draft.skinLabels);
+    for (const option of defaultSkin.options) option.textContent = labelFor(option.value, 'skin', draft.skinLabels);
+    changed();
+  }, { signal: events.signal });
+  nameLabel.append(skinName);
+  const defaultLabel = doc.createElement('label');
+  defaultLabel.className = 'spine-field spine-default'; defaultLabel.textContent = '默认表情';
+  const defaultSkin = doc.createElement('select');
+  defaultSkin.setAttribute('aria-label', '默认表情');
+  for (const name of rendererData.skins) {
+    const option = doc.createElement('option'); option.value = name;
+    option.textContent = labelFor(name, 'skin', draft.skinLabels); defaultSkin.append(option);
+  }
+  defaultSkin.value = draft.defaultSkin;
+  defaultSkin.addEventListener('change', () => {
+    draft.defaultSkin = defaultSkin.value;
+    selectSkin(draft.defaultSkin);
+    changed();
+  }, { signal: events.signal });
+  defaultLabel.append(defaultSkin);
+  root.append(defaultLabel);
+  heading('表情');
+  root.append(skins, nameLabel);
+  const loopLabel = doc.createElement('label');
+  loopLabel.className = 'spine-field'; loopLabel.textContent = '循环动画';
+  const select = doc.createElement('select');
+  select.setAttribute('aria-label', '循环动画');
+  for (const name of rendererData.animations) {
+    const option = doc.createElement('option'); option.value = name; option.textContent = labelFor(name, 'animation'); select.append(option);
+  }
+  select.value = draft.defaultAnimation;
+  select.addEventListener('change', () => { draft.defaultAnimation = select.value; changed(); void preview({ animation: select.value }); }, { signal: events.signal });
+  loopLabel.append(select);
+  if (rendererData.animations.length > 1) root.append(loopLabel);
+  const alphaLabel = doc.createElement('label');
+  alphaLabel.className = 'spine-field';
+  alphaLabel.textContent = '贴图透明方式';
+  const alpha = doc.createElement('select');
+  for (const [value, text] of [['false', '普通透明'], ['true', '预乘透明（PMA）']]) {
+    const option = doc.createElement('option'); option.value = value; option.textContent = text; alpha.append(option);
+  }
+  alpha.value = String(draft.premultipliedAlpha);
+  alpha.setAttribute('aria-label', '贴图透明方式');
+  alpha.addEventListener('change', () => {
+    draft.premultipliedAlpha = alpha.value === 'true'; changed();
+    Promise.resolve(onRenderingChange(structuredClone(draft))).catch(failure => {
+      if (!disposed) { error.textContent = '预览失败，请重新加载'; onError(failure, 'studio.spine.rendering'); }
+    });
+  }, { signal: events.signal });
+  alphaLabel.append(alpha); root.append(alphaLabel);
+  if (rendererData.animations.length > 1) heading('动作');
+  const actions = doc.createElement('div'); actions.className = 'spine-choices';
+  for (const name of rendererData.animations) {
+    const button = doc.createElement('button'); button.type = 'button'; button.className = 'secondary-button compact-button'; button.textContent = labelFor(name, 'animation');
+    button.addEventListener('click', () => { void preview({ action: name }); }, { signal: events.signal });
+    actions.append(button);
+  }
+  if (rendererData.animations.length > 1) root.append(actions);
+  const speedLabel = doc.createElement('label');
+  speedLabel.className = 'spine-field';
+  const speedText = doc.createElement('span');
+  speedText.textContent = `播放速度 · ${draft.speed.toFixed(1)}×`;
+  const speed = doc.createElement('input');
+  Object.assign(speed, { type: 'range', min: '0.1', max: '3', step: '0.1', value: String(draft.speed) });
+  speed.className = 'layout-slider';
+  speed.setAttribute('aria-label', '播放速度');
+  speed.addEventListener('input', () => { draft.speed = Number(speed.value); speedText.textContent = `播放速度 · ${draft.speed.toFixed(1)}×`; changed(); void preview({ speed: draft.speed }); }, { signal: events.signal });
+  speedLabel.append(speedText, speed); root.append(speedLabel);
+  root.append(error);
+  container.append(element);
+  return { getDraft: () => structuredClone(draft), freeze() { events.abort(); element.inert = true; },
+    dispose() { disposed = true; events.abort(); element.remove(); doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter(sheet => sheet !== style); } };
+}
+
+export { mountEditor, renderThumbnail } from './studio.mjs';

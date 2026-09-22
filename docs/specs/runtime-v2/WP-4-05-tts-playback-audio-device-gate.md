@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-14
+updated: 2026-09-22
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -17,16 +17,23 @@ updated: 2026-09-14
 
 - `assistant.tts-v1` 只为已完成聊天中的 `operationId + segmentIndex` 合成，`suppressTts` 和语言守卫必须
   fail closed。WebView 不得提交文本、路径、generation 或音频描述符。
-- 音频实际开始后，以同一个 playback-start 边界同时启动当前段立绘切换和字幕打字；首段等待合成与播放启动时
-  必须继续显示回复等待省略号，直到该门禁打开，不得在聊天文本终态到达时留下空白气泡。字幕和音频均终止后
-  推进下一段。当前段开始后预生成下一段；任何合成、设备或播放失败立即降级为字幕并从同一门禁启动立绘与
-  字幕，不改变聊天终态。历史导航不自动重播。已完成段落可由用户点「重新朗读」；WebView 仍只提交该段的
-  `operationId + segmentIndex`，显式重读可另带 `replay=true`。Core 对已合成段落从持久 recording 签发新的播放副本，不得再次把文本交给
-  Provider。合成失败后，同一身份的显式重读可再次合成；后续回复取消了尚未合成的授权时，显式重读也可再次合成并补启动托管
-  GPT-SoVITS。自动预取不得借 `replay` 复活已取消的 in-flight 请求。
+- 每段字幕与立绘共用一个开始时点。该段有语音时，先等待合成完成，再以原生播放的 `started` 事件
+  同时触发立绘切换与字幕打字；合成期间保留上一段画面，首段保留回复等待指示。字幕显示完且该段音频
+  结束后，经过配置的段间停顿再进入下一段。允许提前合成下一段，但不得提前切换画面或播放。
+- 可选表现控制在桌面准备该段时解析，与语音合成并行；Core 保存和交付正文不等待解析。准备阶段不执行
+  表现动作，解析失败保留当前画面并放行字幕与语音。取消、换回复或录音开始立即解除等待，迟到控制不能
+  补播；历史回看只使用已展示的状态快照，不重新解析或执行一次动作。
+- 未启用语音、`suppressTts` 或录音互斥时，字幕与立绘按纯文字节奏同步推进。合成、设备或播放失败保留
+  语音诊断，并放行当前段的字幕与立绘，不改变聊天终态。快进只完成已开始段落的字幕，不能跳过语音准备
+  或播放等待；切换字幕语言不重播音频。历史导航不自动重播；新回复、切角色和关闭窗口使旧段落失效，
+  并取消尚未完成的合成、停止播放。录音开始时停止语音并放行字幕，结束后不补播被中断或录音期间的回复。
+- 已完成段落可由用户点击“重新朗读”。WebView 仍只提交该段的 `operationId + segmentIndex`，显式重读
+  可另带 `replay=true`。Core 对已合成段落从持久 recording 签发新的播放副本，不再次向 Provider 提交文本。
+  合成失败，或后续回复取消了尚未合成的授权时，同一身份的显式重读可再次合成；需要托管语音服务时，
+  由 Provider 按既有流程启动。自动预取不得借 `replay` 复活已取消的 in-flight 请求。
 - 输出始终使用播放时的系统默认设备；不提供设备选择器。设备断开只结束当前项，下一次播放重新探测。
 - Provider 插件拥有自身 Endpoint、健康检查、预热和 Managed Runtime；Runtime v2 Core 不读取 Provider 私有
-  配置，也不构造具体实现。当前角色启用 TTS 且选中 Sakura 托管 Provider 时，Core 在启动期 Session 发布后
+  配置，也不构造具体实现。当前角色启用 TTS 且选中 Sakura 托管 Provider 时，Core 在启动期 Session 发布、可选插件注册完成后
   通过 Hub 排队后台预热，由 Provider 启动服务并准备当前角色权重；该过程不阻塞 Core readiness，失败后首次
   合成仍可再次准备并只降级字幕。Custom Endpoint 启动预热不得连接、启动、接管或探测外部服务。设置页读取
   状态不得触发服务启动、旧进程清理或全 Provider 探测。
@@ -38,9 +45,10 @@ updated: 2026-09-14
   已存在的本机选择优先，原关闭状态保留，不修改角色包，不自动启用提供者插件。配置损坏或写入失败保留原文件并记录诊断。
   Hub 不在运行时回退旧字段；没有明确旧选择时不根据资源推断引擎。角色导入、导出、工坊保存只处理资源，
   不携带运行选择。见 [ADR-0048](../../adr/0048-voice-resources-and-local-selection.md)。
-- `sakura.tts` Hub、当前选中的 Provider 插件或角色级 TTS 开关被明确关闭时，Core 必须在段落授权阶段把
-  该段投影为 `suppressTts=true`，WebView 直接走字幕且不得发起合成；插件仍启用但 Worker、Service 或
-  Provider 异常时保留故障诊断，不得把运行故障伪装成用户关闭。
+- 段落授权只记录本轮已知的角色、正文和历史关联，不调用 Hub 或 Provider 查询状态；`suppressTts` 只表达
+  回复本身的语言等约束。实际合成时由 Hub 的 `begin` 检查角色级开关和选择，直接调用已绑定 Provider 的
+  `begin`，不先调用 `status`。角色未启用语音时返回 `TTS_DISABLED`，作为正常跳过处理，前端跳过本轮后续语音
+  等待，Core 不发布合成失败事件，Hub 不记录失败日志。Worker、Service 或 Provider 异常仍保留独立语音诊断。
 - Voice 页面把 Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
   Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
   `customBaseUrl` 推导，保存后写入 `endpointMode`，切换模式不得丢弃非活动服务地址。
@@ -71,7 +79,7 @@ updated: 2026-09-14
 ## 接口、故障与回退
 
 Core 只开放 TTS synthesis、动态 settings/status 和 playback-observe allowlist；合成只调用 `sakura.tts`
-的 `begin/poll/cancel`，Hub/角色未配置、关闭或 Provider 不可用时明确失败。Core 不保留旧 Provider Registry、
+的 `begin/poll/cancel`，角色语音关闭时正常跳过；已启用但 Hub 缺失、未选 Provider 或 Provider 不可用时明确失败。Core 不保留旧 Provider Registry、
 合成队列或 Managed Runtime 实现。旧 TTS 配置只在显式导入时转换，并由当前 Provider 插件 parser 校验；
 角色声线清单由各 Provider 插件读取，普通启动不读取旧 `api.yaml.tts`。
 `tts.settings.get` 与 `tts.status.get` 返回 schema v1 的角色选择、动态 Provider 列表和 `surface=voice` 普通

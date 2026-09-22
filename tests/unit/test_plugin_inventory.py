@@ -53,6 +53,7 @@ def test_presentation_only_changes_display_and_never_runtime_eligibility(tmp_pat
     baseline = manifest.read_text(encoding="utf-8")
     for declaration, expected in [
         ("presentation: {kind: provider, category: voice}", {"kind": "provider", "category": "voice", "icon": ""}),
+        ("presentation: {kind: provider, category: visual}", {"kind": "provider", "category": "visual", "icon": ""}),
         ("presentation: {kind: future-role, category: future-domain}", {"kind": "extension", "category": "other", "icon": ""}),
         ("presentation: {kind: provider, category: voice, icon: audio-lines}", {"kind": "provider", "category": "voice", "icon": "audio-lines"}),
         ("presentation: {kind: provider, category: voice, icon: future-icon}", {"kind": "provider", "category": "voice", "icon": "future-icon"}),
@@ -284,7 +285,6 @@ def test_install_id_encoding_separates_sources_and_roundtrips_long_unicode_dto(t
     assert len({record.install_id for record in first.records}) == 2
     for spec in first.runtime_specs:
         assert _install_identifier(spec.install_id) == spec.install_id
-        assert RuntimePluginSpec.from_private_dict(spec.private_dict()) == spec
     assert [record.install_id for record in PluginInventory(tmp_path).scan().records] == [record.install_id for record in first.records]
     old_user_id = next(record.install_id for record in first.records if record.source == "user")
     user.rename(user.with_name("renamed"))
@@ -298,18 +298,12 @@ def test_new_user_plugin_defaults_disable_only_requested_plugins_and_keep_existi
     roots = RuntimeRoots(repository, tmp_path)
     desired = PluginDesiredStateStore(tmp_path)
     inventory = PluginInventory(roots, desired)
-    affected = {"sakura.tts.genie", "sakura.tts.gpt-sovits", "sakura_mobile"}
+    from app.plugins.bundled_migrations import MIGRATIONS
     before = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
-    assert all(before[plugin_id] for plugin_id in affected)
-
-    # Use exactly the document embedded by the Shell's first user-root initialization.
+    assert not (set(before) & MIGRATIONS.keys())
     desired.path.parent.mkdir(parents=True)
     desired.path.write_bytes((repository / "desktop/src-tauri/src/new_user_plugins.yaml").read_bytes())
-    after = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
-    assert {plugin_id for plugin_id in before if before[plugin_id] != after[plugin_id]} == affected
-    assert all(not after[plugin_id] for plugin_id in affected)
-
-    desired.write({"sakura.tts.genie": True, "sakura.tts.gpt-sovits": True, "sakura_mobile": False})
-    existing = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
-    assert existing["sakura.tts.genie"] and existing["sakura.tts.gpt-sovits"]
-    assert not existing["sakura_mobile"]
+    assert {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs} == before
+    desired.write({"sakura.tts.genie": True, "sakura_mobile": False})
+    assert desired.read() == {"sakura.tts.genie": True, "sakura_mobile": False}
+    assert not (set(item.plugin_id for item in inventory.scan().records) & MIGRATIONS.keys())

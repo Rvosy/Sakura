@@ -20,7 +20,6 @@ use serde_json::{json, Value};
 
 use crate::{
     character_presentation::CharacterPresentation,
-    core_host_gateway::CoreHostGateway,
     core_host_protocol::{write_frame, FrameDecoder, PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_router::{CoreHostRouter, CoreHostRouterHandle},
     platform::{
@@ -58,11 +57,10 @@ const REQUIRED_CAPABILITIES: [&str; 5] = [
     "core.initialize",
     "core.snapshot",
 ];
-const OPTIONAL_CAPABILITIES: [&str; 7] = [
+const OPTIONAL_CAPABILITIES: [&str; 6] = [
     "transport.concurrent-router",
     "settings.provider-model",
     "assistant.tools-v1",
-    "assistant.mcp-v1",
     "assistant.plugins-v1",
     "assistant.tts-v1",
     "assistant.screen-capture-v2",
@@ -213,17 +211,6 @@ impl CoreSnapshotCache {
         let object = snapshot
             .as_object()
             .ok_or_else(|| "Core Snapshot must be an object".to_string())?;
-        let expected = [
-            "generationId",
-            "revision",
-            "readiness",
-            "currentCharacterSummary",
-            "characterPresentation",
-            "activeInteractionSummary",
-        ];
-        if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
-            return Err("Core Snapshot fields do not match the WP-2-02 shape".to_string());
-        }
         if object.get("generationId").and_then(Value::as_str) != Some(self.generation_id.as_str()) {
             return Err("Core Snapshot belongs to another generation".to_string());
         }
@@ -427,21 +414,22 @@ fn validate_assistant_readiness(
         .get("code")
         .and_then(Value::as_str)
         .ok_or_else(|| "Core Snapshot Assistant code is invalid".to_string())?;
-    if state != readiness || assistant.get("retryable").and_then(Value::as_bool) != Some(false) {
-        return Err("Core Snapshot Assistant readiness is retryable or inconsistent".to_string());
+    let retryable = assistant.get("retryable").and_then(Value::as_bool);
+    if state != readiness || retryable.is_none() {
+        return Err("Core Snapshot Assistant readiness is inconsistent".to_string());
     }
-    let valid = matches!(
-        (state, code),
-        ("initializing", "INITIALIZING")
-            | ("ready", "READY")
-            | ("setup_required", "CORE_CONFIG_SETUP_REQUIRED")
-            | ("failed", "CONFIG_DATA_INVALID")
-            | ("failed", "CONFIG_VERSION_UNSUPPORTED")
-            | ("setup_required", "PROVIDER_SETUP_REQUIRED")
-            | ("setup_required", "CHARACTER_REQUIRED")
-            | ("failed", "ASSISTANT_INITIALIZATION_FAILED")
-            | ("degraded", "OPTIONAL_CHARACTER_SKIPPED")
-    );
+    // Providers own their public reason codes. The shell validates the contract
+    // without turning provider retryability metadata into an automatic restart.
+    let valid_code = !code.is_empty()
+        && code.len() <= 80
+        && code.bytes().all(|value| {
+            value.is_ascii_alphanumeric() || matches!(value, b'_' | b'.' | b':' | b'-')
+        });
+    let valid = match state {
+        "initializing" => code == "INITIALIZING" && retryable == Some(false),
+        "ready" | "setup_required" | "degraded" | "failed" => valid_code,
+        _ => false,
+    };
     if !valid {
         return Err("Core Snapshot Assistant readiness is unsupported".to_string());
     }
@@ -1347,6 +1335,8 @@ impl ConcurrentRequestHandle {
                     | "asr.input.poll"
                     | "asr.input.capture_status"
                     | "studio.visual.catalog"
+                    | "screen.session"
+                    | "screen_awareness.step"
             ) {
             Severity::Debug
         } else {
@@ -1915,11 +1905,6 @@ impl CoreHostRuntime {
             core_pid: self.core_pid,
             runtime_log: self.runtime_log.clone(),
         })
-    }
-
-    pub fn chat_gateway(&self) -> Result<CoreHostGateway, String> {
-        let handle = self.concurrent_request_handle()?;
-        CoreHostGateway::new(self.generation_id.clone(), Arc::new(handle))
     }
 
     pub fn recv_event_timeout(&self, timeout: Duration) -> Result<Option<Value>, String> {
@@ -2646,7 +2631,6 @@ mod tests {
                 "transport.concurrent-router",
                 "settings.provider-model",
                 "assistant.tools-v1",
-                "assistant.mcp-v1",
                 "assistant.plugins-v1",
                 "assistant.tts-v1",
                 "assistant.screen-capture-v2"
@@ -2694,11 +2678,14 @@ mod tests {
         }
     }
 
-    fn wp_3_02_local_provider() -> (String, thread::JoinHandle<()>) {
+    fn wp_3_02_local_provider() -> (String, thread::JoinHandle<()>, Arc<Mutex<&'static str>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("local Provider should bind");
         let address = listener.local_addr().expect("local Provider address");
+        let progress = Arc::new(Mutex::new("waiting for connection"));
+        let worker_progress = progress.clone();
         let worker = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("local Provider request");
+            *worker_progress.lock().unwrap() = "reading request";
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("Provider read timeout");
@@ -2733,6 +2720,7 @@ mod tests {
                 request.extend_from_slice(&chunk[..read]);
             }
             let request_text = String::from_utf8_lossy(&request);
+            *worker_progress.lock().unwrap() = "request received";
             assert!(request_text.contains("chat/completions"));
             assert!(!request_text.contains("generationCredential"));
             let content = serde_json::to_string(&json!({
@@ -2754,8 +2742,9 @@ mod tests {
             .expect("Provider response headers");
             stream.write_all(&body).expect("Provider response body");
             stream.flush().expect("Provider response flush");
+            *worker_progress.lock().unwrap() = "response sent";
         });
-        (format!("http://{address}/v1"), worker)
+        (format!("http://{address}/v1"), worker, progress)
     }
 
     fn stderr_state() -> Arc<Mutex<StderrDrainState>> {
@@ -3601,7 +3590,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_2_02_snapshot_is_exact_monotonic_and_generation_scoped() {
+    fn wp_2_02_snapshot_allows_extensions_and_keeps_generation_ordering() {
         let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
         let first = json!({
             "generationId": GENERATION_ID,
@@ -3616,16 +3605,20 @@ mod tests {
         });
         cache
             .store_minimal_python_snapshot(&first)
-            .expect("six-field snapshot validates");
-        let mut extra = first.clone();
-        extra["schemaVersion"] = json!(1);
-        assert!(cache.store_minimal_python_snapshot(&extra).is_err());
+            .expect("minimal snapshot validates");
         let mut stale = first.clone();
         stale["revision"] = json!(0);
         assert!(cache.store_minimal_python_snapshot(&stale).is_err());
         let mut reused = first.clone();
         reused["activeInteractionSummary"] = Value::Null;
         assert!(cache.store_minimal_python_snapshot(&reused).is_err());
+        let mut extended = first.clone();
+        extended["revision"] = json!(2);
+        extended["pluginMigration"] = json!({"state": "running", "completed": 0,
+            "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"});
+        cache
+            .store_minimal_python_snapshot(&extended)
+            .expect("additional progress fields are accepted");
         cache
             .begin_generation("00000000-0000-4000-8000-000000002203")
             .expect("new generation clears cache");
@@ -3696,7 +3689,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_wp_3_01_assistant_states_are_all_non_retryable() {
+    fn assistant_states_preserve_validated_retryability_metadata() {
         for (state, code, has_summary) in [
             ("ready", "READY", true),
             ("setup_required", "CORE_CONFIG_SETUP_REQUIRED", false),
@@ -3723,23 +3716,56 @@ mod tests {
 
             let mut retryable = snapshot.clone();
             retryable["components"]["assistant"]["retryable"] = json!(true);
+            cache
+                .store_python_snapshot(&retryable)
+                .expect("retryability metadata does not trigger shell restart");
+            retryable["components"]["assistant"]["retryable"] = json!("true");
             assert!(
                 cache.store_python_snapshot(&retryable).is_err(),
-                "{state}/{code} must never become automatically retryable"
+                "{state}/{code} retryability must be a boolean"
             );
         }
     }
 
     #[test]
-    fn provider_setup_snapshot_can_keep_character_presentation() {
-        let mut snapshot =
-            valid_assistant_snapshot("PROVIDER_SETUP_REQUIRED", "setup_required", Value::Null);
-        snapshot["characterPresentation"] = valid_character_presentation();
-        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+    fn initializing_and_provider_readiness_keep_character_presentation() {
+        for (state, code) in [
+            ("initializing", "INITIALIZING"),
+            ("setup_required", "vendor.account_required"),
+            ("failed", "THIRD_PARTY_SESSION_UNAVAILABLE"),
+        ] {
+            let mut snapshot = valid_assistant_snapshot(code, state, Value::Null);
+            snapshot["characterPresentation"] = valid_character_presentation();
+            let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+            cache
+                .store_python_snapshot(&snapshot)
+                .expect("Assistant readiness does not hide the selected character");
+            assert_eq!(
+                cache.current().expect("stored snapshot")["characterPresentation"],
+                snapshot["characterPresentation"]
+            );
+        }
+    }
 
-        cache
-            .store_python_snapshot(&snapshot)
-            .expect("provider setup keeps the selected character visible");
+    #[test]
+    fn assistant_provider_reason_codes_are_bounded_public_identifiers() {
+        let mut snapshot =
+            valid_assistant_snapshot("PROVIDER_CUSTOM_SETUP", "setup_required", Value::Null);
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+        for invalid in [
+            json!(""),
+            json!("A".repeat(81)),
+            json!("private path/name"),
+            json!("PRIVATE\nDETAIL"),
+            json!("非公开详情"),
+            json!(7),
+        ] {
+            snapshot["components"]["assistant"]["code"] = invalid;
+            assert!(cache.store_python_snapshot(&snapshot).is_err());
+        }
+        snapshot["components"]["assistant"]["code"] = json!("PROVIDER_CUSTOM_SETUP");
+        snapshot["currentCharacterSummary"] = valid_character_summary();
+        assert!(cache.store_python_snapshot(&snapshot).is_err());
     }
 
     #[test]
@@ -4420,6 +4446,8 @@ mod tests {
                 "asr.input.poll",
                 "asr.input.capture_status",
                 "studio.visual.catalog",
+                "screen.session",
+                "screen_awareness.step",
             ] {
                 handle.log_request(
                     Severity::Info,
@@ -4449,6 +4477,15 @@ mod tests {
                 500,
                 Duration::from_millis(500),
             );
+            for command in ["screen.session", "screen_awareness.step"] {
+                handle.log_request_result(
+                    "screen-log-rejected",
+                    command,
+                    &Ok(json!({"ok": false, "error": {"code": "SCREEN_CAPTURE_UNAVAILABLE"}})),
+                    1,
+                    Duration::from_secs(3),
+                );
+            }
             for code in ["ASR_CANCELLED", "CANCELLED"] {
                 handle.log_request_result(
                     "asr-log-cancelled",
@@ -4465,14 +4502,14 @@ mod tests {
                 .collect();
             assert_eq!(
                 ipc.len(),
-                4,
+                6,
                 "successful polling must not consume viewer history"
             );
-            assert!(ipc[..2]
+            assert!(ipc[..4]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.failed"
                     && record.severity == "warning"));
-            assert!(ipc[2..]
+            assert!(ipc[4..]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.cancelled"
                     && record.severity == "info"));
@@ -4527,6 +4564,14 @@ mod tests {
                 if level == Verbosity::Debug { 3 } else { 0 });
             assert!(text.contains("REQUEST_DEADLINE_EXCEEDED"));
             assert!(text.contains("ASR_RECORDING_NOT_FOUND"));
+            for command in ["screen.session", "screen_awareness.step"] {
+                assert_eq!(
+                    text.lines()
+                        .filter(|line| line.contains(command) && line.contains("outcome=completed"))
+                        .count(),
+                    if level == Verbosity::Debug { 1 } else { 0 }
+                );
+            }
             assert_eq!(
                 text.lines()
                     .filter(|line| line.contains("studio.visual.catalog"))
@@ -4540,7 +4585,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_3s_01_real_core_round_trips_redacted_provider_settings_atomically() {
+    fn real_core_round_trips_model_references_without_exposing_credentials() {
         let _test_lock = lifecycle_test_lock();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4550,6 +4595,17 @@ mod tests {
             std::env::temp_dir().join(format!("sakura-wp-3s-01-{}-{unique}", std::process::id()));
         let source = repo_root().join("tests/fixtures/runtime_v2/wp_3_01/ready");
         copy_fixture_tree(&source, &app_root);
+        let character_root = app_root.join("characters/sakura");
+        fs::copy(
+            repo_root().join("desktop/frontend/prototypes/asr/assets/navi.png"),
+            character_root.join("portraits/neutral.png"),
+        )
+        .expect("settings fixture needs a valid portrait for candidate validation");
+        let character_path = character_root.join("character.json");
+        let mut character: Value =
+            serde_json::from_slice(&fs::read(&character_path).unwrap()).unwrap();
+        character["portrait"] = json!({"default": "portraits/neutral.png", "expressions": {"neutral": "portraits/neutral.png"}});
+        fs::write(character_path, serde_json::to_vec(&character).unwrap()).unwrap();
         let secret = "WP_3S_01_SECRET_MUST_NOT_ESCAPE";
         fs::write(
             app_root.join("config/api.yaml"),
@@ -4558,6 +4614,7 @@ mod tests {
             ),
         )
         .expect("provider fixture should write");
+        let original_api = fs::read(app_root.join("config/api.yaml")).unwrap();
         let mut layout = development_layout();
         layout.user_root = app_root
             .canonicalize()
@@ -4569,6 +4626,27 @@ mod tests {
         assert!(hello["payload"]["capabilities"]
             .as_array()
             .is_some_and(|items| items.iter().any(|item| item == "settings.provider-model")));
+        host.request_with_payload(
+            "settings-initialize",
+            "core.initialize",
+            json!({}),
+            Duration::from_secs(3),
+        )
+        .expect("settings initialization should start");
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let snapshot = host
+                .refresh_snapshot("settings-ready", Duration::from_secs(3))
+                .expect("settings readiness should be readable");
+            if matches!(snapshot["readiness"].as_str(), Some("ready" | "degraded")) {
+                break;
+            }
+            if Instant::now() >= ready_deadline {
+                let exit = host.shutdown();
+                panic!("settings readiness timed out: {snapshot}; shutdown: {exit:?}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         let handle = host
             .concurrent_request_handle()
             .expect("settings router should be available");
@@ -4581,34 +4659,32 @@ mod tests {
             )
             .expect("provider settings get should complete");
         assert_eq!(get["ok"], true);
-        assert_eq!(get["payload"]["providers"][0]["configured"], true);
+        assert_eq!(get["payload"]["schema_version"], 2);
         assert!(!serde_json::to_string(&get)
             .expect("settings response should serialize")
             .contains(secret));
 
+        let mut slots = get["payload"]["model_slots"]
+            .as_array()
+            .expect("model slots should be public references")
+            .iter()
+            .map(|slot| {
+                (
+                    slot["identity"].as_str().unwrap().to_string(),
+                    slot["selection"].clone(),
+                )
+            })
+            .collect::<serde_json::Map<String, Value>>();
+        let chat = slots["core:chat"].clone();
+        assert_eq!(chat["serviceKey"], "sakura.model.openai_compatible");
+        slots.insert("core:vision_chat".to_string(), chat.clone());
         let save = handle
             .request(
                 "settings-save",
                 "settings.provider_model.save",
                 json!({
                     "draft": {
-                        "providers": [{
-                            "id": "fixture",
-                            "alias": "Fixture edited",
-                            "base_url": "https://fixture.invalid/v1",
-                            "models": ["fixture-model"],
-                            "credential": {"action": "keep", "value": ""}
-                        }],
-                        "model_slots": {
-                            "chat": {"profile_id": "fixture", "model": "fixture-model"},
-                            "vision_chat": {}
-                        },
-                        "settings": {
-                            "timeout_seconds": 30,
-                            "temperature": null,
-                            "top_p": null,
-                            "max_tokens": null
-                        }
+                        "model_slots": slots
                     }
                 }),
                 Duration::from_secs(5),
@@ -4619,11 +4695,14 @@ mod tests {
             "unexpected provider save response: {save}"
         );
         host.shutdown().expect("provider settings host should stop");
-        let saved = fs::read_to_string(app_root.join("config/api.yaml"))
-            .expect("saved provider config should read");
-        assert!(saved.contains(secret));
-        assert!(saved.contains("preserve_me: true"));
-        assert!(saved.contains("Fixture edited"));
+        assert_eq!(
+            fs::read(app_root.join("config/api.yaml")).unwrap(),
+            original_api
+        );
+        let saved: Value =
+            serde_json::from_slice(&fs::read(app_root.join("config/model_slots.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["slots"]["vision_chat"], chat);
         fs::remove_dir_all(&app_root).expect("isolated provider fixture should clean up");
     }
 
@@ -4638,7 +4717,7 @@ mod tests {
             std::env::temp_dir().join(format!("sakura-wp-3-02-{}-{unique}", std::process::id()));
         let source = repo_root().join("tests/fixtures/runtime_v2/wp_3_01/ready");
         copy_fixture_tree(&source, &app_root);
-        let (provider_url, provider) = wp_3_02_local_provider();
+        let (provider_url, provider, provider_progress) = wp_3_02_local_provider();
         fs::write(
             app_root.join("config/api.yaml"),
             format!(
@@ -4653,8 +4732,12 @@ mod tests {
         let generation = "00000000-0000-4000-8000-000000003002";
         let mut host =
             CoreHostRuntime::launch(&layout, generation).expect("real Core should launch");
-        request_predecessor_hello(&mut host, "real-chat-hello", Duration::from_secs(3))
-            .expect("real chat hello");
+        if let Err(error) =
+            request_predecessor_hello(&mut host, "real-chat-hello", Duration::from_secs(3))
+        {
+            let exit = host.shutdown();
+            panic!("real chat hello failed: {error}; Core shutdown: {exit:?}");
+        }
         host.request_with_payload(
             "real-chat-initialize",
             "core.initialize",
@@ -4670,30 +4753,49 @@ mod tests {
             if matches!(snapshot["readiness"].as_str(), Some("ready" | "degraded")) {
                 break;
             }
-            assert!(
-                Instant::now() < ready_deadline,
-                "Assistant readiness timed out"
-            );
+            if Instant::now() >= ready_deadline {
+                let exit = host.shutdown();
+                panic!(
+                    "Assistant readiness timed out; Snapshot: {snapshot}; Core shutdown: {exit:?}"
+                );
+            }
             thread::sleep(Duration::from_millis(10));
         }
 
-        let gateway = host.chat_gateway().expect("real chat Gateway");
+        let gateway = crate::chat_bridge::ChatBridge::new(
+            Arc::new(host.concurrent_request_handle().unwrap()),
+            generation.to_string(),
+            1,
+        )
+        .unwrap();
         let submission = gateway
-            .send("main", json!({"message": "ただいま"}))
+            .send_with_attachment(
+                "main",
+                "ただいま".to_string(),
+                None,
+                tauri::ipc::Channel::new(|_| Ok(())),
+            )
             .expect("real chat should submit");
         let started = host
             .recv_event_timeout(Duration::from_secs(3))
             .expect("real chat started read")
             .expect("real chat started event");
         assert_eq!(started["name"], "chat.started");
-        assert_eq!(
-            gateway.observe_event(&started).expect("started validation"),
-            crate::core_host_gateway::EventDisposition::Accepted
-        );
+        assert!(gateway
+            .observe_event(&started)
+            .expect("started validation")
+            .is_some());
         let terminal = host
             .recv_event_timeout(Duration::from_secs(10))
-            .expect("real chat terminal read")
-            .expect("real chat terminal event");
+            .expect("real chat terminal read");
+        let terminal = match terminal {
+            Some(terminal) => terminal,
+            None => {
+                let progress = *provider_progress.lock().unwrap();
+                let exit = host.shutdown();
+                panic!("real chat terminal missing; Provider: {progress}; Core shutdown: {exit:?}");
+            }
+        };
         assert_eq!(
             terminal["name"], "chat.completed",
             "unexpected real chat terminal: {terminal}"
@@ -4703,18 +4805,11 @@ mod tests {
             terminal["payload"]["reply"]["segments"][0]["text"],
             "おかえり。"
         );
-        assert_eq!(
-            gateway
-                .observe_event(&terminal)
-                .expect("terminal validation"),
-            crate::core_host_gateway::EventDisposition::Accepted
-        );
-        let accepted = submission
-            .completion
-            .recv_timeout(Duration::from_secs(3))
-            .expect("real chat response channel")
-            .expect("real chat response");
-        assert_eq!(accepted["payload"]["accepted"], true);
+        assert!(gateway
+            .observe_event(&terminal)
+            .expect("terminal validation")
+            .is_some());
+        assert!(submission.wait().expect("real chat response").accepted);
         let history = String::from_utf8_lossy(
             &fs::read(app_root.join("data/chat_history/timeline.sqlite3"))
                 .expect("real chat timeline should exist"),
@@ -5183,7 +5278,10 @@ mod tests {
     #[test]
     fn managed_real_python_host_initializes_and_caches_its_snapshot() {
         let _test_lock = lifecycle_test_lock();
-        let layout = development_layout();
+        let mut layout = development_layout();
+        let user_root =
+            std::env::temp_dir().join(format!("sakura-initialize-{}", uuid::Uuid::new_v4()));
+        layout.user_root = crate::ensure_user_layout(&user_root).unwrap();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
         request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
@@ -5216,12 +5314,16 @@ mod tests {
             .expect("initialized Host should stop cleanly");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);
+        fs::remove_dir_all(user_root).unwrap();
     }
 
     #[test]
     fn real_python_initialize_keeps_health_and_shutdown_responsive() {
         let _test_lock = lifecycle_test_lock();
-        let layout = development_layout();
+        let mut layout = development_layout();
+        let user_root =
+            std::env::temp_dir().join(format!("sakura-responsive-{}", uuid::Uuid::new_v4()));
+        layout.user_root = crate::ensure_user_layout(&user_root).unwrap();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
         request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
@@ -5252,6 +5354,7 @@ mod tests {
             .expect("shutdown should cancel or close real initialize");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);
+        fs::remove_dir_all(user_root).unwrap();
     }
 }
 

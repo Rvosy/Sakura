@@ -495,9 +495,11 @@ def test_import_responses_report_missing_plugins_and_genie_compatibility(tmp_pat
     voice = _voice_archive(tmp_path / "fixture.voice")
     result = boundary.import_voice_archive(str(voice), "fixture")
     assert result["pluginRequirements"][0]["reasonCode"] == "PLUGIN_MISSING"
-    plugin = tmp_path / "plugins/builtin/genie"
+    plugin = tmp_path / "plugins/user/genie"
     plugin.mkdir(parents=True)
-    shutil.copyfile(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_genie/plugin.yaml", plugin / "plugin.yaml")
+    shutil.copyfile(Path(__file__).resolve().parents[2] / "plugins/optional/sakura_genie/plugin.yaml", plugin / "plugin.yaml")
+    from app.plugins.inventory import PluginDesiredStateStore
+    PluginDesiredStateStore(tmp_path).set("sakura.tts.genie", True)
     (plugin / "plugin.py").write_text('raise AssertionError("no synthesis during import")', encoding="utf-8")
     result = boundary.import_voice_archive(str(voice), "fixture")
     assert result["pluginRequirements"][0]["reasonCode"] == "COMPATIBLE"

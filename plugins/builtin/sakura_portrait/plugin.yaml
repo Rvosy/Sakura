@@ -13,7 +13,7 @@ requires:
   - sakura.host.logging
 presentation:
   kind: provider
-  category: model
+  category: visual
   icon: image
 visuals:
   - type: sakura.visual.portrait@1

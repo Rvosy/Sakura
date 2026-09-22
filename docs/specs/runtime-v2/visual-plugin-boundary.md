@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-12
+updated: 2026-09-19
 ---
 
 # 表现插件：资源、编辑、控制与渲染
@@ -42,6 +42,9 @@ visuals:
 `renderer` 必填，`editor` 可省略。模块必须是安装目录内已有的 `.js` 或 `.mjs`，允许中文和空格文件名。
 路径使用 `/`，不含空段、点段、驱动器、网络地址或穿越；实际访问继续检查解析后的路径包含关系。
 Discovery、Inventory、安装器共用解析，不在发现阶段执行模块。未知展示元信息忽略。
+
+VisualHost 使用当前 generation 的应用目录快照，不为候选、编辑器、缩略图或角色预览重复扫描安装目录。
+安装、卸载、插件重载和插件设置刷新会更新这份快照；Provider 的启停和 scope 有效性仍在实际调用时检查。
 
 可选声明按能力处理失败：无效形态不参与绑定，其他形态和普通 Service 继续可用；无效编辑模块只关闭该编辑入口，
 已有形态仍可显示。Inventory 保留 `capability_issues`，形态与编辑查询分别返回 `VISUAL_MANIFEST_INVALID`
@@ -111,15 +114,22 @@ request = {characterId, resource:{id,type,root,entry}, segment?}
 ```
 
 `describe` 通过 `sakura.host.character.resolve_resource(characterId, relativePath)` 读取文件。`assets` 是
-`key -> 角色包内相对路径`，最多 256 项；它列出供渲染或组件导出的文件。宿主不解释资源格式。
+`key -> 角色包内相对路径`；它列出供渲染或组件导出的文件。宿主不解释资源格式。
 资产 key 与 rendererData 内部键属于插件语义，`secret`、`token` 等名称可以作为资源标识；不按宿主敏感字段名拒绝。
-该例外只适用于表现 DTO 的私有字典，资产值仍须通过包内路径校验，其他 Snapshot 字段继续检查。
-说明总 JSON 最多 64 KiB，`prompt` 最多 16,384 个字符，`outputSchema` 必须是对象。
+资产值仍须通过包内路径授权。内部 Snapshot 允许增加字段，消费层不重复验证完整结构。
+描述不另设容量、资产数量或提示词长度门槛；`outputSchema` 必须是对象。跨进程数据遵循插件通信帧预算。
 宿主把私有载荷说明和 Schema 组合进公共提示词，不执行 Schema 中的外部引用。
+公共提示词只声明 control 的 version、resourceId、payload 字段及固定目标，不生成空 payload 作为通用示例。
+payload 的必填字段和可省略内容由当前插件的格式定义。
 
 绑定保存描述的独立副本，提示词与解析使用同一份 `parserData` 快照；重新绑定才更新。解析时 `request.segment`
 提供本段公共信息，例如 TTS `tone`。`describe` 与 `parseControl` 不执行动作；进程级资源仍使用 v4 effect 回收。
+插件返回的描述在入口检查大小和 JSON 格式；后续读取内部快照只做独立复制，不重复序列化校验。
+生成提示词只读取 prompt 与 outputSchema，不复制渲染数据和资源列表。仅明确的绑定过期可省略表现协议，
+其他读取错误保留原始异常，交给现有请求错误边界处理，不能当作未配置资源。
 Service 调用前后检查 provider 与进程 scope，清理或重启后的在途结果返回 `VISUAL_BINDING_EXPIRED`。
+内置立绘读取配置或图片失败时，在 describe 边界记录当前资源标签、包内相对路径和原始异常；不将 JSON
+解析错误改写成无细节的通用错误。前端加载或应用图片失败时保留标签与原始原因，不记录资产访问 URL。
 
 ## 回复、历史与执行时机
 
@@ -129,20 +139,39 @@ Service 调用前后检查 provider 与进程 scope，清理或重启后的在�
 {"version":1,"resourceId":"model-1","payload":{"angle":12.5,"wave":true}}
 ```
 
-宿主校验 version、resourceId 和顶层字段，插件解析 payload。插件返回持续状态 `state`、一次动作列表 `actions`，
-或两者；至少有一个字段，动作最多 32 项。结果必须是有限 JSON，最多 64 KiB，不允许插件指定 bindingId。
-宿主补上绑定身份后写入 segment 的可选 `control`：
+Core 回复处理只补上当前绑定身份，并把原始控制和旧字段封装到 segment 的可选 `control`：
+
+```json
+{"version":1,"resourceId":"model-1","bindingId":"32位随机十六进制ID","deferred":{"control":{"version":1,"resourceId":"model-1","payload":{"angle":12.5,"wave":true}},"portrait":"","tone":"中性"}}
+```
+
+该步骤不调用表现 Provider；正文写入 Timeline、发布回复终态及释放 Assistant 不等待可选控制解析。
+桌面准备播放片段时把完整封装作为 `visual.control.parse` 的 payload，通过现有并发请求队列解析。
+宿主核对当前 bindingId 与 resourceId 后调用该绑定的 `parseControl`；该请求不占用控制消息线程。
+返回值为 `{"control":规范化控制或null,"reasonCode":"READY或失败原因"}`。旧绑定正常返回
+`null / VISUAL_BINDING_EXPIRED`，真实解析失败保留 Provider 原始诊断，只放弃该段控制。
+
+解析时宿主校验原始 control 的 version、resourceId 和顶层字段，插件解析 payload。插件返回持续状态
+`state`、一次动作列表 `actions`，或两者；至少有一个字段。宿主只提取 state 和 actions，再添加自己管理的路由身份：
 
 ```json
 {"version":1,"resourceId":"model-1","bindingId":"32位随机十六进制ID","state":{"angle":12.5},"actions":[{"wave":true}]}
 ```
 
 普通聊天、工具回复与主动事件使用相同处理路径。公共文字、翻译、TTS tone 和 suppressTts 独立于表现控制。
-非法或过期控制只剥离控制，不丢文字、语音或整条历史。单条 Timeline 的紧凑 JSON 上限仍为 256 KiB；
-当可选控制累计超预算时剥离该回复的全部 control，保留原有文字片段。
+`deferred` 与 `state/actions` 是互斥形状，单个控制封装均限制为 64 KiB；`deferred` 必须且只能包含
+`control`、字符串 `portrait` 和字符串 `tone`，其中 control 保留原始模型值或 null。
+结构非法的控制在回复投影时剥离；Provider 拒绝或绑定过期时，播放阶段跳过控制，不改写已保存的回复。
+两者都保留文字、语音和历史。单条 Timeline 的紧凑 JSON 上限仍为 256 KiB；
+当可选控制累计超预算时剥离该回复的全部 control，保留原有文字片段。回复投影剥离非法控制或超预算控制时，
+记录失败原因和片段位置或数量，不静默丢弃。
 
 旧 `portrait` 继续作为兼容数据读取。没有新封装时交由所选插件解释；存在非法新封装时也不退回旧值。
-内置立绘插件按“显式 key/旧 portrait → 本段 tone 对应图片 → 默认图”选择。其他插件可以拒绝旧字段。
+内置立绘插件收到新封装时，payload 必须且只能包含有效图片标签 `key`；空载荷、错误类型和未知标签均拒绝，
+不再尝试 tone 或默认图。旧 `portrait` 非空时也必须命中图片标签。只有没有显式选择时，才按本段 tone
+对应图片或默认图选择。控制失败保留当前画面，不影响本段文字和语音。其他插件可以拒绝旧字段。
+前端回复整理只传递控制数据，由渲染执行入口统一检查格式。当前请求的非法控制记录错误；已取消请求、
+旧绑定和重复片段正常忽略，不重复报错。执行前仍检查目标身份，不能把旧回复应用到新资源。
 旧历史不批量重写。历史页只投影可读文字；历史分页、UI 重绘和 `chat.completed` 不执行控制。
 桌宠气泡的上翻、下翻恢复该片段实际展示时的持续状态，不重播一次性动作、语音或打字动画。
 RendererHost 在片段状态应用后通过可选 `snapshotState()` 保存完整状态；没有控制的片段也记录当时状态，
@@ -154,6 +183,9 @@ RendererHost 在片段状态应用后通过可选 `snapshotState()` 保存完整
 宿主在 TTS 确认开始播放、或静音段开始展示时派发该段控制；不是合成开始时派发。同一 operation 的相同
 segmentIndex 最多执行一次。取消先中止 operation signal，再调用插件 cancel；新 generation、资源绑定、
 插件停用或重载撤销旧目标。首次 lifecycle 公告没有旧 generation，不得销毁刚完成初始挂载的实例。
+视觉解析与 TTS 合成并行准备，准备阶段不应用状态、不执行动作；两者准备结束后才开始播放并同步更新字幕与画面。
+解析失败按无控制片段播放文字和语音。取消立即结束桌面的准备等待，晚到解析结果复核 operation 与绑定身份后丢弃；
+不为解析建立独立后台任务表，历史回看仍只恢复已实际展示的状态快照，不重新解析或回写 Timeline。
 
 ## 前端挂载与原生服务
 
@@ -166,7 +198,7 @@ export function mount({ container, resource, host, signal }) {
 `resource` 是当前 VisualPresentation，含 bindingId、resourceId、type、providerId、私有 data 和受控 assets URL。
 `ready` 可以是 Promise；`applyState`、`destroy` 必须存在，其他回调按需要实现。控制 context 包含
 `operationId`、`segmentIndex` 与 operation `signal`。挂载 signal 表示整份绑定的生命期。
-`snapshotState()` 同步返回可交给 `applyState` 的完整持续状态（有限 JSON，连同路由封装最多 64 KiB）。
+`snapshotState()` 同步返回可交给 `applyState` 的完整持续状态（可传输的 JSON，不另设状态大小门槛）。
 它不包含一次动作、计时器或 GPU 对象。未实现此方法的插件仍能播放新回复，回看只更新文字；
 快照失败不阻止本段动作执行。回看和返回实时状态的 context 使用独立 operation signal，`segmentIndex` 为 -1。
 RendererHost 限制模块加载、mount 和 ready 等待各为 10 秒，销毁迟到实例，并隔离旧回调及宿主服务调用。
@@ -185,7 +217,7 @@ reportError(reasonCode)
 unavailable(reasonCode)
 ```
 
-尺寸为 1–8192 的整数。不提供 assetKey 时使用矩形表面；提供 key 时由原生 PNG alpha-mask 原语生成命中数据。
+尺寸为正整数，原生命中遮罩分配保留 192 MiB 内存预算。不提供 assetKey 时使用矩形表面；提供 key 时由原生 PNG alpha-mask 原语生成命中数据。
 Windows 上的动态表现可在 `setSurface` 成功后调用可选的 `setHitTest`，提供当前画面的一点命中函数。
 参数为表现容器内从左上角起算的归一化 `[x,y]`；true 接收鼠标，false 穿透。宿主负责屏幕坐标、DPI 和 CSS 缩放转换。
 换算必须使用当前绑定实际挂载的表面容器，包含其按比例适配、底部对齐和个人缩放；不能使用外层角色占位区域的矩形。
@@ -211,7 +243,7 @@ Rust 将资源 URL 编码为 `/v1/{hexGeneration}/{bindingId}-{hexAssetKey}`，�
 模块路径按 UTF-8 路径段进行 URL 编码；协议读取时只解码一次，再检查包内路径和模块类型。
 中文、空格及文件名中的字面 `%`、`#` 可正常读取；编码后的分隔符和越界路径仍被拒绝。
 WebView 不接收安装绝对路径；模块只能来自已安装插件，角色包里的 JavaScript 不会作为模块加载。
-普通资产限 64 MiB，模块限 4 MiB。内置立绘插件和原生 PNG 命中服务的单张文件上限均为 16 MiB（16,777,216 字节，含上限）；PNG 宽高各不超过 8192，像素总数不超过 40,000,000。PNG 命中服务另有解码预算和小容量缓存。
+普通资产、模块和立绘不按压缩文件大小拒绝。立绘插件读取 PNG 元信息，实际显示与原生命中服务负责解码；不另设宽高或像素数上限。PNG 解码保留 192 MiB 内存预算和小容量缓存。
 URL 随 generation 与绑定失效；同 generation 的插件重绑同样撤销旧目标。CSP 不允许 eval 或运行时 CDN。
 前端模块是可信插件代码，共享 WebView 权限，不是恶意 JavaScript 沙箱。
 
@@ -243,12 +275,12 @@ PNG data URL 上限 2 MiB，仅图片 CSP 允许 data URL，脚本授权不变�
 选中编辑器与缩略图任务各保留一个独立授权槽；替换缩略图不撤销编辑器，替换编辑器不打断缩略图。
 关闭工坊或提供方失效时一并撤销两者。生成结果仅保存在当前工作区的前端缓存，不写入角色资源或草稿。保存或切换选中项时复用已有缩略图和图片节点；资源配置实际变化后才重新生成，生成期间保留旧图。缩略图使用固定视口，不从正在缩放或重新布局的编辑器画布截取。
 `host.assetUrl` 在本地生成稳定 URL 并复用同路径结果，图片和模型文件直接经原生资源协议读取，不逐张请求 Core，
-也不占用草稿写锁。协议复核 generation、编辑器授权和路径包含关系，单文件上限 64 MiB。
+也不占用草稿写锁。协议复核 generation、编辑器授权和路径包含关系；资源直接读取，失败保留系统原因，不另设业务文件大小门槛。
 路径编码为 `/editor-assets/{hexGeneration}/{bindingId}/{hexUtf8RelativePath}`；JSON 返回 application/json，
 未知格式返回 application/octet-stream，并启用 nosniff，包内脚本不能作为模块执行。
 导入结果含资源相对 resourcePath、原 name；小型文本文件可提供 text，由插件解释。宿主不解析立绘标签文件。
 目录导入保留文件名、大小写和子目录关系，每次使用独立导入目录避免覆盖已有文件；拒绝符号链接和目录联接，
-最多 512 个文件、512 个目录、32 层目录、总计 256 MiB。取消或失败清理本次导入，保留原草稿资源。
+不设文件数、目录数、目录深度和业务文件大小门槛。取消或失败清理本次导入，保留原草稿资源。
 `collect` 返回私有数据，修改时必须调用 changed；`validate` 返回布尔值或抛出可读错误。模块或挂载超时为 10 秒。
 桌面 CSP 不允许动态内联 `<style>`。插件可使用 `CSSStyleSheet.replaceSync` 与 `document.adoptedStyleSheets`
 安装有作用域的样式，在 destroy 时移除。signal 中止时停止异步工作，保留静态画面和样式，供宿主等待新实例就绪。
@@ -344,6 +376,30 @@ ZIP 穿越、重复路径、符号链接与超限归档被拒绝；中途取消�
 只有 GPT-SoVITS 原始 `.ckpt` + `.pth`、没有 ONNX 的角色包，在 Genie 已安装并启用时应显示兼容；
 用户选择 Genie 后，现有语音准备流程按需转换。转换依赖、模型版本、参考语音等实际问题仍在准备或合成时报告。
 形态编辑、渲染和 TTS 启用/选择继续遵循各自现有流程，需求查询不替代运行时检查。
+
+## 普通插件发起表现控制
+
+普通插件可声明依赖 `sakura.host.visual`。`current()` 返回当前 `target`、提供者、类型、控制提示词及
+`outputSchema`；`target` 为 `{characterId, bindingId, resourceId}`。未绑定时返回空目标和原因码，
+不向调用者暴露 rendererData、资源路径或 assets。
+
+`apply({target, control})` 只接受当前目标。`control` 是现有 `{version, resourceId, payload}` 输入，
+由当前表现提供者解析，宿主验证通用 state/actions 结构后交给现有 RendererHost。聊天或桌面忙碌时拒绝，
+不排队、不绕过语音和字幕的播放时机。收到 `{accepted: true, requestId, status: accepted}` 只表示已受理；
+桌面执行前还要向宿主 claim，完成后才记录 `displayed`，失败记录 `failed`。`status(requestId)` 查询结果，
+`release(requestId)` 释放回执并取消该操作。每个宿主最多保留 128 条待调用者释放的回执。
+
+调用实例退出、角色/形态更换或窗口关闭使未完成和已显示的控制失效，状态变为 `cancelled`。
+claim 等待期间收到取消也不得开始播放。取消只作用于匹配的 RendererHost 操作 ID，不能打断后来开始的聊天。
+已显示的姿态保留取消归属，但不持续占据忙碌状态。旧目标、旧 scope 和旧 generation 不能发布新画面。
+
+`select({target, resourceId})` 经现有角色设置流程校验兼容资源、保存选择并重建当前表现绑定。
+受理与保存都校验调用实例和原目标；该接口不允许重写角色包或设置任意路径。形态替换使旧控制目标立即失效。
+从资源校验到绑定完成，宿主保留空闲更新名额，拒绝并发聊天受理；等待插件回复时不持有聊天锁。
+保存前还要核对桌面会话与活动版本，期间有新活动则拒绝保存。
+保存后重建绑定失败时返回 `{accepted: false, saved: true, reasonCode: VISUAL_SELECTION_APPLY_FAILED}`，
+明确区分尚未保存的拒绝与已保存但未应用。再次选择同一资源会重试应用，不能因偏好已保存而跳过。
+接口对内置和第三方插件一致，不要求插件导入 Core、伪造 Assistant 回复或直接触碰 WebView。
 
 ## 失败诊断
 

@@ -4,22 +4,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
+from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.config.character_loader import CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-from app.config.defaults import DEFAULT_BASE_URL, DEFAULT_TEXT_MODEL
 from app.config.models import (
     DEFAULT_THEME_SETTINGS,
-    MODEL_SLOT_CHAT,
-    MODEL_SLOT_VISION_CHAT,
-    ApiConfigProfile,
-    ModelSelectionSettings,
-    ModelSlotSelection,
     ThemeSettings,
     theme_colors_to_mapping,
     theme_from_mapping,
 )
-from app.llm.api_client import ApiSettings
 from app.storage.paths import StoragePaths
 from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
@@ -141,59 +134,6 @@ class AppSettingsService:
     def system_config_path(self) -> Path:
         return self.config_dir / SYSTEM_CONFIG_FILE
 
-    def load_api_settings(self) -> ApiSettings:
-        data = self._api_section("llm")
-        timeout_seconds = _int_value(
-            data.get("timeout_seconds"),
-            60,
-        )
-        return ApiSettings(
-            base_url=str(data.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
-            api_key=str(data.get("api_key", "")).strip(),
-            model=str(data.get("model", DEFAULT_TEXT_MODEL)).strip(),
-            timeout_seconds=timeout_seconds,
-            temperature=_optional_float(data.get("temperature"), minimum=0.0, maximum=2.0),
-            top_p=_optional_float(data.get("top_p"), minimum=0.0, maximum=1.0),
-            max_tokens=_optional_positive_int(data.get("max_tokens")),
-        )
-
-    def load_api_profiles(self) -> list[ApiConfigProfile]:
-        """从 api.yaml 读取当前 api_profiles 列表。"""
-        data = load_yaml_mapping(self.api_config_path)
-        _assert_no_retired_api_fields(data)
-        raw_profiles = data.get("api_profiles")
-        if raw_profiles is None:
-            return []
-        if not isinstance(raw_profiles, list):
-            raise ValueError("Provider 配置格式无效。")
-        profiles: list[ApiConfigProfile] = []
-        for raw in raw_profiles:
-            if not isinstance(raw, dict):
-                raise ValueError("Provider 配置格式无效。")
-            profiles.append(
-                ApiConfigProfile(
-                    id=_required_string(raw.get("id"), "Provider ID"),
-                    alias=_required_string(raw.get("alias"), "Provider 别名"),
-                    base_url=_required_string(raw.get("base_url"), "Provider Base URL").rstrip("/"),
-                    api_key=_string(raw.get("api_key"), "Provider API Key"),
-                    models=_current_provider_models(raw.get("models")),
-                )
-            )
-        return profiles
-
-    def load_model_selection(self) -> ModelSelectionSettings:
-        data = load_yaml_mapping(self.api_config_path)
-        _assert_no_retired_api_fields(data)
-        raw_slots = data.get("model_slots")
-        if raw_slots is None:
-            return ModelSelectionSettings()
-        if not isinstance(raw_slots, dict):
-            raise ValueError("模型槽配置格式无效。")
-        return ModelSelectionSettings(
-            chat=_slot_selection(raw_slots.get(MODEL_SLOT_CHAT)),
-            vision_chat=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISION_CHAT)),
-        )
-
     def load_runtime_loop_settings(self) -> RuntimeLoopSettings:
         tool_loop = self._system_section("tool_loop")
         defaults = RuntimeLoopSettings()
@@ -284,25 +224,6 @@ class AppSettingsService:
                 )
             ),
         )
-
-    def save_screen_awareness_settings(self, settings: ScreenAwarenessSettings) -> None:
-        normalized = settings.normalized()
-        data = self._system_document()
-        section = data.get("screen_awareness")
-        preserved = dict(section) if isinstance(section, dict) else {}
-        preserved.pop("screen_context_enabled", None)
-        enabled = bool(normalized.enabled and normalized.screen_context_enabled)
-        preserved.update(
-            {
-                "enabled": enabled,
-                "check_interval_minutes": int(normalized.check_interval_minutes),
-                "cooldown_minutes": int(normalized.cooldown_minutes),
-                "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
-                "screen_context_resolution": normalized.screen_context_resolution,
-            }
-        )
-        data["screen_awareness"] = preserved
-        save_yaml_mapping(self.system_config_path, data)
 
     def load_bubble_settings(self) -> BubbleSettings:
         ui = self._system_section("ui")
@@ -402,9 +323,6 @@ class AppSettingsService:
             data.pop("visual_selections", None)
         save_yaml_mapping(self.characters_config_path, data)
 
-    def _api_section(self, name: str) -> dict[str, Any]:
-        return _mapping(load_yaml_mapping(self.api_config_path).get(name))
-
     def _system_section(self, name: str) -> dict[str, Any]:
         return _mapping(self._system_document().get(name))
 
@@ -422,72 +340,6 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _assert_no_retired_api_fields(data: dict[str, Any]) -> None:
-    retired = {
-        "model_names",
-        "text_enabled",
-        "text_profile_id",
-        "text_model",
-        "vision_profile_id",
-        "vision_model",
-    }
-    if retired.intersection(data):
-        raise ValueError("API 配置使用了已废止的字段。")
-
-
-def _slot_selection(raw: object) -> ModelSlotSelection:
-    if raw is None:
-        return ModelSlotSelection()
-    if not isinstance(raw, dict):
-        raise ValueError("模型槽配置格式无效。")
-    return ModelSlotSelection(
-        profile_id=_string(raw.get("profile_id"), "Provider ID"),
-        model=_string(raw.get("model"), "模型 ID"),
-        context_window_tokens=_optional_context_window(raw.get("context_window_tokens")),
-    )
-
-
-def _optional_context_window(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value if 4_096 <= value <= 2_000_000 else None
-
-
-def _optional_slot_selection(raw: object) -> ModelSlotSelection | None:
-    if raw is None:
-        return None
-    selection = _slot_selection(raw)
-    return selection if selection.configured else None
-
-
-def _current_provider_models(raw: object) -> tuple[str, ...]:
-    if not isinstance(raw, list):
-        raise ValueError("Provider 模型列表格式无效。")
-    names: list[str] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            raise ValueError("Provider 模型列表格式无效。")
-        name = _required_string(item.get("name"), "模型 ID")
-        if name not in names:
-            names.append(name)
-    return tuple(names)
-
-
-def _string(value: object, field: str) -> str:
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        raise ValueError(f"{field} 格式无效。")
-    return value.strip()
-
-
-def _required_string(value: object, field: str) -> str:
-    text = _string(value, field)
-    if not text:
-        raise ValueError(f"{field} 不能为空。")
-    return text
-
-
 def _int_value(value: Any, default: int) -> int:
     try:
         return int(str(value).strip())
@@ -500,28 +352,6 @@ def _float_value(value: Any, default: float) -> float:
         return float(str(value).strip())
     except (TypeError, ValueError):
         return default
-
-
-def _optional_float(value: Any, *, minimum: float, maximum: float) -> float | None:
-    """解析可选浮点参数；缺省或非法返回 None，合法值 clamp 到 [minimum, maximum]。"""
-    if value is None:
-        return None
-    try:
-        parsed = float(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return max(minimum, min(maximum, parsed))
-
-
-def _optional_positive_int(value: Any) -> int | None:
-    """解析可选正整数；缺省、非法或非正返回 None。"""
-    if value is None:
-        return None
-    try:
-        parsed = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
 
 
 def _bool_value(value: Any, default: bool) -> bool:

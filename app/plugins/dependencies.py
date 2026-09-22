@@ -10,9 +10,10 @@ import sys
 import tempfile
 import tomllib
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator
 
 from app.plugin_sdk.sakura_downloads import uv_download_environment
 from app.storage.atomic import atomic_write_text
@@ -101,31 +102,55 @@ class PluginDependencyRoots:
         *,
         entry: str | None = None,
     ) -> Path | None:
+        with self.prepare(plugin_id, plugin_root, entry=entry) as staging:
+            if staging is None:
+                return None
+            final = self._paths.plugin_dependency_root_for(plugin_id)
+            if final.exists():
+                raise PluginDependencyError("PLUGIN_DEPENDENCY_ROOT_CONFLICT")
+            os.replace(staging, final)
+            return final
+
+    @contextmanager
+    def prepare(
+        self,
+        plugin_id: str,
+        plugin_root: Path,
+        *,
+        entry: str | None = None,
+        bundled: bool = False,
+    ) -> Iterator[Path | None]:
+        """Prepare and import-check dependencies before replacing an existing root."""
         declaration = self.declaration(plugin_root)
-        final = self._paths.plugin_dependency_root_for(plugin_id)
         if declaration is None:
             if entry is not None:
                 self._validate_entry(plugin_id, plugin_root, None, entry)
-            return None
+            yield None
+            return
         parent = self._paths.plugin_dependency_roots_dir
         parent.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix=".build-", dir=parent))
         try:
-            command, exported = self._install_command(declaration, staging)
-            result = subprocess.run(
-                command,
-                cwd=Path(plugin_root),
-                env=self._uv_environment(plugin_root),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=INSTALL_TIMEOUT_SECONDS,
-                check=False,
-            )
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout).strip()
-                raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_FAILED", detail)
+            if bundled:
+                source = self.verified_root(plugin_id, plugin_root, source="bundled")
+                assert source is not None
+                shutil.copytree(source, staging, dirs_exist_ok=True)
+            else:
+                command, exported = self._install_command(declaration, staging)
+                result = subprocess.run(
+                    command,
+                    cwd=Path(plugin_root),
+                    env=self._uv_environment(plugin_root),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=INSTALL_TIMEOUT_SECONDS,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout).strip()
+                    raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_FAILED", detail)
             if entry is not None:
                 self._validate_entry(plugin_id, plugin_root, staging, entry)
             marker = {
@@ -137,10 +162,7 @@ class PluginDependencyRoots:
                 staging / _MARKER,
                 json.dumps(marker, ensure_ascii=False, sort_keys=True),
             )
-            if final.exists():
-                raise PluginDependencyError("PLUGIN_DEPENDENCY_ROOT_CONFLICT")
-            os.replace(staging, final)
-            return final
+            yield staging
         except subprocess.TimeoutExpired as error:
             raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_TIMEOUT") from error
         except OSError as error:
@@ -152,6 +174,28 @@ class PluginDependencyRoots:
                     exported.unlink()
                 except OSError:
                     pass
+
+    def install_bundled(self, plugin_id: str, plugin_root: Path, *, entry: str) -> Path | None:
+        """复制发行包已准备的依赖，不执行下载；用于内置插件迁移。"""
+        source = self.verified_root(plugin_id, plugin_root, source="bundled")
+        if source is None:
+            self._validate_entry(plugin_id, plugin_root, None, entry)
+            return None
+        final = self._paths.plugin_dependency_root_for(plugin_id)
+        if final.exists():
+            existing = self.verified_root(plugin_id, plugin_root)
+            self._validate_entry(plugin_id, plugin_root, existing, entry)
+            return existing
+        final.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".migrate-", dir=final.parent))
+        try:
+            payload = staging / "dependencies"
+            shutil.copytree(source, payload)
+            self._validate_entry(plugin_id, plugin_root, payload, entry)
+            os.replace(payload, final)
+            return final
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     def verified_root(
         self,
@@ -171,6 +215,13 @@ class PluginDependencyRoots:
             root = self._paths.plugin_dependency_root_for(plugin_id)
         else:
             raise PluginDependencyError("PLUGIN_DEPENDENCY_SOURCE_INVALID")
+        return self.verified_path(plugin_root, root)
+
+    def verified_path(self, plugin_root: Path, root: Path) -> Path | None:
+        """Check an installed dependency root, including an offline migration payload."""
+        declaration = self.declaration(plugin_root)
+        if declaration is None:
+            return None
         marker_path = root / _MARKER
         try:
             marker = json.loads(marker_path.read_text(encoding="utf-8"))
@@ -245,7 +296,12 @@ class PluginDependencyRoots:
         return [*base, *declaration.dependencies], None
 
     def _uv_command(self) -> list[str]:
-        adjacent = self._python.with_name("uv.exe" if os.name == "nt" else "uv")
+        uv_name = "uv.exe" if os.name == "nt" else "uv"
+        if self._distribution is not None:
+            bundled = self._distribution.python_tools_dir / uv_name
+            if bundled.is_file():
+                return [str(bundled)]
+        adjacent = self._python.with_name(uv_name)
         if adjacent.is_file():
             return [str(adjacent)]
         executable = shutil.which("uv")

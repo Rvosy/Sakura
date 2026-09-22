@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugins.builtin.sakura_gpt_sovits import _support
+from plugins.optional.sakura_gpt_sovits import _support
 
 
 def _settings(

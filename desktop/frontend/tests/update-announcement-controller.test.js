@@ -127,15 +127,21 @@ test("transient dispatch races wait again without consuming a retry", async () =
   assert.equal(env.controller.isPending(), true);
 });
 
-test("a chat start timeout is a dispatch race and does not consume a model retry", async () => {
+test("an unconfirmed delivery never automatically repeats the accepted announcement", async () => {
   const env = harness();
-  env.announcementResults.push(new Error("CHAT_START_TIMEOUT"));
   await env.controller.refresh();
   await env.controller.tick();
   env.advance(UPDATE_ANNOUNCEMENT_IDLE_MS);
   await env.controller.tick();
-  assert.equal(env.controller.snapshot().failedAttempts, 0);
-  assert.equal(env.controller.isPending(), true);
+  env.controller.handleChatEvent({
+    type: "chat.failed", operationId: "update-op-1",
+    error: { code: "CHAT_DELIVERY_UNCONFIRMED", retryable: false },
+  });
+  await env.controller.tick();
+  env.advance(UPDATE_ANNOUNCEMENT_IDLE_MS);
+  await env.controller.tick();
+  assert.equal(env.controller.isPending(), false);
+  assert.equal(env.announcements.length, 1);
 });
 
 test("disabling drops the pending candidate while enabling immediately refreshes", async () => {

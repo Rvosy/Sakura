@@ -285,7 +285,6 @@ pub fn logical_hit_regions_with_control_surface(
     portrait_scale_percent: u16,
     control_surface: Option<&ControlSurfaceLayout>,
 ) -> Result<LogicalHitRegions, String> {
-    contract.validate()?;
     if let Some(surface) = control_surface {
         contract.validate_control_surface(state, surface)?;
     }
@@ -1427,9 +1426,7 @@ fn linux_envelope_hit_rectangle(envelope: [u32; 2]) -> Option<PhysicalHitRect> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn linux_input_hit_rectangles(
-    model: &PhysicalHitRegions,
-) -> Result<Vec<PhysicalHitRect>, String> {
+fn linux_input_hit_rectangles(model: &PhysicalHitRegions) -> Result<Vec<PhysicalHitRect>, String> {
     // GTK's input-shape region is applied through cairo/XShape. A standing-portrait
     // PNG silhouette (夜乃桜 is 1316×1376 with wispy hair) rasterizes into thousands
     // of rectangles and has aborted WebKitGTK while the settings preview rebound
@@ -1498,10 +1495,7 @@ pub fn apply_native_hit_regions(
         let region = cairo::Region::create();
         region
             .union_rectangle(&cairo::RectangleInt::new(
-                envelope.x,
-                envelope.y,
-                width,
-                height,
+                envelope.x, envelope.y, width, height,
             ))
             .map_err(|error| format!("failed to combine GTK input region: {error}"))?;
         Ok(region)
@@ -2617,8 +2611,8 @@ mod tests {
     use crate::window_geometry::{LayoutContract, PresentationState};
 
     fn contract() -> LayoutContract {
-        serde_json::from_str(include_str!("../../frontend/pet/layout-contract.json"))
-            .expect("layout contract must parse")
+        LayoutContract::from_json(include_str!("../../frontend/pet/layout-contract.json"))
+            .expect("layout contract must be valid")
     }
 
     #[test]

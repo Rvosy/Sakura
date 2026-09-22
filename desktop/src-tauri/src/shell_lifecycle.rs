@@ -12,11 +12,11 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 use crate::{
     character_presentation,
-    chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
+    chat_bridge::{ChatBridge, ChatEventPublication},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
     core_supervisor::{
@@ -134,6 +134,28 @@ pub struct SnapshotPublication {
     generation_id: String,
     revision: u64,
     readiness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_migration: Option<PluginMigrationPublication>,
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginMigrationPublication {
+    state: String,
+    completed: u64,
+    total: u64,
+    plugin_id: Option<String>,
+}
+
+fn plugin_migration(snapshot: &Value) -> Option<PluginMigrationPublication> {
+    serde_json::from_value(snapshot.get("pluginMigration")?.clone()).ok()
+}
+
+fn startup_expired(now: Instant, readiness_deadline: &mut Instant, migrating: bool) -> bool {
+    if migrating {
+        *readiness_deadline = now + READINESS_DEADLINE;
+    }
+    now >= *readiness_deadline
 }
 
 #[derive(Clone, Serialize)]
@@ -376,8 +398,13 @@ impl ShellLifecycleHandle {
 pub struct ShellLifecycleSession {
     handle: ShellLifecycleHandle,
     worker: Option<JoinHandle<()>>,
-    chat_events: Option<Receiver<ChatEventPublication>>,
+    chat_events: Option<Receiver<DesktopProjection>>,
     chat_projector: Option<JoinHandle<()>>,
+}
+
+enum DesktopProjection {
+    Chat(ChatEventPublication),
+    Host(Value),
 }
 
 impl ShellLifecycleSession {
@@ -466,10 +493,17 @@ impl ShellLifecycleSession {
             .take()
             .ok_or("CHAT_PROJECTOR_UNAVAILABLE")?;
         let update_coordinator = app.state::<UpdateCoordinator>().inner().clone();
+        let handle = self.handle.clone();
         self.chat_projector = Some(thread::spawn(move || {
             while let Ok(event) = events.recv() {
-                let _ = update_coordinator.observe_chat_event(&event);
-                let _ = app.emit_to("main", CHAT_EVENT, event);
+                match event {
+                    DesktopProjection::Chat(event) => {
+                        let _ = update_coordinator.observe_chat_event(&event);
+                    }
+                    DesktopProjection::Host(event) => {
+                        crate::host_interaction::dispatch(&app, &handle, event)
+                    }
+                }
             }
         }));
         Ok(())
@@ -521,7 +555,7 @@ fn run_worker(
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
-    chat_events: Sender<ChatEventPublication>,
+    chat_events: Sender<DesktopProjection>,
     runtime_log: Option<RuntimeLogService>,
     start_immediately: bool,
 ) {
@@ -689,7 +723,7 @@ fn run_worker(
     );
 }
 
-fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublication>) {
+fn drain_chat_events(state: &mut WorkerState, events: &Sender<DesktopProjection>) {
     let Some(host) = state.host.as_ref() else {
         return;
     };
@@ -701,13 +735,18 @@ fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublicati
         if event
             .get("name")
             .and_then(Value::as_str)
-            .is_some_and(|name| name.starts_with("chat."))
+            .is_some_and(|name| name.starts_with("chat.") || name.starts_with("host.chat."))
         {
             if let Some(bridge) = state.chat_bridge.as_ref() {
                 if let Ok(Some(publication)) = bridge.observe_event(&event) {
-                    let _ = events.send(publication);
+                    let _ = events.send(DesktopProjection::Chat(publication));
                 }
             }
+        } else if matches!(
+            event.get("name").and_then(Value::as_str),
+            Some("host.screen.capture" | "host.visual.apply" | "host.visual.cancel")
+        ) {
+            let _ = events.send(DesktopProjection::Host(event));
         }
     }
 }
@@ -836,14 +875,14 @@ fn spawn_and_initialize(
         json!({"outcome": "completed"}),
     );
 
-    let readiness_deadline = Instant::now() + READINESS_DEADLINE;
+    let mut readiness_deadline = Instant::now() + READINESS_DEADLINE;
     state.chat_bridge = state
         .host
         .as_ref()
-        .and_then(|host| host.chat_gateway().ok())
-        .and_then(|gateway| {
+        .and_then(|host| host.concurrent_request_handle().ok())
+        .and_then(|transport| {
             ChatBridge::new(
-                gateway,
+                Arc::new(transport),
                 generation_text.clone(),
                 state.identity.map_or(0, |(_, number)| number),
             )
@@ -871,7 +910,7 @@ fn spawn_and_initialize(
         match commands.try_recv() {
             Ok(ShellCommand::Restart) => {
                 // Settings become writable as soon as Core transport is ready,
-                // while Assistant/MCP initialization may still be running.
+                // while Assistant initialization may still be running.
                 // Coalesce restarts until readiness is stable so shutdown does
                 // not race the initializer and report SHUTDOWN_DURING_INITIALIZE.
                 restart_after_readiness = true;
@@ -913,7 +952,12 @@ fn spawn_and_initialize(
             }
             return Ok(());
         }
-        if Instant::now() >= readiness_deadline {
+        let migrating = state
+            .snapshot
+            .as_ref()
+            .and_then(plugin_migration)
+            .is_some_and(|migration| migration.state == "running");
+        if startup_expired(Instant::now(), &mut readiness_deadline, migrating) {
             return Err(FailureReason::InitializeTimeout);
         }
         thread::sleep(SNAPSHOT_POLL_INTERVAL);
@@ -1038,6 +1082,7 @@ fn publish(state: &WorkerState, target: &Arc<Mutex<ShellLifecyclePublication>>) 
             return None;
         }
         Some(SnapshotPublication {
+            plugin_migration: plugin_migration(snapshot),
             generation_id,
             revision: snapshot.get("revision").and_then(Value::as_u64)?,
             readiness: snapshot
@@ -1093,11 +1138,7 @@ fn ready_character_generation(
     let snapshot = publication.snapshot.as_ref()?;
     let generation_advanced = publication.supervisor.generation_number > previous_generation_number
         && generation_id != previous_generation_id
-        && snapshot.generation_id == generation_id
-        && matches!(
-            snapshot.readiness.as_str(),
-            "ready" | "setup_required" | "degraded"
-        );
+        && snapshot.generation_id == generation_id;
     if !generation_advanced {
         return None;
     }
@@ -1113,7 +1154,8 @@ fn ready_character_generation(
                 value.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
             }
         };
-        return (presented.is_empty() && generation_ok).then_some(generation_id);
+        return (snapshot.readiness == "setup_required" && presented.is_empty() && generation_ok)
+            .then_some(generation_id);
     }
     let presentation = publication.character_presentation.as_ref()?;
     let ready = presentation.get("generationId").and_then(Value::as_str)
@@ -1197,6 +1239,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn migration_progress_survives_publication_without_consuming_startup_deadline() {
+        let status = json!({"pluginMigration": {"state": "running", "completed": 0,
+            "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"}});
+        let migration = plugin_migration(&status).expect("public migration progress");
+        assert_eq!(migration.plugin_id.as_deref(), Some("sakura.memory.mem0"));
+        let start = Instant::now();
+        let mut readiness = start + READINESS_DEADLINE;
+        let downloading = start + Duration::from_secs(120);
+        assert!(!startup_expired(downloading, &mut readiness, true));
+        assert!(!startup_expired(
+            downloading + Duration::from_secs(1),
+            &mut readiness,
+            false
+        ));
+        assert!(startup_expired(
+            downloading + READINESS_DEADLINE,
+            &mut readiness,
+            false
+        ));
+    }
+
+    #[test]
     fn hello_deadline_matches_the_validated_cold_start_budget() {
         // A Windows 10 release report observed the Core process reaching its
         // first fixed log event after 5.2 seconds. Keep enough headroom for
@@ -1235,8 +1299,6 @@ mod tests {
         std::fs::create_dir_all(beta.join("portraits")).expect("beta portrait directory");
         std::fs::write(beta.join("card.md"), "You are the isolated Beta fixture.")
             .expect("beta card");
-        std::fs::write(beta.join("portraits/neutral.txt"), "isolated beta portrait")
-            .expect("beta portrait");
         std::fs::write(
             beta.join("character.json"),
             r#"{
@@ -1245,13 +1307,39 @@ mod tests {
   "initial_message": "Beta greeting.",
   "card": "card.md",
   "portrait": {
-    "default": "portraits/neutral.txt",
-    "expressions": {"neutral": "portraits/neutral.txt"}
+    "default": "portraits/neutral.png",
+    "expressions": {"neutral": "portraits/neutral.png"}
   },
   "reply": {"tones": ["neutral"]}
 }"#,
         )
         .expect("beta character manifest");
+        // Candidate publication validates the actual image, including when
+        // switching back to the original role. Both fixtures need loadable PNGs.
+        for role in ["sakura", "beta"] {
+            let package = root.join("characters").join(role);
+            let image = std::fs::File::create(package.join("portraits/neutral.png"))
+                .expect("fixture portrait file");
+            let mut encoder = png::Encoder::new(image, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .expect("PNG header")
+                .write_image_data(&[144, 128, 112, 255])
+                .expect("PNG pixels");
+            let path = package.join("character.json");
+            let mut manifest: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("fixture manifest"))
+                    .expect("valid fixture manifest");
+            manifest["portrait"] = json!({"default": "portraits/neutral.png",
+                "expressions": {"neutral": "portraits/neutral.png"}});
+            std::fs::write(
+                path,
+                serde_json::to_vec(&manifest).expect("encode fixture manifest"),
+            )
+            .expect("write fixture manifest");
+        }
         root.canonicalize().expect("canonical isolated user root")
     }
 
@@ -1333,6 +1421,7 @@ mod tests {
             publication.supervisor.generation_id = Some("generation-ready".to_string());
             publication.supervisor.generation_number = 1;
             publication.snapshot = Some(SnapshotPublication {
+                plugin_migration: None,
                 generation_id: "generation-ready".to_string(),
                 revision: 1,
                 readiness: "ready".to_string(),
@@ -1632,6 +1721,11 @@ mod tests {
             )
             .expect("persist beta selection");
         assert_eq!(
+            select_beta.get("ok"),
+            Some(&Value::Bool(true)),
+            "{select_beta}"
+        );
+        assert_eq!(
             select_beta
                 .pointer("/payload/changePlan")
                 .and_then(Value::as_str),
@@ -1648,6 +1742,15 @@ mod tests {
                     .and_then(Value::as_str)
                     == Some(role)
                 {
+                    assert_eq!(
+                        publication
+                            .character_presentation
+                            .as_ref()
+                            .and_then(|value| value.get("visualReasonCode"))
+                            .and_then(Value::as_str),
+                        Some("READY"),
+                        "selected character must have a validated visual"
+                    );
                     let bootstrap = handle
                         .settings_request(
                             None,
@@ -1727,6 +1830,11 @@ mod tests {
             )
             .expect("persist sakura selection");
         assert_eq!(
+            select_sakura.get("ok"),
+            Some(&Value::Bool(true)),
+            "{select_sakura}"
+        );
+        assert_eq!(
             select_sakura
                 .pointer("/payload/changePlan")
                 .and_then(Value::as_str),
@@ -1763,10 +1871,7 @@ mod tests {
             .join("../..")
             .canonicalize()
             .expect("repository root");
-        let user_root = repository_root
-            .join("tests/fixtures/runtime_v2/wp_3_01/ready")
-            .canonicalize()
-            .expect("ready Assistant fixture");
+        let user_root = isolated_ready_user_root(&repository_root);
         let executable_directory = std::env::current_exe()
             .expect("test executable")
             .parent()
@@ -1778,7 +1883,7 @@ mod tests {
             executable_directory,
             resource_directory: repository_root.clone(),
             explicit_development_root: Some(repository_root),
-            user_root,
+            user_root: user_root.clone(),
         });
         let handle = session.handle();
         let first = wait_for_stable_generation(&handle, 1);
@@ -1858,6 +1963,7 @@ mod tests {
         session
             .shutdown_and_join()
             .expect("recovered lifecycle should reclaim all resources");
+        std::fs::remove_dir_all(user_root).expect("remove isolated crash-recovery root");
     }
 
     #[test]
@@ -1944,6 +2050,7 @@ mod tests {
                 failure: None,
             },
             snapshot: Some(SnapshotPublication {
+                plugin_migration: None,
                 generation_id: generation.clone(),
                 revision: 7,
                 readiness: "ready".to_string(),
@@ -1984,6 +2091,7 @@ mod tests {
         publication.snapshot = None;
         assert!(available_generation_id(&publication).is_none());
         publication.snapshot = Some(SnapshotPublication {
+            plugin_migration: None,
             generation_id: "stale-generation".to_string(),
             revision: 8,
             readiness: "failed".to_string(),
@@ -1991,6 +2099,7 @@ mod tests {
         publication.character_presentation = None;
         assert!(available_generation_id(&publication).is_none());
         publication.snapshot = Some(SnapshotPublication {
+            plugin_migration: None,
             generation_id: "generation-safe".to_string(),
             revision: 9,
             readiness: "failed".to_string(),
@@ -2013,6 +2122,7 @@ mod tests {
                 failure: None,
             },
             snapshot: Some(SnapshotPublication {
+                plugin_migration: None,
                 generation_id: generation.clone(),
                 revision: 1,
                 readiness: "degraded".to_string(),
@@ -2032,14 +2142,19 @@ mod tests {
             ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
             Some("generation-b")
         );
-        publication.snapshot.as_mut().expect("snapshot").readiness = "setup_required".to_string();
-        assert_eq!(
-            ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
-            Some("generation-b")
-        );
-        publication.snapshot.as_mut().expect("snapshot").readiness = "failed".to_string();
+        for readiness in ["initializing", "setup_required", "failed"] {
+            publication.snapshot.as_mut().expect("snapshot").readiness = readiness.to_string();
+            assert_eq!(
+                ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
+                Some("generation-b"),
+                "an available character does not depend on Assistant readiness"
+            );
+        }
+        publication.character_presentation = None;
         assert!(ready_character_generation(&publication, "generation-a", 1, "beta").is_none());
 
+        publication.snapshot.as_mut().expect("snapshot").readiness = "initializing".to_string();
+        assert!(ready_character_generation(&publication, "generation-a", 1, "").is_none());
         publication.snapshot.as_mut().expect("snapshot").readiness = "setup_required".to_string();
         publication.character_presentation = None;
         assert_eq!(

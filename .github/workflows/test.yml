@@ -31,6 +31,19 @@ jobs:
         timeout-minutes: 8
         run: python -m pip install --disable-pip-version-check -r tools/requirements-dev.txt
 
+      - name: Prepare private MCP test dependencies
+        timeout-minutes: 3
+        run: |
+          python -m pip install --disable-pip-version-check --target plugins/dependencies/sakura.mcp -r plugins/builtin/sakura_mcp/requirements.txt
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          Path("plugins/dependencies/sakura.mcp/.sakura-dependencies.json").write_text(json.dumps({
+              "schemaVersion": 1, "kind": "requirements.txt",
+              "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+          }), encoding="utf-8")
+          PY
+
       - name: Run Python tests
         timeout-minutes: 12
         env:
@@ -72,24 +85,41 @@ jobs:
       - name: Install telemetry test dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          -r tools/telemetry_server/requirements.txt pytest httpx
+          -r services/sakura/requirements.txt pytest httpx
 
       - name: Run telemetry server tests
         run: >-
           python -m pytest -q -c /dev/null -p no:cacheprovider
-          tools/telemetry_server/tests
+          services/sakura/tests
 
       - name: Install and build the dashboard
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npm ci && npm run build
 
       - name: Install Chromium for dashboard tests
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npx playwright install --with-deps chromium
 
       - name: Run dashboard browser tests
-        working-directory: tools/telemetry_server/dashboard
+        working-directory: services/sakura/dashboard
         run: npm test
+
+  website:
+    name: Sakura website build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Install website package manager
+        run: npm install --global pnpm@11.19.0
+      - name: Build the public website
+        working-directory: services/sakura/site
+        env:
+          ASTRO_TELEMETRY_DISABLED: "1"
+        run: pnpm install --frozen-lockfile && pnpm build
 
   rust-format:
     name: Rust formatting
@@ -225,20 +255,55 @@ jobs:
           mkdir -p -- "$runtime_dir"
           tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$runtime_dir" --strip-components=1
 
-      - name: Populate the bundled Windows site-packages contract
+      - name: Configure the bundled Windows site-packages path
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $runtime = Join-Path $env:GITHUB_WORKSPACE 'runtime'
           @('python312.zip', '.', 'Lib/site-packages', 'import site') | Set-Content -LiteralPath (Join-Path $runtime 'python312._pth') -Encoding ascii
-          python -m pip --python (Join-Path $runtime 'python.exe') install --only-binary=:all: --no-deps 'PyYAML==6.0.2'
 
-      - name: Populate the bundled POSIX site-packages contract
-        if: runner.os != 'Windows'
+      - name: Install Core and isolated remote model dependencies
         shell: bash
-        run: >-
-          python -m pip --python "$GITHUB_WORKSPACE/runtime/bin/python3"
-          install --only-binary=:all: --no-deps 'PyYAML==6.0.2'
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          repo = Path(os.environ["GITHUB_WORKSPACE"])
+          runtime = repo / "runtime" / ("python.exe" if os.name == "nt" else "bin/python3")
+          pip = [sys.executable, "-m", "pip", "--python", str(runtime), "install", "--only-binary=:all:"]
+          subprocess.run([*pip, "--requirement", str(repo / "requirements.txt")], check=True)
+
+          plugin_root = repo / "plugins/builtin/sakura_model_openai_compatible"
+          dependency_root = repo / "plugins/dependencies/sakura.model.openai_compatible"
+          subprocess.run([
+              *pip, "--target", str(dependency_root),
+              "--requirement", str(plugin_root / "requirements.txt"),
+          ], check=True)
+          version = subprocess.check_output([
+              str(runtime), "-I", "-c",
+              "import sys, yaml, py7zz; "
+              "print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+          ], text=True).strip()
+          (dependency_root / ".sakura-dependencies.json").write_text(
+              json.dumps({"schemaVersion": 1, "kind": "requirements.txt", "python": version}),
+              encoding="utf-8",
+          )
+          with tempfile.TemporaryDirectory(prefix="sakura-native-model-") as data_dir:
+              subprocess.run([
+                  str(runtime), "-I", "-B", "-S", str(repo / "app/plugins/plugin_runner_v4.py"),
+                  "--plugin-id", "sakura.model.openai_compatible",
+                  "--generation-id", "native-ci",
+                  "--plugin-root", str(plugin_root),
+                  "--dependency-root", str(dependency_root),
+                  "--data-dir", data_dir,
+                  "--entry", "plugin:ModelPlugin", "--validate-entry",
+              ], check=True, timeout=30)
+          PY
 
       - name: Run the complete Rust test suite (Windows)
         if: runner.os == 'Windows'

@@ -84,7 +84,7 @@ test("ready, thinking, complete reply typing, and settled form one deterministic
   assert.equal(reducer.current().bubbleText, "完整回复");
 });
 
-test("completed replies keep the waiting frame visible until the first subtitle gate opens", () => {
+test("completed replies preserve the waiting frame until their first text segment starts", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-tts" });
   reducer.setWaitingText("....");
@@ -194,8 +194,8 @@ test("silent proactive requests preserve the current UI until the completed repl
   assert.equal(reducer.current().silentInteraction, false);
 });
 
-test("failed or cancelled silent proactive requests leave the current UI untouched", () => {
-  for (const terminal of ["chat.failed", "chat.cancelled"]) {
+test("silent terminals without a reply preserve the UI and release the next conversation", () => {
+  for (const terminal of ["chat.failed", "chat.cancelled", "chat.completed"]) {
     const reducer = readyReducer();
     const before = reducer.current();
     reducer.reduce({
@@ -211,11 +211,17 @@ test("failed or cancelled silent proactive requests leave the current UI untouch
       generationNumber: 1,
       operationId: terminal,
       error: { message: "不应展示" },
+      reply: { segments: [] },
     });
     assert.equal(reducer.current().phase, before.phase);
     assert.equal(reducer.current().bubbleText, before.bubbleText);
     assert.equal(reducer.current().operationId, null);
     assert.equal(reducer.current().silentInteraction, false);
+    assert.equal(reducer.reduce({
+      type: "chat.started", generationId: "generation-1", generationNumber: 1,
+      operationId: "next-manual",
+    }).applied, true);
+    assert.equal(reducer.current().phase, "thinking");
   }
 });
 
@@ -504,4 +510,12 @@ test("changing subtitle language restarts only the active segment without mixed 
   timers.shift().callback();
   assert.equal(rendered.at(-1), "か");
   assert.equal(rendered.includes("中か"), false);
+});
+
+test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {
+  const reducer = createChatPresentationReducer({ initialMessage: "新角色的问候" });
+  reducer.reduce(lifecycle("rehydrating", 1, 1));
+  reducer.reduce(lifecycle("setup_required", 1, 2));
+  assert.equal(reducer.current().lifecycle, "setup_required");
+  assert.equal(reducer.current().bubbleText, reducer.current().lifecycleHeadline);
 });

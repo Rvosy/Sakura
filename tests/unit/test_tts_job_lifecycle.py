@@ -10,8 +10,8 @@ import pytest
 from app.core_host.plugin_artifacts import MAX_ARTIFACTS_PER_PLUGIN, PluginArtifactStore
 from app.core_host.tts_boundary import _PluginSynthesisHandle
 from app.plugins.sakura_plugin_sdk import PluginContext
-from plugins.builtin.sakura_genie import plugin as genie
-from plugins.builtin.sakura_gpt_sovits import plugin as gpt
+from plugins.optional.sakura_genie import plugin as genie
+from plugins.optional.sakura_gpt_sovits import plugin as gpt
 from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
 
 
@@ -41,7 +41,7 @@ def jobs(request: pytest.FixtureRequest, tmp_path: Path):
     provider.begin = begin
     provider.status = lambda: {"available": True}
     hub = SakuraTTSHub(
-        SimpleNamespace(get=lambda _key: provider),
+        SimpleNamespace(get=lambda _key: provider, bind=lambda _key: provider),
         SimpleNamespace(get=lambda: {"selections": {"fixture": {"enabled": True, "provider": module.PROVIDER_ID}}}),
     )
     hub.registerProvider({

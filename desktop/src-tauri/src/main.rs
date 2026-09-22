@@ -10,13 +10,14 @@ mod character_studio_window;
 mod chat_bridge;
 mod chat_settings;
 mod color_picker;
-mod core_host_gateway;
 mod core_host_protocol;
 mod core_host_router;
 mod core_host_runtime;
 mod core_supervisor;
+mod download_sources;
 mod dynamic_hit_test;
 mod history_window;
+mod host_interaction;
 mod input_visual_effect;
 mod interaction_latency;
 mod legacy_import;
@@ -28,6 +29,7 @@ mod macos_surface_viewport;
 #[cfg(windows)]
 mod managed_process_tree;
 mod platform;
+mod plugin_marketplace;
 mod plugin_settings;
 mod product_shell;
 mod runtime_log;
@@ -742,9 +744,15 @@ fn schedule_control_contraction_region_commit(
         .map_err(|error| format!("failed to start input contraction region timer: {error}"))
 }
 
-fn layout_contract() -> Result<LayoutContract, String> {
-    serde_json::from_str(LAYOUT_CONTRACT_JSON)
-        .map_err(|error| format!("invalid embedded pet layout contract: {error}"))
+fn layout_contract() -> Result<&'static LayoutContract, String> {
+    // Embedded data is immutable. Parse and validate it once; subsequent surface
+    // updates still validate their dynamic rectangles, DPI and native bounds.
+    static CONTRACT: std::sync::OnceLock<Result<LayoutContract, String>> =
+        std::sync::OnceLock::new();
+    CONTRACT
+        .get_or_init(|| LayoutContract::from_json(LAYOUT_CONTRACT_JSON))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 fn monitor_descriptor(monitor: &tauri::Monitor) -> MonitorDescriptor {
@@ -1987,7 +1995,7 @@ fn precommit_webview_surface(
             .map_err(|error| format!("MACOS_SURFACE_AUTORESIZE_FAILED:{error}"))?;
         return macos_surface_viewport::prepare(
             application,
-            composer_resident_viewport(&layout_contract()?),
+            composer_resident_viewport(layout_contract()?),
         );
     }
     #[cfg(not(target_os = "macos"))]
@@ -2628,7 +2636,7 @@ fn start_pet_drag_blocking(
             }
             let state = session.state.expect("checked above");
             let regions = window_interaction::logical_hit_regions_with_control_surface(
-                &layout_contract()?,
+                layout_contract()?,
                 state,
                 session
                     .portrait_alpha_mask
@@ -2776,7 +2784,7 @@ fn open_pet_context_menu(
         .state
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
     let regions = window_interaction::logical_hit_regions_with_control_surface(
-        &layout_contract()?,
+        layout_contract()?,
         state,
         geometry
             .portrait_alpha_mask
@@ -3159,7 +3167,7 @@ fn pet_surface_hovered(
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
     surface_hover_contains(
-        &layout_contract()?,
+        layout_contract()?,
         &geometry,
         [cursor.x, cursor.y],
         [origin.x, origin.y],
@@ -3286,7 +3294,7 @@ fn set_pet_tool_dock_surface(
             .relax_hit_regions(&window)
             .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
     }
-    geometry.apply_tool_dock_surface(&layout_contract()?, rect, |next| {
+    geometry.apply_tool_dock_surface(layout_contract()?, rect, |next| {
         apply_precise_hit_regions(&window, next)
     })
 }
@@ -3400,9 +3408,43 @@ fn runtime_lifecycle_snapshot(
 }
 
 #[tauri::command]
+async fn visual_control_parse(
+    window: WebviewWindow,
+    payload: Value,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".into());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "STALE_GENERATION".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "visual.control.parse",
+        payload,
+        std::time::Duration::from_secs(10),
+    )
+    .await?;
+    if handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .as_deref()
+        != Some(&generation)
+    {
+        return Err("STALE_GENERATION".into());
+    }
+    settings_response_payload(response)
+}
+
+#[tauri::command]
 async fn chat_send(
     window: WebviewWindow,
     payload: chat_bridge::ChatSendRequest,
+    on_event: tauri::ipc::Channel<chat_bridge::ChatEventPublication>,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<chat_bridge::ChatSendPublication, String> {
     let handle = lifecycle
@@ -3413,6 +3455,7 @@ async fn chat_send(
         window.label(),
         payload.message,
         payload.attachment_id,
+        on_event,
     )?;
     tauri::async_runtime::spawn_blocking(move || pending.wait())
         .await
@@ -3774,113 +3817,6 @@ async fn remove_screen_attachment_item(
         item_id: response_item_id.to_string(),
         count,
     })
-}
-
-#[tauri::command]
-async fn capture_screen_awareness_frame(
-    window: WebviewWindow,
-    payload: capture::ScreenAwarenessCaptureRequest,
-    lifecycle: State<'_, ShellLifecycleState>,
-    captures: State<'_, Arc<capture::CaptureManager>>,
-) -> Result<capture::ScreenAwarenessCapturePublication, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
-    let cursor = window
-        .app_handle()
-        .cursor_position()
-        .map_err(|_| "SCREEN_CAPTURE_CURSOR_UNAVAILABLE".to_string())?;
-    let manager = captures.inner().clone();
-    let task_generation_id = generation_id.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let character_session_id = screen_session_id(&handle)?;
-        manager.capture_screen_awareness_frame(
-            &task_generation_id,
-            &character_session_id,
-            cursor.x.round() as i32,
-            cursor.y.round() as i32,
-            &payload.resolution,
-            payload.batch_limit,
-        )
-    })
-    .await
-    .map_err(|_| "SCREEN_CAPTURE_TASK_ABORTED".to_string())??;
-    record_screen_capture(
-        &lifecycle.runtime_log,
-        &generation_id,
-        "screen.awareness.frame.captured",
-        Severity::Info,
-        json!({
-            "outcome": "completed",
-            "batch_count": result.count,
-            "dropped_count": result.dropped_count,
-        }),
-    );
-    Ok(result)
-}
-
-#[tauri::command]
-async fn attach_screen_awareness_batch(
-    window: WebviewWindow,
-    lifecycle: State<'_, ShellLifecycleState>,
-    captures: State<'_, Arc<capture::CaptureManager>>,
-) -> Result<capture::ScreenAwarenessAttachmentPublication, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
-    let manager = captures.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let character_session_id = screen_session_id(&handle)?;
-        let descriptors =
-            manager.materialize_screen_awareness_batch(&generation_id, &character_session_id)?;
-        let count = descriptors.len();
-        let response = handle.settings_request(
-            None,
-            "screen.attachBatch",
-            json!({"resources": descriptors, "sessionId": character_session_id}),
-            std::time::Duration::from_secs(15),
-        );
-        manager.release_descriptors(&descriptors, &generation_id);
-        let payload = settings_response_payload(response?)?;
-        let attachment_id = payload
-            .get("attachmentId")
-            .and_then(Value::as_str)
-            .filter(|value| capture::valid_attachment_id(value))
-            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
-        let attached_count = payload
-            .get("count")
-            .and_then(Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|value| *value == count)
-            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
-        Ok(capture::ScreenAwarenessAttachmentPublication {
-            attachment_id: attachment_id.to_string(),
-            count: attached_count,
-        })
-    })
-    .await
-    .map_err(|_| "SCREEN_ATTACHMENT_TASK_ABORTED".to_string())?
-}
-
-#[tauri::command]
-fn clear_screen_awareness_batch(
-    window: WebviewWindow,
-    captures: State<'_, Arc<capture::CaptureManager>>,
-) -> Result<usize, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    Ok(captures.clear_screen_awareness_batch())
 }
 
 fn valid_composer_tool_segment(value: &str) -> bool {
@@ -4509,144 +4445,18 @@ fn sync_settings_window_appearance_background(
     product_shell::set_settings_window_theme_background(window, background)
 }
 
-fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
-    let expected = [
-        "schemaVersion",
-        "revision",
-        "currentCharacterId",
-        "characters",
-    ];
-    if object.len() != expected.len()
-        || expected.iter().any(|key| !object.contains_key(*key))
-        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || object.get("revision").and_then(Value::as_u64).is_none()
-    {
-        return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    let current = object.get("currentCharacterId").expect("validated field");
-    if !current.is_null() && current.as_str().is_none() {
-        return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    let characters = object
-        .get("characters")
-        .and_then(Value::as_array)
-        .filter(|items| items.len() <= 256)
-        .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
-    let mut ids = std::collections::BTreeSet::new();
-    for character in characters {
-        let item = character
-            .as_object()
-            .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
-        if item.len() != 4
-            || !["id", "displayName", "hasVoice", "hasExportableVoice"]
-                .iter()
-                .all(|key| item.contains_key(*key))
-        {
-            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-        }
-        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
-        let display_name = item
-            .get("displayName")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let has_voice = item.get("hasVoice").and_then(Value::as_bool);
-        let has_exportable_voice = item.get("hasExportableVoice").and_then(Value::as_bool);
-        if id.is_empty()
-            || id.len() > 128
-            || display_name.is_empty()
-            || display_name.len() > 128
-            || has_voice.is_none()
-            || has_exportable_voice.is_none()
-            || (has_exportable_voice == Some(true) && has_voice != Some(true))
-            || !ids.insert(id)
-        {
-            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-        }
-    }
-    if let Some(current) = current.as_str() {
-        if !ids.contains(current) {
-            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
-        }
-    }
-    Ok(())
-}
-
-fn validate_character_export_receipt(value: &Value) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "CHARACTER_EXPORT_RESPONSE_INVALID".to_string())?;
-    let expected = ["schemaVersion", "outputPath", "message"];
-    let output_path = object
-        .get("outputPath")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let message = object
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if object.len() != expected.len()
-        || expected.iter().any(|key| !object.contains_key(*key))
-        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || output_path.is_empty()
-        || output_path.len() > 4096
-        || message.is_empty()
-        || message.len() > 4608
-    {
-        return Err("CHARACTER_EXPORT_RESPONSE_INVALID".to_string());
-    }
-    Ok(())
-}
-
 fn validate_character_settings_change(value: Value) -> Result<(Value, String, Value), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
-    let expected = ["schemaVersion", "snapshot", "changePlan"];
     let requirements = object
         .get("pluginRequirements")
         .cloned()
         .unwrap_or(json!([]));
-    if !requirements.as_array().is_some_and(|items| {
-        items.len() <= 64
-            && items.iter().all(|item| {
-                matches!(
-                    item.get("kind").and_then(Value::as_str),
-                    Some("visual" | "tts")
-                ) && item
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.is_empty())
-                    && matches!(
-                        item.get("reasonCode").and_then(Value::as_str),
-                        Some(
-                            "COMPATIBLE"
-                                | "PLUGIN_DISABLED"
-                                | "PLUGIN_INCOMPATIBLE"
-                                | "PLUGIN_MISSING"
-                        )
-                    )
-                    && item.get("plugins").is_some_and(Value::is_array)
-                    && item.get("candidates").is_some_and(Value::is_array)
-            })
-    }) {
-        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
-    }
-    if object
-        .keys()
-        .any(|key| !expected.contains(&key.as_str()) && key != "pluginRequirements")
-        || expected.iter().any(|key| !object.contains_key(*key))
-        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-    {
-        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
-    }
     let snapshot = object
         .get("snapshot")
         .cloned()
         .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
-    validate_character_settings_snapshot(&snapshot)?;
     let change_plan = object
         .get("changePlan")
         .and_then(Value::as_str)
@@ -4796,7 +4606,6 @@ async fn character_settings_request(
     let (snapshot, handle) =
         character_settings_payload_request(window, shell, lifecycle, name, payload, deadline)
             .await?;
-    validate_character_settings_snapshot(&snapshot)?;
     Ok((snapshot, handle))
 }
 
@@ -4926,50 +4735,8 @@ async fn settings_character_visuals_get(
 }
 
 fn validate_character_visuals_snapshot(value: &Value, character_id: &str) -> Result<(), String> {
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct Choice {
-        id: String,
-        name: String,
-        provider_id: Option<String>,
-        install_id: Option<String>,
-        reason_code: String,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct Snapshot {
-        schema_version: u32,
-        character_id: String,
-        default_resource_id: Option<String>,
-        preference_resource_id: Option<String>,
-        resources: Vec<Choice>,
-    }
-    let invalid = || "CHARACTER_VISUAL_SETTINGS_INVALID".to_string();
-    let parsed: Snapshot = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
-    let bounded = |text: &str, limit| !text.is_empty() && text.len() <= limit;
-    let mut ids = std::collections::HashSet::new();
-    if parsed.schema_version != 1
-        || parsed.character_id != character_id
-        || parsed.resources.len() > 32
-        || parsed.resources.iter().any(|item| {
-            !bounded(&item.id, 128)
-                || !ids.insert(item.id.clone())
-                || !bounded(&item.name, 768)
-                || !bounded(&item.reason_code, 128)
-                || item
-                    .provider_id
-                    .as_ref()
-                    .is_some_and(|id| !bounded(id, 128))
-                || item
-                    .install_id
-                    .as_ref()
-                    .is_some_and(|id| !bounded(id, 1024))
-        })
-        || [&parsed.default_resource_id, &parsed.preference_resource_id]
-            .iter()
-            .any(|id| id.as_ref().is_some_and(|id| !ids.contains(id)))
-    {
-        return Err(invalid());
+    if value["characterId"].as_str() != Some(character_id) {
+        return Err("CHARACTER_VISUAL_SETTINGS_INVALID".into());
     }
     Ok(())
 }
@@ -5153,7 +4920,6 @@ async fn settings_character_export(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    validate_character_export_receipt(&receipt)?;
     Ok(receipt)
 }
 
@@ -5268,57 +5034,6 @@ async fn settings_character_select(
     Ok(receipt)
 }
 
-fn validate_storage_settings_snapshot(value: &Value) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "STORAGE_SETTINGS_RESPONSE_INVALID".to_string())?;
-    let expected = [
-        "schemaVersion",
-        "userRoot",
-        "ttsRoot",
-        "ttsRootSource",
-        "ttsRootAvailable",
-        "reasonCode",
-    ];
-    if object.len() != expected.len()
-        || expected.iter().any(|key| !object.contains_key(*key))
-        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || !matches!(
-            object.get("ttsRootSource").and_then(Value::as_str),
-            Some("default" | "custom")
-        )
-        || object
-            .get("ttsRootAvailable")
-            .and_then(Value::as_bool)
-            .is_none()
-    {
-        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    for key in ["userRoot", "ttsRoot"] {
-        let path = object.get(key).and_then(Value::as_str).unwrap_or_default();
-        if path.is_empty() || !std::path::Path::new(path).is_absolute() {
-            return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
-        }
-    }
-    let reason = object.get("reasonCode").expect("validated field");
-    if !reason.is_null()
-        && !matches!(
-            reason.as_str(),
-            Some("TTS_ROOT_MISSING" | "TTS_ROOT_NOT_DIRECTORY" | "TTS_ROOT_NOT_WRITABLE")
-        )
-    {
-        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    let available = object
-        .get("ttsRootAvailable")
-        .and_then(Value::as_bool)
-        .expect("validated field");
-    if (available && !reason.is_null()) || (!available && reason.is_null()) {
-        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    Ok(())
-}
-
 async fn storage_settings_request(
     window: &WebviewWindow,
     shell: &product_shell::ProductShellState,
@@ -5346,7 +5061,6 @@ async fn storage_settings_request(
     .await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
     let snapshot = settings_response_payload(response)?;
-    validate_storage_settings_snapshot(&snapshot)?;
     Ok(snapshot)
 }
 
@@ -5527,135 +5241,6 @@ async fn settings_provider_model_save(
 }
 
 #[tauri::command]
-async fn settings_screen_awareness_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    if !matches!(
-        window.label(),
-        "main" | product_shell::SETTINGS_WINDOW_LABEL
-    ) {
-        return Err("SCREEN_AWARENESS_WINDOW_INVALID".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle,
-        None,
-        "screen_awareness.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    let mut payload = settings_response_payload(response)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "SCREEN_AWARENESS_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(shell.generation()?));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_screen_awareness_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    settings: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "screen_awareness.settings.save",
-        json!({"settings": settings}),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    let mut payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "SCREEN_AWARENESS_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    if let Some(saved_settings) = object.get("settings").cloned() {
-        let _ = window.app_handle().emit_to(
-            "main",
-            "sakura://screen-awareness-settings",
-            saved_settings,
-        );
-    }
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_provider_model_probe(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    operation_id: String,
-    kind: String,
-    profile: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let name = match kind.as_str() {
-        "list_models" => "settings.provider_model.list_models",
-        "test_connection" => "settings.provider_model.test_connection",
-        _ => return Err("SETTINGS_PROBE_KIND_INVALID".to_string()),
-    };
-    let response = dispatch_settings_request(
-        handle.clone(),
-        Some(operation_id.clone()),
-        name,
-        json!({"operation_id": operation_id, "profile": profile}),
-        std::time::Duration::from_secs(65),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    settings_response_payload(response)
-}
-
-#[tauri::command]
-async fn settings_provider_model_cancel(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    operation_id: String,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<bool, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "settings.provider_model.cancel",
-        json!({"operationId": operation_id}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    Ok(settings_response_payload(response)?
-        .get("cancelled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false))
-}
-
-#[tauri::command]
 fn begin_control_surface_preview(
     window: WebviewWindow,
     revision: u64,
@@ -5686,7 +5271,7 @@ fn begin_control_surface_preview(
                 .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
             let guard_started = std::time::Instant::now();
             let guard_rectangles = build_control_surface_gesture_guard_rectangles(
-                &layout_contract()?,
+                layout_contract()?,
                 application,
                 control_surface,
                 geometry.portrait_scale_percent,
@@ -5833,7 +5418,7 @@ fn preview_pet_control_surface(
     #[cfg(target_os = "macos")]
     {
         let regions = build_native_interaction_regions(
-            &layout_contract()?,
+            layout_contract()?,
             &application,
             Some(&control_surface),
             geometry.portrait_alpha_mask.as_ref(),
@@ -5931,7 +5516,7 @@ fn end_control_surface_preview(
             .clone()
             .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
         let hit_regions = build_native_interaction_regions(
-            &layout_contract()?,
+            layout_contract()?,
             &application,
             geometry.control_surface.as_ref(),
             geometry.portrait_alpha_mask.as_ref(),
@@ -6444,18 +6029,14 @@ fn activate_portrait_hit_test(
             drop(geometry);
             let mask_started = std::time::Instant::now();
             let alpha_mask = if let Some([width, height]) = surface_size {
-                if width == 0
-                    || height == 0
-                    || width > 8192
-                    || height > 8192
-                    || u64::from(width) * u64::from(height) > 40_000_000
-                {
+                let pixels = u64::from(width) * u64::from(height);
+                if pixels == 0 || pixels > 192 * 1024 * 1024 {
                     return Err("SURFACE_SIZE_INVALID".into());
                 }
                 character_presentation::PortraitAlphaMask::new(
                     width,
                     height,
-                    vec![255; (width * height) as usize],
+                    vec![255; pixels as usize],
                 )
             } else {
                 resources.portrait_alpha_mask(
@@ -7443,6 +7024,17 @@ fn retry_core(lifecycle: State<'_, ShellLifecycleState>) -> Result<(), &'static 
 }
 
 #[tauri::command]
+fn settings_restart_after_migration(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    settings_core_handle(&lifecycle)?
+        .restart()
+        .map_err(str::to_string)
+}
+
+#[tauri::command]
 fn exit_runtime(
     lifecycle: State<'_, ShellLifecycleState>,
     app_handle: tauri::AppHandle,
@@ -7780,15 +7372,27 @@ fn ensure_user_layout(root: &std::path::Path) -> Result<std::path::PathBuf, Stri
         .try_exists()
         .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))?
     {
-        if let Err(error) = ui_config::atomic_write(
-            &config.join("plugins.yaml"),
-            include_bytes!("new_user_plugins.yaml"),
-            "USER_ROOT",
-        ) {
-            // Leave a failed first initialization retryable when no file was published.
-            let _ = std::fs::remove_dir(&config);
-            return Err(error);
+        // Publish both defaults together so an interrupted first start cannot
+        // classify a new user as an upgrade on the next launch.
+        let staging = root.join(format!(".config-init-{}", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<(), String> {
+            ui_config::atomic_write(
+                &staging.join("plugin-migrations.json"),
+                include_bytes!("new_user_plugin_migrations.json"),
+                "USER_ROOT",
+            )?;
+            ui_config::atomic_write(
+                &staging.join("plugins.yaml"),
+                include_bytes!("new_user_plugins.yaml"),
+                "USER_ROOT",
+            )?;
+            std::fs::rename(&staging, &config)
+                .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
         }
+        result?;
     }
     for relative in ["config", "data", "characters", "plugins/user", "tts"] {
         std::fs::create_dir_all(root.join(relative))
@@ -8147,8 +7751,14 @@ fn main() {
             ui_config_repository.clone(),
             character_resource_root.join("config/system_config.yaml"),
         ))
+        .manage(download_sources::DownloadSources(
+            ui_config_repository.clone(),
+        ))
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
+        ))
+        .manage(plugin_marketplace::MarketplaceState::new(
+            character_resource_root.clone(),
         ))
         .manage(update_coordinator)
         .manage(audio::AudioState::new(character_resource_root.clone()))
@@ -8235,6 +7845,15 @@ fn main() {
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 match event {
+                    tauri::WindowEvent::Destroyed => {
+                        if let Some(handle) = window.state::<ShellLifecycleState>().handle.as_ref()
+                        {
+                            if let Ok(bridge) = handle.chat_bridge() {
+                                bridge.invalidate();
+                            }
+                            host_interaction::detach(handle);
+                        }
+                    }
                     tauri::WindowEvent::Moved(position) => {
                         let session = window.state::<Mutex<WindowGeometrySession>>();
                         if let Err(error) = try_observe_deferred_window_position(
@@ -8383,12 +8002,14 @@ fn main() {
             chat_cancel,
             start_screen_capture,
             capture_selected_region,
+            host_interaction::host_chat_listen,
+            host_interaction::host_interaction_current,
+            host_interaction::host_interaction_state,
+            host_interaction::host_visual_claim,
+            host_interaction::host_visual_result,
             cancel_screen_capture,
             release_screen_attachment,
             remove_screen_attachment_item,
-            capture_screen_awareness_frame,
-            attach_screen_awareness_batch,
-            clear_screen_awareness_batch,
             composer_tools_get,
             composer_tool_invoke,
             audio::tts_prepare_segment,
@@ -8439,6 +8060,7 @@ fn main() {
             record_interaction_latency_trace,
             record_runtime_diagnostics,
             retry_core,
+            settings_restart_after_migration,
             first_run_start_core,
             exit_runtime,
             product_shell::settings_capability_manifest,
@@ -8454,6 +8076,7 @@ fn main() {
             product_shell::reveal_settings_window,
             settings_characters_get,
             settings_character_visuals_get,
+            visual_control_parse,
             settings_character_choose_import,
             settings_character_choose_export,
             settings_character_import,
@@ -8512,12 +8135,15 @@ fn main() {
             chat_settings::settings_bubble_auto_hide_save,
             settings_provider_model_get,
             settings_provider_model_save,
-            settings_provider_model_probe,
-            settings_provider_model_cancel,
             tool_settings::settings_tools_get,
             tool_settings::settings_tools_save,
-            settings_screen_awareness_get,
-            settings_screen_awareness_save,
+            download_sources::settings_download_sources_get,
+            download_sources::settings_download_sources_save,
+            plugin_marketplace::settings_marketplace_catalog,
+            plugin_marketplace::settings_marketplace_readme,
+            plugin_marketplace::settings_marketplace_open_url,
+            plugin_marketplace::settings_marketplace_install,
+            plugin_marketplace::settings_marketplace_cancel,
             plugin_settings::settings_plugins_get,
             plugin_settings::settings_plugins_save,
             plugin_settings::settings_plugins_enabled_set,
@@ -8599,7 +8225,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn character_visuals_snapshot_enforces_resource_membership_and_public_fields() {
+    fn character_visuals_snapshot_binds_requested_character() {
         let snapshot = json!({
             "schemaVersion": 1, "characterId": "navi", "defaultResourceId": "portrait",
             "preferenceResourceId": null,
@@ -8608,21 +8234,6 @@ mod tests {
         });
         assert!(validate_character_visuals_snapshot(&snapshot, "navi").is_ok());
         assert!(validate_character_visuals_snapshot(&snapshot, "another").is_err());
-        let mut private = snapshot.clone();
-        private["resources"][0]["path"] = json!("private/path");
-        let mut missing = snapshot.clone();
-        missing["preferenceResourceId"] = json!("missing");
-        let mut duplicate = snapshot.clone();
-        duplicate["resources"]
-            .as_array_mut()
-            .unwrap()
-            .push(snapshot["resources"][0].clone());
-        for invalid in [private, missing, duplicate] {
-            assert_eq!(
-                validate_character_visuals_snapshot(&invalid, "navi"),
-                Err("CHARACTER_VISUAL_SETTINGS_INVALID".into())
-            );
-        }
         assert!(validate_character_visuals_snapshot(
             &json!({
                 "schemaVersion": 1, "characterId": "navi", "defaultResourceId": null,
@@ -8637,12 +8248,23 @@ mod tests {
     fn new_user_plugin_defaults_are_written_once_and_preserve_later_choices() {
         let root = std::env::temp_dir().join(format!("sakura-new-user-{}", uuid::Uuid::new_v4()));
         ensure_user_layout(&root).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(root.join("config/plugin-migrations.json")).unwrap()
+            )
+            .unwrap(),
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "new_user_plugin_migrations.json"
+            ))
+            .unwrap()
+        );
         let path = root.join("config/plugins.yaml");
         let defaults: serde_yaml::Value =
             serde_yaml::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(defaults, serde_yaml::from_str::<serde_yaml::Value>(
-            "- {id: sakura.tts.genie, enabled: false}\n- {id: sakura.tts.gpt-sovits, enabled: false}\n- {id: sakura_mobile, enabled: false}\n"
-        ).unwrap());
+        assert_eq!(
+            defaults,
+            serde_yaml::from_str::<serde_yaml::Value>("[]\n").unwrap()
+        );
         let saved = "# 用户选择\n- id: sakura.tts.genie\n  enabled: true\n- id: sakura_mobile\n  enabled: false\n";
         std::fs::write(&path, saved).unwrap();
         ensure_user_layout(&root).unwrap();
@@ -8657,59 +8279,8 @@ mod tests {
         std::fs::create_dir_all(root.join("config")).unwrap();
         ensure_user_layout(&root).unwrap();
         assert!(!root.join("config/plugins.yaml").exists());
+        assert!(!root.join("config/plugin-migrations.json").exists());
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn character_settings_snapshot_accepts_empty_state_and_requires_selected_membership() {
-        assert!(validate_character_settings_snapshot(&json!({
-            "schemaVersion": 1,
-            "revision": 0,
-            "currentCharacterId": null,
-            "characters": [],
-        }))
-        .is_ok());
-        assert!(validate_character_settings_snapshot(&json!({
-            "schemaVersion": 1,
-            "revision": 2,
-            "currentCharacterId": "navi",
-            "characters": [{
-                "id": "navi",
-                "displayName": "N.A.V.I.",
-                "hasVoice": false,
-                "hasExportableVoice": false,
-            }],
-        }))
-        .is_ok());
-        assert_eq!(
-            validate_character_settings_snapshot(&json!({
-                "schemaVersion": 1,
-                "revision": 2,
-                "currentCharacterId": "missing",
-                "characters": [{
-                    "id": "navi",
-                    "displayName": "N.A.V.I.",
-                    "hasVoice": false,
-                    "hasExportableVoice": false,
-                }],
-            }))
-            .unwrap_err(),
-            "CHARACTER_SETTINGS_RESPONSE_INVALID"
-        );
-        assert_eq!(
-            validate_character_settings_snapshot(&json!({
-                "schemaVersion": 1,
-                "revision": 2,
-                "currentCharacterId": "navi",
-                "characters": [{
-                    "id": "navi",
-                    "displayName": "N.A.V.I.",
-                    "hasVoice": false,
-                    "hasExportableVoice": true,
-                }],
-            })),
-            Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())
-        );
     }
 
     #[test]
@@ -8744,10 +8315,12 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(imported_requirements, declared);
-        assert!(validate_character_settings_change(json!({
-            "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": "unchanged",
-            "pluginRequirements": [{"kind": "tts", "type": "gpt-sovits.models@1", "reasonCode": "READY"}],
-        })).is_err());
+        let (_, _, expanded) = validate_character_settings_change(json!({
+            "snapshot": snapshot.clone(), "changePlan": "unchanged", "future": true,
+            "pluginRequirements": vec![declared[0].clone(); 100],
+        }))
+        .unwrap();
+        assert_eq!(expanded.as_array().unwrap().len(), 100);
         for plan in ["visual_rebind", "character_refresh", "character_switch"] {
             let (hot_snapshot, hot_plan, _) = validate_character_settings_change(json!({
                 "schemaVersion": 1, "snapshot": snapshot.clone(), "changePlan": plan,
@@ -8781,81 +8354,6 @@ mod tests {
         assert_eq!(
             character_restart_target(&empty_snapshot, "unchanged"),
             Ok(None)
-        );
-    }
-
-    #[test]
-    fn character_export_receipt_requires_only_public_output_fields() {
-        assert!(validate_character_export_receipt(&json!({
-            "schemaVersion": 1,
-            "outputPath": "C:\\Users\\test\\navi.char",
-            "message": "角色包已导出。",
-        }))
-        .is_ok());
-        assert_eq!(
-            validate_character_export_receipt(&json!({
-                "schemaVersion": 1,
-                "outputPath": "C:\\Users\\test\\navi.char",
-                "message": "角色包已导出。",
-                "characterCard": "private",
-            })),
-            Err("CHARACTER_EXPORT_RESPONSE_INVALID".to_string())
-        );
-    }
-
-    #[test]
-    fn storage_settings_snapshot_accepts_consistent_default_and_custom_states() {
-        let default_root = if cfg!(windows) {
-            "C:\\Sakura"
-        } else {
-            "/tmp/Sakura"
-        };
-        let default_tts = if cfg!(windows) {
-            "C:\\Sakura\\tts"
-        } else {
-            "/tmp/Sakura/tts"
-        };
-        assert!(validate_storage_settings_snapshot(&json!({
-            "schemaVersion": 1,
-            "userRoot": default_root,
-            "ttsRoot": default_tts,
-            "ttsRootSource": "default",
-            "ttsRootAvailable": true,
-            "reasonCode": null,
-        }))
-        .is_ok());
-        assert!(validate_storage_settings_snapshot(&json!({
-            "schemaVersion": 1,
-            "userRoot": default_root,
-            "ttsRoot": if cfg!(windows) { "D:\\Voice" } else { "/Volumes/Voice" },
-            "ttsRootSource": "custom",
-            "ttsRootAvailable": false,
-            "reasonCode": "TTS_ROOT_MISSING",
-        }))
-        .is_ok());
-    }
-
-    #[test]
-    fn storage_settings_snapshot_rejects_reason_availability_contradictions() {
-        let base = json!({
-            "schemaVersion": 1,
-            "userRoot": if cfg!(windows) { "C:\\Sakura" } else { "/tmp/Sakura" },
-            "ttsRoot": if cfg!(windows) { "D:\\Voice" } else { "/Volumes/Voice" },
-            "ttsRootSource": "custom",
-            "ttsRootAvailable": true,
-            "reasonCode": null,
-        });
-        let mut unavailable_without_reason = base.clone();
-        unavailable_without_reason["ttsRootAvailable"] = json!(false);
-        assert_eq!(
-            validate_storage_settings_snapshot(&unavailable_without_reason).unwrap_err(),
-            "STORAGE_SETTINGS_RESPONSE_INVALID"
-        );
-        let mut available_with_reason = base;
-        available_with_reason["reasonCode"] = json!("TTS_ROOT_NOT_WRITABLE");
-        assert_eq!(
-            validate_storage_settings_snapshot(&available_with_reason).unwrap_err(),
-            "STORAGE_SETTINGS_RESPONSE_INVALID"
         );
     }
 
@@ -9629,7 +9127,28 @@ mod tests {
                 .iter()
                 .chain(candidate.drag.iter().skip(1))
             {
-                assert!(first_guard.iter().any(|guard| contains(guard, rect)));
+                // Native guards cover only the portion inside the actual window.
+                let left = i64::from(rect.x).max(0);
+                let top = i64::from(rect.y).max(0);
+                let right =
+                    (i64::from(rect.x) + i64::from(rect.width)).min(i64::from(precise.envelope[0]));
+                let bottom = (i64::from(rect.y) + i64::from(rect.height))
+                    .min(i64::from(precise.envelope[1]));
+                if right <= left || bottom <= top {
+                    continue;
+                }
+                let visible = window_interaction::PhysicalHitRect {
+                    x: left as i32,
+                    y: top as i32,
+                    width: (right - left) as u32,
+                    height: (bottom - top) as u32,
+                    ..rect.clone()
+                };
+                assert!(
+                    first_guard.iter().any(|guard| contains(guard, &visible)),
+                    "guard={first_guard:?}, visible={visible:?}, envelope={:?}",
+                    precise.envelope
+                );
             }
         }
     }

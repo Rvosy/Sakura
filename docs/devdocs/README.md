@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-09-16
 ---
 
 # 开发者文档
@@ -12,6 +12,7 @@ updated: 2026-09-09
 - [技术架构](TECHNICAL_README.md)
 - [Plugin API v4 开发指南](SAKURA_PLUGIN_SDK.md)
 - [插件开发 AI 提示词](SAKURA_PLUGIN_AI_PROMPT.md)：交给 AI 快速制作或适配插件。
+- [开放插件生态初版验收](PLUGIN_ECOSYSTEM_ACCEPTANCE.md)
 - [MCP 开发与验证](RUNTIME_V2_MCP.md)
 - [运行日志与 Agent Trace](RUNTIME_V2_OBSERVABILITY.md)
 - [桌宠窗口表面](RUNTIME_V2_WINDOW_SURFACE.md)

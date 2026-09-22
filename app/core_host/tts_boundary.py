@@ -133,9 +133,10 @@ class _PluginSynthesisHandle:
     @staticmethod
     def _raise_failed(error_code: object) -> None:
         code = error_code if isinstance(error_code, str) else "TTS_SYNTHESIS_FAILED"
+        if code == "TTS_DISABLED":
+            raise TTSBoundaryError("TTS_DISABLED", "角色语音已关闭")
         if code in {
             "TTS_PROVIDER_NOT_SELECTED",
-            "TTS_DISABLED",
             "TTS_PROVIDER_UNAVAILABLE",
             "TTS_JOB_NOT_FOUND",
         }:
@@ -286,8 +287,6 @@ class TTSBoundary:
     ) -> bool:
         if not text.strip() or segment_index < 0:
             return False
-        if not self._synthesis_enabled(character_id):
-            return False
         with self._lock:
             if self._closed:
                 return False
@@ -316,26 +315,6 @@ class TTSBoundary:
                     break
                 self._authorizations.pop(removable, None)
         return True
-
-    def _synthesis_enabled(self, character_id: str) -> bool:
-        """Return false only when the routed TTS Service explicitly says so."""
-
-        application = self._plugin_application()
-        if application is None:
-            # Missing runtime state is an operational failure, not proof that
-            # the user disabled TTS. Preserve the later diagnostic in that case.
-            return True
-        try:
-            status = getattr(application, "call_service")(
-                "sakura.tts",
-                "status",
-                character_id,
-            )
-        except Exception:
-            return True
-        if not isinstance(status, Mapping):
-            return True
-        return status.get("enabled") is not False
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -458,21 +437,24 @@ class TTSBoundary:
 
         if recording_id:
             descriptor = self._playback_descriptor(recording_id)
-            log_event(
-                "TTS", "TTS recording replay prepared",
-                {
-                    "operation_id": operation_id,
-                    "segment_index": segment_index,
-                    "recording_id": recording_id,
-                    "bytes": descriptor["byteLength"],
-                },
-                event="tts.synthesis.ready",
-            )
-            self._publish(
-                request,
-                "tts.synthesis.ready",
-                {**descriptor, "operationId": operation_id, "segmentIndex": segment_index},
-            )
+            with self._lock:
+                if self._authorizations.get((operation_id, segment_index)) is not authorization:
+                    raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "角色语音任务已失效")
+                log_event(
+                    "TTS", "TTS recording replay prepared",
+                    {
+                        "operation_id": operation_id,
+                        "segment_index": segment_index,
+                        "recording_id": recording_id,
+                        "bytes": descriptor["byteLength"],
+                    },
+                    event="tts.synthesis.ready",
+                )
+                self._publish(
+                    request,
+                    "tts.synthesis.ready",
+                    {**descriptor, "operationId": operation_id, "segmentIndex": segment_index},
+                )
             return descriptor
 
         started_at = monotonic()
@@ -528,7 +510,11 @@ class TTSBoundary:
             return descriptor
         except TTSBoundaryError as error:
             self._mark_failed(authorization)
-            if error.code == "TTS_SYNTHESIS_CANCELLED":
+            if error.code == "TTS_DISABLED":
+                self._log_synthesis_terminal(
+                    authorization, error.code, started_at, "skipped",
+                )
+            elif error.code == "TTS_SYNTHESIS_CANCELLED":
                 self._log_synthesis_terminal(
                     authorization,
                     error.code,
@@ -870,7 +856,6 @@ class TTSBoundary:
             or not isinstance(enabled, bool)
             or (provider_id is not None and (not isinstance(provider_id, str) or not provider_id))
             or not isinstance(raw_sections, list)
-            or len(raw_sections) > 32
             or (character_id is None and (enabled or provider_id is not None))
         ):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")

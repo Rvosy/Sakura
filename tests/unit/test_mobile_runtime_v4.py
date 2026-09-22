@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import shutil
 import socket
 import threading
 import time
@@ -12,12 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.config.character_loader import CharacterRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
-from app.llm.chat_reply import ChatReply, ChatSegment
-from app.plugins.inventory import PluginInventory
+from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
+from app.plugins.inventory import PluginInventory, PluginDesiredStateStore
+from app.plugins.installer import LocalPluginInstaller
+from tools.release.package_optional_plugin import build
 from app.storage.runtime_roots import RuntimeRoots
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 from app.storage.paths import StoragePaths
@@ -28,11 +29,8 @@ def _roots(tmp_path: Path, port: int) -> RuntimeRoots:
     distribution = tmp_path / "distribution"
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
-    shutil.copytree(
-        repository / "plugins" / "builtin" / "sakura_mobile",
-        bundled / "sakura_mobile",
-    )
     user = tmp_path / "user"
+    roots = RuntimeRoots(distribution, user)
     character = user / "characters" / "sakura"
     character.mkdir(parents=True)
     (character / "card.md").write_text("system prompt", encoding="utf-8")
@@ -86,6 +84,18 @@ def _roots(tmp_path: Path, port: int) -> RuntimeRoots:
             }]},
         ),
     ])
+    package = tmp_path / "mobile.zip"
+    build(repository / "plugins" / "optional" / "sakura_mobile", package)
+    (user / "config").mkdir(parents=True, exist_ok=True)
+    (user / "config/plugin-migrations.json").write_bytes((repository / "desktop/src-tauri/src/new_user_plugin_migrations.json").read_bytes())
+    config_before = config.read_bytes()
+    PluginDesiredStateStore(user).write({"sakura_mobile": True})
+    LocalPluginInstaller(roots).install(package, "zip")
+    assert config.read_bytes() == config_before
+    record = next(item for item in PluginInventory(roots).scan().records if item.plugin_id == "sakura_mobile")
+    assert record.source == "user" and record.can_uninstall
+    assert not record.desired_enabled
+    PluginDesiredStateStore(user).write({"sakura_mobile": True})
     return RuntimeRoots(distribution, user)
 
 
@@ -113,6 +123,22 @@ def _json(
     return value
 
 
+def _wait_for_mobile_server(application: PluginRuntimeApplication) -> None:
+    # app.started is an asynchronous notification. The plugin's own status is
+    # published after bind/listen, before an HTTP client can consume the server.
+    deadline = time.monotonic() + 2
+    while True:
+        plugin = next(item for item in application.settings_snapshot()["plugins"]
+                      if item["pluginId"] == "sakura_mobile")
+        assert plugin["state"] == "active", plugin
+        status = next(item["values"] for item in plugin["sections"]
+                      if item["sectionId"] == "sakura_mobile")
+        assert not status["error"], status
+        if status["running"] == "运行中":
+            return
+        assert time.monotonic() < deadline, status
+
+
 def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Path) -> None:
     port = _free_port()
     roots = _roots(tmp_path, port)
@@ -120,14 +146,24 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
     calls: list[tuple[str, str]] = []
 
     class ChatBoundary:
-        def run_host_message(
+        def __init__(self):
+            self.accepted = {}
+
+        def reserve_host_message(
             self,
             text: str,
             image: str,
             *,
             operation_id: str,
-        ) -> dict[str, object]:
+            expected_character_id: str,
+        ) -> str:
+            assert expected_character_id == "sakura"
             assert operation_id.startswith("mobile-")
+            self.accepted[operation_id] = (text, image)
+            return operation_id
+
+        def run_reserved_host_message(self, operation_id: str) -> dict[str, object]:
+            text, image = self.accepted.pop(operation_id)
             calls.append((text, image))
             return {
                 "reply": "手机回答",
@@ -152,13 +188,16 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
         call_timeout=1.0,
     )
     application.bind_chat_boundary(ChatBoundary())
-    application.bind_runtime(ToolRegistry(), runtime, session=session)
+    session.assistant = object()
+    session.visual_binding = None
+    application.bind_session(session)
     try:
         application.start()
         record = application.public_snapshot()["plugins"][0]
         assert record["pluginId"] == "sakura_mobile"
         assert record["state"] == "active"
         assert record["pid"] not in {None, 0}
+        _wait_for_mobile_server(application)
 
         base = f"http://127.0.0.1:{port}"
         assert _json(f"{base}/api/status?token=mobile-token") == {"ok": True}
@@ -202,8 +241,11 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
     shell_events: list[dict[str, object]] = []
 
     class Pipeline:
-        def run_user_message(self, messages, **_kwargs):  # type: ignore[no-untyped-def]
-            pipeline_messages.extend(messages)
+        def commit_result(self, commit):
+            commit()
+
+        def run_turn(self, descriptor, **_kwargs):  # type: ignore[no-untyped-def]
+            pipeline_messages.append(descriptor)
             time.sleep(3.2)
             return SimpleNamespace(
                 reply=ChatReply([ChatSegment("mobile raw", translation="手机回答")]),
@@ -217,7 +259,9 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
     session = SimpleNamespace(
         character=profile,
         runtime=runtime,
-        pipeline=Pipeline(),
+        assistant=Pipeline(),
+        visual_binding=None,
+        descriptor=lambda: {},
         tool_actions=None,
         memory_boundary=None,
     )
@@ -241,10 +285,11 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
         call_timeout=1.0,
     )
     application.bind_chat_boundary(boundary)
-    application.bind_runtime(ToolRegistry(), runtime, session=session)
+    application.bind_session(session)
     image = "data:image/jpeg;base64," + base64.b64encode(b"x" * 1_100_000).decode("ascii")
     try:
         application.start()
+        _wait_for_mobile_server(application)
         result = _json(
             f"http://127.0.0.1:{port}/api/chat",
             payload={
@@ -258,19 +303,8 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
         assert result["reply"] == "手机回答"
         assert shell_events == []
         assert application._host_services.artifact_count == 0
-        assert any(
-            isinstance(message, dict)
-            and isinstance(message.get("content"), list)
-            and any(
-                isinstance(part, dict)
-                and part.get("type") == "image_url"
-                and str(part.get("image_url", {}).get("url", "")).startswith(
-                    "data:image/jpeg;base64,"
-                )
-                for part in message["content"]
-            )
-            for message in pipeline_messages
-        )
+        assert pipeline_messages[0]["attachment"]["observations"][0]["data_url"] == image
+
     finally:
         application.close()
         boundary.close()
@@ -282,7 +316,10 @@ def test_mobile_host_image_busy_does_not_poison_the_next_attachment(tmp_path: Pa
     calls = 0
 
     class Pipeline:
-        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+        def commit_result(self, commit):
+            commit()
+
+        def run_turn(self, _descriptor, **_kwargs):  # type: ignore[no-untyped-def]
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -293,7 +330,9 @@ def test_mobile_host_image_busy_does_not_poison_the_next_attachment(tmp_path: Pa
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
-        pipeline=Pipeline(),
+        assistant=Pipeline(),
+        visual_binding=None,
+        descriptor=lambda: {},
         tool_actions=None,
         memory_boundary=None,
     )
@@ -337,3 +376,32 @@ def test_mobile_host_image_busy_does_not_poison_the_next_attachment(tmp_path: Pa
     )
     assert result["reply_raw"] == "ok"
     boundary.close()
+
+
+def test_mobile_worker_preserves_failure_cause_after_completion(tmp_path: Path, monkeypatch) -> None:
+    from app.core_host.mobile_host import MobileHostError, MobileHostService
+
+    failure = OSError("fixture unreadable image")
+    diagnostics = []
+
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr("app.core_host.mobile_host.log_event", lambda *args, **kwargs: diagnostics.append(args[2]))
+    host = MobileHostService(
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        chat_boundary_provider=lambda: SimpleNamespace(
+            reserve_host_message=lambda *_args, **kwargs: kwargs["operation_id"],
+            run_reserved_host_message=fail,
+        ),
+        artifact_resolver=lambda _id: None,
+        artifact_releaser=lambda _id: True,
+    )
+    job_id = host.begin("fixture", "sakura", "hello")["jobId"]
+    assert host._jobs[job_id].done.wait(3)
+    with pytest.raises(MobileHostError) as caught:
+        host.poll("fixture", job_id)
+    assert caught.value.__cause__ is failure
+    assert diagnostics[0]["stage"] == "mobile_chat"
+    assert "fixture unreadable image" in diagnostics[0]["diagnostic"]

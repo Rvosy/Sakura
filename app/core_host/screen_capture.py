@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from app.agent.screen_observation import ScreenObservation
+from app.plugin_sdk.sakura_assistant_contract import ScreenObservation
 
 
 SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"
@@ -52,9 +52,9 @@ def consume_screen_resource(
     generation_id: str,
     temp_root: Path | None = None,
 ) -> ScreenObservation:
-    """Read and delete one generation-private JPEG after repeating every trust check."""
+    """Consume a native capture through its generation-private token."""
 
-    if not isinstance(descriptor, Mapping) or set(descriptor) != _RESOURCE_FIELDS:
+    if not isinstance(descriptor, Mapping) or not _RESOURCE_FIELDS.issubset(descriptor):
         raise ScreenResourceRejected("SCREEN_RESOURCE_DESCRIPTOR_INVALID")
     if descriptor.get("generationId") != generation_id:
         raise ScreenResourceRejected("SCREEN_RESOURCE_GENERATION_MISMATCH")
@@ -68,17 +68,13 @@ def consume_screen_resource(
     byte_length = _positive_integer(
         descriptor.get("byteLength"), "SCREEN_RESOURCE_LENGTH_INVALID"
     )
-    if byte_length > SCREEN_RESOURCE_MAX_BYTES or width * height > SCREEN_RESOURCE_MAX_PIXELS:
-        raise ScreenResourceRejected("SCREEN_RESOURCE_LIMIT_EXCEEDED")
     captured_at = descriptor.get("capturedAt")
     screen_name = descriptor.get("screenName")
     if (
         not isinstance(captured_at, str)
         or not captured_at
-        or len(captured_at) > 64
         or not isinstance(screen_name, str)
         or not screen_name
-        or len(screen_name) > 128
     ):
         raise ScreenResourceRejected("SCREEN_RESOURCE_METADATA_INVALID")
 

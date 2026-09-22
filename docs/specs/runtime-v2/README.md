@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-11
+updated: 2026-09-22
 ---
 
 # Runtime v2 Specs
@@ -19,9 +19,14 @@ updated: 2026-09-11
 - [产品功能等价规范与发布台账](product-capability-parity.md)
 - [设置功能增量迁移规范](settings-incremental-migration.md)
 - [Sakura Plugin Runtime v4](sakura-plugin-runtime-v4.md)
+- [Assistant 插件与 Core 对话边界](assistant-plugin-boundary.md)
+- [模型 Service 与调用方边界](model-services.md)
+- [MCP 系统组件](mcp-system-component.md)
 - [表现插件：资源、编辑、控制与渲染](visual-plugin-boundary.md)
 - [联网插件](web-plugin.md)
 - [Spine 表现插件](spine-visual-plugin.md)
+
+- [便签记忆](fact-memory.md)
 - [ASR Hub 与点击式语音输入](asr-voice-input.md)
 - [Sakura Plugin API v3（已取代）](sakura-plugin-kernel-v3.md)
 - [Runtime v2 热应用规范](runtime-hot-application.md)
@@ -61,7 +66,7 @@ updated: 2026-09-11
 - [定时截图与主动请求](WP-4-07-proactive-reminders-todos.md)
 - [类型化交互时间线与自适应上下文](WP-4-07R-typed-timeline-adaptive-context.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
-- [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
+- [设置窗口宿主](WP-3U-01-same-app-settings-window.md)
 
 工作包进度见 [Runtime v2 路线图](../../plans/runtime-v2/work-packages.md)。进度与人工验收记录不授予或限制代码修改权限。
 

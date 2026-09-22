@@ -2,13 +2,13 @@ import { hasIcon } from "../core/icons.js";
 
 const NORMAL_REASONS = new Set(["ACTIVE", "READY"]);
 export const pluginKinds = Object.freeze({ extension: "功能扩展", provider: "功能引擎", infrastructure: "系统组件" });
-export const pluginCategories = Object.freeze({ model: "模型", voice: "语音", memory: "记忆", tools: "工具", connectivity: "连接", other: "其他" });
+export const pluginCategories = Object.freeze({ model: "模型", voice: "语音", memory: "记忆", visual: "表现", tools: "工具", connectivity: "连接", other: "其他" });
 
 export function pluginIconName(plugin) {
   if (hasIcon(plugin?.presentation?.icon)) return plugin.presentation.icon;
   const { kind, category } = pluginMetadata(plugin);
   if (kind === "infrastructure") return "layers";
-  return { model: "cpu", voice: "audio-lines", memory: "brain", tools: "wrench", connectivity: "globe", other: "puzzle" }[category];
+  return { model: "cpu", voice: "audio-lines", memory: "brain", visual: "person-standing", tools: "wrench", connectivity: "globe", other: "puzzle" }[category];
 }
 
 export function pluginMetadata(plugin) {
@@ -73,6 +73,15 @@ function result(label, message = "", reasonCode = "", unavailable = []) {
 }
 
 export function presentPluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
+  if (reasonCode === "MODEL_API_UPDATE_REQUIRED") {
+    return result("需要更新", "模型接口已更新，请安装这个插件的兼容版本。", reasonCode);
+  }
+  if (reasonCode === "PLUGIN_MIGRATION_SOURCE_MISSING") {
+    return result("需要安装", "缺少这个插件的恢复文件，请从插件市场安装。", reasonCode);
+  }
+  if (reasonCode === "PLUGIN_MIGRATION_FAILED") {
+    return result("恢复失败", "请查看运行日志，或从插件市场安装这个插件。", reasonCode);
+  }
   if (NORMAL_REASONS.has(reasonCode) || state === "active") {
     return result("运行正常");
   }
@@ -81,6 +90,9 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
   }
   if (reasonCode === "PLUGIN_APPLICATION_NOT_READY") {
     return result("正在启动", "插件正在启动，请稍等。");
+  }
+  if (reasonCode === "PLUGIN_APPLICATION_FAILED") {
+    return result("启动失败", "请查看运行日志中的启动错误，处理后重新启动 Sakura。", reasonCode);
   }
   if (reasonCode === "API_VERSION_UNSUPPORTED") {
     return result(

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import threading
-from contextlib import contextmanager
-from dataclasses import asdict
+from contextlib import contextmanager, nullcontext
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
 from app.core_host.plugin_artifacts import PluginArtifactStore
@@ -15,7 +15,10 @@ from app.core_host.visual_host import VisualHost, VISUAL_INACTIVE_REASONS
 from app.core.runtime_log import log_event
 from app.core.diagnostics import exception_diagnostics
 from app.core_host.mobile_host import MobileHostService
-from app.llm.prompts.types import ContextRequest
+from app.core_host.chat_host import ChatHost, HOST_CHAT_SERVICE
+from app.core_host.visual_control_host import HostVisualService, HOST_VISUAL_SERVICE
+from app.core_host.screen_host import ScreenHost, HOST_SCREEN_SERVICE, migrate_legacy_screen_settings
+from app.plugin_sdk.sakura_context import ContextRequest
 from app.plugins.host_services import (
     HOST_ARTIFACTS_SERVICE,
     HOST_CHARACTER_SERVICE,
@@ -33,7 +36,10 @@ from app.plugins.host_services import (
     HOST_TOOLS_SERVICE,
 )
 from app.config.settings_service import AppSettingsService
-from app.plugins.inventory import RuntimePluginSpec
+from app.config.model_references import (
+    EMPTY_REFERENCE, ModelReferenceRepository, migrate_legacy_model_configuration, model_reference,
+)
+from app.plugins.inventory import PluginInventory, PluginInventorySnapshot, RuntimePluginSpec
 from app.plugins.runtime_v4 import PluginRuntimeError, PluginRuntimeManager
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
@@ -42,18 +48,18 @@ from app.storage.timeline import TimelineStore
 
 _HOST_EXPORTS = {
     HOST_LOGGING_SERVICE: ("emit",),
-    HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release"),
+    HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release", "resolve", "release_received", "deliver", "release_delivered"),
     HOST_DIAGNOSTICS_SERVICE: ("emit",),
     HOST_CHARACTER_SERVICE: ("current", "get", "update", "resolve_resource"),
-    HOST_TOOLS_SERVICE: ("register", "unregister"),
-    HOST_CONTEXT_SERVICE: ("register", "unregister"),
-    HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve"),
+    HOST_TOOLS_SERVICE: ("register", "unregister", "catalog", "execute"),
+    HOST_CONTEXT_SERVICE: ("register", "unregister", "describe", "catalog", "collect"),
+    HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve", "active", "register_provider", "unregister_provider"),
     HOST_STORAGE_SERVICE: ("resolve",),
     HOST_SETTINGS_SERVICE: ("register", "unregister"),
     HOST_SETTINGS_SURFACE_V0_SERVICE: ("register", "unregister"),
     HOST_SETTINGS_COLLECTION_V0_SERVICE: ("register", "unregister"),
     HOST_COMPOSER_TOOLS_V0_SERVICE: ("register", "unregister"),
-    HOST_TIMELINE_SERVICE: ("latest_cursor", "read_recent", "read_since"),
+    HOST_TIMELINE_SERVICE: ("latest_cursor", "read_recent", "read_since", "read_turn_page"),
 }
 
 _HOST_EVENT_NAMES = {
@@ -85,6 +91,19 @@ class _HostServiceAdapter:
         self._services.revoke_scope(self._service_key, plugin_id)
 
 
+@dataclass
+class PreparedCharacter:
+    character: object
+    revision: int
+    binding: object | None
+    reason: str
+    presentation: dict
+
+    def close(self):
+        if self.binding is not None:
+            self.binding.close()
+
+
 class PluginRuntimeApplication:
     """Thin Core adapter around the generic v4 manager and existing Host Services."""
 
@@ -93,30 +112,46 @@ class PluginRuntimeApplication:
         roots: RuntimeRoots,
         generation_id: str,
         tool_registry: object,
-        specs: Sequence[RuntimePluginSpec],
+        specs: Sequence[RuntimePluginSpec] | None = None,
         *,
         call_timeout: float | None = None,
+        migration_progress=None,
     ) -> None:
         self._roots = roots
         self._generation_id = generation_id
         self._tool_registry = tool_registry
-        self._runtime: object | None = None
+        self._assistant_inputs = {}
+        self._assistant_input_lock = threading.Lock()
         self._session: object | None = None
         self._chat_boundary: object | None = None
         self._closed = False
         self._loaded = threading.Event()
         self._bound = threading.Event()
+        self._model_configuration_issue = None
+        from app.plugins.bundled_migrations import migrate_bundled_plugins
+
+        # Classify the user before model migration creates config/model_slots.json.
+        migration_failures = migrate_bundled_plugins(roots, progress=migration_progress) if specs is None else {}
+        try:
+            migrate_legacy_model_configuration(roots.user_root)
+        except (OSError, ValueError):
+            self._model_configuration_issue = "CONFIG_DATA_INVALID"
+        self._inventory = PluginInventory(roots, migration_failures=migration_failures)
+        self._inventory_snapshot = self._inventory.scan()
         manager_options = {} if call_timeout is None else {"call_timeout": call_timeout}
         self._manager = PluginRuntimeManager(
             roots,
             generation_id,
-            specs,
+            self._inventory_snapshot.runtime_specs if specs is None else specs,
+            before_start=self._prepare_plugin,
             **manager_options,
         )
-        self.visuals = VisualHost(roots, self._manager)
+        self.visuals = VisualHost(self._manager, inventory=self.inventory)
         self._visual_character = None
         self._visual_binding = None
         self._visual_reason = "VISUAL_NOT_BOUND"
+        self._visual_state_lock = threading.RLock()
+        self._visual_selector = None
         self.audio_input = AudioInputResources(roots.user_root, generation_id, self._manager.service_identity)
         self._manager.install_host_service(
             HOST_AUDIO_INPUT_SERVICE, self.audio_input,
@@ -133,8 +168,9 @@ class PluginRuntimeApplication:
             encode_context_request=_context_request_mapping,
             on_context_change=self._host_context_changed,
             storage_root=roots.user_root,
-            model_catalog=self._model_catalog,
             model_resolver=self._resolve_model,
+            active_model_resolver=self.active_models,
+            commit_plugin_scope=self._manager.commit_plugin_scope,
         )
         for service_key in self._host_services.available_keys:
             self._manager.install_host_service(
@@ -153,6 +189,62 @@ class PluginRuntimeApplication:
             ),
             exports=("characters", "history", "begin", "poll", "cancel", "theme"),
         )
+        commit_scope = lambda owner, commit: self._manager.commit_plugin_scope(*owner, commit)
+        self.screen = ScreenHost(generation_id, commit_scope=commit_scope,
+            session_provider=lambda: self._chat_boundary.current_host_state()["sessionId"] if self._chat_boundary else None,
+            emit_callback=self._emit_desktop_event)
+        self.chat = ChatHost(boundary_provider=lambda: self._chat_boundary,
+            screen_host=self.screen, emit_callback=self._emit_desktop_event, commit_scope=commit_scope)
+        self._manager.install_host_service(HOST_SCREEN_SERVICE, self.screen, exports=("capture", "release", "release_capture"))
+        self._manager.install_host_service(HOST_CHAT_SERVICE, self.chat, exports=("current", "submit", "cancel"))
+        self.visual_controls = HostVisualService(binding_provider=self._current_visual_binding,
+            emit_callback=self._emit_desktop_event, is_idle=lambda: self.chat.current()["idle"],
+            select_callback=self._select_visual_resource, commit_scope=commit_scope)
+        self._manager.install_host_service(HOST_VISUAL_SERVICE, self.visual_controls,
+            exports=("current", "apply", "status", "release", "select"))
+
+    def _current_visual_binding(self):
+        with self._visual_state_lock:
+            return (self._visual_character.id, self._visual_binding) if self._visual_character else None
+
+    def bind_visual_selector(self, callback):
+        self._visual_selector = callback
+
+    def _select_visual_resource(self, target, resource_id):
+        if self._visual_selector is None:
+            raise PluginRuntimeError("VISUAL_SELECTION_UNAVAILABLE")
+        from app.core_host.real_chat import RealChatRejection
+        state = self.chat.current()
+        if not state["idle"] or self._chat_boundary is None:
+            return {"accepted": False, "reasonCode": "VISUAL_BUSY"}
+        try:
+            with self._chat_boundary.idle_runtime_update():
+                return self._visual_selector(target, resource_id, expected_visual_activity=state)
+        except RealChatRejection as error:
+            return {"accepted": False, "reasonCode": error.code}
+
+    def commit_visual_selection(self, target, commit, *, expected_activity=None):
+        """Commit a local preference while the caller and display target are current."""
+        from app.core_host.screen_host import caller_identity
+        owner = caller_identity()
+        value = self._current_visual_binding()
+        if value is None or value[1] is None or {
+            "characterId": value[0], "bindingId": value[1].id,
+            "resourceId": value[1].resource_id,
+        } != target:
+            raise PluginRuntimeError("VISUAL_BINDING_EXPIRED")
+        def publish():
+            value[1]._check_active()
+            return commit()
+        def commit_scope():
+            return self._manager.commit_plugin_scope(*owner, publish)
+        return self.visuals.commit_current(value[1],
+            lambda: self.chat.commit_idle(expected_activity, commit_scope) if expected_activity is not None else commit_scope())
+
+    def _emit_desktop_event(self, name, payload):
+        if self._chat_boundary is None:
+            raise PluginRuntimeError("DESKTOP_UNAVAILABLE")
+        self._chat_boundary.publish_host_event(name, payload)
 
     @property
     def state(self) -> str:
@@ -168,17 +260,55 @@ class PluginRuntimeApplication:
         snapshot = self._manager.snapshot()
         return str(snapshot.get("reasonCode", "READY"))
 
+    def _prepare_plugin(self, spec) -> None:
+        if spec.plugin_id == "sakura.screen_awareness":
+            try:
+                migrate_legacy_screen_settings(self._roots.user_root)
+            except Exception as error:
+                failure = PluginRuntimeError("SCREEN_SETTINGS_MIGRATION_FAILED", plugin_id=spec.plugin_id)
+                failure.recovery_error = getattr(error, "recovery_error", None)
+                raise failure from error
+
     def start(self) -> None:
         if self._closed:
             raise PluginRuntimeError("GENERATION_INVALIDATED")
         try:
             self._manager.start()
-            self._manager.emit_host_event(
+            self._manager.notify_host_event(
                 "sakura.host.app.started",
                 {"generationId": self._generation_id},
             )
+        except BaseException as error:
+            if not self._closed:
+                log_event("Plugin", "插件启动未完成", exception_diagnostics(
+                    error, reason_code="PLUGIN_START_FAILED", stage="plugin.start",
+                ), event="plugin.start.failed", severity="error")
+            raise
         finally:
             self._loaded.set()
+
+    def start_character_presentation(self) -> dict[str, object] | None:
+        """Start only the selected visual provider and its hard dependencies."""
+        from app.config.character_loader import CharacterRegistry
+        from app.config.core_config_reader import CoreConfigReader
+
+        config = CoreConfigReader().read(self._roots.user_root)
+        if config.current_character_id is None:
+            return None
+        registry = CharacterRegistry(self._roots.user_root)
+        character = registry.profiles.get(config.current_character_id)
+        if character is None:
+            return None
+        settings = AppSettingsService(self._roots.user_root)
+        resource = settings.selected_visual_resource(character)
+        service = self.visuals.startup_service(resource.type, character.visual_providers.get(resource.id)) if resource is not None else None
+        self._manager.start(services=(service,) if service is not None else ())
+        self.bind_visual_character(character)
+        return self.visual_presentation()
+
+    def start_assistant(self) -> None:
+        services = {ref["serviceKey"] for ref in self.active_models().values() if ref}
+        self._manager.start(services=(*sorted(services), "sakura.assistant"))
 
     def wait_until_loaded(self, *, timeout: float = 8.0) -> bool:
         return self._loaded.wait(max(0.0, timeout)) and not self._closed
@@ -190,11 +320,36 @@ class PluginRuntimeApplication:
             snapshot["reasonCode"] = "PLUGIN_RUNTIME_STOPPED"
         return snapshot
 
+    def inventory(self) -> PluginInventorySnapshot:
+        return self._inventory_snapshot
+
+    def refresh_inventory(self) -> PluginInventorySnapshot:
+        self._inventory_snapshot = self._inventory.scan()
+        return self._inventory_snapshot
+
+    def marketplace_context(self) -> dict[str, Any]:
+        return {"api": 4, "services": self._manager.available_service_keys()}
+
     def settings_snapshot(self) -> dict[str, Any]:
         return self._host_services.decorate_settings_snapshot(self._manager.snapshot())
 
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         return self._manager.call_service(service_key, method, *args)
+
+    def call_bound_service(self, service_key, identity, method, *args, timeout=None):
+        return self._manager.call_bound_service(service_key, identity, method, *args, timeout=timeout)
+
+    def commit_bound_service(self, service_key, identity, commit):
+        return self._manager.commit_bound_service(service_key, identity, commit)
+
+    def abort_bound_service(self, service_key, identity, *, reason):
+        stopped = self._manager.abort_bound_service(service_key, identity, reason=reason)
+        with self._assistant_input_lock:
+            artifact_ids = [artifact_id for artifact_id, (owner, _) in self._assistant_inputs.items()
+                            if owner == identity]
+        for artifact_id in artifact_ids:
+            self.release_assistant_input(artifact_id)
+        return stopped
 
     def service_identity(self, service_key: str) -> dict[str, str]:
         return self._manager.service_identity(service_key)
@@ -210,52 +365,116 @@ class PluginRuntimeApplication:
         )
         if event_name is None:
             raise PluginRuntimeError("EVENT_INVALID")
-        self._manager.emit_host_event(event_name, dict(payload))
+        self._manager.notify_host_event(event_name, dict(payload))
 
-    def bind_runtime(
-        self,
-        tool_registry: object,
-        runtime: object,
-        *,
-        session: object | None = None,
-    ) -> None:
+    def bind_session(self, session, *, prepared_character=None):
+        character_id = getattr(getattr(session, "character", None), "id", None)
+        if not character_id or getattr(session, "assistant", None) is None:
+            raise PluginRuntimeError("PLUGIN_SESSION_INVALID")
         if self._closed:
+            raise PluginRuntimeError("GENERATION_INVALIDATED")
+        if self._session is session:
             return
-        self._tool_registry = tool_registry
-        self._runtime = runtime
+        candidate = prepared_character or self.prepare_character(session.character)
+        try:
+            identity = getattr(session.assistant, "identity", None)
+            if identity is not None and self.service_identity("sakura.assistant") != identity:
+                raise PluginRuntimeError("SERVICE_BINDING_EXPIRED")
+            for slot, model_identity in getattr(session, "model_bindings", {}).items():
+                if self.service_identity(session.model_slots[slot]["serviceKey"]) != model_identity:
+                    raise PluginRuntimeError("SERVICE_BINDING_EXPIRED")
+            self.publish_character(candidate)
+        except BaseException:
+            candidate.close()
+            raise
         self._session = session
-        getattr(tool_registry, "set_event_emitter")(
-            lambda event_name, payload: self.emit_event(event_name, payload or {})
-        )
-        getattr(runtime, "set_context_providers")(self._host_services.context_providers())
-        character = getattr(session, "character", None)
-        if character is not None:
-            self.bind_visual_character(character)
+        self.chat.invalidate_session()
+        self.screen.invalidate_session()
+        self._tool_registry.set_event_emitter(lambda name, payload: self.emit_event(name, payload or {}))
+        session.visual_binding = candidate.binding
         self._bound.set()
 
+    def create_assistant_input(self, identity, payload):
+        import json
+        if self.service_identity("sakura.assistant") != identity:
+            raise PluginRuntimeError("SERVICE_BINDING_EXPIRED")
+        request = dict(payload)
+        grant = self._host_services.grant_history(identity["providerId"], request["session"]["character"]["id"], request.get("historyCursor"))
+        request["historyToken"] = grant["historyToken"]
+        request["historyCursor"] = grant["snapshotCursor"]
+        try:
+            descriptor = self._host_services.create_json_artifact(identity["providerId"], request)
+        except BaseException:
+            self._host_services.revoke_history(grant["historyToken"])
+            raise
+        with self._assistant_input_lock:
+            self._assistant_inputs[descriptor["artifactId"]] = (dict(identity), grant["historyToken"])
+        return descriptor
+
+    def read_assistant_result(self, descriptor):
+        import json
+        artifact = self._host_services.resolve_committed_artifact(descriptor["artifactId"])
+        payload = artifact.path.read_bytes()
+        if len(payload) != descriptor["byteLength"]:
+            raise PluginRuntimeError("ASSISTANT_RESULT_INVALID")
+        return json.loads(payload)
+
+    def release_assistant_input(self, artifact_id):
+        with self._assistant_input_lock:
+            identity = self._assistant_inputs.pop(artifact_id, None)
+        if identity is not None:
+            self._host_services.revoke_history(identity[1])
+            self._host_services.release_owned_artifact(identity[0]["providerId"], artifact_id)
+
     def bind_visual_character(self, character) -> None:
+        candidate = self.prepare_character(character)
+        try:
+            self.publish_character(candidate)
+        except BaseException:
+            candidate.close()
+            raise
+
+    def prepare_character(self, character, *, strict=False):
+        from app.core_host.character_presentation import project_character_presentation
         from app.core_host.visual_host import VisualHostError
         binding = None
         reason = "VISUAL_RESOURCE_MISSING"
         resource = AppSettingsService(self._roots.user_root).selected_visual_resource(character)
-        if resource is not None:
-            try:
-                binding = self.visuals.bind(character.id, character.package_dir, resource, provider_id=character.visual_providers.get(resource.id))
+        try:
+            revision, binding = self.visuals.prepare(character.id, character.package_dir, resource,
+                provider_id=character.visual_providers.get(resource.id) if resource is not None else None)
+            if binding is not None:
                 reason = "READY"
-            except VisualHostError as error:
-                reason = error.code
-                if reason not in VISUAL_INACTIVE_REASONS:
-                    log_event("Visual", "角色表现加载失败", exception_diagnostics(
-                        error, reason_code=reason, stage="visual.bind",
-                    ), event="visual.binding.failed", severity="warning")
-        if binding is None:
-            self.visuals.clear()
-        self._visual_character = character
-        self._visual_binding = binding
-        self._visual_reason = reason
-        update = getattr(self._runtime, "set_visual_binding", None)
-        if callable(update):
-            update(self._visual_binding)
+        except VisualHostError as error:
+            reason = error.code
+            if reason not in VISUAL_INACTIVE_REASONS:
+                log_event("Visual", "角色表现加载失败", exception_diagnostics(
+                    error, reason_code=reason, stage="visual.bind",
+                ), event="visual.binding.failed", severity="warning")
+            if strict and (reason not in VISUAL_INACTIVE_REASONS or reason == "VISUAL_BINDING_EXPIRED"):
+                raise
+            revision, binding = self.visuals.prepare(character.id, character.package_dir, None)
+        try:
+            presentation = project_character_presentation(character,
+                binding.presentation() if binding is not None else None, reason_code=reason)
+            return PreparedCharacter(character, revision, binding, reason, presentation)
+        except BaseException:
+            if binding is not None:
+                binding.close()
+            raise
+
+    def publish_character(self, candidate):
+        if self._closed:
+            raise PluginRuntimeError("GENERATION_INVALIDATED")
+        self.visuals.publish(candidate.revision, candidate.binding)
+        with self._visual_state_lock:
+            self._visual_character = candidate.character
+            self._visual_binding = candidate.binding
+            self._visual_reason = candidate.reason
+        self.visual_controls.invalidate_target()
+        self._character_store.set_current(candidate.character.id)
+        if self._session is not None:
+            self._session.visual_binding = self._visual_binding
 
     def visual_presentation(self):
         from app.core_host.character_presentation import project_character_presentation
@@ -276,7 +495,7 @@ class PluginRuntimeApplication:
         previous = getattr(self, "_preview_visuals", None)
         if previous is not None:
             previous.close()
-        host = VisualHost(self._roots, self._manager)
+        host = VisualHost(self._manager, inventory=self.inventory)
         self._preview_visuals = host
         visual, reason = None, "VISUAL_RESOURCE_MISSING"
         resource = AppSettingsService(self._roots.user_root).selected_visual_resource(character)
@@ -293,7 +512,7 @@ class PluginRuntimeApplication:
         return project_character_presentation(character, visual, reason_code=reason)
 
     def validate_visual_choice(self, character, resource):
-        host = VisualHost(self._roots, self._manager)
+        host = VisualHost(self._manager, inventory=self.inventory)
         try:
             host.bind(character.id, character.package_dir, resource, provider_id=character.visual_providers.get(resource.id))
         finally:
@@ -335,30 +554,28 @@ class PluginRuntimeApplication:
     def unbind_session(self) -> None:
         character = self._visual_character
         self.visuals.clear()
-        self._visual_binding = None
-        self._visual_character = None
-        registry = self._tool_registry
-        runtime = self._runtime
-        update_visual = getattr(runtime, "set_visual_binding", None)
-        if callable(update_visual):
-            update_visual(None)
-        self._runtime = None
-        self._session = None
-        self._bound.clear()
-        try:
-            getattr(registry, "set_event_emitter")(None)
-        except (AttributeError, TypeError):
-            pass
-        if runtime is not None:
-            try:
-                getattr(runtime, "set_context_providers")([])
-            except (AttributeError, TypeError):
-                pass
+        with self._visual_state_lock:
+            self._visual_binding = None
+            self._visual_character = None
+        self.visual_controls.invalidate_target()
+        self.retire_session()
 
         # A missing model configuration removes chat, not the character window.
         # Revoke in-flight controls while issuing an independent display binding.
         if character is not None and not self._closed:
             self.bind_visual_character(character)
+
+    def retire_session(self) -> None:
+        """Remove chat after an independently prepared display was published."""
+        registry = self._tool_registry
+        if self._session is not None:
+            self._session.visual_binding = None
+        self._session = None
+        self.chat.invalidate_session()
+        self.screen.invalidate_session()
+        self._bound.clear()
+        if hasattr(registry, "set_event_emitter"):
+            registry.set_event_emitter(None)
 
     def wait_until_bound(self, *, timeout: float = 8.0) -> bool:
         return self._bound.wait(max(0.0, timeout)) and not self._closed
@@ -400,11 +617,19 @@ class PluginRuntimeApplication:
         records = self._manager.snapshot()["plugins"]
         ids = [item["pluginId"] for item in records if item["state"] == "active"
                and ({"sakura.host.character", "sakura.host.timeline"} & set(item["requires"]))
-               and not any(key == "sakura.tts" or key.startswith(("sakura.tts.provider.", "sakura.visual.")) for key in item["provides"])]
+               and not any(key == "sakura.tts" or key == "sakura.assistant" or key.startswith(("sakura.tts.provider.", "sakura.visual.")) for key in item["provides"])]
         return self._manager.pause_plugins(ids)
 
-    def set_current_character(self, character_id: str) -> None:
-        self._character_store.set_current(character_id)
+    @contextmanager
+    def plugin_update(self, plugin_id: str):
+        guard = self._chat_boundary.idle_runtime_update() if self._chat_boundary is not None else nullcontext()
+        with guard, self._manager.plugin_update(plugin_id) as dependents:
+            yield dependents
+
+    def restore_update_dependents(self, plugin_ids: list[str]) -> None:
+        self._manager.restore_update_dependents(plugin_ids)
+        for plugin_id in plugin_ids:
+            self._refresh_visual_provider(plugin_id)
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         result = self._manager.set_enabled(plugin_id, enabled)
@@ -412,16 +637,19 @@ class PluginRuntimeApplication:
         return result
 
     def install_plugin(self, spec: RuntimePluginSpec) -> dict[str, Any]:
+        self.refresh_inventory()
         result = self._manager.install_plugin(spec)
         self._refresh_visual_provider(spec.plugin_id)
         return result
 
     def uninstall_plugin(self, plugin_id: str) -> dict[str, Any]:
+        self.refresh_inventory()
         result = self._manager.uninstall_plugin(plugin_id)
         self._refresh_visual_provider(plugin_id)
         return result
 
     def reload_plugin(self, plugin_id: str) -> dict[str, Any]:
+        self.refresh_inventory()
         result = self._manager.reload_plugin(plugin_id)
         self._refresh_visual_provider(plugin_id)
         return result
@@ -448,13 +676,7 @@ class PluginRuntimeApplication:
         handled, result = self._host_services.settings_save(plugin_id, section_id, values)
         if not handled:
             raise PluginRuntimeError("SETTINGS_ID_INVALID", plugin_id=plugin_id)
-        if isinstance(result, Mapping) and result.get("applicationState") == "restart_required":
-            self.reload_plugin(plugin_id)
-            applied = dict(result)
-            applied["applicationState"] = "applied"
-            applied["reasonCode"] = "READY"
-            return applied
-        return result
+        return self._apply_settings_result(plugin_id, result)
 
     def settings_action(
         self,
@@ -471,7 +693,25 @@ class PluginRuntimeApplication:
         )
         if not handled:
             raise PluginRuntimeError("SETTINGS_ACTION_INVALID", plugin_id=plugin_id)
-        return result
+        return self._apply_settings_result(plugin_id, result)
+
+    def _apply_settings_result(self, plugin_id, result):
+        if not isinstance(result, Mapping) or result.get("applicationState") != "restart_required":
+            return result
+        from .real_chat import RealChatRejection
+
+        guard = self._chat_boundary.idle_runtime_update() if self._chat_boundary is not None else nullcontext()
+        try:
+            with guard:
+                snapshot = self.reload_plugin(plugin_id)
+        except RealChatRejection as error:
+            if error.code != "RUNTIME_UPDATE_BUSY":
+                raise
+            raise PluginRuntimeError("PLUGIN_RELOAD_BUSY", "请结束当前对话后应用设置。", plugin_id=plugin_id) from error
+        record = next((item for item in snapshot["plugins"] if item["pluginId"] == plugin_id), None)
+        active = record is not None and record["state"] == "active"
+        return {**result, "applicationState": "applied" if active else "error",
+                "reasonCode": "READY" if active else (record["reasonCode"] if record else "PLUGIN_NOT_FOUND")}
 
     def settings_collection(
         self,
@@ -517,73 +757,54 @@ class PluginRuntimeApplication:
         if self._closed:
             return
         self._closed = True
+        self.chat.close()
+        self.screen.close()
+        self.visual_controls.close()
         self.visuals.close()
         preview = getattr(self, "_preview_visuals", None)
         if preview is not None:
             preview.close()
         self.unbind_session()
         self._manager.close()
+        with self._assistant_input_lock:
+            artifact_ids = list(self._assistant_inputs)
+        for artifact_id in artifact_ids:
+            self.release_assistant_input(artifact_id)
         self.audio_input.close()
         self._host_services.clear()
         self._loaded.set()
 
     def _current_character_id(self) -> str | None:
-        runtime_character = getattr(self._runtime, "character_id", None)
-        return runtime_character if isinstance(runtime_character, str) and runtime_character else None
+        character_id = getattr(getattr(self._session, "character", None), "id", None)
+        return character_id if isinstance(character_id, str) and character_id else None
 
-    def _host_context_changed(self, providers: list[object]) -> None:
-        runtime = self._runtime
-        if runtime is None:
-            return
-        try:
-            getattr(runtime, "set_context_providers")(providers)
-        except (AttributeError, TypeError):
-            pass
+    def _host_context_changed(self, providers):
+        # Each Assistant freezes the public catalog when accepting a turn.
+        return None
 
     def _model_catalog(self) -> list[dict[str, object]]:
-        profiles = AppSettingsService(self._roots.user_root).load_api_profiles()
-        return [
-            {
-                "id": profile.id,
-                "alias": profile.alias,
-                "models": list(profile.models),
-            }
-            for profile in profiles
-        ]
+        return self._host_services.model_catalog()
+
+    def model_catalog(self):
+        return self._model_catalog()
+
+    def active_models(self):
+        try:
+            return ModelReferenceRepository(self._roots.user_root).active()
+        except (OSError, ValueError):
+            return {"chat": None, "vision_chat": None}
+
+    def model_configuration_issue(self):
+        repository = ModelReferenceRepository(self._roots.user_root)
+        try:
+            repository.load()
+        except (OSError, ValueError):
+            return "CONFIG_DATA_INVALID"
+        return self._model_configuration_issue if not repository.path.exists() else None
 
     def _resolve_model(self, selection: Mapping[str, Any]) -> dict[str, object]:
-        settings = AppSettingsService(self._roots.user_root)
-        profile_id = selection.get("profileId")
-        model = selection.get("model")
-        if not isinstance(profile_id, str) or not isinstance(model, str):
-            raise ValueError("MODEL_SLOT_SELECTION_INVALID")
-        if bool(profile_id) != bool(model):
-            raise ValueError("MODEL_SLOT_SELECTION_INVALID")
-        if not profile_id:
-            inherited = settings.load_model_selection().chat
-            profile_id = inherited.profile_id.strip()
-            model = inherited.model.strip()
-        if not profile_id:
-            return {
-                "profileId": "",
-                "model": "",
-                "baseUrl": "",
-                "apiKey": "",
-                "timeoutSeconds": settings.load_api_settings().timeout_seconds,
-            }
-        profile = next(
-            (item for item in settings.load_api_profiles() if item.id == profile_id),
-            None,
-        )
-        if profile is None or model not in profile.models:
-            raise ValueError("MODEL_REFERENCE_INVALID")
-        return {
-            "profileId": profile.id,
-            "model": model,
-            "baseUrl": profile.base_url,
-            "apiKey": profile.api_key,
-            "timeoutSeconds": settings.load_api_settings().timeout_seconds,
-        }
+        reference = model_reference(selection)
+        return reference if reference["serviceKey"] else dict(self.active_models()["chat"] or EMPTY_REFERENCE)
 
 
 def _context_request_mapping(request: ContextRequest) -> dict[str, Any]:

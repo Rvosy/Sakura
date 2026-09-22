@@ -29,8 +29,8 @@ def test_stopped_root_does_not_consume_entire_grace_period() -> None:
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal escalation")
 @pytest.mark.parametrize("module_name", [
     "app.plugin_sdk.sakura_process",
-    "plugins.builtin.sakura_gpt_sovits._support",
-    "plugins.builtin.sakura_genie._support",
+    "plugins.optional.sakura_gpt_sovits._support",
+    "plugins.optional.sakura_genie._support",
 ])
 def test_owned_child_is_reclaimed_when_root_exits_before_it(module_name: str) -> None:
     child_code = (

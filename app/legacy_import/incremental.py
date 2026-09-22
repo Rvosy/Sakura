@@ -691,13 +691,10 @@ def _append_memory_quarantine(path: Path, value: dict[str, Any]) -> None:
 
 
 def _qdrant_client(path: Path):
-    from plugins.builtin.sakura_mem0.memory import (
-        _install_disabled_qdrant_grpc_module,
-        _install_synchronous_qdrant_client_facade,
-    )
-
-    _install_disabled_qdrant_grpc_module()
-    _install_synchronous_qdrant_client_facade()
+    from app.legacy_import.plugin_support import migration_module
+    memory = migration_module("sakura_mem0.memory")
+    memory._install_disabled_qdrant_grpc_module()
+    memory._install_synchronous_qdrant_client_facade()
     from qdrant_client import QdrantClient
 
     return QdrantClient(path=path.as_posix())
@@ -1001,9 +998,9 @@ def _sqlite_snapshot(source: Path, destination: Path) -> bool:
     with closing(sqlite3.connect(sqlite_readonly_uri(source), uri=True)) as original:
         with closing(sqlite3.connect(destination)) as copied:
             original.backup(copied)
-    from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
+    from app.legacy_import.plugin_support import migration_module
 
-    normalize_existing_history_database(destination)
+    migration_module("sakura_mem0.memory").normalize_existing_history_database(destination)
     return True
 
 
@@ -1171,10 +1168,10 @@ def _merge_history_database(
         if not prepared:
             return
         target_path = target_memory / "mem0_history.db"
-        from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
+        from app.legacy_import.plugin_support import migration_module
 
         try:
-            normalize_existing_history_database(target_path)
+            migration_module("sakura_mem0.memory").normalize_existing_history_database(target_path)
             connection = sqlite3.connect(target_path)
             target_columns = [
                 str(row[1]) for row in connection.execute("PRAGMA table_info(history)")

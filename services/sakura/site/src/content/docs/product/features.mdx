@@ -1,0 +1,30 @@
+---
+title: 功能概览
+description: 角色、聊天、屏幕感知与可选插件。
+---
+
+Sakura 在桌面显示角色，并结合人设、聊天记录和已启用插件提供的上下文生成回复。
+
+| 功能 | 使用方式 |
+|---|---|
+| 角色与外观 | 导入 `.char` 角色包，在角色工坊编辑人设、表现资源和主题 |
+| 聊天与图片 | 输入文字或附加图片，选择支持对应输入的模型 |
+| 屏幕感知 | 开启后按设定周期观察屏幕，由模型决定是否主动搭话 |
+| 网页搜索 | 自带联网工具插件，搜索公开网页并读取内容 |
+| 语音与记忆 | 安装并配置 GPT-SoVITS、Genie、Mem0 等可选插件 |
+| 扩展能力 | 从插件市场安装浏览器、语音输入、手机网页端等插件 |
+
+## 工具与权限
+
+用户发起的工具调用经参数校验后直接执行。插件以当前用户权限访问文件和网络，应检查来源及功能后再安装。
+主动屏幕观察使用只读、低风险工具；需要改变外部状态的操作先向用户提出建议。
+
+网页搜索由联网工具插件提供。MCP 基础组件供服务插件连接服务器，具体功能和配置由服务插件提供。
+
+## 使用指南
+
+- [安装与首次配置](/start/setup/)
+- [聊天、截图与屏幕感知](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/CHAT_SCREEN_AND_CONTEXT.md)
+- [网页搜索与读取](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/WEB_SEARCH.md)
+- [插件安装、设置与资源下载](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/RUNTIME_V2_PLUGINS.md)
+- [数据与存储](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/RUNTIME_V2_STORAGE.md)

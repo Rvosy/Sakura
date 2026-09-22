@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-02
+updated: 2026-09-15
 ---
 
 # Sakura Product Harness
@@ -32,7 +32,7 @@ Product Harness 将 Sakura 已有的 Python、Rust、frontend 和平台检查组
 ## Compatibility
 
 现有 `smoke`、`docs`、`unit`、`core-host`、`python-full`、Runtime v2 Shell/Window profiles，以及 Tools、
-MCP、Plugins、Observability、Agent Trace journeys 保持可调用。平台专用 profile 在不支持的平台由调用方
+Plugins、Observability、Agent Trace journeys 保持可调用；旧 MCP journey 已退役。平台专用 profile 在不支持的平台由调用方
 明确不执行，不产生伪造的通过结果。
 
 `release-distribution` 提供发行布局、升级数据保留、签名清单和下载镜像的窄入口。`legacy-import` 必须同时

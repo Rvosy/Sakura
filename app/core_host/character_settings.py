@@ -27,6 +27,7 @@ from app.config.settings_service import AppSettingsService
 from app.core.diagnostics import exception_diagnostics
 from app.core.runtime_log import log_event
 from app.core_host.protocol import response
+from app.core_host.real_chat import RealChatRejection
 
 CHARACTER_SETTINGS_REQUEST_NAMES = frozenset(
     {
@@ -82,6 +83,7 @@ class CharacterSettingsBoundary:
         self._prepare_switch = prepare_switch
         self._apply_switch = apply_switch
         self._switch_apply_pending = False
+        self._visual_apply_pending: set[str] = set()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -410,7 +412,7 @@ class CharacterSettingsBoundary:
         except CharacterConfigError as error:
             raise CharacterSettingsError("CHARACTER_NOT_FOUND", "选择的角色不存在。") from error
         application = self._plugin_application_provider()
-        host = application.application.visuals if application is not None else None
+        host = application.visuals if application is not None else None
         choices = [host.resource_choice(resource, profile.visual_providers.get(resource.id)) if host else {
             "id": resource.id, "name": resource.name or "未命名形态", "providerId": None,
             "installId": None, "reasonCode": "VISUAL_SERVICE_UNAVAILABLE"
@@ -421,7 +423,18 @@ class CharacterSettingsBoundary:
         return {"schemaVersion": 1, "characterId": character_id, "defaultResourceId": profile.default_visual_id,
             "preferenceResourceId": preference, "resources": choices}
 
-    def select(self, raw_character_id: object, visual_selections: object = None) -> dict[str, object]:
+    def select_visual_resource(self, target: dict, resource_id: str, *, expected_visual_activity=None) -> dict:
+        try:
+            result = self.select(target.get("characterId"), {target.get("characterId"): resource_id},
+                                 expected_visual_target=target, expected_visual_activity=expected_visual_activity)
+        except CharacterSettingsError as error:
+            if error.code != "VISUAL_SELECTION_APPLY_FAILED":
+                raise
+            return {"accepted": False, "saved": True, "reasonCode": error.code}
+        return {"accepted": True, "changePlan": result["changePlan"]}
+
+    def select(self, raw_character_id: object, visual_selections: object = None,
+               *, expected_visual_target: dict | None = None, expected_visual_activity=None) -> dict[str, object]:
         if not isinstance(raw_character_id, str) or not raw_character_id.strip():
             raise CharacterSettingsError(
                 "CHARACTER_ID_INVALID",
@@ -431,7 +444,7 @@ class CharacterSettingsBoundary:
         character_id = raw_character_id.strip()
         if visual_selections is None:
             visual_selections = {}
-        if not isinstance(visual_selections, dict) or len(visual_selections) > 256 or any(
+        if not isinstance(visual_selections, dict) or any(
             not isinstance(key, str) or (value is not None and not isinstance(value, str))
             for key, value in visual_selections.items()
         ):
@@ -443,8 +456,15 @@ class CharacterSettingsBoundary:
                 current = self._settings.load_current_character_id(registry)
                 preferences = self._settings.load_visual_selections()
                 changed = {key: value for key, value in visual_selections.items() if preferences.get(key) != value}
+                reapply_visual = character_id in self._visual_apply_pending and character_id in visual_selections
                 application = self._plugin_application_provider()
-                for target, resource_id in changed.items():
+                if expected_visual_target is not None:
+                    if current != character_id or application is None:
+                        raise CharacterSettingsError("VISUAL_BINDING_EXPIRED", "角色表现已变化。")
+                    application.commit_visual_selection(expected_visual_target, lambda: None,
+                                                        expected_activity=expected_visual_activity)
+                validated = {**changed, **({character_id: visual_selections[character_id]} if reapply_visual else {})}
+                for target, resource_id in validated.items():
                     profile = registry.get(target)
                     resource = next((item for item in profile.visual_resources if item.id == (resource_id or profile.default_visual_id)), None)
                     if resource_id is not None and resource is None:
@@ -454,11 +474,11 @@ class CharacterSettingsBoundary:
                         if application is None:
                             raise CharacterSettingsError("VISUAL_SERVICE_UNAVAILABLE", "表现插件暂不可用，请稍后重试。")
                         try:
-                            application.application.validate_visual_choice(profile, resource)
+                            application.validate_visual_choice(profile, resource)
                         except VisualHostError as error:
                             raise CharacterSettingsError(error.code, "所选形态无法使用，请检查对应插件或选择其他形态。") from error
                 needs_switch = current != character_id or self._switch_apply_pending
-                if not needs_switch and not changed:
+                if not needs_switch and not changed and not reapply_visual:
                     return self._change_result("unchanged")
                 if needs_switch and self._apply_switch is not None:
                     scope = self._prepare_switch() if self._prepare_switch else nullcontext()
@@ -478,8 +498,13 @@ class CharacterSettingsBoundary:
                             "角色选择已保存，但切换未能完成，请查看运行日志。" if committed else "旧角色任务尚未结束，角色未切换。",
                         ) from error
                 else:
-                    self._settings.save_character_selection(registry, character_id, changed)
-            except CharacterSettingsError:
+                    save = lambda: self._settings.save_character_selection(registry, character_id, changed)
+                    if expected_visual_target is not None:
+                        application.commit_visual_selection(expected_visual_target, save,
+                                                            expected_activity=expected_visual_activity)
+                    else:
+                        save()
+            except (CharacterSettingsError, RealChatRejection):
                 raise
             except CharacterConfigError as error:
                 raise CharacterSettingsError(
@@ -496,11 +521,17 @@ class CharacterSettingsBoundary:
             self._revision += 1
             if needs_switch:
                 return self._change_result("character_switch" if self._apply_switch else "core_restart_required")
-            if character_id in changed:
+            if character_id in changed or reapply_visual:
                 # The Assistant and other plugins belong to the character session.
                 # Changing its presentation only replaces the visual binding; old
                 # replies retain their expired binding and cannot control the new one.
-                application.bind_character_presentation(character_id)
+                try:
+                    application.bind_character_presentation(character_id)
+                except Exception as error:
+                    self._visual_apply_pending.add(character_id)
+                    raise CharacterSettingsError("VISUAL_SELECTION_APPLY_FAILED",
+                        "形态选择已保存，但尚未应用，请重新选择或重新加载角色。") from error
+                self._visual_apply_pending.discard(character_id)
                 return self._change_result("visual_rebind")
             return self._change_result("unchanged")
 

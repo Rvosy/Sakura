@@ -6,12 +6,13 @@ import base64
 import threading
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from app.config.character_loader import CharacterRegistry
 from app.core_host.character_presentation import project_character_presentation
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.paths import StoragePaths
 from app.storage.timeline import TimelineKind, TimelineStore
 
@@ -29,6 +30,7 @@ class _MobileChatJob:
     done: threading.Event
     result: dict[str, Any] | None = None
     error_code: str = ""
+    error: Exception | None = field(default=None, repr=False)
 
 
 class MobileHostService:
@@ -133,8 +135,9 @@ class MobileHostService:
         if not owner_id or len(owner_id) > 64:
             raise MobileHostError("PLUGIN_ID_INVALID")
         boundary = self._chat_boundary_provider()
-        send = getattr(boundary, "run_host_message", None)
-        if not callable(send):
+        reserve = getattr(boundary, "reserve_host_message", None)
+        send = getattr(boundary, "run_reserved_host_message", None)
+        if not callable(reserve) or not callable(send):
             raise MobileHostError("MOBILE_CHAT_UNAVAILABLE")
         artifact_id = ""
         artifact: object | None = None
@@ -167,11 +170,8 @@ class MobileHostService:
         job_id = f"mobile-job-{uuid.uuid4().hex}"
         operation_id = f"mobile-{uuid.uuid4().hex}"
         job = _MobileChatJob(owner_id, operation_id, threading.Event())
-        with self._lock:
-            self._jobs[job_id] = job
-
-        def run() -> None:
-            try:
+        try:
+            with self._lock:
                 image_data_url = ""
                 if artifact is not None:
                     payload = getattr(artifact, "path").read_bytes()
@@ -181,18 +181,36 @@ class MobileHostService:
                         f"data:{getattr(artifact, 'media_type')};base64,"
                         + base64.b64encode(payload).decode("ascii")
                     )
-                result = send(
+                reserve(
                     str(text),
                     image_data_url,
                     operation_id=operation_id,
+                    expected_character_id=str(profile.id),
                 )
+                self._jobs[job_id] = job
+        except Exception:
+            if artifact_id:
+                self._release_artifact(artifact_id)
+            raise
+
+        def run() -> None:
+            try:
+                result = send(operation_id)
                 if not isinstance(result, Mapping):
                     raise MobileHostError("MOBILE_CHAT_FAILED")
                 job.result = {"character_id": str(profile.id), **dict(result)}
             except Exception as error:
+                job.error = error
                 code = getattr(error, "code", None)
                 job.error_code = (
                     code if isinstance(code, str) and code else "MOBILE_CHAT_FAILED"
+                )
+                log_event(
+                    "Mobile", "移动端对话失败",
+                    {"operation_id": operation_id, **diagnostic_attributes(
+                        error, reason_code=job.error_code, stage="mobile_chat",
+                    )},
+                    event="mobile.chat.failed", severity="error",
                 )
             finally:
                 if artifact_id:
@@ -209,6 +227,7 @@ class MobileHostService:
         except Exception as error:
             with self._lock:
                 self._jobs.pop(job_id, None)
+            boundary.abandon_host_message(operation_id)
             if artifact_id:
                 self._release_artifact(artifact_id)
             raise MobileHostError("MOBILE_CHAT_UNAVAILABLE") from error
@@ -221,7 +240,7 @@ class MobileHostService:
         with self._lock:
             self._jobs.pop(job_id, None)
         if job.error_code:
-            raise MobileHostError(job.error_code)
+            raise MobileHostError(job.error_code) from job.error
         return {"status": "completed", "result": dict(job.result or {})}
 
     def cancel(self, plugin_id: str, job_id: str) -> dict[str, bool]:

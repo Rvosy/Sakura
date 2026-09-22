@@ -42,7 +42,6 @@ def test_disabled_visual_declaration_survives_discovery_and_startup_serializatio
     assert record.runtime_eligible is True
     assert record.visuals[0].resource_type == "example.parameters@1"
     spec = inventory.runtime_specs[0]
-    assert RuntimePluginSpec.from_private_dict(spec.private_dict()) == spec
     assert spec.to_plugin_spec(tmp_path).visuals == record.visuals
     assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
     before = inventory.revision
@@ -77,19 +76,7 @@ def test_invalid_optional_declarations_do_not_disable_other_plugin_services(tmp_
         assert record.visuals[0].editor is None
     assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
     assert LocalPluginInstaller(tmp_path)._validated_spec(plugin_root).visuals == record.visuals
-    assert RuntimePluginSpec.from_private_dict(record.runtime_spec().private_dict()).visuals == record.visuals
 
-
-def test_startup_spec_accepts_older_payload_without_visuals_and_rejects_tampering(tmp_path: Path) -> None:
-    _plugin(tmp_path)
-    spec = PluginInventory(tmp_path).scan().runtime_specs[0]
-    legacy = spec.private_dict()
-    legacy.pop("visuals")
-    assert RuntimePluginSpec.from_private_dict(legacy).visuals == ()
-    invalid = spec.private_dict()
-    invalid["visuals"][0]["service"] = "example.undeclared"
-    with pytest.raises(ValueError, match="PLUGIN_RUNTIME_SPEC_INVALID"):
-        RuntimePluginSpec.from_private_dict(invalid)
 
 
 def test_resource_reference_needs_no_portrait_and_never_writes_the_package(tmp_path: Path) -> None:
@@ -154,7 +141,8 @@ def binding_host(tmp_path: Path):
     (tmp_path / "resource.json").write_text("{}", encoding="utf-8")
     resource = CharacterVisualResource("model", "example.parameters@1", ".", "resource.json")
     runtime = _Runtime()
-    return VisualHost(RuntimeRoots(tmp_path, tmp_path), runtime), runtime, resource, plugin, tmp_path
+    inventory = PluginInventory(RuntimeRoots(tmp_path, tmp_path))
+    return VisualHost(runtime, inventory=inventory.scan), runtime, resource, plugin, tmp_path
 
 
 def test_in_flight_describe_and_parse_are_discarded_after_invalidation(binding_host) -> None:
@@ -209,7 +197,7 @@ def test_resource_candidates_report_contract_failure_and_require_provider_select
         host.bind("character", package, resource, provider_id="alternate.visual")
 
 
-@pytest.mark.parametrize("parsed", [None, {}, {"state": float("inf")}, {"actions": "wave"}, {"actions": [{}] * 33}, {"pluginId": "other", "state": {}}])
+@pytest.mark.parametrize("parsed", [None, {}, {"actions": "wave"}])
 def test_provider_cannot_return_invalid_or_rerouted_control_data(binding_host, parsed) -> None:
     host, runtime, resource, _plugin_root, package = binding_host
     binding = host.bind("character", package, resource)
@@ -229,6 +217,46 @@ def test_revocation_during_identity_read_cannot_publish_control(binding_host) ->
         return result
     runtime.service_identity = identity
     assert binding.parse_control({"version": 1, "resourceId": resource.id, "payload": {}}).reason_code == "VISUAL_BINDING_EXPIRED"
+
+
+@pytest.mark.parametrize("error", [
+    ValueError("invalid service state"),
+    VisualHostError("VISUAL_DESCRIPTION_INVALID"),
+    PluginRuntimeError("SERVICE_INTERNAL_ERROR", "service lookup failed"),
+])
+def test_visual_prompt_errors_are_not_mistaken_for_absent_capabilities(binding_host, monkeypatch, error):
+    from sakura_assistant.agent.runtime import AgentRuntime
+
+    host, provider, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    runtime = AgentRuntime(None, "test character")
+    runtime.set_visual_binding(binding)
+
+    def fail(_service):
+        raise error
+
+    monkeypatch.setattr(provider, "service_identity", fail)
+    with pytest.raises(type(error)) as caught:
+        runtime._build_tool_system_prompt()
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("invalidate", ["close", "missing", "replaced"])
+def test_retired_visual_prompt_is_omitted_without_hiding_other_errors(binding_host, invalidate):
+    from sakura_assistant.agent.runtime import AgentRuntime
+
+    host, provider, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    runtime = AgentRuntime(None, "test character")
+    runtime.set_visual_binding(binding)
+    assert runtime.reply_visual["resourceId"] == resource.id
+    if invalidate == "close":
+        binding.close()
+    elif invalidate == "missing":
+        provider.identity = None
+    else:
+        provider.identity = {"providerId": "example.visual", "scopeId": "replacement"}
+    assert runtime.reply_visual is None
 
 
 def test_conflicting_user_install_does_not_hide_inventory_bundled_winner(binding_host) -> None:
@@ -272,10 +300,10 @@ def test_bad_renderer_preserves_other_capabilities_and_reports_the_failed_type(b
 def test_plugin_module_accepts_unicode_names_but_not_symlinks_outside_installation(tmp_path):
     plugin = _plugin(tmp_path)
     manifest = plugin / "plugin.yaml"
-    raw = yaml.safe_load(manifest.read_text())
-    (plugin / "角色 渲染.js").write_text("export function mount() {}")
+    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    (plugin / "角色 渲染.js").write_text("export function mount() {}", encoding="utf-8")
     raw["visuals"][0]["renderer"] = "角色 渲染.js"
-    manifest.write_text(yaml.safe_dump(raw, allow_unicode=True))
+    manifest.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     assert PluginInventory(tmp_path).scan().records[0].visuals[0].renderer == "角色 渲染.js"
     outside = tmp_path / "outside.js"
     outside.write_text("export function mount() {}")
@@ -287,3 +315,52 @@ def test_plugin_module_accepts_unicode_names_but_not_symlinks_outside_installati
     record = PluginInventory(tmp_path).scan().records[0]
     assert record.runtime_eligible and not record.visuals
     assert record.capability_issues[0]["reasonCode"] == "VISUAL_MODULE_INVALID"
+
+
+def test_control_projection_preserves_host_routing_and_all_actions(binding_host):
+    host, runtime, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    runtime.parsed = {"bindingId": "other", "resourceId": "other", "actions": [{}] * 40}
+    result = binding.parse_control({"version": 1, "resourceId": resource.id, "payload": {}})
+    assert result.control["bindingId"] == binding.id
+    assert result.control["resourceId"] == resource.id
+    assert len(result.control["actions"]) == 40
+
+
+@pytest.mark.parametrize("change", ["mixed", "missing", "portrait", "oversized"])
+def test_deferred_control_rejects_ambiguous_or_unbounded_input(binding_host, change):
+    host, runtime, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    calls = []
+    runtime.before_result = lambda: calls.append("parse")
+    envelope = {"version": 1, "bindingId": binding.id, "resourceId": resource.id,
+        "deferred": {"control": None, "portrait": "", "tone": ""}}
+    if change == "mixed":
+        envelope["state"] = {}
+    elif change == "missing":
+        del envelope["deferred"]["control"]
+    elif change == "portrait":
+        envelope["deferred"]["portrait"] = None
+    else:
+        envelope["deferred"]["control"] = "x" * 65536
+    parsed = host.resolve_control(envelope)
+    assert parsed.reason_code == "VISUAL_CONTROL_INVALID"
+    assert parsed.control is None
+    assert calls == []
+
+
+def test_deferred_control_requires_current_binding_and_rejects_late_result(binding_host):
+    host, runtime, resource, _plugin_root, package = binding_host
+    binding = host.bind("character", package, resource)
+    envelope = {"version": 1, "bindingId": binding.id, "resourceId": resource.id,
+        "deferred": {"control": {"version": 1, "resourceId": resource.id, "payload": {}}, "portrait": "", "tone": ""}}
+    calls = []
+    runtime.before_result = lambda: calls.append("parse")
+    wrong_target = {**envelope, "resourceId": "other"}
+    assert host.resolve_control(wrong_target).reason_code == "VISUAL_BINDING_EXPIRED"
+    assert calls == []
+    runtime.before_result = host.clear
+    assert host.resolve_control(envelope).reason_code == "VISUAL_BINDING_EXPIRED"
+    runtime.before_result = lambda: calls.append("parse")
+    assert host.resolve_control(envelope).reason_code == "VISUAL_BINDING_EXPIRED"
+    assert calls == []

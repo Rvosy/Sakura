@@ -53,6 +53,7 @@ test("plugin icons use the local catalogue and fall back without interpreting su
     assert.equal(pluginIconName({ presentation: { category: "memory", icon } }), "brain");
   }
   assert.equal(pluginIconName({ presentation: { kind: "infrastructure", category: "voice" } }), "layers");
+  assert.equal(pluginIconName({ presentation: { kind: "provider", category: "visual" } }), "person-standing");
   assert.equal(pluginIconName({ plugin_id: "sakura_mem0" }), "puzzle");
 });
 
@@ -114,6 +115,14 @@ test("unknown plugin failures stay readable and retain the original code", () =>
     message: "这个插件暂时无法使用。",
     diagnostic: "诊断代码：SOMETHING_NEW",
   });
+});
+
+test("retired model contracts show an update action with their diagnostic", () => {
+  for (const state of ["failed", "disabled"]) {
+    const status = presentPluginStatus({ state, reasonCode: "MODEL_API_UPDATE_REQUIRED" });
+    assert.equal(status.label, "需要更新");
+    assert.match(status.diagnostic, /MODEL_API_UPDATE_REQUIRED/);
+  }
 });
 
 

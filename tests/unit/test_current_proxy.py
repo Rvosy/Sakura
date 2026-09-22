@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import socket
 import threading
 import urllib.request
@@ -125,24 +124,6 @@ def test_dependency_download_job_uses_current_proxy(proxy_state, tmp_path):
         proxy_state["https"] = proxy
         environment = roots._uv_environment()
         assert environment["HTTPS_PROXY"] == environment["https_proxy"] == proxy
-
-
-def test_mcp_client_refreshes_proxy_per_request_with_open_stream(proxy_state):
-    from app.core.httpx_client import create_mcp_http_client
-
-    async def run(direct, a, b):
-        url = direct.replace("127.0.0.1", "proxy-test.invalid")
-        async with create_mcp_http_client(timeout=2) as client:
-            proxy_state["http"] = a
-            async with client.stream("GET", url) as first:
-                proxy_state["http"] = b
-                assert (await client.get(url)).text == "b"
-                proxy_state.clear()
-                assert (await client.get(url)).text == "direct"
-                assert await first.aread() == b"a"
-
-    with endpoint("direct") as (direct, _), endpoint("a") as (a, _), endpoint("b") as (b, _):
-        asyncio.run(run(direct, a, b))
 
 
 def test_search_proxy_preserves_hostname_and_owns_destination_dns(proxy_state, monkeypatch):

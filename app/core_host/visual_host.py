@@ -6,18 +6,19 @@ Renderer mounting and chat/playback wiring are separate consumers of this bounda
 
 from __future__ import annotations
 
-import json
 import threading
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from app.config.character_resources import CharacterVisualResource
-from app.plugins.inventory import InstalledPluginRecord, PluginInventory
+from app.core.runtime_log import diagnostic_attributes, log_event
+from app.plugin_sdk.sakura_visual_control import validate_visual_control
+from app.plugins.inventory import InstalledPluginRecord, PluginInventorySnapshot
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.plugins.visuals import VISUAL_CONTRACT_VERSION, VisualCapability, relative_resource_path, resolve_resource_path
-from app.storage.runtime_roots import RuntimeRoots
 
 
 class VisualRuntime(Protocol):
@@ -27,8 +28,8 @@ class VisualRuntime(Protocol):
 
 
 class VisualHostError(ValueError):
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
+    def __init__(self, code: str, message: str | None = None) -> None:
+        super().__init__(message or code)
         self.code = code
 
 
@@ -39,16 +40,6 @@ VISUAL_INACTIVE_REASONS = frozenset({
     "VISUAL_SERVICE_UNAVAILABLE", "VISUAL_CONTRACT_UNSUPPORTED", "API_VERSION_UNSUPPORTED",
     "VISUAL_MANIFEST_INVALID", "VISUAL_MODULE_INVALID",
 })
-
-
-def _json_copy(value: object, *, code: str = "VISUAL_CONTROL_INVALID") -> Any:
-    try:
-        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
-        if len(encoded.encode("utf-8")) > 65536:
-            raise ValueError("control contribution too large")
-        return json.loads(encoded)
-    except (TypeError, ValueError, OverflowError, RecursionError) as error:
-        raise VisualHostError(code) from error
 
 
 @dataclass(frozen=True)
@@ -72,8 +63,8 @@ class VisualBinding:
         self.capability = capability
         self._runtime = runtime
         self._identity = dict(identity)
-        self._request = _json_copy(request)
-        self._description = _json_copy(description)
+        self._request = deepcopy(request)
+        self._description = deepcopy(description)
         self._closed = threading.Event()
         self.install_id = install_id
 
@@ -87,14 +78,28 @@ class VisualBinding:
             "installId": self.install_id,
             "renderer": self.capability.renderer,
             "editor": self.capability.editor,
-            "data": _json_copy(self._description["rendererData"]),
-            "assets": _json_copy(self._description.get("assets", {})),
+            "data": deepcopy(self._description["rendererData"]),
+            "assets": deepcopy(self._description.get("assets", {})),
         }
 
     @property
     def description(self) -> dict[str, Any]:
         self._check_active()
-        return _json_copy(self._description)
+        return deepcopy(self._description)
+
+    @property
+    def reply_visual(self) -> dict[str, Any] | None:
+        try:
+            self._check_active()
+        except VisualHostError as error:
+            if error.code != "VISUAL_BINDING_EXPIRED":
+                raise
+            return None
+        return {
+            "resourceId": self.resource_id,
+            "prompt": self._description["prompt"],
+            "outputSchema": deepcopy(self._description["outputSchema"]),
+        }
 
     @property
     def resource_id(self) -> str:
@@ -113,6 +118,8 @@ class VisualBinding:
         try:
             current = self._runtime.service_identity(self.capability.service)
         except PluginRuntimeError as error:
+            if error.code != "SERVICE_MISSING":
+                raise
             raise VisualHostError("VISUAL_BINDING_EXPIRED") from error
         if self._closed.is_set() or current != self._identity:
             raise VisualHostError("VISUAL_BINDING_EXPIRED")
@@ -141,25 +148,23 @@ class VisualBinding:
                 ):
                     raise VisualHostError("VISUAL_CONTROL_INVALID")
                 payload = control["payload"]
-            request = _json_copy(self._request)
-            request["segment"] = _json_copy(segment or {})
+            request = deepcopy(self._request)
+            request["segment"] = deepcopy(segment or {})
             parsed = self._runtime.call_service(
                 self.capability.service,
                 "parseControl",
                 request,
-                _json_copy(self._description["parserData"]),
-                _json_copy(payload),
-                _json_copy(legacy) if control is None else None,
+                deepcopy(self._description["parserData"]),
+                deepcopy(payload),
+                deepcopy(legacy) if control is None else None,
             )
             # A stopped/replaced process must not publish an in-flight result.
             self._check_active()
-            parsed = _json_copy(parsed)
+            parsed = deepcopy(parsed)
             if (
                 not isinstance(parsed, dict)
-                or set(parsed) - {"state", "actions"}
-                or not parsed
+                or not ({"state", "actions"} & parsed.keys())
                 or not isinstance(parsed.get("actions", []), list)
-                or len(parsed.get("actions", [])) > 32
             ):
                 raise VisualHostError("VISUAL_CONTROL_INVALID")
             self._check_active()
@@ -167,17 +172,20 @@ class VisualBinding:
                 "version": VISUAL_CONTRACT_VERSION,
                 "bindingId": self.id,
                 "resourceId": self._request["resource"]["id"],
-                **parsed,
+                **{key: parsed[key] for key in ("state", "actions") if key in parsed},
             })
         except VisualHostError as error:
             return VisualControlResult(None, error.code, error)
         except PluginRuntimeError as error:
-            return VisualControlResult(None, "VISUAL_CONTROL_REJECTED", error)
+            return VisualControlResult(None, "VISUAL_CONTROL_INVALID" if error.code == "SERVICE_PAYLOAD_INVALID" else "VISUAL_CONTROL_REJECTED", error)
 
 
 class VisualHost:
-    def __init__(self, roots: RuntimeRoots, runtime: VisualRuntime) -> None:
-        self._inventory = PluginInventory(roots)
+    def __init__(
+        self, runtime: VisualRuntime,
+        *, inventory: Callable[[], PluginInventorySnapshot],
+    ) -> None:
+        self._inventory = inventory
         self._runtime = runtime
         self._lock = threading.Lock()
         self._revision = 0
@@ -197,6 +205,30 @@ class VisualHost:
         with self._lock:
             return self._binding.presentation() if self._binding is not None else None
 
+    def resolve_control(self, envelope: object) -> VisualControlResult:
+        """Resolve one playback value without holding the visual publication lock."""
+        try:
+            value = validate_visual_control(envelope)
+            if "deferred" not in value:
+                raise VisualHostError("VISUAL_CONTROL_INVALID")
+            with self._lock:
+                binding = self._binding
+            if binding is None or (value["bindingId"], value["resourceId"]) != (binding.id, binding.resource_id):
+                return VisualControlResult(None, "VISUAL_BINDING_EXPIRED")
+            deferred = value["deferred"]
+            parsed = binding.parse_control(deferred["control"],
+                legacy={"portrait": deferred["portrait"], "tone": deferred["tone"]},
+                segment={"tone": deferred["tone"]})
+            if parsed.control is not None:
+                parsed = VisualControlResult(validate_visual_control(parsed.control))
+        except Exception as error:
+            reason = "VISUAL_CONTROL_INVALID" if isinstance(error, ValueError) else "VISUAL_CONTROL_REJECTED"
+            parsed = VisualControlResult(None, reason, error)
+        if parsed.reason_code not in {"READY", "VISUAL_BINDING_EXPIRED"}:
+            log_event("Visual", "表现控制未应用", diagnostic_attributes(parsed.error or RuntimeError(parsed.reason_code),
+                reason_code=parsed.reason_code, stage="visual.parse_control"), event="visual.control.failed", severity="warning")
+        return parsed
+
     def _clear_locked(self) -> None:
         self._revision += 1
         if self._binding is not None:
@@ -206,14 +238,14 @@ class VisualHost:
     def _candidates(self, resource_type: str) -> list[tuple[InstalledPluginRecord, VisualCapability]]:
         return [
             (record, capability)
-            for record in self._inventory.scan().records
+            for record in self._inventory().records
             for capability in record.visuals
             if capability.resource_type == resource_type
         ]
 
     def _unavailable_candidates(self, resource_type, provider_id=None):
         result = []
-        for record in self._inventory.scan().records:
+        for record in self._inventory().records:
             if provider_id is not None and record.plugin_id != provider_id:
                 continue
             if any(cap.resource_type == resource_type for cap in record.visuals):
@@ -266,11 +298,23 @@ class VisualHost:
         *,
         provider_id: str | None = None,
     ) -> VisualBinding:
+        revision, binding = self.prepare(character_id, package_dir, resource, provider_id=provider_id)
+        try:
+            self.publish(revision, binding)
+        except BaseException:
+            binding.close()
+            raise
+        return binding
+
+    def prepare(self, character_id, package_dir, resource, *, provider_id=None):
+        """Describe a candidate without retiring the published visual."""
         with self._lock:
             if self._closed:
                 raise VisualHostError("VISUAL_BINDING_EXPIRED")
             self._revision += 1
             revision = self._revision
+        if resource is None:
+            return revision, None
         try:
             resource.validate_paths(package_dir)
         except ValueError as error:
@@ -282,14 +326,27 @@ class VisualHost:
         except PluginRuntimeError as error:
             code = "VISUAL_RESOURCE_INVALID" if error.code == "VISUAL_RESOURCE_INVALID" else "VISUAL_PROVIDER_FAILED"
             raise VisualHostError(code) from error
+        return revision, binding
+
+    def publish(self, revision, binding) -> None:
         with self._lock:
-            if revision != self._revision:
-                binding.close()
+            if self._closed or revision != self._revision:
+                if binding is not None:
+                    binding.close()
                 raise VisualHostError("VISUAL_BINDING_EXPIRED")
+            if binding is not None:
+                binding._check_active()
             if self._binding is not None:
                 self._binding.close()
             self._binding = binding
-        return binding
+
+    def commit_current(self, binding, commit):
+        """Serialize a short preference write with visual replacement and teardown."""
+        with self._lock:
+            if self._closed or binding is None or self._binding is not binding:
+                raise VisualHostError("VISUAL_BINDING_EXPIRED")
+            binding._check_active()
+            return commit()
 
     def _matching_candidates(self, resource_type, provider_id=None):
         candidates = self._candidates(resource_type)
@@ -334,9 +391,19 @@ class VisualHost:
             raise VisualHostError(reason)
         return record, capability
 
+    def startup_service(self, resource_type: str, provider_id: str | None = None) -> str | None:
+        """Find the selected declaration before its process has started."""
+        candidates = self._matching_candidates(resource_type, provider_id)
+        if len(candidates) != 1:
+            return None
+        record, capability = candidates[0]
+        if not record.runtime_eligible or not record.desired_enabled or capability.contract != VISUAL_CONTRACT_VERSION:
+            return None
+        return capability.service
+
     def catalog(self):
         result = []
-        for record in self._inventory.scan().records:
+        for record in self._inventory().records:
             for capability in record.visuals:
                 editor_issue = self._editor_issue(record, capability)
                 if capability.editor is not None or editor_issue:
@@ -355,7 +422,7 @@ class VisualHost:
         if capability.editor is None:
             raise VisualHostError(self._editor_issue(record, capability) or "VISUAL_EDITOR_MISSING")
         identity = self._runtime.service_identity(capability.service)
-        data = _json_copy(self._runtime.call_service(capability.service, "editorData", resource.to_mapping(), _json_copy(raw)))
+        data = deepcopy(self._runtime.call_service(capability.service, "editorData", resource.to_mapping(), deepcopy(raw)))
         binding = VisualBinding(self._runtime, capability, identity, {"resource": resource.to_mapping()}, {"rendererData": {}, "assets": {}}, record.install_id)
         binding._check_active()
         return {"visual": binding.presentation(), "data": data, "providerScopeId": identity["scopeId"]}
@@ -364,7 +431,7 @@ class VisualHost:
         """Ask for a static cover without describing or mounting a renderer."""
         _record, capability = self._select(resource.type, provider_id)
         try:
-            path = self._runtime.call_service(capability.service, "previewImage", resource.to_mapping(), _json_copy(raw))
+            path = self._runtime.call_service(capability.service, "previewImage", resource.to_mapping(), deepcopy(raw))
         except PluginRuntimeError as error:
             if error.code == "SERVICE_METHOD_NOT_EXPORTED":
                 return None
@@ -375,27 +442,24 @@ class VisualHost:
         identity = self._runtime.service_identity(capability.service)
         if identity.get("providerId") != record.plugin_id:
             raise VisualHostError("VISUAL_PROVIDER_MISMATCH")
-        description = _json_copy(
+        description = deepcopy(
             self._runtime.call_service(capability.service, "describe", request),
-            code="VISUAL_DESCRIPTION_INVALID",
         )
-        if description == {"error": "VISUAL_RESOURCE_INVALID"}:
-            raise VisualHostError("VISUAL_RESOURCE_INVALID")
+        if isinstance(description, dict) and description.get("error") == "VISUAL_RESOURCE_INVALID":
+            raise VisualHostError("VISUAL_RESOURCE_INVALID", description.get("message"))
         if (
             not isinstance(description, dict)
             or not {"prompt", "outputSchema", "rendererData", "parserData"} <= set(description)
-            or set(description) - {"prompt", "outputSchema", "rendererData", "parserData", "assets"}
             or not isinstance(description["prompt"], str)
-            or len(description["prompt"]) > 16384
             or not isinstance(description["outputSchema"], dict)
         ):
             raise VisualHostError("VISUAL_DESCRIPTION_INVALID")
         assets = description.get("assets", {})
-        if not isinstance(assets, dict) or len(assets) > 256:
+        if not isinstance(assets, dict):
             raise VisualHostError("VISUAL_DESCRIPTION_INVALID")
         try:
             for key, path in assets.items():
-                if not isinstance(key, str) or not key or len(key) > 256 or any(ord(c) < 32 for c in key):
+                if not isinstance(key, str) or not key or any(ord(c) < 32 for c in key):
                     raise ValueError("invalid asset key")
                 if not resolve_resource_path(package_dir, relative_resource_path(path)).is_file():
                     raise ValueError("invalid asset")
