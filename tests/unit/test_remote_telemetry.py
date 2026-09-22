@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 import io
 import json
+import threading
 from types import SimpleNamespace
 from functools import partial
 
@@ -15,6 +16,7 @@ from sakura_assistant.llm import api_client
 from sakura_assistant import diagnostics
 from app.core_host.plugin_host_services import _LoggingHostService
 from app.plugins.host_services import HOST_CALLER
+from app.plugins.sakura_plugin_sdk import _LoggingProxy
 from sakura_assistant.llm.api_client import ApiRequestError, DialogueSettings, AssistantModelClient
 
 
@@ -35,6 +37,7 @@ SENTINELS = {
 @pytest.fixture(autouse=True)
 def assistant_metric_host_bridge(monkeypatch):
     host = _LoggingHostService()
+    delivered = threading.Event()
 
     def emit(severity, message, *, fields):
         token = HOST_CALLER.set("sakura.assistant.default")
@@ -43,11 +46,28 @@ def assistant_metric_host_bridge(monkeypatch):
         finally:
             HOST_CALLER.reset(token)
 
+    def remote_call(service, method, args):
+        assert service == "sakura.host.logging"
+        token = HOST_CALLER.set("sakura.assistant.default")
+        try:
+            result = host.call(method, args)
+            delivered.set()
+            return result
+        finally:
+            HOST_CALLER.reset(token)
+
+    logger = _LoggingProxy(SimpleNamespace(_logging_closed=False, _remote_call=remote_call))
+    # Wait for delivery before a test closes Core's bridge.
     def model_call(candidate):
-        return emit("debug", "模型请求已结束", fields={"event": "model.call.metric", "modelCall": candidate})
+        delivered.clear()
+        accepted = logger.model_call(candidate)
+        assert delivered.wait(3), "the SDK metric did not reach Core"
+        return accepted
 
     monkeypatch.setattr(diagnostics, "_logger", SimpleNamespace(model_call=model_call,
         **{severity: partial(emit, severity) for severity in ("debug", "info", "warning", "error")}))
+    yield
+    logger.close()
 
 
 def _telemetry_payloads(stream: io.BytesIO) -> list[dict[str, object]]:
@@ -113,6 +133,18 @@ def test_unhandled_error_bridge_preserves_original_error_and_stack() -> None:
     encoded = json.dumps(error_payload, sort_keys=True)
     assert SENTINELS["exception"] in error_payload["evidence"]["diagnostic"]
     assert SENTINELS["absolute_path"] not in encoded
+
+
+def test_invalid_sdk_model_metric_never_falls_back_to_free_form_logging() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        diagnostics.submit_telemetry_model_call({"schema": 2, "prompt": SENTINELS["prompt"], "apiKey": SENTINELS["api_key"]})
+    finally:
+        bridge.close()
+    assert not _telemetry_payloads(stream)
+    assert SENTINELS["prompt"].encode() not in stream.getvalue()
+    assert SENTINELS["api_key"].encode() not in stream.getvalue()
 
 
 def test_failed_model_metric_keeps_estimate_and_unknown_usage(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]

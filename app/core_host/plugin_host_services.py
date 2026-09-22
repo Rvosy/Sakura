@@ -107,6 +107,9 @@ class _LoggingHostService:
             if item["fields"].get("event") == "model.call.metric":
                 from app.core_host.runtime_logging import submit_telemetry_model_call
                 submit_telemetry_model_call(item["fields"].get("modelCall", {}))
+                # Metric fields never enter the free-form log or breadcrumbs,
+                # including rejected payloads supplied by a plugin.
+                continue
             log_message(item["severity"], item["message"], fields=item["fields"],
                 component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         # Core owns downstream loss accounting; the SDK counts transport loss only.
