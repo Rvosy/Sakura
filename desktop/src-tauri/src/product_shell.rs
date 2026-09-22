@@ -24,6 +24,7 @@ pub const PRODUCT_TRAY_ID: &str = "sakura.product.tray";
 
 const MENU_TOGGLE_PET: &str = "sakura.pet.visibility.toggle";
 const MENU_TOGGLE_SUBTITLE: &str = "sakura.chat.subtitle.toggle";
+const MENU_TOGGLE_JAPANESE_ORIGINAL: &str = "sakura.chat.japanese-original.toggle";
 const MENU_TOGGLE_TOPMOST: &str = "sakura.pet.topmost.toggle";
 const MENU_OPEN_HISTORY: &str = "sakura.history.open";
 const MENU_OPEN_RUNTIME_LOG: &str = "sakura.runtime-log.open";
@@ -38,6 +39,7 @@ const FIRST_RUN_GUIDE_FIELD: &str = "first_run_guide_completed";
 pub enum ProductMenuAction {
     TogglePet,
     ToggleSubtitle,
+    ToggleJapaneseOriginal,
     ToggleTopmost,
     OpenHistory,
     OpenRuntimeLog,
@@ -50,6 +52,7 @@ impl ProductMenuAction {
         match id {
             MENU_TOGGLE_PET => Some(Self::TogglePet),
             MENU_TOGGLE_SUBTITLE => Some(Self::ToggleSubtitle),
+            MENU_TOGGLE_JAPANESE_ORIGINAL => Some(Self::ToggleJapaneseOriginal),
             MENU_TOGGLE_TOPMOST => Some(Self::ToggleTopmost),
             MENU_OPEN_HISTORY => Some(Self::OpenHistory),
             MENU_OPEN_RUNTIME_LOG => Some(Self::OpenRuntimeLog),
@@ -72,10 +75,14 @@ pub struct ProductMenuCapabilityManifest {
 pub fn product_menu_capability_manifest(
     chinese_subtitles: bool,
     pet_topmost: bool,
+    show_japanese_original: bool,
 ) -> ProductMenuCapabilityManifest {
     let mut checked_actions = Vec::new();
     if chinese_subtitles {
         checked_actions.push(MENU_TOGGLE_SUBTITLE.to_string());
+    }
+    if show_japanese_original {
+        checked_actions.push(MENU_TOGGLE_JAPANESE_ORIGINAL.to_string());
     }
     if pet_topmost {
         checked_actions.push(MENU_TOGGLE_TOPMOST.to_string());
@@ -85,6 +92,7 @@ pub fn product_menu_capability_manifest(
         available_actions: [
             MENU_TOGGLE_PET,
             MENU_TOGGLE_SUBTITLE,
+            MENU_TOGGLE_JAPANESE_ORIGINAL,
             MENU_TOGGLE_TOPMOST,
             MENU_OPEN_HISTORY,
             MENU_OPEN_RUNTIME_LOG,
@@ -1091,6 +1099,10 @@ mod tests {
             Some(ProductMenuAction::ToggleSubtitle)
         );
         assert_eq!(
+            ProductMenuAction::from_id(MENU_TOGGLE_JAPANESE_ORIGINAL),
+            Some(ProductMenuAction::ToggleJapaneseOriginal)
+        );
+        assert_eq!(
             ProductMenuAction::from_id(MENU_TOGGLE_TOPMOST),
             Some(ProductMenuAction::ToggleTopmost)
         );
@@ -1116,13 +1128,14 @@ mod tests {
 
     #[test]
     fn product_menu_manifest_exposes_only_dispatchable_actions() {
-        let manifest = product_menu_capability_manifest(true, true);
+        let manifest = product_menu_capability_manifest(true, true, false);
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(
             manifest.available_actions,
             [
                 MENU_TOGGLE_PET,
                 MENU_TOGGLE_SUBTITLE,
+                MENU_TOGGLE_JAPANESE_ORIGINAL,
                 MENU_TOGGLE_TOPMOST,
                 MENU_OPEN_HISTORY,
                 MENU_OPEN_RUNTIME_LOG,

@@ -66,6 +66,7 @@ export function createCharacterSettingsFeature({
   let disposed = false;
   const listeners = [];
   const visualSettings = createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty: refreshDirty, openPlugin, reportError });
+  fields.characterSelect.dataset.optionDelete = "true";
 
   const characterExportOptions = [
     {
@@ -558,9 +559,11 @@ export function createCharacterSettingsFeature({
     });
   }
 
-  async function deleteCharacterArchive() {
+  async function deleteCharacterArchive(characterId = "") {
     await runCharacterArchiveAction(async () => {
-      const character = selectedCharacter();
+      const character = characterId
+        ? characterView.characters.find((item) => item.id === characterId) || null
+        : selectedCharacter();
       if (!character) {
         setError("请先选择要删除的角色。");
         return;
@@ -617,7 +620,11 @@ export function createCharacterSettingsFeature({
   listen(fields.characterImportButton, "click", importCharacterArchive);
   listen(fields.ttsVoiceImportButton, "click", importCharacterVoiceArchive);
   listen(fields.characterExportButton, "click", exportCharacterArchive);
-  listen(fields.characterDeleteButton, "click", deleteCharacterArchive);
+  listen(fields.characterDeleteButton, "click", () => { void deleteCharacterArchive(); });
+  listen(fields.characterSelect, "option-delete", (event) => {
+    const characterId = event.detail?.value;
+    if (characterId) void deleteCharacterArchive(characterId);
+  });
   listen(fields.characterEditorButton, "click", launchCharacterStudio);
   listen(window, "focus", () => { if (!isCharacterSwitching() && !isSubmitting()) void visualSettings.refresh(); });
 

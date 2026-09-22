@@ -92,7 +92,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 - Runtime v2 默认显示中文字幕：`zh` 优先使用 `translation`，空值回退 `text`；`ja` 使用 `text`。
   右键菜单复选项可以原子切换该偏好。设置变更事件到达时，当前可见字幕必须在同一前端任务内刷新：
   输入中的当前段清空后按新语言从头重播；settled 或正在回看的段立即完整替换，不等待下一次回复、不回放
-  已完成段，也不改变当前立绘。
+  已完成段，也不改变当前立绘。另一项「显示日文原文」默认关闭；开启且字幕为中文时，在中文下方用较小字号
+  显示不同的日文 `text`。关闭时气泡仍只有一行。启动问候的 `text` 仍是日文，`translation` 为中文。
 - 启动问候在字体、初始立绘和窗口 reveal 完成后通过同一可取消 typewriter 播放一次；reveal 前气泡为空，
   reload/focus 不重播，用户发送消息会取消未完成问候。系统减少动态效果设置下仍按相同节奏逐字播放。
 - 立绘切换使用解码优先的双层交叉淡入：旧层约 250ms 淡出，新层延迟约 50ms 后以约 250ms 淡入，
@@ -138,8 +139,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 ## 设置切片
 
 本 WP 新开放 `chat.presentation_timing` 和 `chat.subtitle_language`。前者只含
-`subtitle_typing_interval_ms` 和 `reply_segment_pause_ms`；后者只含 `subtitle_language: "zh" | "ja"`，
-由主窗口右键菜单切换并持久化。精确持久化、失败原子性、重新打开和回退契约见
+`subtitle_typing_interval_ms`、`reply_segment_pause_ms` 和 `silent_segment_pause_ms`；后者含 `subtitle_language: "zh" | "ja"`
+和默认关闭的 `show_japanese_original`，由主窗口右键菜单切换并持久化。精确持久化、失败原子性、重新打开和回退契约见
 [`settings-incremental-migration.md`](settings-incremental-migration.md) 第 7 节。
 
 已迁移的 `appearance.character` 继续提供字体与主题。自动隐藏、气泡高度、输入栏偏移、自由布局、发送

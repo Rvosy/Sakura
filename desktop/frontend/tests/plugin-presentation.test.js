@@ -106,6 +106,13 @@ test("plugin dependency projections cascade enablement and find affected consume
   );
 });
 
+test("missing plugin dependencies stay distinct from a bad API key", () => {
+  const status = presentPluginStatus({ state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" });
+  assert.equal(status.label, "缺少依赖");
+  assert.match(status.message, /依赖还没有安装/);
+  assert.match(status.diagnostic, /PLUGIN_DEPENDENCIES_MISSING/);
+});
+
 test("unknown plugin failures stay readable and retain the original code", () => {
   assert.deepEqual(presentPluginStatus({
     state: "failed",

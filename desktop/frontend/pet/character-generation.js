@@ -20,6 +20,7 @@ export function rebindCharacterPresentation({
     characterChanged: true,
     reducer: createChatPresentationReducer({
       initialMessage: nextPresentation.initialMessage,
+      initialMessageTranslation: nextPresentation.initialMessageTranslation,
     }),
     greetingPending: true,
   });

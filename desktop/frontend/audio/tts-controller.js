@@ -124,6 +124,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       replay,
       segments: Array.isArray(segments) ? segments : [],
       prepared: new Map(),
+      played: new Set(),
       silent: captureActive,
       interrupted,
       resolveInterrupted,
@@ -142,6 +143,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       onStarted, resolveStarted, resolveSettled, settled,
     };
     playback = item;
+    current.played.add(index);
     // Playback events, including an early failure, own the visual start gate.
     // Do not keep the gate blocked by a late native command acknowledgement.
     try {
@@ -203,8 +205,12 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       await playDescriptor(current, descriptor, 0);
     },
     async afterSegment(index) {
+      const current = reply;
       const item = playback;
-      if (item && item.index === index && isCurrent(item.reply)) await item.settled;
+      if (item && item.index === index && item.reply === current && isCurrent(current)) {
+        await item.settled;
+      }
+      return Boolean(current?.played.has(index) && isCurrent(current));
     },
     setInputCaptureActive(value) {
       const next = Boolean(value);

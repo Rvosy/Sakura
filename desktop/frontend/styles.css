@@ -258,6 +258,13 @@ body[data-chat-state="thinking"] .bubble::after {
   padding-right: 40px;
 }
 
+.bubble-original {
+  margin-top: 4px;
+  color: var(--muted-text);
+  font-size: 0.72em;
+  line-height: 1.45;
+}
+
 .bubble-copy {
   position: relative;
   flex: 1;

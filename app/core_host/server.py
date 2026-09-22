@@ -866,8 +866,14 @@ class ReadinessController:
         projected = dict(presentation)
         projected["generationId"] = self._config.generation_id
         if projected.get("schemaVersion") == 2:
-            if set(projected) != {"schemaVersion", "generationId", "characterId", "displayName", "initialMessage", "themeTokens", "visual", "visualReasonCode"}:
+            if set(projected) != {
+                "schemaVersion", "generationId", "characterId", "displayName", "initialMessage",
+                "initialMessageTranslation", "themeTokens", "visual", "visualReasonCode",
+            }:
                 raise TypeError("character presentation fields are invalid")
+            translation = projected.get("initialMessageTranslation")
+            if not isinstance(translation, str):
+                raise TypeError("character presentation translation is invalid")
             for key in ("generationId", "characterId", "displayName", "initialMessage", "visualReasonCode"):
                 if not isinstance(projected[key], str) or not projected[key].strip():
                     raise TypeError("character presentation strings are invalid")

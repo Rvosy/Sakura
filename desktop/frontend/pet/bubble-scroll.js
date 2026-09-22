@@ -37,11 +37,18 @@ export function createBubbleScroll({
       following = true;
       scrollToEnd();
     },
-    updateText(text, { forceEnd = false } = {}) {
+    updateText(text, { forceEnd = false, original = "" } = {}) {
       if (disposed) return;
       const wasNearEnd = isNearEnd();
       const shouldFollow = Boolean(forceEnd) || (following && wasNearEnd);
       renderText(viewport, String(text ?? ""));
+      const line = String(original ?? "").trim();
+      if (line) {
+        const node = viewport.ownerDocument.createElement("div");
+        node.className = "bubble-original";
+        renderText(node, line);
+        viewport.append(node);
+      }
       if (shouldFollow) scrollToEnd();
       else following = false;
     },

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { composerPlaceholder, createChatPresentationReducer } from "../chat/chat-presentation.js";
-import { createTypewriter } from "../pet/typewriter.js";
+import { bubbleJapaneseOriginal, createTypewriter } from "../pet/typewriter.js";
 
 const lifecycle = (status, generationNumber = 1, revision = 1, canRetry = false, failure = null) => ({
   type: "lifecycle",
@@ -428,6 +428,28 @@ test("Core failure gives active work one interrupted terminal and preserves earl
   assert.equal(reducer.current().lifecycle, "ready");
 });
 
+test("missing voice uses the longer pause and finished playback keeps the short pause", async () => {
+  const timers = [];
+  const typewriter = createTypewriter({
+    intervalMs: 10,
+    segmentPauseMs: 20,
+    silentSegmentPauseMs: 800,
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onSegmentComplete(_segment, index) {
+      return Promise.resolve(index === 0);
+    },
+  });
+  typewriter.start([{ text: "a" }, { text: "b" }, { text: "c" }]);
+  timers.shift().callback();
+  await Promise.resolve();
+  assert.equal(timers.at(-1).delay, 20);
+  timers.shift().callback();
+  timers.shift().callback();
+  await Promise.resolve();
+  assert.equal(timers.at(-1).delay, 800);
+});
+
 test("timing updates are snapshotted for the next reply without retiming the active one", () => {
   const timers = [];
   const typewriter = createTypewriter({
@@ -510,6 +532,28 @@ test("changing subtitle language restarts only the active segment without mixed 
   timers.shift().callback();
   assert.equal(rendered.at(-1), "か");
   assert.equal(rendered.includes("中か"), false);
+});
+
+test("greeting keeps Chinese above the Japanese line, and the original stays hidden until enabled", () => {
+  const reducer = createChatPresentationReducer({
+    initialMessage: "……起動した。用事があるなら、呼んで。",
+    initialMessageTranslation: "……启动了。有事的话，叫我。",
+  });
+  reducer.reduce(lifecycle("ready"));
+  const greeting = reducer.beginGreeting();
+  const segment = greeting.state.segments[0];
+  assert.equal(segment.text, "……起動した。用事があるなら、呼んで。");
+  assert.equal(segment.translation, "……启动了。有事的话，叫我。");
+  const typing = {
+    phase: "typing",
+    bubbleText: "……启动了",
+    segments: [segment],
+    showingReplyHistorySegment: false,
+  };
+  assert.equal(bubbleJapaneseOriginal(typing, "zh", false), "");
+  assert.equal(bubbleJapaneseOriginal(typing, "zh", true), segment.text);
+  assert.equal(bubbleJapaneseOriginal({ ...typing, phase: "settled", bubbleText: segment.translation }, "zh", true), segment.text);
+  assert.equal(bubbleJapaneseOriginal({ ...typing, phase: "settled", bubbleText: segment.translation }, "ja", true), "");
 });
 
 test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {

@@ -295,17 +295,21 @@ Runtime v2 对该域退回只读，不切换用户入口。
 WP-3-04 开放两个彼此独立提交的 feature key。`chat.presentation_timing` 公开 DTO 只包含：
 
 - `subtitle_typing_interval_ms`：完整回复进入 WebView 后的逐字显示间隔；
-- `reply_segment_pause_ms`：相邻完整回复段之间的展示停顿。
+- `reply_segment_pause_ms`：语音播放结束后，相邻完整回复段之间的展示停顿；
+- `silent_segment_pause_ms`：本段没有生成语音时，字幕结束后再切下一段的停留。旧配置缺省为 2000。
 
 两项字段必须使用有界整数、一次原子保存到 Runtime v2 `ui.json`，保存成功后立即作用于后续回复；失败
 时旧持久值和当前运行值都保持不变。设置窗口重新打开必须回读已提交值，未提交预览和旧 window
 generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 timer，不成为持久化真相源。
 
-`chat.subtitle_language` 只持久化 `subtitle_language: "zh" | "ja"`。缺失或非法值读取为默认 `zh`，
-下一次成功保存时规范化；`zh` 优先展示 segment `translation`，空值回退 `text`，`ja` 展示 `text`。
-主窗口通过 `sakura.chat.subtitle.toggle` 右键菜单动作切换，菜单 manifest 必须返回 checked 状态；保存失败
-保持旧文件、旧运行值与旧勾选态。切换成功后，输入中的当前段立即清空并按新语言从头重播；settled 或
-当前会话回看段立即完整替换，不等待下一条回复、不回放已完成段，也不切换立绘。
+`chat.subtitle_language` 持久化 `subtitle_language: "zh" | "ja"`，以及 `show_japanese_original`。
+`subtitle_language` 缺失或非法值读取为默认 `zh`，下一次成功保存时规范化；`zh` 优先展示 segment
+`translation`，空值回退 `text`，`ja` 展示 `text`。`show_japanese_original` 缺失时为关闭。开启且当前为
+`zh` 时，气泡在中文下方用较小字号再显示不同的 `text`；关闭、语言为 `ja`，或两行文本相同，都只保留原来的一行。
+主窗口通过 `sakura.chat.subtitle.toggle` 和 `sakura.chat.japanese-original.toggle` 右键菜单动作切换，
+菜单 manifest 必须返回 checked 状态；保存失败保持旧文件、旧运行值与旧勾选态。字幕语言切换成功后，
+输入中的当前段立即清空并按新语言从头重播；settled 或当前会话回看段立即完整替换，不等待下一条回复、
+不回放已完成段，也不切换立绘。日文原文开关只增减下方原文，不重播当前段。
 该 feature 不读写 `system_config.yaml`，只使用当前 v1 `ui.json`。
 
 `appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。

@@ -27,6 +27,7 @@ function characterDocument() {
       this.disabled = false;
       this.inert = false;
       this.value = "";
+      this.dataset = {};
       this.className = "";
       this.classList = {
         contains: (name) => this.className.split(/\s+/).includes(name),
@@ -929,6 +930,29 @@ test("deleting a character requires confirmation and does not invoke on cancel",
     "聊天记录和记忆仍会保留。",
     "桌宠将切换到「beta」。",
   ]);
+  assert.equal(fixture.calls.some(([command]) => command === "settings_character_delete"), false);
+  fixture.feature.dispose();
+});
+
+test("expanded character rows delete that character and the bottom button keeps the selection", async () => {
+  const confirms = [];
+  const fixture = await characterSettings({
+    feature: {
+      confirmAction: async (message, options) => {
+        confirms.push({ message, options });
+        return false;
+      },
+    },
+  });
+  await fixture.fields.characterSelect.fire("option-delete", { detail: { value: "gamma" } });
+  assert.equal(confirms.length, 1);
+  assert.equal(confirms[0].message, "删除「gamma」？");
+  assert.deepEqual(confirms[0].options.details, [
+    "角色包会从本机移除，无法恢复。",
+    "聊天记录和记忆仍会保留。",
+  ]);
+  await fixture.fields.characterDeleteButton.click();
+  assert.equal(confirms[1].message, "删除「alpha」？");
   assert.equal(fixture.calls.some(([command]) => command === "settings_character_delete"), false);
   fixture.feature.dispose();
 });

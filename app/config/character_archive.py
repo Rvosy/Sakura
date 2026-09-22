@@ -328,6 +328,11 @@ def export_character_archive(
             "card": card_archive_path,
         }
     )
+    translation = profile.initial_message_translation.strip()
+    if translation:
+        character_manifest["initial_message_translation"] = translation
+    else:
+        character_manifest.pop("initial_message_translation", None)
     if "visuals" not in character_manifest:
         _project_legacy_portrait_archive_paths(character_manifest, profile.package_dir, archive_path_for_resource)
     reply = (

@@ -477,7 +477,13 @@ class CharacterStudioBoundary:
             editor_resource, raw = self._service.visual_editor_input(package, doc, resource)
             result = host.editor(editor_resource, raw, payload.get("providerId") or (doc.visuals or {}).get("providers", {}).get(resource_id))
             from types import SimpleNamespace
-            character = SimpleNamespace(id=doc.id, display_name=doc.display_name, initial_message=doc.initial_message or "你好", theme_settings=doc.theme)
+            character = SimpleNamespace(
+                id=doc.id,
+                display_name=doc.display_name,
+                initial_message=doc.initial_message or "你好",
+                initial_message_translation=doc.initial_message_translation,
+                theme_settings=doc.theme,
+            )
             presentation = project_character_presentation(character, result["visual"], reason_code="READY")
             return {"schemaVersion": 1, "presentation": {**presentation, "generationId": self._generation_id}, "providerScopeId": result["providerScopeId"], "data": result["data"], "resource": resource.to_mapping(),
                 "assetRootPath": str(resolve_resource_path(package, resource.root))}

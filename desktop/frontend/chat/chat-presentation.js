@@ -88,7 +88,7 @@ function normalizedSegments(reply, operationId) {
   );
 }
 
-export function createChatPresentationReducer({ initialMessage } = {}) {
+export function createChatPresentationReducer({ initialMessage, initialMessageTranslation = "" } = {}) {
   if (!initialMessage) throw new Error("character presentation is required");
   let state = initialState();
   let hasReachedReady = false;
@@ -357,7 +357,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
         showingReplyHistorySegment: false,
         segments: Object.freeze([Object.freeze({
           text: initialMessage,
-          translation: "",
+          translation: typeof initialMessageTranslation === "string" ? initialMessageTranslation : "",
           tone: "calm",
 
           suppressTts: true,

@@ -2763,6 +2763,7 @@ fn open_pet_context_menu(
     surface_y: f64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
     subtitle: tauri::State<'_, chat_settings::SubtitleLanguageState>,
+    japanese_original: tauri::State<'_, chat_settings::JapaneseOriginalState>,
     topmost: tauri::State<'_, product_shell::PetTopmostState>,
 ) -> Result<product_shell::ProductMenuCapabilityManifest, String> {
     if window.label() != "main" || !surface_x.is_finite() || !surface_y.is_finite() {
@@ -2805,6 +2806,7 @@ fn open_pet_context_menu(
     let manifest = product_shell::product_menu_capability_manifest(
         subtitle.get()?.is_chinese(),
         topmost.enabled()?,
+        japanese_original.get()?,
     );
     // Repositioning an already-open menu must keep the first frame as the close target. Replacing
     // these snapshots with the expanded frame would make Escape permanently retain the menu size.
@@ -7104,6 +7106,16 @@ fn handle_product_menu_action(
             )
             .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
         }
+        product_shell::ProductMenuAction::ToggleJapaneseOriginal => {
+            let original = app.state::<chat_settings::JapaneseOriginalState>();
+            let enabled = original.toggle()?;
+            app.emit_to(
+                "main",
+                chat_settings::JAPANESE_ORIGINAL_CHANGED_EVENT,
+                enabled,
+            )
+            .map_err(|error| format!("CHAT_JAPANESE_ORIGINAL_EVENT_FAILED: {error}"))
+        }
         product_shell::ProductMenuAction::ToggleTopmost => {
             let window = app
                 .get_webview_window("main")
@@ -7755,6 +7767,9 @@ fn main() {
             ui_config_repository.clone(),
         ))
         .manage(chat_settings::SubtitleLanguageState::new(
+            ui_config_repository.clone(),
+        ))
+        .manage(chat_settings::JapaneseOriginalState::new(
             ui_config_repository,
         ))
         .manage(plugin_marketplace::MarketplaceState::new(
@@ -8032,6 +8047,7 @@ fn main() {
             chat_settings::current_chat_presentation_timing,
             chat_settings::current_bubble_auto_hide,
             chat_settings::current_subtitle_language,
+            chat_settings::current_show_japanese_original,
             history_window::history_bootstrap,
             history_window::history_page,
             history_window::close_history_window,

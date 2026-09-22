@@ -14,9 +14,36 @@ export function selectSegmentText(segment, language = "zh") {
   return normalizeLanguage(language) === "zh" && translation.trim() ? translation : text;
 }
 
+function visibleReplySegment(state) {
+  if (!state) return null;
+  if (state.showingReplyHistorySegment) {
+    return state.replyHistorySegments?.[state.replyHistoryIndex] || null;
+  }
+  if ((state.phase === "typing" || state.phase === "settled") && Array.isArray(state.segments) && state.segments.length === 1) {
+    return state.segments[0];
+  }
+  if (state.phase === "typing" && Array.isArray(state.segments) && state.segments.length > 1) {
+    return state.segments[0];
+  }
+  return null;
+}
+
+export function bubbleJapaneseOriginal(state, language, enabled) {
+  if (!enabled || normalizeLanguage(language) !== "zh") return "";
+  const segment = visibleReplySegment(state);
+  if (!segment) return "";
+  const original = typeof segment.text === "string" ? segment.text.trim() : "";
+  const primary = selectSegmentText(segment, "zh").trim();
+  if (!original || original === primary) return "";
+  const bubble = String(state.bubbleText || "");
+  if (state.phase === "typing") return bubble && primary.startsWith(bubble) ? original : "";
+  return bubble.trim() === primary ? original : "";
+}
+
 export function createTypewriter({
   intervalMs = 28,
   segmentPauseMs = 160,
+  silentSegmentPauseMs,
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
   clearTimer = (timer) => window.clearTimeout(timer),
   language = "zh",
@@ -28,6 +55,9 @@ export function createTypewriter({
 } = {}) {
   let typingDelay = Math.max(5, Math.min(200, Number(intervalMs) || 28));
   let pauseDelay = Math.max(0, Math.min(3000, Number(segmentPauseMs) || 0));
+  let silentPauseDelay = silentSegmentPauseMs === undefined
+    ? pauseDelay
+    : Math.max(0, Math.min(10000, Number(silentSegmentPauseMs) || 0));
   let sequence = 0;
   let timer = null;
   let active = null;
@@ -48,7 +78,7 @@ export function createTypewriter({
   function scheduleNextSegment(run) {
     if (run.sequence !== sequence) return;
     const revision = run.segmentRevision;
-    const advance = () => {
+    const advance = (voiced) => {
       if (run.sequence !== sequence || revision !== run.segmentRevision) return;
       if (run.segmentIndex + 1 >= run.segments.length) return complete(run);
       timer = setTimer(() => {
@@ -56,11 +86,12 @@ export function createTypewriter({
         if (run.sequence !== sequence) return;
         run.segmentIndex += 1;
         typeSegment(run);
-      }, run.pauseDelay);
+      }, voiced === true ? run.pauseDelay : run.silentPauseDelay);
     };
     const gate = onSegmentComplete(run.segments[run.segmentIndex], run.segmentIndex);
-    if (gate && typeof gate.then === "function") Promise.resolve(gate).then(advance, advance);
-    else advance();
+    if (gate && typeof gate.then === "function") {
+      Promise.resolve(gate).then((voiced) => advance(voiced), () => advance(false));
+    } else advance(false);
   }
 
   function typeSegment(run) {
@@ -127,6 +158,7 @@ export function createTypewriter({
         skipped: false,
         typingDelay,
         pauseDelay,
+        silentPauseDelay,
       };
       typeSegment(active);
       return true;
@@ -149,9 +181,16 @@ export function createTypewriter({
       active = null;
       onText(String(replacement ?? ""), Object.freeze({ reason: "cancel", forceEnd: false }));
     },
-    updateTiming({ intervalMs: nextInterval, segmentPauseMs: nextPause } = {}) {
+    updateTiming({
+      intervalMs: nextInterval,
+      segmentPauseMs: nextPause,
+      silentSegmentPauseMs: nextSilent,
+    } = {}) {
       typingDelay = Math.max(5, Math.min(200, Number(nextInterval) || 28));
       pauseDelay = Math.max(0, Math.min(3000, Number(nextPause) || 0));
+      if (nextSilent !== undefined) {
+        silentPauseDelay = Math.max(0, Math.min(10000, Number(nextSilent) || 0));
+      }
     },
     updateLanguage(nextLanguage) {
       const normalized = normalizeLanguage(nextLanguage);

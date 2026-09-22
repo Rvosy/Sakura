@@ -79,7 +79,7 @@ import {
   waitForSurfaceFadeCompletion,
   createSurfaceHoverProbe,
 } from "./pet/surface-visibility.js";
-import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
+import { bubbleJapaneseOriginal, createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
@@ -916,6 +916,7 @@ const rendererHost = createRendererHost({
 
 let presentation = createChatPresentationReducer({
   initialMessage: characterPresentation.initialMessage,
+  initialMessageTranslation: characterPresentation.initialMessageTranslation,
 });
 let pendingCharacterGreeting = false;
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
@@ -1094,12 +1095,14 @@ const phaseLabels = Object.freeze({
 let chatTiming = Object.freeze({
   subtitleTypingIntervalMs: 28,
   replySegmentPauseMs: 160,
+  silentSegmentPauseMs: 2000,
 });
 try {
   const persistedTiming = await invoke("current_chat_presentation_timing");
   if (
     Number.isSafeInteger(persistedTiming?.subtitleTypingIntervalMs)
     && Number.isSafeInteger(persistedTiming?.replySegmentPauseMs)
+    && Number.isSafeInteger(persistedTiming?.silentSegmentPauseMs)
   ) chatTiming = Object.freeze(persistedTiming);
 } catch {
   // Defaults remain valid when the isolated ui.json timing slice cannot be read.
@@ -1111,6 +1114,12 @@ try {
   if (persistedLanguage === "ja") subtitleLanguage = "ja";
 } catch {
   // Chinese remains the fail-safe default when the isolated setting cannot be read.
+}
+let showJapaneseOriginal = false;
+try {
+  showJapaneseOriginal = await invoke("current_show_japanese_original") === true;
+} catch {
+  // The extra Japanese line stays hidden when the setting cannot be read.
 }
 
 let bubbleAutoHideSettings = Object.freeze({
@@ -1272,6 +1281,7 @@ document.addEventListener("keydown", (event) => {
 const typewriter = createTypewriter({
   intervalMs: chatTiming.subtitleTypingIntervalMs,
   segmentPauseMs: chatTiming.replySegmentPauseMs,
+  silentSegmentPauseMs: chatTiming.silentSegmentPauseMs,
   language: subtitleLanguage,
   onStart: () => bubbleScroll.beginReply(),
   onText: (text, bubbleUpdate) => {
@@ -1318,7 +1328,10 @@ function render(state, bubbleUpdate = {}) {
   const commitBubble = () => {
     if (bubbleCommitted) return;
     bubbleCommitted = true;
-    bubbleScroll.updateText(state.bubbleText, bubbleUpdate);
+    bubbleScroll.updateText(state.bubbleText, {
+      ...bubbleUpdate,
+      original: bubbleJapaneseOriginal(state, subtitleLanguage, showJapaneseOriginal),
+    });
     adaptiveSurface.schedule();
   };
   chatPhase.textContent = phaseLabels[state.phase] || "在线";
@@ -1662,6 +1675,16 @@ await listenAppEvent("sakura://subtitle-language-changed", (event) => {
     const refreshed = presentation.refreshVisibleReply(selectSegmentText(segment, language));
     if (refreshed.applied) render(refreshed.state, { reason: "language", forceEnd: true });
   }
+});
+
+await listenAppEvent("sakura://japanese-original-changed", (event) => {
+  showJapaneseOriginal = event?.payload === true;
+  const state = presentation.current();
+  if (typewriter.isActive()) {
+    render(state, { reason: "original", forceEnd: false });
+    return;
+  }
+  render(state, { reason: "original", forceEnd: true });
 });
 
 let coreRebindRevision = 0;
@@ -2063,11 +2086,13 @@ await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
   if (
     !Number.isSafeInteger(values?.subtitleTypingIntervalMs)
     || !Number.isSafeInteger(values?.replySegmentPauseMs)
+    || !Number.isSafeInteger(values?.silentSegmentPauseMs)
   ) return;
   chatTiming = Object.freeze(values);
   typewriter.updateTiming({
     intervalMs: values.subtitleTypingIntervalMs,
     segmentPauseMs: values.replySegmentPauseMs,
+    silentSegmentPauseMs: values.silentSegmentPauseMs,
   });
 });
 

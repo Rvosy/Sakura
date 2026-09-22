@@ -47,6 +47,8 @@ pub struct CharacterPresentation {
     pub character_id: String,
     pub display_name: String,
     pub initial_message: String,
+    #[serde(default)]
+    pub initial_message_translation: String,
     pub theme_tokens: BTreeMap<String, String>,
     pub visual: Option<VisualPresentation>,
     pub visual_reason_code: String,
@@ -871,6 +873,7 @@ mod tests {
             character_id: "model".into(),
             display_name: "模型".into(),
             initial_message: "你好".into(),
+            initial_message_translation: String::new(),
             theme_tokens: THEME_KEYS
                 .iter()
                 .map(|key| (key.to_string(), "#123456".into()))

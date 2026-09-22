@@ -21,6 +21,7 @@ test("the custom product menu uses the existing Rust action IDs", () => {
   assert.deepEqual(PRODUCT_MENU_ACTIONS, {
     visibility: "sakura.pet.visibility.toggle",
     subtitle: "sakura.chat.subtitle.toggle",
+    japaneseOriginal: "sakura.chat.japanese-original.toggle",
     topmost: "sakura.pet.topmost.toggle",
     history: "sakura.history.open",
     runtimeLog: "sakura.runtime-log.open",

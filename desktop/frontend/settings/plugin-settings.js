@@ -1466,7 +1466,52 @@ export function createPluginSettingsFeature({
     return container;
   }
 
-  function renderModelSurfaces() { settingsUI.render(pluginView.items || []); }
+  function modelServicePlugin() {
+    return (pluginView.items || []).find((plugin) =>
+      plugin.plugin_id === "sakura.model.openai_compatible"
+      || (plugin.provides || []).includes("sakura.model.openai_compatible")
+      || pluginSettingsSections(plugin).some((section) => section.presentation?.component === "connection-editor")
+    );
+  }
+
+  function providerUnavailableCopy(plugin) {
+    if (!plugin) {
+      return "模型服务插件没有加载。已保存的连接和 API Key 仍会保留。";
+    }
+    if (plugin.reason_code === "PLUGIN_DEPENDENCIES_MISSING" || plugin.reason_code === "PLUGIN_DEPENDENCIES_STALE") {
+      return "模型服务插件缺少运行依赖，暂时不能编辑连接。已保存的连接和密钥仍会保留。";
+    }
+    const status = pluginPresentation.presentPluginStatus({
+      state: plugin.state,
+      reasonCode: plugin.reason_code,
+    });
+    return status.message
+      ? `${plugin.name}${status.label}。${status.message}已保存的连接和 API Key 仍会保留。`
+      : `${plugin.name}暂时不可用。已保存的连接和 API Key 仍会保留。`;
+  }
+
+  function renderProviderFallback() {
+    const page = fields.pages.providers;
+    const host = fields.modelProviderSurface;
+    if (!page || !host) return;
+    host.querySelector("[data-provider-fallback]")?.remove();
+    if (page.querySelector(".connection-editor")) return;
+    const plugin = modelServicePlugin();
+    const panel = document.createElement("div");
+    panel.className = "provider-unavailable";
+    panel.dataset.providerFallback = "true";
+    const title = document.createElement("h2");
+    title.textContent = "模型服务";
+    const message = document.createElement("p");
+    message.textContent = providerUnavailableCopy(plugin);
+    panel.append(title, message);
+    host.append(panel);
+  }
+
+  function renderModelSurfaces() {
+    settingsUI.render(pluginView.items || []);
+    renderProviderFallback();
+  }
   function renderScreenAwarenessSurface() { settingsUI.render(pluginView.items || []); }
 
   function memorySurfaceIsTransitioning() {

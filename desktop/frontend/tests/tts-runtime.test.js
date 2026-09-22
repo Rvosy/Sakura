@@ -160,6 +160,34 @@ test("cancelling a segment releases pending visual preparation without playing l
   h.controller.dispose();
 });
 
+test("afterSegment waits for playback and still reports voiced after it finishes", async () => {
+  const h = await harness();
+  const segment = { text: "one" };
+  h.controller.beginReply("reply", [segment]);
+  const gate = h.controller.beforeSegment(segment, 0);
+  await h.waitFor("tts_play_prepared");
+  h.emit("tts-1-0", "started");
+  await gate;
+  let settled = false;
+  const wait = h.controller.afterSegment(0).then((voiced) => { settled = voiced; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  h.emit("tts-1-0", "finished");
+  await wait;
+  assert.equal(settled, true);
+  assert.equal(await h.controller.afterSegment(0), true);
+  h.controller.dispose();
+});
+
+test("synthesis failure does not count the segment as voiced", async () => {
+  const h = await harness(() => { throw new Error("TTS_SERVICE_UNAVAILABLE"); });
+  const segment = { text: "one" };
+  h.controller.beginReply("reply", [segment]);
+  await h.controller.beforeSegment(segment, 0);
+  assert.equal(await h.controller.afterSegment(0), false);
+  h.controller.dispose();
+});
+
 test("capture interrupts the current wait while later silent segments still prepare their visuals", async () => {
   const visuals = [deferred(), deferred()];
   const entered = [deferred(), deferred()];
