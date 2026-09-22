@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-16
+updated: 2026-09-22
 ---
 
 # 远程诊断与运行统计
@@ -45,6 +45,7 @@ Rust 是唯一 HTTP 出站 owner。Core 和插件通过现有日志/遥测 bridg
 - `exception_site/source_file/source_line`：可获取的失败位置。
 - `errno/winerror/exit_code/status/http_status/timeout_ms`：系统、子进程与请求事实。更新请求另保留 `is_timeout/is_connect/endpoint_alias/io_error_kind`；类型和状态来自实际异常，不能按 URL 中的 `.json` 判断解析失败。上游已经丢弃状态的 `ReleaseNotFound` 记为 `RELEASE_RESPONSE`，不推断 HTTP 状态。
 - `plugin_id/plugin_name/provider/model/endpoint/url/path`：发生故障的实际组件、模型、请求目标和路径，不上传完整插件清单。
+- `code_source/dependency_source/version`：插件迁移当时使用的代码与依赖来源类别、插件版本；不扫描上传目录清单。
 - `stderr/stage/command/request_id/window_label/provider_error_code/provider_error_type/repair_reason/repair_outcome`：有关现场字段。
 
 Core 的进程边界复用 `exception_diagnostics` 的结果，不再为遥测另造一个只有类型和安全栈的摘要。Rust 在本地日志显示属性过滤之前取得诊断；本地日志等级不会阻断遥测。WebView 保留 message、原始 stack 和 cause 链；Rust panic 保留 panic 原文、位置和 backtrace。
@@ -84,6 +85,8 @@ Rust 使用一个后台发送任务和有界队列。错误发送前写入 UI �
 失败聊天的 `chat.finished` 使用同一终态的错误码填 `reasonCode`，并记录实际失败阶段；成功和取消终态不附带已失效的失败原因。对应的错误诊断使用相同 operationId，便于关联请求、模型调用与聊天终态。
 
 TTS、迁移、修复继续记录已有业务结果，source/repair/recovery 等既有字段不得被日志别名过滤吞掉。`migration.recovery` 只用于真正的恢复事件，不能把所有导入失败都视作恢复失败。
+
+内置插件迁出的 `plugin.migration.*` 事件名和诊断字段在 Core 日志桥、Rust 本地日志及错误报告中保持可识别。实际处理结束后，`plugin.migration.completed` 按汇总结果投影为既有 v2 `migration.completed` 或 `migration.failed`，`details.stage=builtin_extraction`，包含结果、实际耗时和失败数量。逐项失败通过 v3 保留插件 ID、代码与依赖来源、版本、具体阶段及异常链；候选不可用和成功过程保留在本地日志和错误前事件中，不逐条上传为错误。普通运行统计沿用既有不落盘补传的语义，不能据其缺失推断迁移失败。
 
 模型 usage 与 Context 估计分开；失败保留 HTTP 状态、faultDomain、reasonCode、stage、attemptCount 和 compatibilityFallback。模型指标继续归类 modelFamily；错误报告可以包含实际 model 和 endpoint。
 

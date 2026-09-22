@@ -83,6 +83,21 @@ pub(crate) async fn dispatch_settings_request(
     .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
 }
 
+/// Explicit installs own their subprocess/rollback deadlines. Keep the caller
+/// (and its temporary package) alive until Core finishes or the generation ends.
+pub(crate) async fn dispatch_settings_install(
+    handle: ShellLifecycleHandle,
+    name: &'static str,
+    payload: Value,
+    queue_deadline: Duration,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        handle.settings_request_with_completion(None, name, payload, queue_deadline, true)
+    })
+    .await
+    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
+}
+
 pub(crate) fn load_current_character_presentation(
     lifecycle: &ShellLifecycleState,
     resources: &character_presentation::CharacterPresentationState,
@@ -333,6 +348,17 @@ impl ShellLifecycleHandle {
         payload: Value,
         deadline: Duration,
     ) -> Result<Value, String> {
+        self.settings_request_with_completion(request_id, name, payload, deadline, false)
+    }
+
+    fn settings_request_with_completion(
+        &self,
+        request_id: Option<&str>,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+        until_complete: bool,
+    ) -> Result<Value, String> {
         let generated;
         let request_id = match request_id {
             Some(value) if !value.trim().is_empty() => value,
@@ -351,7 +377,11 @@ impl ShellLifecycleHandle {
             .map_err(|_| "SETTINGS_TRANSPORT_UNAVAILABLE".to_string())?
             .clone()
             .ok_or_else(|| "SETTINGS_TRANSPORT_UNAVAILABLE".to_string())?;
-        transport.request(request_id, name, payload, deadline)
+        if until_complete {
+            transport.request_until_complete(request_id, name, payload, deadline)
+        } else {
+            transport.request(request_id, name, payload, deadline)
+        }
     }
 
     pub fn request_shutdown(&self) -> Result<(), &'static str> {

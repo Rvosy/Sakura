@@ -3,7 +3,7 @@ use crate::{product_shell, ui_config::UiConfigRepository};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{error::Error, sync::LazyLock, time::Duration};
 use tauri::{State, WebviewWindow};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -134,10 +134,26 @@ pub async fn fetch(
         match attempt {
             Ok(Some(data)) => return Ok(data),
             Ok(None) => return Err("下载内容超过大小限制。".into()),
-            Err(_) => failures.push(name),
+            Err(error) => failures.push(format!("{name}（{}）", download_error_detail(error))),
         }
     }
-    Err(format!("无法下载，已尝试：{}。", failures.join("、")))
+    Err(format!("无法下载，已尝试：{}。", failures.join("；")))
+}
+
+fn download_error_detail(error: reqwest::Error) -> String {
+    let error = error.without_url();
+    let mut chain = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(cause) = source {
+        chain.push(cause.to_string());
+        source = cause.source();
+    }
+    // Redirects and nested transport errors can contain signed URLs. Keep the
+    // actual failure, but omit request URLs regardless of their query key names.
+    static URL: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r#"https?://[^\s<>\"']+"#).unwrap());
+    let detail = chain.join("\nCaused by: ");
+    crate::runtime_log::sanitize_diagnostic(&URL.replace_all(&detail, "[URL]"), &[], 4096)
 }
 
 #[tauri::command]
@@ -252,6 +268,67 @@ mod tests {
         )
         .await;
         assert!(result.unwrap_err().contains("大小限制"));
+        task.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn all_failed_sources_preserve_http_status_without_request_secrets() {
+        let (first_url, first) = server(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+        let (second_url, second) = server(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n");
+        let sources = vec![
+            DownloadSource {
+                name: "first".into(),
+                prefix: first_url.replacen("http://", "http://user:private-credential@", 1),
+                enabled: true,
+            },
+            DownloadSource {
+                name: "second".into(),
+                prefix: second_url,
+                enabled: true,
+            },
+        ];
+        let attempts = Mutex::new(Vec::new());
+        let error = fetch(
+            &Url::parse("https://github.com/example/repo/package.zip?signature=private-query")
+                .unwrap(),
+            &sources,
+            10,
+            |name, _, _| attempts.lock().unwrap().push(name.to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("first（HTTP status client error (403 Forbidden)"));
+        assert!(error.contains("second（HTTP status server error (503 Unavailable)"));
+        for secret in [
+            "private-credential",
+            "private-query",
+            "package.zip",
+            "http://",
+        ] {
+            assert!(!error.contains(secret), "request details leaked: {error}");
+        }
+        assert_eq!(*attempts.lock().unwrap(), vec!["first", "second"]);
+        first.join().unwrap();
+        second.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_response_preserves_the_transport_cause() {
+        let (address, task) = server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nZIP!");
+        let error = fetch(
+            &Url::parse(&format!("{address}package.zip?signature=private-query")).unwrap(),
+            &[],
+            10,
+            |_, _, _| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("Caused by:"),
+            "transport cause lost: {error}"
+        );
+        assert!(error.contains("end of file before message length reached"));
+        assert!(!error.contains("private-query"));
         task.join().unwrap();
     }
     #[test]

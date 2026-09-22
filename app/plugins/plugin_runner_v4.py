@@ -92,7 +92,7 @@ class PluginRunner:
         self._close_context()
         return 0
 
-    def validate_entry(self) -> None:
+    def validate_entry(self, runtime_imports: Sequence[str] = ()) -> None:
         self._prepare_import_path()
         module_name, separator, class_name = self.entry.partition(":")
         if separator != ":":
@@ -101,6 +101,8 @@ class PluginRunner:
         plugin_type = getattr(module, class_name, None)
         if not callable(plugin_type):
             raise PluginApiError("PLUGIN_ENTRY_INVALID", plugin_id=self.plugin_id)
+        for module_name in runtime_imports:
+            importlib.import_module(module_name)
 
     def _prepare_import_path(self) -> None:
         sdk_root = str(Path(__file__).resolve().parents[1] / "plugin_sdk")
@@ -287,6 +289,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--entry", required=True)
     parser.add_argument("--validate-entry", action="store_true")
+    parser.add_argument("--validate-import", action="append", default=[])
     return parser
 
 
@@ -305,7 +308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         entry=args.entry,
     )
     if args.validate_entry:
-        runner.validate_entry()
+        runner.validate_entry(args.validate_import)
         return 0
     return runner.run()
 

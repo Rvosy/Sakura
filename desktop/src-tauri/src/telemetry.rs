@@ -587,11 +587,21 @@ impl TelemetryService {
             | "tts.synthesis.failed"
             | "tts.synthesis.cancelled" => Some("tts.finished"),
             "reply.repair.finished" => Some("reply.repair.finished"),
+            "plugin.migration.completed" => Some(
+                if outcome_attribute(attributes).as_deref() == Some("failed") {
+                    "migration.failed"
+                } else {
+                    "migration.completed"
+                },
+            ),
             "legacy_import.recovery.failed" => Some("migration.recovery"),
             _ => None,
         };
         if let Some(name) = runtime_event {
             let mut details = details_from_attributes(severity, attributes);
+            if event == "plugin.migration.completed" {
+                details.failed = integer_attribute(attributes, "failed");
+            }
             details.outcome = if cancelled {
                 details.severity = None;
                 details.impact = None;
@@ -3573,6 +3583,97 @@ mod tests {
             assert_eq!(endpoint, "/v3/errors");
         }
         assert_eq!(service.inner.reports.lock().unwrap().len(), 6);
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_migration_failure_keeps_sources_in_local_log_and_report() {
+        use crate::runtime_log::RuntimeLogService;
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "migration-evidence", 128, TEST_WAIT);
+        let log = RuntimeLogService::start(root.join("runtime.log"));
+        log.attach_telemetry(service.clone());
+        let context = CoreLogContext {
+            generation_id: "migration-generation".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        log.activate_telemetry_generation(&context.generation_id);
+        let wire = json!({
+            "severity": "error", "verbosity": "error", "channel": "pluginmigration",
+            "event": "plugin.migration.failed", "message": "Plugin migration failed",
+            "plugin_id": "sakura.memory.mem0",
+            "attributes": {
+                "code": "PLUGIN_MIGRATION_FAILED", "reason_code": "PLUGIN_MIGRATION_FAILED",
+                "stage": "validate_entry", "code_source": "payload",
+                "dependency_source": "user", "version": "0.1.0", "elapsed_ms": 123,
+                "diagnostic": "No module named 'qdrant_client'; token=fixture-private",
+                "exception_stack": "ModuleNotFoundError at validate_entry"
+            }
+        });
+        assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        let (endpoint, bytes) = server.next_request(&service);
+        assert_eq!(endpoint, "/v3/errors");
+        let report: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(report["error"]["event"], "plugin.migration.failed");
+        assert_eq!(report["error"]["code"], "PLUGIN_MIGRATION_FAILED");
+        assert_eq!(report["evidence"]["plugin_id"], "sakura.memory.mem0");
+        assert_eq!(report["evidence"]["code_source"], "payload");
+        assert_eq!(report["evidence"]["dependency_source"], "user");
+        assert_eq!(report["evidence"]["version"], "0.1.0");
+        assert_eq!(report["details"]["stage"], "validate_entry");
+        assert_eq!(report["details"]["elapsedMs"], 123);
+        assert!(report["evidence"]["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("qdrant_client"));
+        assert!(!report.to_string().contains("fixture-private"));
+        log.drain_and_shutdown_for_test();
+        let contents = fs::read_to_string(root.join("sakura-plugins.log")).unwrap();
+        for field in [
+            "code_source=payload",
+            "dependency_source=user",
+            "version=0.1.0",
+        ] {
+            assert!(
+                contents.contains(field),
+                "missing migration detail: {field}"
+            );
+        }
+        drop(log);
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_migration_summary_uses_existing_remote_outcome_contract() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "migration-outcomes", 128, TEST_WAIT);
+        for (outcome, failed, expected) in [
+            ("success", 0, "migration.completed"),
+            ("failed", 2, "migration.failed"),
+        ] {
+            service.observe_runtime_event(
+                "core",
+                "info",
+                "pluginmigration",
+                "plugin.migration.completed",
+                None,
+                Some(&json!({"stage": "builtin_extraction", "outcome": outcome,
+                    "elapsed_ms": 246, "failed": failed})),
+            );
+            let (endpoint, bytes) = server.next_request(&service);
+            assert_eq!(endpoint, "/v2/events");
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["items"][0]["event"], expected);
+            assert_eq!(body["items"][0]["details"]["stage"], "builtin_extraction");
+            assert_eq!(body["items"][0]["details"]["outcome"], outcome);
+            assert_eq!(body["items"][0]["details"]["failed"], failed);
+            assert_eq!(body["items"][0]["durationMs"], 246);
+        }
         service.shutdown();
         assert!(wait_for_sender_exit(&service));
         let _ = fs::remove_dir_all(root);

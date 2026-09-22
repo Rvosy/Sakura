@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from app.core.diagnostics import TRACE_LIMIT, bounded_text
 from app.plugin_sdk.sakura_downloads import uv_download_environment
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
@@ -28,9 +29,9 @@ _MARKER = ".sakura-dependencies.json"
 
 class PluginDependencyError(RuntimeError):
     def __init__(self, code: str, detail: str = "") -> None:
-        super().__init__(code)
         self.code = code
-        self.detail = detail[:2000]
+        self.detail = bounded_text(detail, TRACE_LIMIT)
+        super().__init__(f"{code}: {self.detail}" if self.detail else code)
 
 
 @dataclass(frozen=True)
@@ -149,7 +150,7 @@ class PluginDependencyRoots:
                     check=False,
                 )
                 if result.returncode != 0:
-                    detail = (result.stderr or result.stdout).strip()
+                    detail = f"exit_code={result.returncode}\n{(result.stderr or result.stdout).strip()}"
                     raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_FAILED", detail)
             if entry is not None:
                 self._validate_entry(plugin_id, plugin_root, staging, entry)
@@ -290,7 +291,7 @@ class PluginDependencyRoots:
                 exported.unlink(missing_ok=True)
                 raise PluginDependencyError(
                     "PLUGIN_DEPENDENCY_INSTALL_FAILED",
-                    (export.stderr or export.stdout).strip(),
+                    f"exit_code={export.returncode}\n{(export.stderr or export.stdout).strip()}",
                 )
             return [*base, "--requirements", str(exported)], exported
         return [*base, *declaration.dependencies], None
@@ -327,6 +328,8 @@ class PluginDependencyRoots:
         plugin_root: Path,
         dependency_root: Path | None,
         entry: str,
+        *,
+        runtime_imports: tuple[str, ...] | list[str] = (),
     ) -> None:
         runner = Path(__file__).with_name("plugin_runner_v4.py")
         command = [
@@ -348,6 +351,8 @@ class PluginDependencyRoots:
         ]
         if dependency_root is not None:
             command.extend(["--dependency-root", str(dependency_root)])
+        for module in runtime_imports:
+            command.extend(["--validate-import", module])
         environment = os.environ.copy()
         environment.pop("PYTHONPATH", None)
         environment.pop("PYTHONHOME", None)
@@ -370,7 +375,7 @@ class PluginDependencyRoots:
         if result.returncode != 0:
             raise PluginDependencyError(
                 "PLUGIN_ENTRY_IMPORT_FAILED",
-                (result.stderr or result.stdout).strip(),
+                f"exit_code={result.returncode}\n{(result.stderr or result.stdout).strip()}",
             )
 
 

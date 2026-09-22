@@ -89,7 +89,8 @@ test("installation respects upstream recommendation, withdrawn versions and upda
   assert.equal(recommended(p).number, "1.0.0"); assert.equal(canInstall(p, source), true);
   p.installed = "0.9.0"; assert.equal(canInstall(p, source), false);
   source.canUpdate = true; assert.equal(canInstall(p, source), true);
-  p.installed = "1.0.0"; assert.equal(canInstall(p, source), false);
+  p.installed = "1.0.0"; assert.equal(canInstall(p, source), true);
+  p.installed = "1.1.0"; assert.equal(canInstall(p, source), false);
   delete p.installed;
   p.versions[1].yanked = "withdrawn"; assert.equal(canInstall(p, source), false);
   p.recommendedVersion = "2.0.0"; assert.equal(canInstall(p, source), false);

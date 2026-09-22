@@ -4,8 +4,8 @@ use tauri::{State, WebviewWindow};
 use crate::{
     product_shell::{self, assert_settings_identity},
     shell_lifecycle::{
-        dispatch_settings_request, settings_core_handle, settings_response_payload,
-        ShellLifecycleState,
+        dispatch_settings_install, dispatch_settings_request, settings_core_handle,
+        settings_response_payload, ShellLifecycleState,
     },
 };
 
@@ -255,9 +255,8 @@ pub(crate) async fn settings_plugins_install(
     {
         return Err("PLUGIN_INSTALL_SOURCE_INVALID".to_string());
     }
-    let response = dispatch_settings_request(
+    let response = dispatch_settings_install(
         handle.clone(),
-        None,
         "plugins.install",
         json!({
             "revision": revision,

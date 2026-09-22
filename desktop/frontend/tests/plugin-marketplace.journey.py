@@ -103,6 +103,7 @@ def run():
             dialog = page.locator('#detail-dialog')
             expect(dialog).to_be_visible()
             expect(dialog.locator('[data-manage]')).to_be_enabled()
+            expect(dialog.get_by_role('button', name='重新安装', exact=True)).to_be_enabled()
             expect(dialog.locator('[data-technical]')).to_be_visible()
             # Catalog descriptions are not duplicated into a second body; absent notes stay absent.
             assert dialog.locator('.detail-summary').count() == 1
@@ -173,6 +174,17 @@ def run():
             expect(dialog.locator('[data-manage]')).to_be_enabled()
             assert page.evaluate('fixture.installs') == ['sakura.visual.spine']
 
+            # The current version remains reinstallable without clearing saved enablement.
+            reinstall = dialog.get_by_role('button', name='重新安装', exact=True)
+            expect(reinstall).to_be_enabled()
+            reinstall.click()
+            page.wait_for_function('fixture.installs.length === 2')
+            page.evaluate("fixture.progress(100, 'installing')")
+            expect(dialog.locator('[data-cancel-task]')).to_be_disabled()
+            page.evaluate('fixture.finish()')
+            expect(reinstall).to_be_enabled()
+            assert page.evaluate('fixture.local[0].enabled') is True
+
             # Documentation errors and late responses never block management or replace a newer README.
             page.evaluate("""async () => {
               fixture.source.readme = async () => { throw Error('offline'); };
@@ -237,6 +249,22 @@ def run():
             expect(dialog.locator('#detail-title')).to_have_text('Updated plugin')
             expect(dialog.locator('.plugin-readme')).to_have_text('Cached instructions')
             assert page.evaluate('fixture.readmeCalls') == 0
+            # Download failures and source names are external text, not markup.
+            page.evaluate("""async () => {
+              fixture.market.dispose();
+              const {createPluginMarketplace} = await import('/desktop/frontend/settings/plugin-marketplace.js');
+              fixture.market=createPluginMarketplace({document,host:{installedPlugins:()=>[]},notify(){},source:{
+                async load({onProgress}) {
+                  onProgress('<img src=x onerror=window.injected=true>');
+                  throw Error('mirror <img src=x onerror=window.injected=true> returned 502');
+                }
+              }});
+              fixture.market.setView('market',{load:false});
+              await fixture.market.refresh();
+            }""")
+            expect(page.locator('#catalog [role="status"]')).to_have_text('mirror <img src=x onerror=window.injected=true> returned 502')
+            assert page.locator('#catalog img').count() == 0
+            assert page.evaluate('window.injected === undefined')
             assert not errors, errors
             browser.close()
             print('PASS: marketplace management, update guards, disclosure refresh, safe notes and responsive dialog')

@@ -68,12 +68,25 @@ test("market installation uses current runtime identity and cancels in-flight do
 
 test("updates cannot replace bundled plugins or downgrade newer versions", async () => {
   const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
-  for (const existing of [ { enabled: false, source: "bundled", version: "1.0.0" }, { enabled: false, source: "user", version: "2.0.0" } ]) {
+  for (const existing of [ { enabled: false, source: "bundled", version: "1.0.0" }, { enabled: false, source: "user", version: "2.0.0" },
+    { enabled: true, source: "user", version: "1.10.0", reasonCode: "PLUGIN_ID_CONFLICT" } ]) {
     const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, invoke: async name => {
       assert.equal(name, "settings_plugins_get"); return { plugins: [{ pluginId: "demo", ...existing }] };
     } });
     await assert.rejects(source.install(plugin, { signal: new AbortController().signal, onProgress() {} }));
   }
+});
+
+test("a user plugin can reinstall the current version to repair code or dependencies", async () => {
+  const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
+  const commands = [];
+  const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, invoke: async name => {
+    commands.push(name);
+    if (name === "settings_plugins_get") return { plugins: [{ pluginId: "demo", source: "user", version: "1.10.0",
+      enabled: true, state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" }], revision: "current" };
+  } });
+  await source.install(plugin, { signal: new AbortController().signal, onProgress() {} });
+  assert.deepEqual(commands, ["settings_plugins_get", "settings_marketplace_install"]);
 });
 
 test("a missing migration entry can be installed through the market", async () => {

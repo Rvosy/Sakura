@@ -298,10 +298,25 @@ impl Drop for CoreHostRouter {
 
 impl CoreHostRouterHandle {
     pub fn request(&self, message: Value, deadline: Duration) -> Result<Value, String> {
-        validate_envelope(&message).map_err(|error| error.to_string())?;
         if deadline.is_zero() {
             return Err("Core Host request deadline must be positive".to_string());
         }
+        self.request_with_timeout(message, Some(deadline))
+    }
+
+    /// Wait for a transaction's terminal response or generation retirement.
+    /// The envelope's deadline still limits queue admission in Core; once
+    /// admitted, the transaction owns execution and rollback timeouts.
+    pub fn request_until_complete(&self, message: Value) -> Result<Value, String> {
+        self.request_with_timeout(message, None)
+    }
+
+    fn request_with_timeout(
+        &self,
+        message: Value,
+        response_timeout: Option<Duration>,
+    ) -> Result<Value, String> {
+        validate_envelope(&message).map_err(|error| error.to_string())?;
         let object = message
             .as_object()
             .ok_or_else(|| "INVALID_ENVELOPE: request must be an object".to_string())?;
@@ -336,6 +351,11 @@ impl CoreHostRouterHandle {
             let mut requests = self.shared.requests.lock().map_err(|_| {
                 "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
             })?;
+            // Check under the registry lock so close/failure cannot drain the
+            // generation just before a new completion waiter is registered.
+            if self.shared.stopped.load(Ordering::Acquire) {
+                return Err("GENERATION_INVALIDATED: Router is closed".to_string());
+            }
             if requests.pending.len() + requests.active_chat_events.len() >= PENDING_LIMIT {
                 return Err("PENDING_LIMIT_EXCEEDED: pending request capacity is full".to_string());
             }
@@ -369,7 +389,11 @@ impl CoreHostRouterHandle {
                 return Err("TRANSPORT_WRITE_FAILED: writer is closed".to_string());
             }
         }
-        match receiver.recv_timeout(deadline) {
+        let received = match response_timeout {
+            Some(timeout) => receiver.recv_timeout(timeout),
+            None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match received {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
                 mark_pending_timed_out(&self.shared, &id)?;
@@ -736,6 +760,10 @@ fn invalidate_all(shared: &Arc<Shared>, error: impl Into<String>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::Ordering,
+        mpsc::{self, RecvTimeoutError},
+    };
     use std::{
         collections::VecDeque,
         sync::{atomic::AtomicBool, Arc, Mutex},
@@ -957,6 +985,73 @@ mod tests {
                 .starts_with("INVALID_HOST_EVENT:")
         );
         router.close().unwrap();
+    }
+
+    #[test]
+    fn transaction_waits_for_completion_after_its_queue_deadline() {
+        let (mut router, released) =
+            router_with_messages(vec![response("install", "plugins.marketplace.install")]);
+        let handle = router.handle();
+        let (completed, completion) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut message = request("install", "plugins.marketplace.install");
+            message["deadlineMs"] = json!(1);
+            completed
+                .send(handle.request_until_complete(message))
+                .unwrap();
+        });
+        let registration_deadline = Instant::now() + Duration::from_secs(1);
+        while router.handle().pending_len() != 1 && Instant::now() < registration_deadline {
+            thread::yield_now();
+        }
+        assert_eq!(router.handle().pending_len(), 1);
+        // Hold the response behind the reader gate past the admission deadline.
+        // The actual Core terminal, not this elapsed time, releases the caller.
+        assert!(matches!(
+            completion.recv_timeout(Duration::from_millis(10)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(router.handle().pending_len(), 1);
+        released.store(true, Ordering::Release);
+        assert_eq!(
+            completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap()["payload"]["id"],
+            "install"
+        );
+        worker.join().unwrap();
+        router.close().unwrap();
+    }
+
+    #[test]
+    fn generation_close_releases_transaction_and_rejects_new_waiters() {
+        let (mut router, _) = router_with_messages(Vec::new());
+        let handle = router.handle();
+        let (completed, completion) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            completed
+                .send(handle.request_until_complete(request("install", "plugins.install")))
+                .unwrap();
+        });
+        let registration_deadline = Instant::now() + Duration::from_secs(1);
+        while router.handle().pending_len() != 1 && Instant::now() < registration_deadline {
+            thread::yield_now();
+        }
+        assert_eq!(router.handle().pending_len(), 1);
+        router.close().unwrap();
+        assert!(completion
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap_err()
+            .starts_with("GENERATION_INVALIDATED:"));
+        worker.join().unwrap();
+        assert_eq!(router.handle().pending_len(), 0);
+        assert!(router
+            .handle()
+            .request_until_complete(request("later", "plugins.install"))
+            .unwrap_err()
+            .starts_with("GENERATION_INVALIDATED:"));
     }
 
     #[test]

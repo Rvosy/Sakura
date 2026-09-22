@@ -44,7 +44,8 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     for (const p of plugins) {
       const local = installed.find(item => item.pluginId === p.id && !item.reasonCode?.startsWith("PLUGIN_MIGRATION_"));
       p.installed = local?.version; p.enabled = local?.enabled;
-      p.updateBlocked = local?.source === "bundled" ? "内置插件随应用更新" : "";
+      p.updateBlocked = local?.source === "bundled" ? "内置插件随应用更新"
+        : local?.reasonCode === "PLUGIN_ID_CONFLICT" ? "请先在已安装列表中卸载冲突的插件副本。" : "";
     }
   }
   function actionButton(p) {
@@ -120,7 +121,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     } else if (unavailable) {
       const message = {unconfigured: "市场暂未开放", loading: sourceName ? `正在通过 ${sourceName} 加载` : "正在加载", error: catalogError || "无法连接市场"}[catalogState];
       $("result-count").textContent = "";
-      $("catalog").innerHTML = `<div class="empty">${icon(catalogState === "error" ? "cloud" : "puzzle")}<h3 role="status">${message}</h3>${catalogState === "error" ? '<button data-reconnect>重试</button>' : ""}</div>`;
+      $("catalog").innerHTML = `<div class="empty">${icon(catalogState === "error" ? "cloud" : "puzzle")}<h3 role="status">${escape(message)}</h3>${catalogState === "error" ? '<button data-reconnect>重试</button>' : ""}</div>`;
     } else if (!matches.length) {
       $("catalog").innerHTML = `<div class="empty">${icon("search")}<h3>${plugins.length ? "没有匹配的插件" : "暂无已收录插件"}</h3>${plugins.length ? '<button class="secondary-button" data-clear>清除筛选</button>' : ""}</div>`;
     } else {
@@ -155,15 +156,16 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     if (task?.state === "running") action = `<button class="secondary-button" data-cancel-task ${task.phase === "installing" || task.cancelling ? "disabled" : ""}>${task.cancelling && task.phase !== "installing" ? "正在取消" : "取消安装"}</button>`;
     else if (task?.state === "failed") action = '<button data-retry>重试</button>';
     else if (updating(p)) action = `${!canInstall(p, source) ? manage : ""}<button data-install ${canInstall(p, source) ? "" : "disabled"}>更新至 ${escape(next.number)}</button>`;
-    else if (p.installed) action = manage;
+    else if (p.installed) action = `${manage}${canInstall(p, source) ? '<button data-install>重新安装</button>' : ""}`;
     else action = `<button data-install ${canInstall(p, source) ? "" : "disabled"}>${next ? "安装插件" : "暂无兼容版本"}</button>`;
     let compatibility = "";
     if (!next) compatibility = `<div class="compat-note warning">${escape(p.compatibilityReason || '暂无兼容版本')}</div>`;
-    else if (updating(p) && p.updateBlocked) compatibility = `<div class="compat-note">${escape(p.updateBlocked)}</div>`;
+    else if (p.updateBlocked) compatibility = `<div class="compat-note">${escape(p.updateBlocked)}</div>`;
     else if (p.compatibilityReason) compatibility = `<div class="compat-note">${escape(p.compatibilityReason)}</div>`;
     else if (updating(p) && p.enabled) compatibility = '<div class="compat-note">更新时会短暂停止插件，完成后自动恢复启用。</div>';
+    else if (p.installed && canInstall(p, source)) compatibility = '<div class="compat-note">重新下载插件及依赖，保留设置和数据。</div>';
     const taskMarkup = task?.state === "running"
-      ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.update ? "正在更新" : "正在安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""} · ${Math.round(task.progress)}%</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
+      ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.reinstall ? "正在重新安装" : task.update ? "正在更新" : "正在安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""} · ${Math.round(task.progress)}%</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
       : task?.state === "failed" ? `<div class="task-state task-error" role="alert">${escape(task.error)}</div>` : "";
     $("detail").innerHTML = `<div class="drawer-top"><span>插件详情</span><button class="icon-button" data-close aria-label="关闭插件详情">${icon("x")}</button></div>
       <div class="drawer-scroll"><div class="drawer-identity">${mark(p)}<div><h2 id="detail-title">${escape(p.name)}</h2><div class="detail-byline">${escape([p.author, p.category === "表现" ? "角色表现" : p.category].filter(Boolean).join(" · "))}${example(p)}</div></div></div>
@@ -264,7 +266,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     const installed = tasks.get(id)?.installed;
     if ((!installed && !canInstall(p, source)) || tasks.get(id)?.state === "running") return;
     const abort = new AbortController();
-    const task = { state: "running", progress: installed ? 100 : 0, phase: installed ? "installing" : "downloading", abort, installed, update: Boolean(p.installed) };
+    const task = { state: "running", progress: installed ? 100 : 0, phase: installed ? "installing" : "downloading", abort, installed, update: Boolean(p.installed), reinstall: Boolean(p.installed && !updating(p)) };
     tasks.set(id, task); render(); refreshDetail();
     try {
       if (!task.installed) await source.install(p, { signal: abort.signal, onProgress(progress, phase = "downloading", sourceName = "") {
@@ -277,7 +279,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
       task.phase = "installing";
       await host.refreshCurrent();
       if (disposed) return;
-      tasks.delete(id); notify(task.update ? "已更新" : "已安装", "success");
+      tasks.delete(id); notify(task.reinstall ? "已重新安装" : task.update ? "已更新" : "已安装", "success");
     } catch (error) {
       if (disposed || tasks.get(id) !== task) return;
       if (abort.signal.aborted && task.phase !== "installing") { tasks.delete(id); notify("已取消安装"); }

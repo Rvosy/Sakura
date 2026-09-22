@@ -8,6 +8,9 @@ the old program resources and keeps the saved user-state fixtures. Rollback
 cases restore those historical plugin resources after a simulated 1.2.0 failure,
 then upgrade again with newer user code, backups and interrupted-install files
 still present. A shared-root case models Windows/portable directory ownership.
+Market recovery cases install local ZIP fixtures through the normal installer
+before rollback; they exercise both a newer successful install and an import
+failure, without claiming to download or validate the live marketplace package.
 Neither mode tests the native installer/updater or launches the historical app.
 """
 from __future__ import annotations
@@ -84,9 +87,10 @@ def run(
 ) -> None:
     # -I leaves neither the checkout nor the script's directory on sys.path.
     sys.path.insert(0, str(stage / "core"))
-    from app.plugins.bundled_migrations import MIGRATIONS, migrate_bundled_plugins
+    from app.plugins.bundled_migrations import MIGRATIONS, SOURCES, migrate_bundled_plugins
     from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
     from app.plugins.installer import LocalPluginInstaller
+    from app.plugins.installer import PluginInstallError
     from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
     from app.storage.runtime_roots import RuntimeRoots
 
@@ -123,19 +127,12 @@ def run(
         upgrade_resources(stage, distribution, upgrade_mode)
 
     desired = {plugin_id: index % 2 == 0 for index, plugin_id in enumerate(MIGRATIONS)}
-    # These providers defer dependency imports until enabled. An entry-only
-    # check would accept a marker-only Mem0 root without usable dependencies.
-    dependency_imports = {
-        "sakura.asr.sensevoice": "numpy, sherpa_onnx",
-        "sakura.memory.mem0": "qdrant_client, sqlalchemy, fastembed, onnxruntime",
-        "sakura.tts.genie": "py7zr, py7zz",
-        "sakura.tts.gpt-sovits": "py7zr, py7zz, yaml",
-    }
-    probes = work / "dependency-probes"
-    probes.mkdir()
     scenarios = ["legacy-config", "interrupted-1.2.0"]
     if historical_distribution is not None:
-        scenarios.extend(["rollback-retained-user", "rollback-mixed-shared-root"])
+        scenarios.extend([
+            "rollback-retained-user", "rollback-mixed-shared-root",
+            "rollback-market-success", "rollback-market-failed",
+        ])
     for scenario in scenarios:
         user = work / scenario
         PluginDesiredStateStore(user).write(desired)
@@ -174,6 +171,7 @@ def run(
             )
         scenario_distribution = distribution
         if scenario.startswith("rollback-"):
+            shared_root = scenario != "rollback-retained-user"
             # 1.2.0 moves retired code into a backup before publishing a repair.
             # An interrupted repair and subsequent old installer leave it there.
             mem0 = "sakura.memory.mem0"
@@ -183,12 +181,45 @@ def run(
             )
             shutil.rmtree(user / "plugins/user" / mem0)
             states[mem0] = "repairing"
-            if scenario == "rollback-mixed-shared-root":
+            if shared_root:
                 # Code may have been published before the migration state was
                 # saved; a later partial replacement can leave its entry absent.
                 states.pop("sakura.tts.genie")
                 (user / "plugins/user/sakura.tts.genie/plugin.py").unlink()
             (user / "config/plugin-migrations.json").write_text(json.dumps(states), encoding="utf-8")
+            if scenario.startswith("rollback-market-"):
+                mobile = "sakura_mobile"
+                market_source = work / f"{scenario}-package"
+                shutil.copytree(
+                    stage / "migration_payload/builtin-extraction-v1/plugins" / MIGRATIONS[mobile],
+                    market_source,
+                )
+                manifest = market_source / "plugin.yaml"
+                manifest.write_text(
+                    manifest.read_text(encoding="utf-8").replace("version: 1.0.0", "version: 9.0.0"),
+                    encoding="utf-8",
+                )
+                if scenario == "rollback-market-failed":
+                    (market_source / "plugin.py").write_text(
+                        "raise ImportError('market installation was incomplete')\n", encoding="utf-8",
+                    )
+                package = Path(shutil.make_archive(str(market_source), "zip", market_source))
+                before_market = (user / "config/plugins.yaml").read_bytes()
+                installer = LocalPluginInstaller(RuntimeRoots(stage, user))
+                try:
+                    installed = installer.install(
+                        package, "zip", expected=(mobile, "9.0.0"), initial_enabled=desired[mobile],
+                    )
+                except PluginInstallError as error:
+                    assert scenario == "rollback-market-failed", error
+                    assert error.code == "PLUGIN_ENTRY_IMPORT_FAILED", error
+                    assert not (user / "plugins/user" / mobile).exists()
+                else:
+                    assert scenario == "rollback-market-success"
+                    for name in ("plugin.yaml", "plugin.py"):
+                        saved = installed.code_dir / name
+                        saved_files[str(saved.relative_to(user.resolve()))] = saved.read_bytes()
+                assert (user / "config/plugins.yaml").read_bytes() == before_market
             saved_files[str((backup / "plugin.yaml").relative_to(user))] = (backup / "plugin.yaml").read_bytes()
             # These are actual temporary-directory locations used by 1.2.0.
             for relative in (
@@ -200,9 +231,9 @@ def run(
                 remaining.parent.mkdir(parents=True, exist_ok=True)
                 remaining.write_bytes(b"interrupted install fixture\n")
                 saved_files[relative] = remaining.read_bytes()
-            scenario_distribution = user if scenario == "rollback-mixed-shared-root" else work / f"{scenario}-distribution"
+            scenario_distribution = user if shared_root else work / f"{scenario}-distribution"
             restore_historical_resources(historical_distribution, scenario_distribution)
-            if scenario == "rollback-mixed-shared-root":
+            if shared_root:
                 # Partial program replacement can coexist with completed user
                 # plugins. None of these damaged old sources may block recovery.
                 builtin = scenario_distribution / "plugins/builtin"
@@ -224,17 +255,13 @@ def run(
         for plugin_id, record in records.items():
             code = user / "plugins/user" / record.directory_name
             root = dependencies.verified_root(plugin_id, code)
-            dependencies._validate_entry(plugin_id, code, root, record.entry)
-            if modules := dependency_imports.get(plugin_id):
-                probe = probes / plugin_id
-                probe.mkdir(exist_ok=True)
-                (probe / "probe.py").write_text(
-                    f"import {modules}\nclass Probe: pass\n", encoding="utf-8",
+            try:
+                dependencies._validate_entry(
+                    plugin_id, code, root, record.entry,
+                    runtime_imports=SOURCES[plugin_id].get("runtimeImports", ()),
                 )
-                try:
-                    dependencies._validate_entry(plugin_id, probe, root, "probe:Probe")
-                except PluginDependencyError as error:
-                    raise AssertionError(f"{scenario}: {plugin_id}: {error.detail}") from error
+            except PluginDependencyError as error:
+                raise AssertionError(f"{scenario}: {plugin_id}: {error.detail}") from error
         assert PluginDesiredStateStore(user).read() == desired
         for relative, content in saved_files.items():
             assert (user / relative).read_bytes() == content, (scenario, relative)
@@ -244,6 +271,8 @@ def run(
             spine_source = historical_distribution / "plugins/builtin/sakura_spine"
         expected_version = yaml.safe_load((spine_source / "plugin.yaml").read_text())["version"]
         assert records["sakura.visual.spine"].version == expected_version, scenario
+        if scenario == "rollback-market-success":
+            assert records["sakura_mobile"].version == "9.0.0", scenario
         with patch.object(PluginDependencyRoots, "_validate_entry", side_effect=AssertionError(
             f"{scenario}: completed migration must not revalidate plugin entries",
         )) as validation:
