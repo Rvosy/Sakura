@@ -1,3 +1,5 @@
+import { selectSegmentText, selectSegmentTracks } from "../pet/typewriter.js";
+
 const ENTRY_KINDS = new Set(["human", "assistant", "observation", "system"]);
 const SCHEDULED_SCREEN_DISPLAY_TEXT = "刚才留意了一下屏幕状态。";
 const SCHEDULED_SCREEN_TRIGGER_PREFIX = "定时屏幕观察已提交给对话模型";
@@ -80,10 +82,8 @@ function entryBubbles(entry, { assistantName, subtitleLanguage, formatTime }) {
       align: "left",
       roleName: assistantName,
       createdAt,
-      content:
-        subtitleLanguage === "zh" && text(segment.translation).trim()
-          ? segment.translation.trim()
-          : text(segment.text),
+      content: selectSegmentText({ text: text(segment.text), translation: text(segment.translation).trim() }, subtitleLanguage),
+      subtitleTracks: selectSegmentTracks(segment, subtitleLanguage),
     }));
   }
   if (entry.kind === "human") {

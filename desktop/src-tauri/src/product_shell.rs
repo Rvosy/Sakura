@@ -1,3 +1,5 @@
+use crate::chat_settings::SubtitleLanguage;
+
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -23,7 +25,10 @@ pub const PRODUCT_MENU_ERROR_EVENT: &str = "sakura://product-menu-error";
 pub const PRODUCT_TRAY_ID: &str = "sakura.product.tray";
 
 const MENU_TOGGLE_PET: &str = "sakura.pet.visibility.toggle";
-const MENU_TOGGLE_SUBTITLE: &str = "sakura.chat.subtitle.toggle";
+const MENU_SUBTITLE_ZH: &str = "sakura.chat.subtitle.zh";
+const MENU_SUBTITLE_JA: &str = "sakura.chat.subtitle.ja";
+const MENU_SUBTITLE_BILINGUAL: &str = "sakura.chat.subtitle.bilingual";
+const MENU_SUBTITLE_BILINGUAL_JA: &str = "sakura.chat.subtitle.bilingual_ja";
 const MENU_TOGGLE_TOPMOST: &str = "sakura.pet.topmost.toggle";
 const MENU_OPEN_HISTORY: &str = "sakura.history.open";
 const MENU_OPEN_RUNTIME_LOG: &str = "sakura.runtime-log.open";
@@ -37,7 +42,7 @@ const FIRST_RUN_GUIDE_FIELD: &str = "first_run_guide_completed";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductMenuAction {
     TogglePet,
-    ToggleSubtitle,
+    SetSubtitle(SubtitleLanguage),
     ToggleTopmost,
     OpenHistory,
     OpenRuntimeLog,
@@ -49,7 +54,10 @@ impl ProductMenuAction {
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
             MENU_TOGGLE_PET => Some(Self::TogglePet),
-            MENU_TOGGLE_SUBTITLE => Some(Self::ToggleSubtitle),
+            MENU_SUBTITLE_ZH => Some(Self::SetSubtitle(SubtitleLanguage::Zh)),
+            MENU_SUBTITLE_JA => Some(Self::SetSubtitle(SubtitleLanguage::Ja)),
+            MENU_SUBTITLE_BILINGUAL => Some(Self::SetSubtitle(SubtitleLanguage::Bilingual)),
+            MENU_SUBTITLE_BILINGUAL_JA => Some(Self::SetSubtitle(SubtitleLanguage::BilingualJa)),
             MENU_TOGGLE_TOPMOST => Some(Self::ToggleTopmost),
             MENU_OPEN_HISTORY => Some(Self::OpenHistory),
             MENU_OPEN_RUNTIME_LOG => Some(Self::OpenRuntimeLog),
@@ -70,13 +78,16 @@ pub struct ProductMenuCapabilityManifest {
 }
 
 pub fn product_menu_capability_manifest(
-    chinese_subtitles: bool,
+    subtitle_language: SubtitleLanguage,
     pet_topmost: bool,
 ) -> ProductMenuCapabilityManifest {
-    let mut checked_actions = Vec::new();
-    if chinese_subtitles {
-        checked_actions.push(MENU_TOGGLE_SUBTITLE.to_string());
+    let mut checked_actions = vec![match subtitle_language {
+        SubtitleLanguage::Zh => MENU_SUBTITLE_ZH,
+        SubtitleLanguage::Ja => MENU_SUBTITLE_JA,
+        SubtitleLanguage::Bilingual => MENU_SUBTITLE_BILINGUAL,
+        SubtitleLanguage::BilingualJa => MENU_SUBTITLE_BILINGUAL_JA,
     }
+    .to_string()];
     if pet_topmost {
         checked_actions.push(MENU_TOGGLE_TOPMOST.to_string());
     }
@@ -84,7 +95,10 @@ pub fn product_menu_capability_manifest(
         schema_version: 1,
         available_actions: [
             MENU_TOGGLE_PET,
-            MENU_TOGGLE_SUBTITLE,
+            MENU_SUBTITLE_ZH,
+            MENU_SUBTITLE_JA,
+            MENU_SUBTITLE_BILINGUAL,
+            MENU_SUBTITLE_BILINGUAL_JA,
             MENU_TOGGLE_TOPMOST,
             MENU_OPEN_HISTORY,
             MENU_OPEN_RUNTIME_LOG,
@@ -1085,8 +1099,8 @@ mod tests {
             Some(ProductMenuAction::TogglePet)
         );
         assert_eq!(
-            ProductMenuAction::from_id(MENU_TOGGLE_SUBTITLE),
-            Some(ProductMenuAction::ToggleSubtitle)
+            ProductMenuAction::from_id(MENU_SUBTITLE_ZH),
+            Some(ProductMenuAction::SetSubtitle(SubtitleLanguage::Zh))
         );
         assert_eq!(
             ProductMenuAction::from_id(MENU_TOGGLE_TOPMOST),
@@ -1114,13 +1128,16 @@ mod tests {
 
     #[test]
     fn product_menu_manifest_exposes_only_dispatchable_actions() {
-        let manifest = product_menu_capability_manifest(true, true);
+        let manifest = product_menu_capability_manifest(SubtitleLanguage::Zh, true);
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(
             manifest.available_actions,
             [
                 MENU_TOGGLE_PET,
-                MENU_TOGGLE_SUBTITLE,
+                MENU_SUBTITLE_ZH,
+                MENU_SUBTITLE_JA,
+                MENU_SUBTITLE_BILINGUAL,
+                MENU_SUBTITLE_BILINGUAL_JA,
                 MENU_TOGGLE_TOPMOST,
                 MENU_OPEN_HISTORY,
                 MENU_OPEN_RUNTIME_LOG,
@@ -1130,13 +1147,34 @@ mod tests {
         );
         assert_eq!(
             manifest.checked_actions,
-            [MENU_TOGGLE_SUBTITLE, MENU_TOGGLE_TOPMOST]
+            [MENU_SUBTITLE_ZH, MENU_TOGGLE_TOPMOST]
         );
         assert_eq!(manifest.unavailable_reason, PRODUCT_MENU_UNAVAILABLE_REASON);
         assert!(manifest
             .available_actions
             .iter()
             .all(|id| ProductMenuAction::from_id(id).is_some()));
+    }
+
+    #[test]
+    fn subtitle_menu_selects_exactly_one_language() {
+        for (language, id) in [
+            (SubtitleLanguage::Zh, MENU_SUBTITLE_ZH),
+            (SubtitleLanguage::Ja, MENU_SUBTITLE_JA),
+            (SubtitleLanguage::Bilingual, MENU_SUBTITLE_BILINGUAL),
+            (SubtitleLanguage::BilingualJa, MENU_SUBTITLE_BILINGUAL_JA),
+        ] {
+            let manifest = product_menu_capability_manifest(language, false);
+            assert_eq!(manifest.checked_actions, [id]);
+            assert_eq!(
+                ProductMenuAction::from_id(id),
+                Some(ProductMenuAction::SetSubtitle(language))
+            );
+        }
+        assert_eq!(
+            ProductMenuAction::from_id("sakura.chat.subtitle.toggle"),
+            None
+        );
     }
 
     #[test]

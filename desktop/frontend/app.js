@@ -69,7 +69,7 @@ import {
 import {
   createCharacterVisualPreviewSessionController,
 } from "./pet/character-visual-preview.js";
-import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
+import { inferTextLanguage, renderSubtitleText } from "./pet/multilingual-text.js";
 import { createRendererHost } from "./pet/renderer-host.js";
 import { applyVisualSurfaceAppearance } from "./pet/visual-surface.js";
 import {
@@ -79,7 +79,7 @@ import {
   waitForSurfaceFadeCompletion,
   createSurfaceHoverProbe,
 } from "./pet/surface-visibility.js";
-import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
+import { createTypewriter, selectSegmentText, selectSegmentTracks } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
@@ -917,7 +917,7 @@ let presentation = createChatPresentationReducer({
   initialMessage: characterPresentation.initialMessage,
 });
 let pendingCharacterGreeting = false;
-const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
+const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderSubtitleText });
 
 function surfaceVisibilityKey(kind) {
   if (kind === "bubble") return "bubbleVisible";
@@ -1107,7 +1107,7 @@ try {
 let subtitleLanguage = "zh";
 try {
   const persistedLanguage = await invoke("current_subtitle_language");
-  if (persistedLanguage === "ja") subtitleLanguage = "ja";
+  if (["zh", "ja", "bilingual", "bilingual_ja"].includes(persistedLanguage)) subtitleLanguage = persistedLanguage;
 } catch {
   // Chinese remains the fail-safe default when the isolated setting cannot be read.
 }
@@ -1274,7 +1274,7 @@ const typewriter = createTypewriter({
   language: subtitleLanguage,
   onStart: () => bubbleScroll.beginReply(),
   onText: (text, bubbleUpdate) => {
-    const result = presentation.setTypingText(text);
+    const result = presentation.setTypingText(text, bubbleUpdate.subtitleTracks, bubbleUpdate.fullSubtitleTracks, bubbleUpdate.subtitleLanguage);
     if (result.applied) render(result.state, bubbleUpdate);
   },
   onSegment: (segment, index) => {
@@ -1317,7 +1317,10 @@ function render(state, bubbleUpdate = {}) {
   const commitBubble = () => {
     if (bubbleCommitted) return;
     bubbleCommitted = true;
-    bubbleScroll.updateText(state.bubbleText, bubbleUpdate);
+    bubbleScroll.updateText(state.bubbleText, {
+      ...bubbleUpdate, subtitleTracks: state.subtitleTracks, fullSubtitleTracks: state.fullSubtitleTracks,
+      subtitleLanguage: state.subtitleLanguage,
+    });
     adaptiveSurface.schedule();
   };
   chatPhase.textContent = phaseLabels[state.phase] || "在线";
@@ -1648,7 +1651,7 @@ await listenAppEvent("sakura://product-menu-error", () => {
 });
 
 await listenAppEvent("sakura://subtitle-language-changed", (event) => {
-  const language = event?.payload === "ja" ? "ja" : event?.payload === "zh" ? "zh" : null;
+  const language = ["zh", "ja", "bilingual", "bilingual_ja"].includes(event?.payload) ? event.payload : null;
   if (!language) return;
   subtitleLanguage = language;
   const wasTyping = typewriter.isActive();
@@ -1657,7 +1660,9 @@ await listenAppEvent("sakura://subtitle-language-changed", (event) => {
     const state = presentation.current();
     const segment = state.replyHistorySegments[state.replyHistoryIndex];
     if (!segment) return;
-    const refreshed = presentation.refreshVisibleReply(selectSegmentText(segment, language));
+    const refreshed = presentation.refreshVisibleReply(
+      selectSegmentText(segment, language), selectSegmentTracks(segment, language), language,
+    );
     if (refreshed.applied) render(refreshed.state, { reason: "language", forceEnd: true });
   }
 });
@@ -1844,7 +1849,10 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     }
     if (!appearanceMutationGuard.isCurrent(mutationRevision)) return;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
-    if (changes.fonts) applyAppearanceVariables(activeAppearance);
+    if (changes.fonts) {
+      applyAppearanceVariables(activeAppearance);
+      bubbleScroll.refresh();
+    }
     if (changes.theme || changes.visualEffect) await applyInputVisualEffect(activeAppearance);
     if (!appearanceMutationGuard.isCurrent(mutationRevision)) return;
     if (changes.layout) {
@@ -2155,7 +2163,9 @@ function reviewReplyBy(offset) {
   const targetIndex = state.replyHistoryIndex + offset;
   const segment = state.replyHistorySegments[targetIndex];
   if (!segment) return;
-  const result = presentation.reviewReplyAt(targetIndex, selectSegmentText(segment, subtitleLanguage));
+  const result = presentation.reviewReplyAt(
+    targetIndex, selectSegmentText(segment, subtitleLanguage), selectSegmentTracks(segment, subtitleLanguage), subtitleLanguage,
+  );
   if (result.applied) {
     void rendererHost.review(segment);
     render(result.state, { reason: "history", forceEnd: true });

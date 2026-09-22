@@ -301,11 +301,24 @@ WP-3-04 开放两个彼此独立提交的 feature key。`chat.presentation_timin
 时旧持久值和当前运行值都保持不变。设置窗口重新打开必须回读已提交值，未提交预览和旧 window
 generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 timer，不成为持久化真相源。
 
-`chat.subtitle_language` 只持久化 `subtitle_language: "zh" | "ja"`。缺失或非法值读取为默认 `zh`，
+`chat.subtitle_language` 只持久化 `subtitle_language: "zh" | "ja" | "bilingual" | "bilingual_ja"`。缺失或非法值读取为默认 `zh`，
 下一次成功保存时规范化；`zh` 优先展示 segment `translation`，空值回退 `text`，`ja` 展示 `text`。
-主窗口通过 `sakura.chat.subtitle.toggle` 右键菜单动作切换，菜单 manifest 必须返回 checked 状态；保存失败
+`bilingual` 对应“双语1”，中文为主、日文为辅；`bilingual_ja` 对应“双语2”，日文为主、中文为辅。
+已有 `bilingual` 设置继续读取为“双语1”。两种双语模式按气泡实际可用宽度分别计算原文和译文的换行，
+再按行号交错排列：主字幕第 1 行、辅字幕第 1 行、主字幕第 2 行、辅字幕第 2 行，依此继续。
+两种语言从第一个字符开始同时逐字显示，
+每次更新各推进一个字符；较短的一行显示完整后保留，待两行都显示完整才结束该段字幕。
+每组主副字幕独立排版，主字幕沿用设置字号，辅字幕采用主字幕 80% 的字号和次级文字色，紧随对应主字幕；组间保留正常段间距。
+断行依据完整段落计算，逐字显示时不随未完成的单词重新断行；宽度或字体变化后按当前布局重新计算。
+原文和译文中的显式换行按段落序号配对，再在各段内交错排列自动折行。
+当前气泡与聊天记录使用相同的双语排版，等待、错误和取消提示保持普通文本。
+忽略空文本，去除首尾空白后相同的文本只显示一次。
+右键菜单“显示语言”展开“中文、日文、双语1、双语2”单选子菜单，动作分别为 `sakura.chat.subtitle.zh`、
+`sakura.chat.subtitle.ja`、`sakura.chat.subtitle.bilingual`、`sakura.chat.subtitle.bilingual_ja`，菜单 manifest 只勾选当前语言。子菜单支持悬停、
+点击和键盘操作，空间不足时向左展开，原生窗口裁切范围覆盖两个菜单。保存失败
 保持旧文件、旧运行值与旧勾选态。切换成功后，输入中的当前段立即清空并按新语言从头重播；settled 或
-当前会话回看段立即完整替换，不等待下一条回复、不回放已完成段，也不切换立绘。
+当前会话回看段立即完整替换，不等待下一条回复、不回放已完成段，也不切换立绘或重播语音。
+已打开的聊天记录同步刷新语言；重新打开时读取已保存的选择。
 该 feature 不读写 `system_config.yaml`，只使用当前 v1 `ui.json`。
 
 `appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。
