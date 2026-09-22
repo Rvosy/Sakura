@@ -30,7 +30,8 @@ BUILTIN_PLUGINS = {
     "sakura_tts_hub",
     "sakura_asr_hub",
 }
-# Keep this payload in every release that supports direct upgrades from 1.1.x.
+# Keep this payload while supporting direct upgrades from 1.1.2 and the second
+# 1.2.0 release.
 # It is migration material, never part of the builtin plugin inventory.
 MIGRATION_PAYLOAD = Path("migration_payload/builtin-extraction-v1")
 MIGRATION_SOURCES = json.loads(

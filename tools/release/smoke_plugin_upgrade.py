@@ -4,8 +4,11 @@
 The default cases use representative saved user states and the actual target
 payload. --historical-distribution consumes retained builtin code/dependencies
 from an extracted historical release in overlay mode; replacement mode discards
-the old program resources and keeps the saved user-state fixtures. Neither mode
-tests the native installer/updater or launches the historical application.
+the old program resources and keeps the saved user-state fixtures. Rollback
+cases restore those historical plugin resources after a simulated 1.2.0 failure,
+then upgrade again with newer user code, backups and interrupted-install files
+still present. A shared-root case models Windows/portable directory ownership.
+Neither mode tests the native installer/updater or launches the historical app.
 """
 from __future__ import annotations
 
@@ -17,6 +20,27 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
+
+
+def restore_historical_resources(historical: Path, destination: Path) -> None:
+    """Overlay old program resources without deleting newer user-owned files."""
+    shutil.copytree(historical / "plugins", destination / "plugins", dirs_exist_ok=True)
+    shutil.copy2(historical / "VERSION", destination / "VERSION")
+
+
+def upgrade_resources(stage: Path, destination: Path, mode: str) -> Path:
+    if mode == "replacement":
+        # Windows stores user and program resources together. Replacing program
+        # directories must preserve plugins/user, backups, config and data.
+        for name in ("plugins/builtin", "plugins/dependencies", "migration_payload"):
+            path = destination / name
+            if path.exists():
+                shutil.rmtree(path)
+    for name in ("plugins", "migration_payload"):
+        shutil.copytree(stage / name, destination / name, dirs_exist_ok=True)
+    shutil.copy2(stage / "VERSION", destination / "VERSION")
+    return destination
 
 
 def local_dependency_plugin(work: Path) -> Path:
@@ -67,6 +91,7 @@ def run(
     from app.storage.runtime_roots import RuntimeRoots
 
     import app
+    import yaml
     assert Path(app.__file__).resolve().is_relative_to(stage / "core")
     assert not (stage / "plugins/optional").exists()
     bundled_uv = stage / "python/tools" / ("uv.exe" if os.name == "nt" else "uv")
@@ -93,18 +118,9 @@ def run(
 
     distribution = stage
     if historical_distribution is not None and upgrade_mode == "overlay":
-        # Model replacement while retaining the old plugin directories, as with
-        # a portable overlay. Current builtin implementations stay current.
         distribution = work / "upgraded-distribution"
-        for name in ("plugins", "migration_payload"):
-            shutil.copytree(stage / name, distribution / name)
-        for plugin_id, directory in MIGRATIONS.items():
-            old_code = historical_distribution / "plugins/builtin" / directory
-            old_dependencies = historical_distribution / "plugins/dependencies" / plugin_id
-            if old_code.is_dir():
-                shutil.copytree(old_code, distribution / "plugins/builtin" / directory, dirs_exist_ok=True)
-            if old_dependencies.is_dir():
-                shutil.copytree(old_dependencies, distribution / "plugins/dependencies" / plugin_id, dirs_exist_ok=True)
+        restore_historical_resources(historical_distribution, distribution)
+        upgrade_resources(stage, distribution, upgrade_mode)
 
     desired = {plugin_id: index % 2 == 0 for index, plugin_id in enumerate(MIGRATIONS)}
     # These providers defer dependency imports until enabled. An entry-only
@@ -117,19 +133,33 @@ def run(
     }
     probes = work / "dependency-probes"
     probes.mkdir()
-    for scenario in ("legacy-config", "interrupted-1.2.0"):
+    scenarios = ["legacy-config", "interrupted-1.2.0"]
+    if historical_distribution is not None:
+        scenarios.extend(["rollback-retained-user", "rollback-mixed-shared-root"])
+    for scenario in scenarios:
         user = work / scenario
-        roots = RuntimeRoots(distribution, user)
         PluginDesiredStateStore(user).write(desired)
-        saved_data = user / "data/plugin-settings/saved.json"
-        saved_data.parent.mkdir(parents=True)
-        saved_data.write_bytes(b'{"keep":"user resource"}\n')
-        if scenario == "interrupted-1.2.0":
+        saved_files = {
+            "config/system_config.yaml": b"locale: zh-CN\napp_version: 1.1.2\n",
+            "data/plugins/sakura.tts.gpt-sovits/config.json": b'{"model":"saved-model"}\n',
+            "data/plugins/sakura.tts.gpt-sovits/models/saved-model.pth": b"saved model fixture\n",
+        }
+        for relative, content in saved_files.items():
+            saved = user / relative
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            saved.write_bytes(content)
+        if scenario != "legacy-config":
+            states = {key: "repairing" if index == 0 else "completed"
+                      for index, key in enumerate(MIGRATIONS)}
+            if scenario.startswith("rollback-"):
+                # Preserve a missing entry as well as completed/repairing flags.
+                states.pop(list(MIGRATIONS)[1])
             (user / "config/plugin-migrations.json").write_text(
-                json.dumps({key: "repairing" if index == 0 else "completed"
-                            for index, key in enumerate(MIGRATIONS)}), encoding="utf-8",
+                json.dumps(states), encoding="utf-8",
             )
             for plugin_id, directory in list(MIGRATIONS.items())[1:]:
+                if plugin_id not in states:
+                    continue
                 shutil.copytree(
                     stage / "migration_payload/builtin-extraction-v1/plugins" / directory,
                     user / "plugins/user" / plugin_id,
@@ -142,12 +172,55 @@ def run(
                             "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
                 encoding="utf-8",
             )
+        scenario_distribution = distribution
+        if scenario.startswith("rollback-"):
+            # 1.2.0 moves retired code into a backup before publishing a repair.
+            # An interrupted repair and subsequent old installer leave it there.
+            mem0 = "sakura.memory.mem0"
+            backup = user / "plugins/migration-backups/interrupted-1.2.0" / mem0
+            shutil.copytree(
+                historical_distribution / "plugins/builtin" / MIGRATIONS[mem0], backup,
+            )
+            shutil.rmtree(user / "plugins/user" / mem0)
+            states[mem0] = "repairing"
+            if scenario == "rollback-mixed-shared-root":
+                # Code may have been published before the migration state was
+                # saved; a later partial replacement can leave its entry absent.
+                states.pop("sakura.tts.genie")
+                (user / "plugins/user/sakura.tts.genie/plugin.py").unlink()
+            (user / "config/plugin-migrations.json").write_text(json.dumps(states), encoding="utf-8")
+            saved_files[str((backup / "plugin.yaml").relative_to(user))] = (backup / "plugin.yaml").read_bytes()
+            # These are actual temporary-directory locations used by 1.2.0.
+            for relative in (
+                "plugins/user/.install-interrupted/folder/plugin.yaml",
+                "plugins/.migration-interrupted/plugin.zip",
+                "data/plugin-runtime/dependencies/.build-interrupted/partial.py",
+            ):
+                remaining = user / relative
+                remaining.parent.mkdir(parents=True, exist_ok=True)
+                remaining.write_bytes(b"interrupted install fixture\n")
+                saved_files[relative] = remaining.read_bytes()
+            scenario_distribution = user if scenario == "rollback-mixed-shared-root" else work / f"{scenario}-distribution"
+            restore_historical_resources(historical_distribution, scenario_distribution)
+            if scenario == "rollback-mixed-shared-root":
+                # Partial program replacement can coexist with completed user
+                # plugins. None of these damaged old sources may block recovery.
+                builtin = scenario_distribution / "plugins/builtin"
+                mobile = builtin / MIGRATIONS["sakura_mobile"]
+                shutil.rmtree(mobile)
+                (mobile / "__pycache__").mkdir(parents=True)
+                (builtin / MIGRATIONS["sakura.asr.sensevoice"] / "plugin.yaml").write_text(
+                    "api: [", encoding="utf-8",
+                )
+                shutil.rmtree(scenario_distribution / "plugins/dependencies/sakura.tts.genie")
+            upgrade_resources(stage, scenario_distribution, upgrade_mode)
+        roots = RuntimeRoots(scenario_distribution, user)
         failures = migrate_bundled_plugins(roots)
         assert not failures, (scenario, failures)
         records = {record.plugin_id: record for record in PluginInventory(roots).scan().records
                    if record.source == "user"}
         assert set(records) == set(MIGRATIONS), (scenario, records)
-        dependencies = PluginDependencyRoots(user, distribution_root=distribution)
+        dependencies = PluginDependencyRoots(user, distribution_root=scenario_distribution)
         for plugin_id, record in records.items():
             code = user / "plugins/user" / record.directory_name
             root = dependencies.verified_root(plugin_id, code)
@@ -163,8 +236,22 @@ def run(
                 except PluginDependencyError as error:
                     raise AssertionError(f"{scenario}: {plugin_id}: {error.detail}") from error
         assert PluginDesiredStateStore(user).read() == desired
-        assert saved_data.read_bytes() == b'{"keep":"user resource"}\n'
-        assert migrate_bundled_plugins(roots) == {}
+        for relative, content in saved_files.items():
+            assert (user / relative).read_bytes() == content, (scenario, relative)
+        spine_source = stage / "migration_payload/builtin-extraction-v1/plugins/sakura_spine"
+        if (historical_distribution is not None and upgrade_mode == "overlay"
+                and scenario == "legacy-config"):
+            spine_source = historical_distribution / "plugins/builtin/sakura_spine"
+        expected_version = yaml.safe_load((spine_source / "plugin.yaml").read_text())["version"]
+        assert records["sakura.visual.spine"].version == expected_version, scenario
+        with patch.object(PluginDependencyRoots, "_validate_entry", side_effect=AssertionError(
+            f"{scenario}: completed migration must not revalidate plugin entries",
+        )) as validation:
+            progress = []
+            failures = migrate_bundled_plugins(roots, progress=progress.append)
+            validation.assert_not_called()
+            assert not failures, (scenario, failures)
+            assert not progress, (scenario, progress)
         print(f"staged offline migration passed: {scenario}", flush=True)
 
     # Normal user-triggered installation still needs uv. Exercise the actual

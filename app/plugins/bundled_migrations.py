@@ -19,6 +19,7 @@ from app.storage.runtime_roots import RuntimeRoots
 SOURCES = json.loads(Path(__file__).with_name("migration_sources.json").read_text(encoding="utf-8"))
 MIGRATIONS = {key: value["directory"] for key, value in SOURCES.items()}
 STATE_NAME = "plugin-migrations.json"
+REVALIDATED_KEY = "__builtin_extraction_v1_revalidated"
 PAYLOAD_PATH = Path("migration_payload/builtin-extraction-v1")
 
 
@@ -59,16 +60,17 @@ def _dependency_root(dependencies, code: Path, root: Path) -> Path | None:
     return verified
 
 
-def _separate_user_version(root: Path, plugin_id: str) -> bool:
+def _outside_recovery_versions(root: Path, plugin_id: str) -> bool:
     # Inventory substitutes an invalid record when the entry is missing. Use
-    # the manifest's version for ownership even if that user copy cannot run.
+    # the manifest to limit recovery to known historical/payload versions.
     try:
         raw = yaml.safe_load((root / "plugin.yaml").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError):
         return False
+    source = SOURCES[plugin_id]
     return (isinstance(raw, dict) and raw.get("id") == plugin_id
             and isinstance(raw.get("version"), str) and bool(raw["version"])
-            and raw["version"] != SOURCES[plugin_id]["version"])
+            and raw["version"] not in (source["version"], *source.get("legacyVersions", [])))
 
 
 def _needs_repair(roots: RuntimeRoots, plugin_id: str) -> bool:
@@ -79,7 +81,7 @@ def _needs_repair(roots: RuntimeRoots, plugin_id: str) -> bool:
         # A completed migration followed by uninstall must remain uninstalled.
         return (StoragePaths(roots.user_root).user_plugins_dir / plugin_id).exists()
     root = StoragePaths(roots.user_root).user_plugins_dir / record.directory_name
-    if _separate_user_version(root, plugin_id):
+    if _outside_recovery_versions(root, plugin_id):
         return False
     try:
         _record(roots, root, plugin_id)
@@ -186,7 +188,7 @@ def ensure_external_plugin(roots: RuntimeRoots, plugin_id: str, *, enabled: bool
     if existing is not None and not repair:
         return
     original = paths.user_plugins_dir / (existing.directory_name if existing is not None else plugin_id)
-    if existing is not None and _separate_user_version(original, plugin_id):
+    if existing is not None and _outside_recovery_versions(original, plugin_id):
         return
     if existing is None and original.exists():
         owner = PluginInventory(roots)._record("user", original, {}).plugin_id
@@ -234,8 +236,12 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
     def save():
         atomic_write_text(state_path, json.dumps(completed, ensure_ascii=False, indent=2) + "\n")
 
-    pending = [plugin_id for plugin_id in MIGRATIONS if completed.get(plugin_id) != "not_applicable"]
+    revalidated = completed.get(REVALIDATED_KEY) == "completed"
+    pending = [plugin_id for plugin_id in MIGRATIONS
+               if completed.get(plugin_id) != "not_applicable"
+               and not (revalidated and completed.get(plugin_id) == "completed")]
     count = 0
+    handled = False
     for plugin_id in pending:
         # Include existing-copy import checks in the migration phase, outside
         # the Core's ordinary initialization deadline.
@@ -245,8 +251,9 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
             failures[plugin_id] = "PLUGIN_MIGRATION_STATE_INVALID"
             _failure(ValueError("PLUGIN_MIGRATION_STATE_INVALID"), failures[plugin_id], plugin_id)
             continue
+        handled = True
         try:
-            repair = state == "repairing" or (state == "completed" and _needs_repair(roots, plugin_id))
+            repair = state == "repairing" or _needs_repair(roots, plugin_id)
             if state == "completed" and not repair:
                 count += 1
                 continue
@@ -259,10 +266,16 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
             save()
             count += 1
         except Exception as error:
+            # Also retain failures raised while inspecting an old completed copy.
+            # Successful items must not be rechecked when this item is retried.
+            completed[plugin_id] = "repairing"
             code = "PLUGIN_MIGRATION_SOURCE_MISSING" if str(error) == "PLUGIN_MIGRATION_SOURCE_MISSING" else "PLUGIN_MIGRATION_FAILED"
             failures[plugin_id] = code
             _failure(error, code, plugin_id)
-    if not state_path.exists():
+    if handled and not revalidated:
+        # A string status keeps this flat file readable by 1.2.0 after rollback.
+        completed[REVALIDATED_KEY] = "completed"
+    if (handled and not revalidated) or not state_path.exists():
         try:
             save()
         except OSError as error:

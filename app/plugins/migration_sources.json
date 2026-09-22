@@ -33,6 +33,7 @@
     "directory": "sakura_spine",
     "repository": "Rvosy/Sakura-Spine",
     "version": "0.2.7",
+    "legacyVersions": ["0.2.5"],
     "commit": "e245e6710e7f7baf18711cb7c8c62ae8dd3ea2a3"
   }
 }

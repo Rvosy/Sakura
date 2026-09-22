@@ -47,6 +47,11 @@ def marker(roots):
     return roots.user_root / "config/plugin-migrations.json"
 
 
+def mark_120_completed(roots):
+    # 1.2.0 can record completion before dependency/entry damage is discovered.
+    marker(roots).write_text(json.dumps({PLUGIN: "completed"}))
+
+
 def add_dependencies(code, dependencies):
     (code / "requirements.txt").write_text("migration-probe==1.0\n")
     (code / "plugin.py").write_text("import migration_probe\nclass SakuraMobilePlugin: pass\n")
@@ -73,7 +78,9 @@ def test_old_user_keeps_settings_and_enabled_state(tmp_path, enabled, stale_buil
     assert len(records) == 1 and records[0].source == "user"
     assert records[0].desired_enabled is (True if enabled is None else enabled)
     assert config.read_text() == original
-    assert json.loads(marker(roots).read_text()) == {PLUGIN: "completed"}
+    assert json.loads(marker(roots).read_text()) == {
+        PLUGIN: "completed", migration.REVALIDATED_KEY: "completed",
+    }
     LocalPluginInstaller(roots).uninstall(records[0].install_id)
     assert migrate_bundled_plugins(roots) == {}
     assert not PluginInventory(roots).scan().records
@@ -217,6 +224,7 @@ def test_interrupted_dependency_publish_is_reused(tmp_path):
 def test_retired_api_repair_prepares_before_moving_original(tmp_path, monkeypatch, fails):
     roots = roots_for(tmp_path)
     assert migrate_bundled_plugins(roots) == {}
+    mark_120_completed(roots)
     manifest = installed(roots) / "plugin.yaml"
     manifest.write_text(manifest.read_text() + "\nrequires: [sakura.host.model_slots]\n")
     original = manifest.read_bytes()
@@ -291,9 +299,39 @@ def test_legacy_worker_uses_installed_plugin_helpers_without_bundled_code(tmp_pa
 def test_completed_plugin_missing_entry_is_repaired(tmp_path):
     roots = roots_for(tmp_path)
     assert migrate_bundled_plugins(roots) == {}
+    mark_120_completed(roots)
     (installed(roots) / "plugin.py").unlink()
     assert migrate_bundled_plugins(roots) == {}
     assert (installed(roots) / "plugin.py").read_bytes() == (SOURCE / "plugin.py").read_bytes()
+
+
+@pytest.mark.parametrize("damage", ["entry", "dependencies"])
+def test_existing_partial_copy_without_migration_record_is_repaired(tmp_path, damage):
+    roots = roots_for(tmp_path)
+    shutil.rmtree(roots.distribution_root / "plugins/builtin")
+    payload = roots.distribution_root / PAYLOAD_PATH
+    payload_code = payload / "plugins" / PLUGIN
+    if damage == "dependencies":
+        add_dependencies(payload_code, payload / "dependencies" / PLUGIN)
+    shutil.copytree(payload_code, installed(roots))
+    if damage == "entry":
+        (installed(roots) / "plugin.py").unlink()
+    else:
+        dependency = StoragePaths(roots.user_root).plugin_dependency_root_for(PLUGIN)
+        shutil.copytree(payload / "dependencies" / PLUGIN, dependency)
+        (dependency / "migration_probe.py").unlink()
+    PluginDesiredStateStore(roots.user_root).set(PLUGIN, False)
+    before = (roots.user_root / "config/plugins.yaml").read_bytes()
+    # 1.2.0 publishes code before writing its migration record. Retained user
+    # files can therefore outlive that record during an interrupted upgrade.
+    assert not marker(roots).exists()
+
+    assert migrate_bundled_plugins(roots) == {}
+    assert (installed(roots) / "plugin.py").read_bytes() == (payload_code / "plugin.py").read_bytes()
+    dependencies = PluginDependencyRoots(roots.user_root)
+    dependency = dependencies.verified_root(PLUGIN, installed(roots))
+    dependencies._validate_entry(PLUGIN, installed(roots), dependency, "plugin:SakuraMobilePlugin")
+    assert (roots.user_root / "config/plugins.yaml").read_bytes() == before
 
 
 @pytest.mark.parametrize("remaining_module", [False, True])
@@ -303,6 +341,7 @@ def test_completed_partial_dependencies_with_valid_marker_are_repaired(tmp_path,
     payload = roots.distribution_root / PAYLOAD_PATH
     add_dependencies(payload / "plugins" / PLUGIN, payload / "dependencies" / PLUGIN)
     assert migrate_bundled_plugins(roots) == {}
+    mark_120_completed(roots)
     dependency = StoragePaths(roots.user_root).plugin_dependency_root_for(PLUGIN)
     (dependency / "migration_probe.py").unlink()
     if remaining_module:
@@ -318,6 +357,7 @@ def test_marker_only_root_is_repaired_even_when_entry_defers_imports(tmp_path):
     add_dependencies(payload / "plugins" / PLUGIN, payload / "dependencies" / PLUGIN)
     (payload / "plugins" / PLUGIN / "plugin.py").write_text("class SakuraMobilePlugin: pass\n")
     assert migrate_bundled_plugins(roots) == {}
+    mark_120_completed(roots)
     dependency = StoragePaths(roots.user_root).plugin_dependency_root_for(PLUGIN)
     (dependency / "migration_probe.py").unlink()
     assert migrate_bundled_plugins(roots) == {}
@@ -333,6 +373,7 @@ def test_valid_empty_dependency_declaration_does_not_force_repair(tmp_path, monk
     (dependency / ".sakura-dependencies.json").write_text(json.dumps({
         "schemaVersion": 1, "kind": "requirements.txt", "python": f"{sys.version_info.major}.{sys.version_info.minor}"}))
     assert migrate_bundled_plugins(roots) == {}
+    mark_120_completed(roots)
     def no_repair(*args, **kwargs):
         pytest.fail("An empty dependency declaration must remain usable")
     monkeypatch.setattr(migration, "ensure_external_plugin", no_repair)
@@ -342,6 +383,7 @@ def test_valid_empty_dependency_declaration_does_not_force_repair(tmp_path, monk
 def test_broken_dependency_declaration_uses_compatible_payload(tmp_path):
     roots = roots_for(tmp_path)
     assert migrate_bundled_plugins(roots) == {}
+    mark_120_completed(roots)
     (installed(roots) / "pyproject.toml").write_text("[project\n")
     assert migrate_bundled_plugins(roots) == {}
     assert not (installed(roots) / "pyproject.toml").exists()
@@ -382,6 +424,7 @@ def test_user_version_is_preserved_even_when_it_cannot_run(tmp_path, state, dama
 def test_existing_copy_import_checks_are_inside_the_migration_phase(tmp_path, monkeypatch):
     roots = roots_for(tmp_path)
     assert migrate_bundled_plugins(roots) == {}
+    mark_120_completed(roots)
     events = []
     validate = PluginDependencyRoots._validate_entry
     def validate_in_migration(self, *args, **kwargs):

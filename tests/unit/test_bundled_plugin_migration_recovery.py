@@ -107,7 +107,9 @@ raise AssertionError('The requested interruption point was not reached')
 def _assert_recovered(roots, code, dependencies, state, private_data):
     assert code.joinpath("plugin.py").read_text() == NEW_CODE
     PluginDependencyRoots(roots.user_root)._validate_entry(PLUGIN, code, dependencies, ENTRY)
-    assert json.loads(state.read_text()) == {PLUGIN: "completed"}
+    assert json.loads(state.read_text()) == {
+        PLUGIN: "completed", migration.REVALIDATED_KEY: "completed",
+    }
     assert PluginDesiredStateStore(roots.user_root).read()[PLUGIN] is False
     assert private_data.read_text() == '{"keep": true}'
 
@@ -157,7 +159,9 @@ def test_publication_error_restores_original_code_dependencies_and_settings(
     assert dependencies.joinpath("original.txt").read_text() == "preserve original dependencies"
     assert (dependencies / ".sakura-dependencies.json").read_bytes() == old_marker
     assert not (dependencies / "migration_probe.py").exists()
-    assert json.loads(state.read_text()) == {PLUGIN: "repairing"}
+    assert json.loads(state.read_text()) == {
+        PLUGIN: "repairing", migration.REVALIDATED_KEY: "completed",
+    }
     assert PluginDesiredStateStore(roots.user_root).read()[PLUGIN] is False
     assert private_data.read_text() == '{"keep": true}'
     assert migration.migrate_bundled_plugins(roots) == {}
