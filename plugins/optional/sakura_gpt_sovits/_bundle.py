@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import selectors
 import shutil
 import signal
 import subprocess
@@ -14,9 +15,10 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
 
@@ -41,6 +43,13 @@ def _external_path(value: str | Path) -> str:
 
 class DownloadCancelledError(RuntimeError):
     pass
+
+
+class BundleInstallError(RuntimeError):
+    code = "TTS_BUNDLE_INSTALL_FAILED"
+
+    def __init__(self, exit_code: int, output: str) -> None:
+        super().__init__(f"{self.code}: exit_code={exit_code}\n{output}")
 
 
 @dataclass(frozen=True)
@@ -248,7 +257,7 @@ def _failure_code(error: Exception, stage: str) -> str:
         "TTS_DEVICE_PROBE_FAILED": "TTS_DEVICE_PROBE_FAILED",
         "TTS_PROFILE_GENERATION_FAILED": "TTS_PROFILE_GENERATION_FAILED",
     }
-    message = str(error)
+    message = getattr(error, "code", str(error))
     if message in known:
         return known[message]
     if isinstance(error, PermissionError):
@@ -333,50 +342,23 @@ def _replace_directory(source: Path, target: Path) -> None:
     shutil.rmtree(backup, ignore_errors=True)
 
 
-def _terminate(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], check=False)
-    else:
-        descendants = _posix_descendants(process.pid)
-        for pid in (*reversed(descendants), process.pid):
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (OSError, ProcessLookupError):
-                pass
+def _terminate(process: subprocess.Popen[bytes]) -> None:
+    # The script owns a separate POSIX session. Its children may still hold the
+    # output pipe after the shell exits, so the group outlives process.poll().
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
-
-
-def _posix_descendants(root_pid: int) -> list[int]:
-    try:
-        result = subprocess.run(
-            ["ps", "-eo", "pid=,ppid="],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    children: dict[int, list[int]] = {}
-    for line in result.stdout.splitlines():
+        pass
+    finally:
         try:
-            pid_text, parent_text = line.split(None, 1)
-            pid, parent = int(pid_text), int(parent_text)
-        except (TypeError, ValueError):
-            continue
-        children.setdefault(parent, []).append(pid)
-    descendants: list[int] = []
-    pending = list(children.get(root_pid, ()))
-    while pending:
-        pid = pending.pop()
-        descendants.append(pid)
-        pending.extend(children.get(pid, ()))
-    return descendants
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
 
 
 def _install_archive(
@@ -419,6 +401,42 @@ def _install_archive(
     return _result(entry, _install_dir(entry, user_root))
 
 
+def _script_output(
+    process: subprocess.Popen[bytes], check_cancel: Callable[[], None],
+) -> Iterator[str]:
+    """Read installer output without blocking cancellation on a silent pipe."""
+    assert process.stdout is not None
+    pending = b""
+    oversized = False
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while selector.get_map() or process.poll() is None:
+            check_cancel()
+            for key, _events in selector.select(timeout=0.1):
+                chunk = os.read(key.fd, 4096)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                pending += chunk
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    yield (
+                        "[oversized installer output line omitted]\n"
+                        if oversized else (line + b"\n").decode("utf-8", errors="replace")
+                    )
+                    oversized = False
+                # Four bytes per Unicode character bounds an unfinished line
+                # before the complete-line diagnostic limit below is applied.
+                if len(pending) > 16000:
+                    pending = b""
+                    oversized = True
+        if pending or oversized:
+            yield (
+                "[oversized installer output line omitted]\n"
+                if oversized else pending.decode("utf-8", errors="replace")
+            )
+
+
 def _install_script(
     entry: TTSBundleEntry,
     user_root: Path,
@@ -437,6 +455,11 @@ def _install_script(
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     env = os.environ.copy()
+    # curl, git and conda read proxy environment variables, not macOS settings.
+    for scheme, proxy in urllib.request.getproxies().items():
+        if scheme in {"http", "https", "all", "no"}:
+            env[f"{scheme.upper()}_PROXY"] = proxy
+            env[f"{scheme}_proxy"] = proxy
     env["SAKURA_TTS_INSTALL_DIR"] = _external_path(staging)
     env["SAKURA_TTS_DOWNLOADS_DIR"] = _external_path(root / "_dl")
     process = subprocess.Popen(
@@ -445,18 +468,29 @@ def _install_script(
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        start_new_session=True,
     )
+    output: deque[str] = deque()
+    output_size = 0
     try:
-        assert process.stdout is not None
-        for line in process.stdout:
+        for line in _script_output(process, check_cancel):
             check_cancel()
+            # Keep complete lines so truncation cannot detach credentials from
+            # their labels before the host diagnostic boundary redacts them.
+            if len(line) > 4000:
+                line = "[oversized installer output line omitted]\n"
+            output.append(line)
+            output_size += len(line)
+            while output_size > 4000:
+                output_size -= len(output.popleft())
             match = re.search(r"::sakura-progress\s+status=([a-z_]+)\s+progress=(\d+)", line)
             if match:
                 on_status(match.group(1))
                 on_progress(int(match.group(2)))
-        if process.wait() != 0:
-            raise RuntimeError("TTS_BUNDLE_INSTALL_FAILED")
+        exit_code = process.wait()
+        check_cancel()
+        if exit_code != 0:
+            raise BundleInstallError(exit_code, "".join(output))
         _result(entry, staging)
         _replace_directory(staging, _install_dir(entry, user_root))
         return _result(entry, _install_dir(entry, user_root))
@@ -464,6 +498,9 @@ def _install_script(
         _terminate(process)
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def install_bundle(
@@ -490,9 +527,10 @@ def install_bundle(
 
 
 class TTSBundleResource:
-    def __init__(self, *, user_root: Path, config_get: Callable[[], Mapping[str, Any]], config_update: Callable[[Mapping[str, Any]], object], entry: Callable[[], TTSBundleEntry | None], custom_endpoint: Callable[[Mapping[str, Any]], bool], installer: Callable[..., TTSBundleInstallResult] = install_bundle) -> None:
+    def __init__(self, *, user_root: Path, config_get: Callable[[], Mapping[str, Any]], config_update: Callable[[Mapping[str, Any]], object], entry: Callable[[], TTSBundleEntry | None], custom_endpoint: Callable[[Mapping[str, Any]], bool], installer: Callable[..., TTSBundleInstallResult] = install_bundle, diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None) -> None:
         self._user_root, self._config_get, self._config_update = Path(user_root), config_get, config_update
         self._entry, self._custom_endpoint, self._installer = entry, custom_endpoint, installer
+        self._diagnostic = diagnostic
         self._lock, self._cancel = threading.RLock(), threading.Event()
         self._thread: threading.Thread | None = None
         self._closed = False
@@ -583,6 +621,15 @@ class TTSBundleResource:
             with self._lock:
                 stage = self._stage
             code = _failure_code(error, stage)
+            if self._diagnostic is not None:
+                # The host diagnostic service captures and sanitizes the active
+                # exception, including the installer exit code and output tail.
+                self._diagnostic("tts.bundle.install.failed", "warning", {
+                    "code": "TTS_BUNDLE_INSTALL_FAILED",
+                    "stage": stage if stage in {"verify", "download", "extract", "install", "cleanup"} else "unknown",
+                    "reason_code": code,
+                    "provider_id": "sakura.tts.gpt-sovits",
+                })
             logger.warning(
                 "GPT-SoVITS bundle install failed stage=%s error_type=%s code=%s",
                 stage if stage in {"verify", "download", "extract", "install", "cleanup"} else "unknown",

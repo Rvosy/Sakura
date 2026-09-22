@@ -3,7 +3,7 @@ set -euo pipefail
 
 INSTALL_ROOT="${1:-${SAKURA_TTS_INSTALL_DIR:-}}"
 if [ -z "$INSTALL_ROOT" ]; then
-    echo "usage: bash scripts/install_gpt_sovits_macos.sh <install-root>"
+    echo "usage: bash install_gpt_sovits_macos.sh <install-root>"
     exit 2
 fi
 
@@ -53,6 +53,20 @@ CONFIG_PATH="$GPT_DIR/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml"
 MINIFORGE_VERSION="26.3.2-3"
 MINIFORGE_FILENAME="Miniforge3-$MINIFORGE_VERSION-MacOSX-$ARCH.sh"
 MINIFORGE_URL="${GPT_SOVITS_MINIFORGE_URL:-https://github.com/conda-forge/miniforge/releases/download/$MINIFORGE_VERSION/$MINIFORGE_FILENAME}"
+if [ -n "${GPT_SOVITS_MINIFORGE_URL:-}" ]; then
+    MINIFORGE_URLS=("$MINIFORGE_URL")
+else
+    MINIFORGE_URLS=(
+        "https://gitproxy.mrhjx.cn/$MINIFORGE_URL"
+        "https://ghproxy.vip/$MINIFORGE_URL"
+        "$MINIFORGE_URL"
+    )
+fi
+if [ -n "${GPT_SOVITS_REPO:-}" ]; then
+    GPT_REPO_URLS=("$GPT_REPO")
+else
+    GPT_REPO_URLS=("https://gitproxy.mrhjx.cn/$GPT_REPO" "$GPT_REPO")
+fi
 
 # Keep caller overrides and upstream device-specific wheel indexes.
 export PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
@@ -76,6 +90,42 @@ verify_installer() {
     [ "$(head -c 10 "$file")" = '#!/bin/sh' ] || return 1
 }
 
+download_miniforge() {
+    local installer="$1" url status=1
+    for url in "${MINIFORGE_URLS[@]}"; do
+        if curl -fL -A Sakura -o "$installer.part" "$url"; then
+            if ! verify_installer "$installer.part"; then
+                echo "Downloaded Miniforge installer has an unexpected size or header." >&2
+                return 1
+            fi
+            mv -f "$installer.part" "$installer"
+            return 0
+        else
+            status=$?
+            # Only transport/HTTP failures may advance to another source.
+            case "$status" in
+            5 | 6 | 7 | 16 | 18 | 22 | 28 | 35 | 47 | 52 | 55 | 56 | 60 | 92 | 95 | 96 | 97) ;;
+            *) return "$status" ;;
+            esac
+        fi
+    done
+    echo "Unable to download Miniforge from the configured sources." >&2
+    return "$status"
+}
+
+fetch_gpt_source() {
+    local url status=1
+    for url in "${GPT_REPO_URLS[@]}"; do
+        if git -c http.userAgent=Sakura -C "$GPT_DIR" fetch --depth 1 "$url" "$GPT_REF"; then
+            return 0
+        else
+            status=$?
+        fi
+    done
+    echo "Unable to fetch GPT-SoVITS from the configured sources." >&2
+    return "$status"
+}
+
 conda_usable() {
     [ -x "$MINIFORGE_DIR/bin/conda" ] || return 1
     [ -f "$MINIFORGE_DIR/etc/profile.d/conda.sh" ] || return 1
@@ -97,9 +147,7 @@ if ! conda_usable; then
     fi
     if [ ! -f "$INSTALLER" ]; then
         progress download 10
-        curl -fL -o "$INSTALLER.part" "$MINIFORGE_URL"
-        verify_installer "$INSTALLER.part"
-        mv -f "$INSTALLER.part" "$INSTALLER"
+        download_miniforge "$INSTALLER"
     fi
     verify_installer "$INSTALLER"
     progress install 20
@@ -131,7 +179,7 @@ if [ ! -d "$GPT_DIR/.git" ]; then
 fi
 
 progress install 55
-git -C "$GPT_DIR" fetch --depth 1 origin "$GPT_REF"
+fetch_gpt_source
 git -C "$GPT_DIR" checkout --detach FETCH_HEAD
 
 if [ ! -f "$GPT_DIR/install.sh" ]; then
@@ -141,7 +189,15 @@ fi
 
 progress install 65
 cd "$GPT_DIR"
-WORKFLOW=false bash install.sh --device "$INSTALL_DEVICE" --source "$MODEL_SOURCE"
+(
+    if [ ! -t 1 ]; then
+        # The upstream download progress clears terminal lines with tput.
+        # Desktop installs have a pipe and no terminal to manipulate.
+        tput() { :; }
+        export -f tput
+    fi
+    WORKFLOW=false bash install.sh --device "$INSTALL_DEVICE" --source "$MODEL_SOURCE"
+)
 
 progress configure 92
 SAKURA_TTS_CONFIG_PATH="$CONFIG_PATH" SAKURA_TTS_INFER_DEVICE="$INFER_DEVICE" "$ENV_PYTHON" - <<'PY'

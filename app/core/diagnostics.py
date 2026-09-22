@@ -17,7 +17,7 @@ DIAGNOSTIC_TEXT_KEYS = frozenset({"diagnostic", "exception_chain", "exception_st
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _SECRET = re.compile(r'''(?ix)
     (\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
-    ["']?\s*[:=]\s*(?:bearer\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
+    ["']?\s*[:=]\s*(?:(?:bearer|basic)\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
     |(\bbearer\s+)[^\s,;}&]+|\bsk-[\w.-]{6,}
 ''')
 _URL_AUTH = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@")
