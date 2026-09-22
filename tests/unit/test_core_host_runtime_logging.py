@@ -86,6 +86,29 @@ def _records(stream: io.BytesIO) -> list[dict[str, object]]:
     return records
 
 
+def test_startup_failure_keeps_its_event_and_original_migration_cause() -> None:
+    from app.core_host.assistant_adapter import report_assistant_failure
+
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        try:
+            try:
+                raise OSError("dependency installation was interrupted")
+            except OSError as cause:
+                raise RuntimeError("插件恢复失败（sakura.memory.mem0）") from cause
+        except RuntimeError as error:
+            report_assistant_failure(error, stage="plugin_application", code="ASSISTANT_INITIALIZATION_FAILED")
+    finally:
+        bridge.close()
+    record = _records(stream)[0]
+    assert record["event"] == "assistant.initialization.failed"
+    assert record["attributes"]["stage"] == "plugin_application"
+    assert record["attributes"]["reason_code"] == "ASSISTANT_INITIALIZATION_FAILED"
+    assert "sakura.memory.mem0" in record["attributes"]["exception_chain"]
+    assert "dependency installation was interrupted" in record["attributes"]["diagnostic"]
+
+
 def test_core_bridge_forwards_suppressed_log_events_without_legacy_outputs(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)

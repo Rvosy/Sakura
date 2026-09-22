@@ -1170,6 +1170,35 @@ impl ConcurrentRequestHandle {
         deadline: Duration,
         scheduling: &'static str,
     ) -> Result<Value, String> {
+        self.request_with_completion(request_id, name, payload, deadline, scheduling, false)
+    }
+
+    pub(crate) fn request_until_complete(
+        &self,
+        request_id: &str,
+        name: &str,
+        payload: Value,
+        queue_deadline: Duration,
+    ) -> Result<Value, String> {
+        self.request_with_completion(
+            request_id,
+            name,
+            payload,
+            queue_deadline,
+            "interactive",
+            true,
+        )
+    }
+
+    fn request_with_completion(
+        &self,
+        request_id: &str,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+        scheduling: &'static str,
+        until_complete: bool,
+    ) -> Result<Value, String> {
         if request_id.trim().is_empty()
             || name.trim().is_empty()
             || deadline.is_zero()
@@ -1192,21 +1221,23 @@ impl ConcurrentRequestHandle {
             Some(deadline.as_millis()),
             None,
         );
-        let result = self.router.request(
-            json!({
-                "protocolMajor": PROTOCOL_MAJOR,
-                "protocolMinor": self.protocol_minor,
-                "kind": "request",
-                "generationId": self.generation_id,
-                "generationCredential": self.generation_credential,
-                "id": request_id,
-                "name": name,
-                "payload": payload,
-                "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
-                "priority": scheduling,
-            }),
-            deadline,
-        );
+        let message = json!({
+            "protocolMajor": PROTOCOL_MAJOR,
+            "protocolMinor": self.protocol_minor,
+            "kind": "request",
+            "generationId": self.generation_id,
+            "generationCredential": self.generation_credential,
+            "id": request_id,
+            "name": name,
+            "payload": payload,
+            "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
+            "priority": scheduling,
+        });
+        let result = if until_complete {
+            self.router.request_until_complete(message)
+        } else {
+            self.router.request(message, deadline)
+        };
         let elapsed_ms = started.elapsed().as_millis();
         self.log_request_result(request_id, name, &result, elapsed_ms, deadline);
         result

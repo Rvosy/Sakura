@@ -27,7 +27,7 @@ from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
 _PRIVATE = re.compile(r"authorization|cookie|credential|api.?key|secret|password|token|body|content|prompt|messages|payload|arguments|environment", re.I)
 _SECRET = re.compile(r'''(?ix)
     (\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
-    ["']?\s*[:=]\s*(?:bearer\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
+    ["']?\s*[:=]\s*(?:(?:bearer|basic)\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
     |(\bbearer\s+)[^\s,;}&]+|\bsk-[\w.-]{6,}
 ''')
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")

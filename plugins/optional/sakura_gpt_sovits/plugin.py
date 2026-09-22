@@ -857,6 +857,7 @@ class GPTSoVITSPlugin:
             config_update=context.config.update,
             entry=recommend_gpt_sovits_bundle,
             custom_endpoint=_uses_custom_endpoint,
+            diagnostic=provider._emit_diagnostic,
         )
         context.effect(bundle.close)
         settings.register(

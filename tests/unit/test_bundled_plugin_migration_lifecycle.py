@@ -137,10 +137,10 @@ def test_failed_revalidation_retries_only_the_unfinished_plugin(tmp_path, monkey
         if failure == "inspection":
             needs_repair = migration._needs_repair
 
-            def unreadable_directory(roots, plugin_id):
+            def unreadable_directory(roots, plugin_id, details=None):
                 if plugin_id == SPINE:
                     raise OSError("old plugin directory is temporarily unreadable")
-                return needs_repair(roots, plugin_id)
+                return needs_repair(roots, plugin_id, details)
 
             first_pass.setattr(migration, "_needs_repair", unreadable_directory)
         assert migration.migrate_bundled_plugins(roots) == {SPINE: "PLUGIN_MIGRATION_FAILED"}

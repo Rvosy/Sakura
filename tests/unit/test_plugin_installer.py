@@ -411,7 +411,7 @@ def test_core_boundary_rolls_back_code_when_plugin_lifecycle_fails(tmp_path: Pat
     with pytest.raises(PluginSettingsError) as failed:
         boundary.install(boundary.snapshot()["revision"], "folder", str(source.resolve()))
     assert failed.value.code == "PLUGIN_INSTALL_APPLY_FAILED"
-    assert worker.lifecycle_count == 1
+    assert worker.lifecycle_count == 2
     assert "com.example.local" not in {
         spec.plugin_id for spec in PluginDiscovery(app_root).discover()
     }
@@ -656,6 +656,24 @@ def test_zip_and_folder_install_reject_symlinks(tmp_path: Path) -> None:
         pytest.skip("directory symlink creation is unavailable")
     with pytest.raises(PluginInstallError, match="PLUGIN_INSTALL_SYMLINK_FORBIDDEN"):
         LocalPluginInstaller(tmp_path / "app-source-link").install(source_link, "folder")
+
+
+def test_market_repair_does_not_follow_an_invalid_installation_to_other_code(tmp_path: Path) -> None:
+    root = tmp_path / "app"
+    user = StoragePaths(root).user_plugins_dir
+    other = user / "unrelated"
+    other.mkdir(parents=True)
+    (other / "keep.txt").write_text("keep")
+    link = user / "com.example.local"
+    try:
+        link.symlink_to(other, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation is unavailable")
+    record = next(p for p in PluginInventory(root).scan().records if p.directory_name == link.name)
+    with pytest.raises(PluginInstallError, match="PLUGIN_INSTALL_SYMLINK_FORBIDDEN"):
+        LocalPluginInstaller(root).begin_uninstall(record.install_id, expected_plugin_id="com.example.local")
+    assert (other / "keep.txt").read_text() == "keep"
+    assert link.is_symlink()
 
 
 def test_zip_install_rejects_windows_reserved_paths(tmp_path: Path) -> None:

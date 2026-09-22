@@ -3,8 +3,8 @@ use crate::{
     download_sources::{self, DownloadSources},
     product_shell,
     shell_lifecycle::{
-        dispatch_settings_request, settings_core_handle, settings_response_payload,
-        ShellLifecycleState,
+        dispatch_settings_install, dispatch_settings_request, settings_core_handle,
+        settings_response_payload, ShellLifecycleState,
     },
 };
 use serde_json::{json, Value};
@@ -145,6 +145,38 @@ fn selected_release(catalog: &Value, id: &str, version: &str) -> Result<Value, S
             .ok_or("安装包地址缺失。")?,
     )?;
     Ok(release.clone())
+}
+
+fn validate_install_version(
+    current: &Value,
+    revision: &str,
+    plugin_id: &str,
+    version: &str,
+) -> Result<(), String> {
+    if current["revision"] != revision {
+        return Err("CONFIG_REVISION_CONFLICT: 插件列表已变化，请刷新后重试。".into());
+    }
+    let target = semver::Version::parse(version).map_err(|_| "市场版本号格式无效。")?;
+    for plugin in current["plugins"].as_array().into_iter().flatten() {
+        if plugin["pluginId"] != plugin_id
+            || plugin["reasonCode"]
+                .as_str()
+                .is_some_and(|reason| reason.starts_with("PLUGIN_MIGRATION_"))
+        {
+            continue;
+        }
+        // An unreadable local manifest has no comparable version and remains
+        // repairable. Core still owns installation identity and conflict checks.
+        if let Some(installed) = plugin["version"]
+            .as_str()
+            .and_then(|text| semver::Version::parse(text).ok())
+        {
+            if installed.cmp_precedence(&target).is_gt() {
+                return Err("PLUGIN_DOWNGRADE_FORBIDDEN: 已安装更新版本。".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn readme_addresses(catalog: &Value, id: &str, version: &str) -> Result<(String, String), String> {
@@ -346,6 +378,17 @@ pub(crate) async fn settings_marketplace_install(
             &version,
         )?
     };
+    let current = settings_response_payload(
+        dispatch_settings_request(
+            handle.clone(),
+            None,
+            "plugins.settings.get",
+            json!({}),
+            std::time::Duration::from_secs(4),
+        )
+        .await?,
+    )?;
+    validate_install_version(&current, &revision, &plugin_id, &version)?;
     let sources = sources.load()?;
     let url = download_sources::https_url(release["package"]["url"].as_str().unwrap())?;
     let (cancel, mut cancellation) = watch::channel(false);
@@ -390,9 +433,8 @@ pub(crate) async fn settings_marketplace_install(
     );
     fs::write(&file.0, data).map_err(|_| "无法写入临时安装包。")?;
     let _ = progress.send(json!({"phase":"installing","progress":100}));
-    let response = dispatch_settings_request(
+    let response = dispatch_settings_install(
         handle.clone(),
-        None,
         "plugins.marketplace.install",
         json!({
             "revision":revision,"sourcePath":file.0,"pluginId":plugin_id,"version":version,
@@ -431,6 +473,45 @@ pub(crate) fn settings_marketplace_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_install_rejects_downgrades_but_allows_equal_precedence_repairs() {
+        let current = |version| {
+            json!({"revision":"current","plugins":[{
+                "pluginId":"demo","version":version,"source":"user","reasonCode":"READY"
+            }]})
+        };
+        for (installed, target) in [
+            ("2.0.0", "1.9.0"),
+            ("1.0.0", "1.0.0-beta.9"),
+            ("1.0.0-beta.10", "1.0.0-beta.2"),
+        ] {
+            assert!(
+                validate_install_version(&current(installed), "current", "demo", target)
+                    .unwrap_err()
+                    .starts_with("PLUGIN_DOWNGRADE_FORBIDDEN:")
+            );
+        }
+        for (installed, target) in [
+            ("1.0.0", "1.0.0"),
+            ("1.0.0+build.9", "1.0.0+build.2"),
+            ("1.0.0-beta.2", "1.0.0-beta.10"),
+            ("unknown", "1.0.0"),
+        ] {
+            assert!(
+                validate_install_version(&current(installed), "current", "demo", target).is_ok()
+            );
+        }
+        assert!(
+            validate_install_version(&current("1.0.0"), "stale", "demo", "1.1.0")
+                .unwrap_err()
+                .starts_with("CONFIG_REVISION_CONFLICT:")
+        );
+        let missing = json!({"revision":"current","plugins":[
+            {"pluginId":null,"version":"0.0.0","source":"user","reasonCode":"PLUGIN_MANIFEST_INVALID"},
+            {"pluginId":"demo","version":"0.0.0","source":"bundled","reasonCode":"PLUGIN_MIGRATION_FAILED"}
+        ]});
+        assert!(validate_install_version(&missing, "current", "demo", "1.0.0").is_ok());
+    }
     #[test]
     fn cache_survives_new_state_and_keeps_readmes_bound_to_repository_and_commit() {
         let root =

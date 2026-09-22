@@ -13,25 +13,25 @@ from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.config.character_loader import CharacterRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.dependencies import PluginDependencyRoots
-from app.plugins.inventory import PluginInventory
+from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
 
 
 def _roots(tmp_path: Path) -> RuntimeRoots:
     repository = Path(__file__).parents[2]
     distribution = tmp_path / "distribution"
-    bundled = distribution / "plugins" / "builtin"
-    bundled.mkdir(parents=True)
+    user = tmp_path / "user"
+    plugin_root = user / "plugins/user/sakura.memory.mem0"
     shutil.copytree(
         repository / "plugins" / "optional" / "sakura_mem0",
-        bundled / "sakura_mem0",
+        plugin_root,
     )
-    user = tmp_path / "user"
     _write_character_and_config(user)
+    PluginDesiredStateStore(user).set("sakura.memory.mem0", True)
     _write_third_party_memory(user / "plugins" / "user" / "third_party_memory")
-    _prepare_mem0_dependency_root(distribution, user, bundled / "sakura_mem0")
-    from app.plugins.bundled_migrations import MIGRATIONS
-    (user / "config/plugin-migrations.json").write_text(json.dumps({key: "not_applicable" for key in MIGRATIONS if key not in ['sakura.memory.mem0']}))
+    # This runtime test uses only YAML-backed settings, not the embedding
+    # engine. Migration verifies its full dependency set in separate tests.
+    _prepare_mem0_dependency_root(distribution, user, plugin_root)
     return RuntimeRoots(distribution, user)
 
 
@@ -91,7 +91,7 @@ def _prepare_mem0_dependency_root(
     dependencies = PluginDependencyRoots(user, distribution_root=distribution)
     declaration = dependencies.declaration(plugin_root)
     assert declaration is not None
-    dependency_root = distribution / "plugins" / "dependencies" / "sakura.memory.mem0"
+    dependency_root = user / "data/plugin-runtime/dependencies/sakura.memory.mem0"
     dependency_root.mkdir(parents=True)
     yaml_package = Path(yaml.__file__).resolve().parent
     shutil.copytree(yaml_package, dependency_root / "yaml")
@@ -195,8 +195,6 @@ requires:
 
 def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
-    from app.plugins.bundled_migrations import migrate_bundled_plugins
-    migrate_bundled_plugins(roots)
     inventory = PluginInventory(roots).scan()
     records = {record.plugin_id: record for record in inventory.records}
     assert records["sakura.memory.mem0"].source == "user"

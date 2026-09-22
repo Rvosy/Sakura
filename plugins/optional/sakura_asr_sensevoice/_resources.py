@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import re
 import shutil
+import ssl
 import threading
 import time
 import urllib.request
+import urllib.error
 import uuid
 from pathlib import Path
 
@@ -19,6 +22,7 @@ FILES = (
     ("tokens.txt", _BASE + "tokens.txt", 315894),
     ("silero_vad.onnx", "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx", 643854),
 )
+GITHUB_MIRRORS = ("https://gitproxy.mrhjx.cn/", "https://ghproxy.vip/")
 
 
 class Cancelled(Exception):
@@ -99,6 +103,36 @@ class ModelResources:
         if self.cancelled.is_set():
             raise Cancelled()
 
+    def _download(self, url: str, target: Path, size: int):
+        # Only the public GitHub artifact in FILES needs mirrors. ModelScope
+        # model/token downloads keep their pinned addresses.
+        sources = [*(prefix + url for prefix in GITHUB_MIRRORS), url] if url.startswith("https://github.com/") else [url]
+        failures = []
+        for address in sources:
+            self.check()
+            received = 0
+            request = urllib.request.Request(address, headers={"User-Agent": "Sakura-ASR/1"})
+            try:
+                with urlopen_current_proxy(request, timeout=20) as source, target.open("wb") as output:
+                    while chunk := source.read(256 * 1024):
+                        self.check()
+                        received += len(chunk)
+                        if received > size:
+                            raise ValueError("ASR_DOWNLOAD_SIZE_MISMATCH")
+                        output.write(chunk)
+                        with self.lock:
+                            self.downloaded += len(chunk)
+            except (urllib.error.URLError, TimeoutError, ConnectionError, ssl.SSLError, http.client.HTTPException) as error:
+                self.check()
+                with self.lock:
+                    self.downloaded -= received
+                failures.append(error)
+                continue
+            if received != size:
+                raise ValueError("ASR_DOWNLOAD_SIZE_MISMATCH")
+            return
+        raise ExceptionGroup("ASR_DOWNLOAD_FAILED", failures)
+
     def _install(self):
         staging = self.root / (".install-" + uuid.uuid4().hex)
         backup = self.root / (".previous-" + uuid.uuid4().hex)
@@ -117,21 +151,7 @@ class ModelResources:
                     return
             staging.mkdir(parents=True)
             for name, url, size in FILES:
-                self.check()
-                target = staging / name
-                received = 0
-                request = urllib.request.Request(url, headers={"User-Agent": "Sakura-ASR/1"})
-                with urlopen_current_proxy(request, timeout=20) as source, target.open("wb") as output:
-                    while chunk := source.read(256 * 1024):
-                        self.check()
-                        received += len(chunk)
-                        if received > size:
-                            raise ValueError("ASR_DOWNLOAD_SIZE_MISMATCH")
-                        output.write(chunk)
-                        with self.lock:
-                            self.downloaded += len(chunk)
-                if received != size:
-                    raise ValueError("ASR_DOWNLOAD_SIZE_MISMATCH")
+                self._download(url, staging / name, size)
             self.check()
             (staging / "complete.json").write_text(json.dumps({"version": VERSION}), encoding="utf-8")
             # Publish only a complete validated set; retain the old set on failure.
@@ -156,6 +176,7 @@ class ModelResources:
             with self.lock:
                 self.state = "failed"
                 self.error = str(error) if str(error) in {"ASR_DOWNLOAD_SIZE_MISMATCH", "ASR_MODEL_RESTORE_FAILED"} else "ASR_DOWNLOAD_FAILED"
+            log_event(self.logger, "error", "asr.model.install.failed", "语音模型安装失败", duration_ms=round((time.monotonic() - started_at) * 1000), error_code=self.error)
         finally:
             # These are internally generated children of the private model root.
             # On a failed rollback, the backup is the only remaining old set.
@@ -163,7 +184,8 @@ class ModelResources:
             for directory in ((staging, backup) if published else (staging,)):
                 if directory.parent.resolve() == self.root and directory.exists():
                     shutil.rmtree(directory, ignore_errors=True)
-            log_event(self.logger, "error" if self.state == "failed" else "info", "asr.model.install." + self.state, {"succeeded": "语音模型安装完成", "failed": "语音模型安装失败", "cancelled": "语音模型安装已取消"}.get(self.state, "语音模型安装已结束"), duration_ms=round((time.monotonic() - started_at) * 1000), **({"error_code": self.error} if self.state == "failed" else {}))
+            if self.state != "failed":
+                log_event(self.logger, "info", "asr.model.install." + self.state, {"succeeded": "语音模型安装完成", "cancelled": "语音模型安装已取消"}.get(self.state, "语音模型安装已结束"), duration_ms=round((time.monotonic() - started_at) * 1000))
 
     def cancel(self, _values=None):
         self.cancelled.set()

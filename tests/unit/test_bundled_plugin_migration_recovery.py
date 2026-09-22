@@ -186,7 +186,7 @@ def test_rollback_failure_keeps_both_errors_and_recoverable_backups(
             raise OSError("dependency rollback failure")
         return rmtree(path, *args, **kwargs)
 
-    def capture_error(error, reason, plugin_id=None):
+    def capture_error(error, reason, plugin_id=None, details=None):
         errors.append(diagnostic_attributes(error, reason_code=reason, stage="migration"))
 
     with monkeypatch.context() as failure:

@@ -87,14 +87,16 @@ def _runtime_root(
     distribution = tmp_path / "distribution"
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
-    for name in ("sakura_tts_hub", "sakura_genie", "sakura_gpt_sovits"):
-        shutil.copytree(repository / "plugins" / ("builtin" if name == "sakura_tts_hub" else "optional") / name, bundled / name)
-    # These fixtures exercise custom HTTP endpoints only. Archive extraction
-    # and managed local runtimes are outside this test; their dependencies are
-    # deliberately absent instead of represented by an empty dependency marker.
-    for name in ("sakura_genie", "sakura_gpt_sovits"):
-        (bundled / name / "requirements.txt").unlink()
+    shutil.copytree(repository / "plugins/builtin/sakura_tts_hub", bundled / "sakura_tts_hub")
     user = tmp_path / "user"
+    # These fixtures exercise custom HTTP endpoints only. Archive extraction
+    # and upgrade migration have their own coverage. Install the reduced test
+    # copies directly, without presenting them as intact historical bundles.
+    for name, plugin_id in (("sakura_genie", "sakura.tts.genie"), ("sakura_gpt_sovits", "sakura.tts.gpt-sovits")):
+        installed = user / "plugins/user" / plugin_id
+        shutil.copytree(repository / "plugins/optional" / name, installed)
+        (installed / "requirements.txt").unlink()
+        PluginDesiredStateStore(user).set(plugin_id, True)
     (user / "data" / "plugins" / "sakura.tts.genie").mkdir(parents=True)
     (user / "data" / "plugins" / "sakura.tts.gpt-sovits").mkdir(parents=True)
     (user / "data" / "plugins" / "sakura.tts.genie" / "config.json").write_text(
@@ -122,11 +124,6 @@ def _runtime_root(
     }}), encoding="utf-8")
     _write_genie_character(user, "genie-character")
     _write_gpt_character(user, "gpt-character")
-    from app.plugins.bundled_migrations import MIGRATIONS
-    (user / "config").mkdir(parents=True, exist_ok=True)
-    (user / "config/plugin-migrations.json").write_text(json.dumps({key: "not_applicable" for key in MIGRATIONS if key not in ['sakura.tts.genie', 'sakura.tts.gpt-sovits']}))
-    from app.plugins.bundled_migrations import migrate_bundled_plugins
-    assert migrate_bundled_plugins(RuntimeRoots(distribution, user)) == {}
     return RuntimeRoots(distribution, user)
 
 

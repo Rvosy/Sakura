@@ -2005,6 +2005,8 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         "mode",
         "current_version",
         "version",
+        "code_source",
+        "dependency_source",
         "proxy_mode",
         "proxy_http_configured",
         "proxy_https_configured",
@@ -2205,6 +2207,8 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "mode" => "更新模式",
         "current_version" => "当前版本",
         "version" => "目标版本",
+        "code_source" => "插件代码来源",
+        "dependency_source" => "插件依赖来源",
         "proxy_mode" => "代理模式",
         "proxy_http_configured" => "HTTP 代理",
         "proxy_https_configured" => "HTTPS 代理",
@@ -2367,6 +2371,14 @@ fn business_message(event: &str) -> Option<&'static str> {
 fn legacy_import_business_message(event: &str) -> Option<&'static str> {
     Some(match event {
         "legacy_import.started" => "旧版本迁移开始",
+        "plugin.migration.started" => "开始迁出旧版内置插件",
+        "plugin.migration.plugin_started" => "开始处理插件迁移",
+        "plugin.migration.plugin_completed" => "插件迁移处理完成",
+        "plugin.migration.candidate_rejected" => "迁移来源不可用，继续检查其他本地来源",
+        "plugin.migration.source_selected" => "已选定插件迁移来源",
+        "plugin.migration.rollback_completed" => "迁移失败后已恢复原目录",
+        "plugin.migration.failed" => "插件迁移未完成",
+        "plugin.migration.completed" => "插件迁移处理结束",
         "legacy_import.staged" => "旧版本迁移已提交，等待 Core 校验",
         "legacy_import.failed" => "旧版本迁移失败",
         "legacy_import.worker_started" => "旧版本迁移任务已启动",
@@ -2859,6 +2871,21 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
             "status",
         ],
         value if value.starts_with("legacy_import.tts_copy_") => &LEGACY_COPY_PRIORITY,
+        value if value.starts_with("plugin.migration.") => &[
+            "stage",
+            "status",
+            "outcome",
+            "code_source",
+            "dependency_source",
+            "version",
+            "elapsed_ms",
+            "count",
+            "items",
+            "failed",
+            "ignored",
+            "code",
+            "reason_code",
+        ],
         _ => &DEFAULT_PRIORITY,
     };
     let mut parts = Vec::new();
@@ -3159,6 +3186,8 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "candidates"
             | "category"
             | "dependency"
+            | "code_source"
+            | "dependency_source"
             | "child_pid"
             | "code"
             | "command"
@@ -3320,6 +3349,8 @@ fn normalize_key(value: &str) -> String {
         .flat_map(char::to_lowercase)
         .collect::<String>()
         .replace("diagnosticdetail", "diagnostic_detail")
+        .replace("codesource", "code_source")
+        .replace("dependencysource", "dependency_source")
         .replace("sourcefile", "source_file")
         .replace("sourceline", "source_line")
         .replace("timeoutms", "timeout_ms")

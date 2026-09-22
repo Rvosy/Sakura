@@ -36,6 +36,7 @@ Python 的 response 和 event 共用 `ResponseWriter` 的有界队列与写入�
 - generation 失效、Core crash、stdout EOF、fatal transport、Retry、Exit 和窗口关闭都必须一次性完成或拒绝所有 pending waiter，并停止/join reader、writer。
 - 不在 pending/owner mutex 内做 pipe read/write、线程 join、进程等待或 UI 回调。
 - 保留现有 Supervisor、shutdown 5 秒总 deadline、generation 清理顺序和 stderr drainer；Router 不能成为第二生命周期根。
+- 显式插件安装使用终态等待：`deadlineMs` 仍限制 Core 队列等待，进入执行后由安装器拥有子进程及回滚期限。Shell 等待实际 response 或 generation 失效，期间保留临时 ZIP；不以通用 RPC 等待超时报成安装终态。其他请求保留原有响应期限。
 
 ### 2.3 Python Router
 

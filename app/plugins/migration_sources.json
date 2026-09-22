@@ -7,24 +7,28 @@
   },
   "sakura.asr.sensevoice": {
     "directory": "sakura_asr_sensevoice",
+    "runtimeImports": ["numpy", "sherpa_onnx"],
     "repository": "Rvosy/Sakura-SenseVoice",
     "version": "0.1.0",
     "commit": "1ab586813f880a14d444a59c10a32bc6ce9135bd"
   },
   "sakura.memory.mem0": {
     "directory": "sakura_mem0",
+    "runtimeImports": ["qdrant_client", "sqlalchemy", "fastembed", "onnxruntime"],
     "repository": "Rvosy/Sakura-Mem0",
     "version": "0.1.0",
     "commit": "714504e285e74bd9b6884f9b6e44bb1d51f51280"
   },
   "sakura.tts.gpt-sovits": {
     "directory": "sakura_gpt_sovits",
+    "runtimeImports": ["py7zr", "py7zz", "yaml"],
     "repository": "Rvosy/Sakura-GPT-SoVITS",
     "version": "0.1.0",
     "commit": "6155c31867b225ab4c676775d1f87acb8ebb3bd0"
   },
   "sakura.tts.genie": {
     "directory": "sakura_genie",
+    "runtimeImports": ["py7zr", "py7zz"],
     "repository": "Rvosy/Sakura-Genie",
     "version": "0.1.0",
     "commit": "e52eab8deb5d8deb340bc7dcd8521c53ccaa294e"

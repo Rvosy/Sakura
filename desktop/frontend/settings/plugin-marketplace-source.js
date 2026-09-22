@@ -101,7 +101,8 @@ export function createMarketplaceSource({ invoke, Channel, host, randomUUID = ()
       const current = await invoke("settings_plugins_get");
       const existing = current.plugins.find(p => p.pluginId === plugin.id && !p.reasonCode?.startsWith("PLUGIN_MIGRATION_"));
       if (existing?.source === "bundled") throw new Error("内置插件随应用更新。");
-      if (existing && compareVersions(existing.version, version.number) >= 0) throw new Error("已安装当前版本或更新版本。");
+      if (existing?.reasonCode === "PLUGIN_ID_CONFLICT") throw new Error("请先在已安装列表中卸载冲突的插件副本。");
+      if (existing && compareVersions(existing.version, version.number) > 0) throw new Error("已安装更新版本。");
       signal.throwIfAborted();
       const requestId = randomUUID(), progress = new Channel();
       const cancel = () => { void invoke("settings_marketplace_cancel", { requestId }).catch(() => {}); };

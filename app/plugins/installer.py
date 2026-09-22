@@ -156,21 +156,26 @@ class LocalPluginInstaller:
             state_reserved = True
             dependency_target = self._paths.plugin_dependency_root_for(spec.plugin_id)
             dependency_existed = dependency_target.exists()
-            if reuse_dependencies and dependency_existed:
-                try:
-                    dependency_root = self._dependencies.verified_root(spec.plugin_id, plugin_root)
-                    self._dependencies._validate_entry(spec.plugin_id, plugin_root, dependency_root, spec.entry)
-                except PluginDependencyError:
+            if dependency_existed:
+                dependency_ready = False
+                if reuse_dependencies:
+                    try:
+                        dependency_root = self._dependencies.verified_root(spec.plugin_id, plugin_root)
+                        self._dependencies._validate_entry(spec.plugin_id, plugin_root, dependency_root, spec.entry)
+                        dependency_ready = True
+                    except PluginDependencyError:
+                        pass
+                if not dependency_ready:
                     with self._dependencies.prepare(
                         spec.plugin_id,
                         plugin_root,
                         entry=spec.entry,
                         bundled=offline_dependencies,
                     ) as prepared:
+                        backup = staging / "previous-dependencies"
+                        self._replace_path(dependency_target, backup)
+                        dependency_backup = backup
                         if prepared is not None:
-                            backup = staging / "previous-dependencies"
-                            self._replace_path(dependency_target, backup)
-                            dependency_backup = backup
                             self._replace_path(prepared, dependency_target)
                             dependency_promoted = True
             else:
@@ -247,15 +252,24 @@ class LocalPluginInstaller:
         pending = self.begin_uninstall(install_id)
         self.commit_uninstall(pending)
 
-    def begin_uninstall(self, identity: str) -> PendingPluginRemoval:
+    def begin_uninstall(self, identity: str, *, expected_plugin_id: str | None = None) -> PendingPluginRemoval:
         inventory = PluginInventory(self._roots).scan()
         record = inventory.record(identity)
         if record is None:
             raise PluginInstallError("PLUGIN_NOT_FOUND")
         if record.source != "user":
             raise PluginInstallError("BUNDLED_PLUGIN_LOCKED")
+        if expected_plugin_id is not None and (
+            record.plugin_id not in {None, expected_plugin_id}
+            or (record.plugin_id is None and record.directory_name != sanitize_directory_component(expected_plugin_id))
+        ):
+            raise PluginInstallError("PLUGIN_ID_CONFLICT")
+        plugin_id = record.plugin_id or expected_plugin_id
         user_root = self._paths.user_plugins_dir.resolve()
-        code_dir = (self._paths.user_plugins_dir / record.directory_name).resolve()
+        code_dir = self._paths.user_plugins_dir / record.directory_name
+        if expected_plugin_id is not None and self._unsafe_node(code_dir):
+            raise PluginInstallError("PLUGIN_INSTALL_SYMLINK_FORBIDDEN")
+        code_dir = code_dir.resolve()
         if code_dir.parent != user_root:
             raise PluginInstallError("PLUGIN_INSTALL_LAYOUT_INVALID")
 
@@ -263,8 +277,8 @@ class LocalPluginInstaller:
         quarantine_root = Path(tempfile.mkdtemp(prefix=".uninstall-", dir=user_root))
         quarantine = quarantine_root / "code"
         dependency_dir = (
-            self._paths.plugin_dependency_root_for(record.plugin_id)
-            if record.plugin_id is not None
+            self._paths.plugin_dependency_root_for(plugin_id)
+            if plugin_id is not None
             else None
         )
         dependency_quarantine = quarantine_root / "dependencies"
@@ -286,8 +300,8 @@ class LocalPluginInstaller:
                 raise PluginInstallError("PLUGIN_UNINSTALL_FAILED") from error
             raise PluginInstallError("PLUGIN_UNINSTALL_ROLLBACK_FAILED") from error
         try:
-            if record.plugin_id is not None:
-                self._remove_config_entry(record.plugin_id)
+            if plugin_id is not None:
+                self._remove_config_entry(plugin_id)
         except PluginInstallError:
             try:
                 if (
@@ -302,7 +316,7 @@ class LocalPluginInstaller:
             shutil.rmtree(quarantine.parent, ignore_errors=True)
             raise
         return PendingPluginRemoval(
-            record.plugin_id,
+            plugin_id,
             code_dir,
             quarantine,
             config_before,

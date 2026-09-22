@@ -13,7 +13,7 @@ export function hasUpdate(plugin) {
 export function canInstall(plugin, source) {
   const version = recommended(plugin);
   return Boolean(source?.install && version && (!plugin.installed
-    || (source.canUpdate && !plugin.updateBlocked && hasUpdate(plugin))));
+    || (source.canUpdate && !plugin.updateBlocked && compareVersions(version.number, plugin.installed) >= 0)));
 }
 
 export function createCatalogLoader(source, onChange) {

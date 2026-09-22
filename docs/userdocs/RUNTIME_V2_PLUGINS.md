@@ -29,9 +29,11 @@ Sakura 只安装 `api: 4` 插件。安装包不能包含符号链接、路径逃
 
 未指定软件包源时，Python 依赖默认从阿里云 PyPI 镜像下载，并复用已有下载缓存；用户或插件指定的源优先。
 镜像缺少某个版本时，可在启动 Sakura 前设置 `UV_DEFAULT_INDEX=https://pypi.org/simple`，再重试安装。
+市场目录、说明和安装包按“设置 → 下载源”中的顺序下载，默认先尝试两条国内镜像，再访问 GitHub。
+插件自行下载的模型或整合包使用各插件的来源配置，不随“设置 → 下载源”调整；具体见[下载插件资源](#下载插件资源)。
 
 ```text
-data/user_plugins/<plugin_id>/                         用户插件代码
+plugins/user/<plugin_id>/                              用户插件代码
 data/plugins/<plugin_id>/                              插件配置和数据
 data/plugin-runtime/dependencies/<plugin_id>/           用户插件 Python 依赖
 ```
@@ -43,7 +45,8 @@ data/plugin-runtime/dependencies/<plugin_id>/           用户插件 Python 依�
 
 从曾内置这些能力的版本升级时，Sakura 会利用本地文件和发行包中的兼容材料，将退役内置插件迁入用户插件目录，
 保留配置、数据和启停选择。兼容材料随目标版本提供，支持跳过中间版本直接升级；新安装不会因此启用这些可选插件。
-迁移失败时按设置页中的错误处理并重启，不要删除原配置、模型或迁移备份。
+迁移失败时，可以进入市场安装对应插件；已存在同版本时选择“重新安装”。重新安装会替换代码和 Python 依赖，保留配置、模型、数据和启停选择。安装过程中等待结果，不要删除原配置、模型或迁移备份。
+如果旧版因迁移失败无法打开设置，先升级到修复了启动隔离的版本，再从市场修复。回退旧版后再次升级仍会检查未完成的迁移，不会自动降级已有的其他版本用户插件。
 
 ## 启停与设置
 
@@ -70,6 +73,19 @@ install、enable、disable、reload 和 uninstall 都是明确的用户操作。
 
 需要本地模型或运行组件时，在所属插件的设置窗口中安装、重试或取消。GPT-SoVITS 与 Genie 整合包、
 Mem0 向量模型的资源管理入口都在各自的插件设置中。
+
+SenseVoice 主模型和词表从 ModelScope 下载，VAD 默认按 gitproxy.mrhjx.cn、ghproxy.vip、GitHub 官方的顺序下载同一文件。
+GPT-SoVITS 的 macOS 安装使用相同顺序下载 Miniforge；源码先通过 gitproxy.mrhjx.cn 获取，失败后访问 GitHub 官方。
+模型默认从 ModelScope 下载，Python 包默认使用阿里云 PyPI，Conda 使用清华镜像。
+上游脚本单独指定的 PyTorch、TorchCodec 仍使用 PyTorch 官方源。镜像切换不改变固定的模型、安装器版本或源码提交。
+显式设置的 `GPT_SOVITS_REPO`、`GPT_SOVITS_MINIFORGE_URL` 使用指定地址；模型源、PyPI 和 Conda 的覆盖方式见
+[macOS 安装脚本](../../plugins/optional/sakura_gpt_sovits/install_gpt_sovits_macos.sh)。
+
+Intel Mac 使用当前上游脚本安装时，PyTorch 官方源没有适用于 Python 3.10、macOS x86_64 的 TorchCodec 包，
+会在依赖安装阶段失败；更换下载镜像无法解决。此时可连接已部署的 GPT-SoVITS 服务。
+
+网络失败按顺序切换来源，每个来源只尝试一次；磁盘写入、文件大小或安装器格式错误直接报错。全部来源失败时保留原始原因。
+GPT-SoVITS 安装失败会记录退出码和有长度限制的输出末尾，经过日志脱敏；开启远程诊断时沿用现有错误上报链路。
 
 “关于 → 组件”汇总已启用插件的资源状态，只提供“前往下载设置”；点击后会打开所属插件并定位到资源。
 停用插件的资源不会出现在总览里，尚未应用的启停操作不会提前改变总览。“已安装”只表示资源状态，

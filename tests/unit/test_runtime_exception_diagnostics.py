@@ -29,12 +29,13 @@ def test_local_diagnostic_redacts_fragments_without_discarding_error():
     raw = '''Permission denied: 'C:\\Users\\Private Name\\config.yaml'
 https://user:pass@example.test/v1/models?api_key=secret-value
 Authorization: Bearer private-token
+Authorization: Basic basic-private-value
 {"password": "quoted private value"}'''
     text = safe_diagnostic_text(raw)
     assert "Permission denied" in text and "config.yaml" in text
     assert "example.test/v1/models?api_key=[REDACTED]" in text
     assert r"C:\Users\Private Name\config.yaml" in text
-    for private in ["private-token", "quoted private value", "secret-value", "user:pass"]:
+    for private in ["private-token", "basic-private-value", "quoted private value", "secret-value", "user:pass"]:
         assert private not in text
     assert "[truncated:" in safe_diagnostic_text("多行错误\n" * 2000, 512)
     assert safe_diagnostic_text("file:///C:/Users/private/file.txt") == "file:///C:/Users/private/file.txt"
