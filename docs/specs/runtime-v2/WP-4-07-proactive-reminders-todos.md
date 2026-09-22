@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-21
+updated: 2026-09-22
 ---
 
 # WP-4-07 定时截图与主动请求规范
@@ -103,4 +103,4 @@ Timeline 保存中性观察及实际回复，不保存原图、base64、路径�
 
 ## 非目标
 
-CAP-017 提醒与待办仍未排期。本次只迁移已有主动屏幕策略，不新增调度平台、磁盘批次、持久任务队列、补跑或自愈。
+主动屏幕策略不提供通用提醒、待办、持久任务队列或积压任务补跑。相关能力规划见[能力台账](product-capability-parity.md)。

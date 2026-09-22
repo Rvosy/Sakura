@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-21
+updated: 2026-09-22
 ---
 
 # Sakura Plugin Runtime v4
@@ -307,7 +307,7 @@ Runtime 在绑定创建、派发及返回边界校验身份。停用、退出、
 
 绑定只固定插件进程，不定义同进程内 Python 服务对象的代次。`provide()` 的 disposer 撤销本地服务后，
 原绑定调用报告 `SERVICE_MISSING`；同一进程重新提供相同 key 和导出合同的服务仍属原绑定。
-导出方法表仍是 setup 产物，本轮不增加服务 revision 或动态方法表。
+导出方法表在 setup 时确定，运行期间保持不变。
 
 `bind()` 不创建 Manifest 硬依赖、后台健康探测、重启或业务恢复关系，也不赋予额外权限。
 绑定代理仅在当前消费者进程内使用，普通 Service 参数和结果的 JSON 边界保持不变。

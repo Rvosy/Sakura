@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-09-22
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -50,7 +50,7 @@ legacy 行为与数据
 默认 Assistant 的模型、上下文与工具循环位于 `plugins/builtin/sakura_assistant/`，Core 负责受理、数据与终态。
 Assistant、Memory、Tools 和相关插件能力仍属于现有产品能力，进程与目录迁移不改变本台账的等价要求。
 
-未来通用自治任务编排、多 Agent Runtime、任务图和通用 Capability Broker 不属于本轮必备功能，可以保持可选或延期。
+未来通用自治任务编排、多 Agent Runtime、任务图和通用 Capability Broker 不属于当前必备功能，可以保持可选或延期。
 
 ## 强制功能台账
 

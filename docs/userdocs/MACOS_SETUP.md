@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-15
+updated: 2026-09-22
 ---
 
 # 在 macOS 上使用 Sakura
@@ -65,7 +65,7 @@ macOS 使用 AppKit 管理透明桌宠窗口、点击穿透和原生输入栏材
 
 语音可以关闭。关闭后 Sakura 只显示字幕，不启动合成任务。
 
-macOS 可以连接外置 GPT-SoVITS 或 Genie 服务：
+安装并启用对应的[语音插件](RUNTIME_V2_PLUGINS.md)后，macOS 可以连接外置 GPT-SoVITS 或 Genie 服务：
 
 1. 在本机或其他主机启动语音服务；
 2. 打开“设置 → 语音”；

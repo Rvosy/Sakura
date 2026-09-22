@@ -3,10 +3,8 @@
 `sakura.cialloo.cn` 的 Astro / Starlight 源码在此维护。页面内容位于 `src/content/docs/`，导航在
 `astro.config.mjs`，样式在 `src/styles/starlight.css`，图片在 `public/images/`。新增文档页时同步检查导航和链接。
 
-源码迁自 [Rvosy/sakura-site](https://github.com/Rvosy/sakura-site)，基线提交为
-`f19ca7cb1712c1aec9850dc9a64cc33c3b6f7cda`。原仓库未删除或归档；本分支合入后，官网维护入口统一到这里。
-2026-09-16 已核对线上首页及路由；服务器只保存构建产物，没有找到源码检出。
-该提交是导入的源码基线，不能据此断言线上文件就是由该提交构建。
+产品用法和开发接口的详细来源在仓库 `docs/`。本站保留介绍、快速入口和指向对应指南的链接；修改产品行为时，
+先更新所属指南，再检查本站摘要与链接。历史版本用法从对应 Release 或 Git 标签查询。
 
 ## 本地构建
 
@@ -20,7 +18,6 @@ pnpm preview --host 127.0.0.1
 ```
 
 `dist/`、`.astro/` 和依赖目录不入库。官网为静态站点，服务器不需要运行 Node 进程。
-此次迁入保留现有页面内容；其中产品介绍与安装指南尚未按当前桌面版本重新审校。
 
 ## 发布与回退
 

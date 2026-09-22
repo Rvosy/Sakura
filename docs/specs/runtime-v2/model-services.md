@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-20
+updated: 2026-09-22
 ---
 
 # 模型 Service 与调用方边界
@@ -17,7 +17,7 @@ updated: 2026-09-20
 Assistant 和 Mem0 都通过公开 `sakura_model.ModelClient` 消费模型服务。Assistant 保留 Prompt、
 上下文预算、工具循环、ChatReply 分段解析、语义修复和 Trace；Mem0 保留整理规则、JSON 修复、
 去重、幂等来源和整理游标。模型缺失只阻止需要模型的操作，不阻止 Mem0 本地召回及手工管理。
-本轮默认实现连接远程 API，不提供本地推理进程、权重下载或离线发行。
+默认实现连接远程 API，不提供本地推理进程、权重下载或离线发行。
 
 ## 旧模型插件升级
 

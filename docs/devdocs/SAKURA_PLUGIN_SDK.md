@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-20
+updated: 2026-09-22
 ---
 
 # 编写 Sakura 插件
@@ -1352,9 +1352,9 @@ Python 标准 `logging`、`print`、stderr 和外部程序输出不会自动进�
 
 ## 插件管理与日志适配清单
 
-本轮插件管理与统一日志改动仍使用 Plugin API v4，没有新增插件 HTML 入口，也没有要求重写普通设置回调。
+插件管理与日志接口使用 Plugin API v4，设置页面由宿主渲染，普通设置回调继续适用。
 已有插件按下表检查即可；使用新日志能力的包应在 README 写明需要支持 `sakura.host.logging` 的 Sakura，
-并在 `requires` 中声明它。仅有 `api: 4` 不能证明旧宿主已提供这项新增 Service。
+并在 `requires` 中声明它。宿主需提供所声明的 Service 才能加载插件。
 
 | 改动 | 兼容情况 | 作者需要做什么 |
 |---|---|---|

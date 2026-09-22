@@ -10,7 +10,7 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 		<div class="sakura-hero__inner">
 			<p class="sakura-eyebrow">Desktop Companion Agent</p>
 			<h1>Sakura Desktop Pet</h1>
-			<p class="sakura-lead">一个会主动感知屏幕、用原生 tool_calls 调用工具、把记忆交给你管理的桌面角色 Agent。不是聊天框的外壳，是能陪你工作、提醒你、帮你处理任务的桌面伙伴。</p>
+			<p class="sakura-lead">一个可以结合屏幕内容主动搭话、调用工具，并通过插件扩展语音和记忆的桌面角色 Agent。</p>
 			<div class="sakura-actions">
 				<a class="sakura-button sakura-button--primary" href="/start/setup/">立即开始</a>
 				<a class="sakura-button sakura-button--ghost" href="https://github.com/Rvosy/sakura/releases">下载 Release</a>
@@ -37,35 +37,9 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 
 	## 为什么做 Sakura
 
-	传统聊天机器人是一扇门，你不敲，它永远不会开。Sakura 想做的是另一种东西——一个窝在你屏幕角落的角色：你不必一直陪她说话，但她会留意你在做什么，觉得该开口时自己凑过来。
+	Sakura 想做一个待在屏幕角落、能主动搭话的角色。开启屏幕感知后，她可以根据你正在看的内容回应；你也可以直接发送文字或截图。
 
-	比如你在打游戏连续失败，她瞥一眼屏幕，小声提醒「已经第三次了喔……要不我帮你查查攻略？」。你点点头，她就真的打开浏览器搜一圈，再把重点贴进备忘录。
-
-	这背后是**角色卡**驱动她的语气、表情和声音，**内置 Agent 引擎**给了她真正的工具能力。她不是聊天框的外壳，是一个会主动找你的桌面伙伴。
-
-	### 和普通聊天机器人的区别
-
-	同样接一个大模型，Sakura 不是聊天框的外壳：
-
-	<div class="sakura-compare-wrap">
-		<table class="sakura-compare">
-			<thead>
-				<tr>
-					<th>维度</th>
-					<th>普通聊天机器人</th>
-					<th>Sakura</th>
-				</tr>
-			</thead>
-			<tbody>
-				<tr><th>互动</th><td>你先开口才回应</td><td>主动感知，按需凑过来</td></tr>
-				<tr><th>上下文</th><td>仅文字</td><td>屏幕视觉摘要纳入对话</td></tr>
-				<tr><th>工具</th><td>多为纯文本，少有工具</td><td>原生 tool_calls：网页 / 文件 / 提醒 / 搜索，高风险确认</td></tr>
-				<tr><th>记忆</th><td>会话结束即忘</td><td>按轮次自动总结，本地向量离线，可查可改</td></tr>
-				<tr><th>形象</th><td>一个文本框</td><td>角色卡驱动立绘 / 表情 / 双语字幕 / 语音</td></tr>
-				<tr><th>定制</th><td>改改提示词</td><td>.char 角色包 + Characters Studio + 插件 / MCP</td></tr>
-			</tbody>
-		</table>
-	</div>
+	角色卡决定她的对话风格，表现与语音插件负责形象和声音。需要浏览网页、记住信息或从手机聊天时，再安装对应插件。
 
 		</div>
 		<div class="sakura-feature-stage__visual">
@@ -83,7 +57,7 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 
 	## 能力全景
 
-	感知、工具、记忆和角色表达串在同一条运行链路里，不止一个会说话的立绘。
+	通过模型服务和插件组合角色需要的能力。
 
 	<div class="sakura-pillars">
 		<div>
@@ -95,26 +69,26 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 		<div>
 			<Icon name="database" class="sakura-pillar__icon" size="1.7rem" />
 			<h3>长期记忆</h3>
-			<p>每隔设定的对话轮次，她在后台自动从聊天记录里总结、更新和删除记忆，不打断对话；本地向量模型离线检索，无需联网。</p>
-			<p class="sakura-pillar__tag">她记住的一切，你都能在记忆设置里查看和修改。</p>
+			<p>安装 Mem0 插件后可保存和检索长期记忆；本地向量模型负责检索，自动整理使用配置的模型服务。</p>
+			<p class="sakura-pillar__tag">在记忆设置中查看和修改已保存的内容。</p>
 		</div>
 		<div>
 			<Icon name="puzzle" class="sakura-pillar__icon" size="1.7rem" />
 			<h3>插件与 MCP 扩展</h3>
-			<p>本地插件自动发现加载，可注册工具、动态上下文、设置页、输入区控件、提示词补丁和渲染后端；任意 MCP Server 即插即用，内置 Web 搜索。</p>
+			<p>启用的插件可提供工具、上下文、设置页和表现资源；MCP 基础组件供服务插件使用，网页搜索由联网工具插件提供。</p>
 			<p class="sakura-pillar__tag">能力边界由你扩展。</p>
 		</div>
 	</div>
 
 	<CardGrid>
 		<Card title="原生工具循环" icon="approve-check-circle">
-			基于 OpenAI 兼容接口的 tool_calls：截图、打开网页、待办、提醒、笔记、搜索同轮调度，高风险操作执行前先弹出确认。
+			聊天模型可以调用已启用的工具，并结合工具结果继续回复。用户发起的工具调用经参数校验后直接执行，只安装可信插件。
 		</Card>
 		<Card title="分段双语表达" icon="translate">
 			模型输出日文原文、中文字幕、语气标签和立绘指令，字幕、表情与语音同步驱动，配逐字打字机动效。
 		</Card>
 		<Card title="语音 TTS" icon="comment-alt">
-			集成 GPT-SoVITS，一键下载整合包（RTX 50 系 / 通用 N 卡 / CPU），也可接入自部署的外置服务。
+			安装 GPT-SoVITS 或 Genie 插件后，为角色配置语音；服务与模型资源在对应插件中管理。
 		</Card>
 		<Card title="外观可调" icon="window">
 			纯色、高斯模糊、亚克力与 macOS 原生毛玻璃；气泡和输入栏的位置、大小都能调。

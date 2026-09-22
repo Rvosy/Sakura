@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-18
+updated: 2026-09-22
 ---
 
 # Runtime v2 角色工坊
@@ -17,7 +17,7 @@ updated: 2026-09-18
 两者使用工坊内的确认框，取消后保留编辑内容。确认放弃时停止后续自动保存，等待在途草稿写入结束后再删除或恢复，避免旧修改回写。
 
 角色工坊保留 0.9.10 已有的本地编辑能力：新建和编辑角色、草稿自动保存、角色卡、插件表现资源、主题颜色、
-GPT-SoVITS 模型、参考语音试听、发布、放弃草稿和 `.char` 导出。本轮不增加角色删除、复制、在线发布或把
+GPT-SoVITS 模型、参考语音试听、发布、放弃草稿和 `.char` 导出。不提供角色删除、复制、在线发布，也不把
 未发布草稿直接投影到桌宠。
 
 工坊是 Sakura 主 Tauri 进程中的唯一 `studio` 窗口。Python Core 继续管理草稿、角色包和归档；Rust 只管理

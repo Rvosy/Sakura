@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-15
+updated: 2026-09-22
 ---
 
 # ADR-0059：MCP 客户端作为可复用系统组件
@@ -11,7 +11,7 @@ updated: 2026-09-15
 ## 背景
 
 用户需要供后续插件复用的 MCP 支持能力。各服务插件应能注册服务器并使用其功能，基础组件本身不做管理平台。
-旧 Core Bridge 已按用户要求清理。重新在 Core 加协议分支会绑定 SDK 与应用生命周期；
+旧 Core Bridge 已移除。重新在 Core 加协议分支会绑定 SDK 与应用生命周期；
 各插件自行实现客户端又会重复依赖、认证与回收工作。
 
 ## 决策

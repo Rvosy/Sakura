@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-16
+updated: 2026-09-22
 ---
 
 # 开放插件生态验收
@@ -45,9 +45,9 @@ cargo build --manifest-path desktop/src-tauri/Cargo.toml --locked
 3. 保存后切换角色再切回，列表仍按插件原有角色分区读取，成功保存的记录不丢失。
 4. 搜索、编辑、删除正常。删除确认跨角色或插件重绑定后失效，不应把旧确认应用到新实例。
 
-Mem0 与便签记忆均为 character 集合；新宿主会对旧版未声明 scope 的安装包保留同样保护，无需为本次修复重装。
+Mem0 与便签记忆均为 character 集合；新宿主会对旧版未声明 scope 的安装包保留同样保护，无需重装插件。
 global 集合由隔离前端夹具验证：待选角色时可查询与编辑，“应用”可完成角色切换并保留草稿；“保存并关闭”仍要求处理未保存记录。
-本轮不为此增加新的业务插件。Collection 创建、更新和删除直接保存，主设置“应用”不会代为提交记录。
+Collection 创建、更新和删除直接保存，主设置“应用”不会代为提交记录。
 
 自动入口为 `desktop/frontend/tests/plugin-settings.test.js` 和 `settings-studio-integration.test.js`：
 覆盖字段变化/还原、两种 scope、旧声明、Core 重绑定、同角色语音导入、删除确认、搜索恢复与重叠通知。

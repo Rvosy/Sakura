@@ -1,95 +1,30 @@
 ---
 title: 功能概览
-description: Sakura 的角色、主动感知、工具、记忆、语音和插件能力。
+description: 角色、聊天、屏幕感知与可选插件。
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+Sakura 在桌面显示角色，并结合人设、聊天记录和已启用插件提供的上下文生成回复。
 
-# 功能概览
+| 功能 | 使用方式 |
+|---|---|
+| 角色与外观 | 导入 `.char` 角色包，在角色工坊编辑人设、表现资源和主题 |
+| 聊天与图片 | 输入文字或附加图片，选择支持对应输入的模型 |
+| 屏幕感知 | 开启后按设定周期观察屏幕，由模型决定是否主动搭话 |
+| 网页搜索 | 自带联网工具插件，搜索公开网页并读取内容 |
+| 语音与记忆 | 安装并配置 GPT-SoVITS、Genie、Mem0 等可选插件 |
+| 扩展能力 | 从插件市场安装浏览器、语音输入、手机网页端等插件 |
 
-Sakura 是一个桌面陪伴 Agent。核心不是"桌宠外观 + 聊天框"，而是把角色表达、上下文感知、工具调用、记忆和语音统一进同一条运行链路。
+## 工具与权限
 
-<CardGrid>
-	<Card title="角色与外观">
-		`.char` 角色包一键导入，角色卡、立绘、GPT-SoVITS 语音权重和主题色随包分发。
-	</Card>
-	<Card title="主动感知">
-		周期性观察屏幕内容，生成视觉摘要并纳入上下文，也可以由用户随时触发屏幕观察。
-	</Card>
-	<Card title="双语表达">
-		模型输出日文原文、中文字幕、语气标签和立绘指令，UI 同步驱动字幕、表情和语音。
-	</Card>
-	<Card title="工具能力">
-		内置时间、待办、提醒、笔记、屏幕观察、打开网页/本地文件夹、长期记忆等工具，Web 搜索经内置 MCP 提供。
-	</Card>
-	<Card title="权限确认">
-		高风险工具执行前弹出确认面板，确保 Sakura 帮你做事之前先经过允许。
-	</Card>
-	<Card title="长期记忆">
-		候选记忆先由用户确认，再写入正式记忆；本地向量模型负责检索和整理。
-	</Card>
-</CardGrid>
+用户发起的工具调用经参数校验后直接执行。插件以当前用户权限访问文件和网络，应检查来源及功能后再安装。
+主动屏幕观察使用只读、低风险工具；需要改变外部状态的操作先向用户提出建议。
 
-## 角色与外观
+网页搜索由联网工具插件提供。MCP 基础组件供服务插件连接服务器，具体功能和配置由服务插件提供。
 
-- 角色包驱动：人格卡、立绘、语音参考和权重按角色打包。
-- 主题跟随角色：UI 主题色可以随角色配置变化。
-- 外观效果：支持纯色、高斯模糊、亚克力和 macOS 原生毛玻璃（默认高斯模糊）。
-- 气泡与输入栏：位置、大小和显示行为可调。
+## 使用指南
 
-想自己制作可分发的角色，参见[角色包制作指南](/developers/character-pack/)。
-
-## 主动感知
-
-Sakura 可以在你允许的范围内观察屏幕，把视觉摘要加入对话上下文。她能响应你的请求，也能在定时检查时自己判断是否需要开口。
-
-典型场景：
-
-- 你卡在某个页面或游戏关卡时，Sakura 主动询问是否要帮忙。
-- 长时间没有互动，Sakura 根据冷却时间决定是否提醒。
-- 你让她"看一下屏幕"，她把截图内容整理成上下文再回复。
-
-## 工具与确认
-
-工具由 Agent 运行时统一调度。模型可以在同一轮对话里决定是否调用工具，工具结果以 tool 角色回填给模型，再生成最终角色回复。每个工具带有分组和风险等级（低 / 中 / 高），高风险工具执行前会先进入确认面板。
-
-内置工具按用途分组：
-
-| 分组 | 工具 | 说明 |
-|---|---|---|
-| 时间 | `get_current_time` | 获取本地时间与时区 |
-| 待办 | `add_todo` / `list_todos` / `complete_todo` | 简单任务清单 |
-| 提醒 | `add_reminder` / `list_reminders` / `cancel_reminder` | 支持"3 分钟后"等相对时间或绝对时间 |
-| 笔记 | `read_note` / `write_note` | 读写受限于 `data/notes/` 的文本 |
-| 屏幕 | `observe_screen` | 按需截图并纳入上下文 |
-| 网页 | `open_url`、`open_local_folder` | 打开链接或本地文件夹（高风险，需确认） |
-| 记忆 | `memory_search` / `memory_remember` / `memory_forget` | 检索、写入、删除长期记忆 |
-| 发现 | `search_tools` | 按关键词查找已安装工具 |
-
-Web 搜索由内置 MCP 提供；浏览器自动化由 Playwright 插件提供。打开网页、浏览器自动化、文件写入等高风险工具执行前，都弹出确认面板。
-
-## 记忆
-
-长期记忆走"候选 → 用户确认 → 正式写入"的流程。Sakura 逐渐记住你允许她记的内容，同时避免把临时信息直接固化。
-
-记忆能力包括：
-
-- 自动整理候选记忆
-- 本地向量模型离线运行，无需联网
-- 对话时按上下文检索相关记忆
-- 用户可控的确认流程
-- 自动拦截密码、令牌、API Key 等敏感信息，避免误写入
-
-## 语音
-
-Sakura 集成 GPT-SoVITS，按语气标签选择参考音频并合成语音。
-
-Windows 用户可以用内置一键下载整合包；macOS、Linux、AMD 显卡用户可以接入外置 GPT-SoVITS 服务。
-
-## 插件与 MCP
-
-Sakura 支持本地插件和 MCP Server。
-
-- MCP Server：任意 MCP Server 均可接入，内置 Web 搜索 MCP。
-- 本地插件：自动发现和加载，Playwright 浏览器插件开箱可用。
-- 扩展点：工具、设置页、聊天输入区、动态上下文、提示词补丁和角色渲染后端。
+- [安装与首次配置](/start/setup/)
+- [聊天、截图与屏幕感知](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/CHAT_SCREEN_AND_CONTEXT.md)
+- [网页搜索与读取](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/WEB_SEARCH.md)
+- [插件安装、设置与资源下载](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/RUNTIME_V2_PLUGINS.md)
+- [数据与存储](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/RUNTIME_V2_STORAGE.md)

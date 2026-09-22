@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-09-22
 ---
 
 # Runtime v2 Specs
@@ -66,7 +66,7 @@ updated: 2026-09-18
 - [定时截图与主动请求](WP-4-07-proactive-reminders-todos.md)
 - [类型化交互时间线与自适应上下文](WP-4-07R-typed-timeline-adaptive-context.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
-- [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
+- [设置窗口宿主](WP-3U-01-same-app-settings-window.md)
 
 工作包进度见 [Runtime v2 路线图](../../plans/runtime-v2/work-packages.md)。进度与人工验收记录不授予或限制代码修改权限。
 
