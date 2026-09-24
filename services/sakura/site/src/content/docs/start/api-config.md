@@ -9,4 +9,4 @@ description: 添加模型服务，为文字聊天和图片消息选择模型。
 
 连接测试只检查指定模型。完成设置后，分别发送一条文字消息和一张图片，检查实际使用的能力。
 
-[完整配置步骤、字段说明与错误排查](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/API_CONFIG.md)集中维护在仓库指南中。
+完整步骤、字段说明和错误排查见 [API 配置指南](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/API_CONFIG.md)。

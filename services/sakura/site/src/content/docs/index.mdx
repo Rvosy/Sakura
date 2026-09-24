@@ -22,7 +22,7 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 				</div>
 				<div>
 					<dt>Agent</dt>
-					<dd>原生 tool_calls</dd>
+					<dd>聊天中调用工具</dd>
 				</div>
 				<div>
 					<dt>扩展</dt>
@@ -63,7 +63,7 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 		<div>
 			<Icon name="magnifier" class="sakura-pillar__icon" size="1.7rem" />
 			<h3>主动感知</h3>
-			<p>定期截图生成视觉摘要并纳入上下文，也可以随时按需观察屏幕；她会周期性评估此刻是否该开口，间隔与冷却时间都能配置。</p>
+			<p>定期观察屏幕，结合画面摘要判断是否主动搭话；你也可以手动发送截图。检查间隔和最短搭话间隔都能在设置中调整。</p>
 			<p class="sakura-pillar__tag">不用你先开口，她自己凑过来。</p>
 		</div>
 		<div>
@@ -76,7 +76,7 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 			<Icon name="puzzle" class="sakura-pillar__icon" size="1.7rem" />
 			<h3>插件与 MCP 扩展</h3>
 			<p>启用的插件可提供工具、上下文、设置页和表现资源；MCP 基础组件供服务插件使用，网页搜索由联网工具插件提供。</p>
-			<p class="sakura-pillar__tag">能力边界由你扩展。</p>
+			<p class="sakura-pillar__tag">在插件市场选择需要的功能。</p>
 		</div>
 	</div>
 
@@ -91,7 +91,7 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 			安装 GPT-SoVITS 或 Genie 插件后，为角色配置语音；服务与模型资源在对应插件中管理。
 		</Card>
 		<Card title="外观可调" icon="window">
-			纯色、高斯模糊、亚克力与 macOS 原生毛玻璃；气泡和输入栏的位置、大小都能调。
+			可调整气泡和输入栏的位置、大小及颜色。背景效果按平台提供，包括纯色、高斯模糊和 macOS 原生材质；不支持的选项会置灰。
 		</Card>
 	</CardGrid>
 
@@ -101,22 +101,20 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 
 	## 角色由你定义
 
-	角色以 `.char` 包为单位分发：人格卡、立绘与表情映射、主题色、语气和 GPT-SoVITS 语音权重打包在一起。导入一个 `.char`，整套对话风格、外观和声音随之切换。
+	角色通过 `.char` 包分享，可以包含人设卡、立绘等形态资源、表情映射、主题、语气和 GPT-SoVITS 模型等语音资源。导入后可选择该角色；语音开关和引擎选择保存在本机，需要在语音设置中另行配置。
 
-	想做自己的角色？Sakura 自带 **Characters Studio**，向导式制作可分发的角色包：
+	Sakura 自带角色工坊，可以编辑角色并导出角色包。各页面分别管理：
 
 	<div class="sakura-steps">
-		<div><span>1</span>新建 / 导入</div>
-		<div><span>2</span>基础信息</div>
-		<div><span>3</span>人格卡</div>
-		<div><span>4</span>立绘绑定</div>
-		<div><span>5</span>语音模型</div>
-		<div><span>6</span>参考音频</div>
-		<div><span>7</span>主题配色</div>
-		<div><span>8</span>校验导出 .char</div>
+		<div><span>1</span>基础信息</div>
+		<div><span>2</span>人设卡</div>
+		<div><span>3</span>角色形态</div>
+		<div><span>4</span>语音模型</div>
+		<div><span>5</span>参考语音</div>
+		<div><span>6</span>配色</div>
 	</div>
 
-	编辑全程在隔离工作区进行，不会动到正在使用的角色目录，编辑器也与桌宠共用同一套视觉。详细字段说明见[角色包制作指南](/developers/character-pack/)。
+	编辑内容先保存为草稿，点击“保存”或“添加到角色列表”后才写入角色。工坊沿用桌宠的主题样式。详细字段说明见[角色包制作指南](/developers/character-pack/)。
 
 	</section>
 
@@ -138,7 +136,7 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 		<a href="/product/features/">
 			<span>03</span>
 			<strong>开启能力</strong>
-			按需启用主动关怀、TTS、记忆、工具与插件。
+			按需配置屏幕感知、语音、记忆和工具插件。
 		</a>
 		<a href="/developers/plugin-sdk/">
 			<span>04</span>
@@ -152,11 +150,11 @@ import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
 	<div class="sakura-audience">
 		<div>
 			<h3>想直接用桌宠的人</h3>
-			<p>下载 Release 完整包，导入角色包，配置模型后即可运行。Windows 主要测试平台，macOS 和 Linux 可按源码路径运行。</p>
+			<p>下载 Release 完整包，导入角色包，配置模型后即可运行。Windows 和 macOS 的发布包见 Releases；没有适用发布包的平台可按源码指南构建。</p>
 		</div>
 		<div>
 			<h3>想做角色包的人</h3>
-			<p>用自带的 Characters Studio 向导式制作，或手写角色目录——角色卡、立绘、主题色、语音参考一包打包，适合做可分发的桌面角色。参见 <a href="/developers/character-pack/">角色包制作指南</a>。</p>
+			<p>用角色工坊编辑人设、形态、主题和语音资源，再导出为可分享的角色包；也可以手工准备角色目录。参见 <a href="/developers/character-pack/">角色包制作指南</a>。</p>
 		</div>
 		<div>
 			<h3>想扩展 Agent 的开发者</h3>

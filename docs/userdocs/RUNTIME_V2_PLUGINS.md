@@ -3,12 +3,12 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-09-24
 ---
 
 # Python 插件
 
-Sakura 使用 Plugin API v4。每个启用插件运行在独立进程和独立 Python dependency root 中；一个插件失败或
+Sakura 使用 Plugin API v4。每个启用的插件都有独立进程和 Python 依赖目录；一个插件失败或
 卡死时，桌宠窗口、Core 和无关插件仍可响应。
 
 插件进程不是安全沙箱。插件代码仍以当前用户权限访问文件和网络，只安装你信任的来源。
@@ -16,11 +16,13 @@ Sakura 使用 Plugin API v4。每个启用插件运行在独立进程和独立 P
 ## 安装和卸载
 
 1. 打开“设置 → 插件”。
-2. 从插件市场选择插件并安装；已有插件包时选择“安装 ZIP”或“安装文件夹”。
+2. 从插件市场选择插件并安装；已有插件包时在“更多”中选择“从 ZIP 安装…”或“从文件夹安装…”。
 3. 检查插件名称、作者、说明和声明的服务。
-4. 打开启用开关并保存。
+4. 打开启用开关并应用设置。
 
-GPT-SoVITS、Genie、Mem0、SenseVoice 和手机网页端等是可选插件，新安装按需添加。源码中的
+“市场”支持按名称、作者和功能搜索。“筛选”中可以只看兼容版本，或隐藏已安装且没有更新的插件。详情页显示说明、资源要求和版本记录；有新版时可以直接更新，已启用的插件也支持更新，配置和数据会保留。
+
+GPT-SoVITS、Genie、Mem0、SenseVoice、Spine 和手机网页端等是可选插件，新安装按需添加。源码中的
 `plugins/optional/` 是开发与打包来源，不会在普通启动时自动安装。
 
 Sakura 只安装 `api: 4` 插件。安装包不能包含符号链接、路径逃逸、特殊文件或跨平台非法文件名。安装操作会把
@@ -29,8 +31,8 @@ Sakura 只安装 `api: 4` 插件。安装包不能包含符号链接、路径逃
 
 未指定软件包源时，Python 依赖默认从阿里云 PyPI 镜像下载，并复用已有下载缓存；用户或插件指定的源优先。
 镜像缺少某个版本时，可在启动 Sakura 前设置 `UV_DEFAULT_INDEX=https://pypi.org/simple`，再重试安装。
-市场目录、说明和安装包按“设置 → 下载源”中的顺序下载，默认先尝试两条国内镜像，再访问 GitHub。
-插件自行下载的模型或整合包使用各插件的来源配置，不随“设置 → 下载源”调整；具体见[下载插件资源](#下载插件资源)。
+市场目录、说明和安装包按“设置 → 插件 → 更多 → 下载源…”中的顺序下载，默认先尝试两条国内镜像，再访问 GitHub。
+插件自行下载的模型或整合包使用各插件的来源配置，不随此处的下载源设置调整；具体见[下载插件资源](#下载插件资源)。
 
 ```text
 plugins/user/<plugin_id>/                              用户插件代码
@@ -38,8 +40,7 @@ data/plugins/<plugin_id>/                              插件配置和数据
 data/plugin-runtime/dependencies/<plugin_id>/           用户插件 Python 依赖
 ```
 
-卸载会移除用户插件代码和 dependency root，但保留插件数据。随 Sakura 分发的 bundled 插件不能卸载，但默认
-领域实现可以停用并由第三方插件替换。
+卸载会移除用户插件代码和 Python 依赖目录，但保留插件数据。随 Sakura 分发的内置插件不能卸载，其中提供默认功能的插件可以停用，再由第三方插件替换。
 
 ## 升级已有安装
 
@@ -53,20 +54,19 @@ data/plugin-runtime/dependencies/<plugin_id>/           用户插件 Python 依�
 插件列表按功能扩展、能力提供方和系统组件分组，用浅色标签区分类别。顶部可切换分类，或搜索名称、作者、
 ID 和简介。卡片在名称右侧显示运行状态，领域和安装来源在详情中查看。分类和图标由插件声明，不代表权限或运行是否正常。
 
-选中插件后，在详情里启用或停用；有可配置区块时，点击右上角“插件设置”打开独立窗口。插件只能提供
-Sakura 支持的字段、状态卡、资源进度和动作，不能加载自己的网页或脚本。
+选中插件后，在详情里启用或停用；有可配置区块时，点击右上角“插件设置”打开独立窗口。插件设置使用 Sakura 提供的字段、状态卡、资源进度和动作，不会加载插件自带的网页或脚本。
 
 - 编辑字段后点“完成”，再在设置页底栏点“应用”或“保存并关闭”，配置才会提交。
 - “取消”、右上角关闭或 Esc 恢复该插件打开窗口时的可编辑值，其他插件草稿保留。
 - 测试连接、数据增删和下载等操作点击后就会执行，取消窗口不会撤销这些操作。
 
-语音配置也可从“语音”页进入，两个入口共用同一套控件；记忆内容管理仍在“记忆”页。保存结果分为：
+语音配置也可从“语音”页进入，两个入口共用同一套控件；记忆内容管理仍在“记忆”页。插件保存和应用结果包括：
 
 - `applied`：当前插件进程已经应用；
-- `restart_required`：配置已保存，Sakura 在本次操作中重新加载目标插件及必要的硬依赖插件；
+- `restart_required`：配置已保存，需要重新加载；普通插件设置由 Sakura 在应用时重新加载目标插件及依赖它的必要插件，语音页若仍提示此状态，按页面提示重新加载语音插件；
 - `error`：配置已保存，但插件没有应用。
 
-install、enable、disable、reload 和 uninstall 都是明确的用户操作。它们不重启桌面应用，也不重启无关插件。
+安装、启用、停用、重新加载和卸载都由用户主动执行，不会重启桌面应用或无关插件。
 失败后不会自动重试、自动恢复或重放调用。
 
 ## 下载插件资源
@@ -74,11 +74,13 @@ install、enable、disable、reload 和 uninstall 都是明确的用户操作。
 需要本地模型或运行组件时，在所属插件的设置窗口中安装、重试或取消。GPT-SoVITS 与 Genie 整合包、
 Mem0 向量模型的资源管理入口都在各自的插件设置中。
 
+以下下载顺序对应本仓库的插件源码；独立仓库和市场安装包可能使用不同版本，请同时查看所安装插件的说明。
+
 SenseVoice 主模型和词表从 ModelScope 下载，VAD 默认按 gitproxy.mrhjx.cn、ghproxy.vip、GitHub 官方的顺序下载同一文件。
 GPT-SoVITS 的 macOS 安装使用相同顺序下载 Miniforge；源码先通过 gitproxy.mrhjx.cn 获取，失败后访问 GitHub 官方。
 模型默认从 ModelScope 下载，Python 包默认使用阿里云 PyPI，Conda 使用清华镜像。
 上游脚本单独指定的 PyTorch、TorchCodec 仍使用 PyTorch 官方源。镜像切换不改变固定的模型、安装器版本或源码提交。
-显式设置的 `GPT_SOVITS_REPO`、`GPT_SOVITS_MINIFORGE_URL` 使用指定地址；模型源、PyPI 和 Conda 的覆盖方式见
+已设置 `GPT_SOVITS_REPO` 或 `GPT_SOVITS_MINIFORGE_URL` 时，使用指定地址。`PIP_INDEX_URL`、`CONDARC` 和 `CONDA_CHANNEL_ALIAS` 等已有配置也优先使用；具体覆盖方式见
 [macOS 安装脚本](../../plugins/optional/sakura_gpt_sovits/install_gpt_sovits_macos.sh)。
 
 Intel Mac 使用当前上游脚本安装时，PyTorch 官方源没有适用于 Python 3.10、macOS x86_64 的 TorchCodec 包，
@@ -94,13 +96,13 @@ GPT-SoVITS 安装失败会记录退出码和有长度限制的输出末尾，经
 ## 状态
 
 - `disabled`：已安装但未启用；
-- `active`：插件进程已经发布声明的 Service 和 Contribution；
-- `failed`：manifest、依赖、导入、`setup()`、Service 冲突或进程运行失败。
+- `active`：插件已启动，并注册了声明的服务和扩展能力；
+- `failed`：插件清单、依赖、导入、`setup()`、服务冲突或进程运行出错。
 
 常见原因码包括 `API_VERSION_UNSUPPORTED`、`MISSING_SERVICE`、`SERVICE_CONFLICT`、`DEPENDENCY_CYCLE`、
 `PLUGIN_DEPENDENCIES_MISSING`、`PLUGIN_CALL_TIMEOUT`、`PLUGIN_PROCESS_EXITED` 和 `PLUGIN_ID_CONFLICT`。失败时先在
-插件页执行 reload 或重试安装；仍然失败再查看[运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)。不要手工移动安装
-事务目录或其他插件的 dependency root。
+插件页重新加载插件或重试安装；仍然失败再查看[运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)。不要手工移动安装
+事务目录或其他插件的 Python 依赖目录。
 
 插件接入宿主日志后，可以在运行日志窗口的“插件”页按插件筛选，也可以查看 `data/logs/sakura-plugins.log`。
 安装、加载和依赖失败由宿主记录在 `data/logs/sakura-runtime.log`。没有业务日志时，可能是插件尚未接入，

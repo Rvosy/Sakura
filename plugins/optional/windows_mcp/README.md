@@ -9,12 +9,12 @@
 
 当前固定 Windows-MCP 0.8.5、FastMCP 4.0.3，使用插件私有依赖和独立服务进程。
 上游匿名遥测默认关闭，stdio 使用 UTF-8，使用插件自己的配置路径，不读取用户全局 Windows-MCP 配置。
-命令、鼠标、键盘和文件工具会实际操作当前 Windows 用户环境，启用后按任务需要调用。
+启用后，聊天模型可以按任务需要调用这些工具。命令、鼠标、键盘和文件操作会直接作用于当前 Windows 用户环境。
 
 ## 安装与接口
 
-使用 Sakura 的本地插件安装入口导入 ZIP；安装时准备私有依赖，安装后启用“Windows 操作”。
-核心组件不增加任何管理入口。此插件发现 20 个上游工具，包括 Snapshot、Screenshot、Click、PowerShell 等。
+从“设置 → 插件 → 更多 → 从 ZIP 安装…”导入插件包；安装时会准备独立依赖，完成后启用“Windows 操作”。
+服务器连接由插件管理，无需在 MCP 基础组件中配置。此插件发现 20 个上游工具，包括 Snapshot、Screenshot、Click、PowerShell 等。
 截图通过宿主图像 artifact 传回；大文本或多图结果返回操作编号，可用 `windows_mcp_result` 分段读取并释放。
 
 另提供 `sakura.windows-mcp` Service：`status`、`catalog`、`begin`、`inspect`、`readResult`、`cancel`、`release`。

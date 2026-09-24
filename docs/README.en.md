@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: all
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-09-24
 ---
 
 # Sakura documentation
@@ -18,7 +18,7 @@ The user guides are maintained in Chinese. Start with the installation guide, th
 - [Chat, screenshots, and screen awareness](userdocs/CHAT_SCREEN_AND_CONTEXT.md)
 - [Data and storage](userdocs/RUNTIME_V2_STORAGE.md)
 - [Web search and page reading](userdocs/WEB_SEARCH.md)
-- [Telemetry and remote diagnostics](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
+- [Usage statistics and error reports](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
 - [macOS guide](userdocs/MACOS_SETUP.md)
 - [Window interaction](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
 - [Appearance](userdocs/RUNTIME_V2_APPEARANCE.md)
