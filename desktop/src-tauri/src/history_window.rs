@@ -58,8 +58,9 @@ struct AssistantSegment {
 }
 
 pub fn validate_page(value: Value) -> Result<HistoryPage, String> {
-    let page: HistoryPage =
-        serde_json::from_value(value).map_err(|_| "HISTORY_RESPONSE_INVALID".to_string())?;
+    let page: HistoryPage = serde_json::from_value(value).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("HISTORY_RESPONSE_INVALID", source_error)
+    })?;
     if page.schema_version != 1
         || page.core_generation_id.trim().is_empty()
         || page.character_id.trim().is_empty()
@@ -78,15 +79,25 @@ pub fn validate_page(value: Value) -> Result<HistoryPage, String> {
         }
         match entry.kind.as_str() {
             "human" | "observation" | "system" => {
-                let payload: TextPayload = serde_json::from_value(entry.payload.clone())
-                    .map_err(|_| "HISTORY_RESPONSE_INVALID".to_string())?;
+                let payload: TextPayload =
+                    serde_json::from_value(entry.payload.clone()).map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "HISTORY_RESPONSE_INVALID",
+                            source_error,
+                        )
+                    })?;
                 if payload.text.trim().is_empty() {
                     return Err("HISTORY_RESPONSE_INVALID".to_string());
                 }
             }
             "assistant" => {
                 let payload: AssistantPayload = serde_json::from_value(entry.payload.clone())
-                    .map_err(|_| "HISTORY_RESPONSE_INVALID".to_string())?;
+                    .map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "HISTORY_RESPONSE_INVALID",
+                            source_error,
+                        )
+                    })?;
                 if payload.segments.is_empty()
                     || payload.segments.iter().any(|segment| {
                         segment.text.trim().is_empty() || segment.translation.len() > 64 * 1024
@@ -305,7 +316,7 @@ mod tests {
         with_visual_id["entries"][0]["payload"]["visualId"] = json!("private");
         assert_eq!(
             validate_page(with_visual_id),
-            Err("HISTORY_RESPONSE_INVALID".to_string())
+            Err("HISTORY_RESPONSE_INVALID: unknown field `visualId`, expected `text`".to_string())
         );
 
         let mut mismatched_cursor = page();

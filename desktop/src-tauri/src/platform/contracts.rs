@@ -123,6 +123,12 @@ impl fmt::Debug for ProcessTreeFinalizationFailure {
     }
 }
 
+impl fmt::Display for ProcessTreeFinalizationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
 pub type ProcessTreeFinalizationResult =
     Result<ProcessTreeFinalization, ProcessTreeFinalizationFailure>;
 

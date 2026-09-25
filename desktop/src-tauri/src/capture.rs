@@ -182,11 +182,13 @@ impl CaptureManager {
     }
 
     fn with_base(base_root: PathBuf) -> Result<Self, String> {
-        fs::create_dir_all(&base_root).map_err(|_| "SCREEN_RESOURCE_ROOT_UNAVAILABLE")?;
+        fs::create_dir_all(&base_root).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_RESOURCE_ROOT_UNAVAILABLE", source_error)
+        })?;
         restrict_directory(&base_root)?;
-        let base_root = base_root
-            .canonicalize()
-            .map_err(|_| "SCREEN_RESOURCE_ROOT_UNAVAILABLE")?;
+        let base_root = base_root.canonicalize().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_RESOURCE_ROOT_UNAVAILABLE", source_error)
+        })?;
         Ok(Self {
             base_root,
             available: true,
@@ -209,10 +211,9 @@ impl CaptureManager {
             return Err("SCREEN_CAPTURE_NO_MONITORS".to_string());
         }
         self.cleanup_expired();
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string())?;
+        let mut state = self.state.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_STATE_UNAVAILABLE", source_error)
+        })?;
         let previous = state
             .active
             .take()
@@ -246,10 +247,9 @@ impl CaptureManager {
         window_label: &str,
         monitor_id: u32,
     ) -> Result<CaptureClaim, String> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string())?;
+        let mut state = self.state.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_STATE_UNAVAILABLE", source_error)
+        })?;
         let session = state
             .active
             .take()
@@ -294,21 +294,28 @@ impl CaptureManager {
     ) -> Result<ScreenResourceDescriptor, String> {
         self.cleanup_expired();
         let monitor = Monitor::all()
-            .map_err(|_| "SCREEN_CAPTURE_PLATFORM_UNAVAILABLE".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "SCREEN_CAPTURE_PLATFORM_UNAVAILABLE",
+                    source_error,
+                )
+            })?
             .into_iter()
             .find(|monitor| monitor.id().ok() == Some(claim.monitor_id))
             .ok_or_else(|| "SCREEN_CAPTURE_MONITOR_GONE".to_string())?;
-        let monitor_width = monitor
-            .width()
-            .map_err(|_| "SCREEN_CAPTURE_MONITOR_GONE".to_string())?;
-        let monitor_height = monitor
-            .height()
-            .map_err(|_| "SCREEN_CAPTURE_MONITOR_GONE".to_string())?;
+        let monitor_width = monitor.width().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_MONITOR_GONE", source_error)
+        })?;
+        let monitor_height = monitor.height().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_MONITOR_GONE", source_error)
+        })?;
         let rect = intersect_local(local_rect, monitor_width, monitor_height)
             .ok_or_else(|| "SCREEN_CAPTURE_SELECTION_INVALID".to_string())?;
         let image = monitor
             .capture_region(rect.x as u32, rect.y as u32, rect.width, rect.height)
-            .map_err(|_| "SCREEN_CAPTURE_PLATFORM_DENIED".to_string())?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_DENIED", source_error)
+            })?;
         let image = resize_capture(image);
         let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
         let mut bytes = Vec::new();
@@ -319,7 +326,9 @@ impl CaptureManager {
                 rgb.height(),
                 ExtendedColorType::Rgb8,
             )
-            .map_err(|_| "SCREEN_CAPTURE_ENCODE_FAILED".to_string())?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_ENCODE_FAILED", source_error)
+            })?;
         if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
             return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
         }
@@ -330,24 +339,38 @@ impl CaptureManager {
             .write(true)
             .create_new(true)
             .open(&path)
-            .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED",
+                    source_error,
+                )
+            })?;
         restrict_file(&path)?;
-        if file.write_all(&bytes).and_then(|_| file.flush()).is_err() {
+        if let Err(source_error) = file.write_all(&bytes).and_then(|_| file.flush()) {
             let _ = fs::remove_file(&path);
-            return Err("SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string());
+            return Err(crate::runtime_log::diagnostic_error(
+                "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED",
+                source_error,
+            ));
         }
-        let canonical = path
-            .canonicalize()
-            .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
+        let canonical = path.canonicalize().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED",
+                source_error,
+            )
+        })?;
         if canonical.parent() != Some(root.as_path()) {
             let _ = fs::remove_file(&canonical);
             return Err("SCREEN_CAPTURE_RESOURCE_ESCAPE".to_string());
         }
         let mut state = match self.state.lock() {
             Ok(state) => state,
-            Err(_) => {
+            Err(source_error) => {
                 let _ = fs::remove_file(&canonical);
-                return Err("SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string());
+                return Err(crate::runtime_log::diagnostic_error(
+                    "SCREEN_CAPTURE_STATE_UNAVAILABLE",
+                    source_error,
+                ));
             }
         };
         state.resources.insert(
@@ -407,11 +430,12 @@ impl CaptureManager {
         if session_id.is_empty() || !valid_capture_resolution(resolution) {
             return Err("SCREEN_CAPTURE_REQUEST_INVALID".to_string());
         }
-        let monitor = Monitor::from_point(cursor_x, cursor_y)
-            .map_err(|_| "SCREEN_CAPTURE_MONITOR_GONE".to_string())?;
-        let image = monitor
-            .capture_image()
-            .map_err(|_| "SCREEN_CAPTURE_PLATFORM_DENIED".to_string())?;
+        let monitor = Monitor::from_point(cursor_x, cursor_y).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_MONITOR_GONE", source_error)
+        })?;
+        let image = monitor.capture_image().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_DENIED", source_error)
+        })?;
         let screen_name = monitor
             .name()
             .ok()
@@ -444,7 +468,9 @@ impl CaptureManager {
                 rgb.height(),
                 ExtendedColorType::Rgb8,
             )
-            .map_err(|_| "SCREEN_CAPTURE_ENCODE_FAILED".to_string())?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_ENCODE_FAILED", source_error)
+            })?;
         if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
             return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
         }
@@ -456,21 +482,36 @@ impl CaptureManager {
                 .write(true)
                 .create_new(true)
                 .open(&path)
-                .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED",
+                        source_error,
+                    )
+                })?;
             restrict_file(&path)?;
             file.write_all(&bytes)
                 .and_then(|_| file.flush())
-                .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
-            let canonical = path
-                .canonicalize()
-                .map_err(|_| "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string())?;
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED",
+                        source_error,
+                    )
+                })?;
+            let canonical = path.canonicalize().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED",
+                    source_error,
+                )
+            })?;
             if canonical.parent() != Some(root.as_path()) {
                 return Err("SCREEN_CAPTURE_RESOURCE_ESCAPE".to_string());
             }
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| "SCREEN_CAPTURE_STATE_UNAVAILABLE".to_string())?;
+            let mut state = self.state.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "SCREEN_CAPTURE_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             // Only temporary publication handles live here. Batch selection and
             // resource ownership belong to the plugin and the Core Host service.
             if state.resources.len() >= 64 {
@@ -516,11 +557,13 @@ impl CaptureManager {
     fn generation_root(&self, generation_id: &str) -> Result<PathBuf, String> {
         validate_generation(generation_id)?;
         let root = self.base_root.join(generation_id);
-        fs::create_dir_all(&root).map_err(|_| "SCREEN_RESOURCE_ROOT_UNAVAILABLE".to_string())?;
+        fs::create_dir_all(&root).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_RESOURCE_ROOT_UNAVAILABLE", source_error)
+        })?;
         restrict_directory(&root)?;
-        let root = root
-            .canonicalize()
-            .map_err(|_| "SCREEN_RESOURCE_ROOT_UNAVAILABLE".to_string())?;
+        let root = root.canonicalize().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_RESOURCE_ROOT_UNAVAILABLE", source_error)
+        })?;
         if root.parent() != Some(self.base_root.as_path()) {
             return Err("SCREEN_CAPTURE_RESOURCE_ESCAPE".to_string());
         }
@@ -560,28 +603,45 @@ impl Drop for CaptureManager {
 
 pub fn monitor_descriptors() -> Result<Vec<CaptureMonitor>, String> {
     Monitor::all()
-        .map_err(|_| "SCREEN_CAPTURE_PLATFORM_UNAVAILABLE".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "SCREEN_CAPTURE_PLATFORM_UNAVAILABLE",
+                source_error,
+            )
+        })?
         .into_iter()
         .map(|monitor| {
-            let id = monitor
-                .id()
-                .map_err(|_| "SCREEN_CAPTURE_MONITOR_INVALID".to_string())?;
+            let id = monitor.id().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_MONITOR_INVALID", source_error)
+            })?;
             Ok(CaptureMonitor {
                 id,
                 name: monitor.name().unwrap_or_else(|_| format!("monitor-{id}")),
                 bounds: PhysicalRect {
-                    x: monitor
-                        .x()
-                        .map_err(|_| "SCREEN_CAPTURE_MONITOR_INVALID".to_string())?,
-                    y: monitor
-                        .y()
-                        .map_err(|_| "SCREEN_CAPTURE_MONITOR_INVALID".to_string())?,
-                    width: monitor
-                        .width()
-                        .map_err(|_| "SCREEN_CAPTURE_MONITOR_INVALID".to_string())?,
-                    height: monitor
-                        .height()
-                        .map_err(|_| "SCREEN_CAPTURE_MONITOR_INVALID".to_string())?,
+                    x: monitor.x().map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "SCREEN_CAPTURE_MONITOR_INVALID",
+                            source_error,
+                        )
+                    })?,
+                    y: monitor.y().map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "SCREEN_CAPTURE_MONITOR_INVALID",
+                            source_error,
+                        )
+                    })?,
+                    width: monitor.width().map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "SCREEN_CAPTURE_MONITOR_INVALID",
+                            source_error,
+                        )
+                    })?,
+                    height: monitor.height().map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "SCREEN_CAPTURE_MONITOR_INVALID",
+                            source_error,
+                        )
+                    })?,
                 },
                 primary: monitor.is_primary().unwrap_or(false),
             })
@@ -636,19 +696,24 @@ pub fn show_overlays(
             .build()
         {
             Ok(window) => window,
-            Err(_) => {
+            Err(source_error) => {
                 close_windows(app, &created);
-                return Err("SCREEN_CAPTURE_OVERLAY_UNAVAILABLE".to_string());
+                return Err(crate::runtime_log::diagnostic_error(
+                    "SCREEN_CAPTURE_OVERLAY_UNAVAILABLE",
+                    source_error,
+                ));
             }
         };
-        if window
+        if let Err(source_error) = window
             .set_position(PhysicalPosition::new(monitor.bounds.x, monitor.bounds.y))
             .and_then(|_| window.set_size(overlay_size(monitor)))
-            .is_err()
         {
             close_windows(app, &created);
             let _ = window.close();
-            return Err("SCREEN_CAPTURE_OVERLAY_UNAVAILABLE".to_string());
+            return Err(crate::runtime_log::diagnostic_error(
+                "SCREEN_CAPTURE_OVERLAY_UNAVAILABLE",
+                source_error,
+            ));
         }
         let webview = WebviewBuilder::new(label, WebviewUrl::App(query.into()))
             .devtools(false)
@@ -656,14 +721,16 @@ pub fn show_overlays(
             .background_color(Color(0, 0, 0, 0))
             .focused(false)
             .auto_resize();
-        if window
+        if let Err(source_error) = window
             .add_child(webview, PhysicalPosition::new(0, 0), overlay_size(monitor))
             .and_then(|_| window.show())
-            .is_err()
         {
             close_windows(app, &created);
             let _ = window.close();
-            return Err("SCREEN_CAPTURE_OVERLAY_UNAVAILABLE".to_string());
+            return Err(crate::runtime_log::diagnostic_error(
+                "SCREEN_CAPTURE_OVERLAY_UNAVAILABLE",
+                source_error,
+            ));
         }
         created.push(label.clone());
     }
@@ -728,9 +795,9 @@ pub fn logical_selection_to_physical(
     {
         return Err("SCREEN_CAPTURE_SELECTION_INVALID".to_string());
     }
-    let scale = window
-        .scale_factor()
-        .map_err(|_| "SCREEN_CAPTURE_SCALE_UNAVAILABLE".to_string())?;
+    let scale = window.scale_factor().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_SCALE_UNAVAILABLE", source_error)
+    })?;
     selection_at_scale(request, scale)
 }
 
@@ -834,8 +901,9 @@ fn cleanup_resources(resources: &mut HashMap<String, CaptureResource>) {
 fn restrict_directory(path: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|_| "SCREEN_RESOURCE_ROOT_UNAVAILABLE".to_string())
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("SCREEN_RESOURCE_ROOT_UNAVAILABLE", source_error)
+    })
 }
 
 #[cfg(not(unix))]
@@ -847,9 +915,9 @@ fn restrict_directory(_path: &std::path::Path) -> Result<(), String> {
 fn restrict_file(path: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|_| {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
         let _ = fs::remove_file(path);
-        "SCREEN_CAPTURE_RESOURCE_WRITE_FAILED".to_string()
+        crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_RESOURCE_WRITE_FAILED", error)
     })
 }
 

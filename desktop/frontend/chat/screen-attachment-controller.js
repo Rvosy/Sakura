@@ -1,3 +1,4 @@
+import { errorText } from "../core/error-display.js";
 import { createIcon } from "../core/icons.js";
 export function createScreenAttachmentController({
   composer,
@@ -154,8 +155,8 @@ export function createScreenAttachmentController({
     if (revision !== layoutRevision || open) return false;
     try {
       await closeSurface();
-    } catch {
-      onError("扩展工具区域暂时无法关闭，请重试。");
+    } catch (error) {
+      onError(errorText(error));
     }
     menu.hidden = true;
     if (focus) toggle.focus({ preventScroll: true });
@@ -176,11 +177,11 @@ export function createScreenAttachmentController({
     try {
       await invoke("start_screen_capture", { payload: { captureRevision: revision } });
       return revision === captureRevision;
-    } catch {
+    } catch (error) {
       if (revision !== captureRevision) return false;
       capturing = false;
       renderControls();
-      onError("无法开始截图，请检查系统屏幕录制权限。");
+      onError(errorText(error));
       return false;
     }
   }
@@ -205,10 +206,10 @@ export function createScreenAttachmentController({
       publishAttachmentCount();
       renderControls();
       return true;
-    } catch {
+    } catch (error) {
       removing.delete(itemId);
       renderControls();
-      onError("无法移除这张截图，请重试。");
+      onError(errorText(error));
       return false;
     }
   }

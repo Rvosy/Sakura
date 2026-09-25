@@ -116,3 +116,7 @@ updated: 2026-09-22
 - [Obsidian Manage notes](https://obsidian.md/help/manage-notes)：删除方式与恢复后果。
 - [Notion Publish a Site](https://www.notion.com/help/public-pages-and-web-publishing)：发布与公开访问的关系。
 - [Ant Design 文案](https://ant.design/docs/spec/copywriting-cn)：熟悉的语言、统一术语和重要信息前置。
+
+## 错误详情
+
+错误提示保留底层原始原因、异常链和调用栈，不用固定错误码或通用中文提示覆盖。错误码可以同时显示，并独立用于程序判断。凭据脱敏，路径和系统错误号保留；以纯文本展示，超长内容明确标记截断。详细契约见 [运行时诊断](../specs/runtime-v2/WP-4L-02-human-readable-runtime-log-agent-trace.md)。

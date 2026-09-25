@@ -102,7 +102,9 @@ pub(crate) fn runtime_log_viewer_bootstrap(
         .and_then(|presentation| appearance.current(&presentation).ok())
         .map(|publication| publication.values.theme_tokens)
         .unwrap_or_else(fallback_theme_tokens);
-    let snapshot = runtime_log.viewer_snapshot(None).map_err(str::to_string)?;
+    let snapshot = runtime_log
+        .viewer_snapshot(None)
+        .map_err(|error| error.to_string())?;
     Ok(RuntimeLogViewerBootstrap {
         schema_version: 3,
         theme_tokens,
@@ -119,7 +121,7 @@ pub(crate) fn runtime_log_viewer_snapshot(
     validate_runtime_log_window(&window)?;
     runtime_log
         .viewer_snapshot(after_sequence)
-        .map_err(str::to_string)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

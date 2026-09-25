@@ -1,3 +1,4 @@
+import { errorText } from '../core/error-display.js';
 function playable(segment) {
   return segment && typeof segment === "object" && segment.suppressTts !== true;
 }
@@ -99,7 +100,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
           if (!isCurrent(current) || current.silent) return null;
           const code = errorCode(error, "TTS_SERVICE_UNAVAILABLE");
           if (code === "TTS_DISABLED") current.silent = true;
-          else onDiagnostic(code);
+          else onDiagnostic(errorText(error));
           return null;
         }
       })();
@@ -176,7 +177,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         if (!isCurrent(current) || playback !== item) return;
         openPlayback(item, { state: "failed" });
         releasePlayback();
-        onDiagnostic(errorCode(error, "AUDIO_PLAYBACK_FAILED"));
+        onDiagnostic(errorText(error, "AUDIO_PLAYBACK_FAILED"));
       }
       await started;
     },

@@ -1,3 +1,4 @@
+import { errorText } from '../core/error-display.js';
 const ACTIVE = new Set(["preparing", "recording", "recognizing"]);
 
 export function insertTranscript(draft, saved, text) {
@@ -11,29 +12,7 @@ export function insertTranscript(draft, saved, text) {
 }
 
 export function asrErrorMessage(error) {
-  const code = typeof error === "string" ? error : error?.errorCode || error?.code || "";
-  const messages = {
-    ASR_NO_SPEECH: "没有检测到人声，请再试一次。",
-    ASR_BUSY: "另一次语音输入尚未结束，请稍后重试。",
-    ASR_DEVICE_UNAVAILABLE: "麦克风不可用，请检查所选输入设备和麦克风权限。",
-    ASR_MICROPHONE_UNAVAILABLE: "麦克风不可用，请检查所选输入设备和麦克风权限。",
-    ASR_MICROPHONE_DISCONNECTED: "麦克风连接已中断，本次录音已取消。",
-    ASR_CAPTURE_INTERRUPTED: "录音已中断，请重新开始。",
-    ASR_AUDIO_FORMAT_UNSUPPORTED: "所选麦克风的音频格式暂不支持，请调整设备格式或更换输入设备。",
-    ASR_CAPTURE_FAILED: "录音已中止，请检查麦克风连接和系统权限。",
-    ASR_INPUT_DEVICE_UNAVAILABLE: "麦克风不可用，请检查所选输入设备和麦克风权限。",
-    ASR_INPUT_DEVICE_NOT_FOUND: "所选麦克风未连接，请重新连接或在插件设置中选择其他设备。",
-    ASR_PROVIDER_UNAVAILABLE: "所选语音输入引擎不可用，请在插件设置中检查引擎。",
-    ASR_HUB_UNAVAILABLE: "语音输入服务不可用，请在插件设置中启用 ASR Hub。",
-    ASR_SERVICE_UNAVAILABLE: "语音输入服务不可用，请在插件设置中检查 ASR Hub。",
-    ASR_PROVIDER_NOT_SELECTED: "尚未选择语音输入引擎，请在插件设置中选择。",
-    ASR_RESOURCES_MISSING: "语音输入模型尚未安装，请在插件设置中安装资源。",
-    ASR_MODEL_MISSING: "语音输入模型尚未安装，请在插件设置中安装资源。",
-    ASR_MODEL_INVALID: "语音输入模型无法加载，请在插件设置中重试安装。",
-    ASR_DEPENDENCY_UNAVAILABLE: "语音输入引擎的依赖无法加载，请在插件设置中检查安装状态。",
-  };
-  return Object.entries(messages).find(([key]) => code.includes(key))?.[1]
-    || "语音输入失败，请检查插件中的识别引擎与麦克风设置后重试。";
+  return errorText(error);
 }
 
 // The consumer never sends a message. It owns only one complete draft insertion.
@@ -116,7 +95,7 @@ export function createAsrController({
       writeDraft(inserted);
       return;
     } else if (["failed", "cancelled", "consumed"].includes(result.state)) {
-      finish(task, result.state === "failed" ? result.errorCode || "ASR_FAILED" : null);
+      finish(task, result.state === "failed" ? result : null);
       void cancelNative(task);
       return;
     } else if (ACTIVE.has(result.state)) {
@@ -152,7 +131,7 @@ export function createAsrController({
         if (!valid(task)) { void cancel({ restore: false }); return; }
         if (payload.state === "recognizing") { state(task, "recognizing"); nextPoll(task); }
         else if (payload.state === "failed") {
-          finish(task, payload.errorCode || "ASR_CAPTURE_FAILED"); void cancelNative(task);
+          finish(task, payload); void cancelNative(task);
         }
       }));
     },

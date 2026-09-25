@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class LegacyImportError(RuntimeError):
-    """A content-free failure suitable for the desktop boundary."""
+    """A stable failure code with the original exception diagnostics."""
 
     code: str
     stage: str
@@ -21,4 +21,6 @@ class LegacyImportError(RuntimeError):
             result["relativePath"] = self.relative_path.replace("\\", "/")
         if self.line is not None:
             result["line"] = self.line
+        from app.core.diagnostics import exception_diagnostics
+        result.update(exception_diagnostics(self, reason_code=self.code, stage=self.stage))
         return result

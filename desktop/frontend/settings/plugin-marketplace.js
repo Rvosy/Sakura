@@ -1,3 +1,4 @@
+import { errorText } from "../core/error-display.js";
 import { iconMarkup as icon } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects } from "./select-control.js";
 import { marketplaceMarkup } from "./plugin-marketplace-view.js";
@@ -141,9 +142,9 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     const doc = documents.get(documentKey(p));
     const projectUrl = documentationUrl(p.repository);
     const links = source?.openUrl ? `${projectUrl ? `<a href="${escape(projectUrl)}" data-document-link>${icon("globe")}项目主页</a>` : ""}${doc?.url ? `<a href="${escape(doc.url)}" data-document-link>${icon("file-text")}查看原文</a>` : ""}` : "";
-    const readme = doc?.state === "ready" ? `<section class="detail-readme" aria-label="项目说明"><div class="detail-readme-heading"><h3>项目说明</h3>${doc.previous ? `<span>v${escape(doc.version)}</span>` : ""}</div><div class="plugin-readme">${doc.html}</div>${doc.refreshFailed ? '<div class="detail-document-state">新版说明未能加载<button class="plain" data-retry-document>重试</button></div>' : ""}</section>`
+    const readme = doc?.state === "ready" ? `<section class="detail-readme" aria-label="项目说明"><div class="detail-readme-heading"><h3>项目说明</h3>${doc.previous ? `<span>v${escape(doc.version)}</span>` : ""}</div><div class="plugin-readme">${doc.html}</div>${doc.refreshFailed ? `<div class="detail-document-state">${escape(doc.error)}<button class="plain" data-retry-document>重试</button></div>` : ""}</section>`
       : doc?.state === "loading" ? '<p class="detail-document-state" role="status">正在加载项目说明…</p>'
-      : doc?.state === "failed" ? '<div class="detail-document-state" role="status">项目说明未能加载<button class="plain" data-retry-document>重试</button></div>' : "";
+      : doc?.state === "failed" ? `<div class="detail-document-state" role="status">${escape(doc.error)}<button class="plain" data-retry-document>重试</button></div>` : "";
     const description = p.description?.trim() || "";
     const body = p.body?.trim() || "";
     const versionRow = v => `<div class="version-row"><div class="version-title"><strong>v${escape(v.number)}</strong>${v.yanked ? '<span class="version-label warning">已撤回</span>' : v.prerelease ? '<span class="version-label warning">预发布</span>' : v.compatible === false ? '<span class="version-label warning">不兼容</span>' : ""}${v.date ? `<time>${escape(v.date)}</time>` : ""}</div>${v.notes?.trim() ? `<p>${escape(v.notes)}</p>` : ""}${v.yanked || v.reason ? `<p>${escape(v.yanked || v.reason)}</p>` : ""}</div>`;
@@ -212,7 +213,8 @@ export function createPluginMarketplace({ document, host, notify, source = null,
       const result = await source.readme(p, { signal: entry.abort.signal });
       if (disposed || entry.abort.signal.aborted || documents.get(key) !== entry) return;
       apply(result);
-    } catch {
+    } catch (error) {
+      entry.error = errorText(error);
       if (disposed || entry.abort.signal.aborted || documents.get(key) !== entry) return;
       if (entry.state === "ready") entry.refreshFailed = true;
       else entry.state = "failed";
@@ -304,7 +306,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     if (link) {
       event.preventDefault();
       const url = documentationUrl(link.getAttribute("href"));
-      if (url && source?.openUrl) void Promise.resolve().then(() => source.openUrl(url)).catch(() => notify("无法打开网页", "error"));
+      if (url && source?.openUrl) void Promise.resolve().then(() => source.openUrl(url)).catch(error => notify(errorText(error), "error"));
       return;
     }
     const button = event.target.closest("button");
@@ -334,7 +336,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
   });
   $("market-submit-issue").disabled = !source?.openUrl;
   listen($("market-submit-issue"), "click", () => {
-    void Promise.resolve().then(() => source.openUrl(submissionUrl)).catch(() => notify("无法打开网页", "error"));
+    void Promise.resolve().then(() => source.openUrl(submissionUrl)).catch(error => notify(errorText(error), "error"));
   });
   listen(submitDialog, "click", event => {
     if (event.target.closest("[data-close-submit]")) submitDialog.close();

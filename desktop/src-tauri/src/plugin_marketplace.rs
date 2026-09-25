@@ -156,7 +156,9 @@ fn validate_install_version(
     if current["revision"] != revision {
         return Err("CONFIG_REVISION_CONFLICT: 插件列表已变化，请刷新后重试。".into());
     }
-    let target = semver::Version::parse(version).map_err(|_| "市场版本号格式无效。")?;
+    let target = semver::Version::parse(version).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("市场版本号格式无效。", source_error)
+    })?;
     for plugin in current["plugins"].as_array().into_iter().flatten() {
         if plugin["pluginId"] != plugin_id
             || plugin["reasonCode"]
@@ -225,10 +227,9 @@ pub(crate) async fn settings_marketplace_readme(
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
     let (raw, url) = {
-        let catalog = market
-            .catalog
-            .lock()
-            .map_err(|_| "MARKETPLACE_STATE_UNAVAILABLE")?;
+        let catalog = market.catalog.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
+        })?;
         readme_addresses(
             catalog.as_ref().ok_or("请先刷新插件目录。")?,
             &plugin_id,
@@ -248,8 +249,12 @@ pub(crate) async fn settings_marketplace_readme(
         ),
     )
     .await
-    .map_err(|_| "项目说明加载超时。")??;
-    let markdown = String::from_utf8(data).map_err(|_| "项目说明编码无效。")?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("项目说明加载超时。", source_error)
+    })??;
+    let markdown = String::from_utf8(data).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("项目说明编码无效。", source_error)
+    })?;
     if markdown.trim().is_empty() {
         return Err("项目说明为空。".into());
     }
@@ -266,7 +271,9 @@ pub(crate) fn settings_marketplace_open_url(
     url: String,
 ) -> Result<(), String> {
     product_shell::validate_settings_window(&window)?;
-    let url = reqwest::Url::parse(&url).map_err(|_| "网页地址无效。")?;
+    let url = reqwest::Url::parse(&url).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("网页地址无效。", source_error)
+    })?;
     if url.scheme() != "https"
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -297,10 +304,9 @@ pub(crate) async fn settings_marketplace_catalog(
         .await?,
     )?;
     let cached = {
-        let mut current = market
-            .catalog
-            .lock()
-            .map_err(|_| "MARKETPLACE_STATE_UNAVAILABLE")?;
+        let mut current = market.catalog.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
+        })?;
         if current.is_none() {
             *current = market.cached_catalog();
         }
@@ -323,15 +329,16 @@ pub(crate) async fn settings_marketplace_catalog(
         },
     )
     .await?;
-    let catalog: Value = serde_json::from_slice(&data).map_err(|_| "插件目录格式无效。")?;
+    let catalog: Value = serde_json::from_slice(&data).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("插件目录格式无效。", source_error)
+    })?;
     if !valid_catalog(&catalog) {
         return Err("插件目录版本不受支持。".into());
     }
     save_cache(&market.cache_root.join("catalog.json"), &catalog);
-    *market
-        .catalog
-        .lock()
-        .map_err(|_| "MARKETPLACE_STATE_UNAVAILABLE")? = Some(catalog.clone());
+    *market.catalog.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
+    })? = Some(catalog.clone());
     Ok(json!({"catalog":catalog,"context":context,"readmes":market.cached_readmes(&catalog)}))
 }
 
@@ -368,10 +375,9 @@ pub(crate) async fn settings_marketplace_install(
         &core_generation_id,
     )?;
     let release = {
-        let catalog = market
-            .catalog
-            .lock()
-            .map_err(|_| "MARKETPLACE_STATE_UNAVAILABLE")?;
+        let catalog = market.catalog.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
+        })?;
         selected_release(
             catalog.as_ref().ok_or("请先刷新插件目录。")?,
             &plugin_id,
@@ -393,10 +399,9 @@ pub(crate) async fn settings_marketplace_install(
     let url = download_sources::https_url(release["package"]["url"].as_str().unwrap())?;
     let (cancel, mut cancellation) = watch::channel(false);
     {
-        let mut tasks = market
-            .tasks
-            .lock()
-            .map_err(|_| "MARKETPLACE_STATE_UNAVAILABLE")?;
+        let mut tasks = market.tasks.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
+        })?;
         if tasks.contains_key(&request_id) {
             return Err("下载任务已存在。".into());
         }
@@ -413,7 +418,9 @@ pub(crate) async fn settings_marketplace_install(
     market
         .tasks
         .lock()
-        .map_err(|_| "MARKETPLACE_STATE_UNAVAILABLE")?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
+        })?
         .remove(&request_id);
     let data = data?;
     if *cancellation.borrow() {
@@ -431,7 +438,9 @@ pub(crate) async fn settings_marketplace_install(
     let file = PackageFile(
         std::env::temp_dir().join(format!("sakura-plugin-{}.zip", uuid::Uuid::new_v4())),
     );
-    fs::write(&file.0, data).map_err(|_| "无法写入临时安装包。")?;
+    fs::write(&file.0, data).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("无法写入临时安装包。", source_error)
+    })?;
     let _ = progress.send(json!({"phase":"installing","progress":100}));
     let response = dispatch_settings_install(
         handle.clone(),
@@ -462,7 +471,9 @@ pub(crate) fn settings_marketplace_cancel(
     if let Some(sender) = market
         .tasks
         .lock()
-        .map_err(|_| "MARKETPLACE_STATE_UNAVAILABLE")?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
+        })?
         .get(&request_id)
     {
         let _ = sender.send(true);

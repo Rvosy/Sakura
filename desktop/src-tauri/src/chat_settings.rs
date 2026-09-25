@@ -293,10 +293,15 @@ fn bubble_settings_from_legacy(path: &Path) -> Result<BubbleAutoHideSettings, St
     if !path.is_file() {
         return Ok(BubbleAutoHideSettings::default());
     }
-    let source = std::fs::read_to_string(path)
-        .map_err(|_| "BUBBLE_AUTO_HIDE_LEGACY_READ_FAILED".to_string())?;
-    let document: serde_yaml::Value = serde_yaml::from_str(&source)
-        .map_err(|_| "BUBBLE_AUTO_HIDE_LEGACY_DOCUMENT_INVALID".to_string())?;
+    let source = std::fs::read_to_string(path).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("BUBBLE_AUTO_HIDE_LEGACY_READ_FAILED", source_error)
+    })?;
+    let document: serde_yaml::Value = serde_yaml::from_str(&source).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error(
+            "BUBBLE_AUTO_HIDE_LEGACY_DOCUMENT_INVALID",
+            source_error,
+        )
+    })?;
     let ui = document.get("ui").and_then(serde_yaml::Value::as_mapping);
     let defaults = BubbleAutoHideSettings::default();
     let enabled = ui

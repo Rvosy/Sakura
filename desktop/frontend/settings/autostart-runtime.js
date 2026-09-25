@@ -1,17 +1,8 @@
+import { errorText } from '../core/error-display.js';
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
 export function autostartErrorMessage(error) {
-  const value = String(error ?? "");
-  if (value.includes("AUTOSTART_SETTINGS_READ_FAILED")) {
-    return "无法读取系统的开机启动状态。";
-  }
-  if (value.includes("AUTOSTART_SETTINGS_UPDATE_FAILED")) {
-    return "无法修改开机启动设置，请检查系统权限后重试。";
-  }
-  if (value.includes("AUTOSTART_SETTINGS_VERIFY_FAILED")) {
-    return "系统没有确认开机启动设置，请重试。";
-  }
-  return value || "开机启动设置操作失败。";
+  return errorText(error);
 }
 
 export function validateAutostartSnapshot(snapshot) {

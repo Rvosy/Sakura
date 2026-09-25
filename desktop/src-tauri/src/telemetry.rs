@@ -397,11 +397,12 @@ impl TelemetryService {
     }
 
     pub fn snapshot(&self) -> Result<TelemetrySettingsSnapshot, String> {
-        let runtime = self
-            .inner
-            .runtime
-            .lock()
-            .map_err(|_| "TELEMETRY_SETTINGS_STATE_UNAVAILABLE".to_string())?;
+        let runtime = self.inner.runtime.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "TELEMETRY_SETTINGS_STATE_UNAVAILABLE",
+                source_error,
+            )
+        })?;
         if let Some(error) = runtime.settings_error.as_ref() {
             return Err(error.clone());
         }
@@ -415,13 +416,19 @@ impl TelemetryService {
     pub fn set_enabled(&self, enabled: bool) -> Result<TelemetrySettingsSnapshot, String> {
         if !enabled {
             self.pause();
-            let saved_id = persist_telemetry(&self.inner.repository, false, None)
-                .map_err(|_| "TELEMETRY_SETTINGS_SAVE_FAILED".to_string())?;
-            let mut runtime = self
-                .inner
-                .runtime
-                .lock()
-                .map_err(|_| "TELEMETRY_SETTINGS_STATE_UNAVAILABLE".to_string())?;
+            let saved_id =
+                persist_telemetry(&self.inner.repository, false, None).map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "TELEMETRY_SETTINGS_SAVE_FAILED",
+                        source_error,
+                    )
+                })?;
+            let mut runtime = self.inner.runtime.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "TELEMETRY_SETTINGS_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             runtime.installation_id = saved_id;
             runtime.settings_error = None;
             return Ok(TelemetrySettingsSnapshot {
@@ -432,14 +439,17 @@ impl TelemetryService {
         }
 
         let id = persist_telemetry(&self.inner.repository, true, None)
-            .map_err(|_| "TELEMETRY_SETTINGS_SAVE_FAILED".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("TELEMETRY_SETTINGS_SAVE_FAILED", source_error)
+            })?
             .ok_or_else(|| "TELEMETRY_SETTINGS_SAVE_FAILED".to_string())?;
         {
-            let mut runtime = self
-                .inner
-                .runtime
-                .lock()
-                .map_err(|_| "TELEMETRY_SETTINGS_STATE_UNAVAILABLE".to_string())?;
+            let mut runtime = self.inner.runtime.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "TELEMETRY_SETTINGS_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             runtime.installation_id = Some(id);
             runtime.settings_error = None;
         }
@@ -460,11 +470,12 @@ impl TelemetryService {
             self.bump_epoch();
             return Err("TELEMETRY_SETTINGS_SAVE_FAILED".to_string());
         }
-        let mut runtime = self
-            .inner
-            .runtime
-            .lock()
-            .map_err(|_| "TELEMETRY_SETTINGS_STATE_UNAVAILABLE".to_string())?;
+        let mut runtime = self.inner.runtime.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "TELEMETRY_SETTINGS_STATE_UNAVAILABLE",
+                source_error,
+            )
+        })?;
         runtime.installation_id = Some(new_id);
         runtime.settings_error = None;
         drop(runtime);
@@ -2711,12 +2722,16 @@ mod tests {
         fs::write(&root, b"not-a-directory").unwrap();
 
         assert_eq!(
-            service.regenerate_installation_id(),
+            service
+                .regenerate_installation_id()
+                .map_err(|error| crate::runtime_log::diagnostic_code(&error).to_string()),
             Err("TELEMETRY_SETTINGS_SAVE_FAILED".to_string())
         );
         assert_eq!(service.snapshot().unwrap(), original);
         assert_eq!(
-            service.set_enabled(false),
+            service
+                .set_enabled(false)
+                .map_err(|error| crate::runtime_log::diagnostic_code(&error).to_string()),
             Err("TELEMETRY_SETTINGS_SAVE_FAILED".to_string())
         );
         let runtime = service.snapshot().unwrap();

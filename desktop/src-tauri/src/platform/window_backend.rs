@@ -144,7 +144,12 @@ fn macos_atomic_frame(
         .map_err(|error| format!("failed to dispatch atomic macOS window frame: {error}"))?;
     receiver
         .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| "timed out applying atomic macOS window frame".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "timed out applying atomic macOS window frame",
+                source_error,
+            )
+        })?
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -234,7 +239,12 @@ fn macos_atomic_resize_preserving_top_left(
         .map_err(|error| format!("failed to dispatch macOS resize: {error}"))?;
     receiver
         .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| "timed out applying macOS top-left-preserving resize".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "timed out applying macOS top-left-preserving resize",
+                source_error,
+            )
+        })?
 }
 
 #[cfg(windows)]

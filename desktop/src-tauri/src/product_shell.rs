@@ -118,9 +118,9 @@ impl PetTopmostState {
 
     pub fn initialize(&self, window: &WebviewWindow) -> Result<bool, String> {
         self.initialize_with(|enabled| {
-            window
-                .set_always_on_top(enabled)
-                .map_err(|_| "PET_TOPMOST_APPLY_FAILED".to_string())
+            window.set_always_on_top(enabled).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("PET_TOPMOST_APPLY_FAILED", source_error)
+            })
         })
     }
 
@@ -130,10 +130,9 @@ impl PetTopmostState {
     ) -> Result<bool, String> {
         let enabled = topmost_from_document(&self.repository.load(PET_TOPMOST_NAMESPACE)?)?;
         set_native(enabled)?;
-        *self
-            .committed
-            .lock()
-            .map_err(|_| "PET_TOPMOST_STATE_UNAVAILABLE".to_string())? = enabled;
+        *self.committed.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("PET_TOPMOST_STATE_UNAVAILABLE", source_error)
+        })? = enabled;
         Ok(enabled)
     }
 
@@ -141,14 +140,16 @@ impl PetTopmostState {
         self.committed
             .lock()
             .map(|enabled| *enabled)
-            .map_err(|_| "PET_TOPMOST_STATE_UNAVAILABLE".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("PET_TOPMOST_STATE_UNAVAILABLE", source_error)
+            })
     }
 
     pub fn toggle(&self, window: &WebviewWindow) -> Result<bool, String> {
         self.toggle_with(|enabled| {
-            window
-                .set_always_on_top(enabled)
-                .map_err(|_| "PET_TOPMOST_APPLY_FAILED".to_string())
+            window.set_always_on_top(enabled).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("PET_TOPMOST_APPLY_FAILED", source_error)
+            })
         })
     }
 
@@ -156,10 +157,9 @@ impl PetTopmostState {
         &self,
         mut set_native: impl FnMut(bool) -> Result<(), String>,
     ) -> Result<bool, String> {
-        let mut committed = self
-            .committed
-            .lock()
-            .map_err(|_| "PET_TOPMOST_STATE_UNAVAILABLE".to_string())?;
+        let mut committed = self.committed.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("PET_TOPMOST_STATE_UNAVAILABLE", source_error)
+        })?;
         let previous = *committed;
         let next = !previous;
         set_native(next)?;
@@ -302,10 +302,9 @@ pub struct ProductShellState {
 
 impl ProductShellState {
     fn install_tray_visibility(&self, item: MenuItem<tauri::Wry>) -> Result<(), String> {
-        let mut visibility = self
-            .tray_visibility
-            .lock()
-            .map_err(|_| "tray menu state is unavailable".to_string())?;
+        let mut visibility = self.tray_visibility.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("tray menu state is unavailable", source_error)
+        })?;
         *visibility = Some(item);
         Ok(())
     }
@@ -314,7 +313,9 @@ impl ProductShellState {
         let item = self
             .tray_visibility
             .lock()
-            .map_err(|_| "tray menu state is unavailable".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("tray menu state is unavailable", source_error)
+            })?
             .as_ref()
             .cloned()
             .ok_or_else(|| "tray visibility action is unavailable".to_string())?;
@@ -323,10 +324,12 @@ impl ProductShellState {
     }
 
     fn next_generation(&self) -> Result<u64, String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         session.generation = session.generation.saturating_add(1).max(1);
         session.ready = false;
         session.close_authorized = false;
@@ -339,14 +342,21 @@ impl ProductShellState {
         self.settings
             .lock()
             .map(|session| session.ready)
-            .map_err(|_| "settings window state is unavailable".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "settings window state is unavailable",
+                    source_error,
+                )
+            })
     }
 
     fn mark_settings_ready(&self) -> Result<(), String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         session.ready = true;
         Ok(())
     }
@@ -355,24 +365,33 @@ impl ProductShellState {
         self.settings
             .lock()
             .map(|session| session.generation)
-            .map_err(|_| "settings window state is unavailable".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "settings window state is unavailable",
+                    source_error,
+                )
+            })
     }
 
     pub fn authorize_close(&self) -> Result<(), String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         session.close_authorized = true;
         session.closing = true;
         Ok(())
     }
 
     fn queue_reopen_if_closing(&self) -> Result<bool, String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         if !session.closing {
             return Ok(false);
         }
@@ -381,10 +400,12 @@ impl ProductShellState {
     }
 
     pub fn cancel_close(&self) -> Result<(), String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         session.close_authorized = false;
         session.closing = false;
         session.reopen_after_close = false;
@@ -392,20 +413,24 @@ impl ProductShellState {
     }
 
     pub fn consume_close_authorization(&self) -> Result<bool, String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         let authorized = session.close_authorized;
         session.close_authorized = false;
         Ok(authorized)
     }
 
     pub fn begin_exit(&self) -> Result<Option<u64>, String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         if session.exit_pending {
             return Ok(None);
         }
@@ -416,10 +441,12 @@ impl ProductShellState {
     }
 
     pub fn acknowledge_exit(&self, revision: u64) -> Result<(), String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         if !session.exit_pending || session.exit_revision != revision {
             return Err("SETTINGS_EXIT_REQUEST_STALE".to_string());
         }
@@ -428,10 +455,12 @@ impl ProductShellState {
     }
 
     pub fn cancel_unanswered_exit(&self, revision: u64) -> Result<bool, String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         if !session.exit_pending || session.exit_revision != revision || session.exit_acknowledged {
             return Ok(false);
         }
@@ -440,39 +469,47 @@ impl ProductShellState {
     }
 
     pub fn resolve_exit(&self) -> Result<bool, String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         let pending = session.exit_pending;
         session.exit_pending = false;
         Ok(pending)
     }
 
     pub fn authorize_app_exit(&self) -> Result<(), String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         session.app_exit_authorized = true;
         Ok(())
     }
 
     pub fn consume_app_exit_authorization(&self) -> Result<bool, String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         let authorized = session.app_exit_authorized;
         session.app_exit_authorized = false;
         Ok(authorized)
     }
 
     pub fn window_destroyed(&self) -> Result<bool, String> {
-        let mut session = self
-            .settings
-            .lock()
-            .map_err(|_| "settings window state is unavailable".to_string())?;
+        let mut session = self.settings.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "settings window state is unavailable",
+                source_error,
+            )
+        })?;
         let reopen = session.reopen_after_close && !session.exit_pending;
         session.ready = false;
         session.close_authorized = false;
@@ -832,7 +869,7 @@ pub(crate) fn assert_settings_identity(
     }
     let current = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     if current != core_generation_id {
         return Err("SETTINGS_CORE_GENERATION_MISMATCH".to_string());
@@ -1018,8 +1055,9 @@ fn parse_theme_color(value: &str) -> Result<Color, String> {
         .filter(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or_else(|| "SETTINGS_WINDOW_BACKGROUND_INVALID".to_string())?;
     let channel = |range: std::ops::Range<usize>| {
-        u8::from_str_radix(&hex[range], 16)
-            .map_err(|_| "SETTINGS_WINDOW_BACKGROUND_INVALID".to_string())
+        u8::from_str_radix(&hex[range], 16).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SETTINGS_WINDOW_BACKGROUND_INVALID", source_error)
+        })
     };
     Ok(Color(channel(0..2)?, channel(2..4)?, channel(4..6)?, 255))
 }

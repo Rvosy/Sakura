@@ -144,12 +144,12 @@ def _tavily_request(endpoint, parameters, config):
                 if not isinstance(payload, dict):
                     raise ValueError()
                 return payload
-    except httpx.TimeoutException:
-        raise web.WebError("WEB_TIMEOUT", "Tavily 请求超时。") from None
-    except httpx.HTTPError:
-        raise web.WebError("WEB_NETWORK_ERROR", "无法连接 Tavily。") from None
-    except ValueError:
-        raise web.WebError("WEB_SEARCH_RESPONSE_INVALID", "Tavily 返回了无效的响应。") from None
+    except httpx.TimeoutException as error:
+        raise web.WebError("WEB_TIMEOUT", "Tavily 请求超时。") from error
+    except httpx.HTTPError as error:
+        raise web.WebError("WEB_NETWORK_ERROR", "无法连接 Tavily。") from error
+    except ValueError as error:
+        raise web.WebError("WEB_SEARCH_RESPONSE_INVALID", "Tavily 返回了无效的响应。") from error
 
 
 def _tavily(query, max_results, config):
@@ -174,8 +174,8 @@ def _tavily(query, max_results, config):
                 result["published_date"] = published[:120]
             results.append(result)
         return {"query": query, "source": "Tavily", "results": results}
-    except (ValueError, KeyError, TypeError, AttributeError):
-        raise web.WebError("WEB_SEARCH_RESPONSE_INVALID", "Tavily 返回了无效的搜索结果。") from None
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise web.WebError("WEB_SEARCH_RESPONSE_INVALID", "Tavily 返回了无效的搜索结果。") from error
 
 
 def fetch(url, max_chars, values):
@@ -203,7 +203,7 @@ def fetch(url, max_chars, values):
                 raise ValueError()
             result = {"url": final_url, "content_type": "text/plain", "title": title[:500],
                       "text": text[:max_chars], "truncated": len(text) > max_chars, "links": [], "source": "Tavily"}
-        except (ValueError, KeyError, TypeError, AttributeError):
-            raise web.WebError("WEB_EXTRACT_RESPONSE_INVALID", "Tavily 返回了无效的网页正文。") from None
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            raise web.WebError("WEB_EXTRACT_RESPONSE_INVALID", "Tavily 返回了无效的网页正文。") from error
     result["retrieved_at"] = datetime.now(timezone.utc).isoformat()
     return result

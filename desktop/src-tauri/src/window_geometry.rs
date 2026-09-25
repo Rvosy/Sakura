@@ -547,32 +547,54 @@ pub fn apply_window_layout_with_fit_bounds(
     let top = relative_top.floor() as i64;
     let right = relative_right.ceil() as i64;
     let bottom = relative_bottom.ceil() as i64;
-    let width =
-        u32::try_from(right - left).map_err(|_| "pet surface width overflow".to_string())?;
-    let height =
-        u32::try_from(bottom - top).map_err(|_| "pet surface height overflow".to_string())?;
-    let local_anchor_x =
-        u32::try_from(-left).map_err(|_| "pet surface local anchor x overflow".to_string())?;
-    let local_anchor_y =
-        u32::try_from(-top).map_err(|_| "pet surface local anchor y overflow".to_string())?;
+    let width = u32::try_from(right - left).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("pet surface width overflow", source_error)
+    })?;
+    let height = u32::try_from(bottom - top).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("pet surface height overflow", source_error)
+    })?;
+    let local_anchor_x = u32::try_from(-left).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("pet surface local anchor x overflow", source_error)
+    })?;
+    let local_anchor_y = u32::try_from(-top).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("pet surface local anchor y overflow", source_error)
+    })?;
     let placement = PhysicalPlacement {
-        x: i32::try_from(i64::from(anchor.x) + left)
-            .map_err(|_| "pet window x coordinate overflow".to_string())?,
-        y: i32::try_from(i64::from(anchor.y) + top)
-            .map_err(|_| "pet window y coordinate overflow".to_string())?,
+        x: i32::try_from(i64::from(anchor.x) + left).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("pet window x coordinate overflow", source_error)
+        })?,
+        y: i32::try_from(i64::from(anchor.y) + top).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("pet window y coordinate overflow", source_error)
+        })?,
         width,
         height,
     };
     if anchor_policy == AnchorPolicy::Automatic {
         let fit_placement = PhysicalPlacement {
-            x: i32::try_from(i64::from(anchor.x) + envelope.left)
-                .map_err(|_| "visible pet surface x coordinate overflow".to_string())?,
-            y: i32::try_from(i64::from(anchor.y) + envelope.top)
-                .map_err(|_| "visible pet surface y coordinate overflow".to_string())?,
-            width: u32::try_from(envelope.right - envelope.left)
-                .map_err(|_| "visible pet surface width overflow".to_string())?,
-            height: u32::try_from(envelope.bottom - envelope.top)
-                .map_err(|_| "visible pet surface height overflow".to_string())?,
+            x: i32::try_from(i64::from(anchor.x) + envelope.left).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "visible pet surface x coordinate overflow",
+                    source_error,
+                )
+            })?,
+            y: i32::try_from(i64::from(anchor.y) + envelope.top).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "visible pet surface y coordinate overflow",
+                    source_error,
+                )
+            })?,
+            width: u32::try_from(envelope.right - envelope.left).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "visible pet surface width overflow",
+                    source_error,
+                )
+            })?,
+            height: u32::try_from(envelope.bottom - envelope.top).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "visible pet surface height overflow",
+                    source_error,
+                )
+            })?,
         };
         ensure_placement_within_work_area(fit_placement, monitor.work_area)?;
     }
@@ -996,17 +1018,33 @@ fn resolve_anchor(
     if let Some(requested) = requested {
         return Ok(match policy {
             AnchorPolicy::Automatic => PhysicalPoint {
-                x: i32::try_from(i64::from(requested.x).clamp(min_x, max_x))
-                    .map_err(|_| "automatic anchor x overflow".to_string())?,
-                y: i32::try_from(i64::from(requested.y).clamp(min_y, max_y))
-                    .map_err(|_| "automatic anchor y overflow".to_string())?,
+                x: i32::try_from(i64::from(requested.x).clamp(min_x, max_x)).map_err(
+                    |source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "automatic anchor x overflow",
+                            source_error,
+                        )
+                    },
+                )?,
+                y: i32::try_from(i64::from(requested.y).clamp(min_y, max_y)).map_err(
+                    |source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "automatic anchor y overflow",
+                            source_error,
+                        )
+                    },
+                )?,
             },
             AnchorPolicy::UserPositioned => requested,
         });
     }
     Ok(PhysicalPoint {
-        x: i32::try_from(max_x).map_err(|_| "default anchor x overflow".to_string())?,
-        y: i32::try_from(max_y).map_err(|_| "default anchor y overflow".to_string())?,
+        x: i32::try_from(max_x).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("default anchor x overflow", source_error)
+        })?,
+        y: i32::try_from(max_y).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("default anchor y overflow", source_error)
+        })?,
     })
 }
 

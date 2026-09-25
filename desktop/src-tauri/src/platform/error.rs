@@ -143,7 +143,11 @@ impl fmt::Display for PlatformError {
             self.stable_code(),
             self.operation,
             self.message
-        )
+        )?;
+        if let Some(native) = &self.native_code {
+            write!(formatter, " ({}={})", native.namespace, native.value)?;
+        }
+        Ok(())
     }
 }
 

@@ -201,12 +201,18 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
         code = "MODEL_AUTHENTICATION_FAILED" if status in {401, 403} else "MODEL_RATE_LIMITED" if status == 429 else "MODEL_HTTP_FAILED"
         if any(marker in body.lower() for marker in ("context_length_exceeded", "maximum context length", "context window")):
             domain, code = "context", "MODEL_CONTEXT_REJECTED"
-        raise ModelError(code, message, diagnostics={**diagnostics, "httpStatus": status, "faultDomain": domain, "stage": "request"}) from None
+        failure = ModelError(code, message, diagnostics={**diagnostics, "httpStatus": status, "faultDomain": domain, "stage": "request"})
+        failure.diagnostic_secrets = (key,)
+        raise failure from error
     except APITimeoutError as error:
         stage = "read" if isinstance(error.__cause__, httpx.ReadTimeout) else "connect" if isinstance(error.__cause__, httpx.ConnectTimeout) else "request"
         code = {"read": "MODEL_READ_TIMEOUT", "connect": "MODEL_CONNECTION_TIMEOUT", "request": "MODEL_REQUEST_TIMEOUT"}[stage]
-        raise ModelError(code, "模型请求超时。", diagnostics={**diagnostics, "faultDomain": "transport", "stage": stage}) from None
-    except APIConnectionError:
-        raise ModelError("MODEL_CONNECTION_FAILED", "模型服务连接失败。", diagnostics={**diagnostics, "faultDomain": "transport", "stage": "connect"}) from None
+        failure = ModelError(code, "模型请求超时。", diagnostics={**diagnostics, "faultDomain": "transport", "stage": stage})
+        failure.diagnostic_secrets = (key,)
+        raise failure from error
+    except APIConnectionError as error:
+        failure = ModelError("MODEL_CONNECTION_FAILED", "模型服务连接失败。", diagnostics={**diagnostics, "faultDomain": "transport", "stage": "connect"})
+        failure.diagnostic_secrets = (key,)
+        raise failure from error
     except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError) as error:
         raise ModelError("MODEL_RESPONSE_INVALID", "模型返回格式无法解析。") from error

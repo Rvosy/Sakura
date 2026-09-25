@@ -591,13 +591,14 @@ class RealChatBoundary:
             else:
                 code, message, retryable = _classify_error(error)
                 _safe_diagnostic(error, code=code, stage=stage, operation_id=operation_id)
+                from app.core.diagnostics import exception_diagnostics
                 terminal_payload = {
                     "operationId": operation_id,
                     "error": {
                         "code": code,
                         "message": message,
                         "retryable": retryable,
-                        "details": {},
+                        "details": {"diagnostics": exception_diagnostics(error, reason_code=code, stage=stage)},
                     },
                     "historyStatus": history_status,
                 }

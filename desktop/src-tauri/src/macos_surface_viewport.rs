@@ -42,9 +42,9 @@ pub fn prepare(
     if !scale.is_finite() || scale <= 0.0 || canvas.contains(&0) {
         return Err("MACOS_SURFACE_VIEWPORT_INVALID".to_string());
     }
-    *pending()
-        .lock()
-        .map_err(|_| "MACOS_SURFACE_VIEWPORT_UNAVAILABLE")? = Some(SurfaceViewport {
+    *pending().lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("MACOS_SURFACE_VIEWPORT_UNAVAILABLE", source_error)
+    })? = Some(SurfaceViewport {
         canvas,
         offset: [application.active_bounds[0], application.active_bounds[1]],
         scale,
@@ -64,7 +64,9 @@ pub fn apply_frame(
 
     let viewport = pending()
         .lock()
-        .map_err(|_| "MACOS_SURFACE_VIEWPORT_UNAVAILABLE")?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("MACOS_SURFACE_VIEWPORT_UNAVAILABLE", source_error)
+        })?
         .ok_or("MACOS_SURFACE_VIEWPORT_NOT_PREPARED")?;
     let host = window
         .contentView()

@@ -100,7 +100,7 @@ pub(crate) async fn settings_plugins_get(
     let window_generation = shell.generation()?;
     let core_generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(
         handle.clone(),

@@ -1,3 +1,4 @@
+import { errorText } from "../core/error-display.js";
 import { createIcon } from "../core/icons.js";
 const TOOL_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
@@ -112,8 +113,8 @@ export function createComposerToolRegistry({
       await invoke("composer_tool_invoke", { toolId: tool.id });
       await afterActivate(tool);
       return true;
-    } catch {
-      onError(`“${tool.label}”暂时无法运行，请重试。`);
+    } catch (error) {
+      onError(errorText(error));
       return false;
     } finally {
       button.disabled = false;

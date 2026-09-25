@@ -162,9 +162,9 @@ pub fn encode_frame(message: &Value) -> Result<Vec<u8>, IpcError> {
 
 fn decode_payload(payload: &[u8]) -> Result<Value, IpcError> {
     std::str::from_utf8(payload)
-        .map_err(|_| IpcError::new("INVALID_UTF8", "frame payload is not valid UTF-8"))?;
+        .map_err(|error| IpcError::new("INVALID_UTF8", &error.to_string()))?;
     let message: Value = serde_json::from_slice(payload)
-        .map_err(|_| IpcError::new("INVALID_JSON", "frame payload is not valid JSON"))?;
+        .map_err(|error| IpcError::new("INVALID_JSON", &error.to_string()))?;
     validate_envelope(&message)?;
     Ok(message)
 }

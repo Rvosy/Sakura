@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import traceback
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 
 _PROVIDER_PUBLIC_FIELDS = ("message", "code", "type", "status")
-_PROVIDER_DIAGNOSTIC_LIMIT = 360
+_PROVIDER_DIAGNOSTIC_LIMIT = 4096
 _PROVIDER_HTTP_PREFIX = re.compile(r"(?:^|\n)API HTTP (?P<status>[1-5][0-9]{2}):")
 _PROVIDER_SENSITIVE_PATTERNS = (
-    re.compile(r"\bPRIVATE_[A-Z0-9_]+\b"),
     re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{6,}\b", re.IGNORECASE),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{6,}", re.IGNORECASE),
     re.compile(
@@ -18,9 +18,6 @@ _PROVIDER_SENSITIVE_PATTERNS = (
         r"\s*[:=]\s*[^\s,;]+",
         re.IGNORECASE,
     ),
-    re.compile(r"https?://[^\s\])}>,;]+", re.IGNORECASE),
-    re.compile(r"\b[A-Za-z]:\\[^\s\])}>,;]+"),
-    re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s\])}>,;]+"),
 )
 
 
@@ -44,11 +41,11 @@ def public_provider_http_message(
     *,
     secrets: Iterable[str] = (),
 ) -> str:
-    """Keep useful Provider HTTP details while removing credentials and private paths."""
+    """Keep useful Provider HTTP details while removing credentials."""
 
     resolved_status = status_code if status_code is not None else provider_http_status(error)
     if resolved_status is None:
-        return "供应商请求失败。"
+        return sanitize_provider_diagnostic(str(error), secrets=secrets)
     secrets = tuple(secrets)
     body = _provider_error_body(str(error), resolved_status)
     payload = _provider_error_payload(body)
@@ -111,17 +108,48 @@ def sanitize_provider_diagnostic(value: str, *, secrets: Iterable[str] = ()) -> 
     # whitespace normalization or truncation could split the original value.
     for secret in secrets:
         if secret:
-            for encoded in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1]):
+            for encoded in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1], repr(secret)[1:-1], ascii(secret)[1:-1]):
                 value = value.replace(encoded, "[REDACTED]")
-    sanitized = " ".join(value.split())
+    value = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@", r"\1[REDACTED]@", value)
+    sanitized = value.strip()
     for pattern in _PROVIDER_SENSITIVE_PATTERNS:
         sanitized = pattern.sub("[REDACTED]", sanitized)
     if len(sanitized) > _PROVIDER_DIAGNOSTIC_LIMIT:
-        sanitized = sanitized[: _PROVIDER_DIAGNOSTIC_LIMIT - 1].rstrip() + "…"
+        sanitized = sanitized[: _PROVIDER_DIAGNOSTIC_LIMIT - 14].rstrip() + "\n[truncated]"
     return sanitized
 
 
+def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = ()) -> dict[str, str]:
+    """Capture a provider failure before its asynchronous worker releases it."""
+    secrets = (*secrets, *getattr(error, "diagnostic_secrets", ()))
+    chain, stacks, seen, current = [], [], set(), error
+    while current is not None and id(current) not in seen and len(chain) < 16:
+        seen.add(id(current))
+        status = getattr(current, "status_code", None)
+        body = getattr(current, "body", None)
+        if isinstance(status, int) and isinstance(body, Mapping):
+            # SDK exception strings embed the entire response, including normal
+            # output fields. Keep the provider's error fields, not that payload.
+            message = public_provider_http_message(
+                RuntimeError(f"API HTTP {status}: {json.dumps(body, ensure_ascii=False)}"),
+                status, secrets=secrets,
+            )
+        else:
+            message = sanitize_provider_diagnostic(str(current), secrets=secrets)
+        summary = f"{type(current).__name__}: {message}"
+        chain.append(summary)
+        stacks.append(summary + "\n" + "".join(traceback.format_tb(current.__traceback__, limit=-32)))
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return {
+        "diagnostic": sanitize_provider_diagnostic(str(error), secrets=secrets),
+        "exception_chain": sanitize_provider_diagnostic("\nCaused by: ".join(chain), secrets=secrets),
+        "exception_stack": sanitize_provider_diagnostic("\nCaused by:\n".join(stacks), secrets=secrets),
+    }
+
+
+
 __all__ = [
+    "provider_exception_diagnostics",
     "provider_http_status",
     "public_provider_http_message",
     "sanitize_provider_diagnostic",
