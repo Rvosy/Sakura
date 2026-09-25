@@ -26,6 +26,31 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def subprocess_audit_command(args: tuple) -> tuple[Path, list[str]]:
+    executable, command = args[:2]
+    if isinstance(command, str):
+        # Windows reports a command line and may omit the executable even
+        # when Popen received an argument list. Parse with Windows semantics.
+        import ctypes
+        from ctypes import wintypes
+
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+        shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+        kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+        kernel32.LocalFree.restype = wintypes.HLOCAL
+        count = ctypes.c_int()
+        argv = shell32.CommandLineToArgvW(command, ctypes.byref(count))
+        if not argv:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            command = [argv[index] for index in range(count.value)]
+        finally:
+            kernel32.LocalFree(argv)
+    return Path(executable or command[0]).resolve(), list(command)
+
+
 def restore_historical_resources(historical: Path, destination: Path) -> None:
     """Overlay old program resources without deleting newer user-owned files."""
     shutil.copytree(historical / "plugins", destination / "plugins", dirs_exist_ok=True)
@@ -107,7 +132,7 @@ def run(
         if event in {"socket.connect", "socket.getaddrinfo", "urllib.Request"}:
             raise AssertionError(f"Release migration attempted network access: {event}")
         if event == "subprocess.Popen":
-            executable, command = Path(args[0]).resolve(), args[1]
+            executable, command = subprocess_audit_command(args)
             if executable == bundled_uv.resolve() and installing:
                 uv_commands.append(list(command))
             elif executable == Path(sys.executable).resolve() and str(runner) in command:
@@ -245,7 +270,12 @@ def run(
                 )
                 shutil.rmtree(scenario_distribution / "plugins/dependencies/sakura.tts.genie")
             upgrade_resources(stage, scenario_distribution, upgrade_mode)
-        roots = RuntimeRoots(scenario_distribution, user)
+        user_root = str(user.resolve())
+        if os.name == "nt" and not user_root.startswith("\\\\?\\"):
+            # Rust passes canonical Win32 roots to Core. Python's ordinary
+            # resolve() spelling misses migration cwd/native-library failures.
+            user_root = "\\\\?\\UNC\\" + user_root[2:] if user_root.startswith("\\\\") else "\\\\?\\" + user_root
+        roots = RuntimeRoots(scenario_distribution, Path(user_root))
         failures = migrate_bundled_plugins(roots)
         assert not failures, (scenario, failures)
         records = {record.plugin_id: record for record in PluginInventory(roots).scan().records
@@ -269,7 +299,7 @@ def run(
         if (historical_distribution is not None and upgrade_mode == "overlay"
                 and scenario == "legacy-config"):
             spine_source = historical_distribution / "plugins/builtin/sakura_spine"
-        expected_version = yaml.safe_load((spine_source / "plugin.yaml").read_text())["version"]
+        expected_version = yaml.safe_load((spine_source / "plugin.yaml").read_text(encoding="utf-8"))["version"]
         assert records["sakura.visual.spine"].version == expected_version, scenario
         if scenario == "rollback-market-success":
             assert records["sakura_mobile"].version == "9.0.0", scenario

@@ -7,8 +7,29 @@ from pathlib import Path
 
 import pytest
 
-from app.config.character_loader import CharacterRegistry
+from app.config.character_loader import CharacterRegistry, THEME_SOURCE_PACKAGE
 from app.config.character_packages import ensure_legacy_voice_extensions, repair_character_packages
+
+
+def test_registry_accepts_legacy_theme_source_without_rewriting_package(tmp_path: Path) -> None:
+    package = _write_package(tmp_path, "legacy", "legacy")
+    path = package / "character.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["theme"] = {
+        "source": "compat_default", "primary_color": "#112233", "accent_color": "#445566",
+    }
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = path.read_bytes()
+    issues = []
+
+    registry = CharacterRegistry(tmp_path, issue_sink=lambda *args: issues.append(args))
+    profile = registry.get("legacy")
+
+    assert profile.theme_source == THEME_SOURCE_PACKAGE
+    assert profile.theme_settings.primary_color == "#112233"
+    assert profile.theme_settings.accent_color == "#445566"
+    assert issues == []
+    assert path.read_bytes() == before
 
 
 def test_repair_character_packages_upgrades_legacy_voice_manifest(tmp_path: Path) -> None:

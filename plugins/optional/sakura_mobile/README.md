@@ -1,10 +1,10 @@
 # 手机聊天插件
 
-`sakura_mobile` 是 Plugin API v4 插件，用于把手机浏览器接入桌面端 Sakura 的同一条聊天、历史和角色链。
+通过手机浏览器与电脑上的 Sakura 聊天，发送文字或图片、查看聊天历史，使用桌面端当前角色和同一份会话数据。插件 ID 为 `sakura_mobile`，使用 Plugin API v4。使用时需要保持电脑上的 Sakura 运行。
 
 ## 安装与升级
 
-此插件单独分发，新用户不预装。通过设置中的本地插件安装入口导入 ZIP，然后启用“手机聊天”。
+此插件单独分发，新用户不预装。在“设置 → 插件 → 市场”搜索“手机聊天”并安装，也可以从“更多 → 从 ZIP 安装…”导入插件包，然后启用插件。
 插件只依赖 Python 标准库和宿主公开服务，无需额外 Python 依赖。
 
 ```text
@@ -13,10 +13,9 @@ runtime/bin/python tools/release/package_optional_plugin.py --source plugins/opt
 
 Windows 将上述 Python 路径替换为 `runtime\python.exe`。
 
-从内置版本升级时，新版 Sakura 优先使用旧文件迁移，文件缺失时联网恢复固定版本，保留原启用状态。
-已有同 ID 外部版本不会被覆盖，迁移后主动卸载也不会自动恢复。插件 ID 仍为 `sakura_mobile`，
-原 `data/plugins/sakura_mobile/config.json` 和聊天历史继续使用。新用户主动安装时默认停用，需要显式启用。
-迁移由主程序启动流程执行，EXE 和 ZIP 一致；便携版须沿用原用户目录才能识别升级。
+从内置版本升级时，Sakura 使用本地文件和发行包中的兼容材料离线迁移，保留配置、数据和启停选择。已有其他版本的用户插件不会自动降级，迁移完成后主动卸载也不会自动恢复。原 `data/plugins/sakura_mobile/config.json` 和聊天历史继续使用。
+
+迁移在启动时执行，安装版和便携版使用同一流程；便携版需要沿用原用户目录。失败时可从市场重新安装，详见[插件升级指南](../../../docs/userdocs/RUNTIME_V2_PLUGINS.md#升级已有安装)。
 
 ## Runtime v2 当前状态
 
@@ -39,6 +38,8 @@ Runtime v2 通过普通 `sakura.host.mobile` Host Service 提供当前角色、T
 Host Service 把任务绑定当前 generation 和插件 scope；插件停止时 Runtime 只取消该 scope 尚未完成的任务。
 
 ## 配置
+
+打开插件设置，修改访问 token，开启手机网页服务并保存。将手机和电脑接入同一局域网，或通过 Tailscale 互通，再用手机浏览器打开设置中显示的访问地址。地址包含访问令牌，不要公开分享。
 
 插件自带默认配置：
 

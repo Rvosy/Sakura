@@ -1,11 +1,11 @@
 # Spine
 
-Sakura 的内置表现插件，支持 Spine 3.6 JSON 骨骼、文本图集和 PNG/JPEG 贴图。
+Sakura 的可选表现插件，支持 Spine 3.6 JSON 骨骼、文本图集和 PNG/JPEG 贴图。
 插件提供资源校验、实际皮肤与动画候选、提示词贡献、控制解析、WebGL 渲染和编辑模块。
 插件使用正式 RendererHost 和工坊编辑器接口，也保留独立预览入口。
 
 插件 ID 为 `sakura.visual.spine`，资源类型为 `spine.json@1`。后端使用现有 v4 Service，
-无需额外 Python 依赖，随应用提供并默认启用。添加形态后需选择显示方式，内置插件不会自动改变当前角色。
+无需额外 Python 依赖。新用户在“设置 → 插件 → 市场”安装并启用 Spine；旧版升级会迁移原插件和设置。添加形态后需选择显示方式，安装插件不会自动改变当前角色。
 
 ## 本地预览
 
@@ -23,7 +23,7 @@ runtime/python.exe -m tools.spine_preview serve "artifacts/spine/my-character" -
 只使用 Room 时，把第一条命令的输入指向解包目录中的 `spine/room`，就只导入 Room 的动画和皮肤。
 其他角色也可以按同样方式选定所需子目录，插件不依赖角色编号或文件名。
 
-本次 DeepOne Room 的贴图已经预乘透明度，且 `default` 只有基础部件，五官在 `normal` 和各表情皮肤中。
+以下 DeepOne Room 示例素材的贴图已经预乘透明度，且 `default` 只有基础部件，五官在 `normal` 和各表情皮肤中。
 准备这些素材时使用：
 
 ```text
@@ -34,7 +34,7 @@ runtime/bin/python -m tools.spine_preview prepare 原始room目录 artifacts/spi
 基础附件仍保留，供完整表情使用；不叠加多个表情。其他素材按自身的透明编码和皮肤结构选择参数。
 
 已经导入的旧包可在编辑器把“贴图透明方式”改为“预乘透明（PMA）”，表情选择 `normal` 后保存。
-更改透明方式会重建预览并保留表情和速度，导出也会保留配置。修正版组件直接导入即可。
+更改透明方式会重建预览并保留表情和速度，导出也会保留配置。使用重新导出的组件时，直接导入即可。
 
 
 预览中的“保存草稿”保存到输出目录中的 `spine-draft.json`，重新选择形态或重启预览可恢复。
@@ -79,19 +79,19 @@ model/room.png           # 保留图集引用的贴图名称
 runtime/bin/python -m tools.spine_preview export artifacts/spine/my-character artifacts/spine/importable
 ```
 
-Spine 已内置，可直接进入“角色工坊 → 角色形态 → 导入形态”选择输出的 `.visual`。
+安装并启用 Spine 后，进入“角色工坊 → 角色形态 → 导入形态”选择输出的 `.visual`。
 完整角色包继续用 `.char`，语音包用 `.voice`；旧版 `.char` 形态组件仍可导入。
 也可以“添加形态 → Spine”，再在编辑器中“导入模型目录”，选择一套组件目录或仅包含一套完整骨骼的素材目录。
 导入文件写入工坊草稿；修改表情、速度后按“保存”。工坊的“导出形态”保留本次保存的配置与全部依赖。
 如果 Spine 被禁用，仍可导入和保存组件，启用插件后再编辑或显示，无需重新导入。
-导入会把它设为包默认。组件保留 `spine.json@1` 格式要求及 `sakura.visual.spine` 提供方信息，其他声明兼容该格式的插件也可满足需求。
+导入时保留已有默认形态；尚未设置默认形态时，才将导入形态设为默认。组件保留 `spine.json@1` 格式要求及 `sakura.visual.spine` 提供方信息，其他声明兼容该格式的插件也可满足需求。
 
 ## 控制和前端接入
 
 在工坊中选择一个表情，即可修改“表情名称”，按钮上的文字会同步更新。
 例如将 `smile` 改为“开心”，或把 `unique1` 改成便于识别的名称。
 显示名称来自形态包的 `skinLabels`，未设置或留空时显示原始皮肤 ID。插件不内置表情或动画名称翻译。修改随草稿保存，重新打开和导出形态后仍保留。
-模型会收到自定义名称，但底层继续使用原始皮肤 ID，不影响表情和动画绑定。留空后显示原始皮肤 ID。
+模型会收到自定义名称，但底层继续使用原始皮肤 ID，不影响表情和动画绑定。
 
 ```json
 {"skinLabels": {"normal": "平静", "smile": "开心", "unique1": "得意"}}
@@ -119,7 +119,7 @@ Room 只向模型开放 `skin` 表情选择，待机动画始终循环，默认 
 
 运行时无需 CDN。插件携带 Esoteric Software 官方 Spine Runtimes 3.6 WebGL 构建，来源和许可证见
 [运行库说明](vendor/README.md)。仅接受 `3.6.x` JSON；`.skel` 二进制、其他 Spine 版本、Live2D 和
-游戏特效的多骨骼编排不在当前实现范围内。音频口型和鼠标跟随尚未接入；原生表面使用矩形命中，不生成动画逐帧透明遮罩。
+游戏特效的多骨骼编排不在当前实现范围内。音频口型和鼠标跟随尚未接入；动态角色支持按当前动画的透明区域判断鼠标响应，不生成逐帧透明遮罩。
 
 ```powershell
 runtime/python.exe -m pytest -q tests/unit/test_spine_plugin.py

@@ -89,6 +89,11 @@ capability dependency；Python distribution dependency 单独通过 `pyproject.t
 官方预装插件可以随发行包携带已解析环境或 wheelhouse，保证首次启动离线可用。普通第三方包不强制为每个
 平台和 CPython ABI 携带完整 wheelhouse。
 
+Windows 下，插件运行和安装、迁移校验共用 `app/plugins/process_paths.py` 的路径处理。传给子进程的工作目录，
+以及 Runner 提供给插件和依赖库的导入根、数据目录使用普通盘符或 UNC 路径。Rust 文件边界返回的 `\\?\` 前缀
+不能直接进入这些位置，否则原生库加载、根相对路径探测和含 `..` 的资源路径可能失败或长时间阻塞。
+这些进程显式使用 `-B` 禁止写入字节码；`-I` 会忽略同名环境变量，不能靠环境变量保护插件代码和依赖目录。
+
 ### 3.1 展示分类与图标
 
 Manifest 可以声明 `presentation: {kind, category, icon}`。`kind` 为 `extension`（功能扩展）、`provider`（功能引擎）

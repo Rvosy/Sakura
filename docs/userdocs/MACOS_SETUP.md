@@ -3,12 +3,12 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-09-24
 ---
 
 # 在 macOS 上使用 Sakura
 
-先在“关于本机”确认处理器架构：Apple Silicon 使用 `arm64`，Intel Mac 使用 `x86_64`。应用、bundled Python 和原生依赖必须使用同一架构；混用 Rosetta 与 arm64 文件通常会在导入原生模块时失败。
+先在“关于本机”确认处理器架构：Apple Silicon 使用 `arm64`，Intel Mac 使用 `x86_64`。应用、随应用提供的 Python 和原生依赖必须使用同一架构；混用 Rosetta 与 arm64 文件通常会在导入原生模块时失败。
 
 ## 使用发布包
 
@@ -40,7 +40,7 @@ bash scripts/start.sh
 
 `scripts/start.sh` 会增量编译 debug 开发版，为二进制创建最小 `.app` 包装，再启动 Tauri Shell。这个包装让 macOS 按应用身份管理窗口和权限。release 构建只用于正式发行布局，不由该开发入口启动。
 
-如果 bundled Python 访问 HTTPS 时提示证书错误，安装当前 Python 发行版附带的证书，或确认 Runtime 的 CA 配置。不要通过关闭 TLS 校验解决。
+如果随应用提供的 Python 访问 HTTPS 时提示证书错误，安装当前 Python 发行版附带的证书，或确认 Runtime 的 CA 配置。不要通过关闭 TLS 校验解决。
 
 ## 系统权限
 
@@ -55,11 +55,11 @@ bash scripts/start.sh
 
 ## 窗口和外观
 
-macOS 使用 AppKit 管理透明桌宠窗口、点击穿透和原生输入栏材质。窗口只在立绘和可见控件上接收鼠标；透明区域会把点击交给下方应用。
+macOS 支持透明桌宠窗口、点击穿透和原生输入栏材质。窗口只在立绘和可见控件上接收鼠标；透明区域会把点击交给下方应用。
 
-“设置 → 外观”会列出当前系统支持的材质。Liquid Glass 需要系统提供对应的 `NSGlassEffectView`；不支持时选项会置灰。普通原生材质使用 `NSVisualEffectView`。
+“设置 → 外观”会列出当前系统支持的材质。Liquid Glass 需要系统支持，不支持时选项会置灰。原生材质的实现与系统要求见[窗口规范](../specs/runtime-v2/WP-3-03E-macos-input-native-glass.md)。
 
-调整立绘大小时，窗口在手势期间使用稳定包络，松手后按最终可见区域收紧。多显示器和 Retina 缩放由原生坐标换算处理。若命中位置不对，记录每块屏幕的排列和缩放比例，参阅[窗口交互](RUNTIME_V2_WINDOW_INTERACTION.md)。
+调整立绘大小时，窗口会在拖动期间保持范围稳定，松手后按最终可见区域收紧。Sakura 会处理多显示器和 Retina 的坐标缩放；若鼠标响应位置不对，记录每块屏幕的排列和缩放比例，参阅[窗口交互](RUNTIME_V2_WINDOW_INTERACTION.md)。
 
 ## 语音
 
@@ -74,15 +74,13 @@ macOS 使用 AppKit 管理透明桌宠窗口、点击穿透和原生输入栏材
 
 Apple Silicon 上的本地语音服务应尽量使用 arm64 Python 和原生依赖。Sakura 自身与语音服务可以使用不同 Python 环境，只要通过 HTTP 接口通信。
 
-GPT-SoVITS 源码安装脚本默认从 ModelScope 下载模型、从阿里云安装普通 Python 包，并用清华 Conda 镜像解析
-`conda-forge`。已有 `PIP_INDEX_URL`、`CONDARC` 或 `CONDA_CHANNEL_ALIAS` 配置优先；上游指定的设备专用
-PyTorch 源保持不变。Miniforge 安装器与 GPT-SoVITS 源码仍从 GitHub 获取，源码只拉取指定版本的一层历史。
+GPT-SoVITS 的模型、Python 依赖和安装器使用各自的下载源。来源顺序和覆盖方法见[下载插件资源](RUNTIME_V2_PLUGINS.md#下载插件资源)，具体以所安装插件版本的脚本为准。源码安装只拉取指定版本的一层历史。
 
 ## MCP、插件和角色工作室
 
 Python 插件的使用方式与其他平台相同。MCP 基础组件为服务插件提供连接接口，具体配置在对应插件中完成。
 
-角色工作室已内置在 Sakura 桌面应用中。从“设置 → 角色与布局 → 修改角色”打开，不需要单独构建或启动工作室程序。
+角色工坊已内置在 Sakura 桌面应用中。从“设置 → 角色与布局 → 修改角色”打开，无需单独构建或启动工坊程序。
 
 ## 常见问题
 

@@ -58,6 +58,15 @@ bash scripts/start.sh
 
 Windows 的 `scripts\start.bat` 与 macOS/Linux 的 `scripts/start.sh` 都会增量编译并启动 debug Shell。
 
+## 本地打包
+
+准备好 `runtime/`、Rust 和 Node.js 后，在 Windows 仓库根目录运行 `scripts\package.bat`。产物位于
+`artifacts/local/`，包括 Setup、Portable ZIP 和单独的 Playwright 插件 ZIP。
+
+冻结 Python 归档、pip wheel 和 uv wheel 缓存位于 `temp/release-cache/`。后续构建会先核对 Python 归档的固定大小，
+确认归档可解析后再复用；pip/uv 锁文件中的上游包哈希由安装工具校验。缓存失效时只重建对应缓存，
+不会把开发用 `runtime/` 中已经安装的包直接复制到发行包。
+
 ## 分支和提交
 
 准备贡献分支时，通常从最新 `dev` 建立分支：

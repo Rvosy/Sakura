@@ -214,9 +214,10 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
 
 def character_theme_from_mapping(data: Any) -> tuple[ThemeSettings, CharacterThemeSource, bool]:
     if isinstance(data, dict):
-        source = _theme_source_from_text(data.get("source"))
+        # Historical source labels are provenance, not a theme format version.
+        # Loading an installed package must accept the same colors as importing it.
         theme = theme_from_mapping(data).normalized()
-        return ThemeSettings(**theme_colors_to_mapping(theme)), source, False
+        return ThemeSettings(**theme_colors_to_mapping(theme)), THEME_SOURCE_PACKAGE, False
     return _default_theme_settings(), THEME_SOURCE_PACKAGE, True
 
 

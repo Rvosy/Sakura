@@ -4560,3 +4560,24 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
   overflow-wrap: anywhere;
 }
 .migration-status > span { flex: 1 1 220px; }
+.migration-status > progress {
+  flex: 1 0 100%;
+  width: 100%;
+  height: 6px;
+  accent-color: var(--sakura-primary);
+}
+body[data-migration-loading] .page-head,
+body[data-migration-loading] .page-scroll,
+body[data-migration-loading] #applyButton,
+body[data-migration-loading] #saveButton { display: none; }
+body[data-migration-loading] .migration-status {
+  flex: 1;
+  align-content: center;
+  align-self: center;
+  width: min(480px, 100%);
+  margin: 0;
+  padding: 24px;
+  border: 0;
+  background: transparent;
+}
+body[data-migration-loading] .migration-status > span { flex-basis: 100%; }

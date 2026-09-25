@@ -693,14 +693,7 @@ def _normalized_reply_tones(reply_data: Any) -> list[str]:
 
 
 def _normalized_theme(theme_data: Any) -> dict[str, object]:
-    archive_theme = dict(theme_data) if isinstance(theme_data, dict) else theme_data
-    if isinstance(archive_theme, dict):
-        # Archive provenance is not part of the installed character contract.
-        # Older Sakura releases exported internal labels such as
-        # ``compat_default``; keep their colors and install them as a normal
-        # package-owned theme.
-        archive_theme.pop("source", None)
-    theme_settings, _theme_source, _missing = character_theme_from_mapping(archive_theme)
+    theme_settings, _theme_source, _missing = character_theme_from_mapping(theme_data)
     return character_theme_to_mapping(theme_settings, source=THEME_SOURCE_PACKAGE)
 
 

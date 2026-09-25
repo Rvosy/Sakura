@@ -163,7 +163,6 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     else if (p.updateBlocked) compatibility = `<div class="compat-note">${escape(p.updateBlocked)}</div>`;
     else if (p.compatibilityReason) compatibility = `<div class="compat-note">${escape(p.compatibilityReason)}</div>`;
     else if (updating(p) && p.enabled) compatibility = '<div class="compat-note">更新时会短暂停止插件，完成后自动恢复启用。</div>';
-    else if (p.installed && canInstall(p, source)) compatibility = '<div class="compat-note">重新下载插件及依赖，保留设置和数据。</div>';
     const taskMarkup = task?.state === "running"
       ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.reinstall ? "正在重新安装" : task.update ? "正在更新" : "正在安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""} · ${Math.round(task.progress)}%</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
       : task?.state === "failed" ? `<div class="task-state task-error" role="alert">${escape(task.error)}</div>` : "";
