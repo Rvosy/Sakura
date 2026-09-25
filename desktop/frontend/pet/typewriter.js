@@ -5,13 +5,21 @@ function normalizeSegments(segments) {
 }
 
 function normalizeLanguage(language) {
-  return language === "ja" ? "ja" : "zh";
+  return ["ja", "bilingual", "bilingual_ja"].includes(language) ? language : "zh";
+}
+
+export function selectSegmentTracks(segment, language = "zh") {
+  const text = typeof segment?.text === "string" ? segment.text : "";
+  const translation = typeof segment?.translation === "string" ? segment.translation : "";
+  if (language === "bilingual" || language === "bilingual_ja") {
+    const tracks = language === "bilingual_ja" ? [text.trim(), translation.trim()] : [translation.trim(), text.trim()];
+    return [...new Set(tracks.filter(Boolean))];
+  }
+  return [normalizeLanguage(language) === "zh" && translation.trim() ? translation : text];
 }
 
 export function selectSegmentText(segment, language = "zh") {
-  const text = typeof segment?.text === "string" ? segment.text : "";
-  const translation = typeof segment?.translation === "string" ? segment.translation : "";
-  return normalizeLanguage(language) === "zh" && translation.trim() ? translation : text;
+  return selectSegmentTracks(segment, language).join("\n");
 }
 
 export function createTypewriter({
@@ -73,12 +81,14 @@ export function createTypewriter({
       if (run.sequence !== sequence || segmentRevision !== run.segmentRevision) return;
       run.waitingForStart = false;
       run.openedIndex = run.segmentIndex;
-      run.text = selectSegmentText(segment, selectedLanguage);
+      const tracks = selectSegmentTracks(segment, selectedLanguage);
+      run.text = tracks.join("\n");
       run.visible = "";
-      run.characters = Array.from(run.text);
+      run.characterTracks = tracks.map((text) => Array.from(text));
+      run.characterCount = Math.max(0, ...run.characterTracks.map((characters) => characters.length));
       run.characterIndex = 0;
       onText("", Object.freeze({ reason: "segment", forceEnd: true }));
-      if (run.characters.length === 0) {
+      if (run.characterCount === 0) {
         run.visible = run.text;
         if (run.text) onText(run.visible, Object.freeze({ reason: "typing", forceEnd: true }));
         scheduleNextSegment(run);
@@ -87,9 +97,12 @@ export function createTypewriter({
       const tick = () => {
         timer = null;
         if (run.sequence !== sequence || segmentRevision !== run.segmentRevision) return;
-        run.visible += run.characters[run.characterIndex++];
-        onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
-        if (run.characterIndex >= run.characters.length) scheduleNextSegment(run);
+        run.characterIndex += 1;
+        const subtitleTracks = run.characterTracks
+          .map((characters) => characters.slice(0, run.characterIndex).join(""));
+        run.visible = subtitleTracks.join("\n");
+        onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false, subtitleTracks, fullSubtitleTracks: tracks, subtitleLanguage: selectedLanguage }));
+        if (run.characterIndex >= run.characterCount) scheduleNextSegment(run);
         else timer = setTimer(tick, run.typingDelay);
       };
       timer = setTimer(tick, run.typingDelay);
@@ -121,7 +134,8 @@ export function createTypewriter({
         segmentIndex: 0,
         visible: "",
         text: "",
-        characters: [],
+        characterTracks: [],
+        characterCount: 0,
         characterIndex: 0,
         segmentRevision: 0,
         skipped: false,
@@ -137,9 +151,13 @@ export function createTypewriter({
       clearActiveTimer();
       run.segmentRevision += 1;
       run.skipped = true;
-      run.characterIndex = run.characters.length;
+      run.characterIndex = run.characterCount;
       run.visible = run.text;
-      onText(run.visible, Object.freeze({ reason: "skip", forceEnd: true }));
+      onText(run.visible, Object.freeze({
+        reason: "skip", forceEnd: true,
+        subtitleTracks: run.characterTracks.map((characters) => characters.join("")),
+        subtitleLanguage: selectedLanguage,
+      }));
       scheduleNextSegment(run);
       return true;
     },

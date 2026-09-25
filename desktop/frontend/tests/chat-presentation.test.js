@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { composerPlaceholder, createChatPresentationReducer } from "../chat/chat-presentation.js";
-import { createTypewriter } from "../pet/typewriter.js";
+import { createTypewriter, selectSegmentText } from "../pet/typewriter.js";
 
 const lifecycle = (status, generationNumber = 1, revision = 1, canRetry = false, failure = null) => ({
   type: "lifecycle",
@@ -256,14 +256,21 @@ test("subtitle changes do not replace cancellation or provider error copy with a
       reply: { segments: [{ text: "原文", translation: "译文", portrait: "smile" }] },
     });
     reducer.setTypingSegment(reducer.current().segments[0], 0);
-    reducer.setTypingText("译文");
+    reducer.setTypingText("译文\n原文", ["译文", "原文"]);
     reducer.finishTyping();
+    assert.deepEqual(reducer.current().subtitleTracks, ["译文", "原文"]);
     reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "terminal" });
     reducer.reduce({ ...terminal, generationId: "generation-1", generationNumber: 1, operationId: "terminal" });
 
     const terminalCopy = reducer.current().bubbleText;
     assert.equal(reducer.refreshVisibleReply("原文").applied, false);
     assert.equal(reducer.current().bubbleText, terminalCopy);
+    assert.deepEqual(reducer.current().subtitleTracks, []);
+    const reviewed = reducer.reviewReplyAt(0, "译文\n原文", ["译文", "原文"]);
+    assert.equal(reviewed.applied, true);
+    assert.deepEqual(reviewed.state.subtitleTracks, ["译文", "原文"]);
+    reducer.refreshVisibleReply("原文", ["原文"]);
+    assert.deepEqual(reducer.current().subtitleTracks, ["原文"]);
   }
 });
 
@@ -480,6 +487,54 @@ test("changing subtitle language restarts only the active segment without mixed 
   timers.shift().callback();
   assert.equal(rendered.at(-1), "か");
   assert.equal(rendered.includes("中か"), false);
+  assert.equal(typewriter.updateLanguage("bilingual"), true);
+  timers.shift().callback();
+  assert.equal(rendered.at(-1), "中\nか");
+  assert.equal(typewriter.updateLanguage("bilingual_ja"), true);
+  timers.shift().callback();
+  assert.equal(rendered.at(-1), "か\n中");
+  typewriter.skip();
+  assert.equal(rendered.at(-1), "かな\n中文");
+  while (timers.length) timers.shift().callback();
+  assert.equal(rendered.at(-1), "次\n下一段");
+});
+
+test("bilingual typing starts both languages together and waits for the longer line", () => {
+  const timers = [];
+  const rendered = [];
+  const completedSegments = [];
+  let completed = false;
+  const typewriter = createTypewriter({
+    language: "bilingual",
+    setTimer(callback) { timers.push(callback); return callback; },
+    clearTimer(callback) { const index = timers.indexOf(callback); if (index >= 0) timers.splice(index, 1); },
+    onText(text) { rendered.push(text); },
+    onSegmentComplete(_segment, index) { completedSegments.push(index); },
+    onComplete() { completed = true; },
+  });
+  typewriter.start([{ text: "かなよ", translation: "中文" }, { text: "次", translation: "下" }]);
+  timers.shift()();
+  assert.equal(rendered.at(-1), "中\nか");
+  timers.shift()();
+  assert.equal(rendered.at(-1), "中文\nかな");
+  assert.deepEqual(completedSegments, []);
+  timers.shift()();
+  assert.equal(rendered.at(-1), "中文\nかなよ");
+  assert.deepEqual(completedSegments, [0]);
+  assert.equal(completed, false);
+  while (timers.length) timers.shift()();
+  assert.equal(rendered.at(-1), "下\n次");
+  assert.deepEqual(completedSegments, [0, 1]);
+  assert.equal(completed, true);
+});
+
+test("bilingual subtitles pair translation and original without empty or duplicate lines", () => {
+  assert.equal(selectSegmentText({ text: "かな", translation: "中文" }, "bilingual"), "中文\nかな");
+  assert.equal(selectSegmentText({ text: "かな", translation: "  " }, "bilingual"), "かな");
+  assert.equal(selectSegmentText({ text: "", translation: "中文" }, "bilingual"), "中文");
+  assert.equal(selectSegmentText({ text: "同文", translation: " 同文 " }, "bilingual"), "同文");
+  assert.equal(selectSegmentText({ text: "かな", translation: "中文" }, "bilingual_ja"), "かな\n中文");
+  assert.equal(selectSegmentText({ text: "かな", translation: " " }, "bilingual_ja"), "かな");
 });
 
 test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {

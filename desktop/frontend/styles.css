@@ -1,6 +1,7 @@
 @import url("./core/icons.css");
 @import url("./assets/fonts/fonts.css");
 @import url("./core/selection.css");
+@import url("./pet/subtitle.css");
 
 :root {
   color: #27445a;
@@ -331,6 +332,7 @@ body[data-chat-state="thinking"] .bubble::after {
 
 .bubble [data-selectable-text] { cursor: text; }
 
+.bubble-copy { white-space: pre-wrap; }
 .bubble-copy p { margin: 0 0 10px; }
 .bubble-copy p:last-child { margin-bottom: 0; }
 .bubble-copy .translation { margin-top: 5px; color: var(--secondary-text); font-size: 12px; }
@@ -831,12 +833,13 @@ body[data-chat-state="thinking"] .bubble::after {
 .acceptance-entry[hidden] { display: none; }
 .acceptance-entry button { border: 0; color: white; background: transparent; font: 9px/1 monospace; cursor: pointer; }
 
-.pet-context-menu {
+.pet-context-menu,
+.pet-context-menu__submenu {
   position: fixed;
   z-index: 1000;
   min-width: 226px;
   padding: 6px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid color-mix(in srgb, var(--border) 88%, white 12%);
   border-radius: 14px;
   color: var(--text);
@@ -848,6 +851,27 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .pet-context-menu[hidden] { display: none; }
+
+.pet-context-menu__language { position: relative; }
+.pet-context-menu__arrow { margin-left: auto; font-size: 20px; line-height: 20px; }
+.pet-context-menu__submenu {
+  position: absolute;
+  top: -7px;
+  left: calc(100% + 12px);
+  min-width: 120px;
+}
+.pet-context-menu__submenu[hidden] { display: none; }
+.pet-context-menu__submenu[data-side="left"] { left: auto; right: calc(100% + 12px); }
+/* Keep the hover path continuous across the space between panels. */
+.pet-context-menu__submenu::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 100%;
+  width: 14px;
+}
+.pet-context-menu__submenu[data-side="left"]::before { right: auto; left: 100%; }
 
 .pet-context-menu.is-open { animation: pet-context-menu-in 110ms ease-out; }
 
@@ -870,6 +894,7 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .pet-context-menu button:not(:disabled):hover,
+.pet-context-menu button[aria-expanded="true"],
 .pet-context-menu.is-keyboard-open button:not(:disabled):focus-visible {
   outline: none;
   color: var(--text);
@@ -903,7 +928,7 @@ body[data-chat-state="thinking"] .bubble::after {
   line-height: 1;
 }
 
-.pet-context-menu [role="menuitemcheckbox"][aria-checked="true"] .pet-context-menu__indicator {
+.pet-context-menu [aria-checked="true"] .pet-context-menu__indicator {
   color: var(--primary);
 }
 

@@ -2830,10 +2830,8 @@ fn open_pet_context_menu(
     {
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
-    let manifest = product_shell::product_menu_capability_manifest(
-        subtitle.get()?.is_chinese(),
-        topmost.enabled()?,
-    );
+    let manifest =
+        product_shell::product_menu_capability_manifest(subtitle.get()?, topmost.enabled()?);
     // Repositioning an already-open menu must keep the first frame as the close target. Replacing
     // these snapshots with the expanded frame would make Escape permanently retain the menu size.
     if geometry.context_menu_open {
@@ -7124,15 +7122,11 @@ fn handle_product_menu_action(
 ) -> Result<(), String> {
     match action {
         product_shell::ProductMenuAction::TogglePet => toggle_pet_visibility(app),
-        product_shell::ProductMenuAction::ToggleSubtitle => {
+        product_shell::ProductMenuAction::SetSubtitle(language) => {
             let subtitle = app.state::<chat_settings::SubtitleLanguageState>();
-            let language = subtitle.toggle()?;
-            app.emit_to(
-                "main",
-                chat_settings::SUBTITLE_LANGUAGE_CHANGED_EVENT,
-                language,
-            )
-            .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
+            let language = subtitle.save(language)?;
+            app.emit(chat_settings::SUBTITLE_LANGUAGE_CHANGED_EVENT, language)
+                .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
         }
         product_shell::ProductMenuAction::ToggleTopmost => {
             let window = app
