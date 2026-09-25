@@ -90,7 +90,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 - segment 的 `text`/`translation`/`tone`/`portrait`/`suppressTts` 只按已冻结 DTO 消费；本 WP 允许
   portrait/tone 驱动现有角色表现，不允许执行 action、Tool 或 TTS。
 - Runtime v2 默认显示中文字幕：`zh` 优先使用 `translation`，空值回退 `text`；`ja` 使用 `text`。
-  右键菜单复选项可以原子切换该偏好。设置变更事件到达时，当前可见字幕必须在同一前端任务内刷新：
+  右键菜单“显示语言”提供中文、日文、双语1和双语2单选，两种双语模式交换主副语言，按实际换行交错显示，具体规则见
+  [字幕语言契约](settings-incremental-migration.md)。设置变更事件到达时，当前可见字幕必须在同一前端任务内刷新：
   输入中的当前段清空后按新语言从头重播；settled 或正在回看的段立即完整替换，不等待下一次回复、不回放
   已完成段，也不改变当前立绘。另一项「显示日文原文」默认关闭；开启且字幕为中文时，在中文下方用较小字号
   显示不同的日文 `text`。关闭时气泡仍只有一行。启动问候的 `text` 仍是日文，`translation` 为中文。
@@ -139,8 +140,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 ## 设置切片
 
 本 WP 新开放 `chat.presentation_timing` 和 `chat.subtitle_language`。前者只含
-`subtitle_typing_interval_ms`、`reply_segment_pause_ms` 和 `silent_segment_pause_ms`；后者含 `subtitle_language: "zh" | "ja"`
-和默认关闭的 `show_japanese_original`，由主窗口右键菜单切换并持久化。精确持久化、失败原子性、重新打开和回退契约见
+`subtitle_typing_interval_ms`、`reply_segment_pause_ms` 和 `silent_segment_pause_ms`；后者包含 `subtitle_language: "zh" | "ja" | "bilingual" | "bilingual_ja"`，
+由主窗口右键菜单切换并持久化。精确持久化、失败原子性、重新打开和回退契约见
 [`settings-incremental-migration.md`](settings-incremental-migration.md) 第 7 节。
 
 已迁移的 `appearance.character` 继续提供字体与主题。自动隐藏、气泡高度、输入栏偏移、自由布局、发送
@@ -184,7 +185,7 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 
 ## 人工验收与退出条件
 
-Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错误与取消；验证启动问候、中文字幕开关
+Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错误与取消；验证启动问候、字幕语言选择
 即时刷新、多段逐段显示、当前会话上下回看及立绘联动、点号等待动效、角色名思考 placeholder、等待立绘
 保持、HTTP 400/429 诊断、中文 IME、Enter/Shift+Enter、长文本、无关闭/“立即显示”控件、鼠标右键菜单
 首项不持续深色、portrait/tone、快速

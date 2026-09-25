@@ -1,6 +1,7 @@
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
+import { renderSubtitleText } from "../pet/multilingual-text.js";
 import {
   preservePrependScroll,
   projectHistoryEntries,
@@ -33,6 +34,7 @@ let assistantName = "Sakura";
 let subtitleLanguage = "zh";
 const expandedEntries = new Set();
 const loadGuard = createHistoryLoadGuard();
+const languageGuard = createHistoryLoadGuard();
 let initialReloadPending = false;
 const runtimeFontsReady = waitForRuntimeFonts();
 let revealPromise = null;
@@ -65,6 +67,7 @@ function setLoading(active, message) {
 
 function render({ animateRecent = false, animatedEntryIds = null } = {}) {
   const fragment = document.createDocumentFragment();
+  const pendingText = [];
   const bubbles = projectHistoryEntries(entries, { assistantName, subtitleLanguage });
   const recentStart = animateRecent ? Math.max(0, bubbles.length - 8) : bubbles.length;
   let enteringIndex = 0;
@@ -103,15 +106,26 @@ function render({ animateRecent = false, animatedEntryIds = null } = {}) {
         else expandedEntries.delete(item.entryId);
       });
     } else {
-      bubble.textContent = item.content;
+      if (item.subtitleTracks?.length === 2) bubble.classList.add("entry-bubble-bilingual");
+      pendingText.push([bubble, item]);
     }
     column.append(bubble);
     row.append(column);
     fragment.append(row);
   }
   list.replaceChildren(fragment);
+  for (const [bubble, item] of pendingText) renderSubtitleText(bubble, item.content, item.subtitleTracks, item.subtitleTracks, subtitleLanguage);
   empty.hidden = entries.length !== 0;
 }
+
+let historyWidth = list.clientWidth;
+const historyResize = new ResizeObserver(() => {
+  if (list.clientWidth === historyWidth) return;
+  historyWidth = list.clientWidth;
+  render();
+});
+historyResize.observe(list);
+window.addEventListener("pagehide", () => historyResize.disconnect(), { once: true });
 
 function errorMessage(error) {
   const raw = String(error || "HISTORY_READ_FAILED");
@@ -153,6 +167,7 @@ async function loadInitial() {
     return;
   }
   const revision = loadGuard.begin();
+  const languageRevision = languageGuard.begin();
   setLoading(true, "正在读取聊天记录…");
   try {
     const bootstrap = await invoke("history_bootstrap");
@@ -162,7 +177,9 @@ async function loadInitial() {
     assistantName = typeof bootstrap?.assistantName === "string" && bootstrap.assistantName
       ? bootstrap.assistantName
       : "Sakura";
-    subtitleLanguage = bootstrap?.subtitleLanguage === "ja" ? "ja" : "zh";
+    if (languageGuard.isCurrent(languageRevision)) {
+      subtitleLanguage = ["zh", "ja", "bilingual", "bilingual_ja"].includes(bootstrap?.subtitleLanguage) ? bootstrap.subtitleLanguage : "zh";
+    }
     identity = Object.freeze({
       coreGenerationId: bootstrap?.coreGenerationId,
       characterId: bootstrap?.characterId,
@@ -250,5 +267,11 @@ await subscribeHistoryRefresh(listen, (event) => {
   const action = historyRefreshAction(event?.payload);
   if (action.reset) resetForCharacterSwitch();
   if (action.reload) void loadInitial();
+});
+await listen?.("sakura://subtitle-language-changed", (event) => {
+  if (!["zh", "ja", "bilingual", "bilingual_ja"].includes(event?.payload)) return;
+  languageGuard.invalidate();
+  subtitleLanguage = event.payload;
+  render();
 });
 await loadInitial();

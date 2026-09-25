@@ -1,5 +1,6 @@
 @import url("../assets/fonts/fonts.css");
 @import url("../core/selection.css");
+@import url("../pet/subtitle.css");
 
 :root {
   --primary: #4b9ac4;
@@ -169,6 +170,8 @@ h1 {
   border-radius: 14px 14px 14px 4px;
   background: var(--input-background);
 }
+
+.entry-bubble-bilingual { width: 100%; }
 
 .entry-bubble-human {
   border-color: color-mix(in srgb, var(--primary) 23%, var(--border));

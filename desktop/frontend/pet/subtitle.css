@@ -1,0 +1,30 @@
+.subtitle-measure {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.subtitle-pair { display: block; }
+.subtitle-pair + .subtitle-pair { margin-top: 0.55em; }
+
+.subtitle-line {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  min-height: 1.5em;
+}
+
+.subtitle-line--zh {
+  font-family: var(--font-zh, "Sakura Noto Sans SC", "Microsoft YaHei UI", sans-serif);
+}
+.subtitle-line--ja {
+  font-family: var(--font-ja, "Sakura Noto Sans JP", Meiryo, "Yu Gothic UI", sans-serif);
+}
+.subtitle-line--secondary {
+  margin-top: 0;
+  color: var(--secondary-text);
+  font-size: 0.8em;
+  line-height: 1.25;
+  min-height: 1.25em;
+}

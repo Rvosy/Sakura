@@ -357,19 +357,9 @@ pub enum SubtitleLanguage {
     #[default]
     Zh,
     Ja,
-}
-
-impl SubtitleLanguage {
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::Zh => Self::Ja,
-            Self::Ja => Self::Zh,
-        }
-    }
-
-    pub fn is_chinese(self) -> bool {
-        self == Self::Zh
-    }
+    Bilingual,
+    #[serde(rename = "bilingual_ja")]
+    BilingualJa,
 }
 
 pub struct SubtitleLanguageState {
@@ -398,6 +388,8 @@ impl SubtitleLanguageState {
                     match language {
                         SubtitleLanguage::Zh => "zh",
                         SubtitleLanguage::Ja => "ja",
+                        SubtitleLanguage::Bilingual => "bilingual",
+                        SubtitleLanguage::BilingualJa => "bilingual_ja",
                     }
                     .to_string(),
                 ),
@@ -405,10 +397,6 @@ impl SubtitleLanguageState {
             Ok(())
         })?;
         Ok(language)
-    }
-
-    pub fn toggle(&self) -> Result<SubtitleLanguage, String> {
-        self.save(self.get()?.toggled())
     }
 }
 
@@ -465,6 +453,8 @@ fn subtitle_language_from_document(document: &Value) -> Result<SubtitleLanguage,
     validate_subtitle_document(document)?;
     Ok(match document["settings"]["subtitle_language"].as_str() {
         Some("ja") => SubtitleLanguage::Ja,
+        Some("bilingual") => SubtitleLanguage::Bilingual,
+        Some("bilingual_ja") => SubtitleLanguage::BilingualJa,
         _ => SubtitleLanguage::Zh,
     })
 }
@@ -509,10 +499,7 @@ fn timing_from_document(document: &Value) -> Result<ChatPresentationTiming, Stri
             defaults.subtitle_typing_interval_ms,
         )?,
         reply_segment_pause_ms: read("reply_segment_pause_ms", defaults.reply_segment_pause_ms)?,
-        silent_segment_pause_ms: read(
-            "silent_segment_pause_ms",
-            defaults.silent_segment_pause_ms,
-        )?,
+        silent_segment_pause_ms: read("silent_segment_pause_ms", defaults.silent_segment_pause_ms)?,
     }
     .validate()
 }
@@ -720,8 +707,16 @@ mod tests {
         )
         .unwrap();
         let state = SubtitleLanguageState::new(UiConfigRepository::new(path.clone()));
-        assert_eq!(state.toggle().unwrap(), SubtitleLanguage::Ja);
-        assert_eq!(state.get().unwrap(), SubtitleLanguage::Ja);
+        for language in [
+            SubtitleLanguage::Ja,
+            SubtitleLanguage::Bilingual,
+            SubtitleLanguage::BilingualJa,
+            SubtitleLanguage::Zh,
+        ] {
+            assert_eq!(state.save(language).unwrap(), language);
+            let reopened = SubtitleLanguageState::new(UiConfigRepository::new(path.clone()));
+            assert_eq!(reopened.get().unwrap(), language);
+        }
         let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(document["settings"]["future"], true);
     }

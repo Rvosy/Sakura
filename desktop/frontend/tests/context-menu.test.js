@@ -20,7 +20,10 @@ function deferred() {
 test("the custom product menu uses the existing Rust action IDs", () => {
   assert.deepEqual(PRODUCT_MENU_ACTIONS, {
     visibility: "sakura.pet.visibility.toggle",
-    subtitle: "sakura.chat.subtitle.toggle",
+    subtitleZh: "sakura.chat.subtitle.zh",
+    subtitleJa: "sakura.chat.subtitle.ja",
+    subtitleBilingual: "sakura.chat.subtitle.bilingual",
+    subtitleBilingualJa: "sakura.chat.subtitle.bilingual_ja",
     japaneseOriginal: "sakura.chat.japanese-original.toggle",
     topmost: "sakura.pet.topmost.toggle",
     history: "sakura.history.open",
@@ -46,7 +49,7 @@ test("the capability manifest fails closed and ignores unknown actions", () => {
     schemaVersion: 1,
     availableActions: [
       PRODUCT_MENU_ACTIONS.visibility,
-      PRODUCT_MENU_ACTIONS.subtitle,
+      PRODUCT_MENU_ACTIONS.subtitleZh,
       PRODUCT_MENU_ACTIONS.topmost,
       PRODUCT_MENU_ACTIONS.history,
       PRODUCT_MENU_ACTIONS.runtimeLog,
@@ -54,19 +57,19 @@ test("the capability manifest fails closed and ignores unknown actions", () => {
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.exit,
     ],
-    checkedActions: [PRODUCT_MENU_ACTIONS.subtitle, PRODUCT_MENU_ACTIONS.topmost],
+    checkedActions: [PRODUCT_MENU_ACTIONS.subtitleZh, PRODUCT_MENU_ACTIONS.topmost],
     unavailableReason: "尚未迁移",
   });
   assert.deepEqual(manifest.availableActions, [
     PRODUCT_MENU_ACTIONS.visibility,
-    PRODUCT_MENU_ACTIONS.subtitle,
+    PRODUCT_MENU_ACTIONS.subtitleZh,
     PRODUCT_MENU_ACTIONS.topmost,
     PRODUCT_MENU_ACTIONS.history,
     PRODUCT_MENU_ACTIONS.runtimeLog,
     PRODUCT_MENU_ACTIONS.settings,
     PRODUCT_MENU_ACTIONS.exit,
   ]);
-  assert.deepEqual(manifest.checkedActions, [PRODUCT_MENU_ACTIONS.subtitle, PRODUCT_MENU_ACTIONS.topmost]);
+  assert.deepEqual(manifest.checkedActions, [PRODUCT_MENU_ACTIONS.subtitleZh, PRODUCT_MENU_ACTIONS.topmost]);
   assert.equal(manifest.unavailableReason, "尚未迁移");
   assert.throws(() => validateProductMenuManifest({ schemaVersion: 1 }), /MANIFEST_INVALID/);
   assert.throws(() => validateProductMenuManifest({

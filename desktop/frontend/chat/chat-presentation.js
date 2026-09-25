@@ -44,6 +44,7 @@ function initialState() {
     phase: "booting",
     operationId: null,
     bubbleText: "",
+    subtitleTracks: [],
     segments: Object.freeze([]),
     replyHistorySegments: Object.freeze([]),
     replyHistoryIndex: -1,
@@ -103,6 +104,7 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
       phase: "error",
       operationId: null,
       bubbleText: "连接中断，本次回复已停止。",
+      subtitleTracks: [],
       segments: Object.freeze([]),
       replyHistorySegments,
       replyHistoryIndex: replyHistorySegments.length - 1,
@@ -181,6 +183,8 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
             : chatReady || initialStartup
               ? state.bubbleText
               : lifecycleHeadline,
+          subtitleTracks: !activeReplyInterrupted && (preserveVisualState || preserveGreeting || chatReady || initialStartup)
+            ? state.subtitleTracks : [],
           segments: preserveVisualState || preserveGreeting || chatReady ? state.segments : Object.freeze([]),
           replyHistorySegments: state.replyHistorySegments,
           replyHistoryIndex: state.replyHistoryIndex,
@@ -223,6 +227,7 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
           phase: "thinking",
           operationId: event.operationId,
           bubbleText: ".",
+          subtitleTracks: [],
           segments: Object.freeze([]),
           currentReplyHistoryStart: -1,
           showingReplyHistorySegment: false,
@@ -280,6 +285,7 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
           phase: "error",
           operationId: null,
           bubbleText: message,
+          subtitleTracks: [],
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
@@ -295,6 +301,7 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
           phase: "settled",
           operationId: null,
           bubbleText: event.reason === "core_restart" ? "连接已断开，这次回复停止了。" : "已取消当前回复。",
+          subtitleTracks: [],
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: null,
@@ -306,14 +313,14 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
       }
       return result(false);
     },
-    setTypingText(text) {
+    setTypingText(text, subtitleTracks = [], fullSubtitleTracks = subtitleTracks, subtitleLanguage = "bilingual") {
       if (state.phase !== "typing") return result(false);
-      state = freezeState({ ...state, bubbleText: String(text ?? "") });
+      state = freezeState({ ...state, bubbleText: String(text ?? ""), subtitleTracks, fullSubtitleTracks, subtitleLanguage });
       return result(true);
     },
     setWaitingText(text) {
       if (!["thinking", "typing"].includes(state.phase)) return result(false);
-      state = freezeState({ ...state, bubbleText: String(text ?? "") });
+      state = freezeState({ ...state, bubbleText: String(text ?? ""), subtitleTracks: [] });
       return result(true);
     },
     setTypingSegment(segment, index = 0) {
@@ -328,20 +335,23 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
       });
       return result(true);
     },
-    refreshVisibleReply(text) {
+    refreshVisibleReply(text, subtitleTracks = [], subtitleLanguage = "bilingual") {
       if (!["settled", "error"].includes(state.phase) || !state.showingReplyHistorySegment) return result(false);
       const segment = state.replyHistorySegments[state.replyHistoryIndex];
       if (!segment) return result(false);
-      state = freezeState({ ...state, bubbleText: String(text ?? "") });
+      state = freezeState({ ...state, bubbleText: String(text ?? ""), subtitleTracks, fullSubtitleTracks: subtitleTracks, subtitleLanguage });
       return result(true);
     },
-    reviewReplyAt(index, text) {
+    reviewReplyAt(index, text, subtitleTracks = [], subtitleLanguage = "bilingual") {
       if (!["settled", "error"].includes(state.phase) || !Number.isInteger(index)) return result(false);
       const segment = state.replyHistorySegments[index];
       if (!segment) return result(false);
       state = freezeState({
         ...state,
         bubbleText: String(text ?? ""),
+        subtitleTracks,
+        fullSubtitleTracks: subtitleTracks,
+        subtitleLanguage,
         replyHistoryIndex: index,
         showingReplyHistorySegment: true,
       });
@@ -354,6 +364,7 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
         ...state,
         phase: "typing",
         bubbleText: "",
+        subtitleTracks: [],
         showingReplyHistorySegment: false,
         segments: Object.freeze([Object.freeze({
           text: initialMessage,

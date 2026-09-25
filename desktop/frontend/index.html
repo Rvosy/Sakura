@@ -158,17 +158,26 @@
 
       <div class="pet-context-menu__separator" role="separator"></div>
 
-      <button
-        type="button"
-        role="menuitemcheckbox"
-        tabindex="-1"
-        aria-checked="false"
-        aria-disabled="false"
-        data-menu-action="sakura.chat.subtitle.toggle"
-      >
-        <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
-        <span>显示中文字幕</span>
-      </button>
+      <div class="pet-context-menu__language">
+        <button type="button" role="menuitem" tabindex="-1" data-menu-submenu
+          aria-haspopup="menu" aria-expanded="false" aria-controls="pet-language-menu">
+          <span>显示语言</span><span class="pet-context-menu__arrow" aria-hidden="true">›</span>
+        </button>
+        <div id="pet-language-menu" class="pet-context-menu__submenu" role="menu" aria-label="显示语言" hidden>
+          <button type="button" role="menuitemradio" tabindex="-1" aria-checked="false" data-menu-action="sakura.chat.subtitle.zh">
+            <span class="pet-context-menu__indicator" aria-hidden="true">✓</span><span>中文</span>
+          </button>
+          <button type="button" role="menuitemradio" tabindex="-1" aria-checked="false" data-menu-action="sakura.chat.subtitle.ja">
+            <span class="pet-context-menu__indicator" aria-hidden="true">✓</span><span>日文</span>
+          </button>
+          <button type="button" role="menuitemradio" tabindex="-1" aria-checked="false" data-menu-action="sakura.chat.subtitle.bilingual">
+            <span class="pet-context-menu__indicator" aria-hidden="true">✓</span><span>双语1</span>
+          </button>
+          <button type="button" role="menuitemradio" tabindex="-1" aria-checked="false" data-menu-action="sakura.chat.subtitle.bilingual_ja">
+            <span class="pet-context-menu__indicator" aria-hidden="true">✓</span><span>双语2</span>
+          </button>
+        </div>
+      </div>
       <button
         type="button"
         role="menuitemcheckbox"

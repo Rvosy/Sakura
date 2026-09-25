@@ -2838,7 +2838,7 @@ fn open_pet_context_menu(
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
     let manifest = product_shell::product_menu_capability_manifest(
-        subtitle.get()?.is_chinese(),
+        subtitle.get()?,
         topmost.enabled()?,
         japanese_original.get()?,
     );
@@ -7184,15 +7184,11 @@ fn handle_product_menu_action(
 ) -> Result<(), String> {
     match action {
         product_shell::ProductMenuAction::TogglePet => toggle_pet_visibility(app),
-        product_shell::ProductMenuAction::ToggleSubtitle => {
+        product_shell::ProductMenuAction::SetSubtitle(language) => {
             let subtitle = app.state::<chat_settings::SubtitleLanguageState>();
-            let language = subtitle.toggle()?;
-            app.emit_to(
-                "main",
-                chat_settings::SUBTITLE_LANGUAGE_CHANGED_EVENT,
-                language,
-            )
-            .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
+            let language = subtitle.save(language)?;
+            app.emit(chat_settings::SUBTITLE_LANGUAGE_CHANGED_EVENT, language)
+                .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
         }
         product_shell::ProductMenuAction::ToggleJapaneseOriginal => {
             let original = app.state::<chat_settings::JapaneseOriginalState>();

@@ -293,10 +293,13 @@ test("subtitle language changes reuse the pending gate and never replay a segmen
   await s.opened[0].promise;
   s.drain();
   assert.equal(s.text.at(-1), "かな");
-  s.writer.updateLanguage("zh");
+  s.writer.updateLanguage("bilingual");
   assert.equal(s.writer.skip(), true);
   assert.equal(s.writer.skip(), true);
-  assert.equal(s.text.at(-1), "中文");
+  assert.equal(s.text.at(-1), "中文\nかな");
+  s.writer.updateLanguage("bilingual_ja");
+  assert.equal(s.writer.skip(), true);
+  assert.equal(s.text.at(-1), "かな\n中文");
   assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 1);
   h.emit("tts-1-0", "finished");
   await s.finished.promise;
@@ -470,7 +473,9 @@ test("explicit replay retries a previously failed segment identity", async () =>
   const segment = { text: "retry", operationId: "operation-retry", segmentIndex: 0 };
   h.controller.beginReply(segment.operationId, [segment]);
   await h.controller.beforeSegment(segment, 0);
-  assert.deepEqual(h.diagnostics, ["TTS_SYNTHESIS_FAILED"]);
+  assert.equal(h.diagnostics.length, 1);
+  assert.match(h.diagnostics[0], /TTS_SYNTHESIS_FAILED/);
+  assert.match(h.diagnostics[0], /tts-runtime.test.js/);
   const replay = h.controller.replaySegment(segment);
   const [, { payload }] = await h.waitFor("tts_play_prepared");
   h.emit(payload.playbackId, "started");

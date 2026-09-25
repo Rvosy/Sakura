@@ -1,6 +1,9 @@
 export const PRODUCT_MENU_ACTIONS = Object.freeze({
   visibility: "sakura.pet.visibility.toggle",
-  subtitle: "sakura.chat.subtitle.toggle",
+  subtitleZh: "sakura.chat.subtitle.zh",
+  subtitleJa: "sakura.chat.subtitle.ja",
+  subtitleBilingual: "sakura.chat.subtitle.bilingual",
+  subtitleBilingualJa: "sakura.chat.subtitle.bilingual_ja",
   japaneseOriginal: "sakura.chat.japanese-original.toggle",
   topmost: "sakura.pet.topmost.toggle",
   history: "sakura.history.open",
@@ -72,6 +75,10 @@ export class PetContextMenu {
     this.beforeSurfaceResize = beforeSurfaceResize;
     this.document = documentRef;
     this.window = windowRef;
+    this.submenu = menu.querySelector("#pet-language-menu");
+    this.submenuTrigger = menu.querySelector("[data-menu-submenu]");
+    this.languageGroup = menu.querySelector(".pet-context-menu__language");
+    this.submenuCloseTimer = null;
     this.disposed = false;
     this.pendingAction = false;
     this.openRevision = 0;
@@ -88,15 +95,30 @@ export class PetContextMenu {
     this.boundDocumentKeyDown = (event) => {
       if (event.key !== "Escape" || this.menu.hidden) return;
       event.preventDefault();
+      if (this.submenu && !this.submenu.hidden) {
+        this.closeSubmenu(true);
+        return;
+      }
       this.close().catch(() => {});
     };
     this.boundWindowBlur = () => this.close().catch(() => {});
     this.boundMenuClick = (event) => {
+      if (event.target.closest?.("[data-menu-submenu]")) {
+        this.openSubmenu(true);
+        return;
+      }
       const item = event.target.closest?.("[data-menu-action]");
       if (!item || item.disabled || item.getAttribute("aria-disabled") === "true") return;
       this.activate(item.dataset.menuAction).catch(() => {});
     };
     this.boundMenuKeyDown = (event) => this.handleMenuKeyDown(event);
+    this.boundLanguageEnter = () => this.openSubmenu();
+    // Allow a diagonal pointer path from the parent row to the lower language choices.
+    this.boundLanguageLeave = () => {
+      this.submenuCloseTimer = this.window.setTimeout(() => this.closeSubmenu(), 200);
+    };
+    this.languageGroup?.addEventListener("pointerenter", this.boundLanguageEnter);
+    this.languageGroup?.addEventListener("pointerleave", this.boundLanguageLeave);
     this.document.addEventListener("pointerdown", this.boundPointerDown, true);
     this.document.addEventListener("keydown", this.boundDocumentKeyDown);
     this.window.addEventListener("blur", this.boundWindowBlur);
@@ -120,7 +142,7 @@ export class PetContextMenu {
       const enabled = available.has(item.dataset.menuAction);
       item.disabled = !enabled;
       item.setAttribute("aria-disabled", String(!enabled));
-      if (item.getAttribute?.("role") === "menuitemcheckbox") {
+      if (["menuitemcheckbox", "menuitemradio"].includes(item.getAttribute?.("role"))) {
         item.setAttribute("aria-checked", String(checked.has(item.dataset.menuAction)));
       }
     }
@@ -138,6 +160,7 @@ export class PetContextMenu {
   } = {}) {
     if (this.disposed) return;
     const openRevision = ++this.openRevision;
+    this.closeSubmenu();
     this.applyManifest(manifest);
     this.menu.classList.remove("is-open");
     if (focusFirst) this.menu.classList.add("is-keyboard-open");
@@ -148,15 +171,27 @@ export class PetContextMenu {
     this.menu.style.top = "0px";
     const bounds = this.menu.getBoundingClientRect();
     const offset = [viewport?.x || 0, viewport?.y || 0];
+    const menuWidth = this.menu.offsetWidth || bounds.width;
+    // Reserve the submenu in the native crop before showing the menu, so hovering never
+    // races a native resize or moves the portrait. Both panels fit within this one surface.
+    let submenuWidth = 0;
+    if (this.submenu) {
+      this.submenu.hidden = false;
+      submenuWidth = this.submenu.offsetWidth + 6;
+      this.submenu.hidden = true;
+    }
+    const viewportWidth = viewport?.width ?? this.window.innerWidth;
+    const opensLeft = clientX - offset[0] + menuWidth + submenuWidth + 20 > viewportWidth;
+    if (this.submenu) this.submenu.dataset.side = opensLeft ? "left" : "right";
     const localPosition = clampMenuPosition(
-      clientX - offset[0],
+      clientX - offset[0] - (opensLeft ? submenuWidth : 0),
       clientY - offset[1],
-      this.menu.offsetWidth || bounds.width,
+      menuWidth + submenuWidth,
       this.menu.offsetHeight || bounds.height,
       viewport || { width: this.window.innerWidth, height: this.window.innerHeight },
     );
     const position = { x: localPosition.x + offset[0], y: localPosition.y + offset[1] };
-    this.menu.style.left = `${position.x}px`;
+    this.menu.style.left = `${position.x + (opensLeft ? submenuWidth : 0)}px`;
     this.menu.style.top = `${position.y}px`;
     const scale = Number(contentScale);
     if (!Number.isFinite(scale) || scale <= 0) throw new Error("PET_CONTEXT_MENU_SCALE_INVALID");
@@ -168,7 +203,7 @@ export class PetContextMenu {
       rect: [
         Math.floor(position.x / scale + Number(surfaceOffset[0] || 0)),
         Math.floor(position.y / scale + Number(surfaceOffset[1] || 0)),
-        Math.max(1, Math.ceil((this.menu.offsetWidth || bounds.width) / scale)),
+        Math.max(1, Math.ceil((menuWidth + submenuWidth) / scale)),
         Math.max(1, Math.ceil((this.menu.offsetHeight || bounds.height) / scale)),
       ],
     });
@@ -182,13 +217,52 @@ export class PetContextMenu {
   }
 
   enabledItems() {
-    return Array.from(this.menu.querySelectorAll("[data-menu-action]:not(:disabled)"));
+    if (!this.submenu) return Array.from(this.menu.querySelectorAll("[data-menu-action]:not(:disabled)"));
+    if (!this.submenu.hidden && this.submenu.contains(this.document.activeElement)) {
+      return Array.from(this.submenu.querySelectorAll("[data-menu-action]:not(:disabled)"));
+    }
+    return Array.from(this.menu.querySelectorAll("[data-menu-action]:not(:disabled), [data-menu-submenu]"))
+      .filter((item) => !this.submenu.contains(item));
+  }
+
+  openSubmenu(focus = false) {
+    if (!this.submenu || this.menu.hidden) return;
+    this.window.clearTimeout(this.submenuCloseTimer);
+    this.submenuCloseTimer = null;
+    this.submenu.hidden = false;
+    this.submenuTrigger.setAttribute("aria-expanded", "true");
+    if (focus) {
+      const item = this.submenu.querySelector('[aria-checked="true"]:not(:disabled)')
+        || this.submenu.querySelector("button:not(:disabled)");
+      item?.focus({ preventScroll: true });
+    }
+  }
+
+  closeSubmenu(focus = false) {
+    if (!this.submenu) return;
+    this.window.clearTimeout(this.submenuCloseTimer);
+    this.submenuCloseTimer = null;
+    const hadFocus = this.submenu.contains(this.document.activeElement);
+    this.submenu.hidden = true;
+    this.submenuTrigger.setAttribute("aria-expanded", "false");
+    if (focus || hadFocus) this.submenuTrigger.focus({ preventScroll: true });
   }
 
   handleMenuKeyDown(event) {
     if (this.menu.hidden) return;
+    this.menu.classList.add("is-keyboard-open");
+    if (event.key === "ArrowRight" && event.target === this.submenuTrigger) {
+      event.preventDefault();
+      this.openSubmenu(true);
+      return;
+    }
+    if (event.key === "ArrowLeft" && this.submenu && !this.submenu.hidden) {
+      event.preventDefault();
+      this.closeSubmenu(true);
+      return;
+    }
     if (event.key === "Enter" || event.key === " ") {
-      const item = event.target.closest?.("[data-menu-action]:not(:disabled)");
+      const item = event.target.closest?.("[data-menu-action]:not(:disabled), [data-menu-submenu]");
       if (!item) return;
       event.preventDefault();
       item.click();
@@ -200,6 +274,7 @@ export class PetContextMenu {
     event.preventDefault();
     const index = moveMenuFocusIndex(items.indexOf(this.document.activeElement), items.length, event.key);
     items[index]?.focus({ preventScroll: true });
+    if (this.submenu && !this.submenu.contains(items[index])) this.closeSubmenu();
   }
 
   hide() {
@@ -208,6 +283,7 @@ export class PetContextMenu {
     const focusedItem = this.document.activeElement;
     if (focusedItem && this.menu.contains(focusedItem)) focusedItem.blur?.();
     this.menu.hidden = true;
+    this.closeSubmenu();
     this.menu.classList.remove("is-open", "is-keyboard-open");
     this.menu.style.visibility = "";
     return true;
@@ -258,5 +334,7 @@ export class PetContextMenu {
     this.window.removeEventListener("blur", this.boundWindowBlur);
     this.menu.removeEventListener("click", this.boundMenuClick);
     this.menu.removeEventListener("keydown", this.boundMenuKeyDown);
+    this.languageGroup?.removeEventListener("pointerenter", this.boundLanguageEnter);
+    this.languageGroup?.removeEventListener("pointerleave", this.boundLanguageLeave);
   }
 }

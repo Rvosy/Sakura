@@ -64,6 +64,17 @@ test("observations and system facts become centered plain-text records", () => {
   assert.equal("visualId" in projected[0], false);
 });
 
+test("bilingual history pairs each assistant segment and preserves human text", () => {
+  const projected = projectHistoryEntries([
+    entry("human", { text: "你好" }),
+    entry("assistant", { segments: [
+      { text: "ただいま", translation: "我回来了" },
+      { text: "うん", translation: "" },
+    ] }),
+  ], { subtitleLanguage: "bilingual" });
+  assert.deepEqual(projected.map(({ content }) => content), ["你好", "我回来了\nただいま", "うん"]);
+});
+
 test("legacy manual screenshot notices are projected without changing stored text or other entries", () => {
   const legacyText = "用户手动选择的 2 张屏幕截图已提交给对话模型。";
   const manual = entry("observation", { text: legacyText }, { origin: "manual_screen" });
