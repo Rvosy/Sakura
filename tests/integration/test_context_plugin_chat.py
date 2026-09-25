@@ -364,7 +364,7 @@ def test_required_plugin_callback_failure_stops_before_provider_and_assistant_hi
         bridge.close()
     assert terminal["name"] == "chat.failed", terminal
     assert terminal["payload"]["error"]["code"] == "CONTEXT_CONTRIBUTION_FAILED"
-    assert "private callback detail" not in json.dumps(terminal)
+    assert "private callback detail" in terminal["payload"]["error"]["details"]["diagnostics"]["exception_chain"]
     assert chat.requests == []
     assert [entry.kind for entry in chat.timeline.read_all("fixture")] == [TimelineKind.HUMAN]
     assert [event["name"] for event in chat.events] == ["chat.started", "chat.failed"]

@@ -113,7 +113,7 @@ def test_trace_flush_failure_still_releases_output_and_frees_the_operation(monke
     assert released == ["output"]
     assert not plugin.operations
     assert recorded[0][0][2]["stage"] == "trace"
-    assert "trace directory is not writable" in recorded[0][0][2]["error_message"]
+    assert "trace directory is not writable" in recorded[0][0][2]["diagnostic"]
 
 
 def test_disposal_is_idempotent_when_the_receiver_already_released_the_artifact(monkeypatch):

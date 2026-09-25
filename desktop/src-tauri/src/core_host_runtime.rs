@@ -476,7 +476,6 @@ impl CoreHostLifecycleFailure {
         }
     }
 
-    #[cfg(test)]
     pub fn diagnostic(&self) -> &str {
         &self.diagnostic
     }

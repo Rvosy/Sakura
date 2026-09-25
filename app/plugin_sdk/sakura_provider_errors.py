@@ -108,7 +108,7 @@ def sanitize_provider_diagnostic(value: str, *, secrets: Iterable[str] = ()) -> 
     # whitespace normalization or truncation could split the original value.
     for secret in secrets:
         if secret:
-            for encoded in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1]):
+            for encoded in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1], repr(secret)[1:-1], ascii(secret)[1:-1]):
                 value = value.replace(encoded, "[REDACTED]")
     value = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@", r"\1[REDACTED]@", value)
     sanitized = value.strip()
@@ -122,16 +122,30 @@ def sanitize_provider_diagnostic(value: str, *, secrets: Iterable[str] = ()) -> 
 def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = ()) -> dict[str, str]:
     """Capture a provider failure before its asynchronous worker releases it."""
     secrets = (*secrets, *getattr(error, "diagnostic_secrets", ()))
-    chain, seen, current = [], set(), error
+    chain, stacks, seen, current = [], [], set(), error
     while current is not None and id(current) not in seen and len(chain) < 16:
         seen.add(id(current))
-        chain.append(f"{type(current).__name__}: {current}")
+        status = getattr(current, "status_code", None)
+        body = getattr(current, "body", None)
+        if isinstance(status, int) and isinstance(body, Mapping):
+            # SDK exception strings embed the entire response, including normal
+            # output fields. Keep the provider's error fields, not that payload.
+            message = public_provider_http_message(
+                RuntimeError(f"API HTTP {status}: {json.dumps(body, ensure_ascii=False)}"),
+                status, secrets=secrets,
+            )
+        else:
+            message = sanitize_provider_diagnostic(str(current), secrets=secrets)
+        summary = f"{type(current).__name__}: {message}"
+        chain.append(summary)
+        stacks.append(summary + "\n" + "".join(traceback.format_tb(current.__traceback__, limit=-32)))
         current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
     return {
         "diagnostic": sanitize_provider_diagnostic(str(error), secrets=secrets),
         "exception_chain": sanitize_provider_diagnostic("\nCaused by: ".join(chain), secrets=secrets),
-        "exception_stack": sanitize_provider_diagnostic("".join(traceback.format_exception(error, limit=-32)), secrets=secrets),
+        "exception_stack": sanitize_provider_diagnostic("\nCaused by:\n".join(stacks), secrets=secrets),
     }
+
 
 
 __all__ = [
