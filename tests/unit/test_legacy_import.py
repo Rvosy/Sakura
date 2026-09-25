@@ -448,13 +448,13 @@ def test_configuration_import_converts_pr110_selection_without_model_slots(
     assert selection["vision_chat"] == {"serviceKey": OPENAI_SERVICE, "profileId": "vision-provider", "modelId": expected_vision_model}
 
 
-def test_exception_diagnostics_do_not_include_free_form_private_messages() -> None:
+def test_exception_diagnostics_preserve_original_reason_and_redact_credentials() -> None:
     attributes = legacy_importer._exception_log_attributes(
-        RuntimeError("private config value and absolute path")
+        RuntimeError("cannot open C:/Sakura/data.db: api_key=do-not-show")
     )
 
-    assert attributes["diagnostic"] == "RuntimeError"
-    assert "private config value" not in json.dumps(attributes)
+    assert attributes["diagnostic"] == "cannot open C:/Sakura/data.db: api_key=[REDACTED]"
+    assert "do-not-show" not in json.dumps(attributes)
 
 
 def _macos_legacy_fixture(tmp_path: Path) -> Path:

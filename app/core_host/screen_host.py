@@ -7,7 +7,8 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from app.core_host.screen_capture import consume_screen_resource
+from app.core.diagnostics import safe_diagnostic_text
+from app.core_host.screen_capture import consume_screen_resource, ScreenResourceRejected
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
 
 HOST_SCREEN_SERVICE = "sakura.host.screen"
@@ -18,8 +19,8 @@ _CANCELLED_OPERATION_LIMIT = 256
 
 
 class ScreenHostError(RuntimeError):
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
+    def __init__(self, code: str, diagnostic: str = "") -> None:
+        super().__init__(f"{code}: {diagnostic}" if diagnostic else code)
         self.code = code
 
 
@@ -38,6 +39,7 @@ class _Capture:
     done: threading.Event = field(default_factory=threading.Event)
     result: dict | None = None
     error: str = ""
+    diagnostic: str = ""
 
 
 @dataclass
@@ -124,7 +126,7 @@ class ScreenHost:
             if not pending.done.wait(self._timeout):
                 raise ScreenHostError("SCREEN_CAPTURE_TIMEOUT")
             if pending.error:
-                raise ScreenHostError(pending.error)
+                raise ScreenHostError(pending.error, pending.diagnostic)
             current_epoch = self._session_snapshot(session_id)
             with self._lock:
                 self._check_epoch(current_epoch)
@@ -144,16 +146,19 @@ class ScreenHost:
         """Receive only authenticated shell replies, including late replies for cleanup."""
         if not isinstance(payload, Mapping) or not isinstance(payload.get("requestId"), str):
             raise ScreenHostError("SCREEN_CAPTURE_RESULT_INVALID")
-        observation, failure = None, ""
+        observation, failure, diagnostic = None, "", ""
         resource = payload.get("resource")
         if resource is not None:
             try:
                 observation = self._consume(resource, generation_id=self._generation_id)
             except Exception as error:
-                failure = str(error) if str(error).startswith("SCREEN_") else "SCREEN_RESOURCE_INVALID"
+                failure = str(error) if isinstance(error, ScreenResourceRejected) else getattr(error, "code", "SCREEN_RESOURCE_INVALID")
+                diagnostic = safe_diagnostic_text(error)
         else:
             error = payload.get("error")
             failure = str(error.get("code", "SCREEN_CAPTURE_FAILED")) if isinstance(error, Mapping) else "SCREEN_CAPTURE_FAILED"
+            if isinstance(error, Mapping):
+                diagnostic = safe_diagnostic_text(error.get("diagnostic", ""))
         with self._lock:
             pending = self._pending.get(payload["requestId"])
         if pending is None or pending.done.is_set():
@@ -181,6 +186,7 @@ class ScreenHost:
                                   "capturedAt": observation.captured_at, "screenName": observation.screen_name}
             except ScreenHostError as error:
                 pending.error = error.code
+                pending.diagnostic = diagnostic
             finally:
                 pending.done.set()
             return {"accepted": not bool(pending.error)}

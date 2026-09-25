@@ -1,3 +1,4 @@
+import { errorText } from "../core/error-display.js";
 import { createAsrInputTest } from "./asr-input-test.js";
 
 export function createAsrSettingsController({ document, invoke, enhanceSelect = () => {},
@@ -52,8 +53,8 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
         option.value = item.id; option.textContent = item.label; device.append(option);
       }
       selectDevice(selected);
-    } catch {
-      if (!disposed && request === deviceRevision) onStatus("无法读取麦克风列表，请检查设备后重新刷新。", "error");
+    } catch (error) {
+      if (!disposed && request === deviceRevision) onStatus(errorText(error), "error");
     }
   }
 

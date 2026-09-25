@@ -54,6 +54,7 @@ class AssistantFailure(RuntimeError):
         self.public_message = failure["message"]
         self.retryable = bool(failure["retryable"])
         self.log_attributes = dict(failure.get("attributes", {}))
+        self.diagnostics = dict(failure.get("diagnostics", {}))
 
 
 class BoundAssistant:

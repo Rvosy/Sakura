@@ -46,14 +46,16 @@ fn legacy_action_deadline(action: &str) -> Result<Duration, String> {
 }
 
 fn process_tree_state_is_unknown(code: &str) -> bool {
-    code == LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
+    crate::runtime_log::diagnostic_code(code) == LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
 }
 
 fn fail_incremental_finalize_with_unknown_process<T>(
     error: String,
-    stop_core: impl FnOnce(Duration) -> Result<(), &'static str>,
+    stop_core: impl FnOnce(Duration) -> Result<(), String>,
 ) -> Result<T, String> {
-    stop_core(Duration::from_secs(15)).map_err(|_| LEGACY_IMPORT_CORE_STOP_FAILED.to_string())?;
+    stop_core(Duration::from_secs(15)).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error(LEGACY_IMPORT_CORE_STOP_FAILED, source_error)
+    })?;
     Err(error)
 }
 
@@ -66,7 +68,9 @@ enum JournalState {
 
 pub fn recover_interrupted(request: &RuntimeLocationRequest) -> Result<bool, String> {
     let pending = fs::read_dir(&request.user_root)
-        .map_err(|_| "LEGACY_IMPORT_RECOVERY_FAILED".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_RECOVERY_FAILED", source_error)
+        })?
         .filter_map(Result::ok)
         .any(|entry| {
             let name = entry.file_name();
@@ -173,7 +177,12 @@ impl LegacyImportState {
         self.inner
             .lock()
             .map(|inner| inner.snapshot.clone())
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "LEGACY_IMPORT_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })
     }
 
     fn publish(
@@ -182,10 +191,12 @@ impl LegacyImportState {
         mutate: impl FnOnce(&mut LegacyImportSnapshot),
     ) -> Result<LegacyImportSnapshot, String> {
         let snapshot = {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+            let mut inner = self.inner.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "LEGACY_IMPORT_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             mutate(&mut inner.snapshot);
             inner.snapshot.clone()
         };
@@ -203,7 +214,12 @@ impl LegacyImportState {
                 publication,
             );
         })
-        .map_err(|_| "LEGACY_IMPORT_PROGRESS_PUBLISH_FAILED".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "LEGACY_IMPORT_PROGRESS_PUBLISH_FAILED",
+                source_error,
+            )
+        })?;
         Ok(snapshot)
     }
 }
@@ -228,9 +244,9 @@ pub fn legacy_import_choose_source(
     else {
         return state.snapshot();
     };
-    let source = source
-        .canonicalize()
-        .map_err(|_| "LEGACY_SOURCE_UNAVAILABLE".to_string())?;
+    let source = source.canonicalize().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("LEGACY_SOURCE_UNAVAILABLE", source_error)
+    })?;
     let source_label = source
         .file_name()
         .and_then(|value| value.to_str())
@@ -241,10 +257,9 @@ pub fn legacy_import_choose_source(
         .collect::<String>();
     let selection_id = uuid::Uuid::new_v4().simple().to_string();
     let snapshot = {
-        let mut inner = state
-            .inner
-            .lock()
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let mut inner = state.inner.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_STATE_UNAVAILABLE", source_error)
+        })?;
         inner.selection = Some(Selection {
             id: selection_id.clone(),
             source,
@@ -289,10 +304,9 @@ pub async fn legacy_import_inspect(
         json!({}),
     );
     let (source, request) = {
-        let mut inner = state
-            .inner
-            .lock()
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let mut inner = state.inner.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_STATE_UNAVAILABLE", source_error)
+        })?;
         if inner.snapshot.state != "selected" {
             return Err(if inner.snapshot.state == "inspecting" {
                 "LEGACY_IMPORT_BUSY".to_string()
@@ -343,7 +357,8 @@ pub async fn legacy_import_inspect(
             );
             return Err(code);
         }
-        Err(_) => {
+        Err(error) => {
+            let detail = crate::runtime_log::diagnostic_error("LEGACY_RUNTIME_FAILED", error);
             let _ = restore_selected_after_inspection_failure(&state, &app, &selection_id);
             log_import_step(
                 &app,
@@ -351,9 +366,9 @@ pub async fn legacy_import_inspect(
                 "legacy_import.inspect_failed",
                 "旧版本迁移来源检查失败",
                 &selection_id,
-                json!({"code": "LEGACY_RUNTIME_FAILED", "stage": "inspect"}),
+                json!({"code": "LEGACY_RUNTIME_FAILED", "diagnostic": detail, "stage": "inspect"}),
             );
-            return Err("LEGACY_RUNTIME_FAILED".to_string());
+            return Err(detail);
         }
     };
     let parsed = (|| {
@@ -430,10 +445,9 @@ pub async fn legacy_import_inspect(
         }),
     );
     let snapshot = {
-        let mut inner = state
-            .inner
-            .lock()
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let mut inner = state.inner.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_STATE_UNAVAILABLE", source_error)
+        })?;
         let selection = inner
             .selection
             .as_mut()
@@ -497,19 +511,17 @@ pub fn legacy_import_start(
         .handle
         .as_ref()
         .ok_or_else(|| "LEGACY_CORE_UNAVAILABLE".to_string())?;
-    if !handle
-        .is_stopped()
-        .map_err(|_| "LEGACY_CORE_STATE_UNAVAILABLE".to_string())?
-    {
+    if !handle.is_stopped().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("LEGACY_CORE_STATE_UNAVAILABLE", source_error)
+    })? {
         return Err("LEGACY_IMPORT_CORE_RUNNING".to_string());
     }
     let app = window.app_handle().clone();
     let state = state.inner().clone();
     let (source, overwrite_domains, import_id, snapshot) = {
-        let mut inner = state
-            .inner
-            .lock()
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let mut inner = state.inner.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_STATE_UNAVAILABLE", source_error)
+        })?;
         if inner.snapshot.state != "ready" {
             return Err("LEGACY_IMPORT_NOT_READY".to_string());
         }
@@ -554,10 +566,9 @@ pub fn legacy_import_cancel(
     product_shell::validate_settings_window(&window)?;
     ensure_first_run_pending(&first_run)?;
     let import_id = {
-        let inner = state
-            .inner
-            .lock()
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let inner = state.inner.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_STATE_UNAVAILABLE", source_error)
+        })?;
         if !inner.snapshot.cancellable {
             return Err("LEGACY_IMPORT_NOT_CANCELLABLE".to_string());
         }
@@ -573,7 +584,9 @@ pub fn legacy_import_cancel(
             .join(format!(".legacy-import-cancel-{import_id}")),
         b"cancel\n",
     )
-    .map_err(|_| "LEGACY_IMPORT_CANCEL_FAILED".to_string())?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("LEGACY_IMPORT_CANCEL_FAILED", source_error)
+    })?;
     state.publish(window.app_handle(), |snapshot| {
         snapshot.message = "正在取消迁移并清理暂存文件，大型 TTS 可能需要几分钟".to_string();
         snapshot.cancellable = false;
@@ -590,10 +603,9 @@ pub async fn settings_legacy_data_import_choose(
 ) -> Result<Option<Value>, String> {
     product_shell::validate_settings_window(&window)?;
     let source = if let Some(id) = selection_id {
-        let mut inner = state
-            .inner
-            .lock()
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let mut inner = state.inner.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_STATE_UNAVAILABLE", source_error)
+        })?;
         let selection = inner
             .data_selection
             .as_ref()
@@ -609,21 +621,30 @@ pub async fn settings_legacy_data_import_choose(
                 .pick_folder()
         })
         .await
-        .map_err(|_| "LEGACY_DATA_SOURCE_CHOOSER_FAILED".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_DATA_SOURCE_CHOOSER_FAILED", source_error)
+        })?;
         let Some(source) = selected else {
             return Ok(None);
         };
         state
             .inner
             .lock()
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "LEGACY_IMPORT_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?
             .data_selection = None;
-        source
-            .canonicalize()
-            .map_err(|_| "LEGACY_SOURCE_UNAVAILABLE".to_string())?
+        source.canonicalize().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_SOURCE_UNAVAILABLE", source_error)
+        })?
     };
-    let mapping_json = serde_json::to_string(&role_mapping.unwrap_or_default())
-        .map_err(|_| "LEGACY_DATA_MAPPING_INVALID".to_string())?;
+    let mapping_json =
+        serde_json::to_string(&role_mapping.unwrap_or_default()).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_DATA_MAPPING_INVALID", source_error)
+        })?;
     let request = state.request.clone();
     let handle = lifecycle
         .handle
@@ -634,7 +655,7 @@ pub async fn settings_legacy_data_import_choose(
     let result = tauri::async_runtime::spawn_blocking(move || {
         work_handle
             .stop_and_wait(Duration::from_secs(15))
-            .map_err(str::to_string)?;
+            .map_err(|error| error.to_string())?;
         let inspected = run_data_python(
             &request,
             "inspect-data",
@@ -650,7 +671,7 @@ pub async fn settings_legacy_data_import_choose(
         {
             return inspected;
         }
-        let restarted = start_core_and_wait_usable(&work_handle).map_err(str::to_string);
+        let restarted = start_core_and_wait_usable(&work_handle).map_err(|error| error.to_string());
         match (inspected, restarted) {
             (Ok(values), Ok(())) => Ok(values),
             (_, Err(error)) => Err(error),
@@ -658,7 +679,9 @@ pub async fn settings_legacy_data_import_choose(
         }
     })
     .await
-    .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string())??;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("LEGACY_RUNTIME_FAILED", source_error)
+    })??;
     let mut plan = result
         .iter()
         .find(|value| value.get("type").and_then(Value::as_str) == Some("data-import-plan"))
@@ -675,7 +698,9 @@ pub async fn settings_legacy_data_import_choose(
     state
         .inner
         .lock()
-        .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_STATE_UNAVAILABLE", source_error)
+        })?
         .data_selection = Some(DataSelection {
         id: selection_id.clone(),
         source,
@@ -698,10 +723,9 @@ pub async fn settings_legacy_data_import_apply(
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
     let selection = {
-        let mut inner = state
-            .inner
-            .lock()
-            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let mut inner = state.inner.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_IMPORT_STATE_UNAVAILABLE", source_error)
+        })?;
         let selection = inner
             .data_selection
             .as_ref()
@@ -723,7 +747,7 @@ pub async fn settings_legacy_data_import_apply(
     let work = tauri::async_runtime::spawn_blocking(move || {
         handle
             .stop_and_wait(Duration::from_secs(15))
-            .map_err(str::to_string)?;
+            .map_err(|error| error.to_string())?;
         let mut arguments = vec![
             ("--source", selection.source.to_string_lossy().to_string()),
             ("--target", request.user_root.to_string_lossy().to_string()),
@@ -753,7 +777,7 @@ pub async fn settings_legacy_data_import_apply(
             != JournalState::Readable("pending_core_validation".to_string())
         {
             recover_transaction(&request, &work_import_id)?;
-            start_core_and_wait_usable(&handle).map_err(str::to_string)?;
+            start_core_and_wait_usable(&handle).map_err(|error| error.to_string())?;
             return Err("LEGACY_IMPORT_RESULT_INVALID".to_string());
         }
         let report = match values
@@ -765,7 +789,7 @@ pub async fn settings_legacy_data_import_apply(
             Some(report) => report,
             None => {
                 recover_transaction(&request, &work_import_id)?;
-                start_core_and_wait_usable(&handle).map_err(str::to_string)?;
+                start_core_and_wait_usable(&handle).map_err(|error| error.to_string())?;
                 return Err("LEGACY_IMPORT_PROTOCOL_INVALID".to_string());
             }
         };
@@ -785,18 +809,20 @@ pub async fn settings_legacy_data_import_apply(
             }
             let _ = handle.stop_and_wait(Duration::from_secs(15));
             recover_transaction(&request, &work_import_id)?;
-            start_core_and_wait_usable(&handle).map_err(str::to_string)?;
+            start_core_and_wait_usable(&handle).map_err(|error| error.to_string())?;
             return Err(error);
         }
         if commit_journal_state(&request, &work_import_id) != JournalState::Missing {
             let _ = handle.stop_and_wait(Duration::from_secs(15));
             recover_transaction(&request, &work_import_id)?;
-            start_core_and_wait_usable(&handle).map_err(str::to_string)?;
+            start_core_and_wait_usable(&handle).map_err(|error| error.to_string())?;
         }
         Ok(report)
     })
     .await
-    .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string())??;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("LEGACY_RUNTIME_FAILED", source_error)
+    })??;
     let mut report = work;
     if let Some(object) = report.as_object_mut() {
         object.insert(
@@ -809,7 +835,7 @@ pub async fn settings_legacy_data_import_apply(
 
 fn start_core_and_wait_usable(
     handle: &crate::shell_lifecycle::ShellLifecycleHandle,
-) -> Result<(), &'static str> {
+) -> Result<(), String> {
     handle.start_core_and_wait_available(CORE_VALIDATION_DEADLINE)?;
     let deadline = Instant::now() + CORE_VALIDATION_DEADLINE;
     loop {
@@ -819,7 +845,7 @@ fn start_core_and_wait_usable(
             {
                 return Ok(())
             }
-            _ if Instant::now() >= deadline => return Err("CORE_START_TIMEOUT"),
+            _ if Instant::now() >= deadline => return Err("CORE_START_TIMEOUT".to_string()),
             _ => thread::sleep(Duration::from_millis(20)),
         }
     }
@@ -983,7 +1009,7 @@ fn run_import_worker(
                                 .state::<ShellLifecycleState>()
                                 .handle
                                 .as_ref()
-                                .ok_or("LEGACY_CORE_UNAVAILABLE")
+                                .ok_or_else(|| "LEGACY_CORE_UNAVAILABLE".to_string())
                                 .and_then(start_core_and_wait_usable);
                             if let Err(code) = restart {
                                 error = json!({"code":code,"stage":"core_restart"});
@@ -1058,7 +1084,7 @@ fn validate_with_core(
         rollback_after_core_failure(app, state, request, import_id, "LEGACY_CORE_UNAVAILABLE");
         return;
     };
-    if handle.start_core().is_err() {
+    if let Err(error) = handle.start_core() {
         log_import_step(
             app,
             Severity::Error,
@@ -1067,13 +1093,19 @@ fn validate_with_core(
             import_id,
             json!({
                 "code": "LEGACY_CORE_START_FAILED",
-                "diagnostic": "迁移后的 Core 启动请求未能提交",
+                "diagnostic": error,
                 "error_type": "CoreStartError",
                 "reason_code": "LEGACY_CORE_START_FAILED",
                 "stage": "core_start"
             }),
         );
-        rollback_after_core_failure(app, state, request, import_id, "LEGACY_CORE_START_FAILED");
+        rollback_after_core_failure(
+            app,
+            state,
+            request,
+            import_id,
+            &crate::runtime_log::diagnostic_error("LEGACY_CORE_START_FAILED", error),
+        );
         return;
     }
     log_import_step(
@@ -1252,13 +1284,13 @@ fn validate_with_core(
                 );
                 return;
             }
-            Err(_) => {
+            Err(error) => {
                 rollback_after_core_failure(
                     app,
                     state,
                     request,
                     import_id,
-                    "LEGACY_CORE_VALIDATION_FAILED",
+                    &crate::runtime_log::diagnostic_error("LEGACY_CORE_VALIDATION_FAILED", error),
                 );
                 return;
             }
@@ -1314,9 +1346,9 @@ fn rollback_after_core_failure(
         json!({
             "code": public_code,
             "diagnostic": if recovery.is_ok() {
-                "迁移数据未通过 Core 校验，事务已回滚"
+                code.to_string()
             } else {
-                "迁移数据未通过 Core 校验，事务恢复失败"
+                format!("{}\nRecovery: {}", code, recovery.as_ref().unwrap_err())
             },
             "error_type": if recovery.is_ok() {
                 "CoreValidationError"
@@ -1335,11 +1367,12 @@ fn rollback_after_core_failure(
     fail_publication(
         app,
         state,
-        json!({"code":public_code,"stage":"core_validating","primaryCode":code,"recoveryCode":recovery.as_ref().err(),"recoveryOutcome":if recovery.is_ok(){"success"}else{"failed"}}),
+        json!({"code":public_code,"diagnostic":format!("{}\n{}", code, recovery.as_ref().err().map(String::as_str).unwrap_or("")),"stage":"core_validating","primaryCode":crate::runtime_log::diagnostic_code(code),"recoveryCode":recovery.as_ref().err(),"recoveryOutcome":if recovery.is_ok(){"success"}else{"failed"}}),
     );
 }
 
-fn fail_publication(app: &AppHandle, state: &Arc<LegacyImportState>, error: Value) {
+fn fail_publication(app: &AppHandle, state: &Arc<LegacyImportState>, mut error: Value) {
+    normalize_import_error(&mut error);
     let _ = state.publish(app, |snapshot| {
         snapshot.state = "failed".to_string();
         snapshot.stage = error
@@ -1486,9 +1519,9 @@ fn stream_run(
         json!({
             "succeeded": false,
             "code": code,
-            "diagnostic": "迁移 Python 子进程未正常完成",
+            "diagnostic": code,
             "error_type": "LegacyImportProcessExit",
-            "reason_code": code,
+            "reason_code": crate::runtime_log::diagnostic_code(code),
             "stage": "child_exit"
         })
     };
@@ -1570,6 +1603,24 @@ fn read_journal_state(journal: &Path) -> JournalState {
     }
 }
 
+fn normalize_import_error(error: &mut Value) {
+    if let Some(raw) = error.get("code").and_then(Value::as_str).map(str::to_owned) {
+        let code = crate::runtime_log::diagnostic_code(&raw);
+        if code != raw {
+            let existing = error
+                .get("diagnostic")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            error["diagnostic"] = json!(if existing.is_empty() || existing == raw {
+                raw.clone()
+            } else {
+                format!("{raw}\n{existing}")
+            });
+            error["code"] = json!(code);
+        }
+    }
+}
+
 #[track_caller]
 fn log_import_step(
     app: &AppHandle,
@@ -1579,6 +1630,7 @@ fn log_import_step(
     import_id: &str,
     mut attributes: Value,
 ) {
+    normalize_import_error(&mut attributes);
     if let Some(fields) = attributes.as_object_mut() {
         fields.insert(
             "source_file".into(),
@@ -1693,7 +1745,9 @@ fn python_process_request(
 ) -> Result<ManagedProcessRequest, String> {
     let layout = FilesystemRuntimeLocator
         .locate(request)
-        .map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_RUNTIME_UNAVAILABLE", source_error)
+        })?;
     let bootstrap = python_bootstrap(
         &layout.python_path_entries,
         &layout.core_root,
@@ -1710,10 +1764,9 @@ fn python_process_request(
         program: layout.python_executable,
         args,
         current_directory: Some(layout.core_root),
-        environment_overrides: vec![(
-            OsString::from("SAKURA_DISTRIBUTION_ROOT"),
-            layout.distribution_root.into_os_string(),
-        )],
+        // Windows managed processes inherit their environment. Set the importer's
+        // distribution root inside Python, as with the Core bootstrap.
+        environment_overrides: Vec::new(),
         stdio: ProcessStdio::Piped,
     })
 }
@@ -1724,9 +1777,9 @@ fn run_managed_protocol(
     operation_deadline: Instant,
     mut on_value: impl FnMut(&Value),
 ) -> Result<Vec<Value>, String> {
-    let spawned = backend
-        .spawn(&request)
-        .map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
+    let spawned = backend.spawn(&request).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("LEGACY_RUNTIME_UNAVAILABLE", source_error)
+    })?;
     let mut tree = spawned.tree;
     let Some(pipes) = spawned.pipes else {
         let finalization = tree.finalize_until(
@@ -1779,8 +1832,11 @@ fn run_managed_protocol(
                 match tree.wait_root(Duration::from_millis(1)) {
                     Ok(crate::platform::ProcessWaitOutcome::Exited(_)) => break,
                     Ok(crate::platform::ProcessWaitOutcome::TimedOut) => continue,
-                    Err(_) => {
-                        protocol_error = Some("LEGACY_RUNTIME_FAILED".to_string());
+                    Err(error) => {
+                        protocol_error = Some(crate::runtime_log::diagnostic_error(
+                            "LEGACY_RUNTIME_FAILED",
+                            error,
+                        ));
                         break;
                     }
                 }
@@ -1789,8 +1845,11 @@ fn run_managed_protocol(
                 protocol_error = Some("LEGACY_RUNTIME_FAILED".to_string());
                 break;
             }
-            Err(_) => {
-                protocol_error = Some("LEGACY_IMPORT_PROTOCOL_INVALID".to_string());
+            Err(error) => {
+                protocol_error = Some(crate::runtime_log::diagnostic_error(
+                    "LEGACY_IMPORT_PROTOCOL_INVALID",
+                    error,
+                ));
                 break;
             }
         }
@@ -1800,33 +1859,55 @@ fn run_managed_protocol(
             protocol_error = Some(error);
         }
     }
-    cancelled.store(true, Ordering::Release);
     let finalization = tree
         .finalize_until(
             Instant::now() + LEGACY_PROCESS_FINALIZE_DEADLINE,
             LEGACY_PROCESS_TERMINATE_REASON,
         )
-        .map_err(|_| LEGACY_IMPORT_PROCESS_TERMINATION_FAILED.to_string());
-    let stderr_result = stderr_drain
-        .join()
-        .unwrap_or_else(|_| Err("LEGACY_RUNTIME_FAILED".to_string()));
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                LEGACY_IMPORT_PROCESS_TERMINATION_FAILED,
+                source_error,
+            )
+        });
+    if operation_timed_out || finalization.is_err() {
+        cancelled.store(true, Ordering::Release);
+    }
+    let stderr_result = stderr_drain.join().unwrap_or_else(|error| {
+        Err(crate::runtime_log::diagnostic_error(
+            "LEGACY_RUNTIME_FAILED",
+            crate::runtime_log::panic_diagnostic(error),
+        ))
+    });
     if operation_timed_out {
-        if finalization.is_err() {
-            return Err(LEGACY_IMPORT_PROCESS_TERMINATION_FAILED.to_string());
-        }
+        finalization?;
         return Err(LEGACY_IMPORT_OPERATION_TIMEOUT.to_string());
     }
     let finalization = finalization?;
-    stderr_result?;
+    let stderr = stderr_result?;
     if let Some(error) = protocol_error {
-        return Err(error);
+        return Err(if stderr.is_empty() {
+            error
+        } else {
+            crate::runtime_log::diagnostic_error(&error, stderr)
+        });
     }
     if finalization.root_status != ProcessExitStatus::Code(0) {
-        return Err(values
-            .iter()
-            .find_map(|value| value.pointer("/error/code").and_then(Value::as_str))
-            .unwrap_or("LEGACY_RUNTIME_FAILED")
-            .to_string());
+        let error = values.iter().find_map(|value| value.get("error"));
+        let code = error
+            .and_then(|value| value.get("code"))
+            .and_then(Value::as_str)
+            .unwrap_or("LEGACY_RUNTIME_FAILED");
+        let details = error
+            .map(crate::runtime_log::error_details)
+            .unwrap_or_default();
+        return Err(crate::runtime_log::diagnostic_error(
+            code,
+            format!(
+                "{details}\nprocess exit: {:?}\n{stderr}",
+                finalization.root_status
+            ),
+        ));
     }
     Ok(values)
 }
@@ -1839,8 +1920,9 @@ fn decode_protocol_line(
     if line.iter().all(u8::is_ascii_whitespace) {
         return Ok(());
     }
-    let value = serde_json::from_slice::<Value>(line)
-        .map_err(|_| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?;
+    let value = serde_json::from_slice::<Value>(line).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("LEGACY_IMPORT_PROTOCOL_INVALID", source_error)
+    })?;
     on_value(&value);
     values.push(value);
     Ok(())
@@ -1849,25 +1931,37 @@ fn decode_protocol_line(
 fn drain_managed_pipe(
     mut pipe: Box<dyn ManagedPipeReader>,
     cancelled: Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut buffer = [0_u8; 8192];
+    let mut tail = Vec::new();
     loop {
         match pipe.read_until(
             &mut buffer,
             Instant::now() + LEGACY_PIPE_POLL_INTERVAL,
             cancelled.as_ref(),
         ) {
-            Ok(ManagedPipeReadOutcome::Read(_)) | Ok(ManagedPipeReadOutcome::TimedOut) => {}
-            Ok(ManagedPipeReadOutcome::Eof) => return Ok(()),
-            Ok(ManagedPipeReadOutcome::Cancelled) if cancelled.load(Ordering::Acquire) => {
-                return Ok(())
+            Ok(ManagedPipeReadOutcome::Read(count)) => {
+                tail.extend_from_slice(&buffer[..count]);
+                if tail.len() > 16384 {
+                    tail.drain(..tail.len() - 16384);
+                }
             }
-            Err(_) if cancelled.load(Ordering::Acquire) => return Ok(()),
-            Ok(ManagedPipeReadOutcome::Cancelled) | Err(_) => {
-                return Err("LEGACY_RUNTIME_FAILED".to_string())
+            Ok(ManagedPipeReadOutcome::TimedOut) => {}
+            Ok(ManagedPipeReadOutcome::Eof | ManagedPipeReadOutcome::Cancelled) => break,
+            Err(_) if cancelled.load(Ordering::Acquire) => break,
+            Err(error) => {
+                return Err(crate::runtime_log::diagnostic_error(
+                    "LEGACY_RUNTIME_FAILED",
+                    error,
+                ))
             }
         }
     }
+    Ok(crate::runtime_log::sanitize_diagnostic(
+        &String::from_utf8_lossy(&tail),
+        &[],
+        16384,
+    ))
 }
 
 fn python_bootstrap(
@@ -1899,10 +1993,15 @@ fn python_bootstrap(
     {
         roots.push(memory_dependencies.to_string_lossy().to_string());
     }
-    let roots =
-        serde_json::to_string(&roots).map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
+    let roots = serde_json::to_string(&roots).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("LEGACY_RUNTIME_UNAVAILABLE", source_error)
+    })?;
+    let distribution_root =
+        serde_json::to_string(&distribution_root.to_string_lossy()).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("LEGACY_RUNTIME_UNAVAILABLE", source_error)
+        })?;
     Ok(format!(
-        "import runpy,sys;sys.path[:0]={roots};sys.argv[0]='app.legacy_import';runpy.run_module('app.legacy_import',run_name='__main__')"
+        "import os,runpy,sys;os.environ['SAKURA_DISTRIBUTION_ROOT']={distribution_root};sys.path[:0]={roots};sys.argv[0]='app.legacy_import';runpy.run_module('app.legacy_import',run_name='__main__')"
     ))
 }
 
@@ -2114,6 +2213,18 @@ fn sanitize_legacy_import_attributes(attributes: &Value) -> Value {
     };
     let mut sanitized = serde_json::Map::new();
     for (key, value) in object {
+        if matches!(
+            key.as_str(),
+            "diagnostic" | "exception_chain" | "exception_stack"
+        ) {
+            if let Some(text) = value.as_str() {
+                sanitized.insert(
+                    key.clone(),
+                    json!(crate::runtime_log::sanitize_diagnostic(text, &[], 8192)),
+                );
+            }
+            continue;
+        }
         if !SAFE_KEYS.contains(&key.as_str()) {
             continue;
         }
@@ -2268,7 +2379,10 @@ mod tests {
                         chunks: VecDeque::from([b"not-json\n".to_vec()]),
                     }),
                     stderr: Box::new(ScriptedPipe {
-                        chunks: VecDeque::new(),
+                        chunks: VecDeque::from([
+                            b"Traceback\nOSError: source pipe failed api_key=private-test-key\n"
+                                .to_vec(),
+                        ]),
                     }),
                 }),
             })
@@ -2376,9 +2490,58 @@ mod tests {
         assert_eq!(roots[1], distribution_root);
         assert!(roots.contains(&site_packages));
         assert!(roots.contains(&memory_dependencies));
+        let distribution_json = bootstrap
+            .split_once("os.environ['SAKURA_DISTRIBUTION_ROOT']=")
+            .unwrap()
+            .1
+            .split_once(";sys.path")
+            .unwrap()
+            .0;
+        assert_eq!(
+            serde_json::from_str::<PathBuf>(distribution_json).unwrap(),
+            distribution_root
+        );
         assert!(!bootstrap.contains("SAKURA_RUNTIME_LOG_PATH"));
         assert!(!bootstrap.contains("sakura-runtime.log"));
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_import_request_accepts_inherited_environment() {
+        use crate::platform::{PlatformTarget, RuntimeMode};
+
+        let root = temporary_root("windows-request");
+        fs::create_dir_all(root.join("python/Lib/site-packages")).unwrap();
+        fs::create_dir_all(root.join("core/app/core_host")).unwrap();
+        fs::write(
+            root.join("runtime-manifest.json"),
+            include_bytes!("../runtime-layouts/windows-x64/runtime-manifest.json"),
+        )
+        .unwrap();
+        // The locator needs a Windows executable; no Python installation is
+        // needed to verify the request passed to the native spawn boundary.
+        fs::copy(
+            std::env::current_exe().unwrap(),
+            root.join("python/python.exe"),
+        )
+        .unwrap();
+        fs::write(root.join("core/app/core_host/__main__.py"), "").unwrap();
+        let root = root.canonicalize().unwrap();
+        let request = RuntimeLocationRequest {
+            mode: RuntimeMode::Packaged,
+            target: PlatformTarget::WindowsX64,
+            executable_directory: root.clone(),
+            resource_directory: root.clone(),
+            explicit_development_root: None,
+            user_root: root.clone(),
+        };
+        for action in ["inspect", "inspect-data", "run", "apply-data", "recover"] {
+            let process = python_process_request(&request, action, &[]).unwrap();
+            assert!(process.environment_overrides.is_empty());
+            assert_eq!(process.args[3], OsString::from(action));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2404,7 +2567,7 @@ mod tests {
             "stage": "configuration",
             "files": 4,
             "relative_path": "config/api.yaml",
-            "diagnostic": "secret value",
+            "diagnostic": "source exception at C:\\Users\\private\\source",
             "output_tail": "C:\\Users\\private\\source",
             "nested": {"private": true}
         }));
@@ -2413,7 +2576,8 @@ mod tests {
             json!({
                 "stage": "configuration",
                 "files": 4,
-                "relative_path": "config/api.yaml"
+                "relative_path": "config/api.yaml",
+                "diagnostic": "source exception at C:\\Users\\private\\source"
             })
         );
         assert_eq!(
@@ -2459,7 +2623,11 @@ mod tests {
             |_| {},
         );
 
-        assert_eq!(result.unwrap_err(), "LEGACY_IMPORT_PROTOCOL_INVALID");
+        let error = result.unwrap_err();
+        assert!(error.starts_with("LEGACY_IMPORT_PROTOCOL_INVALID:"));
+        assert!(error.contains("line 1"));
+        assert!(error.contains("OSError: source pipe failed"));
+        assert!(!error.contains("private-test-key"));
         assert!(finalized.load(Ordering::Acquire));
     }
 
@@ -2524,7 +2692,7 @@ mod tests {
         );
 
         assert_eq!(
-            result.unwrap_err(),
+            crate::runtime_log::diagnostic_code(&result.unwrap_err()),
             LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
         );
         assert!(finalization_attempted.load(Ordering::Acquire));
@@ -2550,7 +2718,7 @@ mod tests {
         );
 
         assert_eq!(
-            result.unwrap_err(),
+            crate::runtime_log::diagnostic_code(&result.unwrap_err()),
             LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
         );
         assert!(stop_attempted.load(Ordering::Acquire));
@@ -2560,10 +2728,12 @@ mod tests {
     fn incremental_finalize_unknown_escalates_an_uncertain_core_stop() {
         let result: Result<(), String> = fail_incremental_finalize_with_unknown_process(
             LEGACY_IMPORT_PROCESS_TERMINATION_FAILED.to_string(),
-            |_| Err("LIFECYCLE_STOP_TIMEOUT"),
+            |_| Err("LIFECYCLE_STOP_TIMEOUT".to_string()),
         );
 
-        assert_eq!(result.unwrap_err(), LEGACY_IMPORT_CORE_STOP_FAILED);
+        assert!(result
+            .unwrap_err()
+            .starts_with(LEGACY_IMPORT_CORE_STOP_FAILED));
     }
 
     #[test]
@@ -2578,7 +2748,7 @@ mod tests {
             cancelled,
         );
 
-        assert_eq!(result, Ok(()));
+        assert_eq!(result, Ok(String::new()));
         assert!(cancellation_seen.load(Ordering::Acquire));
     }
 }

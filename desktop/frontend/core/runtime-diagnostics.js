@@ -31,7 +31,7 @@ function stableCode(value) {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(value);
 }
 
-function safeErrorText(value, maximum = 4096) {
+export function safeErrorText(value, maximum = 4096) {
   let text = String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   text = text
     .replace(/\b(api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)/gi, "$1=[REDACTED]")
@@ -47,10 +47,13 @@ function safeDiagnostic(error) {
   const publicError = source.match(/^([A-Z][A-Z0-9_]{0,63})\|[^|\r\n]*\|[^|\r\n]*\|([\s\S]*)$/);
   const coded = source.match(/^([A-Z][A-Z0-9_]{0,63})(?::\s*([\s\S]*))?$/);
   const code = stableCode(error?.code) ? error.code : publicError?.[1] || coded?.[1] || "INVOKE_FAILED";
-  const raw = publicError?.[2] || coded?.[2] || source;
+  const details = error?.details?.diagnostics || error;
+  const raw = details?.diagnostic || publicError?.[2] || coded?.[2] || source;
   const prefix = !publicError && !coded && typeof error?.name === "string" ? `${error.name}: ` : "";
   const diagnostic = safeErrorText(prefix + raw) || "未记录底层原因";
   const chain = [], stacks = [], seen = new Set();
+  if (details?.exception_chain) chain.push(details.exception_chain);
+  if (details?.exception_stack) stacks.push(details.exception_stack);
   let cause = error;
   while (cause && !seen.has(cause) && chain.length < 16) {
     seen.add(cause);

@@ -245,7 +245,12 @@ impl WindowsInputGlassState {
             let result = self
                 .layer
                 .lock()
-                .map_err(|_| "native input glass object store is unavailable".to_string())?
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native input glass object store is unavailable",
+                        source_error,
+                    )
+                })?
                 .as_ref()
                 .map(|layer| layer.update_appearance(values))
                 .transpose();
@@ -293,7 +298,12 @@ impl WindowsInputGlassState {
             let result = self
                 .layer
                 .lock()
-                .map_err(|_| "native glass object store is unavailable".to_string())?
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native glass object store is unavailable",
+                        source_error,
+                    )
+                })?
                 .as_ref()
                 .map(|layer| {
                     layer.update_control_surface(surface, application, previous_surface, transition)
@@ -321,7 +331,12 @@ impl WindowsInputGlassState {
             let result = self
                 .layer
                 .lock()
-                .map_err(|_| "native glass object store is unavailable".to_string())?
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native glass object store is unavailable",
+                        source_error,
+                    )
+                })?
                 .as_ref()
                 .map(|layer| layer.set_control_surface_presented(presented, duration_ms))
                 .transpose();
@@ -534,8 +549,11 @@ impl NativeGlassRegion {
         self.clip.StopAnimation(&HSTRING::from("Right"))?;
         self.clip.StopAnimation(&HSTRING::from("Bottom"))?;
         self.apply_clip_geometry(geometry)?;
-        *self.geometry.lock().map_err(|_| {
-            windows::core::Error::new(E_INVALIDARG_HRESULT, "glass region geometry lock")
+        *self.geometry.lock().map_err(|error| {
+            windows::core::Error::new(
+                E_INVALIDARG_HRESULT,
+                format!("{}: {error}", "glass region geometry lock"),
+            )
         })? = Some(geometry);
         if let (Some(previous_rect), Some(transition)) = (previous_rect, transition) {
             if transition.duration_ms > 0 {
@@ -601,8 +619,11 @@ impl NativeGlassRegion {
         self.clip.StopAnimation(&HSTRING::from("Right"))?;
         self.clip.StopAnimation(&HSTRING::from("Bottom"))?;
         if visible {
-            if let Some(geometry) = *self.geometry.lock().map_err(|_| {
-                windows::core::Error::new(E_INVALIDARG_HRESULT, "glass region geometry lock")
+            if let Some(geometry) = *self.geometry.lock().map_err(|error| {
+                windows::core::Error::new(
+                    E_INVALIDARG_HRESULT,
+                    format!("{}: {error}", "glass region geometry lock"),
+                )
             })? {
                 return self.apply_clip_geometry(geometry);
             }
@@ -895,8 +916,11 @@ impl NativeGlassLayer {
         duration_ms: u32,
     ) -> Result<(), NativeGlassError> {
         let previous = {
-            let mut current = self.input_presented.lock().map_err(|_| {
-                NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+            let mut current = self.input_presented.lock().map_err(|error| {
+                NativeGlassError::at(
+                    "GLASS_PRESENTATION_STATE_UNAVAILABLE",
+                    format!("{}: {error}", "presentation lock"),
+                )
             })?;
             let previous = *current;
             *current = presented;
@@ -905,13 +929,20 @@ impl NativeGlassLayer {
         let has_geometry = self
             .latest_surface
             .lock()
-            .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
+            .map_err(|error| {
+                NativeGlassError::at(
+                    "GLASS_LAYOUT_STATE_UNAVAILABLE",
+                    format!("{}: {error}", "layout lock"),
+                )
+            })?
             .as_ref()
             .is_some_and(|(surface, _, _)| surface.input_visible);
-        let requested_mode = *self
-            .requested_mode
-            .lock()
-            .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
+        let requested_mode = *self.requested_mode.lock().map_err(|error| {
+            NativeGlassError::at(
+                "GLASS_MODE_STATE_UNAVAILABLE",
+                format!("{}: {error}", "mode lock"),
+            )
+        })?;
         let visibility = native_layer_visibility(requested_mode, has_geometry);
         if visibility.gaussian {
             self.input_region
@@ -979,12 +1010,20 @@ impl NativeGlassLayer {
         let has_geometry = self
             .latest_surface
             .lock()
-            .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
+            .map_err(|error| {
+                NativeGlassError::at(
+                    "GLASS_LAYOUT_STATE_UNAVAILABLE",
+                    format!("{}: {error}", "layout lock"),
+                )
+            })?
             .as_ref()
             .is_some_and(|(surface, _, _)| surface.input_visible);
         let visibility = native_layer_visibility(requested_mode, has_geometry);
-        let presented = *self.input_presented.lock().map_err(|_| {
-            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+        let presented = *self.input_presented.lock().map_err(|error| {
+            NativeGlassError::at(
+                "GLASS_PRESENTATION_STATE_UNAVAILABLE",
+                format!("{}: {error}", "presentation lock"),
+            )
         })?;
         if let Some(liquid) = self.liquid.as_ref() {
             if let Err(error) = liquid.set_requested_visible(visibility.liquid_requested) {
@@ -1000,11 +1039,12 @@ impl NativeGlassLayer {
                     .unwrap_or("LIQUID_GLASS_BACKEND_UNAVAILABLE"),
             );
         }
-        *self
-            .requested_mode
-            .lock()
-            .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))? =
-            requested_mode;
+        *self.requested_mode.lock().map_err(|error| {
+            NativeGlassError::at(
+                "GLASS_MODE_STATE_UNAVAILABLE",
+                format!("{}: {error}", "mode lock"),
+            )
+        })? = requested_mode;
         let material_presented = visibility.gaussian && presented;
         self.input_region
             .animate_blur_presented(&self.compositor, !material_presented, material_presented, 0)
@@ -1041,15 +1081,21 @@ impl NativeGlassLayer {
             self.input_region
                 .animate_overlays_presented(&self.compositor, true, false, 0)
                 .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
-            *self.latest_surface.lock().map_err(|_| {
-                NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock")
+            *self.latest_surface.lock().map_err(|error| {
+                NativeGlassError::at(
+                    "GLASS_LAYOUT_STATE_UNAVAILABLE",
+                    format!("{}: {error}", "layout lock"),
+                )
             })? = Some((surface.clone(), application.active_bounds, scale));
             return Ok(());
         }
         let [active_x, active_y, _, _] = application.active_bounds;
         let blur_standard_deviation = BASE_GAUSSIAN_STANDARD_DEVIATION * scale as f32;
-        let presented = *self.input_presented.lock().map_err(|_| {
-            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+        let presented = *self.input_presented.lock().map_err(|error| {
+            NativeGlassError::at(
+                "GLASS_PRESENTATION_STATE_UNAVAILABLE",
+                format!("{}: {error}", "presentation lock"),
+            )
         })?;
         self.blur_brush
             .Properties()
@@ -1093,15 +1139,18 @@ impl NativeGlassLayer {
                 let _ = liquid.set_requested_visible(false);
             }
         }
-        *self
-            .latest_surface
-            .lock()
-            .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))? =
-            Some((surface.clone(), application.active_bounds, scale));
-        let requested_mode = *self
-            .requested_mode
-            .lock()
-            .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
+        *self.latest_surface.lock().map_err(|error| {
+            NativeGlassError::at(
+                "GLASS_LAYOUT_STATE_UNAVAILABLE",
+                format!("{}: {error}", "layout lock"),
+            )
+        })? = Some((surface.clone(), application.active_bounds, scale));
+        let requested_mode = *self.requested_mode.lock().map_err(|error| {
+            NativeGlassError::at(
+                "GLASS_MODE_STATE_UNAVAILABLE",
+                format!("{}: {error}", "mode lock"),
+            )
+        })?;
         let visibility = native_layer_visibility(requested_mode, surface.input_visible);
         let material_presented = visibility.gaussian && presented;
         self.input_region
@@ -1160,14 +1209,20 @@ impl windows::Graphics::Effects::IGraphicsEffectSource_Impl for BorderEffectDesc
 #[cfg(windows)]
 impl windows::Graphics::Effects::IGraphicsEffect_Impl for BorderEffectDescription_Impl {
     fn Name(&self) -> windows::core::Result<windows::core::HSTRING> {
-        self.name.lock().map(|name| name.clone()).map_err(|_| {
-            windows::core::Error::new(E_INVALIDARG_HRESULT, "border effect name lock poisoned")
+        self.name.lock().map(|name| name.clone()).map_err(|error| {
+            windows::core::Error::new(
+                E_INVALIDARG_HRESULT,
+                format!("{}: {error}", "border effect name lock poisoned"),
+            )
         })
     }
 
     fn SetName(&self, name: &windows::core::HSTRING) -> windows::core::Result<()> {
-        *self.name.lock().map_err(|_| {
-            windows::core::Error::new(E_INVALIDARG_HRESULT, "border effect name lock poisoned")
+        *self.name.lock().map_err(|error| {
+            windows::core::Error::new(
+                E_INVALIDARG_HRESULT,
+                format!("{}: {error}", "border effect name lock poisoned"),
+            )
         })? = name.clone();
         Ok(())
     }
@@ -1257,14 +1312,20 @@ impl windows::Graphics::Effects::IGraphicsEffectSource_Impl for GaussianBlurEffe
 #[cfg(windows)]
 impl windows::Graphics::Effects::IGraphicsEffect_Impl for GaussianBlurEffectDescription_Impl {
     fn Name(&self) -> windows::core::Result<windows::core::HSTRING> {
-        self.name.lock().map(|name| name.clone()).map_err(|_| {
-            windows::core::Error::new(E_INVALIDARG_HRESULT, "blur effect name lock poisoned")
+        self.name.lock().map(|name| name.clone()).map_err(|error| {
+            windows::core::Error::new(
+                E_INVALIDARG_HRESULT,
+                format!("{}: {error}", "blur effect name lock poisoned"),
+            )
         })
     }
 
     fn SetName(&self, name: &windows::core::HSTRING) -> windows::core::Result<()> {
-        *self.name.lock().map_err(|_| {
-            windows::core::Error::new(E_INVALIDARG_HRESULT, "blur effect name lock poisoned")
+        *self.name.lock().map_err(|error| {
+            windows::core::Error::new(
+                E_INVALIDARG_HRESULT,
+                format!("{}: {error}", "blur effect name lock poisoned"),
+            )
         })? = name.clone();
         Ok(())
     }

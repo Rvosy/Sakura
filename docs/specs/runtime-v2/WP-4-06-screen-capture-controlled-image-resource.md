@@ -27,7 +27,7 @@ updated: 2026-09-21
   发送按钮。截图条只显示顺序、尺寸和逐项删除按钮，不向 WebView 投影像素；删除最后一张后，若文本
   本身不需要展开，输入栏恢复单行。数量达到 6 时只禁用截图入口，不禁用菜单和删除。
 - 捕获、权限拒绝、portal 取消、显示器消失和编码失败均为可恢复错误；聊天和 Core 生命周期保持可用，
-  UI 显示稳定中文错误，不投影路径、平台异常原文或图像内容。
+  UI 保留错误码及平台异常原文，诊断中的路径可以展示；凭据脱敏，不展示图像内容。详见 [诊断原文规则](WP-4L-02-human-readable-runtime-log-agent-trace.md)。
 
 ## 所有权与资源生命周期
 
@@ -64,7 +64,7 @@ updated: 2026-09-21
   `shot-<32 hex>`。Rust commands 只允许 `main` 或当前捕获覆盖层调用；覆盖层会话 ID、窗口 label、
   显示器 ID 与 generation 必须一致。
 - Rust 记录 `screen.capture.started/attached/cancelled/failed`，只包含 generation 关联、显示器数量、尺寸、
-  字节数、耗时、结果和稳定错误码，不记录图像、路径、token、用户消息或平台异常原文。
+  字节数、耗时、结果和稳定错误码；失败诊断保留原始异常及其路径，凭据脱敏，不记录图像、资源 token 或用户消息。
 - 自动验证覆盖资源 escape/symlink、过期、重复读、旧 generation、错误窗口、尺寸/MIME/解码不一致、
   多显示器负坐标、DPI 换算、取消、六张上限、逐项删除和聊天单次消费。真实应用门覆盖 Windows
   100%/150% 混合 DPI、macOS

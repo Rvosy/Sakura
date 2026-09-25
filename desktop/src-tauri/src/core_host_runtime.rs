@@ -618,14 +618,19 @@ impl StderrDrainer {
             let Some(reader_handle) = self.reader.take() else {
                 return Err("STDERR_READ_FAILED: stderr reader ownership was missing".to_string());
             };
-            reader_handle
-                .join()
-                .map_err(|_| "STDERR_READ_FAILED: stderr reader panicked".to_string())?;
+            reader_handle.join().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "STDERR_READ_FAILED: stderr reader panicked",
+                    crate::runtime_log::panic_diagnostic(source_error),
+                )
+            })?;
         }
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| "STDERR_READ_FAILED: stderr state lock was poisoned".to_string())?;
+        let state = self.state.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "STDERR_READ_FAILED: stderr state lock was poisoned",
+                source_error,
+            )
+        })?;
         let output = state.records.iter().cloned().collect::<String>();
         let stats = state.stats.clone();
         drop(state);
@@ -1775,9 +1780,12 @@ impl CoreHostRuntime {
             .as_mut()
             .ok_or_else(|| "TRANSPORT_WRITE_FAILED: Core Host stdin is closed".to_string())?;
         write_frame(stdin, &request).map_err(|error| error.to_string())?;
-        stdin
-            .flush()
-            .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
+        stdin.flush().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed",
+                source_error,
+            )
+        })?;
         #[cfg(test)]
         if name == "system.shutdown" {
             if let Some(events) = &self.cleanup_events {
@@ -2541,7 +2549,12 @@ fn create_generation_credential() -> Result<([u8; GENERATION_CREDENTIAL_BYTES], 
 fn fill_os_random(bytes: &mut [u8]) -> Result<(), String> {
     File::open("/dev/urandom")
         .and_then(|mut source| source.read_exact(bytes))
-        .map_err(|_| "GENERATION_CREDENTIAL_UNAVAILABLE: OS random source failed".to_string())
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "GENERATION_CREDENTIAL_UNAVAILABLE: OS random source failed",
+                source_error,
+            )
+        })
 }
 
 #[cfg(windows)]

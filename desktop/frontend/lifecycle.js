@@ -1,3 +1,4 @@
+import { errorText } from './core/error-display.js';
 const STATUSES = new Set([
   "startup",
   "initializing",
@@ -102,8 +103,8 @@ function safeFailure(value) {
     || typeof value.message !== "string"
   ) return null;
   const message = value.message.trim();
-  if (!message || message.length > 160) return null;
-  return Object.freeze({ code: value.code, message });
+  if (!message) return null;
+  return Object.freeze({ code: value.code, message: errorText(value.message) });
 }
 
 function safeVersion(value) {

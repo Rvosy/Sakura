@@ -29,6 +29,23 @@ def run(settings=SETTINGS, request=REQUEST, **kwargs):
     return execute(settings, request, cancel_checker=kwargs.pop("cancel_checker", None), progress=kwargs.pop("progress", lambda _event: None), **kwargs)
 
 
+def test_async_model_worker_preserves_cause_before_releasing_credentials(monkeypatch):
+    from plugins.builtin.sakura_model_openai_compatible import plugin
+    def fail(*args, **kwargs):
+        raise OSError('connection reset at C:\\runtime\\model opaque-secret')
+    monkeypatch.setattr(plugin, 'execute', fail)
+    worker = plugin.ModelPlugin()
+    worker.changed = threading.Condition()
+    worker._read_request = lambda job: REQUEST
+    job = plugin.Job('failure', ('owner', 'scope'), dict(SETTINGS), {})
+    worker._run(job)
+    assert job.state == 'failed'
+    assert not job.settings
+    assert 'connection reset at C:\\runtime\\model' in job.failure['message']
+    assert 'OSError' in job.failure['diagnostics']['exception_stack']
+    assert 'opaque-secret' not in json.dumps(job.failure)
+
+
 def test_parameter_fallback_is_bounded_and_does_not_mutate_request(monkeypatch):
     calls = []
     def handler(request):
@@ -58,7 +75,11 @@ def test_http_failure_is_not_replayed_and_credentials_stay_private(monkeypatch, 
     assert len(calls) == 1
     assert caught.value.status_code == status
     assert "opaque-secret" not in str(caught.value)
-    assert caught.value.__cause__ is None
+    from sakura_provider_errors import provider_exception_diagnostics
+    assert caught.value.__cause__ is not None
+    details = provider_exception_diagnostics(caught.value)
+    assert "opaque-secret" not in json.dumps(details)
+    assert type(caught.value.__cause__).__name__ in details["exception_chain"]
 
 
 @pytest.mark.parametrize("path", ["", "/v1", "/v1beta", "/v1/openai", "/v1beta/openai/"])
@@ -110,7 +131,7 @@ def test_cancel_reclaims_the_pending_http_task(monkeypatch):
 
 @pytest.mark.parametrize("error_type,code,stage", [(httpx.ConnectTimeout, "MODEL_CONNECTION_TIMEOUT", "connect"),
                                                  (httpx.ReadTimeout, "MODEL_READ_TIMEOUT", "read")])
-def test_provider_timeout_keeps_the_failure_stage_without_transferring_sdk_errors(monkeypatch, error_type, code, stage):
+def test_provider_timeout_keeps_the_failure_stage_and_redacted_sdk_cause(monkeypatch, error_type, code, stage):
     def handler(request):
         raise error_type("opaque-secret", request=request)
     mock_http(monkeypatch, handler)
@@ -119,7 +140,11 @@ def test_provider_timeout_keeps_the_failure_stage_without_transferring_sdk_error
     assert caught.value.code == code
     assert caught.value.diagnostics["stage"] == stage
     assert caught.value.diagnostics["attemptCount"] == 1
-    assert caught.value.__cause__ is None
+    from sakura_provider_errors import provider_exception_diagnostics
+    assert caught.value.__cause__ is not None
+    details = provider_exception_diagnostics(caught.value)
+    assert "opaque-secret" not in json.dumps(details)
+    assert type(caught.value.__cause__).__name__ in details["exception_chain"]
 
 
 def test_native_tool_arguments_and_opaque_continuation_metadata_roundtrip(monkeypatch):

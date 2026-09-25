@@ -218,9 +218,11 @@ class ModelPlugin:
         except OperationCancelled:
             job.failure = {"code": "OPERATION_CANCELLED", "message": "模型请求已取消。"}
         except Exception as error:
+            from sakura_provider_errors import provider_exception_diagnostics
+            details = provider_exception_diagnostics(error, secrets=(job.settings.get("api_key", ""),))
             job.failure = {"code": getattr(error, "code", "MODEL_REQUEST_FAILED"),
-                           "message": str(error) if isinstance(error, ModelError) else "模型请求失败。",
-                           "diagnostics": getattr(error, "diagnostics", {})}
+                           "message": details["diagnostic"],
+                           "diagnostics": {**getattr(error, "diagnostics", {}), **details}}
         finally:
             # Do not retain credentials or large image requests after the worker ends.
             job.settings.clear()

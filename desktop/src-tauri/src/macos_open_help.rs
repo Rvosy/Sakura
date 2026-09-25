@@ -14,7 +14,7 @@ fn spawn_open(arguments: &[&str], error_code: &str) -> Result<(), String> {
         .args(arguments)
         .spawn()
         .map(|_| ())
-        .map_err(|_| error_code.to_string())
+        .map_err(|error| crate::runtime_log::diagnostic_error(error_code, error))
 }
 
 #[cfg(target_os = "macos")]

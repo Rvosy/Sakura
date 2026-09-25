@@ -132,7 +132,9 @@ impl UpdateCoordinator {
     pub fn checked_snapshot(&self) -> Result<Option<UpdateSnapshot>, String> {
         self.state
             .lock()
-            .map_err(|_| "UPDATE_COORDINATOR_UNAVAILABLE".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("UPDATE_COORDINATOR_UNAVAILABLE", source_error)
+            })
             .map(|state| state.checked_snapshot.clone())
     }
 
@@ -146,7 +148,12 @@ impl UpdateCoordinator {
         if !enabled {
             self.state
                 .lock()
-                .map_err(|_| "UPDATE_COORDINATOR_UNAVAILABLE".to_string())?
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "UPDATE_COORDINATOR_UNAVAILABLE",
+                        source_error,
+                    )
+                })?
                 .candidate = None;
         }
         self.preferences()
@@ -247,10 +254,9 @@ impl UpdateCoordinator {
     }
 
     pub fn pending_event(&self) -> Result<(Value, String), String> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| "UPDATE_COORDINATOR_UNAVAILABLE".to_string())?;
+        let state = self.state.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("UPDATE_COORDINATOR_UNAVAILABLE", source_error)
+        })?;
         let candidate = state
             .candidate
             .as_ref()
@@ -269,10 +275,9 @@ impl UpdateCoordinator {
             preferences.last_announced_version = Some(version.to_string());
             preferences.last_announced_local_date = Some(local_date());
         })?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "UPDATE_COORDINATOR_UNAVAILABLE".to_string())?;
+        let mut state = self.state.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("UPDATE_COORDINATOR_UNAVAILABLE", source_error)
+        })?;
         if state
             .candidate
             .as_ref()
@@ -341,9 +346,9 @@ fn mirrored_updater(app: &AppHandle) -> Result<tauri_plugin_updater::UpdaterBuil
             );
         }
         if !resolved.is_empty() {
-            builder = builder
-                .endpoints(resolved)
-                .map_err(|_| "UPDATE_CONFIGURATION_INVALID")?;
+            builder = builder.endpoints(resolved).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("UPDATE_CONFIGURATION_INVALID", source_error)
+            })?;
         }
     }
     Ok(builder)
@@ -1215,7 +1220,7 @@ pub(crate) fn open_https_url(url: &str, error_code: &str) -> Result<(), String> 
             .arg(url)
             .spawn()
             .map(|_| ())
-            .map_err(|_| error_code.to_string())
+            .map_err(|error| crate::runtime_log::diagnostic_error(error_code, error))
     }
 }
 
@@ -1225,7 +1230,8 @@ fn open_windows_https_url(
     error_code: &str,
     launch: impl FnOnce(&[u16]) -> isize,
 ) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url).map_err(|_| error_code.to_string())?;
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| crate::runtime_log::diagnostic_error(error_code, error))?;
     if parsed.scheme() != "https"
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
@@ -1245,7 +1251,9 @@ fn open_windows_https_url(
 
 fn current_executable_directory() -> Result<std::path::PathBuf, String> {
     std::env::current_exe()
-        .map_err(|_| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("EXECUTABLE_DIRECTORY_UNAVAILABLE", source_error)
+        })?
         .parent()
         .map(ToOwned::to_owned)
         .ok_or_else(|| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())
@@ -1338,7 +1346,9 @@ pub(crate) async fn chat_update_announce(
             .send_update_available(window.label(), event, version, on_event)?;
     tauri::async_runtime::spawn_blocking(move || pending.wait())
         .await
-        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("CHAT_DISPATCH_ABORTED", source_error)
+        })?
 }
 
 #[tauri::command]
@@ -1389,7 +1399,7 @@ pub(crate) async fn settings_update_install(
                 .as_ref()
                 .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
                 .shutdown_and_wait(std::time::Duration::from_secs(5))
-                .map_err(str::to_string)
+                .map_err(|error| error.to_string())
         },
     )
     .await

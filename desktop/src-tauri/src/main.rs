@@ -245,8 +245,10 @@ async fn first_run_start_core(
         handle.start_core_and_wait_available(std::time::Duration::from_secs(40))
     })
     .await
-    .map_err(|_| "CORE_START_ABORTED".to_string())?
-    .map_err(str::to_string);
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("CORE_START_ABORTED", source_error)
+    })?
+    .map_err(|error| error.to_string());
     match &result {
         Ok(()) => {
             let _ = runtime_log.submit(RuntimeLogEvent::rust(
@@ -714,9 +716,12 @@ fn schedule_control_contraction_region_commit(
             if let Err(error) = delayed_window.run_on_main_thread(move || {
                 let commit = (|| -> Result<(), String> {
                     let state = commit_window.state::<Mutex<WindowGeometrySession>>();
-                    let mut geometry = state
-                        .lock()
-                        .map_err(|_| "window geometry state is unavailable".to_string())?;
+                    let mut geometry = state.lock().map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "window geometry state is unavailable",
+                            source_error,
+                        )
+                    })?;
                     if geometry.applied_revision != revision {
                         return Ok(());
                     }
@@ -1063,7 +1068,12 @@ fn current_pet_layout_revision(
     session
         .lock()
         .map(|session| session.applied_revision.max(session.revision.latest()))
-        .map_err(|_| "window geometry state is unavailable".to_string())
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "window geometry state is unavailable",
+                source_error,
+            )
+        })
 }
 
 #[tauri::command]
@@ -1074,9 +1084,9 @@ fn current_pet_surface_diagnostics(
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    let geometry = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let geometry = session.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     let application = geometry
         .application
         .as_ref()
@@ -1544,9 +1554,9 @@ fn start_pet_input_expansion(
         delay_ms: remaining_input_motion_delay_ms(start_at_unix_ms),
     }
     .validate()?;
-    let mut session = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut session = session.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     let state = session
         .state
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
@@ -1603,9 +1613,12 @@ fn start_pet_input_transition(
     glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<bool, String> {
     let pending = {
-        let mut session = session
-            .lock()
-            .map_err(|_| "window geometry state is unavailable".to_string())?;
+        let mut session = session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "window geometry state is unavailable",
+                source_error,
+            )
+        })?;
         if session.applied_revision != revision
             || session
                 .input_surface_transition_pending
@@ -1661,9 +1674,12 @@ fn start_pet_bubble_transition(
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
 ) -> Result<bool, String> {
     let pending = {
-        let mut session = session
-            .lock()
-            .map_err(|_| "window geometry state is unavailable".to_string())?;
+        let mut session = session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "window geometry state is unavailable",
+                source_error,
+            )
+        })?;
         if session.applied_revision != revision
             || session
                 .bubble_surface_transition_pending
@@ -1872,7 +1888,9 @@ fn build_context_menu_surface_geometry(
         rect,
         composer_resident_viewport(contract),
     )
-    .map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID".to_string())?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("PET_CONTEXT_MENU_RECT_INVALID", source_error)
+    })?;
     let application = window_geometry::expand_application_preserving_anchor(
         base_application,
         expanded_bounds,
@@ -1895,8 +1913,12 @@ fn build_context_menu_surface_geometry(
     let logical_menu = window_interaction::LogicalHitRegions {
         state: expanded_hit_regions.state,
         interactive: vec![window_interaction::LogicalHitRect::checked(
-            i32::try_from(x).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
-            i32::try_from(y).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
+            i32::try_from(x).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("PET_CONTEXT_MENU_RECT_INVALID", source_error)
+            })?,
+            i32::try_from(y).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("PET_CONTEXT_MENU_RECT_INVALID", source_error)
+            })?,
             width,
             height,
             composer_resident_viewport(contract),
@@ -1948,9 +1970,9 @@ fn apply_precise_hit_regions_with_synchronous_redraw(
 
 fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> {
     let session = window.state::<Mutex<WindowGeometrySession>>();
-    let geometry = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let geometry = session.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     if geometry.context_menu_open
         && current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow
     {
@@ -2336,9 +2358,9 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
     )?;
     let hit_regions = apply_native_pet_surface(window, &contract, &application, None, None, 100)?;
     let state = window.state::<Mutex<WindowGeometrySession>>();
-    let mut session = state
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut session = state.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     commit_bootstrap_geometry(&mut session, application, hit_regions)
 }
 
@@ -2354,7 +2376,12 @@ fn reveal_pet_window(
     }
     let layout_ready = session
         .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "window geometry state is unavailable",
+                source_error,
+            )
+        })?
         .state
         .is_some();
     if !layout_ready {
@@ -2366,7 +2393,7 @@ fn reveal_pet_window(
         .as_ref()
         .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
         .character_presentation()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .is_some();
     if !first_run_completed {
         window.hide().map_err(|error| error.to_string())?;
@@ -2568,7 +2595,12 @@ fn commit_dragged_window_position_on_main_thread(
     let wait_started = std::time::Instant::now();
     let result = receiver
         .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| "PET_DRAG_COMMIT_MAIN_THREAD_TIMEOUT".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "PET_DRAG_COMMIT_MAIN_THREAD_TIMEOUT",
+                source_error,
+            )
+        })?;
     interaction_latency::stage_elapsed("drag-commit-main-thread-return", wait_started);
     result
 }
@@ -2593,7 +2625,9 @@ async fn start_pet_drag(
         )
     })
     .await
-    .map_err(|_| "PET_DRAG_TASK_ABORTED".to_string())?
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("PET_DRAG_TASK_ABORTED", source_error)
+    })?
 }
 
 fn start_pet_drag_blocking(
@@ -2762,9 +2796,9 @@ fn open_pet_context_menu(
     if window.label() != "main" || !surface_x.is_finite() || !surface_y.is_finite() {
         return Err("PRODUCT_MENU_REQUEST_REJECTED".to_string());
     }
-    let mut geometry = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut geometry = session.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     if geometry.is_deferred_drag_pending() {
         let position = window
             .outer_position()
@@ -2839,9 +2873,9 @@ fn set_pet_context_menu_surface(
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     let contract = layout_contract()?;
-    let mut geometry = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut geometry = session.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     if !geometry.context_menu_open {
         return Err("PET_CONTEXT_MENU_NOT_OPEN".to_string());
     }
@@ -2931,9 +2965,9 @@ fn close_pet_context_menu_surface(
     window: &WebviewWindow,
     session: &Mutex<WindowGeometrySession>,
 ) -> Result<(), String> {
-    let mut geometry = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut geometry = session.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     if !geometry.context_menu_open {
         return Ok(());
     }
@@ -3157,9 +3191,9 @@ fn pet_surface_hovered(
         .cursor_position()
         .map_err(|error| error.to_string())?;
     let origin = window.inner_position().map_err(|error| error.to_string())?;
-    let geometry = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let geometry = session.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     surface_hover_contains(
         layout_contract()?,
         &geometry,
@@ -3238,13 +3272,19 @@ fn composer_tool_dock_hit_regions(
     }
     let resident_envelope = composer_resident_viewport(contract);
     let mut dock = window_interaction::LogicalHitRect::checked(
-        i32::try_from(x).map_err(|_| "PET_TOOL_DOCK_GEOMETRY_INVALID")?,
-        i32::try_from(y).map_err(|_| "PET_TOOL_DOCK_GEOMETRY_INVALID")?,
+        i32::try_from(x).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("PET_TOOL_DOCK_GEOMETRY_INVALID", source_error)
+        })?,
+        i32::try_from(y).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("PET_TOOL_DOCK_GEOMETRY_INVALID", source_error)
+        })?,
         width,
         height,
         resident_envelope,
     )
-    .map_err(|_| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("PET_TOOL_DOCK_GEOMETRY_INVALID", source_error)
+    })?;
     dock.corner_radius = COMPOSER_TOOL_DOCK_CORNER_RADIUS;
     let logical = window_interaction::LogicalHitRegions {
         state: application.state,
@@ -3258,7 +3298,9 @@ fn composer_tool_dock_hit_regions(
         application.active_bounds,
         contract.viewport.portrait_anchor,
     )
-    .map_err(|_| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("PET_TOOL_DOCK_GEOMETRY_INVALID", source_error)
+    })?;
     let mut combined = base.clone();
     combined.interactive.append(&mut physical.interactive);
     Ok(combined)
@@ -3273,9 +3315,9 @@ fn set_pet_tool_dock_surface(
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    let mut geometry = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut geometry = session.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     if rect.is_some() && geometry.context_menu_open {
         return Err("PET_CONTEXT_MENU_OPEN".to_string());
     }
@@ -3384,7 +3426,7 @@ fn runtime_lifecycle_snapshot(
     lifecycle: State<'_, ShellLifecycleState>,
     appearance: State<'_, character_appearance::CharacterAppearanceState>,
     app_handle: tauri::AppHandle,
-) -> Result<shell_lifecycle::ShellLifecyclePublication, &'static str> {
+) -> Result<shell_lifecycle::ShellLifecyclePublication, String> {
     let handle = lifecycle
         .handle
         .as_ref()
@@ -3393,10 +3435,19 @@ fn runtime_lifecycle_snapshot(
     let generation_id = handle.available_generation_id()?;
     if let Some(rollback) = appearance
         .cancel_if_generation_changed(generation_id.as_deref())
-        .map_err(|_| "LIFECYCLE_APPEARANCE_ROLLBACK_FAILED")?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "LIFECYCLE_APPEARANCE_ROLLBACK_FAILED",
+                source_error,
+            )
+        })?
     {
-        emit_appearance(&app_handle, rollback)
-            .map_err(|_| "LIFECYCLE_APPEARANCE_ROLLBACK_FAILED")?;
+        emit_appearance(&app_handle, rollback).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "LIFECYCLE_APPEARANCE_ROLLBACK_FAILED",
+                source_error,
+            )
+        })?;
     }
     Ok(publication)
 }
@@ -3413,7 +3464,7 @@ async fn visual_control_parse(
     let handle = settings_core_handle(&lifecycle)?;
     let generation = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "STALE_GENERATION".to_string())?;
     let response = dispatch_settings_request(
         handle.clone(),
@@ -3425,7 +3476,7 @@ async fn visual_control_parse(
     .await?;
     if handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .as_deref()
         != Some(&generation)
     {
@@ -3453,7 +3504,9 @@ async fn chat_send(
     )?;
     tauri::async_runtime::spawn_blocking(move || pending.wait())
         .await
-        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("CHAT_DISPATCH_ABORTED", source_error)
+        })?
 }
 
 #[tauri::command]
@@ -3472,7 +3525,9 @@ async fn chat_cancel(
         bridge.cancel(&label, &payload.operation_id, &payload.cancel_handle)
     })
     .await
-    .map_err(|_| "CHAT_CANCEL_ABORTED".to_string())?
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("CHAT_CANCEL_ABORTED", source_error)
+    })?
 }
 
 #[tauri::command]
@@ -3490,7 +3545,7 @@ async fn start_screen_capture(
     let handle = settings_core_handle(&lifecycle)?;
     let generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
     let app = window.app_handle().clone();
     let capture_manager = captures.inner().clone();
@@ -3526,7 +3581,9 @@ async fn start_screen_capture(
         Ok(monitor_count)
     })
     .await
-    .map_err(|_| "SCREEN_CAPTURE_PREPARATION_ABORTED".to_string())?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PREPARATION_ABORTED", source_error)
+    })?;
     let monitor_count = match task {
         Ok(count) => count,
         Err(error) => {
@@ -3645,7 +3702,9 @@ async fn capture_selected_region(
     })
     .await;
     capture::close_windows(&app, &claim.window_labels);
-    let result = task_result.map_err(|_| "SCREEN_CAPTURE_TASK_ABORTED".to_string())?;
+    let result = task_result.map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_TASK_ABORTED", source_error)
+    })?;
     match result {
         Ok(publication) => {
             record_screen_capture(
@@ -3661,7 +3720,12 @@ async fn capture_selected_region(
                 }),
             );
             app.emit_to("main", capture::ATTACHED_EVENT, publication)
-                .map_err(|_| "SCREEN_ATTACHMENT_PUBLICATION_FAILED".to_string())?;
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "SCREEN_ATTACHMENT_PUBLICATION_FAILED",
+                        source_error,
+                    )
+                })?;
             Ok(())
         }
         Err(code) => {
@@ -3745,7 +3809,9 @@ async fn release_screen_attachment(
         )
     })
     .await
-    .map_err(|_| "SCREEN_ATTACHMENT_RELEASE_ABORTED".to_string())??;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("SCREEN_ATTACHMENT_RELEASE_ABORTED", source_error)
+    })??;
     Ok(settings_response_payload(response)?
         .get("accepted")
         .and_then(Value::as_bool)
@@ -3783,7 +3849,9 @@ async fn remove_screen_attachment_item(
         )
     })
     .await
-    .map_err(|_| "SCREEN_ATTACHMENT_REMOVE_ABORTED".to_string())??;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("SCREEN_ATTACHMENT_REMOVE_ABORTED", source_error)
+    })??;
     let response = settings_response_payload(response)?;
     let accepted = response
         .get("accepted")
@@ -3911,7 +3979,7 @@ async fn composer_tools_get(
     let handle = settings_core_handle(&lifecycle)?;
     let generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "COMPOSER_TOOLS_NOT_READY".to_string())?;
     let response = dispatch_settings_request(
         handle.clone(),
@@ -4133,7 +4201,7 @@ async fn settings_character_visual_preview(
         .as_ref()
         .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
     let reply = dispatch_settings_request(
         settings_core_handle(&lifecycle)?,
@@ -4359,8 +4427,12 @@ fn settings_character_appearance_layout_frame(
             "prepareNative": cfg!(target_os = "macos"),
         });
         if let Some(trace) = publication_trace {
-            payload["trace"] = serde_json::to_value(trace)
-                .map_err(|_| "INTERACTION_LATENCY_TRACE_SERIALIZATION_FAILED".to_string())?;
+            payload["trace"] = serde_json::to_value(trace).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "INTERACTION_LATENCY_TRACE_SERIALIZATION_FAILED",
+                    source_error,
+                )
+            })?;
         }
         interaction_latency::stage("main-event-emit-start");
         app_handle
@@ -4569,7 +4641,7 @@ async fn character_settings_payload_request(
     let window_generation = shell.generation()?;
     let core_generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
@@ -4618,7 +4690,7 @@ async fn character_settings_change_request(
     let window_generation = shell.generation()?;
     let (core_generation_id, core_generation_number) = handle
         .available_generation_identity()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
@@ -4669,9 +4741,9 @@ fn finish_character_settings_change(
     target_character_id: Option<String>,
 ) -> Result<Value, String> {
     if let Some(target_character_id) = target_character_id {
-        handle
-            .restart()
-            .map_err(|_| "CHARACTER_RESTART_REQUEST_FAILED".to_string())?;
+        handle.restart().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("CHARACTER_RESTART_REQUEST_FAILED", source_error)
+        })?;
         audio_state.shutdown();
         if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
             let _ = history.emit(
@@ -4937,9 +5009,9 @@ async fn settings_character_select(
     )
     .await?;
     if let Some(target_character_id) = target_character_id {
-        handle
-            .restart()
-            .map_err(|_| "CHARACTER_RESTART_REQUEST_FAILED".to_string())?;
+        handle.restart().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("CHARACTER_RESTART_REQUEST_FAILED", source_error)
+        })?;
         audio_state.shutdown();
         if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
             let _ = history.emit(
@@ -4994,7 +5066,7 @@ async fn storage_settings_request(
     let window_generation = shell.generation()?;
     let core_generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(
         handle.clone(),
@@ -5051,7 +5123,9 @@ fn open_directory(path: &std::path::Path) -> Result<(), String> {
         .arg(path)
         .spawn()
         .map(|_| ())
-        .map_err(|_| "STORAGE_DIRECTORY_OPEN_FAILED".to_string())
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STORAGE_DIRECTORY_OPEN_FAILED", source_error)
+        })
 }
 
 #[tauri::command]
@@ -5088,7 +5162,9 @@ async fn settings_storage_choose_tts_root(
             .pick_folder()
     })
     .await
-    .map_err(|_| "TTS_ROOT_CHOOSER_FAILED".to_string())?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("TTS_ROOT_CHOOSER_FAILED", source_error)
+    })?;
     let Some(path) = selected else {
         return Ok(None);
     };
@@ -5131,7 +5207,7 @@ async fn settings_provider_model_get(
     let window_generation = shell.generation()?;
     let core_generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(
         handle.clone(),
@@ -5243,9 +5319,12 @@ async fn prepare_control_surface_preview(
     #[cfg(target_os = "macos")]
     {
         let result = (|| {
-            let mut geometry = geometry_state
-                .lock()
-                .map_err(|_| "window geometry state is unavailable".to_string())?;
+            let mut geometry = geometry_state.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "window geometry state is unavailable",
+                    source_error,
+                )
+            })?;
             if !geometry.can_end_control_surface_preview(revision) {
                 return Ok(None);
             }
@@ -5345,9 +5424,9 @@ fn preview_pet_control_surface(
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     layout_contract()?.validate_control_surface(PresentationState::Product, &control_surface)?;
-    let mut geometry = geometry_state
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut geometry = geometry_state.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     if !geometry.can_end_control_surface_preview(preview_revision) {
         return Ok(());
     }
@@ -5497,12 +5576,12 @@ fn prepare_portrait_transition(
         .as_ref()
         .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
     let next_mask = resources.active_portrait_alpha_mask(&portrait_key, &generation_id)?;
-    let mut geometry = geometry_state
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut geometry = geometry_state.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     if revision < geometry.portrait_hit_revision {
         return Ok(None);
     }
@@ -5693,7 +5772,7 @@ fn begin_portrait_scale_preview(
             .as_ref()
             .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
             .available_generation_id()
-            .map_err(str::to_string)?;
+            .map_err(|error| error.to_string())?;
         let mut geometry = interaction_latency::lock(
             geometry_state.inner(),
             "geometry-mutex-wait-start",
@@ -5935,7 +6014,7 @@ fn activate_portrait_hit_test(
             .as_ref()
             .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
             .available_generation_id()
-            .map_err(str::to_string)?;
+            .map_err(|error| error.to_string())?;
         let mut geometry = interaction_latency::lock(
             geometry_state.inner(),
             "geometry-mutex-wait-start",
@@ -6175,9 +6254,9 @@ fn commit_portrait_transition(
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    let mut geometry = geometry_state
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut geometry = geometry_state.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     let pending = match geometry.portrait_transition_pending.clone() {
         Some(pending) if pending.revision == revision => pending,
         _ => return Ok(None),
@@ -6246,9 +6325,9 @@ fn settle_portrait_scale_surface(
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    let mut geometry = geometry_state
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let mut geometry = geometry_state.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     if !geometry.can_settle_portrait_scale(revision) {
         return Ok(None);
     }
@@ -6335,7 +6414,7 @@ fn record_runtime_diagnostics(
         .into_iter()
         .map(|entry| runtime_log.prepare_webview(window.label(), entry))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(str::to_string)?;
+        .map_err(|error| error.to_string())?;
     for event in prepared {
         let _ = runtime_log.submit(event);
     }
@@ -6434,7 +6513,7 @@ async fn studio_bootstrap(
     let handle = settings_core_handle(&lifecycle)?;
     let generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
     state.bind_generation(&generation_id)?;
     let presentation = load_current_character_presentation(&lifecycle, &resources)?;
@@ -6484,7 +6563,7 @@ async fn studio_request(
     let handle = settings_core_handle(&lifecycle)?;
     let (previous_generation_id, _) = handle
         .available_generation_identity()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
     state.bind_generation(&previous_generation_id)?;
     let deadline = if matches!(
@@ -6534,7 +6613,9 @@ async fn studio_request(
             &scope_id,
             std::path::Path::new(&root),
         )?)
-        .map_err(|_| "VISUAL_EDITOR_INVALID")?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("VISUAL_EDITOR_INVALID", source_error)
+        })?;
         payload["assetBaseUrl"] =
             json!(resources.editor_asset_base(&previous_generation_id, &binding));
     }
@@ -6602,8 +6683,9 @@ async fn studio_request(
             byte_length,
             &previous_generation_id,
         )?;
-        payload = serde_json::to_value(registration)
-            .map_err(|_| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        payload = serde_json::to_value(registration).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_PREVIEW_RESPONSE_INVALID", source_error)
+        })?;
         if let Some(object) = payload.as_object_mut() {
             object.insert("schemaVersion".to_string(), json!(1));
         }
@@ -6727,7 +6809,9 @@ async fn studio_pick_screen_color(
         color_picker::wait_for_result(session.receiver)
     })
     .await
-    .map_err(|_| "STUDIO_COLOR_ABORTED".to_string())?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("STUDIO_COLOR_ABORTED", source_error)
+    })?;
     if let Some(studio) =
         app_handle.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
     {
@@ -6761,7 +6845,9 @@ async fn studio_color_pick(
         color_picker::capture_color(monitor_id, point.0, point.1)
     })
     .await
-    .map_err(|_| "STUDIO_COLOR_CAPTURE_ABORTED".to_string())?;
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("STUDIO_COLOR_CAPTURE_ABORTED", source_error)
+    })?;
     capture::close_windows(&app_handle, &labels);
     claim.complete(result);
     Ok(())
@@ -6957,7 +7043,7 @@ fn character_protocol_response(
 }
 
 #[tauri::command]
-fn retry_core(lifecycle: State<'_, ShellLifecycleState>) -> Result<(), &'static str> {
+fn retry_core(lifecycle: State<'_, ShellLifecycleState>) -> Result<(), String> {
     lifecycle
         .handle
         .as_ref()
@@ -6973,15 +7059,17 @@ fn settings_restart_after_migration(
     product_shell::validate_settings_window(&window)?;
     settings_core_handle(&lifecycle)?
         .restart()
-        .map_err(str::to_string)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn exit_runtime(
     lifecycle: State<'_, ShellLifecycleState>,
     app_handle: tauri::AppHandle,
-) -> Result<(), &'static str> {
-    request_app_exit(&app_handle, &lifecycle).map_err(|_| "APP_EXIT_REQUEST_FAILED")
+) -> Result<(), String> {
+    request_app_exit(&app_handle, &lifecycle).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("APP_EXIT_REQUEST_FAILED", source_error)
+    })
 }
 
 #[tauri::command]
@@ -7003,7 +7091,7 @@ fn toggle_pet_visibility(app: &tauri::AppHandle) -> Result<(), String> {
         .as_ref()
         .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
         .character_presentation()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .is_some();
     if !session_ready {
         if let Some(window) = app.get_webview_window("main") {
@@ -7136,7 +7224,9 @@ fn finish_app_exit(
     }
     if let Some(handle) = &lifecycle.handle {
         app_handle.state::<asr::AsrState>().shutdown();
-        handle.request_shutdown().map_err(str::to_string)?;
+        handle
+            .request_shutdown()
+            .map_err(|error| error.to_string())?;
     }
     app_handle.exit(0);
     Ok(())
@@ -7258,7 +7348,9 @@ fn resolve_settings_exit(
     }
     if let Some(handle) = &lifecycle.handle {
         app_handle.state::<asr::AsrState>().shutdown();
-        handle.request_shutdown().map_err(str::to_string)?;
+        handle
+            .request_shutdown()
+            .map_err(|error| error.to_string())?;
     }
     shell.authorize_app_exit()?;
     app_handle.exit(0);
@@ -7413,15 +7505,17 @@ fn wp_4_01_manual_root(path: std::path::PathBuf) -> Result<std::path::PathBuf, S
     {
         return Err("WP_4_01_MANUAL_ROOT_INVALID".to_string());
     }
-    let root = path
-        .canonicalize()
-        .map_err(|_| "WP_4_01_MANUAL_ROOT_INVALID".to_string())?;
+    let root = path.canonicalize().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("WP_4_01_MANUAL_ROOT_INVALID", source_error)
+    })?;
     let directory = root
         .parent()
         .ok_or_else(|| "WP_4_01_MANUAL_ROOT_INVALID".to_string())?;
     let temp = std::env::temp_dir()
         .canonicalize()
-        .map_err(|_| "WP_4_01_MANUAL_TEMP_UNAVAILABLE".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("WP_4_01_MANUAL_TEMP_UNAVAILABLE", source_error)
+        })?;
     let name = directory
         .file_name()
         .and_then(|value| value.to_str())

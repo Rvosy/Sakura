@@ -68,7 +68,7 @@ updated: 2026-08-29
 ## 5. 脱敏与来源边界
 
 进入持久层前必须删除凭据、generation credential、环境值、绝对路径、Prompt、对话正文、记忆正文、
-工具参数/结果、HTTP body/header 和异常原文。字段名包含 `body/content/input/output/payload/arguments`，或
+工具参数/结果和 HTTP body/header。异常诊断遵循 [诊断原文规则](WP-4L-02-human-readable-runtime-log-agent-trace.md)。字段名包含 `body/content/input/output/payload/arguments`，或
 `authorization/cookie/token/secret/password/api_key/credential` 时，不得保留原值；只允许保存类型、
 字符/字节数、元素数和获准键名计数。即使 trace 等级也不得放宽。
 
@@ -83,7 +83,7 @@ updated: 2026-08-29
   每行不超过 4096 bytes。它只写 `sys.__stderr__.buffer`，不写 stdout。
 - 聊天 `operationId` 必须在执行线程进入现有 interaction context，使 Agent、模型、Tools、Memory 和未来
   领域 `log_event` 自动携带 `operation_id`；终态后清理 context。
-- 未捕获 Python 异常只记录稳定异常类型和边界 code，不记录 `str(exception)` 或 traceback 正文。
+- 未捕获 Python 异常保留原始错误、异常链和调用栈，凭据脱敏；详见 [诊断原文规则](WP-4L-02-human-readable-runtime-log-agent-trace.md)。
 
 ## 7. Rust Core stderr drainer
 

@@ -209,7 +209,7 @@ test("polling a capture failure before its native event still reports the error 
   f.event("sakura://asr-capture", { recordingId: "recording-1", state: "failed", errorCode: "ASR_MICROPHONE_DISCONNECTED" });
   assert.equal(f.controller.state(), "idle");
   assert.equal(f.errors.length, 1);
-  assert.match(f.errors[0], /麦克风/);
+  assert.match(f.errors[0], /ASR_MICROPHONE_DISCONNECTED/);
   assert.equal(f.draft().value, "hello world");
   assert.equal(f.writes.length, 0);
   f.controller.dispose();

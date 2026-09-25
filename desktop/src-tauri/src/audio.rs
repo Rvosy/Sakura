@@ -50,7 +50,7 @@ pub struct PlayPreparedRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AudioPlaybackError {
     pub code: &'static str,
-    pub message: &'static str,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,10 +79,12 @@ struct AudioRegistry {
 
 impl AudioRegistry {
     fn new(root: PathBuf) -> Result<Self, String> {
-        fs::create_dir_all(&root).map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
-        let root = root
-            .canonicalize()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
+        fs::create_dir_all(&root).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+        })?;
+        let root = root.canonicalize().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+        })?;
         Ok(Self {
             root,
             items: Arc::new(Mutex::new(BTreeMap::new())),
@@ -96,25 +98,26 @@ impl AudioRegistry {
         }
         let expires_at = validate_expiry(&descriptor.expires_at)?;
         let unresolved = self.root.join(format!("{}.wav", descriptor.opaque_id));
-        let metadata =
-            fs::symlink_metadata(&unresolved).map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
+        let metadata = fs::symlink_metadata(&unresolved).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", source_error)
+        })?;
         if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
             return Err("AUDIO_RECORDING_INVALID".to_string());
         }
-        let path = unresolved
-            .canonicalize()
-            .map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
-        path.strip_prefix(&self.root)
-            .map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
+        let path = unresolved.canonicalize().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", source_error)
+        })?;
+        path.strip_prefix(&self.root).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", source_error)
+        })?;
         let actual = metadata.len();
         if actual == 0 || actual != descriptor.byte_length || actual > MAX_TTS_AUDIO_BYTES {
             return Err("AUDIO_RECORDING_INVALID".to_string());
         }
         validate_wav_header(&path)?;
-        let mut items = self
-            .items
-            .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
+        let mut items = self.items.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+        })?;
         if items.contains_key(&descriptor.opaque_id) {
             return Err("AUDIO_RECORDING_INVALID".to_string());
         }
@@ -134,7 +137,9 @@ impl AudioRegistry {
         let item = self
             .items
             .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+            })?
             .remove(opaque_id)
             .ok_or_else(|| "AUDIO_RECORDING_INVALID".to_string())?;
         if item.expires_at <= OffsetDateTime::now_utc() {
@@ -217,7 +222,9 @@ impl AudioManager {
         let thread = thread::Builder::new()
             .name("sakura-runtime-v2-audio".to_string())
             .spawn(move || playback_loop(receiver, callback))
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+            })?;
         Ok(Self {
             registry,
             registration_revision: Mutex::new(0),
@@ -230,7 +237,9 @@ impl AudioManager {
         self.registration_revision
             .lock()
             .map(|revision| *revision)
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+            })
     }
 
     pub fn register_at_revision(
@@ -238,10 +247,9 @@ impl AudioManager {
         descriptor: &AudioDescriptor,
         expected_revision: u64,
     ) -> Result<(), String> {
-        let revision = self
-            .registration_revision
-            .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
+        let revision = self.registration_revision.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+        })?;
         if *revision != expected_revision {
             self.registry.discard_unregistered(&descriptor.opaque_id);
             return Err("STALE_GENERATION".to_string());
@@ -262,10 +270,9 @@ impl AudioManager {
     }
 
     pub fn stop_and_clear(&self) -> Result<(), String> {
-        let mut revision = self
-            .registration_revision
-            .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
+        let mut revision = self.registration_revision.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+        })?;
         *revision = revision.wrapping_add(1);
         self.registry.clear();
         drop(revision);
@@ -289,11 +296,15 @@ impl AudioManager {
     fn send(&self, command: AudioCommand) -> Result<(), String> {
         self.sender
             .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+            })?
             .as_ref()
             .ok_or_else(|| "AUDIO_PLAYBACK_FAILED".to_string())?
             .send(command)
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+            })
     }
 }
 
@@ -346,10 +357,9 @@ impl AudioState {
         callback: AudioEventCallback,
     ) -> Result<Arc<AudioManager>, String> {
         validate_generation_id(generation_id)?;
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
+        let mut active = self.active.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+        })?;
         if self.input_active.load(Ordering::SeqCst) {
             return Err("TTS_PAUSED_FOR_VOICE_INPUT".into());
         }
@@ -374,7 +384,9 @@ impl AudioState {
     pub fn current(&self, generation_id: &str) -> Result<Arc<AudioManager>, String> {
         self.active
             .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+            })?
             .as_ref()
             .filter(|(active, _)| active == generation_id)
             .map(|(_, manager)| manager.clone())
@@ -404,7 +416,9 @@ impl AudioState {
         generation: &str,
         payload: PlayPreparedRequest,
     ) -> Result<(), String> {
-        let active = self.active.lock().map_err(|_| "AUDIO_PLAYBACK_FAILED")?;
+        let active = self.active.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+        })?;
         if self.input_active.load(Ordering::SeqCst) {
             return Err("TTS_PAUSED_FOR_VOICE_INPUT".into());
         }
@@ -484,17 +498,17 @@ fn playback_loop(receiver: mpsc::Receiver<AudioCommand>, callback: AudioEventCal
 fn open_default_playback(path: &Path) -> Result<(MixerDeviceSink, Player), AudioPlaybackError> {
     // Open the system default on every item so a device switch/disconnect can
     // recover on the next segment without restarting the application.
-    let sink = DeviceSinkBuilder::open_default_sink().map_err(|_| AudioPlaybackError {
+    let sink = DeviceSinkBuilder::open_default_sink().map_err(|error| AudioPlaybackError {
         code: "AUDIO_DEVICE_UNAVAILABLE",
-        message: "No system default audio output is available",
+        message: crate::runtime_log::diagnostic_error("AUDIO_DEVICE_UNAVAILABLE", error),
     })?;
-    let file = File::open(path).map_err(|_| AudioPlaybackError {
+    let file = File::open(path).map_err(|error| AudioPlaybackError {
         code: "AUDIO_RECORDING_INVALID",
-        message: "Prepared audio is unavailable",
+        message: crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", error),
     })?;
-    let decoder = Decoder::try_from(file).map_err(|_| AudioPlaybackError {
+    let decoder = Decoder::try_from(file).map_err(|error| AudioPlaybackError {
         code: "AUDIO_FORMAT_UNSUPPORTED",
-        message: "Prepared audio is not a supported WAV file",
+        message: crate::runtime_log::diagnostic_error("AUDIO_FORMAT_UNSUPPORTED", error),
     })?;
     let player = Player::connect_new(sink.mixer());
     player.append(decoder);
@@ -527,8 +541,9 @@ fn emit_audio_event(callback: &AudioEventCallback, event: AudioPlaybackEvent) {
 }
 
 fn validate_expiry(value: &str) -> Result<OffsetDateTime, String> {
-    let expiry = OffsetDateTime::parse(value, &Rfc3339)
-        .map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
+    let expiry = OffsetDateTime::parse(value, &Rfc3339).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", source_error)
+    })?;
     let now = OffsetDateTime::now_utc();
     if expiry <= now || (expiry - now).whole_seconds() > MAX_DESCRIPTOR_FUTURE_SECONDS {
         return Err("AUDIO_RECORDING_INVALID".to_string());
@@ -540,7 +555,9 @@ fn validate_wav_header(path: &Path) -> Result<(), String> {
     let mut header = [0_u8; 12];
     File::open(path)
         .and_then(|mut file| file.read_exact(&mut header))
-        .map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", source_error)
+        })?;
     if &header[0..4] != b"RIFF" || &header[8..12] != b"WAVE" {
         return Err("AUDIO_FORMAT_UNSUPPORTED".to_string());
     }
@@ -597,7 +614,7 @@ pub(crate) async fn tts_prepare_segment(
     let handle = settings_core_handle(&lifecycle)?;
     let generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "STALE_GENERATION".to_string())?;
     let callback_app = app_handle.clone();
     let observer_handle = handle.clone();
@@ -626,14 +643,16 @@ pub(crate) async fn tts_prepare_segment(
     .await?;
     if handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .as_deref()
         != Some(generation_id.as_str())
     {
         return Err("STALE_GENERATION".to_string());
     }
     let descriptor: AudioDescriptor = serde_json::from_value(settings_response_payload(response)?)
-        .map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", source_error)
+        })?;
     manager.register_at_revision(&descriptor, registration_revision)?;
     app_handle
         .emit_to(
@@ -646,7 +665,9 @@ pub(crate) async fn tts_prepare_segment(
                 "descriptor": descriptor.clone(),
             }),
         )
-        .map_err(|_| "TTS_PUBLICATION_FAILED".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("TTS_PUBLICATION_FAILED", source_error)
+        })?;
     Ok(descriptor)
 }
 
@@ -692,7 +713,7 @@ pub(crate) fn tts_play_prepared(
         .as_ref()
         .ok_or_else(|| "STALE_GENERATION".to_string())?
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "STALE_GENERATION".to_string())?;
     audio_state.play_if_allowed(&generation_id, payload)
 }
@@ -723,7 +744,7 @@ pub(crate) async fn settings_voice_get(
     let window_generation = shell.generation()?;
     let core_generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(
         handle.clone(),
@@ -754,7 +775,7 @@ pub(crate) async fn settings_voice_status_get(
     let window_generation = shell.generation()?;
     let core_generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(
         handle.clone(),
@@ -951,7 +972,7 @@ mod tests {
                 state: "failed",
                 error: Some(AudioPlaybackError {
                     code: "AUDIO_DEVICE_UNAVAILABLE",
-                    message: "not persisted",
+                    message: "not persisted".to_string(),
                 }),
             },
         );

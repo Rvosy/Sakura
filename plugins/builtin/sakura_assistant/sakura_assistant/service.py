@@ -227,6 +227,7 @@ class AssistantPlugin:
             value = {"state": operation.state, "sequence": len(operation.progress), "progress": operation.progress[after_sequence:]}
             if operation.error is not None:
                 value["failure"] = classify_failure(operation.error)
+                value["failure"]["diagnostics"] = {**diagnostics.diagnostic_attributes(operation.error), **getattr(operation.error, "diagnostics", {})}
             return value
 
     def result(self, operation_id):

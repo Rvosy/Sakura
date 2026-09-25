@@ -180,11 +180,12 @@ impl CoreHostRouter {
                     .min(READ_SLICE),
             ) {
                 Ok(event) => {
-                    *self
-                        .event_head
-                        .lock()
-                        .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: event head unavailable")? =
-                        Some(event);
+                    *self.event_head.lock().map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "EVENT_QUEUE_LOCK_FAILED: event head unavailable",
+                            source_error,
+                        )
+                    })? = Some(event);
                 }
                 Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
                 Err(RecvTimeoutError::Timeout) => return Ok(None),
@@ -201,10 +202,12 @@ impl CoreHostRouter {
     }
 
     fn fill_event_heads(&self) -> Result<(), String> {
-        let mut event_head = self
-            .event_head
-            .lock()
-            .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: event head unavailable".to_string())?;
+        let mut event_head = self.event_head.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "EVENT_QUEUE_LOCK_FAILED: event head unavailable",
+                source_error,
+            )
+        })?;
         if event_head.is_none() {
             if let Ok(event) = self.event_receiver.try_recv() {
                 *event_head = Some(event);
@@ -212,10 +215,12 @@ impl CoreHostRouter {
         }
         drop(event_head);
 
-        let mut critical_head = self
-            .critical_event_head
-            .lock()
-            .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: critical event head unavailable".to_string())?;
+        let mut critical_head = self.critical_event_head.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "EVENT_QUEUE_LOCK_FAILED: critical event head unavailable",
+                source_error,
+            )
+        })?;
         if critical_head.is_none() {
             if let Ok(event) = self.critical_event_receiver.try_recv() {
                 *critical_head = Some(event);
@@ -225,14 +230,18 @@ impl CoreHostRouter {
     }
 
     fn take_next_event(&self) -> Result<Option<SequencedEvent>, String> {
-        let mut event_head = self
-            .event_head
-            .lock()
-            .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: event head unavailable".to_string())?;
-        let mut critical_head = self
-            .critical_event_head
-            .lock()
-            .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: critical event head unavailable".to_string())?;
+        let mut event_head = self.event_head.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "EVENT_QUEUE_LOCK_FAILED: event head unavailable",
+                source_error,
+            )
+        })?;
+        let mut critical_head = self.critical_event_head.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "EVENT_QUEUE_LOCK_FAILED: critical event head unavailable",
+                source_error,
+            )
+        })?;
         let take_critical = match (event_head.as_ref(), critical_head.as_ref()) {
             (None, None) => return Ok(None),
             (None, Some(_)) => true,
@@ -348,8 +357,8 @@ impl CoreHostRouterHandle {
             .ok_or_else(|| "INVALID_ENVELOPE: request protocol minor is missing".to_string())?;
         let (waiter, receiver) = mpsc::channel();
         {
-            let mut requests = self.shared.requests.lock().map_err(|_| {
-                "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
+            let mut requests = self.shared.requests.lock().map_err(|error| {
+                crate::runtime_log::diagnostic_error("ROUTER_PENDING_LOCK_FAILED", error)
             })?;
             // Check under the registry lock so close/failure cannot drain the
             // generation just before a new completion waiter is registered.
@@ -517,8 +526,8 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| "INVALID_ENVELOPE: event id is missing".to_string())?
                 .to_string();
-            let mut requests = shared.requests.lock().map_err(|_| {
-                "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
+            let mut requests = shared.requests.lock().map_err(|error| {
+                crate::runtime_log::diagnostic_error("ROUTER_PENDING_LOCK_FAILED", error)
             })?;
             if requests.contains_timed_out(&id) {
                 return Ok(());
@@ -612,7 +621,12 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     (current < limit).then_some(current + 1)
                 })
-                .map_err(|_| "EVENT_QUEUE_FULL: event queue is full".to_string())?;
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "EVENT_QUEUE_FULL: event queue is full",
+                        source_error,
+                    )
+                })?;
             let event = SequencedEvent {
                 sequence: shared.next_event_sequence.fetch_add(1, Ordering::Relaxed),
                 critical,
@@ -637,8 +651,8 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "INVALID_ENVELOPE: response id is missing".to_string())?;
-            let mut requests = shared.requests.lock().map_err(|_| {
-                "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
+            let mut requests = shared.requests.lock().map_err(|error| {
+                crate::runtime_log::diagnostic_error("ROUTER_PENDING_LOCK_FAILED", error)
             })?;
             if requests.contains_timed_out(id) {
                 return Ok(());
@@ -701,10 +715,12 @@ fn remove_pending(shared: &Arc<Shared>, id: &str) {
 }
 
 fn mark_pending_timed_out(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
-    let mut requests = shared
-        .requests
-        .lock()
-        .map_err(|_| "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string())?;
+    let mut requests = shared.requests.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error(
+            "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable",
+            source_error,
+        )
+    })?;
     if requests.pending.remove(id).is_some() {
         requests.mark_timed_out(id.to_string());
     }

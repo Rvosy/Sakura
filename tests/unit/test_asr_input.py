@@ -313,7 +313,7 @@ def test_capture_failure_survives_cleanup_and_worker_exit_without_overriding_use
     if cancel_first:
         request("asr.input.cancel", recordingId="record-1")
     result = request("asr.input.capture_discarded", recordingId="record-1",
-                     errorCode="ASR_MICROPHONE_DISCONNECTED")["payload"]
+                     errorCode="ASR_MICROPHONE_DISCONNECTED", diagnostic="device disconnected: win32=5 api_key=private-key")["payload"]
     expected = "cancelled" if cancel_first else "failed"
     assert result["state"] == expected
     boundary._tasks["record-1"].worker.join(2)
@@ -324,6 +324,11 @@ def test_capture_failure_survives_cleanup_and_worker_exit_without_overriding_use
     polled = request("asr.input.poll", recordingId="record-1")["payload"]
     assert polled["state"] == expected
     assert polled.get("errorCode") == (None if cancel_first else "ASR_MICROPHONE_DISCONNECTED")
+    if not cancel_first:
+        assert "device disconnected: win32=5" in polled["diagnostics"]["diagnostic"]
+        assert "private-key" not in str(polled)
+        status = request("asr.input.capture_status", recordingId="record-1")["payload"]
+        assert status["diagnostics"] == polled["diagnostics"]
     assert "text" not in polled
     assert app.audio_input.count == 0 and not path.exists()
     assert app.call_service("test.asr.one.service", "probe")["jobs"] == 0

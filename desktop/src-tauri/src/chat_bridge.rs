@@ -183,7 +183,9 @@ impl ChatBridge {
         channel: Channel<ChatEventPublication>,
     ) -> Result<(), String> {
         authorize_window(window_label)?;
-        let mut state = self.state.lock().map_err(|_| "CHAT_BRIDGE_UNAVAILABLE")?;
+        let mut state = self.state.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("CHAT_BRIDGE_UNAVAILABLE", source_error)
+        })?;
         if !state.valid {
             return Err("CHAT_GENERATION_INVALIDATED".into());
         }
@@ -215,7 +217,9 @@ impl ChatBridge {
     ) -> Result<PendingChatSend, String> {
         authorize_window(window_label)?;
         validate_chat_payload(&payload)?;
-        let mut state = self.state.lock().map_err(|_| "CHAT_BRIDGE_UNAVAILABLE")?;
+        let mut state = self.state.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("CHAT_BRIDGE_UNAVAILABLE", source_error)
+        })?;
         if !state.valid {
             return Err("CHAT_GENERATION_INVALIDATED".to_string());
         }
@@ -321,7 +325,9 @@ impl ChatBridge {
     ) -> Result<ChatCancelPublication, String> {
         authorize_window(window_label)?;
         {
-            let mut state = self.state.lock().map_err(|_| "CHAT_BRIDGE_UNAVAILABLE")?;
+            let mut state = self.state.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("CHAT_BRIDGE_UNAVAILABLE", source_error)
+            })?;
             if !state.valid {
                 return Err("CHAT_GENERATION_INVALIDATED".to_string());
             }
@@ -373,7 +379,9 @@ impl ChatBridge {
     }
 
     pub fn observe_event(&self, message: &Value) -> Result<Option<ChatEventPublication>, String> {
-        let mut state = self.state.lock().map_err(|_| "CHAT_BRIDGE_UNAVAILABLE")?;
+        let mut state = self.state.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("CHAT_BRIDGE_UNAVAILABLE", source_error)
+        })?;
         if !state.valid
             || message.get("generationId").and_then(Value::as_str) != Some(&state.generation_id)
         {
@@ -505,9 +513,9 @@ impl ChatBridge {
 
 impl PendingChatSend {
     pub fn wait(self) -> Result<ChatSendPublication, String> {
-        self.completion
-            .recv()
-            .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
+        self.completion.recv().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("CHAT_DISPATCH_ABORTED", source_error)
+        })?
     }
 }
 
@@ -561,41 +569,17 @@ fn project_error(error: Option<&Value>) -> Result<Value, String> {
                     .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
         })
         .unwrap_or("CHAT_FAILED");
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .filter(|value| safe_public_error_message(value))
-        .unwrap_or("暂时无法完成回复。");
+    let details = crate::runtime_log::error_details(&Value::Object(error.clone()));
+    let message = if details.is_empty() {
+        code.to_string()
+    } else {
+        details
+    };
     Ok(json!({
         "code": code,
         "message": message,
         "retryable": error.get("retryable").and_then(Value::as_bool).unwrap_or(false),
     }))
-}
-
-fn safe_public_error_message(value: &str) -> bool {
-    if value.is_empty()
-        || value.len() > 256
-        || value
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n' | '\\'))
-    {
-        return false;
-    }
-    let lower = value.to_ascii_lowercase();
-    ![
-        "authorization",
-        "bearer ",
-        "api_key",
-        "apikey",
-        "credential",
-        "password",
-        "secret",
-        "token=",
-        "://",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
 }
 
 fn validate_chat_payload(payload: &Value) -> Result<(), String> {
@@ -853,10 +837,10 @@ mod tests {
             .unwrap();
         let serialized = serde_json::to_string(&failed).unwrap();
         assert!(!serialized.contains("must-not-project"));
-        assert!(!serialized.contains("private"));
+        assert!(serialized.contains("private"));
         assert_eq!(
             failed.error.as_ref().unwrap()["message"],
-            "暂时无法完成回复。"
+            "Authorization: Bearer [REDACTED] C:\\private"
         );
         assert_eq!(failed.error.unwrap()["retryable"], true);
         assert!(bridge

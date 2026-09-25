@@ -51,7 +51,9 @@ pub fn validate(sources: &[DownloadSource]) -> Result<(), String> {
 }
 
 pub fn https_url(value: &str) -> Result<Url, String> {
-    let url = Url::parse(value).map_err(|_| "下载地址无效。".to_string())?;
+    let url = Url::parse(value).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("下载地址无效。", source_error)
+    })?;
     if url.scheme() != "https"
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -67,9 +69,9 @@ impl DownloadSources {
     pub fn load(&self) -> Result<Vec<DownloadSource>, String> {
         let document = self.0.load("DOWNLOAD")?;
         let sources = match document.pointer("/settings/download_sources") {
-            Some(value) => {
-                serde_json::from_value(value.clone()).map_err(|_| "下载源配置无效。".to_string())?
-            }
+            Some(value) => serde_json::from_value(value.clone()).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("下载源配置无效。", source_error)
+            })?,
             None => defaults(),
         };
         validate(&sources)?;

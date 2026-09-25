@@ -217,7 +217,7 @@ inspect 在系统临时目录保存源/目标路径、角色映射和稳定历�
 commit阶段回滚，包括四棵原子树在 target→backup 和 staging→target 之间硬退出后的完整恢复。还必须覆盖角色包
 损坏、TTS复制/后扫描失败及 TTS布局 warning 均能保留 Timeline和Memory，且用户取消不会被可选域吞掉。成功、带
 warning完成、失败和取消
-均需直接比较测试涉及的源文件内容和 mtime，证明源文件未被改写，且脱敏输出零命中凭据、正文、记忆和绝对源路径。发布前使用
+均需直接比较测试涉及的源文件内容和 mtime，证明源文件未被改写，且常规输出不包含凭据、正文、记忆和绝对源路径；失败诊断允许保留原始异常中的路径，遵循 [诊断原文规则](WP-4L-02-human-readable-runtime-log-agent-trace.md)。发布前使用
 `sakura-release` 的副本分别完成一次真实 Windows 与 macOS arm64 人工迁移，不直接改动原目录。macOS 验收必须覆盖
 GPT-SoVITS Miniforge 内部相对符号链接、可执行位、托管 Python/推理配置路径以及迁移后真实 TTS 启动。
 长期记忆回归还必须覆盖：无目标模型时把完整 ONNX模型纳入 staging/target、准备失败时仍提交已保全的 Memory并产生

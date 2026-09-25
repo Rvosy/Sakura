@@ -238,7 +238,9 @@ impl CharacterAppearanceState {
         let session_values = self
             .session
             .lock()
-            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("APPEARANCE_STATE_UNAVAILABLE", source_error)
+            })?
             .as_ref()
             .filter(|session| {
                 session.core_generation_id == presentation.generation_id
@@ -263,10 +265,9 @@ impl CharacterAppearanceState {
         presentation: &CharacterPresentation,
     ) -> Result<(AppearancePublication, Option<AppearancePublication>), String> {
         let baseline = self.repository.load_for(presentation)?;
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("APPEARANCE_STATE_UNAVAILABLE", source_error)
+        })?;
         let cancelled = session
             .take()
             .filter(|existing| existing.preview.is_some())
@@ -320,10 +321,9 @@ impl CharacterAppearanceState {
             .theme_tokens
             .get("pageBackground")
             .ok_or_else(|| "APPEARANCE_THEME_INVALID".to_string())?;
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("APPEARANCE_STATE_UNAVAILABLE", source_error)
+        })?;
         let Some(session) = session.as_mut() else {
             return Ok(());
         };
@@ -356,10 +356,9 @@ impl CharacterAppearanceState {
     }
 
     pub fn cancel(&self) -> Result<Option<AppearancePublication>, String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("APPEARANCE_STATE_UNAVAILABLE", source_error)
+        })?;
         let Some(existing) = session.as_mut() else {
             return Ok(None);
         };
@@ -370,10 +369,9 @@ impl CharacterAppearanceState {
     }
 
     pub fn close_session(&self) -> Result<Option<AppearancePublication>, String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("APPEARANCE_STATE_UNAVAILABLE", source_error)
+        })?;
         session
             .take()
             .filter(|existing| existing.preview.is_some())
@@ -385,10 +383,9 @@ impl CharacterAppearanceState {
         &self,
         current_generation_id: Option<&str>,
     ) -> Result<Option<AppearancePublication>, String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("APPEARANCE_STATE_UNAVAILABLE", source_error)
+        })?;
         let Some(current_generation_id) = current_generation_id else {
             // A Core generation transition temporarily has no available generation. Keep the preview
             // session bound to its last confirmed generation until a different generation is
@@ -428,10 +425,9 @@ impl CharacterAppearanceState {
         &self,
         window_generation: u64,
     ) -> Result<std::sync::MutexGuard<'_, Option<PreviewSession>>, String> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        let session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("APPEARANCE_STATE_UNAVAILABLE", source_error)
+        })?;
         if session
             .as_ref()
             .is_none_or(|existing| existing.window_generation != window_generation)
@@ -1113,7 +1109,9 @@ mod tests {
         fs::write(&parent_as_file, b"not a directory").unwrap();
         let target = parent_as_file.join("ui.json");
         assert_eq!(
-            atomic_write(&target, b"replacement").unwrap_err(),
+            crate::runtime_log::diagnostic_code(
+                &atomic_write(&target, b"replacement").unwrap_err()
+            ),
             "APPEARANCE_PERMISSION_DENIED"
         );
         assert_eq!(fs::read(parent_as_file).unwrap(), b"not a directory");

@@ -34,10 +34,10 @@ test("autostart snapshot is strict and generation-scoped", () => {
   assert.throws(() => validateAutostartSnapshot({ ...snapshot(), extra: true }));
 });
 
-test("autostart platform errors are shown as actionable messages", () => {
+test("autostart platform errors retain the original OS reason", () => {
   assert.equal(
-    autostartErrorMessage("AUTOSTART_SETTINGS_UPDATE_FAILED"),
-    "无法修改开机启动设置，请检查系统权限后重试。",
+    autostartErrorMessage("AUTOSTART_SETTINGS_UPDATE_FAILED: Access denied (os error 5)"),
+    "AUTOSTART_SETTINGS_UPDATE_FAILED: Access denied (os error 5)",
   );
 });
 
@@ -77,7 +77,7 @@ test("failed autostart save keeps the draft dirty and discard restores the platf
   controller.initialize(snapshot(false));
   control.checked = true;
   control.fire("change");
-  await assert.rejects(() => controller.save(), /无法修改开机启动设置/);
+  await assert.rejects(() => controller.save(), /AUTOSTART_SETTINGS_UPDATE_FAILED/);
   assert.equal(controller.isDirty(), true);
   controller.discard();
   assert.equal(control.checked, false);

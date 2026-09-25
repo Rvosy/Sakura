@@ -73,45 +73,57 @@ impl CharacterStudioWindowState {
         self.session
             .lock()
             .map(|session| session.initial_character_id.clone())
-            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "STUDIO_WINDOW_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })
     }
 
     pub fn initial_resource_id(&self) -> Result<Option<String>, String> {
         self.session
             .lock()
             .map(|session| session.initial_resource_id.clone())
-            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "STUDIO_WINDOW_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })
     }
 
     pub fn bind_generation(&self, generation_id: &str) -> Result<(), String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_WINDOW_STATE_UNAVAILABLE", source_error)
+        })?;
         if session.generation_id != generation_id {
             session.generation_id = generation_id.to_string();
             self.previews
                 .lock()
-                .map_err(|_| "STUDIO_PREVIEW_STATE_UNAVAILABLE".to_string())?
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "STUDIO_PREVIEW_STATE_UNAVAILABLE",
+                        source_error,
+                    )
+                })?
                 .clear();
         }
         Ok(())
     }
 
     pub fn authorize_close(&self) -> Result<(), String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_WINDOW_STATE_UNAVAILABLE", source_error)
+        })?;
         session.close_authorized = true;
         Ok(())
     }
 
     pub fn consume_close_authorization(&self) -> Result<bool, String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_WINDOW_STATE_UNAVAILABLE", source_error)
+        })?;
         let authorized = session.close_authorized;
         session.close_authorized = false;
         Ok(authorized)
@@ -129,10 +141,9 @@ impl CharacterStudioWindowState {
     }
 
     pub fn begin_exit(&self) -> Result<bool, String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_WINDOW_STATE_UNAVAILABLE", source_error)
+        })?;
         if session.exit_requested {
             return Ok(false);
         }
@@ -187,10 +198,9 @@ impl CharacterStudioWindowState {
             generation_id: generation_id.to_string(),
             expires_at: Instant::now() + PREVIEW_TTL,
         };
-        let mut previews = self
-            .previews
-            .lock()
-            .map_err(|_| "STUDIO_PREVIEW_STATE_UNAVAILABLE".to_string())?;
+        let mut previews = self.previews.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_PREVIEW_STATE_UNAVAILABLE", source_error)
+        })?;
         previews.retain(|_, item| item.expires_at > Instant::now());
         previews.insert(token.clone(), resource);
         let preview_url = if cfg!(target_os = "windows") {
@@ -206,10 +216,9 @@ impl CharacterStudioWindowState {
     }
 
     pub fn load_preview(&self, token: &str, generation_id: &str) -> Result<LoadedPreview, String> {
-        let mut previews = self
-            .previews
-            .lock()
-            .map_err(|_| "STUDIO_PREVIEW_STATE_UNAVAILABLE".to_string())?;
+        let mut previews = self.previews.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_PREVIEW_STATE_UNAVAILABLE", source_error)
+        })?;
         previews.retain(|_, item| item.expires_at > Instant::now());
         let resource = previews
             .get(token)
@@ -238,10 +247,9 @@ impl CharacterStudioWindowState {
         initial_resource_id: Option<&str>,
         settings_was_visible: bool,
     ) -> Result<(), String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_WINDOW_STATE_UNAVAILABLE", source_error)
+        })?;
         *session = StudioSession {
             initial_character_id: initial_character_id.to_string(),
             initial_resource_id: initial_resource_id.map(str::to_string),
@@ -252,16 +260,20 @@ impl CharacterStudioWindowState {
     }
 
     fn finish_session(&self) -> Result<(bool, bool), String> {
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())?;
+        let mut session = self.session.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_WINDOW_STATE_UNAVAILABLE", source_error)
+        })?;
         let restore_settings = session.settings_was_visible;
         let exiting = session.exiting;
         *session = StudioSession::default();
         self.previews
             .lock()
-            .map_err(|_| "STUDIO_PREVIEW_STATE_UNAVAILABLE".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "STUDIO_PREVIEW_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?
             .clear();
         Ok((restore_settings, exiting))
     }
@@ -338,8 +350,9 @@ pub fn show_or_focus(
             settings.hide().map_err(|error| error.to_string())?;
         }
         if let Some(pet) = app.get_webview_window("main") {
-            pet.set_always_on_top(false)
-                .map_err(|_| "PET_TOPMOST_APPLY_FAILED".to_string())?;
+            pet.set_always_on_top(false).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("PET_TOPMOST_APPLY_FAILED", source_error)
+            })?;
         }
         Ok(())
     })();

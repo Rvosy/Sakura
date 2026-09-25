@@ -1138,7 +1138,7 @@ def _prepare_memory_model(
         raise
     except MemoryModelTaskCancelled:
         raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "staging") from None
-    except Exception as exc:  # noqa: BLE001 - only stable diagnostics cross the boundary
+    except Exception as exc:  # noqa: BLE001 - preserve the original failure at the migration boundary
         _log_legacy_import(
             import_id,
             "legacy_import.memory_model_failed",
@@ -1149,7 +1149,7 @@ def _prepare_memory_model(
         raise LegacyImportError(
             "LEGACY_MEMORY_MODEL_PREPARATION_FAILED",
             "staging",
-        ) from None
+        ) from exc
 
 
 def _copy_tts(
@@ -1633,14 +1633,6 @@ def _safe_file_size(path: Path) -> int:
 def _exception_log_attributes(
     error: BaseException, *, stage: str = "internal"
 ) -> dict[str, object]:
-    # Exception messages may contain absolute paths, config values, or user
-    # text. Keep a useful but content-free diagnostic and expose structured OS,
-    # SQLite, YAML-location and chained-cause facts separately.
-    diagnostic = (
-        str(error.strerror or type(error).__name__)
-        if isinstance(error, OSError)
-        else str(getattr(error, "code", "") or type(error).__name__)
-    )
     reason_code = getattr(error, "code", None) or getattr(
         error, "sqlite_errorname", None
     )
@@ -1654,12 +1646,8 @@ def _exception_log_attributes(
             if errno is not None
             else "LEGACY_IMPORT_FAILED"
         )
-    attributes: dict[str, object] = {
-        "diagnostic": diagnostic,
-        "error_type": type(error).__name__,
-        "reason_code": str(reason_code),
-        "stage": stage,
-    }
+    from app.core.diagnostics import exception_diagnostics
+    attributes = exception_diagnostics(error, reason_code=str(reason_code), stage=stage)
     for name in ("sqlite_errorcode", "sqlite_errorname", "errno", "winerror"):
         value = getattr(error, name, None)
         if value is not None:
