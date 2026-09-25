@@ -479,6 +479,55 @@ class TestAgentRuntimeBasics:
         runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
         assert runtime.model_vision_enabled is True
 
+    @pytest.mark.parametrize("snapshot_success", [True, False])
+    def test_auto_browser_snapshot_has_a_matching_tool_call(self, snapshot_success) -> None:
+        client = _dummy_api_client()
+        navigation = {
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "navigate-1", "type": "function",
+                "function": {"name": "playwright_navigate", "arguments": "{}"}}],
+        }
+        calls = []
+
+        def complete(_prompt, messages, **_kwargs):
+            calls.append(messages)
+            if len(calls) == 1:
+                return ChatCompletionTurn(content="", message=navigation,
+                    tool_calls=[NativeToolCall(id="navigate-1", name="playwright_navigate", arguments={})])
+            pending = set()
+            results = []
+            for message in messages:
+                if message["role"] == "tool":
+                    assert message["tool_call_id"] in pending, "orphan tool result rejected by provider"
+                    pending.remove(message["tool_call_id"])
+                    results.append(message["name"])
+                else:
+                    assert not pending, "tool transaction interrupted"
+                    pending.update(call["id"] for call in message.get("tool_calls", []))
+            assert not pending
+            assert results == ["playwright_navigate", "playwright_get_text"]
+            return ChatCompletionTurn(
+                content=json.dumps({"segments": [{"ja": "確認したよ。", "zh": "已经检查了。", "tone": "中性"}]}),
+                message={"role": "assistant", "content": ""}, tool_calls=[],
+            )
+
+        client.complete_with_tools.side_effect = complete
+        def snapshot(_args):
+            if not snapshot_success:
+                raise RuntimeError("snapshot failed")
+            return "A page with useful information"
+
+        registry = ToolRegistry([
+            _dummy_tool("playwright_navigate"),
+            _dummy_tool("playwright_get_text", handler=snapshot),
+        ])
+        runtime = AgentRuntime(client, _dummy_system_prompt(), tools=registry, strict_provider_errors=True,
+            runtime_loop_settings=RuntimeLoopSettings(max_agent_steps_per_turn=1))
+        result = runtime.handle_user_message([ChatMessage(role="user", content="用浏览器打开网页并总结")])
+        assert result.reply.segments[0].translation == "已经检查了。"
+        assert len(calls) == 2
+        assert len(navigation["tool_calls"]) == 1, "do not mutate the recorded model response"
+
     def test_default_autonomous_screen_observation_enabled(self) -> None:
         runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
         assert runtime.autonomous_screen_observation_enabled is True

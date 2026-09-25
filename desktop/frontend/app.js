@@ -1384,7 +1384,6 @@ function handleCoreEvent(event) {
     ++portraitHitRevision;
     rendererHost.freeze("generation_changed");
   }
-  if (event.type === "lifecycle" && isChatReadyLifecycle(event.status) && event.generationId === characterPresentation.generationId && event.revision !== before.revision) void rebindCoreGeneration(event.generationId, { refresh: true });
   const result = presentation.reduce(event);
   if (!result.applied) return;
   if (event.type === "lifecycle") hostInteraction.handleLifecycle(event);
@@ -1695,7 +1694,8 @@ let coreRebindRevision = 0;
 let coreRebindTarget = "";
 
 async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
-  if (!refresh && generationId === characterPresentation.generationId) return true;
+  if (!refresh && !presentationUnavailable && generationId === characterPresentation.generationId
+    && (!characterPresentation.visual || rendererHost.current()?.bindingId === characterPresentation.visual.bindingId)) return true;
   if (disposed || !generationId || coreRebindTarget === generationId) return false;
   const revision = ++coreRebindRevision;
   coreRebindTarget = generationId;
@@ -1725,9 +1725,9 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
     try { activeAppearance = validateAppearancePublication(await invoke("current_character_appearance"), next); } catch { /* retain valid appearance */ }
     if (disposed || revision !== coreRebindRevision) return false;
     visualScalePercent = activeAppearance.portraitScalePercent;
-    await rendererHost.bind(next);
+    const bound = await rendererHost.bind(next);
     if (disposed || revision !== coreRebindRevision) return false;
-    presentationUnavailable = false;
+    presentationUnavailable = !bound;
     characterName.textContent = next.displayName;
     portraitFallbackName.textContent = next.displayName;
     portrait.setAttribute("aria-label", `${next.displayName}，可拖动窗口`);
@@ -1754,6 +1754,12 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
     const next = validateCharacterPresentation(publication.presentation);
     const appearance = validateAppearancePublication(publication.appearance, next);
     if (next.generationId !== token.coreGenerationId) return;
+    if (next.characterId === characterPresentation.characterId) {
+      // Selecting the active character restores its current publication. The
+      // cached binding (and the preview token) may have been revoked by reload.
+      await rebindCoreGeneration(next.generationId, { refresh: true });
+      return;
+    }
     await screenAttachment.close();
     if (!characterVisualPreviewSessions.isCurrent(token)) return;
     ++portraitHitRevision;
@@ -1763,12 +1769,6 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
     if (!characterVisualPreviewSessions.isCurrent(token)) return;
     bubbleScroll.updateText(next.initialMessage, { forceEnd: true });
     applyTheme(appearance.themeTokens);
-    if (next.characterId === characterPresentation.characterId) {
-      visualScalePercent = activeAppearance.portraitScalePercent;
-      await rendererHost.bind(characterPresentation);
-      characterVisualPreviewActive = false;
-      render(presentation.current());
-    }
   } catch (error) {
     runtimeDiagnostics.reportError(error, { command: "visual_preview", code: "VISUAL_PREVIEW_FAILED" });
     showRecoverableError("角色预览失败。");

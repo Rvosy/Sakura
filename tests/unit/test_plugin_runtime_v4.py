@@ -96,6 +96,9 @@ class Plugin:
             load=lambda: {{"serviceKey": "", "profileId": "", "modelId": ""}},
             save=lambda values: None,
         )
+        context.get("sakura.host.model_slots.v2").register_provider(
+            {{"serviceKey": "{service_key}", "label": "测试模型"}}, catalog=lambda: [],
+        )
         original_id = context.plugin_id
         context.plugin_id = "fixture.spoofed"
         logger = context.get("sakura.host.logging")
@@ -138,6 +141,7 @@ class Plugin:
     assert b"fixture.spoofed" not in stream.getvalue()
     assert b"private-credential" not in stream.getvalue()
     assert all(len(line) + 1 <= 4096 for line in stream.getvalue().splitlines())
+    assert not [r for r in records if r.get("attributes", {}).get("event") == "plugin.cleanup.failed"]
 
 
 def test_plugin_start_failures_reach_log_bridge_with_identity(tmp_path: Path):

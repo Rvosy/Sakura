@@ -164,6 +164,7 @@ class _CallbackBinding:
 class _HostRegistration:
     service_key: str
     registration_id: str
+    unregister_method: str
 
 
 @dataclass(frozen=True)
@@ -1580,9 +1581,10 @@ class PluginRuntimeManager:
             # A closing worker must be able to release its own registrations
             # before Core performs the final scope sweep.
             draining_unregister = (binding is not None and binding.host_service is not None
-                and draining is not None and method == "unregister"
+                and draining is not None
                 and len(detached_args) == 1
                 and any(item.service_key == service_key and item.registration_id == detached_args[0]
+                        and item.unregister_method == method
                         for item in self._host_registrations.get(caller_id, ())))
             # Reverse dependency shutdown keeps a worker's declared services
             # alive until its cleanup finishes. Unrelated or stale callers
@@ -1674,19 +1676,22 @@ class PluginRuntimeManager:
     ) -> None:
         if caller_id == "sakura.core" or not service_key.startswith("sakura.host."):
             return
-        if method == "register" and isinstance(result, Mapping):
+        if method in {"register", "register_provider"} and isinstance(result, Mapping):
             registration_id = result.get("registrationId")
             if isinstance(registration_id, str) and registration_id:
                 with self._lock:
                     self._host_registrations.setdefault(caller_id, []).append(
-                        _HostRegistration(service_key, registration_id)
+                        _HostRegistration(service_key, registration_id,
+                            "unregister_provider" if method == "register_provider" else "unregister")
                     )
             return
-        if method == "unregister" and len(args) == 1 and isinstance(args[0], str):
+        if method in {"unregister", "unregister_provider"} and len(args) == 1 and isinstance(args[0], str):
             with self._lock:
                 registrations = self._host_registrations.get(caller_id, [])
                 self._host_registrations[caller_id] = [
-                    item for item in registrations if item.registration_id != args[0]
+                    item for item in registrations if not (
+                        item.service_key == service_key and item.registration_id == args[0]
+                        and item.unregister_method == method)
                 ]
 
     def _clear_plugin_scope(self, plugin_id: str, scope_id: str | None = None) -> None:
@@ -1716,7 +1721,7 @@ class PluginRuntimeManager:
         for registration in registrations:
             binding = host_bindings.get(registration.service_key)
             callback = (
-                getattr(binding.host_service, "unregister", None)
+                getattr(binding.host_service, registration.unregister_method, None)
                 if binding is not None
                 else None
             )

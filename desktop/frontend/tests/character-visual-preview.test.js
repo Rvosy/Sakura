@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 
 import {
   createCharacterVisualPreviewSessionController,
@@ -15,6 +17,32 @@ function deferred() {
 function publication(characterId, revision, windowGeneration = 1) {
   return { schemaVersion: 1, characterId, revision, windowGeneration };
 }
+
+test("selecting the active character reloads the committed binding instead of mounting revoked tokens", async () => {
+  const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  const handler = source.slice(source.indexOf('await listenAppEvent("sakura://character-visual-preview"'),
+    source.indexOf('await listenAppEvent("sakura://control-surface-frame"'));
+  const refreshed = [];
+  let receive;
+  const context = {
+    listenAppEvent: async (_name, callback) => { receive = callback; },
+    characterVisualPreviewSessions: createCharacterVisualPreviewSessionController({ currentCoreGenerationId: () => "g" }),
+    characterPresentation: { characterId: "active", generationId: "g", visual: { bindingId: "revoked" } },
+    validateCharacterPresentation: value => value,
+    validateAppearancePublication: value => value,
+    rebindCoreGeneration: async (generation, options) => { refreshed.push([generation, options.refresh]); },
+    screenAttachment: { close: async () => {} },
+    portraitHitRevision: 0,
+    characterVisualPreviewActive: false,
+    visualScalePercent: 100,
+    rendererHost: { bind: () => assert.fail("neither cached nor transient preview bindings may mount") },
+    runtimeDiagnostics: { reportError: error => assert.fail(String(error)) },
+  };
+  await vm.runInNewContext(`(async () => { ${handler} })()`, context);
+  await receive({ payload: { ...publication("active", 1),
+    presentation: { characterId: "active", generationId: "g", visual: { bindingId: "preview" } }, appearance: {} } });
+  assert.deepEqual(refreshed, [["g", true]]);
+});
 
 test("late B preview cannot overwrite C portrait, theme, or greeting", async () => {
   let coreGenerationId = "generation-a";

@@ -320,6 +320,32 @@ test("failed readiness stays non-retryable while Core is still running", async (
   client.dispose();
 });
 
+test("same-character visual reload binds even while the model still needs setup", async () => {
+  const env = harness();
+  const prepared = [];
+  const events = [];
+  const publish = bindingId => ({ ...lifecyclePublication(1, "running", "setup_required"),
+    characterPresentation: { generationId: "generation-1", characterId: "alpha", visual: { bindingId } } });
+  env.setPublication(publish("old"));
+  const client = env.create(event => events.push(event), { prepareGeneration: async args => {
+    prepared.push(args);
+    return true;
+  } });
+  try {
+    await client.start();
+    env.setPublication(publish("replacement"));
+    await env.tick();
+    assert.equal(prepared.length, 2);
+    assert.equal(prepared[1].refresh, true);
+    assert.equal(events.at(-1).status, "setup_required");
+    await env.tick();
+    assert.equal(prepared.length, 2, "an unchanged binding is not remounted every poll");
+    await assert.rejects(client.send({ message: "not configured" }), /CHAT_NOT_READY/);
+  } finally {
+    client.dispose();
+  }
+});
+
 test("stopped Core failure exposes its safe reason and manual retry", async () => {
   const events = [];
   const env = harness();

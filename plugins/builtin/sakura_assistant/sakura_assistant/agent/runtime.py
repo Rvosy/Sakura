@@ -1095,14 +1095,24 @@ class AgentRuntime:
                 check_cancelled(cancel_checker)
                 step_results.append(snapshot_result)
                 execution_results.append(snapshot_result)
+                snapshot_call = NativeToolCall(
+                    id=f"auto_browser_snapshot_{step_index}",
+                    name=BROWSER_SNAPSHOT_TOOL_NAME,
+                    arguments={},
+                    arguments_json="{}",
+                )
+                tool_messages.append(traced_message({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": snapshot_call.id,
+                        "type": "function",
+                        "function": {"name": snapshot_call.name, "arguments": "{}"},
+                    }],
+                }, "assistant_tool_call"))
                 tool_messages.extend(
                     _build_tool_messages_for_result(
-                        NativeToolCall(
-                            id=f"auto_browser_snapshot_{step_index}",
-                            name=BROWSER_SNAPSHOT_TOOL_NAME,
-                            arguments={},
-                            arguments_json="{}",
-                        ),
+                        snapshot_call,
                         snapshot_result,
                         include_images=self.model_vision_enabled,
                     )
