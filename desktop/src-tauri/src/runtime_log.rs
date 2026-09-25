@@ -604,12 +604,12 @@ impl RuntimeLogService {
     pub fn viewer_snapshot(
         &self,
         after_sequence: Option<u64>,
-    ) -> Result<RuntimeLogViewerSnapshot, &'static str> {
+    ) -> Result<RuntimeLogViewerSnapshot, String> {
         let state = self
             .inner
             .state
             .lock()
-            .map_err(|_| "RUNTIME_LOG_VIEWER_UNAVAILABLE")?;
+            .map_err(|error| diagnostic_error("RUNTIME_LOG_VIEWER_UNAVAILABLE", error))?;
         let cursor = after_sequence.unwrap_or_default();
         let reset_required = cursor > 0
             && state
@@ -3510,6 +3510,41 @@ pub(crate) fn diagnostic_error(code: &str, error: impl std::fmt::Display) -> Str
     )
 }
 
+pub(crate) fn diagnostic_code(error: &str) -> &str {
+    error.split([':', '|', '\n']).next().unwrap_or(error)
+}
+
+pub(crate) fn panic_diagnostic(error: Box<dyn std::any::Any + Send>) -> String {
+    error
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| error.downcast_ref::<&str>().map(|text| (*text).to_string()))
+        .unwrap_or_else(|| "thread panicked with a non-string payload".to_string())
+}
+
+pub(crate) fn error_details(error: &Value) -> String {
+    let mut parts = Vec::new();
+    for value in [
+        error.get("message"),
+        error.get("diagnostic"),
+        error.pointer("/details/diagnostics/exception_chain"),
+        error.pointer("/details/diagnostics/diagnostic"),
+        error.get("exception_chain"),
+        error.pointer("/details/diagnostics/exception_stack"),
+        error.get("exception_stack"),
+    ] {
+        if let Some(text) = value
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            if !parts.iter().any(|part: &&str| *part == text) {
+                parts.push(text);
+            }
+        }
+    }
+    sanitize_diagnostic(&parts.join("\n"), &[], 16384)
+}
+
 pub(crate) fn redact_diagnostic_credentials(value: &str, secrets: &[String]) -> String {
     use regex::{Captures, Regex};
     use std::sync::LazyLock;
@@ -3785,6 +3820,25 @@ fn local_clock_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boundary_errors_keep_native_and_remote_causes_with_stable_codes() {
+        let error = diagnostic_error("SPAWN_FAILED", "CreateProcess: win32=5 api_key=private-key");
+        assert_eq!(diagnostic_code(&error), "SPAWN_FAILED");
+        assert!(error.contains("CreateProcess: win32=5"));
+        assert!(!error.contains("private-key"));
+        let details = error_details(&json!({"message":"请求失败", "details":{"diagnostics":{
+            "diagnostic":"connection reset", "exception_stack":"Traceback\nC:\\runtime\\main.py:12"
+        }}}));
+        assert!(details.contains("connection reset"));
+        assert!(details.contains("Traceback\nC:\\runtime\\main.py:12"));
+        let settings_error = crate::shell_lifecycle::settings_response_payload(json!({
+            "ok":false, "error":{"code":"SETTINGS_LOAD_FAILED", "message":"读取失败",
+            "details":{"feature":"voice", "field":"provider", "diagnostics":{"diagnostic":"Permission denied (os error 5)"}}}
+        })).unwrap_err();
+        assert!(settings_error.starts_with("SETTINGS_LOAD_FAILED|voice|provider|"));
+        assert!(settings_error.contains("Permission denied (os error 5)"));
+    }
 
     fn paused_writer(path: PathBuf) -> (RuntimeLogService, mpsc::Sender<()>) {
         let (resume, paused) = mpsc::channel();

@@ -40,7 +40,9 @@ async fn request(
         )?)
     })
     .await
-    .map_err(|_| "HOST_INTERACTION_ABORTED".to_string())?
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("HOST_INTERACTION_ABORTED", source_error)
+    })?
 }
 
 #[tauri::command]
@@ -139,7 +141,12 @@ pub fn dispatch(app: &tauri::AppHandle, handle: &ShellLifecycleHandle, event: Va
         let manager = app.state::<Arc<CaptureManager>>().inner().clone();
         let result = app
             .cursor_position()
-            .map_err(|_| "SCREEN_CAPTURE_CURSOR_UNAVAILABLE".to_string())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "SCREEN_CAPTURE_CURSOR_UNAVAILABLE",
+                    source_error,
+                )
+            })
             .and_then(|cursor| {
                 manager.capture_host_frame(
                     &generation_id,
@@ -153,7 +160,9 @@ pub fn dispatch(app: &tauri::AppHandle, handle: &ShellLifecycleHandle, event: Va
             json!({"generationId":generation_id,"requestId":request_id,"sessionId":session_id});
         match &result {
             Ok(resource) => response["resource"] = json!(resource),
-            Err(_) => response["error"] = json!({"code":"SCREEN_CAPTURE_FAILED"}),
+            Err(error) => {
+                response["error"] = json!({"code":"SCREEN_CAPTURE_FAILED", "diagnostic":error})
+            }
         }
         // The payload retains the original generation even if the live transport
         // changes before dispatch. Core rejects that result rather than adopting it.

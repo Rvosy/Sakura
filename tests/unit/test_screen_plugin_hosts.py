@@ -63,6 +63,18 @@ def captured_screen(session_provider=lambda: "session"):
     return screen
 
 
+def test_capture_failure_keeps_native_diagnostic_and_stable_code():
+    def emit(name, payload):
+        screen.complete({**payload, "error": {"code": "SCREEN_CAPTURE_FAILED",
+                         "diagnostic": "CreateWindow: win32=5 C:\\runtime api_key=private-key"}})
+    screen = ScreenHost("generation", session_provider=lambda: "session", emit_callback=emit)
+    with caller(), pytest.raises(ScreenHostError) as caught:
+        screen.capture({"operationId": "capture-failure", "sessionId": "session", "resolution": "720p"})
+    assert caught.value.code == "SCREEN_CAPTURE_FAILED"
+    assert "CreateWindow: win32=5 C:\\runtime" in str(caught.value)
+    assert "private-key" not in str(caught.value)
+
+
 def test_resource_handles_are_scoped_and_consumed_once():
     screen = captured_screen()
     with caller():

@@ -1,3 +1,4 @@
+import { errorText } from "../core/error-display.js";
 import { openLegacyDataImport } from './legacy-data-import.js';
 import { installClickIconMotion } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from "./select-control.js";
@@ -1565,8 +1566,8 @@ fields.telemetryCopyButton.addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(value);
     notify("诊断 ID 已复制。", "success");
-  } catch {
-    setError("TELEMETRY_INSTALLATION_ID_COPY_FAILED");
+  } catch (error) {
+    setError(errorText(error));
   }
 });
 fields.telemetryRegenerateButton.addEventListener("click", regenerateTelemetryInstallationId);

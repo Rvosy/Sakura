@@ -1,22 +1,9 @@
+import { errorText } from '../core/error-display.js';
 import { enhanceSelect, refreshSelect, closeSelects } from './select-control.js';
 import { legacyDataImportPlanHasWork } from './root-settings-runtime.js';
 
 export function legacyImportError(error) {
-  const code = String(error);
-  const messages = {
-    LEGACY_SOURCE_ACTIVE: '请先退出 Sakura 0.9.x，再选择目录。',
-    LEGACY_DATA_SOURCE_UNRECOGNIZED: '所选目录不是可识别的 Sakura 0.9.x 数据目录。',
-    LEGACY_DATA_MAPPING_REQUIRED: '请先选择待关联角色的迁移目标。',
-    LEGACY_DATA_MAPPING_COLLISION: '多个旧角色不能迁移到同一个角色，请分别选择。',
-    LEGACY_DATA_MAPPING_INVALID: '所选角色已不可用，请重新扫描。',
-    LEGACY_DATA_SCOPE_CONFLICT: '部分记录的角色身份冲突，不能覆盖其他角色的数据。',
-    LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED: '当前有冲突记录，请重新扫描后确认覆盖。',
-    LEGACY_DATA_IMPORT_PLAN_STALE: '迁移选择已失效，请重新选择目录。',
-    LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: '无法确认迁移进程已停止。请退出 Sakura，保留迁移记录并重启系统后重试。',
-    LEGACY_IMPORT_CORE_STOP_FAILED: '无法确认 Sakura Core 已停止。请退出 Sakura，保留迁移记录并重启系统后重试。',
-    LEGACY_IMPORT_OPERATION_TIMEOUT: '迁移等待超时，请重新扫描后重试。',
-  };
-  return Object.entries(messages).find(([key]) => code.includes(key))?.[1] || `迁移失败：${code}`;
+  return errorText(error);
 }
 
 export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = () => {} }) {
@@ -141,7 +128,7 @@ export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = 
       const actual = report.plan?.totals || {};
       $('[data-receipt]').textContent = `导入 ${count(report.plan?.packagesNew)} 个角色包；新增 ${count(actual.historyNew + actual.memoryNew)} 条，跳过 ${count(actual.historyIdentical + actual.memoryIdentical)} 条，覆盖 ${count(actual.historyConflicts + actual.memoryConflicts)} 条，单独保留 ${count(actual.recoverableErrors)} 条坏数据，关联 ${count(report.plan?.reassociatedRecords)} 条已有记录。`;
       $('[data-summary]').textContent = ''; start.textContent = '完成'; cancel.hidden = true;
-      try { await onComplete(report); } catch { feedback.textContent = "迁移已完成，角色列表刷新失败，请重新打开设置。"; }
+      try { await onComplete(report); } catch (error) { feedback.textContent = `迁移已完成，角色列表刷新失败：${errorText(error)}`; }
     } catch (error) { plan = null; feedback.textContent = legacyImportError(error); start.textContent = '开始迁移'; }
     finally { setOperation(false); }
   };

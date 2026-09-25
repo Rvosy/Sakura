@@ -1,3 +1,4 @@
+import { errorText } from '../core/error-display.js';
 import { createAsrController } from "../audio/asr-controller.js";
 
 export function createAsrInputTest({ document, invoke, listen, readProvider, readDevice,
@@ -32,7 +33,7 @@ export function createAsrInputTest({ document, invoke, listen, readProvider, rea
     if (!readProvider()) { output.textContent = "请先选择要测试的识别引擎。"; return; }
     connected ||= controller.connect();
     try { await connected; if (!disposed) await controller.start(); }
-    catch { output.textContent = "无法连接麦克风测试，请重新打开设置后重试。"; }
+    catch (error) { output.textContent = errorText(error); }
   }
   function cancelTest() { return controller.cancel({ restore: false }); }
   function onKey(event) {

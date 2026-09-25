@@ -1726,13 +1726,16 @@ def test_invalid_provider_json_fails_once_without_poisoning_core(tmp_path: Path)
         assert names[0] == "chat.started"
         assert set(names[1:]) == {"chat.send", "chat.failed"}
         failure = next(frame["payload"] for frame in frames if frame.get("name") == "chat.failed")
+        diagnostics = failure["error"]["details"]["diagnostics"]
+        assert diagnostics["diagnostic"]
+        assert diagnostics["exception_stack"]
         assert failure == {
             "operationId": "chat-invalid-json",
             "error": {
                 "code": "PROVIDER_RESPONSE_INVALID",
                 "message": "模型服务响应格式无效：回复结构不符合协议。",
                 "retryable": False,
-                "details": {},
+                "details": failure["error"]["details"],
             },
             "historyStatus": "saved",
         }
@@ -1831,11 +1834,14 @@ def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) 
         assert names[0] == "chat.started"
         assert set(names[1:]) == {"chat.send", "chat.failed"}
         failure = next(frame["payload"] for frame in frames if frame.get("name") == "chat.failed")
+        diagnostics = failure["error"]["details"]["diagnostics"]
+        assert diagnostics["diagnostic"]
+        assert diagnostics["exception_stack"]
         assert failure["error"] == {
             "code": "PROVIDER_RESPONSE_INVALID",
             "message": "模型服务响应格式无效：回复结构不符合协议。",
             "retryable": False,
-            "details": {},
+            "details": failure["error"]["details"],
         }
         assert len(_ProviderHandler.requests) == 2
         _exchange(process, _request("shutdown", "system.shutdown", {}))
@@ -1871,6 +1877,7 @@ def test_provider_http_status_is_sanitized_and_scoped_to_one_operation(
         )
         frames = [_read(process), _read(process), _read(process)]
         terminal = next(frame for frame in frames if frame.get("name") == "chat.failed")
+        assert terminal["payload"]["error"]["details"]["diagnostics"]["exception_stack"]
         assert terminal["name"] == "chat.failed"
         assert terminal["payload"]["error"] == {
             "code": "PROVIDER_REQUEST_FAILED",
@@ -1879,7 +1886,7 @@ def test_provider_http_status_is_sanitized_and_scoped_to_one_operation(
                 "(code: rate_limit; type: requests)"
             ),
             "retryable": retryable,
-            "details": {},
+            "details": terminal["payload"]["error"]["details"],
         }
         assert "PRIVATE_PROVIDER_FAILURE" not in json.dumps(terminal)
         assert "sk-private-fixture" not in json.dumps(terminal)
@@ -1936,11 +1943,12 @@ def test_connection_refused_is_retryable_and_does_not_change_readiness(tmp_path:
         )
         frames = [_read(process), _read(process), _read(process)]
         terminal = next(frame for frame in frames if frame.get("name") == "chat.failed")
+        assert terminal["payload"]["error"]["details"]["diagnostics"]["exception_stack"]
         assert terminal["payload"]["error"] == {
             "code": "PROVIDER_REQUEST_FAILED",
             "message": "模型请求失败。",
             "retryable": True,
-            "details": {},
+            "details": terminal["payload"]["error"]["details"],
         }
         snapshot = _exchange(process, _request("snapshot", "core.snapshot", {}))
         assert snapshot["payload"]["readiness"] == "ready"

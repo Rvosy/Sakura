@@ -155,7 +155,9 @@ impl SinglePipelineController {
                 .store(false, std::sync::atomic::Ordering::Release);
             self.pipeline
                 .lock()
-                .map_err(|_| NativeError::at(ERROR_CODE, "pipeline lock"))?
+                .map_err(|error| {
+                    NativeError::at(ERROR_CODE, format!("{}: {error}", "pipeline lock"))
+                })?
                 .take();
             let _ = self.liquid_visual.SetIsVisible(false);
             return Err(NativeError::at(
@@ -169,7 +171,7 @@ impl SinglePipelineController {
             .store(false, std::sync::atomic::Ordering::Release);
         self.pipeline
             .lock()
-            .map_err(|_| NativeError::at(ERROR_CODE, "pipeline lock"))?
+            .map_err(|error| NativeError::at(ERROR_CODE, format!("{}: {error}", "pipeline lock")))?
             .take();
         let ready = self.ready.load(std::sync::atomic::Ordering::Acquire);
         if visible && self.enabled() && ready {
@@ -193,17 +195,20 @@ impl SinglePipelineController {
         *self
             .tint
             .lock()
-            .map_err(|_| NativeError::at(ERROR_CODE, "tint lock"))? = tint;
+            .map_err(|error| NativeError::at(ERROR_CODE, format!("{}: {error}", "tint lock")))? =
+            tint;
         if let Some(pipeline) = self
             .pipeline
             .lock()
-            .map_err(|_| NativeError::at(ERROR_CODE, "pipeline lock"))?
+            .map_err(|error| NativeError::at(ERROR_CODE, format!("{}: {error}", "pipeline lock")))?
             .as_mut()
         {
             pipeline
                 .renderer
                 .lock()
-                .map_err(|_| NativeError::at(ERROR_CODE, "renderer lock"))?
+                .map_err(|error| {
+                    NativeError::at(ERROR_CODE, format!("{}: {error}", "renderer lock"))
+                })?
                 .tint = tint;
         }
         Ok(())
@@ -226,10 +231,9 @@ impl SinglePipelineController {
                 })
             })
             .map_err(|error| NativeError::at("LIQUID_GLASS_VISUAL_GEOMETRY_FAILED", error))?;
-        *self
-            .latest_geometry
-            .lock()
-            .map_err(|_| NativeError::at(ERROR_CODE, "geometry lock"))? = Some(geometry);
+        *self.latest_geometry.lock().map_err(|error| {
+            NativeError::at(ERROR_CODE, format!("{}: {error}", "geometry lock"))
+        })? = Some(geometry);
         if !self
             .requested_visible
             .load(std::sync::atomic::Ordering::Acquire)
@@ -248,10 +252,9 @@ impl SinglePipelineController {
                 "MonitorFromWindow returned null",
             );
         }
-        let mut slot = self
-            .pipeline
-            .lock()
-            .map_err(|_| NativeError::at(ERROR_CODE, "pipeline lock"))?;
+        let mut slot = self.pipeline.lock().map_err(|error| {
+            NativeError::at(ERROR_CODE, format!("{}: {error}", "pipeline lock"))
+        })?;
         let size = [geometry.input_surface.width, geometry.input_surface.height];
         let rebuild = slot.as_ref().is_none_or(|pipeline| {
             pipeline.monitor_value != monitor.0 as isize || pipeline.size != size
@@ -260,10 +263,9 @@ impl SinglePipelineController {
             self.ready
                 .store(false, std::sync::atomic::Ordering::Release);
             slot.take();
-            let tint = *self
-                .tint
-                .lock()
-                .map_err(|_| NativeError::at(ERROR_CODE, "tint lock"))?;
+            let tint = *self.tint.lock().map_err(|error| {
+                NativeError::at(ERROR_CODE, format!("{}: {error}", "tint lock"))
+            })?;
             match NativePipeline::create(
                 hwnd,
                 monitor,
@@ -441,9 +443,9 @@ impl NativePipeline {
             .map_err(|error| NativeError::at("LIQUID_GLASS_CAPTURE_SESSION_FAILED", error))?;
         let _ = session.SetIsCursorCaptureEnabled(false);
         let _ = session.SetIsBorderRequired(false);
-        *session_slot
-            .lock()
-            .map_err(|_| NativeError::at(ERROR_CODE, "session lock"))? = Some(session.clone());
+        *session_slot.lock().map_err(|error| {
+            NativeError::at(ERROR_CODE, format!("{}: {error}", "session lock"))
+        })? = Some(session.clone());
         session
             .StartCapture()
             .map_err(|error| NativeError::at("LIQUID_GLASS_CAPTURE_START_FAILED", error))?;
@@ -461,7 +463,7 @@ impl NativePipeline {
     fn update_geometry(&mut self, geometry: SamplingGeometry) -> Result<(), NativeError> {
         self.renderer
             .lock()
-            .map_err(|_| NativeError::at(ERROR_CODE, "renderer lock"))?
+            .map_err(|error| NativeError::at(ERROR_CODE, format!("{}: {error}", "renderer lock")))?
             .geometry = geometry;
         Ok(())
     }

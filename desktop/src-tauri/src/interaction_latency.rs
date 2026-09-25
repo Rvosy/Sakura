@@ -276,9 +276,9 @@ pub fn lock<'a, T>(
 ) -> Result<MutexGuard<'a, T>, String> {
     let started = Instant::now();
     stage(wait_stage);
-    let guard = mutex
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let guard = mutex.lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
+    })?;
     stage_elapsed(acquired_stage, started);
     Ok(guard)
 }

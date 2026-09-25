@@ -1,3 +1,4 @@
+import { errorText } from '../core/error-display.js';
 const CHARACTER_ERROR = "CHARACTER_SETTINGS_RESPONSE_INVALID";
 const STORAGE_REASONS = Object.freeze({
   TTS_ROOT_MISSING: "目录不存在；请重新连接外置盘或选择其他目录。",
@@ -10,11 +11,7 @@ function fail(code) {
 }
 
 export function formatSettingsError(value) {
-  const text = String(value ?? "").trim();
-  return text.replace(
-    /(^|[：:]\s*)[A-Z][A-Z0-9_]{2,63}\|[^\r\n|]{0,120}\|[^\r\n|]{0,120}\|([^\r\n]{1,512})$/,
-    (_match, separator, message) => `${separator}${message}`,
-  );
+  return errorText(value);
 }
 
 export function normalizeCharacterSettingsSnapshot(snapshot) {

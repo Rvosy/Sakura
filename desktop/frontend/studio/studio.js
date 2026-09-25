@@ -1,3 +1,4 @@
+import { errorText } from '../core/error-display.js';
 import { requirementSummary } from "../core/plugin-requirements.js";
 import { createVisualEditorHost, renderVisualThumbnail } from "./visual-editor-host.js";
 import { observeSelects } from "../settings/select-control.js";
@@ -2092,7 +2093,7 @@ async function commitCharacter({ publish = false } = {}) {
       }
       if (!reloadFailure) {
         try { await loadVisualCatalog(); }
-        catch { reloadFailure = "角色已保存，形态暂时无法加载。请重新选择形态。"; }
+        catch (error) { reloadFailure = errorText(error); }
       }
     } catch (error) {
       void renderVisualResources({ flush: false });

@@ -47,7 +47,9 @@ fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
     {
         return Err("TOOLS_SETTINGS_RESPONSE_INVALID".to_string());
     }
-    validate_values(value).map_err(|_| "TOOLS_SETTINGS_RESPONSE_INVALID".to_string())?;
+    validate_values(value).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("TOOLS_SETTINGS_RESPONSE_INVALID", source_error)
+    })?;
     if saved
         && (value.get("saved").and_then(Value::as_bool) != Some(true)
             || value.get("changePlan").and_then(Value::as_str) != Some("applied"))
@@ -83,7 +85,7 @@ pub(crate) async fn settings_tools_get(
     let window_generation = shell.generation()?;
     let core_generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(
         handle.clone(),

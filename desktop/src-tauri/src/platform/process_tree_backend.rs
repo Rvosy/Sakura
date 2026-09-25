@@ -813,7 +813,6 @@ mod native {
     fn finalizer_platform_error(mut error: PlatformError) -> PlatformError {
         error.operation = "finalize_until";
         error.retry = RetryAdvice::Never;
-        error.message = "native process tree finalization failed".into();
         error
     }
 

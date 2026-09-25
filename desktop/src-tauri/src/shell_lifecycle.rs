@@ -66,7 +66,13 @@ pub(crate) fn settings_response_payload(response: Value) -> Result<Value, String
         .pointer("/error/details/field")
         .and_then(Value::as_str)
         .unwrap_or("");
-    Err(format!("{code}|{feature}|{field}|{message}"))
+    let details = crate::runtime_log::error_details(&response["error"]);
+    let diagnostic = if details.is_empty() {
+        message
+    } else {
+        &details
+    };
+    Err(format!("{code}|{feature}|{field}|{diagnostic}"))
 }
 
 pub(crate) async fn dispatch_settings_request(
@@ -80,7 +86,9 @@ pub(crate) async fn dispatch_settings_request(
         handle.settings_request(request_id.as_deref(), name, payload, deadline)
     })
     .await
-    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("SETTINGS_REQUEST_ABORTED", source_error)
+    })?
 }
 
 /// Explicit installs own their subprocess/rollback deadlines. Keep the caller
@@ -95,7 +103,9 @@ pub(crate) async fn dispatch_settings_install(
         handle.settings_request_with_completion(None, name, payload, queue_deadline, true)
     })
     .await
-    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("SETTINGS_REQUEST_ABORTED", source_error)
+    })?
 }
 
 pub(crate) fn load_current_character_presentation(
@@ -108,12 +118,12 @@ pub(crate) fn load_current_character_presentation(
         .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?;
     let generation_id = handle
         .available_generation_id()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
 
     let value = handle
         .character_presentation()
-        .map_err(str::to_string)?
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
     let presentation =
         character_presentation::CharacterPresentation::from_value(&value, &generation_id)?;
@@ -140,7 +150,7 @@ pub struct SupervisorPublication {
 #[serde(rename_all = "camelCase")]
 pub struct FailurePublication {
     code: &'static str,
-    message: &'static str,
+    message: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -212,35 +222,43 @@ pub struct ShellLifecycleHandle {
 }
 
 impl ShellLifecycleHandle {
-    pub fn snapshot(&self) -> Result<ShellLifecyclePublication, &'static str> {
+    pub fn snapshot(&self) -> Result<ShellLifecyclePublication, String> {
         self.publication
             .lock()
             .map(|publication| publication.clone())
-            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+            .map_err(|error| {
+                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
+            })
     }
 
-    pub fn character_presentation(&self) -> Result<Option<Value>, &'static str> {
+    pub fn character_presentation(&self) -> Result<Option<Value>, String> {
         self.publication
             .lock()
             .map(|publication| publication.character_presentation.clone())
-            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+            .map_err(|error| {
+                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
+            })
     }
 
-    pub fn available_generation_id(&self) -> Result<Option<String>, &'static str> {
+    pub fn available_generation_id(&self) -> Result<Option<String>, String> {
         self.publication
             .lock()
             .map(|publication| available_generation_id(&publication))
-            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+            .map_err(|error| {
+                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
+            })
     }
 
-    pub fn available_generation_identity(&self) -> Result<Option<(String, u64)>, &'static str> {
+    pub fn available_generation_identity(&self) -> Result<Option<(String, u64)>, String> {
         self.publication
             .lock()
             .map(|publication| {
                 available_generation_id(&publication)
                     .map(|generation_id| (generation_id, publication.supervisor.generation_number))
             })
-            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+            .map_err(|error| {
+                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
+            })
     }
 
     pub fn ready_character_generation(
@@ -248,7 +266,7 @@ impl ShellLifecycleHandle {
         previous_generation_id: &str,
         previous_generation_number: u64,
         target_character_id: &str,
-    ) -> Result<Option<String>, &'static str> {
+    ) -> Result<Option<String>, String> {
         self.publication
             .lock()
             .map(|publication| {
@@ -259,16 +277,18 @@ impl ShellLifecycleHandle {
                     target_character_id,
                 )
             })
-            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+            .map_err(|error| {
+                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
+            })
     }
 
-    pub fn start_core(&self) -> Result<(), &'static str> {
-        self.command
-            .send(ShellCommand::Start)
-            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    pub fn start_core(&self) -> Result<(), String> {
+        self.command.send(ShellCommand::Start).map_err(|error| {
+            crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
+        })
     }
 
-    pub fn start_core_and_wait_available(&self, timeout: Duration) -> Result<(), &'static str> {
+    pub fn start_core_and_wait_available(&self, timeout: Duration) -> Result<(), String> {
         self.start_core()?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -277,25 +297,33 @@ impl ShellLifecycleHandle {
                 return Ok(());
             }
             if publication.supervisor.state == "failed" {
-                return Err("CORE_START_FAILED");
+                return Err(crate::runtime_log::diagnostic_error(
+                    "CORE_START_FAILED",
+                    publication
+                        .supervisor
+                        .failure
+                        .as_ref()
+                        .map(|failure| failure.message.as_str())
+                        .unwrap_or("Core start failed"),
+                ));
             }
             if publication.supervisor.app_shutdown {
-                return Err("LIFECYCLE_COMMAND_UNAVAILABLE");
+                return Err("LIFECYCLE_COMMAND_UNAVAILABLE".to_string());
             }
             if Instant::now() >= deadline {
-                return Err("CORE_START_TIMEOUT");
+                return Err("CORE_START_TIMEOUT".to_string());
             }
             thread::sleep(Duration::from_millis(20));
         }
     }
 
-    pub fn stop_core(&self) -> Result<(), &'static str> {
-        self.command
-            .send(ShellCommand::Stop)
-            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    pub fn stop_core(&self) -> Result<(), String> {
+        self.command.send(ShellCommand::Stop).map_err(|error| {
+            crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
+        })
     }
 
-    pub fn stop_and_wait(&self, timeout: Duration) -> Result<(), &'static str> {
+    pub fn stop_and_wait(&self, timeout: Duration) -> Result<(), String> {
         self.stop_core()?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -304,13 +332,13 @@ impl ShellLifecycleHandle {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err("LIFECYCLE_STOP_TIMEOUT");
+                return Err("LIFECYCLE_STOP_TIMEOUT".to_string());
             }
             thread::sleep(Duration::from_millis(20));
         }
     }
 
-    pub fn readiness(&self) -> Result<Option<String>, &'static str> {
+    pub fn readiness(&self) -> Result<Option<String>, String> {
         self.publication
             .lock()
             .map(|publication| {
@@ -319,26 +347,30 @@ impl ShellLifecycleHandle {
                     .as_ref()
                     .map(|snapshot| snapshot.readiness.clone())
             })
-            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+            .map_err(|error| {
+                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
+            })
     }
 
-    pub fn is_stopped(&self) -> Result<bool, &'static str> {
+    pub fn is_stopped(&self) -> Result<bool, String> {
         self.publication
             .lock()
             .map(|publication| publication.supervisor.state == "stopped")
-            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+            .map_err(|error| {
+                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
+            })
     }
 
-    pub fn retry(&self) -> Result<(), &'static str> {
-        self.command
-            .send(ShellCommand::Retry)
-            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    pub fn retry(&self) -> Result<(), String> {
+        self.command.send(ShellCommand::Retry).map_err(|error| {
+            crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
+        })
     }
 
-    pub fn restart(&self) -> Result<(), &'static str> {
-        self.command
-            .send(ShellCommand::Restart)
-            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    pub fn restart(&self) -> Result<(), String> {
+        self.command.send(ShellCommand::Restart).map_err(|error| {
+            crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
+        })
     }
 
     pub fn settings_request(
@@ -374,7 +406,9 @@ impl ShellLifecycleHandle {
         let transport = self
             .settings_transport
             .lock()
-            .map_err(|_| "SETTINGS_TRANSPORT_UNAVAILABLE".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("SETTINGS_TRANSPORT_UNAVAILABLE", source_error)
+            })?
             .clone()
             .ok_or_else(|| "SETTINGS_TRANSPORT_UNAVAILABLE".to_string())?;
         if until_complete {
@@ -384,13 +418,13 @@ impl ShellLifecycleHandle {
         }
     }
 
-    pub fn request_shutdown(&self) -> Result<(), &'static str> {
-        self.command
-            .send(ShellCommand::Shutdown)
-            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    pub fn request_shutdown(&self) -> Result<(), String> {
+        self.command.send(ShellCommand::Shutdown).map_err(|error| {
+            crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
+        })
     }
 
-    pub fn shutdown_and_wait(&self, timeout: Duration) -> Result<(), &'static str> {
+    pub fn shutdown_and_wait(&self, timeout: Duration) -> Result<(), String> {
         self.request_shutdown()?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -399,7 +433,7 @@ impl ShellLifecycleHandle {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err("LIFECYCLE_SHUTDOWN_TIMEOUT");
+                return Err("LIFECYCLE_SHUTDOWN_TIMEOUT".to_string());
             }
             thread::sleep(Duration::from_millis(20));
         }
@@ -410,16 +444,22 @@ impl ShellLifecycleHandle {
         let (reply, result) = mpsc::channel();
         self.command
             .send(ShellCommand::CrashForTest(reply))
-            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", source_error)
+            })?;
         result
             .recv_timeout(Duration::from_secs(2))
-            .map_err(|_| "CORE_TEST_CRASH_TIMEOUT".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("CORE_TEST_CRASH_TIMEOUT", source_error)
+            })?
     }
 
     pub fn chat_bridge(&self) -> Result<ChatBridge, String> {
         self.chat_bridge
             .lock()
-            .map_err(|_| "CHAT_BRIDGE_UNAVAILABLE".to_string())?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("CHAT_BRIDGE_UNAVAILABLE", source_error)
+            })?
             .clone()
             .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())
     }
@@ -515,7 +555,7 @@ impl ShellLifecycleSession {
         self.handle.clone()
     }
 
-    pub fn bind_chat_projection(&mut self, app: tauri::AppHandle) -> Result<(), &'static str> {
+    pub fn bind_chat_projection(&mut self, app: tauri::AppHandle) -> Result<(), String> {
         if self.chat_projector.is_some() {
             return Ok(());
         }
@@ -560,14 +600,24 @@ impl ShellLifecycleSession {
         Ok(())
     }
 
-    pub fn shutdown_and_join(mut self) -> Result<(), &'static str> {
+    pub fn shutdown_and_join(mut self) -> Result<(), String> {
         let _ = self.handle.request_shutdown();
         let Some(worker) = self.worker.take() else {
             return Ok(());
         };
-        worker.join().map_err(|_| "LIFECYCLE_WORKER_FAILED")?;
+        worker.join().map_err(|error| {
+            crate::runtime_log::diagnostic_error(
+                "LIFECYCLE_WORKER_FAILED",
+                crate::runtime_log::panic_diagnostic(error),
+            )
+        })?;
         if let Some(projector) = self.chat_projector.take() {
-            projector.join().map_err(|_| "CHAT_PROJECTOR_FAILED")?;
+            projector.join().map_err(|error| {
+                crate::runtime_log::diagnostic_error(
+                    "CHAT_PROJECTOR_FAILED",
+                    crate::runtime_log::panic_diagnostic(error),
+                )
+            })?;
         }
         Ok(())
     }
@@ -586,6 +636,7 @@ impl Drop for ShellLifecycleSession {
 }
 
 struct WorkerState {
+    failure_diagnostic: Option<String>,
     request: RuntimeLocationRequest,
     supervisor: CoreSupervisor,
     host: Option<CoreHostRuntime>,
@@ -615,6 +666,7 @@ fn run_worker(
         .map_or(0, |duration| duration.as_nanos() as u64)
         ^ u64::from(std::process::id());
     let mut state = WorkerState {
+        failure_diagnostic: None,
         request,
         supervisor: CoreSupervisor::new(nonce),
         host: None,
@@ -848,9 +900,13 @@ fn spawn_and_initialize(
     publication: &Arc<Mutex<ShellLifecyclePublication>>,
     desktop_events: &Sender<DesktopProjection>,
 ) -> Result<(), FailureReason> {
+    state.failure_diagnostic = None;
     let layout = FilesystemRuntimeLocator
         .locate(&state.request)
-        .map_err(|_| FailureReason::DeterministicRuntime)?;
+        .map_err(|error| {
+            state.failure_diagnostic = Some(error.to_string());
+            FailureReason::DeterministicRuntime
+        })?;
     let generation_text = generation_text(generation_id);
     let generation_number = state.identity.map_or(1, |(_, number)| number);
     let host_result = match state.runtime_log.as_ref() {
@@ -865,6 +921,7 @@ fn spawn_and_initialize(
     let host = match host_result {
         Ok(host) => host,
         Err(failure) => {
+            state.failure_diagnostic = Some(failure.diagnostic().to_string());
             if failure.into_recovery().is_some() {
                 state.cleanup_blocked = true;
             }
@@ -888,8 +945,12 @@ fn spawn_and_initialize(
         .as_mut()
         .expect("spawned host remains owned")
         .request("shell-hello", "system.hello", HELLO_DEADLINE)
-        .map_err(|error| classify_control_failure(&error, FailureReason::HelloTimeout))?;
+        .map_err(|error| {
+            state.failure_diagnostic = Some(error.clone());
+            classify_control_failure(&error, FailureReason::HelloTimeout)
+        })?;
     if hello.get("ok").and_then(Value::as_bool) != Some(true) {
+        state.failure_diagnostic = Some(crate::runtime_log::error_details(&hello["error"]));
         return Err(FailureReason::ProtocolMajorIncompatible);
     }
     log_lifecycle(
@@ -916,8 +977,12 @@ fn spawn_and_initialize(
             json!({}),
             INITIALIZE_DEADLINE,
         )
-        .map_err(|error| classify_control_failure(&error, FailureReason::InitializeTimeout))?;
+        .map_err(|error| {
+            state.failure_diagnostic = Some(error.clone());
+            classify_control_failure(&error, FailureReason::InitializeTimeout)
+        })?;
     if initialize.get("ok").and_then(Value::as_bool) != Some(true) {
+        state.failure_diagnostic = Some(crate::runtime_log::error_details(&initialize["error"]));
         return Err(FailureReason::DeterministicConfiguration);
     }
     log_lifecycle(
@@ -1098,6 +1163,7 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
         .ok_or(())?
         .refresh_snapshot(&request_id, SNAPSHOT_DEADLINE)
         .map_err(|error| {
+            state.failure_diagnostic = Some(error.clone());
             log_lifecycle(
                 state,
                 Severity::Error,
@@ -1180,7 +1246,7 @@ fn publish(state: &WorkerState, target: &Arc<Mutex<ShellLifecyclePublication>>) 
                 .to_string(),
         })
     });
-    let next = ShellLifecyclePublication {
+    let mut next = ShellLifecyclePublication {
         supervisor: supervisor_publication(supervisor, identity),
         snapshot,
         character_presentation: state.snapshot.as_ref().and_then(|snapshot| {
@@ -1201,6 +1267,11 @@ fn publish(state: &WorkerState, target: &Arc<Mutex<ShellLifecyclePublication>>) 
             log_location: "Sakura application logs",
         },
     };
+    if let (Some(failure), Some(diagnostic)) =
+        (&mut next.supervisor.failure, &state.failure_diagnostic)
+    {
+        failure.message = crate::runtime_log::sanitize_diagnostic(diagnostic, &[], 16384);
+    }
     if let Ok(mut publication) = target.lock() {
         *publication = next;
     }
@@ -1264,7 +1335,7 @@ fn supervisor_publication(
         app_shutdown: snapshot.app_shutdown,
         failure: snapshot.failure.map(|reason| FailurePublication {
             code: failure_reason(reason),
-            message: failure_message(reason),
+            message: failure_message(reason).to_string(),
         }),
     }
 }
@@ -1628,7 +1699,7 @@ mod tests {
 
         assert_eq!(
             handle.start_core_and_wait_available(Duration::from_secs(1)),
-            Err("CORE_START_FAILED")
+            Err("CORE_START_FAILED: Core start failed".to_string())
         );
         worker.join().unwrap();
     }
@@ -2085,13 +2156,12 @@ mod tests {
                 .map(|failure| failure.code),
             Some("unexpected_exit")
         );
-        assert_eq!(
-            failed
-                .supervisor
-                .failure
-                .as_ref()
-                .map(|failure| failure.message),
-            Some("Core 进程意外退出。")
+        let diagnostic = &failed.supervisor.failure.as_ref().unwrap().message;
+        assert!(
+            diagnostic.contains("GENERATION_INVALIDATED")
+                || diagnostic.contains("CORE_PROCESS")
+                || diagnostic.contains("EOF"),
+            "{diagnostic}"
         );
         assert!(failed.snapshot.is_none());
         assert!(failed.character_presentation.is_none());
@@ -2133,7 +2203,7 @@ mod tests {
                 app_shutdown: false,
                 failure: Some(FailurePublication {
                     code: "deterministic_runtime",
-                    message: "找不到可用的 Core 运行环境。",
+                    message: "找不到可用的 Core 运行环境。".to_string(),
                 }),
             },
             snapshot: None,

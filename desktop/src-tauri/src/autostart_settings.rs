@@ -17,22 +17,22 @@ pub struct AutostartSettingsSnapshot {
 }
 
 trait AutostartBackend {
-    fn enable(&self) -> Result<(), ()>;
-    fn disable(&self) -> Result<(), ()>;
-    fn is_enabled(&self) -> Result<bool, ()>;
+    fn enable(&self) -> Result<(), String>;
+    fn disable(&self) -> Result<(), String>;
+    fn is_enabled(&self) -> Result<bool, String>;
 }
 
 impl AutostartBackend for AutoLaunchManager {
-    fn enable(&self) -> Result<(), ()> {
-        AutoLaunchManager::enable(self).map_err(|_| ())
+    fn enable(&self) -> Result<(), String> {
+        AutoLaunchManager::enable(self).map_err(|error| error.to_string())
     }
 
-    fn disable(&self) -> Result<(), ()> {
-        AutoLaunchManager::disable(self).map_err(|_| ())
+    fn disable(&self) -> Result<(), String> {
+        AutoLaunchManager::disable(self).map_err(|error| error.to_string())
     }
 
-    fn is_enabled(&self) -> Result<bool, ()> {
-        AutoLaunchManager::is_enabled(self).map_err(|_| ())
+    fn is_enabled(&self) -> Result<bool, String> {
+        AutoLaunchManager::is_enabled(self).map_err(|error| error.to_string())
     }
 }
 
@@ -40,7 +40,9 @@ fn snapshot_from(
     backend: &impl AutostartBackend,
     window_generation: u64,
 ) -> Result<AutostartSettingsSnapshot, String> {
-    let launch_at_login = backend.is_enabled().map_err(|_| READ_FAILED.to_string())?;
+    let launch_at_login = backend
+        .is_enabled()
+        .map_err(|source_error| crate::runtime_log::diagnostic_error(READ_FAILED, source_error))?;
     Ok(AutostartSettingsSnapshot {
         schema_version: 1,
         window_generation,
@@ -53,17 +55,22 @@ fn save_with(
     window_generation: u64,
     launch_at_login: bool,
 ) -> Result<AutostartSettingsSnapshot, String> {
-    let current = backend.is_enabled().map_err(|_| READ_FAILED.to_string())?;
+    let current = backend
+        .is_enabled()
+        .map_err(|source_error| crate::runtime_log::diagnostic_error(READ_FAILED, source_error))?;
     if current != launch_at_login {
         let result = if launch_at_login {
             backend.enable()
         } else {
             backend.disable()
         };
-        result.map_err(|_| UPDATE_FAILED.to_string())?;
+        result.map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(UPDATE_FAILED, source_error)
+        })?;
     }
-    let snapshot =
-        snapshot_from(backend, window_generation).map_err(|_| VERIFY_FAILED.to_string())?;
+    let snapshot = snapshot_from(backend, window_generation).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error(VERIFY_FAILED, source_error)
+    })?;
     if snapshot.launch_at_login != launch_at_login {
         return Err(VERIFY_FAILED.to_string());
     }
@@ -130,23 +137,23 @@ mod tests {
     }
 
     impl AutostartBackend for FakeBackend {
-        fn enable(&self) -> Result<(), ()> {
+        fn enable(&self) -> Result<(), String> {
             if self.fail_update {
-                return Err(());
+                return Err("system refused autostart update".to_string());
             }
             *self.enabled.lock().unwrap() = true;
             Ok(())
         }
 
-        fn disable(&self) -> Result<(), ()> {
+        fn disable(&self) -> Result<(), String> {
             if self.fail_update {
-                return Err(());
+                return Err("system refused autostart update".to_string());
             }
             *self.enabled.lock().unwrap() = false;
             Ok(())
         }
 
-        fn is_enabled(&self) -> Result<bool, ()> {
+        fn is_enabled(&self) -> Result<bool, String> {
             Ok(*self.enabled.lock().unwrap())
         }
     }
@@ -171,7 +178,10 @@ mod tests {
     fn failed_update_keeps_the_previous_state() {
         let mut backend = FakeBackend::new(false);
         backend.fail_update = true;
-        assert_eq!(save_with(&backend, 3, true).unwrap_err(), UPDATE_FAILED);
+        assert_eq!(
+            save_with(&backend, 3, true).unwrap_err(),
+            format!("{UPDATE_FAILED}: system refused autostart update")
+        );
         assert!(!*backend.enabled.lock().unwrap());
     }
 }

@@ -1,3 +1,4 @@
+import { errorText } from "../core/error-display.js";
 import { enhanceSelect, refreshSelect, closeSelects } from "../settings/select-control.js";
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
@@ -317,8 +318,8 @@ async function bootstrap() {
       ? "已显示本次运行日志。"
       : "等待新记录。";
     scrollToLatest();
-  } catch {
-    status.textContent = "运行日志读取失败，请稍后刷新。";
+  } catch (error) {
+    status.textContent = errorText(error);
   } finally {
     // Keep the viewer reachable even when the initial snapshot fails; in that
     // case its already-defined product fallback theme is the correct first frame.
@@ -341,9 +342,9 @@ async function poll() {
       status.textContent = "日志已更新。";
       scrollToLatest();
     }
-  } catch {
+  } catch (error) {
     if (generation === requestGeneration) {
-      status.textContent = "日志更新中断，正在重连。";
+      status.textContent = errorText(error);
     }
   } finally {
     pollActive = false;
@@ -396,8 +397,8 @@ copy.addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(text);
     status.textContent = "已复制。";
-  } catch {
-    status.textContent = "复制失败，请重新选择后再试。";
+  } catch (error) {
+    status.textContent = errorText(error);
   }
 });
 close.addEventListener("click", () => void invoke?.("close_runtime_log_viewer"));

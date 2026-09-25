@@ -239,8 +239,10 @@ def _run(args: argparse.Namespace) -> int:
             error["diagnosticLog"] = "data/logs/sakura-runtime.log"
         _emit({"type": "error", "error": error})
         return 2
-    except Exception:
+    except Exception as exc:
         error = {"code": "LEGACY_IMPORT_INTERNAL", "stage": "internal"}
+        from app.core.diagnostics import exception_diagnostics
+        error.update(exception_diagnostics(exc, reason_code=error["code"], stage="internal"))
         if getattr(args, "command", "") == "run":
             error["diagnosticLog"] = "data/logs/sakura-runtime.log"
         _emit(

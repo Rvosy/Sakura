@@ -133,9 +133,12 @@ impl MacInputGlassState {
                 (None, None)
             };
 
-            let mut native = views
-                .lock()
-                .map_err(|_| "MACOS_INPUT_GLASS_STATE_UNAVAILABLE".to_string())?;
+            let mut native = views.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "MACOS_INPUT_GLASS_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             native.gaussian = Some(gaussian_handle);
             native.liquid_container = liquid_container_handle;
             native.liquid = liquid_handle;
@@ -177,9 +180,12 @@ impl MacInputGlassState {
         let views = self.views.clone();
         let support = self.support;
         let next = match with_native_webview(window, move |_webview, _mtm| {
-            let mut native = views
-                .lock()
-                .map_err(|_| "MACOS_INPUT_GLASS_STATE_UNAVAILABLE".to_string())?;
+            let mut native = views.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "MACOS_INPUT_GLASS_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             native.requested_mode = Some(requested_mode);
             if let Some(handle) = native.liquid {
                 let liquid = unsafe { view_from_handle::<NSGlassEffectView>(handle) };
@@ -244,9 +250,12 @@ impl MacInputGlassState {
             }
         };
         let next = match with_native_webview(window, move |webview, _mtm| {
-            let mut native = views
-                .lock()
-                .map_err(|_| "MACOS_INPUT_GLASS_STATE_UNAVAILABLE".to_string())?;
+            let mut native = views.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "MACOS_INPUT_GLASS_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             let (liquid_container_frame, staging_liquid_container_frame) =
                 if native.liquid_container.is_some() {
                     let host = unsafe { webview.superview() }
@@ -340,9 +349,12 @@ impl MacInputGlassState {
     pub fn teardown(&self, window: &tauri::WebviewWindow) {
         let views = self.views.clone();
         let _ = with_native_webview(window, move |_webview, _mtm| {
-            let mut native = views
-                .lock()
-                .map_err(|_| "MACOS_INPUT_GLASS_STATE_UNAVAILABLE".to_string())?;
+            let mut native = views.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "MACOS_INPUT_GLASS_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             native.liquid.take();
             for handle in [native.gaussian.take(), native.liquid_container.take()]
                 .into_iter()
@@ -359,9 +371,12 @@ impl MacInputGlassState {
     fn record_failure(&self, window: &tauri::WebviewWindow, code: &'static str, detail: &str) {
         let views = self.views.clone();
         let _ = with_native_webview(window, move |_webview, _mtm| {
-            let native = views
-                .lock()
-                .map_err(|_| "MACOS_INPUT_GLASS_STATE_UNAVAILABLE".to_string())?;
+            let native = views.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "MACOS_INPUT_GLASS_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             if let Some(handle) = native.gaussian {
                 unsafe { view_from_handle::<NSVisualEffectView>(handle) }.setHidden(true);
             }
@@ -398,7 +413,9 @@ where
         .map_err(|error| format!("MACOS_INPUT_GLASS_DISPATCH_FAILED:{error}"))?;
     receiver
         .recv_timeout(NATIVE_OPERATION_TIMEOUT)
-        .map_err(|_| "MACOS_INPUT_GLASS_DISPATCH_TIMEOUT".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("MACOS_INPUT_GLASS_DISPATCH_TIMEOUT", source_error)
+        })?
 }
 
 fn apply_visibility(

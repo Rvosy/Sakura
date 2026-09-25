@@ -1,3 +1,4 @@
+import { errorText } from "./core/error-display.js";
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createTtsController } from "./audio/tts-controller.js";
 import { createAsrController } from "./audio/asr-controller.js";
@@ -699,8 +700,8 @@ async function settleLayoutPreview(revision) {
   layoutPreviewTimer = null;
   try {
     await endLayoutPreviewSession(revision, layoutGestureReady);
-  } catch {
-    showRecoverableError("桌宠裁剪区域恢复失败；再次调整布局可重试。");
+  } catch (error) {
+    showRecoverableError(errorText(error));
     return;
   }
 }
@@ -1508,9 +1509,9 @@ async function submitMessage({ text }) {
       surfaceVisibilityController?.setInputPinned(inputIsPinned());
     }
     screenAttachment.markSent(submittedAttachmentId);
-  } catch {
+  } catch (error) {
     if (submittedAttachmentId) screenAttachment.setSubmitting(false);
-    showRecoverableError("消息暂时无法发送，请稍后重试。");
+    showRecoverableError(errorText(error));
   }
 }
 
@@ -1651,10 +1652,10 @@ document.addEventListener("contextmenu", async (event) => {
         height: activeBounds[3] * contentScale,
       } : null,
     });
-  } catch {
+  } catch (error) {
     contextMenu.hide();
     invoke("close_pet_context_menu").catch(() => {});
-    showRecoverableError("桌宠菜单暂时无法打开，请稍后重试。");
+    showRecoverableError(errorText(error));
   }
 });
 
@@ -1830,7 +1831,7 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
     void interactionLatencyTrace.flush();
   }).catch(() => {
     if (!disposed && revision === layoutPreviewRevision) {
-      showRecoverableError("桌宠裁剪区域恢复失败；再次调整布局可重试。");
+      showRecoverableError(errorText(error));
     }
   });
 });
@@ -2171,9 +2172,9 @@ composer.addEventListener("submit", (event) => {
   event.preventDefault();
   if (asrController?.active()) return;
   const state = presentation.current();
-  if (state.canCancel) void chatClient.cancel(state.operationId).catch(() => showRecoverableError("取消失败，请重试。"));
+  if (state.canCancel) void chatClient.cancel(state.operationId).catch(error => showRecoverableError(errorText(error)));
   else if (state.canRetry) {
-    invoke("retry_core").catch(() => showRecoverableError("重连失败，请稍后重试。"));
+    invoke("retry_core").catch(error => showRecoverableError(errorText(error)));
   }
   else inputFocus.submit("button");
 });

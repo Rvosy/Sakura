@@ -73,10 +73,9 @@ impl ColorPickerState {
             windows.insert(label.clone(), monitor.id);
             labels.push(label);
         }
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| "STUDIO_COLOR_STATE_UNAVAILABLE".to_string())?;
+        let mut active = self.active.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_COLOR_STATE_UNAVAILABLE", source_error)
+        })?;
         let previous = active
             .take()
             .map(|picker| {
@@ -104,10 +103,9 @@ impl ColorPickerState {
         window_label: &str,
         request: &ColorPickRequest,
     ) -> Result<PickerClaim, String> {
-        let mut active = self
-            .active
-            .lock()
-            .map_err(|_| "STUDIO_COLOR_STATE_UNAVAILABLE".to_string())?;
+        let mut active = self.active.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_COLOR_STATE_UNAVAILABLE", source_error)
+        })?;
         let picker = active
             .take()
             .ok_or_else(|| "STUDIO_COLOR_SESSION_STALE".to_string())?;
@@ -195,20 +193,25 @@ pub fn show_overlays(
             .build()
         {
             Ok(window) => window,
-            Err(_) => {
+            Err(source_error) => {
                 capture::close_windows(app, &created);
-                return Err("STUDIO_COLOR_OVERLAY_UNAVAILABLE".to_string());
+                return Err(crate::runtime_log::diagnostic_error(
+                    "STUDIO_COLOR_OVERLAY_UNAVAILABLE",
+                    source_error,
+                ));
             }
         };
         let size = PhysicalSize::new(monitor.bounds.width, monitor.bounds.height);
-        if window
+        if let Err(source_error) = window
             .set_position(PhysicalPosition::new(monitor.bounds.x, monitor.bounds.y))
             .and_then(|_| window.set_size(size))
-            .is_err()
         {
             capture::close_windows(app, &created);
             let _ = window.close();
-            return Err("STUDIO_COLOR_OVERLAY_UNAVAILABLE".to_string());
+            return Err(crate::runtime_log::diagnostic_error(
+                "STUDIO_COLOR_OVERLAY_UNAVAILABLE",
+                source_error,
+            ));
         }
         let url = format!(
             "studio/color-picker.html?sessionId={}&monitorId={}",
@@ -220,14 +223,16 @@ pub fn show_overlays(
             .background_color(Color(0, 0, 0, 0))
             .focused(false)
             .auto_resize();
-        if window
+        if let Err(source_error) = window
             .add_child(webview, PhysicalPosition::new(0, 0), size)
             .and_then(|_| window.show())
-            .is_err()
         {
             capture::close_windows(app, &created);
             let _ = window.close();
-            return Err("STUDIO_COLOR_OVERLAY_UNAVAILABLE".to_string());
+            return Err(crate::runtime_log::diagnostic_error(
+                "STUDIO_COLOR_OVERLAY_UNAVAILABLE",
+                source_error,
+            ));
         }
         created.push(label.clone());
     }
@@ -243,9 +248,9 @@ pub fn logical_point(window: &WebviewWindow, x: f64, y: f64) -> Result<(u32, u32
     if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
         return Err("STUDIO_COLOR_POINT_INVALID".to_string());
     }
-    let scale = window
-        .scale_factor()
-        .map_err(|_| "STUDIO_COLOR_SCALE_UNAVAILABLE".to_string())?;
+    let scale = window.scale_factor().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("STUDIO_COLOR_SCALE_UNAVAILABLE", source_error)
+    })?;
     if !scale.is_finite() || scale <= 0.0 {
         return Err("STUDIO_COLOR_SCALE_UNAVAILABLE".to_string());
     }
@@ -254,22 +259,24 @@ pub fn logical_point(window: &WebviewWindow, x: f64, y: f64) -> Result<(u32, u32
 
 pub fn capture_color(monitor_id: u32, x: u32, y: u32) -> Result<String, String> {
     let monitor = Monitor::all()
-        .map_err(|_| "STUDIO_COLOR_PLATFORM_UNAVAILABLE".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_COLOR_PLATFORM_UNAVAILABLE", source_error)
+        })?
         .into_iter()
         .find(|monitor| monitor.id().ok() == Some(monitor_id))
         .ok_or_else(|| "STUDIO_COLOR_MONITOR_GONE".to_string())?;
-    let width = monitor
-        .width()
-        .map_err(|_| "STUDIO_COLOR_MONITOR_GONE".to_string())?;
-    let height = monitor
-        .height()
-        .map_err(|_| "STUDIO_COLOR_MONITOR_GONE".to_string())?;
+    let width = monitor.width().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("STUDIO_COLOR_MONITOR_GONE", source_error)
+    })?;
+    let height = monitor.height().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("STUDIO_COLOR_MONITOR_GONE", source_error)
+    })?;
     if x >= width || y >= height {
         return Err("STUDIO_COLOR_POINT_INVALID".to_string());
     }
-    let image = monitor
-        .capture_region(x, y, 1, 1)
-        .map_err(|_| "STUDIO_COLOR_PLATFORM_DENIED".to_string())?;
+    let image = monitor.capture_region(x, y, 1, 1).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("STUDIO_COLOR_PLATFORM_DENIED", source_error)
+    })?;
     let pixel = image.get_pixel(0, 0).0;
     Ok(format!("#{:02X}{:02X}{:02X}", pixel[0], pixel[1], pixel[2]))
 }
@@ -277,7 +284,9 @@ pub fn capture_color(monitor_id: u32, x: u32, y: u32) -> Result<String, String> 
 pub fn wait_for_result(receiver: mpsc::Receiver<Result<String, String>>) -> Result<String, String> {
     receiver
         .recv_timeout(PICK_TIMEOUT)
-        .map_err(|_| "STUDIO_COLOR_TIMEOUT".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("STUDIO_COLOR_TIMEOUT", source_error)
+        })?
 }
 
 #[cfg(test)]

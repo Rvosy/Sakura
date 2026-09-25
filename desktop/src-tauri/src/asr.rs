@@ -180,7 +180,9 @@ impl CaptureSession {
         self.submitted
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map(|_| ())
-            .map_err(|_| "ASR_ALREADY_SUBMITTED".into())
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("ASR_ALREADY_SUBMITTED", source_error)
+            })
     }
     fn finish(&self, result: Result<Value, String>) {
         if let Ok(mut log) = self.log.lock() {
@@ -213,7 +215,9 @@ impl CaptureSession {
             if let Some(result) = self
                 .result
                 .lock()
-                .map_err(|_| "ASR_CAPTURE_FAILED")?
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+                })?
                 .clone()
             {
                 return result;
@@ -225,7 +229,9 @@ impl CaptureSession {
 
 impl AsrState {
     fn reserve(&self, id: &str, window_label: &str) -> Result<Arc<CaptureSession>, String> {
-        let mut active = self.active.lock().map_err(|_| "ASR_CAPTURE_FAILED")?;
+        let mut active = self.active.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+        })?;
         if self.closing.load(Ordering::SeqCst) {
             return Err("ASR_CANCELLED".into());
         }
@@ -233,7 +239,9 @@ impl AsrState {
             if previous
                 .result
                 .lock()
-                .map_err(|_| "ASR_CAPTURE_FAILED")?
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+                })?
                 .is_none()
             {
                 return Err("ASR_BUSY".into());
@@ -248,14 +256,18 @@ impl AsrState {
     fn current(&self, id: &str) -> Result<Arc<CaptureSession>, String> {
         self.active
             .lock()
-            .map_err(|_| "ASR_CAPTURE_FAILED")?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+            })?
             .as_ref()
             .filter(|session| session.id == id)
             .cloned()
             .ok_or_else(|| "ASR_RECORDING_STALE".into())
     }
     fn remember_owner(&self, id: &str, window_label: &str) -> Result<(), String> {
-        let mut owners = self.owners.lock().map_err(|_| "ASR_CAPTURE_FAILED")?;
+        let mut owners = self.owners.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+        })?;
         if owners.iter().any(|(known, _)| known == id) {
             return Err("ASR_RECORDING_REUSED".into());
         }
@@ -269,7 +281,9 @@ impl AsrState {
         if self
             .owners
             .lock()
-            .map_err(|_| "ASR_CAPTURE_FAILED")?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+            })?
             .iter()
             .any(|(known, owner)| known == id && owner == window_label)
         {
@@ -352,7 +366,7 @@ fn join_until(worker: JoinHandle<()>, timeout: Duration) -> bool {
 
 fn capture_failure(result: &Result<Value, String>, recording_only: bool) -> Option<String> {
     let code = match result {
-        Err(error) => error.split('|').next().unwrap_or("ASR_CORE_UNAVAILABLE"),
+        Err(error) => crate::runtime_log::diagnostic_code(error),
         Ok(value) => match value.get("state").and_then(Value::as_str) {
             Some("failed") => value
                 .get("errorCode")
@@ -418,7 +432,9 @@ impl CaptureStatusWatch {
                     }
                 }
             })
-            .map_err(|_| "ASR_CAPTURE_FAILED")?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+            })?;
         Ok(Self {
             stopped,
             wake,
@@ -523,7 +539,9 @@ pub(crate) async fn asr_prepare(
         .to_owned();
     validate_id(&id)?;
     {
-        let mut input = state.input.lock().map_err(|_| "ASR_CAPTURE_FAILED")?;
+        let mut input = state.input.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+        })?;
         if input.is_some() {
             return Err("ASR_BUSY".into());
         }
@@ -538,7 +556,9 @@ pub(crate) async fn asr_prepare(
     let still_active = state
         .input
         .lock()
-        .map_err(|_| "ASR_CAPTURE_FAILED")?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+        })?
         .as_ref()
         .is_some_and(|active| active.id == id);
     if !still_active {
@@ -595,7 +615,7 @@ pub(crate) async fn asr_capture_start(
     let handle = settings_core_handle(&lifecycle)?;
     let generation = handle
         .available_generation_id()
-        .map_err(str::to_owned)?
+        .map_err(|error| error.to_string())?
         .ok_or("STALE_GENERATION")?;
     let session = state.reserve(&payload.recording_id, window.label())?;
     session.observe(
@@ -672,6 +692,7 @@ pub(crate) async fn asr_capture_start(
                 let mut discarded = json!({"recordingId": worker_session.id});
                 if code != "ASR_CANCELLED" {
                     discarded["errorCode"] = json!(code);
+                    discarded["diagnostic"] = json!(result.as_ref().err());
                 }
                 // Publish a pollable failure before notifying the UI. A racing poll
                 // must not consume a silent cancellation and hide the device error.
@@ -682,7 +703,7 @@ pub(crate) async fn asr_capture_start(
                     &worker_session.window_label,
                     "sakura://asr-capture",
                     json!({
-                        "recordingId": worker_session.id, "state": "failed", "errorCode": code
+                        "recordingId": worker_session.id, "state": "failed", "errorCode": code, "diagnostic": result.as_ref().err()
                     }),
                 );
             } else if !worker_session.submitted.load(Ordering::SeqCst) {
@@ -696,10 +717,15 @@ pub(crate) async fn asr_capture_start(
         });
     match worker {
         Ok(worker) => {
-            *session.worker.lock().map_err(|_| "ASR_CAPTURE_FAILED")? = Some(worker);
+            *session.worker.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+            })? = Some(worker);
         }
-        Err(_) => {
-            session.finish(Err("ASR_CAPTURE_FAILED".into()));
+        Err(error) => {
+            session.finish(Err(crate::runtime_log::diagnostic_error(
+                "ASR_CAPTURE_FAILED",
+                error,
+            )));
             let _ = proxy(
                 &lifecycle,
                 "asr.input.cancel",
@@ -715,9 +741,9 @@ pub(crate) async fn asr_capture_start(
             return Err("ASR_CAPTURE_FAILED".into());
         }
     }
-    opened
-        .await
-        .map_err(|_| "ASR_CAPTURE_FAILED".to_owned())??;
+    opened.await.map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+    })??;
     Ok(json!({"recordingId": session.id, "state": "recording"}))
 }
 #[tauri::command]
@@ -768,7 +794,9 @@ pub(crate) async fn settings_asr_devices(window: WebviewWindow) -> Result<Value,
     product_shell::validate_settings_window(&window)?;
     tauri::async_runtime::spawn_blocking(input_device_snapshot)
         .await
-        .map_err(|_| "ASR_INPUT_DEVICES_UNAVAILABLE".to_owned())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_INPUT_DEVICES_UNAVAILABLE", source_error)
+        })?
 }
 
 #[tauri::command]
@@ -879,7 +907,9 @@ where
             },
             None,
         )
-        .map_err(|_| "ASR_MICROPHONE_UNAVAILABLE".into())
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_MICROPHONE_UNAVAILABLE", source_error)
+        })
 }
 
 struct OpenInput {
@@ -896,10 +926,9 @@ fn input_device_snapshot() -> Result<Value, String> {
         .and_then(|device| device.id().ok())
         .map(|id| id.to_string());
     let mut devices = Vec::new();
-    for device in host
-        .input_devices()
-        .map_err(|_| "ASR_INPUT_DEVICES_UNAVAILABLE")?
-    {
+    for device in host.input_devices().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("ASR_INPUT_DEVICES_UNAVAILABLE", source_error)
+    })? {
         let Ok(id) = device.id() else {
             continue;
         };
@@ -919,20 +948,22 @@ fn select_input_device(input_device_id: &str) -> Result<cpal::Device, String> {
             .default_input_device()
             .ok_or_else(|| "ASR_MICROPHONE_UNAVAILABLE".into());
     }
-    let id: cpal::DeviceId = input_device_id
-        .parse()
-        .map_err(|_| "ASR_INPUT_DEVICE_NOT_FOUND")?;
+    let id: cpal::DeviceId = input_device_id.parse().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("ASR_INPUT_DEVICE_NOT_FOUND", source_error)
+    })?;
     host.input_devices()
-        .map_err(|_| "ASR_INPUT_DEVICES_UNAVAILABLE")?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_INPUT_DEVICES_UNAVAILABLE", source_error)
+        })?
         .find(|device| device.id().ok().as_ref() == Some(&id))
         .ok_or_else(|| "ASR_INPUT_DEVICE_NOT_FOUND".into())
 }
 
 fn open_input(input_device_id: &str) -> Result<OpenInput, String> {
     let device = select_input_device(input_device_id)?;
-    let supported = device
-        .default_input_config()
-        .map_err(|_| "ASR_MICROPHONE_UNAVAILABLE")?;
+    let supported = device.default_input_config().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("ASR_MICROPHONE_UNAVAILABLE", source_error)
+    })?;
     let config: cpal::StreamConfig = supported.clone().into();
     let rate = config.sample_rate as usize;
     if !(8_000..=192_000).contains(&rate) || config.channels == 0 || config.channels > 32 {
@@ -997,7 +1028,9 @@ fn capture(
         if session.cancelled.load(Ordering::SeqCst) {
             return Err(session.cancellation_error());
         }
-        stream.play().map_err(|_| "ASR_MICROPHONE_UNAVAILABLE")?;
+        stream.play().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_MICROPHONE_UNAVAILABLE", source_error)
+        })?;
         Ok((stream, samples, failed, rate))
     })();
     let (stream, samples, failed, rate) = match opened {
@@ -1064,7 +1097,9 @@ fn capture(
             break Err("ASR_MICROPHONE_DISCONNECTED".into());
         }
         let (sequence, level, full, stalled) = {
-            let buffer = samples.lock().map_err(|_| "ASR_CAPTURE_FAILED")?;
+            let buffer = samples.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+            })?;
             (
                 buffer.sequence,
                 buffer.level,
@@ -1096,7 +1131,14 @@ fn capture(
     playback_pause.release();
     drop(status_watch);
     outcome?;
-    let mono = std::mem::take(&mut samples.lock().map_err(|_| "ASR_CAPTURE_FAILED")?.mono);
+    let mono = std::mem::take(
+        &mut samples
+            .lock()
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", source_error)
+            })?
+            .mono,
+    );
     if mono.is_empty() {
         return Err("ASR_NO_SPEECH".into());
     }
@@ -1132,7 +1174,9 @@ fn write_wav(path: &Path, samples: &[f32], rate: usize) -> Result<(), String> {
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|_| "ASR_AUDIO_WRITE_FAILED")?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("ASR_AUDIO_WRITE_FAILED", source_error)
+        })?;
     let mut writer = BufWriter::new(file);
     let bytes = (pcm.len() * 2) as u32;
     let mut header = Vec::with_capacity(44);
@@ -1148,17 +1192,19 @@ fn write_wav(path: &Path, samples: &[f32], rate: usize) -> Result<(), String> {
     header.extend_from_slice(&16_u16.to_le_bytes());
     header.extend_from_slice(b"data");
     header.extend_from_slice(&bytes.to_le_bytes());
-    writer
-        .write_all(&header)
-        .map_err(|_| "ASR_AUDIO_WRITE_FAILED")?;
+    writer.write_all(&header).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("ASR_AUDIO_WRITE_FAILED", source_error)
+    })?;
     for sample in pcm {
         writer
             .write_all(&sample.to_le_bytes())
-            .map_err(|_| "ASR_AUDIO_WRITE_FAILED")?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("ASR_AUDIO_WRITE_FAILED", source_error)
+            })?;
     }
-    writer
-        .flush()
-        .map_err(|_| "ASR_AUDIO_WRITE_FAILED".to_owned())
+    writer.flush().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("ASR_AUDIO_WRITE_FAILED", source_error)
+    })
 }
 
 // Windowed sinc low-pass before decimation avoids aliasing the microphone's
@@ -1283,7 +1329,7 @@ mod tests {
             uuid::Uuid::new_v4()
         );
         assert!(
-            matches!(select_input_device(&missing), Err(error) if error == "ASR_INPUT_DEVICE_NOT_FOUND")
+            matches!(select_input_device(&missing), Err(error) if crate::runtime_log::diagnostic_code(&error) == "ASR_INPUT_DEVICE_NOT_FOUND")
         );
         let OpenInput {
             stream,
@@ -1538,7 +1584,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            matches!(select_input_device("not-a-device-id"), Err(error) if error == "ASR_INPUT_DEVICE_NOT_FOUND")
+            matches!(select_input_device("not-a-device-id"), Err(error) if crate::runtime_log::diagnostic_code(&error) == "ASR_INPUT_DEVICE_NOT_FOUND")
         );
     }
 }

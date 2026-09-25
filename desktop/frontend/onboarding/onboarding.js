@@ -1,3 +1,4 @@
+import { errorText } from '../core/error-display.js';
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { createRuntimeDiagnostics } from "../core/runtime-diagnostics.js";
 import {
@@ -78,44 +79,7 @@ const domainLabels = {
   legacyMemoryJson: "旧记忆备份（隔离）",
 };
 
-const errorMessages = {
-  LEGACY_SOURCE_NOT_DIRECTORY: "选择的目录不可用。",
-  LEGACY_LAYOUT_UNRECOGNIZED: "这里不是受支持的 Sakura 0.9.x 目录。",
-  LEGACY_VERSION_UNSUPPORTED: "只能导入 Sakura 0.9.x。",
-  LEGACY_PLATFORM_UNSUPPORTED: "请选取完整的 Windows 或 macOS 旧版安装目录。",
-  LEGACY_TARGET_PLATFORM_UNSUPPORTED: "当前系统暂不支持旧版本导入。",
-  LEGACY_CROSS_PLATFORM_UNSUPPORTED: "旧版与当前系统不同，无法迁移语音等运行资源。",
-  LEGACY_SOURCE_ACTIVE: "请先退出正在运行的 Sakura 0.9.x。",
-  LEGACY_TARGET_SPACE_INSUFFICIENT: "可用磁盘空间不足。",
-  LEGACY_TTS_LINK_BROKEN: "旧版 TTS 外置目录已经断开。",
-  LEGACY_TTS_LAYOUT_UNRECOGNIZED: "无法识别旧版 TTS 目录结构。",
-  LEGACY_TTS_TARGET_OVERLAP: "旧版语音目录与当前数据目录重叠，无法迁移。",
-  LEGACY_NESTED_LINK_UNSUPPORTED: "旧数据含嵌套链接，暂不支持导入。",
-  LEGACY_TTS_ABSOLUTE_LINKS_SKIPPED: "已跳过旧版语音资源的绝对链接，模型原文件仍会迁移。",
-  LEGACY_COPY_CONFLICT: "旧文件的目标位置冲突，内容不同。",
-  LEGACY_TTS_CONFIG_VALIDATION_FAILED: "旧版 TTS 配置无法转换为当前格式。",
-  LEGACY_SETTINGS_VALIDATION_FAILED: "旧版配置无法转换为当前设置格式。",
-  LEGACY_HISTORY_JSON_INVALID: "聊天历史中存在损坏的记录。",
-  LEGACY_HISTORY_ROLE_UNSUPPORTED: "聊天历史中存在无法识别的记录类型。",
-  LEGACY_HISTORY_TIMESTAMP_INVALID: "聊天历史中存在无效时间。",
-  LEGACY_MEMORY_DATABASE_INVALID: "旧版长期记忆数据库损坏。",
-  LEGACY_MEMORY_SCHEMA_INVALID: "旧版长期记忆数据库结构不兼容。",
-  LEGACY_MEMORY_DIMENSION_UNSUPPORTED: "旧版记忆的向量格式不兼容。",
-  LEGACY_MEMORY_OPEN_FAILED: "当前记忆插件无法打开导入后的旧记忆库。",
-  LEGACY_REMINDERS_VALIDATION_FAILED: "旧版提醒数据无法转换为当前格式。",
-  LEGACY_TASKS_VALIDATION_FAILED: "旧版任务数据无法转换为当前格式。",
-  LEGACY_NOTE_VALIDATION_FAILED: "旧版笔记包含当前版本无法读取的文件。",
-  LEGACY_CHARACTER_STUDIO_VALIDATION_FAILED: "旧版角色工坊草稿无法转换为当前格式。",
-  LEGACY_SCREEN_STATE_VALIDATION_FAILED: "旧版视觉摘要状态无法转换为当前格式。",
-  LEGACY_IMPORT_FIRST_RUN_ONLY: "完成首次设置后无法导入旧版。",
-  LEGACY_IMPORT_CORE_RUNNING: "程序已启动，请重启后先导入旧版本。",
-  LEGACY_IMPORT_CONFIRMATION_STALE: "当前数据已变化，请重新确认覆盖范围。",
-  LEGACY_IMPORT_CANCELLED: "导入已取消，现有数据没有改变。",
-  LEGACY_IMPORT_OPERATION_TIMEOUT: "导入超时，已停止并恢复原数据。",
-  LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: "无法确认导入进程已停止。请保留导入记录，重启系统后再启动 Sakura。",
-  LEGACY_CORE_VALIDATION_FAILED: "导入数据校验失败，已恢复原数据。",
-  LEGACY_ROLLBACK_FAILED: "自动恢复失败，请保留旧目录并查看诊断信息。",
-};
+
 
 function replayAnimation(element, className) {
   const previousHandle = animationReplayHandles.get(element);
@@ -290,13 +254,7 @@ function formatBytes(value) {
 }
 
 function publicError(error) {
-  const code = error?.code || String(error || "LEGACY_IMPORT_FAILED").split(":", 1)[0];
-  const base = errorMessages[code] || `导入失败（${code}）`;
-  const location = error?.relativePath
-    ? ` 文件：${error.relativePath}${error.line ? `:${error.line}` : ""}`
-    : "";
-  const diagnostic = error?.diagnosticLog ? ` 诊断日志：${error.diagnosticLog}` : "";
-  return `${base}${location}${diagnostic}`;
+  return errorText(error);
 }
 
 function renderInspection(snapshot) {

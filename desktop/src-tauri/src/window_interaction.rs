@@ -39,8 +39,12 @@ fn dragged_window_origin(
     let y =
         i64::from(initial_window[1]) + i64::from(current_cursor[1]) - i64::from(initial_cursor[1]);
     Ok([
-        i32::try_from(x).map_err(|_| "native drag x coordinate overflow".to_string())?,
-        i32::try_from(y).map_err(|_| "native drag y coordinate overflow".to_string())?,
+        i32::try_from(x).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("native drag x coordinate overflow", source_error)
+        })?,
+        i32::try_from(y).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("native drag y coordinate overflow", source_error)
+        })?,
     ])
 }
 
@@ -231,10 +235,12 @@ fn translate_rect(
     envelope: [u32; 2],
     corner_radius: u32,
 ) -> Result<LogicalHitRect, String> {
-    let x = i32::try_from(u64::from(rect[0]) + u64::from(offset[0]))
-        .map_err(|_| "hit rectangle x coordinate overflow".to_string())?;
-    let y = i32::try_from(u64::from(rect[1]) + u64::from(offset[1]))
-        .map_err(|_| "hit rectangle y coordinate overflow".to_string())?;
+    let x = i32::try_from(u64::from(rect[0]) + u64::from(offset[0])).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("hit rectangle x coordinate overflow", source_error)
+    })?;
+    let y = i32::try_from(u64::from(rect[1]) + u64::from(offset[1])).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("hit rectangle y coordinate overflow", source_error)
+    })?;
     LogicalHitRect::checked(x, y, rect[2], rect[3], envelope)
         .map(|rect| rect.with_corner_radius(corner_radius))
 }
@@ -439,12 +445,21 @@ pub fn logical_visible_surface_bounds_with_control_surface(
         return Err("visible pet surface bounds are invalid".to_string());
     }
     Ok([
-        u32::try_from(left).map_err(|_| "visible pet surface x overflow".to_string())?,
-        u32::try_from(top).map_err(|_| "visible pet surface y overflow".to_string())?,
-        u32::try_from(right - left)
-            .map_err(|_| "visible pet surface width overflow".to_string())?,
-        u32::try_from(bottom - top)
-            .map_err(|_| "visible pet surface height overflow".to_string())?,
+        u32::try_from(left).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("visible pet surface x overflow", source_error)
+        })?,
+        u32::try_from(top).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("visible pet surface y overflow", source_error)
+        })?,
+        u32::try_from(right - left).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("visible pet surface width overflow", source_error)
+        })?,
+        u32::try_from(bottom - top).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "visible pet surface height overflow",
+                source_error,
+            )
+        })?,
     ])
 }
 
@@ -475,16 +490,21 @@ pub fn apply_portrait_alpha_bounds(
     regions.drag[0] = alpha_bounding_logical_rect(mask, target)?
         .ok_or_else(|| "portrait alpha mask has no visible pixels".to_string())?;
 
-    let source_width_usize = usize::try_from(source_width)
-        .map_err(|_| "portrait alpha crop width overflow".to_string())?;
-    let source_height_usize = usize::try_from(source_height)
-        .map_err(|_| "portrait alpha crop height overflow".to_string())?;
-    let source_left_usize =
-        usize::try_from(source_left).map_err(|_| "portrait alpha crop x overflow".to_string())?;
-    let source_top_usize =
-        usize::try_from(source_top).map_err(|_| "portrait alpha crop y overflow".to_string())?;
-    let mask_width = usize::try_from(mask.width)
-        .map_err(|_| "portrait alpha mask width overflow".to_string())?;
+    let source_width_usize = usize::try_from(source_width).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("portrait alpha crop width overflow", source_error)
+    })?;
+    let source_height_usize = usize::try_from(source_height).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("portrait alpha crop height overflow", source_error)
+    })?;
+    let source_left_usize = usize::try_from(source_left).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("portrait alpha crop x overflow", source_error)
+    })?;
+    let source_top_usize = usize::try_from(source_top).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("portrait alpha crop y overflow", source_error)
+    })?;
+    let mask_width = usize::try_from(mask.width).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("portrait alpha mask width overflow", source_error)
+    })?;
     let mut alpha = Vec::with_capacity(source_width_usize.saturating_mul(source_height_usize));
     for row in 0..source_height_usize {
         let start = (source_top_usize + row)
@@ -504,8 +524,14 @@ pub fn apply_portrait_alpha_bounds(
 }
 
 fn validate_portrait_alpha_mask(mask: &PortraitAlphaMask) -> Result<(), String> {
-    let expected_len = usize::try_from(u64::from(mask.width) * u64::from(mask.height))
-        .map_err(|_| "portrait alpha mask dimensions overflow".to_string())?;
+    let expected_len = usize::try_from(u64::from(mask.width) * u64::from(mask.height)).map_err(
+        |source_error| {
+            crate::runtime_log::diagnostic_error(
+                "portrait alpha mask dimensions overflow",
+                source_error,
+            )
+        },
+    )?;
     if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected_len {
         return Err("portrait alpha mask is invalid".to_string());
     }
@@ -561,7 +587,12 @@ fn extreme_control_surface(
     let bubble_bottom = reference_bubble_bottom - reserved_overflow;
     let bubble_top = bubble_bottom - i64::from(bubble_height);
     let to_u32 = |value: i64| {
-        u32::try_from(value).map_err(|_| "stable control surface escapes viewport".to_string())
+        u32::try_from(value).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "stable control surface escapes viewport",
+                source_error,
+            )
+        })
     };
     Ok(ControlSurfaceLayout {
         bubble_rect: [to_u32(x)?, to_u32(bubble_top)?, width, bubble_height],
@@ -643,8 +674,9 @@ fn maximum_bubble_height(
     let reserved_overflow = (requested_input_top + i64::from(panel.input_max_height)
         - i64::from(contract.viewport.window_size[1]))
     .max(0);
-    u32::try_from(reference_bubble_bottom - reserved_overflow)
-        .map_err(|_| "expanded bubble escapes viewport".to_string())
+    u32::try_from(reference_bubble_bottom - reserved_overflow).map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("expanded bubble escapes viewport", source_error)
+    })
 }
 
 pub fn logical_bubble_expansion_stable_surface_bounds(
@@ -833,8 +865,12 @@ fn alpha_bounding_logical_rect(
             .y
             .checked_add(i32::try_from(top).map_err(|_| "portrait alpha y overflow")?)
             .ok_or_else(|| "portrait alpha y overflow".to_string())?,
-        u32::try_from(right - left).map_err(|_| "portrait alpha width overflow".to_string())?,
-        u32::try_from(bottom - top).map_err(|_| "portrait alpha height overflow".to_string())?,
+        u32::try_from(right - left).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("portrait alpha width overflow", source_error)
+        })?,
+        u32::try_from(bottom - top).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("portrait alpha height overflow", source_error)
+        })?,
     )))
 }
 
@@ -911,16 +947,30 @@ pub fn classify_logical_point_with_alpha(
             let visible = match portrait_alpha_mask {
                 None => true,
                 Some(mask) => {
-                    let expected_len =
-                        usize::try_from(u64::from(mask.width) * u64::from(mask.height))
-                            .map_err(|_| "portrait alpha mask dimensions overflow".to_string())?;
+                    let expected_len = usize::try_from(
+                        u64::from(mask.width) * u64::from(mask.height),
+                    )
+                    .map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "portrait alpha mask dimensions overflow",
+                            source_error,
+                        )
+                    })?;
                     if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected_len {
                         return Err("portrait alpha mask is invalid".to_string());
                     }
-                    let local_x = u32::try_from(point[0] - target.x)
-                        .map_err(|_| "portrait alpha point x overflow".to_string())?;
-                    let local_y = u32::try_from(point[1] - target.y)
-                        .map_err(|_| "portrait alpha point y overflow".to_string())?;
+                    let local_x = u32::try_from(point[0] - target.x).map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "portrait alpha point x overflow",
+                            source_error,
+                        )
+                    })?;
+                    let local_y = u32::try_from(point[1] - target.y).map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "portrait alpha point y overflow",
+                            source_error,
+                        )
+                    })?;
                     let source_x = (u64::from(local_x) * u64::from(mask.width)
                         / u64::from(target.width))
                     .min(u64::from(mask.width - 1));
@@ -1006,12 +1056,21 @@ fn expand_rounded_clip_for_antialiasing(
         return Err("native rounded clip is empty".to_string());
     }
     Ok(PhysicalHitRect {
-        x: i32::try_from(left).map_err(|_| "native rounded clip x overflow".to_string())?,
-        y: i32::try_from(top).map_err(|_| "native rounded clip y overflow".to_string())?,
-        width: u32::try_from(right - left)
-            .map_err(|_| "native rounded clip width overflow".to_string())?,
-        height: u32::try_from(bottom - top)
-            .map_err(|_| "native rounded clip height overflow".to_string())?,
+        x: i32::try_from(left).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("native rounded clip x overflow", source_error)
+        })?,
+        y: i32::try_from(top).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("native rounded clip y overflow", source_error)
+        })?,
+        width: u32::try_from(right - left).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("native rounded clip width overflow", source_error)
+        })?,
+        height: u32::try_from(bottom - top).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native rounded clip height overflow",
+                source_error,
+            )
+        })?,
         corner_radius: rect.corner_radius.saturating_add(bleed as u32),
     })
 }
@@ -1036,14 +1095,18 @@ pub fn scale_hit_regions(
     let neutral = scale_all(&model.neutral)?;
     let mut envelope = [0_u32, 0_u32];
     for rect in interactive.iter().chain(&drag).chain(&neutral) {
-        envelope[0] = envelope[0].max(
-            u32::try_from(rect.right())
-                .map_err(|_| "physical hit-region envelope width overflow".to_string())?,
-        );
-        envelope[1] = envelope[1].max(
-            u32::try_from(rect.bottom())
-                .map_err(|_| "physical hit-region envelope height overflow".to_string())?,
-        );
+        envelope[0] = envelope[0].max(u32::try_from(rect.right()).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "physical hit-region envelope width overflow",
+                source_error,
+            )
+        })?);
+        envelope[1] = envelope[1].max(u32::try_from(rect.bottom()).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "physical hit-region envelope height overflow",
+                source_error,
+            )
+        })?);
     }
     Ok(PhysicalHitRegions {
         state: model.state,
@@ -1156,8 +1219,14 @@ fn alpha_hit_rectangles(
     mask: &PortraitAlphaMask,
     target: PhysicalHitRect,
 ) -> Result<Vec<PhysicalHitRect>, String> {
-    let expected_len = usize::try_from(u64::from(mask.width) * u64::from(mask.height))
-        .map_err(|_| "portrait alpha mask dimensions overflow".to_string())?;
+    let expected_len = usize::try_from(u64::from(mask.width) * u64::from(mask.height)).map_err(
+        |source_error| {
+            crate::runtime_log::diagnostic_error(
+                "portrait alpha mask dimensions overflow",
+                source_error,
+            )
+        },
+    )?;
     if mask.width == 0
         || mask.height == 0
         || mask.alpha.len() != expected_len
@@ -1284,12 +1353,24 @@ pub(crate) fn translated_bridge_rectangles(
             && right == rect.right() + delta_x
             && bottom == rect.bottom() + delta_y;
         translated.push(PhysicalHitRect {
-            x: i32::try_from(left).map_err(|_| "bridge hit region x overflow".to_string())?,
-            y: i32::try_from(top).map_err(|_| "bridge hit region y overflow".to_string())?,
-            width: u32::try_from(right - left)
-                .map_err(|_| "bridge hit region width overflow".to_string())?,
-            height: u32::try_from(bottom - top)
-                .map_err(|_| "bridge hit region height overflow".to_string())?,
+            x: i32::try_from(left).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("bridge hit region x overflow", source_error)
+            })?,
+            y: i32::try_from(top).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("bridge hit region y overflow", source_error)
+            })?,
+            width: u32::try_from(right - left).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "bridge hit region width overflow",
+                    source_error,
+                )
+            })?,
+            height: u32::try_from(bottom - top).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "bridge hit region height overflow",
+                    source_error,
+                )
+            })?,
             corner_radius: if unclipped { rect.corner_radius } else { 0 },
         });
     }
@@ -1305,8 +1386,12 @@ fn normalize_plain_hit_rectangles(
         if rect.corner_radius != 0 || rect.width == 0 || rect.height == 0 {
             continue;
         }
-        let bottom = i32::try_from(rect.bottom())
-            .map_err(|_| "native hit region bottom edge overflow".to_string())?;
+        let bottom = i32::try_from(rect.bottom()).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native hit region bottom edge overflow",
+                source_error,
+            )
+        })?;
         y_edges.push(rect.y);
         y_edges.push(bottom);
     }
@@ -1328,8 +1413,12 @@ fn normalize_plain_hit_rectangles(
                 rect.corner_radius == 0 && rect.y <= top && rect.bottom() >= i64::from(bottom)
             })
             .map(|rect| {
-                let right = i32::try_from(rect.right())
-                    .map_err(|_| "native hit region right edge overflow".to_string())?;
+                let right = i32::try_from(rect.right()).map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native hit region right edge overflow",
+                        source_error,
+                    )
+                })?;
                 Ok((rect.x, right))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -1349,8 +1438,12 @@ fn normalize_plain_hit_rectangles(
         for (left, right) in merged {
             let key = (left, right);
             let index = if let Some(index) = previous.get(&key).copied() {
-                let band_height = u32::try_from(bottom - top)
-                    .map_err(|_| "native hit region height overflow".to_string())?;
+                let band_height = u32::try_from(bottom - top).map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native hit region height overflow",
+                        source_error,
+                    )
+                })?;
                 normalized[index].height = normalized[index]
                     .height
                     .checked_add(band_height)
@@ -1360,10 +1453,18 @@ fn normalize_plain_hit_rectangles(
                 normalized.push(PhysicalHitRect {
                     x: left,
                     y: top,
-                    width: u32::try_from(right - left)
-                        .map_err(|_| "native hit region width overflow".to_string())?,
-                    height: u32::try_from(bottom - top)
-                        .map_err(|_| "native hit region height overflow".to_string())?,
+                    width: u32::try_from(right - left).map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "native hit region width overflow",
+                            source_error,
+                        )
+                    })?,
+                    height: u32::try_from(bottom - top).map_err(|source_error| {
+                        crate::runtime_log::diagnostic_error(
+                            "native hit region height overflow",
+                            source_error,
+                        )
+                    })?,
                     corner_radius: 0,
                 });
                 normalized.len() - 1
@@ -1529,10 +1630,18 @@ pub fn apply_native_hit_regions(
         }
         for row in rows {
             let row = linux_cairo_rectangle_for_physical_hit(row, gdk_scale)?;
-            let width = i32::try_from(row.width)
-                .map_err(|_| "native hit region width exceeds GTK limits".to_string())?;
-            let height = i32::try_from(row.height)
-                .map_err(|_| "native hit region height exceeds GTK limits".to_string())?;
+            let width = i32::try_from(row.width).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "native hit region width exceeds GTK limits",
+                    source_error,
+                )
+            })?;
+            let height = i32::try_from(row.height).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "native hit region height exceeds GTK limits",
+                    source_error,
+                )
+            })?;
             if region
                 .union_rectangle(&cairo::RectangleInt::new(row.x, row.y, width, height))
                 .is_err()
@@ -1746,13 +1855,12 @@ pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
 ) -> Result<(), String> {
-    *mac_hit_router_slot()
-        .lock()
-        .map_err(|_| "macOS hit router state is unavailable".to_string())? =
-        Some(MacHitRouterSnapshot {
-            window: window.clone(),
-            model: std::sync::Arc::new(model.clone()),
-        });
+    *mac_hit_router_slot().lock().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("macOS hit router state is unavailable", source_error)
+    })? = Some(MacHitRouterSnapshot {
+        window: window.clone(),
+        model: std::sync::Arc::new(model.clone()),
+    });
     ensure_mac_event_monitors(window)?;
     ensure_mac_hit_router()
 }
@@ -1835,7 +1943,12 @@ fn apply_or_defer_native_hit_regions(
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
     let mut deferrals = native_drag_region_deferrals()
         .lock()
-        .map_err(|_| "native drag region state is unavailable".to_string())?;
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native drag region state is unavailable",
+                source_error,
+            )
+        })?;
     if deferrals.defer(hwnd.0 as isize, model) {
         crate::interaction_latency::stage("setwindowrgn-deferred-during-drag");
         return Ok(());
@@ -1900,7 +2013,12 @@ impl NativeDragHitRegionGuard {
         }
         let mut deferrals = native_drag_region_deferrals()
             .lock()
-            .map_err(|_| "native drag region state is unavailable".to_string())?;
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "native drag region state is unavailable",
+                    source_error,
+                )
+            })?;
         if !deferrals.pending_by_window.contains_key(&self.window_key) {
             return Err("native drag region lease is unavailable".to_string());
         }
@@ -1986,7 +2104,12 @@ fn scale_native_region(
         return Err("failed to measure native DPI region snapshot".to_string());
     }
     let words = usize::try_from(byte_count)
-        .map_err(|_| "native DPI region snapshot is too large".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native DPI region snapshot is too large",
+                source_error,
+            )
+        })?
         .div_ceil(std::mem::size_of::<usize>());
     let mut storage = vec![0usize; words];
     if unsafe {
@@ -2104,7 +2227,12 @@ pub fn use_coarse_native_hit_region_while_dragging(
     };
     if !native_drag_region_deferrals()
         .lock()
-        .map_err(|_| "native drag region state is unavailable".to_string())?
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native drag region state is unavailable",
+                source_error,
+            )
+        })?
         .begin(guard.window_key)
     {
         return Err("native drag region lease is already active".to_string());
@@ -2251,10 +2379,18 @@ fn apply_native_hit_regions_with_redraw(
             Ok(RECT {
                 left: rect.x,
                 top: rect.y,
-                right: i32::try_from(rect.right())
-                    .map_err(|_| "native hit region right edge overflow".to_string())?,
-                bottom: i32::try_from(rect.bottom())
-                    .map_err(|_| "native hit region bottom edge overflow".to_string())?,
+                right: i32::try_from(rect.right()).map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native hit region right edge overflow",
+                        source_error,
+                    )
+                })?,
+                bottom: i32::try_from(rect.bottom()).map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native hit region bottom edge overflow",
+                        source_error,
+                    )
+                })?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -2283,10 +2419,18 @@ fn apply_native_hit_regions_with_redraw(
             bytes.cast::<RGNDATAHEADER>().write(RGNDATAHEADER {
                 dwSize: u32::try_from(header_size).unwrap_or(u32::MAX),
                 iType: RDH_RECTANGLES,
-                nCount: u32::try_from(plain.len())
-                    .map_err(|_| "native region rectangle count overflow".to_string())?,
-                nRgnSize: u32::try_from(rectangle_bytes)
-                    .map_err(|_| "native region data size overflow".to_string())?,
+                nCount: u32::try_from(plain.len()).map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native region rectangle count overflow",
+                        source_error,
+                    )
+                })?,
+                nRgnSize: u32::try_from(rectangle_bytes).map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native region data size overflow",
+                        source_error,
+                    )
+                })?,
                 rcBound: bounds,
             });
             std::ptr::copy_nonoverlapping(
@@ -2296,8 +2440,12 @@ fn apply_native_hit_regions_with_redraw(
             );
             ExtCreateRegion(
                 None,
-                u32::try_from(total_bytes)
-                    .map_err(|_| "native region data size overflow".to_string())?,
+                u32::try_from(total_bytes).map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "native region data size overflow",
+                        source_error,
+                    )
+                })?,
                 bytes.cast::<RGNDATA>(),
             )
         }
@@ -2309,12 +2457,25 @@ fn apply_native_hit_regions_with_redraw(
         .iter()
         .filter(|rect| rect.corner_radius > 0)
     {
-        let right = i32::try_from(rect.right())
-            .map_err(|_| "native hit region right edge overflow".to_string())?;
-        let bottom = i32::try_from(rect.bottom())
-            .map_err(|_| "native hit region bottom edge overflow".to_string())?;
-        let diameter = i32::try_from(rect.corner_radius.saturating_mul(2))
-            .map_err(|_| "native rounded clip radius overflow".to_string())?;
+        let right = i32::try_from(rect.right()).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native hit region right edge overflow",
+                source_error,
+            )
+        })?;
+        let bottom = i32::try_from(rect.bottom()).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native hit region bottom edge overflow",
+                source_error,
+            )
+        })?;
+        let diameter =
+            i32::try_from(rect.corner_radius.saturating_mul(2)).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "native rounded clip radius overflow",
+                    source_error,
+                )
+            })?;
         let part = unsafe { CreateRoundRectRgn(rect.x, rect.y, right, bottom, diameter, diameter) };
         if part.is_invalid() {
             unsafe {
@@ -2399,10 +2560,18 @@ pub(crate) fn expand_native_hit_region(
             if rect.width == 0 || rect.height == 0 || rect.x < 0 || rect.y < 0 {
                 return Err("native pet region expansion rectangle is invalid".to_string());
             }
-            let right = i32::try_from(rect.right())
-                .map_err(|_| "native pet region expansion right edge overflow".to_string())?;
-            let bottom = i32::try_from(rect.bottom())
-                .map_err(|_| "native pet region expansion bottom edge overflow".to_string())?;
+            let right = i32::try_from(rect.right()).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "native pet region expansion right edge overflow",
+                    source_error,
+                )
+            })?;
+            let bottom = i32::try_from(rect.bottom()).map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "native pet region expansion bottom edge overflow",
+                    source_error,
+                )
+            })?;
             let part = unsafe { CreateRectRgn(rect.x, rect.y, right, bottom) };
             if part.is_invalid() {
                 return Err("failed to allocate native pet region expansion rectangle".to_string());

@@ -224,7 +224,12 @@ impl CharacterPresentationState {
         if let Some(active) = self
             .active
             .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?
             .as_ref()
         {
             if active.presentation == presentation {
@@ -232,14 +237,18 @@ impl CharacterPresentationState {
             }
         }
         let (public, active) = self.prepare(presentation, generation)?;
-        *self
-            .active
-            .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")? = Some(active);
-        *self
-            .preview
-            .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")? = None;
+        *self.active.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                source_error,
+            )
+        })? = Some(active);
+        *self.preview.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                source_error,
+            )
+        })? = None;
         Ok(public)
     }
     pub fn preview_character(
@@ -250,10 +259,12 @@ impl CharacterPresentationState {
         revision: u64,
     ) -> Result<(FrontendCharacterPresentation, bool), String> {
         let (public, active) = self.prepare(presentation, generation)?;
-        let mut slot = self
-            .preview
-            .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?;
+        let mut slot = self.preview.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                source_error,
+            )
+        })?;
         let accepted = slot
             .as_ref()
             .is_none_or(|(window, rev, _)| (window_generation, revision) >= (*window, *rev));
@@ -266,7 +277,12 @@ impl CharacterPresentationState {
         Ok(self
             .active
             .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?
             .as_ref()
             .map(|a| a.presentation.clone()))
     }
@@ -321,10 +337,12 @@ impl CharacterPresentationState {
             return Err("VISUAL_EDITOR_ROOT_INVALID".into());
         }
         active.root = Some(root);
-        let mut editors = self
-            .editors
-            .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?;
+        let mut editors = self.editors.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                source_error,
+            )
+        })?;
         // One selected editor and one sequential thumbnail job may coexist.
         // Replacing either revokes only its own files and modules.
         editors.retain(|_, editor| editor.thumbnail != thumbnail);
@@ -387,7 +405,12 @@ impl CharacterPresentationState {
         let active = self
             .editors
             .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?
             .get(binding)
             .map(|editor| editor.active.clone())
             .ok_or("VISUAL_BINDING_EXPIRED")?;
@@ -419,19 +442,34 @@ impl CharacterPresentationState {
         let active = self
             .active
             .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?
             .clone();
         let preview = self
             .preview
             .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?
             .as_ref()
             .map(|(_, _, a)| a.clone());
         let editor = match binding {
             Some(id) => self
                 .editors
                 .lock()
-                .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error(
+                        "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                        source_error,
+                    )
+                })?
                 .get(id)
                 .map(|editor| editor.active.clone()),
             None => None,
@@ -532,7 +570,7 @@ impl CharacterPresentationState {
                 } else {
                     StatusCode::UNPROCESSABLE_ENTITY
                 };
-                protocol_error(status, &code)
+                protocol_error(status, &error)
             }
         }
     }
@@ -635,10 +673,12 @@ impl CharacterPresentationState {
         let modified = file.modified().ok();
         let size = file.len();
         {
-            let mut cache = active
-                .masks
-                .lock()
-                .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?;
+            let mut cache = active.masks.lock().map_err(|source_error| {
+                crate::runtime_log::diagnostic_error(
+                    "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                    source_error,
+                )
+            })?;
             if let Some(index) = cache.iter().position(|item| {
                 item.path == path && item.modified == modified && item.size == size
             }) {
@@ -651,10 +691,12 @@ impl CharacterPresentationState {
         let bytes = read_resource(&path)?;
         let metadata = inspect_png(&path, bytes.len() as u64)?;
         let mask = decode_png_alpha_mask(&bytes, metadata)?;
-        let mut cache = active
-            .masks
-            .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE")?;
+        let mut cache = active.masks.lock().map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "CHARACTER_RESOURCE_STATE_UNAVAILABLE",
+                source_error,
+            )
+        })?;
         cache.retain(|item| item.path != path);
         cache.push_back(CachedMask {
             path,
@@ -790,8 +832,12 @@ fn unhex(s: &str) -> Result<String, String> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
         .collect();
-    String::from_utf8(bytes.map_err(|_| "CHARACTER_RESOURCE_ID_UNKNOWN")?)
-        .map_err(|_| "CHARACTER_RESOURCE_ID_UNKNOWN".into())
+    String::from_utf8(bytes.map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_ID_UNKNOWN", source_error)
+    })?)
+    .map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("CHARACTER_RESOURCE_ID_UNKNOWN", source_error)
+    })
 }
 pub fn protocol_error(
     status: tauri::http::StatusCode,
@@ -1049,6 +1095,16 @@ mod tests {
             fs::canonicalize(dir.path().join("characters/model/assets/model.json")).unwrap_err();
         assert!(error.starts_with("CHARACTER_RESOURCE_MISSING: "));
         assert!(error.contains(&source.to_string()));
+        let request = tauri::http::Request::builder()
+            .uri(protocol_url(&format!(
+                "v1/67/{}-{}",
+                "a".repeat(32),
+                hex_text("model")
+            )))
+            .body(Vec::new())
+            .unwrap();
+        let response = state.protocol_response(&request, "g", |_, _| {});
+        assert!(String::from_utf8_lossy(response.body()).contains(&source.to_string()));
         assert!(!error.contains(dir.path().to_str().unwrap()));
     }
 

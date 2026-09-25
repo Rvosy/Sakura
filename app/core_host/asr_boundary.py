@@ -121,7 +121,7 @@ class ASRBoundary:
                     self._cancel(task)
                     result = self._snapshot(task)
                 elif name == "asr.input.capture_discarded":
-                    result = self._discard_capture(task, payload.get("errorCode"))
+                    result = self._discard_capture(task, payload.get("errorCode"), payload.get("diagnostic"))
                 elif name == "asr.input.capture_target":
                     with self._lock:
                         self._require_context(task)
@@ -153,6 +153,7 @@ class ASRBoundary:
                         result = {"recordingId": task.recording_id, "state": task.state}
                         if task.error_code:
                             result["errorCode"] = task.error_code
+                            result["diagnostics"] = dict(task.diagnostics)
                 else:
                     raise AudioInputError("ASR_REQUEST_INVALID")
             return self._response(request, payload=result)
@@ -330,7 +331,7 @@ class ASRBoundary:
             task.changed.set()
             return self._snapshot(task)
 
-    def _discard_capture(self, task: _Input, error_code: object) -> dict:
+    def _discard_capture(self, task: _Input, error_code: object, diagnostic: object = None) -> dict:
         if error_code is not None and (not isinstance(error_code, str)
                 or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", error_code)):
             raise AudioInputError("ASR_REQUEST_INVALID")
@@ -338,6 +339,9 @@ class ASRBoundary:
             if error_code and error_code != "ASR_CANCELLED" and task.state in _ACTIVE:
                 task.state = "failed"
                 task.error_code = error_code
+                if isinstance(diagnostic, str):
+                    from app.core.diagnostics import safe_diagnostic_text
+                    task.diagnostics = {"diagnostic": safe_diagnostic_text(diagnostic)}
                 self._log_state(task, "failed")
             self._cancel(task)
             if task.resource_id:
@@ -390,8 +394,8 @@ class ASRBoundary:
             hub_plugin_id = app.service_identity("sakura.asr")["providerId"]
             status = app.call_service("sakura.asr", "status")
             providers = app.call_service("sakura.asr", "listProviders")
-        except Exception:
-            status = {"state": "unavailable", "available": False, "errorCode": "ASR_SERVICE_UNAVAILABLE"}
+        except Exception as error:
+            status = {"state": "unavailable", "available": False, "errorCode": "ASR_SERVICE_UNAVAILABLE", "diagnostics": diagnostic_attributes(error, reason_code="ASR_SERVICE_UNAVAILABLE", stage="settings")}
             providers = []
         return {"schemaVersion": 1, **dict(status), "selectedProviderId": status.get("providerId"),
                 "inputDeviceId": self._settings_service.load_audio_input_device(),
@@ -491,6 +495,7 @@ class ASRBoundary:
             value["text"] = task.text
         if task.error_code:
             value["errorCode"] = task.error_code
+            value["diagnostics"] = dict(task.diagnostics)
         return value
 
     @staticmethod

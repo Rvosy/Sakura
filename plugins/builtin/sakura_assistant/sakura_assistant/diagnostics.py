@@ -26,9 +26,9 @@ def safe_diagnostic_text(value, max_chars=8000, *, secrets=(), **kwargs):
     return re.sub(r"(?i)(authorization|api[_-]?key|token|password)([=: ]+)[^\s,;]+", r"\1\2[REDACTED]", text)[:max_chars]
 
 def diagnostic_attributes(error, **attributes):
-    return {**attributes, "error_type": type(error).__name__, "error_message": safe_diagnostic_text(error),
-            "traceback": safe_diagnostic_text("".join(traceback.format_exception(error))),
-            "cause": safe_diagnostic_text(error.__cause__) if error.__cause__ else None}
+    return {**attributes, "error_type": type(error).__name__, "diagnostic": safe_diagnostic_text(error),
+            "exception_stack": safe_diagnostic_text("".join(traceback.format_exception(error))),
+            "exception_chain": safe_diagnostic_text(error.__cause__) if error.__cause__ else ""}
 
 def log_event(channel, message, attributes=None, *, severity="info", event=None, **kwargs):
     if _logger is not None:
