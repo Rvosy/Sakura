@@ -52,6 +52,7 @@ _DOC_FIELDS = frozenset(
         "id",
         "displayName",
         "initialMessage",
+        "initialMessageTranslation",
         "cardText",
         "defaultPortrait",
         "expressions",

@@ -1776,10 +1776,11 @@ def _merge_character_manifest(
     theme = dict(manifest.get("theme")) if isinstance(manifest.get("theme"), dict) else {}
     theme.update(generated["theme"])
     manifest["theme"] = theme
-    if "initial_message" in generated:
-        manifest["initial_message"] = generated["initial_message"]
-    else:
-        manifest.pop("initial_message", None)
+    for key in ("initial_message", "initial_message_translation"):
+        if key in generated:
+            manifest[key] = generated[key]
+        else:
+            manifest.pop(key, None)
 
     if "visuals" in generated:
         manifest["visuals"] = generated["visuals"]
