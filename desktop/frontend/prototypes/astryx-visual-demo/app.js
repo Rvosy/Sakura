@@ -50,10 +50,10 @@ async function load() {
 
     doc.querySelector('script[src="./settings.js"]')?.remove();
 
-    const demoSurface = doc.createElement("link");
-    demoSurface.rel = "stylesheet";
-    demoSurface.href = new URL("../settings-demo/surface.css", location.href).href;
-    doc.head.append(demoSurface);
+    const support = doc.createElement("link");
+    support.rel = "stylesheet";
+    support.href = new URL("./support.css", location.href).href;
+    doc.head.append(support);
 
     if (mode === "visual") {
       const visual = doc.createElement("link");
