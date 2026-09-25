@@ -1,0 +1,71 @@
+.demo-dialog {
+  width: min(520px, calc(100vw - 40px));
+  max-height: 85vh;
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--sakura-border);
+  border-radius: 16px;
+  color: var(--sakura-text);
+  background: var(--sakura-page-bg);
+  font: inherit;
+  box-shadow: 0 20px 70px rgb(25 60 89 / 19%);
+}
+
+.demo-dialog::backdrop {
+  background: rgb(39 68 90 / 22%);
+  backdrop-filter: blur(3px);
+}
+
+.demo-dialog h2 {
+  margin: 0 0 20px;
+  font-size: 20px;
+}
+
+.demo-dialog p {
+  margin: 0 0 18px;
+  line-height: 1.8;
+}
+
+.demo-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.demo-dialog .demo-fields {
+  display: grid;
+  gap: 16px;
+}
+
+.demo-dialog .demo-fields label {
+  display: grid;
+  gap: 7px;
+}
+
+.demo-dialog input,
+.demo-dialog select {
+  width: 100%;
+}
+
+.demo-dialog .mini-note {
+  margin-top: 12px;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+}
+
+.demo-plugin-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+
+.demo-plugin-state::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sakura-accent);
+}
