@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import sqlite3
@@ -618,6 +619,9 @@ def _copy_tts_optional(
     progress: Progress,
     report: ImportReport,
 ) -> None:
+    # An unverified or foreign runtime must not block portable data, but
+    # neither should its model binaries be installed in this platform.
+    target_platform = {"Windows": "windows", "Darwin": "macos"}.get(platform.system(), "unknown")
     inspection_issue = next(
         (
             str(item.get("code"))
@@ -626,6 +630,8 @@ def _copy_tts_optional(
         ),
         None,
     )
+    if inspection_issue is None and inspection.source_platform != target_platform:
+        inspection_issue = "LEGACY_TTS_PLATFORM_UNVERIFIED"
     if inspection_issue is not None:
         _record_optional_domain_skipped(
             report,
