@@ -1,0 +1,524 @@
+/*
+ * Sakura visual study inspired by Astryx's calm, spacious product aesthetic.
+ *
+ * This file intentionally overrides only presentation. The DOM, settings controller,
+ * bridge and current main information architecture are reused unchanged.
+ */
+
+:root {
+  --sakura-primary: #4b9ac4 !important;
+  --sakura-primary-hover: #3d89b1 !important;
+  --sakura-accent: #df6e98 !important;
+
+  --sakura-text: #191b1e !important;
+  --sakura-secondary-text: #565a60 !important;
+  --sakura-muted-text: #85898f !important;
+
+  --sakura-page-bg: #f7f7f4 !important;
+  --sakura-panel-bg: #f1f1ed !important;
+  --sakura-input-bg: #ffffff !important;
+  --sakura-bubble-bg: #f4f7f8 !important;
+  --sakura-border: #dedfdb !important;
+
+  --surface-soft: #ffffff !important;
+  --surface-raised: #ffffff !important;
+  --hairline: rgb(25 27 30 / 8%) !important;
+  --tint-faint: rgb(75 154 196 / 6%) !important;
+  --tint-soft: rgb(75 154 196 / 10%) !important;
+  --ring: rgb(75 154 196 / 24%) !important;
+  --shadow-card:
+    0 1px 1px rgb(22 24 27 / 3%),
+    0 10px 30px rgb(22 24 27 / 3%) !important;
+  --shadow-pop:
+    0 8px 24px rgb(22 24 27 / 9%),
+    0 1px 3px rgb(22 24 27 / 5%) !important;
+
+  --radius-lg: 20px !important;
+  --radius-md: 15px !important;
+  --radius-sm: 11px !important;
+
+  --settings-nav-width: clamp(176px, 17vw, 196px) !important;
+  --settings-shell-gap: clamp(20px, 2.4vw, 34px) !important;
+  --settings-shell-inset: clamp(18px, 2.2vw, 30px) !important;
+  --settings-content-gutter: 0px !important;
+  --settings-section-inset: 22px !important;
+  --settings-secondary-width: 104px !important;
+}
+
+html,
+body {
+  background: var(--sakura-page-bg) !important;
+}
+
+body {
+  color: var(--sakura-text);
+}
+
+.settings-shell {
+  width: min(100%, 1380px);
+  margin: 0 auto;
+  animation-duration: .34s;
+}
+
+/* --- Sidebar: remove the nested-panel feeling and make navigation quieter. --- */
+
+.nav-card,
+.detail-card {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.nav-card {
+  gap: 17px;
+  padding: 5px 3px 12px;
+}
+
+.nav-brand {
+  position: relative;
+  min-height: 42px;
+  gap: 9px;
+  padding: 2px 10px 14px 15px;
+  border-bottom: 0;
+}
+
+.nav-brand::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--sakura-primary);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--sakura-primary) 10%, transparent);
+}
+
+.nav-brand-text {
+  color: var(--sakura-text);
+  font-size: 16px;
+  font-weight: var(--font-weight-bold);
+  letter-spacing: .035em;
+}
+
+.nav-list {
+  gap: 3px;
+  padding-right: 4px;
+}
+
+.nav-group {
+  gap: 3px;
+}
+
+.nav-group + .nav-group {
+  margin-top: 10px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.nav-group-label {
+  padding: 4px 11px 5px;
+  color: #9a9da1;
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: .08em;
+}
+
+.nav-item {
+  min-height: 39px;
+  gap: 10px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: #676b70;
+  font-size: 13.5px;
+}
+
+.nav-item:hover:not(:disabled) {
+  border-color: rgb(25 27 30 / 4%);
+  background: rgb(255 255 255 / 60%);
+  color: var(--sakura-text);
+}
+
+.nav-item.is-active {
+  border-color: rgb(25 27 30 / 6%);
+  background: #fff;
+  color: var(--sakura-text);
+  font-weight: var(--font-weight-semibold);
+  box-shadow:
+    0 1px 2px rgb(22 24 27 / 5%),
+    0 8px 24px rgb(22 24 27 / 2%);
+  transform: none;
+}
+
+.nav-item.is-active .nav-item-icon {
+  color: var(--sakura-primary);
+}
+
+.nav-item-icon {
+  opacity: .72;
+}
+
+/* --- Content canvas: the page is the canvas; only real groups become cards. --- */
+
+.detail-card {
+  max-width: 980px;
+}
+
+.page-head {
+  padding: 7px 4px 24px;
+  border-bottom: 0;
+}
+
+.page-title {
+  color: var(--sakura-text);
+  font-size: 27px;
+  font-weight: var(--font-weight-bold);
+  letter-spacing: -.025em;
+  line-height: 1.18;
+}
+
+.page-subtitle {
+  max-width: 620px;
+  margin-top: 8px;
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.page-scroll {
+  padding: 0 4px 34px;
+}
+
+.settings-page {
+  gap: 18px;
+}
+
+.settings-page.is-active > * {
+  animation-duration: .28s;
+}
+
+/* --- Cards: white, large radius, almost no visible chrome. --- */
+
+.settings-group {
+  gap: 4px;
+  padding: 20px 22px 18px;
+  border: 1px solid var(--hairline);
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: var(--shadow-card);
+}
+
+.settings-group legend {
+  margin-left: 0;
+  margin-bottom: 6px;
+  padding: 0 2px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--sakura-text);
+  font-size: 14.5px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -.005em;
+}
+
+.setting-row {
+  gap: 12px 24px;
+  min-height: 52px;
+  padding: 10px 2px;
+}
+
+.settings-group > .setting-row + .setting-row {
+  border-top: 1px solid rgb(25 27 30 / 6%);
+}
+
+.setting-title {
+  color: var(--sakura-text);
+  font-size: 13.5px;
+  font-weight: var(--font-weight-medium);
+}
+
+.setting-desc {
+  margin-top: 2px;
+  color: var(--sakura-muted-text);
+  font-size: 11.5px;
+}
+
+.page-note,
+.visual-status-row,
+.plugin-status-message.is-section-message {
+  border: 0 !important;
+  border-radius: 13px !important;
+  background: #f6f6f2 !important;
+  color: var(--sakura-secondary-text) !important;
+}
+
+/* --- Controls: neutral surfaces, brand color only for state and intent. --- */
+
+input[type="number"],
+input[type="text"],
+input[type="password"],
+select,
+textarea,
+.custom-select__trigger {
+  min-height: 39px;
+  border-color: #dedfdb;
+  border-radius: 11px;
+  background: #fff;
+  color: var(--sakura-text);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 74%);
+}
+
+input[type="number"]:hover:not(:disabled),
+input[type="text"]:hover:not(:disabled),
+input[type="password"]:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled),
+.custom-select__trigger:hover:not(:disabled) {
+  border-color: #c8cac6;
+}
+
+input[type="number"]:focus,
+input[type="text"]:focus,
+input[type="password"]:focus,
+select:focus,
+textarea:focus,
+.custom-select.is-open .custom-select__trigger,
+.custom-select__trigger:focus-visible {
+  border-color: color-mix(in srgb, var(--sakura-primary) 62%, #c8cac6);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.custom-select__menu {
+  padding: 6px;
+  border-color: rgb(25 27 30 / 9%);
+  border-radius: 14px;
+  background: rgb(255 255 255 / 98%);
+  box-shadow: var(--shadow-pop);
+}
+
+.custom-select__option {
+  border-radius: 9px;
+}
+
+.custom-select__option:hover,
+.custom-select__option.is-active {
+  background: #f2f4f3;
+  color: var(--sakura-text);
+}
+
+.custom-select__option.is-selected:not(.is-disabled)::after {
+  color: var(--sakura-primary);
+}
+
+button {
+  min-height: 37px;
+  border-color: #dedfdb;
+  border-radius: 11px;
+  background: #fff;
+  color: #55595e;
+  box-shadow: 0 1px 1px rgb(22 24 27 / 2%);
+}
+
+button:hover:not(:disabled) {
+  border-color: #c9cac6;
+  background: #fafaf8;
+  color: var(--sakura-text);
+  box-shadow: 0 3px 10px rgb(22 24 27 / 5%);
+  transform: translateY(-1px);
+}
+
+button:active:not(:disabled) {
+  transform: scale(.985);
+}
+
+#saveButton,
+.primary-button {
+  border-color: var(--sakura-primary);
+  background: var(--sakura-primary);
+  color: #fff;
+  box-shadow: 0 4px 12px rgb(75 154 196 / 18%);
+}
+
+#saveButton:hover:not(:disabled),
+.primary-button:hover:not(:disabled) {
+  border-color: var(--sakura-primary-hover);
+  background: var(--sakura-primary-hover);
+  color: #fff;
+  filter: none;
+}
+
+.secondary-button {
+  min-width: 96px;
+}
+
+input[type="checkbox"] {
+  border-color: #c9cbc8;
+  border-radius: 6px;
+  background: #fff;
+}
+
+input[type="checkbox"]:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--sakura-primary) 58%, #c9cbc8);
+  background: var(--tint-faint);
+}
+
+input[type="checkbox"]:checked,
+input[type="checkbox"]:checked:hover:not(:disabled) {
+  border-color: var(--sakura-primary);
+  background: var(--sakura-primary);
+}
+
+/* Range values behave like quiet metadata rather than another blue control. */
+
+input[type="range"].layout-slider {
+  height: 5px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--sakura-primary) 72%, #d8d9d5),
+    #e4e4e0
+  );
+}
+
+input[type="range"].layout-slider::-webkit-slider-thumb {
+  width: 17px;
+  height: 17px;
+  border: 3px solid #fff;
+  background: var(--sakura-primary);
+  box-shadow: 0 1px 5px rgb(22 24 27 / 16%);
+}
+
+input[type="range"].layout-slider::-moz-range-thumb {
+  width: 17px;
+  height: 17px;
+  border: 3px solid #fff;
+  background: var(--sakura-primary);
+  box-shadow: 0 1px 5px rgb(22 24 27 / 16%);
+}
+
+.slider-value {
+  min-width: 49px;
+  padding: 3px 7px;
+  border: 1px solid rgb(25 27 30 / 6%);
+  background: #f6f6f2;
+  color: #64686d;
+  font-weight: var(--font-weight-medium);
+}
+
+/* --- Footer: float the actions on the page instead of closing a giant panel. --- */
+
+.detail-card > footer {
+  margin: 0 4px;
+  padding: 15px 0 0 !important;
+  border-top: 1px solid rgb(25 27 30 / 7%) !important;
+  background: transparent !important;
+}
+
+/* --- Admin/plugin surfaces: keep the richer pages consistent with the same calm canvas. --- */
+
+body:has(#page-plugins.is-active) .detail-card {
+  max-width: 1080px;
+}
+
+.plugin-page-heading h2 {
+  color: var(--sakura-text);
+  font-size: 27px;
+  letter-spacing: -.025em;
+}
+
+.admin-mini-panel,
+.status-chip,
+.permission-chip,
+.plugin-list,
+.plugin-detail,
+.plugin-workbench,
+.resource-card,
+.about-product-card,
+.about-components {
+  border-color: var(--hairline) !important;
+}
+
+.admin-mini-panel,
+.resource-card,
+.about-product-card,
+.about-components {
+  border-radius: 16px !important;
+  background: #fff !important;
+  box-shadow: var(--shadow-card);
+}
+
+.status-chip,
+.permission-chip {
+  background: #f4f4f0;
+}
+
+.plugin-workbench {
+  gap: 16px;
+}
+
+.plugin-list,
+.plugin-detail {
+  border-radius: 18px !important;
+  background: #fff !important;
+  box-shadow: var(--shadow-card);
+}
+
+.plugin-settings-dialog,
+.demo-dialog {
+  border-color: rgb(25 27 30 / 9%) !important;
+  border-radius: 20px !important;
+  background: #fff !important;
+  box-shadow:
+    0 24px 80px rgb(22 24 27 / 18%),
+    0 2px 8px rgb(22 24 27 / 6%) !important;
+}
+
+.plugin-settings-dialog::backdrop,
+.demo-dialog::backdrop {
+  background: rgb(23 25 28 / 28%) !important;
+  backdrop-filter: blur(5px);
+}
+
+.plugin-dialog-footer {
+  background: #fafaf7;
+}
+
+/* --- Tiny Sakura personality: keep pink as a rare emotional accent. --- */
+
+.error-text,
+.modal-error,
+.permission-chip.is-locked,
+.plugin-requirement-status.is-missing,
+.plugin-requirement-status.is-unsupported {
+  color: var(--sakura-accent) !important;
+}
+
+/* --- Responsive: retain the existing compact layout, just reduce the extra air. --- */
+
+@media (max-width: 1040px) {
+  :root {
+    --settings-shell-gap: 18px !important;
+    --settings-shell-inset: 16px !important;
+  }
+
+  .page-title,
+  .plugin-page-heading h2 {
+    font-size: 24px;
+  }
+
+  .settings-group {
+    padding-inline: 18px;
+  }
+}
+
+@media (max-width: 820px) {
+  :root {
+    --settings-nav-width: 158px !important;
+  }
+
+  .nav-item {
+    padding-inline: 9px;
+  }
+
+  .setting-row {
+    gap: 10px 14px;
+  }
+}
