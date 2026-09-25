@@ -321,7 +321,6 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 当前会话回看段立即完整替换，不等待下一条回复、不回放已完成段，也不切换立绘或重播语音。
 已打开的聊天记录同步刷新语言；重新打开时读取已保存的选择。
 
-另保存默认关闭的 `show_japanese_original`。中文单语模式可通过 `sakura.chat.japanese-original.toggle` 在下方显示日文原文；双语模式直接使用主副字幕轨道，不重复追加原文。
 该 feature 不读写 `system_config.yaml`，只使用当前 v1 `ui.json`。
 
 `appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。

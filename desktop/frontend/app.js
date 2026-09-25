@@ -80,7 +80,7 @@ import {
   waitForSurfaceFadeCompletion,
   createSurfaceHoverProbe,
 } from "./pet/surface-visibility.js";
-import { bubbleJapaneseOriginal, createTypewriter, selectSegmentText, selectSegmentTracks } from "./pet/typewriter.js";
+import { createTypewriter, selectSegmentText, selectSegmentTracks } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
@@ -1116,12 +1116,6 @@ try {
 } catch {
   // Chinese remains the fail-safe default when the isolated setting cannot be read.
 }
-let showJapaneseOriginal = false;
-try {
-  showJapaneseOriginal = await invoke("current_show_japanese_original") === true;
-} catch {
-  // The extra Japanese line stays hidden when the setting cannot be read.
-}
 
 let bubbleAutoHideSettings = Object.freeze({
   autoHideEnabled: true,
@@ -1332,7 +1326,6 @@ function render(state, bubbleUpdate = {}) {
     bubbleScroll.updateText(state.bubbleText, {
       ...bubbleUpdate, subtitleTracks: state.subtitleTracks, fullSubtitleTracks: state.fullSubtitleTracks,
       subtitleLanguage: state.subtitleLanguage,
-      original: bubbleJapaneseOriginal(state, subtitleLanguage, showJapaneseOriginal),
     });
     adaptiveSurface.schedule();
   };
@@ -1678,16 +1671,6 @@ await listenAppEvent("sakura://subtitle-language-changed", (event) => {
     );
     if (refreshed.applied) render(refreshed.state, { reason: "language", forceEnd: true });
   }
-});
-
-await listenAppEvent("sakura://japanese-original-changed", (event) => {
-  showJapaneseOriginal = event?.payload === true;
-  const state = presentation.current();
-  if (typewriter.isActive()) {
-    render(state, { reason: "original", forceEnd: false });
-    return;
-  }
-  render(state, { reason: "original", forceEnd: true });
 });
 
 let coreRebindRevision = 0;

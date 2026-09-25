@@ -49,13 +49,6 @@ export function createBubbleScroll({
     const wasNearEnd = isNearEnd();
     const shouldFollow = Boolean(forceEnd) || (following && wasNearEnd);
     renderText(viewport, lastText, subtitleTracks, fullSubtitleTracks, subtitleLanguage);
-    const original = String(options.original ?? "").trim();
-    if (original && !String(subtitleLanguage).startsWith("bilingual")) {
-      const node = viewport.ownerDocument.createElement("div");
-      node.className = "bubble-original";
-      renderText(node, original);
-      viewport.append(node);
-    }
     if (shouldFollow) scrollToEnd();
     else following = false;
   }

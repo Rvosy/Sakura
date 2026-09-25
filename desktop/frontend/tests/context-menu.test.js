@@ -24,7 +24,6 @@ test("the custom product menu uses the existing Rust action IDs", () => {
     subtitleJa: "sakura.chat.subtitle.ja",
     subtitleBilingual: "sakura.chat.subtitle.bilingual",
     subtitleBilingualJa: "sakura.chat.subtitle.bilingual_ja",
-    japaneseOriginal: "sakura.chat.japanese-original.toggle",
     topmost: "sakura.pet.topmost.toggle",
     history: "sakura.history.open",
     runtimeLog: "sakura.runtime-log.open",

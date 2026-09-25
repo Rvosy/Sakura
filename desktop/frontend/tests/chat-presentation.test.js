@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { composerPlaceholder, createChatPresentationReducer } from "../chat/chat-presentation.js";
-import { bubbleJapaneseOriginal, createTypewriter, selectSegmentText } from "../pet/typewriter.js";
+import { createTypewriter, selectSegmentText } from "../pet/typewriter.js";
 
 const lifecycle = (status, generationNumber = 1, revision = 1, canRetry = false, failure = null) => ({
   type: "lifecycle",
@@ -589,26 +589,17 @@ test("bilingual subtitles pair translation and original without empty or duplica
   assert.equal(selectSegmentText({ text: "かな", translation: " " }, "bilingual_ja"), "かな");
 });
 
-test("greeting keeps Chinese above the Japanese line, and the original stays hidden until enabled", () => {
+test("greeting uses the subtitle language tracks", () => {
   const reducer = createChatPresentationReducer({
     initialMessage: "……起動した。用事があるなら、呼んで。",
     initialMessageTranslation: "……启动了。有事的话，叫我。",
   });
   reducer.reduce(lifecycle("ready"));
-  const greeting = reducer.beginGreeting();
-  const segment = greeting.state.segments[0];
-  assert.equal(segment.text, "……起動した。用事があるなら、呼んで。");
-  assert.equal(segment.translation, "……启动了。有事的话，叫我。");
-  const typing = {
-    phase: "typing",
-    bubbleText: "……启动了",
-    segments: [segment],
-    showingReplyHistorySegment: false,
-  };
-  assert.equal(bubbleJapaneseOriginal(typing, "zh", false), "");
-  assert.equal(bubbleJapaneseOriginal(typing, "zh", true), segment.text);
-  assert.equal(bubbleJapaneseOriginal({ ...typing, phase: "settled", bubbleText: segment.translation }, "zh", true), segment.text);
-  assert.equal(bubbleJapaneseOriginal({ ...typing, phase: "settled", bubbleText: segment.translation }, "ja", true), "");
+  const segment = reducer.beginGreeting().state.segments[0];
+  assert.equal(selectSegmentText(segment, "zh"), segment.translation);
+  assert.equal(selectSegmentText(segment, "ja"), segment.text);
+  assert.equal(selectSegmentText(segment, "bilingual"), `${segment.translation}\n${segment.text}`);
+  assert.equal(selectSegmentText(segment, "bilingual_ja"), `${segment.text}\n${segment.translation}`);
 });
 
 test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {

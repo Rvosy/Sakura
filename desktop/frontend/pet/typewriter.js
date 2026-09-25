@@ -22,32 +22,6 @@ export function selectSegmentText(segment, language = "zh") {
   return selectSegmentTracks(segment, language).join("\n");
 }
 
-function visibleReplySegment(state) {
-  if (!state) return null;
-  if (state.showingReplyHistorySegment) {
-    return state.replyHistorySegments?.[state.replyHistoryIndex] || null;
-  }
-  if ((state.phase === "typing" || state.phase === "settled") && Array.isArray(state.segments) && state.segments.length === 1) {
-    return state.segments[0];
-  }
-  if (state.phase === "typing" && Array.isArray(state.segments) && state.segments.length > 1) {
-    return state.segments[0];
-  }
-  return null;
-}
-
-export function bubbleJapaneseOriginal(state, language, enabled) {
-  if (!enabled || normalizeLanguage(language) !== "zh") return "";
-  const segment = visibleReplySegment(state);
-  if (!segment) return "";
-  const original = typeof segment.text === "string" ? segment.text.trim() : "";
-  const primary = selectSegmentText(segment, "zh").trim();
-  if (!original || original === primary) return "";
-  const bubble = String(state.bubbleText || "");
-  if (state.phase === "typing") return bubble && primary.startsWith(bubble) ? original : "";
-  return bubble.trim() === primary ? original : "";
-}
-
 export function createTypewriter({
   intervalMs = 28,
   segmentPauseMs = 160,

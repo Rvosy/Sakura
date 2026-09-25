@@ -11,7 +11,6 @@ use crate::{product_shell, ui_config::UiConfigRepository};
 
 pub const CHAT_TIMING_CHANGED_EVENT: &str = "sakura://chat-presentation-timing-changed";
 pub const SUBTITLE_LANGUAGE_CHANGED_EVENT: &str = "sakura://subtitle-language-changed";
-pub const JAPANESE_ORIGINAL_CHANGED_EVENT: &str = "sakura://japanese-original-changed";
 pub const BUBBLE_AUTO_HIDE_CHANGED_EVENT: &str = "sakura://bubble-auto-hide-changed";
 const SCHEMA_VERSION: u64 = 1;
 const DOMAIN: &str = "ui";
@@ -400,39 +399,6 @@ impl SubtitleLanguageState {
     }
 }
 
-pub struct JapaneseOriginalState {
-    repository: UiConfigRepository,
-}
-
-impl JapaneseOriginalState {
-    pub fn new(repository: UiConfigRepository) -> Self {
-        Self { repository }
-    }
-
-    pub fn get(&self) -> Result<bool, String> {
-        let document = self.repository.load("CHAT_SUBTITLE")?;
-        validate_subtitle_document(&document)?;
-        Ok(document["settings"]["show_japanese_original"].as_bool() == Some(true))
-    }
-
-    pub fn save(&self, enabled: bool) -> Result<bool, String> {
-        self.repository.update("CHAT_SUBTITLE", |document| {
-            validate_subtitle_document(document)?;
-            let settings = document
-                .get_mut("settings")
-                .and_then(Value::as_object_mut)
-                .ok_or_else(|| "CHAT_SUBTITLE_DOCUMENT_INVALID".to_string())?;
-            settings.insert("show_japanese_original".to_string(), Value::Bool(enabled));
-            Ok(())
-        })?;
-        Ok(enabled)
-    }
-
-    pub fn toggle(&self) -> Result<bool, String> {
-        self.save(!self.get()?)
-    }
-}
-
 fn validate_subtitle_document(document: &Value) -> Result<(), String> {
     let root = document
         .as_object()
@@ -535,17 +501,6 @@ pub(crate) fn current_subtitle_language(
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     subtitle.get()
-}
-
-#[tauri::command]
-pub(crate) fn current_show_japanese_original(
-    window: WebviewWindow,
-    original: State<'_, JapaneseOriginalState>,
-) -> Result<bool, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    original.get()
 }
 
 #[tauri::command]
@@ -729,24 +684,6 @@ mod tests {
         let state = SubtitleLanguageState::new(UiConfigRepository::new(path.clone()));
         assert!(state.save(SubtitleLanguage::Ja).is_err());
         assert_eq!(fs::read(path).unwrap(), b"not json");
-    }
-
-    #[test]
-    fn japanese_original_defaults_off_and_preserves_the_subtitle_language() {
-        let fixture = Fixture::new();
-        let path = fixture.0.join("ui.json");
-        fs::write(
-            &path,
-            br#"{"schema_version":1,"domain":"ui","settings":{"subtitle_language":"ja"}}"#,
-        )
-        .unwrap();
-        let state = JapaneseOriginalState::new(UiConfigRepository::new(path.clone()));
-        assert_eq!(state.get().unwrap(), false);
-        assert_eq!(state.toggle().unwrap(), true);
-        let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(document["settings"]["show_japanese_original"], true);
-        assert_eq!(document["settings"]["subtitle_language"], "ja");
-        assert_eq!(state.toggle().unwrap(), false);
     }
 
     #[test]
