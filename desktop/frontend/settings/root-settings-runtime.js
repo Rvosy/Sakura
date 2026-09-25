@@ -117,6 +117,11 @@ export function createRootSettingsClient({ invoke }) {
         await invoke("settings_character_export", { path, characterId, kind }),
       );
     },
+    async characterDelete(characterId) {
+      return normalizeCharacterSwitchReceipt(
+        await invoke("settings_character_delete", { characterId }),
+      );
+    },
     async characterSelect(characterId, visualSelections) {
       return normalizeCharacterSwitchReceipt(
         await invoke("settings_character_select", { characterId, ...(visualSelections ? { visualSelections } : {}) }),

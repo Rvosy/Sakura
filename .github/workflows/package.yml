@@ -55,6 +55,9 @@ jobs:
           - target: macos-arm64
             runner: macos-15
             archive: python-runtime.tar.gz
+          - target: linux-x64
+            runner: ubuntu-24.04
+            archive: python-runtime.tar.gz
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
@@ -90,8 +93,22 @@ jobs:
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           Expand-Archive -LiteralPath (Join-Path $env:RUNNER_TEMP '${{ matrix.archive }}') -DestinationPath $root
 
-      - name: Extract bundled Python (macOS)
-        if: runner.os == 'macOS'
+      - name: Install Linux WebKit build prerequisites
+        if: runner.os == 'Linux'
+        timeout-minutes: 8
+        shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+            build-essential clang libclang-dev file libssl-dev libasound2-dev libgbm-dev \
+            libpipewire-0.3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev libxdo-dev librsvg2-dev patchelf
+
+      - name: Extract bundled Python (macOS/Linux)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -153,6 +170,23 @@ jobs:
           Remove-Item -LiteralPath desktop/src-tauri/portable-staging/release-inventory.json
           $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
           Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
+
+      - name: Collect Linux AppImage and deb
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          appimage="$(find desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
+          deb="$(find desktop/src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$appimage" && test -n "$deb"
+          cp "$appimage" "artifacts/Sakura-${VERSION}-linux-x64.AppImage"
+          cp "$deb" "artifacts/Sakura-${VERSION}-linux-x64.deb"
+          python tools/release/package_optional_plugin.py \
+            --source plugins/optional/playwright_browser \
+            --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
       - name: Collect macOS app and DMG
         if: runner.os == 'macOS'

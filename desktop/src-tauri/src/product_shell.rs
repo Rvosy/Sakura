@@ -599,6 +599,7 @@ pub struct SettingsCapabilityManifest {
     pub window_generation: u64,
     pub sections: BTreeMap<String, SettingsSectionCapability>,
     pub unavailable_reasons: BTreeMap<String, String>,
+    pub live_character_visual_preview: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -634,6 +635,7 @@ impl SettingsCapabilityManifest {
             window_generation,
             sections: BTreeMap::new(),
             unavailable_reasons,
+            live_character_visual_preview: !cfg!(target_os = "linux"),
         };
         manifest.sections.insert(
             "about".to_string(),
@@ -1430,6 +1432,10 @@ mod tests {
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.window_generation, 7);
         assert_eq!(
+            manifest.live_character_visual_preview,
+            !cfg!(target_os = "linux")
+        );
+        assert_eq!(
             manifest.sections["appearance"].features["appearance.input_visual_effect"],
             "available"
         );
@@ -1495,6 +1501,10 @@ mod tests {
             "available"
         );
         assert_eq!(manifest.sections["tools"].features.len(), 1);
+        assert_eq!(
+            manifest.live_character_visual_preview,
+            !cfg!(target_os = "linux")
+        );
         let json = serde_json::to_string(&manifest).unwrap().to_lowercase();
         for forbidden in ["password", "api_key", "apikey", "secret", "token"] {
             assert!(!json.contains(forbidden), "{forbidden}");

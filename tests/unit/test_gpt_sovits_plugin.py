@@ -535,6 +535,50 @@ def test_managed_runtime_reports_five_stages_once_and_replays_after_restart(
     assert [event for event, _severity, _attributes in diagnostics] == lifecycle * 2
 
 
+def test_managed_runtime_restarts_after_child_exit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from plugins.optional.sakura_gpt_sovits import _support
+
+    settings = SimpleNamespace(
+        api_url="http://127.0.0.1:9880/tts",
+        timeout_seconds=1,
+        gpt_model_path=Path("gpt.ckpt"),
+        sovits_model_path=Path("sovits.pth"),
+    )
+    runtime = _support._ManagedRuntime(
+        settings,
+        base_dir=Path("."),
+        is_closed=lambda: False,
+    )
+
+    class DeadProcess:
+        def poll(self) -> int:
+            return 1
+
+    class LiveProcess:
+        def poll(self) -> None:
+            return None
+
+    starts: list[int] = []
+
+    def start(_fail) -> bool:  # type: ignore[no-untyped-def]
+        starts.append(1)
+        runtime._server_process = LiveProcess()
+        return True
+
+    monkeypatch.setattr(runtime, "_start", start)
+    monkeypatch.setattr(_support, "_probe_tcp", lambda *_args: False)
+    monkeypatch.setattr(_support, "_probe_http", lambda *_args: True)
+    monkeypatch.setattr(_support, "terminate_process_tree", lambda *_args, **_kwargs: None)
+
+    runtime._server_process = DeadProcess()
+    runtime._service_ready = True
+    runtime._weights_ready = True
+    assert runtime.ensure_available(pytest.fail) is True
+    assert starts == [1]
+    assert runtime._service_ready is True
+    assert runtime._weights_ready is False
+
+
 def test_managed_runtime_reports_timeout_and_weight_failure_stage(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from plugins.optional.sakura_gpt_sovits import _support
 
@@ -859,6 +903,13 @@ def test_bundle_install_clears_stale_optional_runtime_overrides(tmp_path: Path) 
     }]
 
 
+def test_linux_recommends_source_installer(monkeypatch: pytest.MonkeyPatch) -> None:
+    from plugins.optional.sakura_gpt_sovits import _bundle
+
+    monkeypatch.setattr(_bundle.sys, "platform", "linux")
+    assert _bundle.recommend_gpt_sovits_bundle() is _bundle.GPT_SOVITS_LINUX
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="managed Windows bundle layout")
 def test_installed_managed_bundle_with_stale_paths_is_available_after_startup(
     tmp_path: Path,
@@ -1006,6 +1057,9 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
             return True
 
         def _restart_local_service_after_http_failure(self, _status: int, _body: str) -> bool:
+            return False
+
+        def _restart_owned_runtime(self) -> bool:
             return False
 
     class FakeEngine:

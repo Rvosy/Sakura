@@ -1732,6 +1732,8 @@ async function startSettingsFrontend() {
     invalidateCollectionRequests: () => runtimePluginController?.invalidateCollectionRequests(),
     renderPluginCollections: () => runtimePluginController?.renderCollections(),
     openPlugin: (installId, configure) => { showPage("plugins"); runtimePluginController?.openPlugin(installId, configure); },
+    liveCharacterVisualPreview: manifest.liveCharacterVisualPreview !== false,
+    confirmAction,
   });
   window.__TAURI__?.event?.listen?.("sakura://character-catalog-changed", ({ payload } = {}) => {
     if (settingsWindowClosing) return;

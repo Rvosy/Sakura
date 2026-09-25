@@ -18,6 +18,22 @@ test("microphone visibility tracks Hub availability without inspecting or select
   availability.dispose();
 });
 
+test("availability polling backs off after transport failures", async () => {
+  const delays = [];
+  const availability = createAsrAvailability({
+    invoke: async () => { throw new Error("SETTINGS_TRANSPORT_UNAVAILABLE"); },
+    onChange: () => {},
+    schedule: (_callback, delay) => { delays.push(delay); return 1; },
+    unschedule: () => {},
+  });
+  await availability.start();
+  assert.equal(availability.delayMs(), 4000);
+  await availability.refresh();
+  assert.equal(availability.delayMs(), 8000);
+  assert.deepEqual(delays, [4000]);
+  availability.dispose();
+});
+
 test("availability polling is single flight and an obsolete callback cannot reveal the microphone", async () => {
   let resolve;
   const changes = [];

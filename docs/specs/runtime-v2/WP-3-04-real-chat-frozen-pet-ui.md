@@ -93,7 +93,7 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
   右键菜单“显示语言”提供中文、日文、双语1和双语2单选，两种双语模式交换主副语言，按实际换行交错显示，具体规则见
   [字幕语言契约](settings-incremental-migration.md)。设置变更事件到达时，当前可见字幕必须在同一前端任务内刷新：
   输入中的当前段清空后按新语言从头重播；settled 或正在回看的段立即完整替换，不等待下一次回复、不回放
-  已完成段，也不改变当前立绘。
+  已完成段，也不改变当前立绘。启动问候的 `text` 仍是日文，`translation` 为中文。
 - 启动问候在字体、初始立绘和窗口 reveal 完成后通过同一可取消 typewriter 播放一次；reveal 前气泡为空，
   reload/focus 不重播，用户发送消息会取消未完成问候。系统减少动态效果设置下仍按相同节奏逐字播放。
 - 立绘切换使用解码优先的双层交叉淡入：旧层约 250ms 淡出，新层延迟约 50ms 后以约 250ms 淡入，
@@ -139,7 +139,7 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 ## 设置切片
 
 本 WP 新开放 `chat.presentation_timing` 和 `chat.subtitle_language`。前者只含
-`subtitle_typing_interval_ms` 和 `reply_segment_pause_ms`；后者只含 `subtitle_language: "zh" | "ja" | "bilingual" | "bilingual_ja"`，
+`subtitle_typing_interval_ms`、`reply_segment_pause_ms` 和 `silent_segment_pause_ms`；后者包含 `subtitle_language: "zh" | "ja" | "bilingual" | "bilingual_ja"`，
 由主窗口右键菜单切换并持久化。精确持久化、失败原子性、重新打开和回退契约见
 [`settings-incremental-migration.md`](settings-incremental-migration.md) 第 7 节。
 

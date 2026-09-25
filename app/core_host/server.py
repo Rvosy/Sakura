@@ -866,8 +866,14 @@ class ReadinessController:
         projected = dict(presentation)
         projected["generationId"] = self._config.generation_id
         if projected.get("schemaVersion") == 2:
-            if set(projected) != {"schemaVersion", "generationId", "characterId", "displayName", "initialMessage", "themeTokens", "visual", "visualReasonCode"}:
+            if set(projected) != {
+                "schemaVersion", "generationId", "characterId", "displayName", "initialMessage",
+                "initialMessageTranslation", "themeTokens", "visual", "visualReasonCode",
+            }:
                 raise TypeError("character presentation fields are invalid")
+            translation = projected.get("initialMessageTranslation")
+            if not isinstance(translation, str):
+                raise TypeError("character presentation translation is invalid")
             for key in ("generationId", "characterId", "displayName", "initialMessage", "visualReasonCode"):
                 if not isinstance(projected[key], str) or not projected[key].strip():
                     raise TypeError("character presentation strings are invalid")
@@ -1480,6 +1486,7 @@ def run_host(
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
     from app.config.character_packages import repair_character_packages
+    from app.config.seed_characters import import_seed_characters
 
     from .character_settings import (
         CHARACTER_SETTINGS_REQUEST_NAMES,
@@ -1509,6 +1516,7 @@ def run_host(
     try:
         writer = ResponseWriter(output_stream)
         repair_character_packages(config.user_root)
+        import_seed_characters(config.distribution_root, config.user_root)
         dispatcher = ControlDispatcher(config)
         asr_boundary = ASRBoundary(
             config.generation_id, config.generation_credential,

@@ -635,6 +635,30 @@ def test_partial_legacy_source_without_config_imports_surviving_history(
     )
 
 
+def test_markerless_legacy_data_imports_settings_history_and_memory(
+    tmp_path: Path,
+) -> None:
+    source = _legacy_fixture(tmp_path, source_platform="windows")
+    (source / "start.bat").unlink()
+    (source / "VERSION").unlink()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    inspection = inspect_legacy_installation(source, target)
+    assert inspection.compatible
+    assert inspection.source_platform == "unknown"
+
+    report, pending = run_legacy_import(
+        source, target, import_id="markerless-legacy-data", finalize=True,
+    )
+    assert pending is None
+    assert (target / "config/api.yaml").is_file()
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("Sakura")
+    assert (target / "data/memory/mem0_history.db").is_file()
+    assert report.counts["ttsSkipped"] == 1
+    assert any(w["code"] == "LEGACY_TTS_IMPORT_SKIPPED" for w in report.warnings)
+
+
 def test_inspection_rejects_a_1_0x_target_inside_the_0_9x_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -670,7 +694,7 @@ def test_inspection_reports_transformed_configuration_conflict(
     assert "配置" in inspection.overwrite_domains
 
 
-def test_inspection_rejects_cross_platform_legacy_source(
+def test_inspection_allows_portable_data_from_cross_platform_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -681,11 +705,9 @@ def test_inspection_rejects_cross_platform_legacy_source(
 
     inspection = inspect_legacy_installation(source, target)
 
-    assert not inspection.compatible
+    assert inspection.compatible
     assert inspection.source_platform == "macos"
-    assert "LEGACY_CROSS_PLATFORM_UNSUPPORTED" in {
-        str(blocker["code"]) for blocker in inspection.blockers
-    }
+    assert not inspection.blockers
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")

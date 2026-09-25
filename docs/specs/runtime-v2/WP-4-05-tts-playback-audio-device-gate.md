@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-19
+updated: 2026-09-22
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -27,6 +27,10 @@ updated: 2026-09-19
   语音诊断，并放行当前段的字幕与立绘，不改变聊天终态。快进只完成已开始段落的字幕，不能跳过语音准备
   或播放等待；切换字幕语言不重播音频。历史导航不自动重播；新回复、切角色和关闭窗口使旧段落失效，
   并取消尚未完成的合成、停止播放。录音开始时停止语音并放行字幕，结束后不补播被中断或录音期间的回复。
+- 已完成段落可由用户点击“重新朗读”。WebView 仍只提交该段的 `operationId + segmentIndex`，显式重读
+  可另带 `replay=true`。Core 对已合成段落从持久 recording 签发新的播放副本，不再次向 Provider 提交文本。
+  合成失败，或后续回复取消了尚未合成的授权时，同一身份的显式重读可再次合成；需要托管语音服务时，
+  由 Provider 按既有流程启动。自动预取不得借 `replay` 复活已取消的 in-flight 请求。
 - 输出始终使用播放时的系统默认设备；不提供设备选择器。设备断开只结束当前项，下一次播放重新探测。
 - Provider 插件拥有自身 Endpoint、健康检查、预热和 Managed Runtime；Runtime v2 Core 不读取 Provider 私有
   配置，也不构造具体实现。当前角色启用 TTS 且选中 Sakura 托管 Provider 时，Core 在启动期 Session 发布、可选插件注册完成后

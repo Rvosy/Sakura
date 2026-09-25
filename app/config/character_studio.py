@@ -99,6 +99,7 @@ class CharacterStudioDoc:
     id: str = ""
     display_name: str = ""
     initial_message: str = ""
+    initial_message_translation: str = ""
     card_text: str = ""
     default_portrait: str = ""
     expressions: dict[str, str] = field(default_factory=dict)
@@ -139,6 +140,8 @@ class CharacterStudioDoc:
             manifest["visuals"] = json.loads(json.dumps(self.visuals, ensure_ascii=False, allow_nan=False))
         if self.initial_message.strip():
             manifest["initial_message"] = self.initial_message.strip()
+        if self.initial_message_translation.strip():
+            manifest["initial_message_translation"] = self.initial_message_translation.strip()
         tones = [str(tone).strip() for tone in self.reply_tones if str(tone).strip()]
         if tones:
             manifest["reply"] = {"tones": tones}
@@ -163,6 +166,7 @@ class CharacterStudioDoc:
             "id": self.id,
             "display_name": self.display_name,
             "initial_message": self.initial_message,
+            "initial_message_translation": self.initial_message_translation,
             "card_text": self.card_text,
             "default_portrait": self.default_portrait,
             "expressions": dict(self.expressions),
@@ -206,6 +210,7 @@ class CharacterStudioDoc:
             id=str(payload.get("id") or "").strip(),
             display_name=str(payload.get("display_name") or "").strip(),
             initial_message=str(payload.get("initial_message") or ""),
+            initial_message_translation=str(payload.get("initial_message_translation") or ""),
             card_text=str(payload.get("card_text") or ""),
             default_portrait=str(payload.get("default_portrait") or "").strip(),
             expressions={
@@ -251,6 +256,7 @@ class CharacterStudioDoc:
             id=str(raw.get("id") or ""),
             display_name=str(raw.get("display_name") or ""),
             initial_message=str(raw.get("initial_message") or ""),
+            initial_message_translation=str(raw.get("initial_message_translation") or ""),
             card_text=card_text,
             default_portrait=str(portrait.get("default") or ""),
             expressions={
@@ -1770,10 +1776,11 @@ def _merge_character_manifest(
     theme = dict(manifest.get("theme")) if isinstance(manifest.get("theme"), dict) else {}
     theme.update(generated["theme"])
     manifest["theme"] = theme
-    if "initial_message" in generated:
-        manifest["initial_message"] = generated["initial_message"]
-    else:
-        manifest.pop("initial_message", None)
+    for key in ("initial_message", "initial_message_translation"):
+        if key in generated:
+            manifest[key] = generated[key]
+        else:
+            manifest.pop(key, None)
 
     if "visuals" in generated:
         manifest["visuals"] = generated["visuals"]

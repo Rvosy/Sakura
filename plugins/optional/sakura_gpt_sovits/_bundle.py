@@ -112,6 +112,16 @@ GPT_SOVITS_MACOS = TTSBundleEntry(
     python_path_name="miniforge3/envs/gpt-sovits310/bin/python",
     tts_config_path_name="GPT-SoVITS/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml",
 )
+GPT_SOVITS_LINUX = TTSBundleEntry(
+    key="gpt_sovits_linux",
+    label="GPT-SoVITS Linux 源码安装包",
+    supported_systems=("linux",),
+    install_method="script",
+    installer_script="install_gpt_sovits_linux.sh",
+    work_dir_name="GPT-SoVITS",
+    python_path_name="sovits/bin/python",
+    tts_config_path_name="GPT-SoVITS/GPT_SoVITS/configs/tts_infer_sakura_linux.yaml",
+)
 
 
 def _system_name() -> str:
@@ -125,6 +135,8 @@ def _supported(entry: TTSBundleEntry) -> bool:
 def recommend_gpt_sovits_bundle() -> TTSBundleEntry | None:
     if sys.platform == "darwin":
         return GPT_SOVITS_MACOS
+    if sys.platform == "linux":
+        return GPT_SOVITS_LINUX
     if sys.platform != "win32":
         return None
     try:

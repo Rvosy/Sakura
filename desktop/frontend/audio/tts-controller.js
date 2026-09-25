@@ -67,7 +67,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
     if (event.state === "started") {
       openPlayback(item, event);
       // Prepare one segment ahead; only the subtitle sequencer may start it.
-      void prepare(item.reply, item.index + 1);
+      if (!item.reply.replay) void prepare(item.reply, item.index + 1);
     } else if (["finished", "stopped", "failed"].includes(event.state)) {
       openPlayback(item, event);
       releasePlayback();
@@ -88,7 +88,8 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         try {
           const descriptor = await invoke("tts_prepare_segment", { payload: {
             operationId: current.operationId,
-            segmentIndex: index,
+            segmentIndex: current.replay ? current.segments[index].segmentIndex : index,
+            ...(current.replay ? { replay: true } : {}),
           } });
           if (!isCurrent(current) || current.silent) return null;
           if (!validDescriptor(descriptor)) {
@@ -109,31 +110,66 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
     return current.prepared.get(index);
   }
 
+  function beginReply(operationId, segments, replay = false) {
+    if (disposed) return;
+    cancelSynthesis(reply?.operationId);
+    if (reply) invokeBestEffort("tts_stop_playback");
+    reply?.resolveInterrupted();
+    epoch += 1;
+    releasePlayback();
+    let resolveInterrupted;
+    const interrupted = new Promise((resolve) => { resolveInterrupted = resolve; });
+    reply = {
+      epoch,
+      operationId,
+      replay,
+      segments: Array.isArray(segments) ? segments : [],
+      prepared: new Map(),
+      played: new Set(),
+      silent: captureActive,
+      interrupted,
+      resolveInterrupted,
+    };
+    void prepare(reply, 0);
+  }
+
+  async function playDescriptor(current, descriptor, index, onStarted = () => {}) {
+    const playbackId = `tts-${current.epoch}-${current.replay ? "replay" : index}`;
+    let resolveStarted;
+    let resolveSettled;
+    const started = new Promise((resolve) => { resolveStarted = resolve; });
+    const settled = new Promise((resolve) => { resolveSettled = resolve; });
+    const item = {
+      id: playbackId, reply: current, index, started: false,
+      onStarted, resolveStarted, resolveSettled, settled,
+    };
+    playback = item;
+    current.played.add(index);
+    // Playback events, including an early failure, own the visual start gate.
+    // Do not keep the gate blocked by a late native command acknowledgement.
+    try {
+      Promise.resolve(invoke("tts_play_prepared", { payload: {
+        opaqueId: descriptor.opaqueId,
+        playbackId,
+      } })).catch(failed);
+    } catch (error) {
+      failed(error);
+    }
+    function failed(error) {
+      if (!isCurrent(current) || playback !== item) return;
+      openPlayback(item, { state: "failed" });
+      releasePlayback();
+      onDiagnostic(errorText(error, "AUDIO_PLAYBACK_FAILED"));
+    }
+    await started;
+  }
+
   return Object.freeze({
     async start() {
       if (disposed) throw new Error("TTS_CONTROLLER_DISPOSED");
       unlisten = await listen("sakura://tts-playback-event", receive);
     },
-    beginReply(operationId, segments) {
-      if (disposed) return;
-      cancelSynthesis(reply?.operationId);
-      if (reply) invokeBestEffort("tts_stop_playback");
-      reply?.resolveInterrupted();
-      epoch += 1;
-      releasePlayback();
-      let resolveInterrupted;
-      const interrupted = new Promise((resolve) => { resolveInterrupted = resolve; });
-      reply = {
-        epoch,
-        operationId,
-        segments: Array.isArray(segments) ? segments : [],
-        prepared: new Map(),
-        silent: captureActive,
-        interrupted,
-        resolveInterrupted,
-      };
-      void prepare(reply, 0);
-    },
+    beginReply,
     async beforeSegment(segment, index, { prepareVisual = () => {}, onStarted = () => {} } = {}) {
       const current = reply;
       // Greetings are local, suppressed segments without a synthesis operation.
@@ -153,37 +189,29 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         onStarted({ state: "skipped" });
         return;
       }
-      const playbackId = `tts-${current.epoch}-${index}`;
-      let resolveStarted;
-      let resolveSettled;
-      const started = new Promise((resolve) => { resolveStarted = resolve; });
-      const settled = new Promise((resolve) => { resolveSettled = resolve; });
-      const item = {
-        id: playbackId, reply: current, index, started: false,
-        onStarted, resolveStarted, resolveSettled, settled,
-      };
-      playback = item;
-      // Playback events, including an early failure, own the visual start gate.
-      // Do not keep the gate blocked by a late native command acknowledgement.
-      try {
-        Promise.resolve(invoke("tts_play_prepared", { payload: {
-          opaqueId: descriptor.opaqueId,
-          playbackId,
-        } })).catch(failed);
-      } catch (error) {
-        failed(error);
-      }
-      function failed(error) {
-        if (!isCurrent(current) || playback !== item) return;
-        openPlayback(item, { state: "failed" });
-        releasePlayback();
-        onDiagnostic(errorText(error, "AUDIO_PLAYBACK_FAILED"));
-      }
-      await started;
+      await playDescriptor(current, descriptor, index, onStarted);
+    },
+    async replaySegment(segment) {
+      if (disposed || captureActive || !playable(segment)) return;
+      if (
+        typeof segment.operationId !== "string"
+        || !segment.operationId
+        || !Number.isInteger(segment.segmentIndex)
+        || segment.segmentIndex < 0
+      ) return;
+      beginReply(segment.operationId, [segment], true);
+      const current = reply;
+      const descriptor = await Promise.race([prepare(current, 0), current.interrupted]);
+      if (!isCurrent(current) || current.silent || !descriptor) return;
+      await playDescriptor(current, descriptor, 0);
     },
     async afterSegment(index) {
+      const current = reply;
       const item = playback;
-      if (item && item.index === index && isCurrent(item.reply)) await item.settled;
+      if (item && item.index === index && item.reply === current && isCurrent(current)) {
+        await item.settled;
+      }
+      return Boolean(current?.played.has(index) && isCurrent(current));
     },
     setInputCaptureActive(value) {
       const next = Boolean(value);

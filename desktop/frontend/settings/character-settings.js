@@ -31,6 +31,8 @@ export function createCharacterSettingsFeature({
   renderPluginCollections,
   openPlugin = () => {},
   reportError = () => {},
+  liveCharacterVisualPreview = true,
+  confirmAction = async () => false,
 }) {
   const rootSettingsClient = createRootSettingsClient({ invoke });
   const fields = {
@@ -38,6 +40,7 @@ export function createCharacterSettingsFeature({
     characterImportButton: document.getElementById("characterImportButton"),
     ttsVoiceImportButton: document.getElementById("ttsVoiceImportButton"),
     characterExportButton: document.getElementById("characterExportButton"),
+    characterDeleteButton: document.getElementById("characterDeleteButton"),
     characterEditorButton: document.getElementById("characterEditorButton"),
     characterArchiveHint: document.getElementById("characterArchiveHint"),
     saveButton: document.getElementById("saveButton"),
@@ -63,6 +66,7 @@ export function createCharacterSettingsFeature({
   let disposed = false;
   const listeners = [];
   const visualSettings = createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty: refreshDirty, openPlugin, reportError });
+  fields.characterSelect.dataset.optionDelete = "true";
 
   const characterExportOptions = [
     {
@@ -158,7 +162,10 @@ export function createCharacterSettingsFeature({
       fields.applyButton.disabled = true;
     }
     const character = selectedCharacter();
-    visualSettings.sync(character?.id, characterArchiveBusy || characterSwitching || isSubmitting());
+    visualSettings.sync(
+      liveVisualSettingsCharacterId(character?.id),
+      characterArchiveBusy || characterSwitching || isSubmitting(),
+    );
     const hasCharacter = Boolean(character);
     fields.characterSelect.disabled = characterArchiveBusy || characterSwitching
       || !characterView.characters.length;
@@ -168,6 +175,8 @@ export function createCharacterSettingsFeature({
       || !hasCharacter || Boolean(pendingCharacterId) || currentCharacterHasDrafts();
     fields.characterExportButton.disabled = characterArchiveBusy || characterSwitching
       || !hasCharacter || Boolean(pendingCharacterId);
+    fields.characterDeleteButton.disabled = characterArchiveBusy || characterSwitching
+      || !hasCharacter;
     syncCharacterEditorControl(
       fields.characterEditorButton,
       characterArchiveBusy || characterSwitching || !hasCharacter,
@@ -195,6 +204,13 @@ export function createCharacterSettingsFeature({
     });
   }
 
+  function liveVisualSettingsCharacterId(preferredId) {
+    if (!liveCharacterVisualPreview && pendingRuntimeCharacterId()) {
+      return runtimeCharacterSnapshot?.currentCharacterId || "";
+    }
+    return preferredId || "";
+  }
+
   function runtimeVisualPreviewTheme(publication) {
     const presentation = publication?.presentation;
     const appearance = publication?.appearance;
@@ -213,13 +229,19 @@ export function createCharacterSettingsFeature({
   }
 
   function previewRuntimeCharacterVisual(characterId) {
-    if (!characterId) return;
+    if (!characterId || !liveCharacterVisualPreview) return;
     const pending = (async () => {
       const revision = ++runtimeCharacterVisualPreviewRevision;
-      const publication = await invoke("settings_character_visual_preview", {
-        characterId,
-        revision,
-      });
+      let publication;
+      try {
+        publication = await invoke("settings_character_visual_preview", {
+          characterId,
+          revision,
+        });
+      } catch (error) {
+        if (String(error).includes("CHARACTER_VISUAL_PREVIEW_SKIPPED")) return;
+        throw error;
+      }
       if (
         revision !== runtimeCharacterVisualPreviewRevision
         || characterId !== runtimeCharacterDraftId
@@ -298,7 +320,7 @@ export function createCharacterSettingsFeature({
         rebindSettings: rebindSettingsAfterCharacterSwitch,
       });
       if (applied && !disposed) {
-        await visualSettings.refresh(runtimeCharacterDraftId);
+        await visualSettings.refresh(liveVisualSettingsCharacterId(runtimeCharacterDraftId));
         setError("");
       }
     } catch (error) {
@@ -479,7 +501,11 @@ export function createCharacterSettingsFeature({
     try {
       await previewRuntimeCharacterVisual(characterId);
     } catch (error) {
-      if (!disposed && characterId === runtimeCharacterDraftId) {
+      if (
+        !disposed
+        && characterId === runtimeCharacterDraftId
+        && !String(error).includes("CHARACTER_VISUAL_PREVIEW_SKIPPED")
+      ) {
         setError(`角色视觉预览失败：${String(error)}`);
       }
     }
@@ -533,6 +559,44 @@ export function createCharacterSettingsFeature({
     });
   }
 
+  async function deleteCharacterArchive(characterId = "") {
+    await runCharacterArchiveAction(async () => {
+      const character = characterId
+        ? characterView.characters.find((item) => item.id === characterId) || null
+        : selectedCharacter();
+      if (!character) {
+        setError("请先选择要删除的角色。");
+        return;
+      }
+      const name = character.display_name || character.id;
+      const remaining = characterView.characters.filter((item) => item.id !== character.id);
+      const committedId = runtimeCharacterSnapshot?.currentCharacterId || "";
+      const details = ["角色包会从本机移除，无法恢复。", "聊天记录和记忆仍会保留。"];
+      if (character.id === committedId) {
+        if (remaining.length) {
+          const nextName = remaining[0].display_name || remaining[0].id;
+          details.push(`桌宠将切换到「${nextName}」。`);
+        } else {
+          details.push("删除后桌宠没有角色。");
+        }
+      }
+      const confirmed = await confirmAction(`删除「${name}」？`, {
+        title: "删除角色",
+        confirmText: "删除",
+        cancelText: "取消",
+        danger: true,
+        details,
+      });
+      if (!confirmed) {
+        return;
+      }
+      const previousLifecycle = await invoke("runtime_lifecycle_snapshot");
+      const result = await rootSettingsClient.characterDelete(character.id);
+      await applyRuntimeCharacterChange(result, previousLifecycle);
+      notify(`已删除「${name}」。`, "success");
+    });
+  }
+
   async function launchCharacterStudio() {
     await runCharacterArchiveAction(async () => {
       const character = selectedCharacter();
@@ -556,6 +620,11 @@ export function createCharacterSettingsFeature({
   listen(fields.characterImportButton, "click", importCharacterArchive);
   listen(fields.ttsVoiceImportButton, "click", importCharacterVoiceArchive);
   listen(fields.characterExportButton, "click", exportCharacterArchive);
+  listen(fields.characterDeleteButton, "click", () => { void deleteCharacterArchive(); });
+  listen(fields.characterSelect, "option-delete", (event) => {
+    const characterId = event.detail?.value;
+    if (characterId) void deleteCharacterArchive(characterId);
+  });
   listen(fields.characterEditorButton, "click", launchCharacterStudio);
   listen(window, "focus", () => { if (!isCharacterSwitching() && !isSubmitting()) void visualSettings.refresh(); });
 
@@ -607,7 +676,11 @@ export function createCharacterSettingsFeature({
     isTransitioning: isCharacterSwitching,
     syncControls: syncCharacterArchiveState,
     refreshCatalog: refreshRuntimeCharacterCatalog,
-    onPageChanged(page) { if (page === "character" && !isCharacterSwitching() && !isSubmitting()) void visualSettings.refresh(runtimeCharacterDraftId); },
+    onPageChanged(page) {
+      if (page === "character" && !isCharacterSwitching() && !isSubmitting()) {
+        void visualSettings.refresh(liveVisualSettingsCharacterId(runtimeCharacterDraftId));
+      }
+    },
     discard: discardRuntimeCharacterSelection,
     waitForPreview: () => runtimeCharacterVisualPreviewPromise,
     async commit() {

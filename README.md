@@ -36,7 +36,7 @@ Sakura 在桌面上显示你选择的角色，用角色卡决定对话风格，�
 2. 首次启动时导入 `.char` 角色包，并按 [API 配置指南](docs/userdocs/API_CONFIG.md)添加模型服务、选择对话模型。
 3. 发送一条消息开始聊天。语音、记忆和语音输入按需安装对应插件，见[插件指南](docs/userdocs/RUNTIME_V2_PLUGINS.md)。
 
-源码运行、Linux 构建和版本升级见[完整安装指南](docs/userdocs/SETUP.md)。
+Linux x64 从源码安装见 [Linux 使用说明](docs/userdocs/LINUX_SETUP.md)；其他源码运行方式和版本升级见[完整安装指南](docs/userdocs/SETUP.md)。
 
 ## 功能特性
 
@@ -56,6 +56,7 @@ Sakura 在桌面上显示你选择的角色，用角色卡决定对话风格，�
 | [运行统计与错误报告](docs/userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md) | 默认状态、发送范围、关闭方式、诊断 ID 与保存期限 |
 | [macOS 使用指南](docs/userdocs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
 | [技术架构指南](docs/devdocs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
+| [Linux 安装指南](docs/userdocs/LINUX_SETUP.md) | Ubuntu 24.04、WebKitGTK、从源码下载 Runtime |
 | [插件 SDK 文档](docs/devdocs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |
 | [文档总览](docs/README.md) | 按用户文档、开发文档、spec、ADR、plan、record 和 archive 分类的完整目录 |
 | [贡献指南](.github/CONTRIBUTING.md) | 开发环境、分支规范、测试和 PR 要求 |

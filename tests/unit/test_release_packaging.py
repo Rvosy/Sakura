@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -32,7 +33,7 @@ from tools.release.stage_distribution import (
     validate_layout,
     write_windows_pth,
 )
-from tools.release.tauri_release_config import build_config
+from tools.release.tauri_release_config import build_config, bundle_targets
 from tools.release.updater_manifest import build_manifest
 from tools.release.verify_updater_signature import UpdaterSignatureError, verify
 
@@ -142,6 +143,56 @@ def test_runtime_archive_retries_transient_download_failures(
     assert runtime_v2_archive.download_and_verify(manifest, archive) == len(content)
     assert attempts == 3
     assert delays == [5, 5]
+
+
+def test_bootstrap_runtime_stages_linux_layout_from_pinned_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import bootstrap_runtime
+
+    repo = tmp_path / "repo"
+    layout = repo / "desktop/src-tauri/runtime-layouts/linux-x64"
+    layout.mkdir(parents=True)
+    payload = tmp_path / "python"
+    python = payload / "bin" / "python3"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"#!/bin/sh\n")
+    archive = tmp_path / "cpython.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        bundle.add(payload, arcname="python")
+    (layout / "runtime-manifest.json").write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "productVersion": "1.1.1",
+                "target": "linux-x64",
+                "archive": {
+                    "fileName": archive.name,
+                    "url": "https://example.test/cpython.tar.gz",
+                    "size": archive.stat().st_size,
+                    "archiveRoot": "python",
+                    "stripComponents": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_download(_manifest: Path, output_path: Path, _selector: str = "archive") -> int:
+        shutil.copy2(archive, output_path)
+        return output_path.stat().st_size
+
+    monkeypatch.setattr(bootstrap_runtime, "download_and_verify", fake_download)
+    staged = bootstrap_runtime.stage_runtime(
+        repo_root=repo,
+        target="linux-x64",
+        archive_cache=tmp_path / "cache",
+    )
+    assert staged == repo / "runtime/bin/python3"
+    assert staged.is_file()
+    assert staged.stat().st_mode & 0o111
+    assert bootstrap_runtime.stage_runtime(repo_root=repo, target="linux-x64") == staged
 
 
 def test_release_dependency_install_allows_the_callers_pip_cache(
@@ -806,6 +857,10 @@ def test_updater_overlay_requires_https_endpoint_and_public_key() -> None:
     development = build_config(target="macos-arm64", updater=False, endpoint="", public_key="")
     assert development["bundle"]["createUpdaterArtifacts"] is False
     assert development["bundle"]["targets"] == ["app", "dmg"]
+    linux = build_config(target="linux-x64", updater=False, endpoint="", public_key="")
+    assert linux["bundle"]["targets"] == ["appimage", "deb"]
+    with pytest.raises(ValueError, match="RELEASE_TARGET_UNSUPPORTED"):
+        bundle_targets("freebsd-x64")
     with pytest.raises(ValueError, match="UPDATER_RELEASE_CONFIGURATION_MISSING"):
         build_config(
             target="windows-x64", updater=True, endpoint="http://example.test/latest.json", public_key="key"
@@ -834,9 +889,13 @@ def test_updater_overlay_requires_https_endpoint_and_public_key() -> None:
     assert client_only["bundle"]["createUpdaterArtifacts"] is False
 
 
-def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) -> None:
+def test_static_updater_manifest_requires_signed_release_platforms(tmp_path: Path) -> None:
     releases = []
-    for target, name in (("windows-x64", "Sakura-setup.exe"), ("macos-arm64", "Sakura.app.tar.gz")):
+    for target, name in (
+        ("windows-x64", "Sakura-setup.exe"),
+        ("macos-arm64", "Sakura.app.tar.gz"),
+        ("linux-x64", "Sakura.AppImage.tar.gz"),
+    ):
         artifact = tmp_path / name
         signature = tmp_path / f"{name}.sig"
         artifact.write_bytes(b"artifact")
@@ -852,8 +911,9 @@ def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) 
         portable=portable,
         pub_date="2026-08-26T00:00:00Z",
     )
-    assert set(manifest["platforms"]) == {"windows-x86_64", "darwin-aarch64"}
+    assert set(manifest["platforms"]) == {"windows-x86_64", "darwin-aarch64", "linux-x86_64"}
     assert manifest["platforms"]["darwin-aarch64"]["url"].endswith("Sakura.app.tar.gz")
+    assert manifest["platforms"]["linux-x86_64"]["url"].endswith("Sakura.AppImage.tar.gz")
     assert manifest["portable"]["windows-x86_64"]["url"].endswith("Sakura-portable.zip")
     assert set(manifest["portable"]["windows-x86_64"]) == {"url"}
 

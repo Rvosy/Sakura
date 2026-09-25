@@ -284,11 +284,11 @@ body[data-chat-state="thinking"] .bubble::after {
   top: 50%;
   right: 20px;
   width: 30px;
-  height: 72px;
+  height: 106px;
   display: grid;
   min-height: 0;
-  grid-template-rows: 30px 30px;
-  row-gap: 12px;
+  grid-template-rows: 30px 30px 30px;
+  row-gap: 8px;
   justify-items: center;
   cursor: default;
   transform: translateY(-50%);
@@ -328,6 +328,10 @@ body[data-chat-state="thinking"] .bubble::after {
 .reply-history-button:disabled {
   cursor: default;
   opacity: .28;
+}
+
+.reply-history-button[aria-busy="true"] .sakura-icon {
+  animation: lucide-breathe 900ms ease-in-out infinite;
 }
 
 .bubble [data-selectable-text] { cursor: text; }

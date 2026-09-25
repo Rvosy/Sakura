@@ -807,6 +807,7 @@ mod tests {
                 character_id: "Sakura".to_string(),
                 display_name: "Sakura".to_string(),
                 initial_message: "hello".to_string(),
+                initial_message_translation: String::new(),
                 theme_tokens: THEME_TOKENS
                     .iter()
                     .map(|(key, _)| ((*key).to_string(), "#a1b2c3".to_string()))

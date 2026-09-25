@@ -30,6 +30,7 @@ export const iconNames = Object.freeze([
   "monitor",
   "music",
   "palette",
+  "play",
   "plus",
   "puzzle",
   "scan-line",

@@ -160,6 +160,34 @@ test("cancelling a segment releases pending visual preparation without playing l
   h.controller.dispose();
 });
 
+test("afterSegment waits for playback and still reports voiced after it finishes", async () => {
+  const h = await harness();
+  const segment = { text: "one" };
+  h.controller.beginReply("reply", [segment]);
+  const gate = h.controller.beforeSegment(segment, 0);
+  await h.waitFor("tts_play_prepared");
+  h.emit("tts-1-0", "started");
+  await gate;
+  let settled = false;
+  const wait = h.controller.afterSegment(0).then((voiced) => { settled = voiced; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  h.emit("tts-1-0", "finished");
+  await wait;
+  assert.equal(settled, true);
+  assert.equal(await h.controller.afterSegment(0), true);
+  h.controller.dispose();
+});
+
+test("synthesis failure does not count the segment as voiced", async () => {
+  const h = await harness(() => { throw new Error("TTS_SERVICE_UNAVAILABLE"); });
+  const segment = { text: "one" };
+  h.controller.beginReply("reply", [segment]);
+  await h.controller.beforeSegment(segment, 0);
+  assert.equal(await h.controller.afterSegment(0), false);
+  h.controller.dispose();
+});
+
 test("capture interrupts the current wait while later silent segments still prepare their visuals", async () => {
   const visuals = [deferred(), deferred()];
   const entered = [deferred(), deferred()];
@@ -402,3 +430,77 @@ test("replacing playback ignores late events and native rejection from the old r
   assert.deepEqual(shown, ["new"]);
   h.controller.dispose();
 });
+
+test("suppressed history segments never request replay synthesis", async () => {
+  const h = await harness();
+  await h.controller.replaySegment({
+    text: "silent", suppressTts: true, operationId: "old", segmentIndex: 0,
+  });
+  assert.deepEqual(h.calls, []);
+  h.controller.dispose();
+});
+
+test("explicit replay requests the reviewed segment identity without auto-playing history", async () => {
+  const h = await harness();
+  h.controller.beginReply("operation-new", [{ text: "latest" }]);
+  h.controller.cancel();
+  const replay = h.controller.replaySegment({
+    text: "previous", operationId: "operation-old", segmentIndex: 1,
+  });
+  const [, { payload }] = await h.waitFor("tts_play_prepared");
+  h.emit(payload.playbackId, "started");
+  await replay;
+  h.emit(payload.playbackId, "finished");
+  assert.deepEqual(
+    h.calls.filter(([name]) => name === "tts_prepare_segment").map(([, args]) => args),
+    [
+      { payload: { operationId: "operation-new", segmentIndex: 0 } },
+      { payload: { operationId: "operation-old", segmentIndex: 1, replay: true } },
+    ],
+  );
+  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 1);
+  assert.equal(payload.opaqueId, descriptor.opaqueId);
+  h.controller.dispose();
+});
+
+test("explicit replay retries a previously failed segment identity", async () => {
+  let attempts = 0;
+  const h = await harness(name => {
+    if (name !== "tts_prepare_segment") return;
+    if (++attempts === 1) throw new Error("TTS_SYNTHESIS_FAILED");
+    return descriptor;
+  });
+  const segment = { text: "retry", operationId: "operation-retry", segmentIndex: 0 };
+  h.controller.beginReply(segment.operationId, [segment]);
+  await h.controller.beforeSegment(segment, 0);
+  assert.equal(h.diagnostics.length, 1);
+  assert.match(h.diagnostics[0], /TTS_SYNTHESIS_FAILED/);
+  assert.match(h.diagnostics[0], /tts-runtime.test.js/);
+  const replay = h.controller.replaySegment(segment);
+  const [, { payload }] = await h.waitFor("tts_play_prepared");
+  h.emit(payload.playbackId, "started");
+  await replay;
+  h.emit(payload.playbackId, "finished");
+  assert.equal(attempts, 2);
+  assert.deepEqual(h.calls.filter(([name]) => name === "tts_prepare_segment").at(-1)[1], {
+    payload: { operationId: "operation-retry", segmentIndex: 0, replay: true },
+  });
+  h.controller.dispose();
+});
+
+for (const action of ["cancel", "capture", "replace"]) {
+  test(`${action} releases pending replay and ignores its late synthesis`, async () => {
+    const pending = deferred();
+    const h = await harness(name => name === "tts_prepare_segment" ? pending.promise : undefined);
+    const replay = h.controller.replaySegment({ text: "old", operationId: "old", segmentIndex: 2 });
+    await h.waitFor("tts_prepare_segment");
+    if (action === "capture") h.controller.setInputCaptureActive(true);
+    else if (action === "replace") h.controller.beginReply("new", [{ text: "new", suppressTts: true }]);
+    else h.controller.cancel();
+    await replay;
+    pending.resolve(descriptor);
+    await pending.promise;
+    assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
+    h.controller.dispose();
+  });
+}

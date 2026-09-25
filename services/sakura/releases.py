@@ -64,14 +64,15 @@ def validate_release(value: object) -> dict:
     version = release["latest"]
     if release["releaseUrl"] != f"https://github.com/Rvosy/Sakura/releases/tag/v{version}":
         raise ValueError("SERVICE_RELEASE_URL_INVALID")
-    downloads = _fields(release["downloads"], {
-        "windowsX64Setup", "windowsX64Portable", "macosArm64Dmg",
-    })
-    for key, suffix in {
+    download_suffixes = {
         "windowsX64Setup": "windows-x64-setup.exe",
         "windowsX64Portable": "windows-x64-portable.zip",
         "macosArm64Dmg": "macos-arm64.dmg",
-    }.items():
+    }
+    if isinstance(release["downloads"], dict) and "linuxX64AppImage" in release["downloads"]:
+        download_suffixes["linuxX64AppImage"] = "linux-x64.AppImage"
+    downloads = _fields(release["downloads"], set(download_suffixes))
+    for key, suffix in download_suffixes.items():
         if downloads[key] != asset_url(version, suffix):
             raise ValueError("SERVICE_ASSET_URL_INVALID")
     if release["updaterManifestUrl"] not in (SERVICE_ENDPOINT, LEGACY_SERVICE_ENDPOINT, GITHUB_ENDPOINT):
@@ -90,11 +91,14 @@ def validate_updater(value: object, version: str) -> dict:
     if not isinstance(updater["notes"], str) or len(updater["notes"]) > 16000:
         raise ValueError("SERVICE_NOTES_INVALID")
     _date(updater["pub_date"])
-    platforms = _fields(updater["platforms"], {"windows-x86_64", "darwin-aarch64"})
-    for key, suffix in {
+    platform_suffixes = {
         "windows-x86_64": "windows-x64-setup.exe",
         "darwin-aarch64": "macos-arm64.app.tar.gz",
-    }.items():
+    }
+    if isinstance(updater["platforms"], dict) and "linux-x86_64" in updater["platforms"]:
+        platform_suffixes["linux-x86_64"] = "linux-x64.AppImage.tar.gz"
+    platforms = _fields(updater["platforms"], set(platform_suffixes))
+    for key, suffix in platform_suffixes.items():
         artifact = _fields(platforms[key], {"url", "signature"})
         signature = artifact["signature"]
         if not isinstance(signature, str) or not signature.strip() or len(signature) > 8192:
@@ -129,6 +133,8 @@ def decode(raw: bytes) -> dict:
 def build_payload(release: object, updater: object) -> dict:
     metadata = dict(validate_release(release))
     manifest = validate_updater(updater, metadata["latest"])
+    if ("linuxX64AppImage" in metadata["downloads"]) != ("linux-x86_64" in manifest["platforms"]):
+        raise ValueError("SERVICE_LINUX_RELEASE_INCOMPLETE")
     metadata["updaterManifestUrl"] = SERVICE_ENDPOINT
     return {"schema": 1, "release": metadata, "updater": manifest}
 
@@ -155,15 +161,15 @@ def publish(raw: bytes, root: Path) -> None:
         _fields(payload, {"schema", "release", "updater"})
         if type(payload["schema"]) is not int or payload["schema"] != 1:
             raise ValueError("SERVICE_SCHEMA_INVALID")
-        metadata = validate_release(payload["release"])
-        manifest = validate_updater(payload["updater"], metadata["latest"])
-        if metadata["updaterManifestUrl"] not in (SERVICE_ENDPOINT, LEGACY_SERVICE_ENDPOINT):
+        publication = build_payload(payload["release"], payload["updater"])
+        if payload["release"]["updaterManifestUrl"] not in (SERVICE_ENDPOINT, LEGACY_SERVICE_ENDPOINT):
             raise ValueError("SERVICE_UPDATER_URL_INVALID")
-        metadata = {**metadata, "updaterManifestUrl": SERVICE_ENDPOINT}
+        metadata = publication["release"]
+        manifest = publication["updater"]
     else:
         # Existing CI sends only releases.json. Keep its restricted write contract.
         metadata = validate_release(payload)
-        if metadata["updaterManifestUrl"] != GITHUB_ENDPOINT:
+        if metadata["updaterManifestUrl"] != GITHUB_ENDPOINT or "linuxX64AppImage" in metadata["downloads"]:
             raise ValueError("SERVICE_UPDATER_MANIFEST_REQUIRED")
     for name, field in (("releases.json", "latest"), ("latest.json", "version")):
         path = root / name

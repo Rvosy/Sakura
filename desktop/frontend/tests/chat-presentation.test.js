@@ -305,9 +305,21 @@ test("reply history navigation crosses turns and only changes text", () => {
   reducer.finishTyping();
 
   assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["第一段", "第二段", "第三段"]);
+  assert.deepEqual(
+    reducer.current().replyHistorySegments.map(({ operationId, segmentIndex }) => ({
+      operationId,
+      segmentIndex,
+    })),
+    [
+      { operationId: "first", segmentIndex: 0 },
+      { operationId: "first", segmentIndex: 1 },
+      { operationId: "second", segmentIndex: 0 },
+    ],
+  );
   assert.equal(reducer.current().replyHistoryIndex, 2);
   assert.equal(reducer.current().canReviewPrevious, true);
   assert.equal(reducer.current().canReviewNext, false);
+  assert.equal(reducer.current().canReplayCurrentReply, true);
 
   let reviewed = reducer.reviewReplyAt(1, "第二段");
   assert.equal(reviewed.applied, true);
@@ -315,11 +327,29 @@ test("reply history navigation crosses turns and only changes text", () => {
 
   assert.equal(reviewed.state.canReviewPrevious, true);
   assert.equal(reviewed.state.canReviewNext, true);
+  assert.equal(reviewed.state.canReplayCurrentReply, true);
 
   reviewed = reducer.reviewReplyAt(0, "第一段");
 
   assert.equal(reviewed.state.canReviewPrevious, false);
+  assert.equal(reviewed.state.canReplayCurrentReply, true);
   assert.equal(reducer.reviewReplyAt(-1, "越界").applied, false);
+});
+
+test("suppressed history segments cannot be replayed", () => {
+  const reducer = readyReducer();
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "silent" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "silent",
+    reply: { segments: [{ text: "不朗读", suppressTts: true }] },
+  });
+  reducer.setTypingSegment(reducer.current().segments[0], 0);
+  reducer.setTypingText("不朗读");
+  reducer.finishTyping();
+  assert.equal(reducer.current().canReplayCurrentReply, false);
 });
 
 test("failed and cancelled terminals are operation-scoped and immediately retryable", () => {
@@ -403,6 +433,28 @@ test("Core failure gives active work one interrupted terminal and preserves earl
   assert.equal(reducer.current().bubbleText, "连接中断，本次回复已停止。");
   assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["已经完成"]);
   assert.equal(reducer.current().lifecycle, "ready");
+});
+
+test("missing voice uses the longer pause and finished playback keeps the short pause", async () => {
+  const timers = [];
+  const typewriter = createTypewriter({
+    intervalMs: 10,
+    segmentPauseMs: 20,
+    silentSegmentPauseMs: 800,
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onSegmentComplete(_segment, index) {
+      return Promise.resolve(index === 0);
+    },
+  });
+  typewriter.start([{ text: "a" }, { text: "b" }, { text: "c" }]);
+  timers.shift().callback();
+  await Promise.resolve();
+  assert.equal(timers.at(-1).delay, 20);
+  timers.shift().callback();
+  timers.shift().callback();
+  await Promise.resolve();
+  assert.equal(timers.at(-1).delay, 800);
 });
 
 test("timing updates are snapshotted for the next reply without retiming the active one", () => {
@@ -535,6 +587,19 @@ test("bilingual subtitles pair translation and original without empty or duplica
   assert.equal(selectSegmentText({ text: "同文", translation: " 同文 " }, "bilingual"), "同文");
   assert.equal(selectSegmentText({ text: "かな", translation: "中文" }, "bilingual_ja"), "かな\n中文");
   assert.equal(selectSegmentText({ text: "かな", translation: " " }, "bilingual_ja"), "かな");
+});
+
+test("greeting uses the subtitle language tracks", () => {
+  const reducer = createChatPresentationReducer({
+    initialMessage: "……起動した。用事があるなら、呼んで。",
+    initialMessageTranslation: "……启动了。有事的话，叫我。",
+  });
+  reducer.reduce(lifecycle("ready"));
+  const segment = reducer.beginGreeting().state.segments[0];
+  assert.equal(selectSegmentText(segment, "zh"), segment.translation);
+  assert.equal(selectSegmentText(segment, "ja"), segment.text);
+  assert.equal(selectSegmentText(segment, "bilingual"), `${segment.translation}\n${segment.text}`);
+  assert.equal(selectSegmentText(segment, "bilingual_ja"), `${segment.text}\n${segment.translation}`);
 });
 
 test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {

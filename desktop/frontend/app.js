@@ -137,6 +137,7 @@ const chatBubble = document.querySelector("#chat-bubble");
 const bubbleCopy = document.querySelector("#bubble-copy");
 const bubbleBody = document.querySelector(".reply-body");
 const replyHistoryPrevious = document.querySelector("#reply-history-previous");
+const replyHistoryReplay = document.querySelector("#reply-history-replay");
 const replyHistoryNext = document.querySelector("#reply-history-next");
 const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
@@ -916,6 +917,7 @@ const rendererHost = createRendererHost({
 
 let presentation = createChatPresentationReducer({
   initialMessage: characterPresentation.initialMessage,
+  initialMessageTranslation: characterPresentation.initialMessageTranslation,
 });
 let pendingCharacterGreeting = false;
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderSubtitleText });
@@ -1094,12 +1096,14 @@ const phaseLabels = Object.freeze({
 let chatTiming = Object.freeze({
   subtitleTypingIntervalMs: 28,
   replySegmentPauseMs: 160,
+  silentSegmentPauseMs: 2000,
 });
 try {
   const persistedTiming = await invoke("current_chat_presentation_timing");
   if (
     Number.isSafeInteger(persistedTiming?.subtitleTypingIntervalMs)
     && Number.isSafeInteger(persistedTiming?.replySegmentPauseMs)
+    && Number.isSafeInteger(persistedTiming?.silentSegmentPauseMs)
   ) chatTiming = Object.freeze(persistedTiming);
 } catch {
   // Defaults remain valid when the isolated ui.json timing slice cannot be read.
@@ -1272,6 +1276,7 @@ document.addEventListener("keydown", (event) => {
 const typewriter = createTypewriter({
   intervalMs: chatTiming.subtitleTypingIntervalMs,
   segmentPauseMs: chatTiming.replySegmentPauseMs,
+  silentSegmentPauseMs: chatTiming.silentSegmentPauseMs,
   language: subtitleLanguage,
   onStart: () => bubbleScroll.beginReply(),
   onText: (text, bubbleUpdate) => {
@@ -1339,6 +1344,7 @@ function render(state, bubbleUpdate = {}) {
     && !isChatReadyLifecycle(state.lifecycle)
   );
   replyHistoryPrevious.disabled = !state.canReviewPrevious;
+  replyHistoryReplay.disabled = !state.canReplayCurrentReply || asrController?.active() === true;
   replyHistoryNext.disabled = !state.canReviewNext;
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
@@ -2070,11 +2076,13 @@ await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
   if (
     !Number.isSafeInteger(values?.subtitleTypingIntervalMs)
     || !Number.isSafeInteger(values?.replySegmentPauseMs)
+    || !Number.isSafeInteger(values?.silentSegmentPauseMs)
   ) return;
   chatTiming = Object.freeze(values);
   typewriter.updateTiming({
     intervalMs: values.subtitleTypingIntervalMs,
     segmentPauseMs: values.replySegmentPauseMs,
+    silentSegmentPauseMs: values.silentSegmentPauseMs,
   });
 });
 
@@ -2173,6 +2181,17 @@ function reviewReplyBy(offset) {
   }
 }
 replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));
+replyHistoryReplay.addEventListener("click", () => {
+  const state = presentation.current();
+  if (!state.canReplayCurrentReply || asrController?.active() === true) return;
+  const segment = state.replyHistorySegments[state.replyHistoryIndex];
+  if (!segment) return;
+  replyHistoryReplay.setAttribute("aria-busy", "true");
+  Promise.resolve(ttsController.replaySegment(segment)).finally(() => {
+    if (disposed) return;
+    replyHistoryReplay.removeAttribute("aria-busy");
+  });
+});
 replyHistoryNext.addEventListener("click", () => reviewReplyBy(1));
 window.addEventListener("focus", () => inputFocus.handleWindowFocus());
 window.addEventListener("blur", () => {

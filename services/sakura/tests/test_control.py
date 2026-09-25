@@ -12,7 +12,7 @@ from app import app as ingestion
 
 
 @pytest.fixture
-def environment(tmp_path, monkeypatch):
+def environment(tmp_path, monkeypatch, request):
     monkeypatch.setattr(control, "DATABASE", tmp_path / "console.db")
     monkeypatch.setattr(control, "LOCK", tmp_path / "publish.lock")
     monkeypatch.setattr(control, "ROOT", tmp_path / "public")
@@ -30,10 +30,18 @@ def environment(tmp_path, monkeypatch):
         "platforms": {key: {"url": releases.asset_url(version, suffix), "signature": "upstream-signature"} for key, suffix in
             [("windows-x86_64", suffixes[0]), ("darwin-aarch64", suffixes[3])]},
         "portable": {"windows-x86_64": {"url": releases.asset_url(version, suffixes[1])}}}
+    if getattr(request, "param", False):
+        for suffix in ("linux-x64.AppImage", "linux-x64.AppImage.tar.gz"):
+            name = f"Sakura-{version}-{suffix}"
+            remote["assets"].append({"name": name, "browser_download_url": prefix + name})
+        updater["platforms"]["linux-x86_64"] = {
+            "url": releases.asset_url(version, "linux-x64.AppImage.tar.gz"), "signature": "linux-signature",
+        }
     monkeypatch.setattr(control, "fetch_json", lambda url, *args: deepcopy(updater if url.endswith("latest.json") else remote))
     return remote, updater
 
 
+@pytest.mark.parametrize("environment", [False, True], indirect=True)
 def test_import_edit_publish_and_idempotency(environment):
     item = control.import_draft("1.2.0")
     assert list(control.ROOT.iterdir()) == []
@@ -49,6 +57,8 @@ def test_import_edit_publish_and_idempotency(environment):
     live = control.read_live()
     assert live["consistent"] and live["updater"]["notes"] == "修复启动"
     assert live["updater"]["platforms"] == environment[1]["platforms"]
+    if "linux-x86_64" in environment[1]["platforms"]:
+        assert live["release"]["downloads"]["linuxX64AppImage"] == releases.asset_url("1.2.0", "linux-x64.AppImage")
     assert control.publish_draft(item["id"], None, item["payload"])["published_at"] == published["published_at"]
     assert len([op for op in control.status()["operations"] if op["action"] == "publish"]) == 1
 
@@ -69,6 +79,7 @@ def test_stale_live_and_failed_write(environment, monkeypatch):
     assert (control.ROOT / "latest.json").read_bytes() == before
 
 
+@pytest.mark.parametrize("environment", [False, True], indirect=True)
 def test_ci_import_is_private_idempotent_and_preserves_owner_edits(environment):
     payload = control.import_draft("1.2.0")["payload"]
     raw = json.dumps(payload).encode()
@@ -110,6 +121,23 @@ def test_incomplete_import_and_invalid_live(environment):
     (control.ROOT / "latest.json").write_text('{"version":"1.2.0"}')
     (control.ROOT / "releases.json").write_text('{"latest":"1.2.0"}')
     assert not control.read_live()["consistent"]
+
+
+@pytest.mark.parametrize("environment", [True], indirect=True)
+@pytest.mark.parametrize("missing", ["appimage", "archive", "updater"])
+def test_linux_import_requires_both_assets_and_the_signed_updater(environment, missing):
+    remote, updater = environment
+    if missing == "updater":
+        del updater["platforms"]["linux-x86_64"]
+        error = "SERVICE_LINUX_RELEASE_INCOMPLETE"
+    else:
+        suffix = "linux-x64.AppImage" if missing == "appimage" else "linux-x64.AppImage.tar.gz"
+        remote["assets"] = [asset for asset in remote["assets"] if not asset["name"].endswith(suffix)]
+        error = "齐全"
+    with pytest.raises(ValueError, match=error):
+        control.import_draft("1.2.0")
+    assert control.status()["drafts"] == []
+    assert list(control.ROOT.iterdir()) == []
 
 
 def test_private_routes_origin_boundary_and_discard(environment):

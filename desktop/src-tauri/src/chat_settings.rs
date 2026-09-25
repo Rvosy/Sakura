@@ -18,6 +18,9 @@ const TYPING_INTERVAL_MIN: u16 = 5;
 const TYPING_INTERVAL_MAX: u16 = 200;
 const SEGMENT_PAUSE_MIN: u16 = 0;
 const SEGMENT_PAUSE_MAX: u16 = 3000;
+const SILENT_SEGMENT_PAUSE_MIN: u16 = 0;
+const SILENT_SEGMENT_PAUSE_MAX: u16 = 10000;
+const SILENT_SEGMENT_PAUSE_DEFAULT: u16 = 2000;
 const BUBBLE_AUTO_HIDE_DELAY_MIN: u16 = 1;
 const BUBBLE_AUTO_HIDE_DELAY_MAX: u16 = 120;
 
@@ -26,6 +29,7 @@ const BUBBLE_AUTO_HIDE_DELAY_MAX: u16 = 120;
 pub struct ChatPresentationTiming {
     pub subtitle_typing_interval_ms: u16,
     pub reply_segment_pause_ms: u16,
+    pub silent_segment_pause_ms: u16,
 }
 
 impl Default for ChatPresentationTiming {
@@ -33,6 +37,7 @@ impl Default for ChatPresentationTiming {
         Self {
             subtitle_typing_interval_ms: 28,
             reply_segment_pause_ms: 160,
+            silent_segment_pause_ms: SILENT_SEGMENT_PAUSE_DEFAULT,
         }
     }
 }
@@ -46,6 +51,11 @@ impl ChatPresentationTiming {
         if !(SEGMENT_PAUSE_MIN..=SEGMENT_PAUSE_MAX).contains(&self.reply_segment_pause_ms) {
             return Err("CHAT_TIMING_FIELD_INVALID:replySegmentPauseMs".to_string());
         }
+        if !(SILENT_SEGMENT_PAUSE_MIN..=SILENT_SEGMENT_PAUSE_MAX)
+            .contains(&self.silent_segment_pause_ms)
+        {
+            return Err("CHAT_TIMING_FIELD_INVALID:silentSegmentPauseMs".to_string());
+        }
         Ok(self)
     }
 }
@@ -55,6 +65,7 @@ impl ChatPresentationTiming {
 pub struct ChatPresentationTimingLimits {
     pub subtitle_typing_interval_ms: [u16; 3],
     pub reply_segment_pause_ms: [u16; 3],
+    pub silent_segment_pause_ms: [u16; 3],
 }
 
 impl Default for ChatPresentationTimingLimits {
@@ -62,6 +73,11 @@ impl Default for ChatPresentationTimingLimits {
         Self {
             subtitle_typing_interval_ms: [TYPING_INTERVAL_MIN, TYPING_INTERVAL_MAX, 28],
             reply_segment_pause_ms: [SEGMENT_PAUSE_MIN, SEGMENT_PAUSE_MAX, 160],
+            silent_segment_pause_ms: [
+                SILENT_SEGMENT_PAUSE_MIN,
+                SILENT_SEGMENT_PAUSE_MAX,
+                SILENT_SEGMENT_PAUSE_DEFAULT,
+            ],
         }
     }
 }
@@ -115,6 +131,10 @@ impl ChatPresentationTimingState {
             settings.insert(
                 "reply_segment_pause_ms".to_string(),
                 Value::from(values.reply_segment_pause_ms),
+            );
+            settings.insert(
+                "silent_segment_pause_ms".to_string(),
+                Value::from(values.silent_segment_pause_ms),
             );
             validate_document(document)?;
             timing_from_document(document).map(|_| ())
@@ -445,6 +465,7 @@ fn timing_from_document(document: &Value) -> Result<ChatPresentationTiming, Stri
             defaults.subtitle_typing_interval_ms,
         )?,
         reply_segment_pause_ms: read("reply_segment_pause_ms", defaults.reply_segment_pause_ms)?,
+        silent_segment_pause_ms: read("silent_segment_pause_ms", defaults.silent_segment_pause_ms)?,
     }
     .validate()
 }
@@ -591,7 +612,9 @@ mod tests {
         let values = ChatPresentationTiming {
             subtitle_typing_interval_ms: 41,
             reply_segment_pause_ms: 275,
+            silent_segment_pause_ms: 1800,
         };
+        assert_eq!(state.get().unwrap().silent_segment_pause_ms, 2000);
         assert_eq!(state.save(values).unwrap(), values);
         assert_eq!(state.get().unwrap(), values);
         let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
