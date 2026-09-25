@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sakura Astryx 视觉方向 Demo</title>
+    <link rel="stylesheet" href="./demo.css" />
+  </head>
+  <body>
+    <header class="demo-bar">
+      <div class="demo-brand">
+        <span class="demo-mark" aria-hidden="true"></span>
+        <div>
+          <strong>Sakura</strong>
+          <span>Astryx-inspired visual study</span>
+        </div>
+      </div>
+      <div class="demo-controls">
+        <div class="demo-tabs" role="group" aria-label="视觉版本对照">
+          <button id="visual" class="selected" type="button" aria-pressed="true">视觉 Demo</button>
+          <button id="main" type="button" aria-pressed="false">main 对照</button>
+        </div>
+        <label class="scenario-label" for="scenario">场景</label>
+        <select id="scenario">
+          <option value="portrait">普通立绘</option>
+          <option value="multiple">多种表现</option>
+          <option value="missing">缺少插件</option>
+        </select>
+        <button id="reset" class="reset-button" type="button">重置</button>
+      </div>
+      <span class="demo-note">同一正式设置页 · 仅视觉层不同</span>
+    </header>
+
+    <main class="demo-stage">
+      <iframe
+        id="settings"
+        title="Sakura 设置视觉 Demo"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+      ></iframe>
+      <div id="loading" role="status">正在载入当前 main 设置页…</div>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
