@@ -80,6 +80,8 @@ Rust 使用一个后台发送任务和有界队列。错误发送前写入 UI �
 
 `POST /v2/events` 仍为最多 10 条、8 KiB 的批量事件；`POST /v2/model-calls` 仍为最多 10 条、16 KiB 的批量模型指标。字段定义见 `v2_models.py` 和 Rust `telemetry/contract.rs`，不把完整错误塞入它们的固定 details。
 
+插件通过日志 SDK 的 `model_call` 提交完整的结构化指标，复用有界发送队列，由 Core 的 `_valid_model_call_candidate` 校验后进入遥测桥。指标不经过普通日志的嵌套字段裁剪和敏感字段名替换；Token 数保留数值。无效指标直接拒绝，完整指标对象不写入普通日志或 breadcrumbs。
+
 聊天在 `RealChatBoundary` 确定唯一终态后记录 `chat.finished`，分别报告 success/failed/cancelled，并使用操作实际耗时。诊断用的 `chat.request.failed` 不再承担聊天终态计数，避免重复和遗漏成功/取消。普通 info 事件不默认标为 error/unavailable；`durationMs` 取 elapsedMs，没有就省略，不能填 occurredMs。
 
 失败聊天的 `chat.finished` 使用同一终态的错误码填 `reasonCode`，并记录实际失败阶段；成功和取消终态不附带已失效的失败原因。对应的错误诊断使用相同 operationId，便于关联请求、模型调用与聊天终态。

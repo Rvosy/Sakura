@@ -59,6 +59,7 @@ export function createRealChatClient({
   let interactionEpoch = 0;
   let preparedGenerationId = null;
   let preparedCharacterId = null;
+  let preparedVisualBindingId = null;
   let interaction = null;
   let hostChannel = null;
 
@@ -102,6 +103,7 @@ export function createRealChatClient({
         ? supervisor.generationId
         : null;
       preparedCharacterId = null;
+      preparedVisualBindingId = null;
       initialPreparedGenerationId = null;
     }
     return true;
@@ -150,11 +152,13 @@ export function createRealChatClient({
 
       const snapshotMatches = publication.snapshot?.generationId === supervisor.generationId;
       const characterId = publication.characterPresentation?.characterId || null;
+      const visualBindingId = publication.characterPresentation?.visual?.bindingId || null;
       const characterChanged = characterId !== preparedCharacterId;
       if (
         canPrepareGeneration(publication, view.status)
         && snapshotMatches
-        && (preparedGenerationId !== supervisor.generationId || characterChanged)
+        && (preparedGenerationId !== supervisor.generationId || characterChanged
+          || visualBindingId !== preparedVisualBindingId)
       ) {
         if (characterChanged) sealInteraction();
         emitLifecycle("rehydrating", supervisor, lifecycleSignatureFor(publication, "rehydrating"), false, null);
@@ -190,11 +194,13 @@ export function createRealChatClient({
           !sameIdentity(supervisor?.generationId, supervisor?.generationNumber)
           || publication.snapshot?.generationId !== supervisor.generationId
           || (publication.characterPresentation?.characterId || null) !== characterId
+          || (publication.characterPresentation?.visual?.bindingId || null) !== visualBindingId
         ) return;
         view = projectLifecycle(publication);
         if (!canPrepareGeneration(publication, view.status)) return;
         preparedGenerationId = supervisor.generationId;
         preparedCharacterId = characterId;
+        preparedVisualBindingId = visualBindingId;
       }
       // Native registration may deliver an accepted operation before its invoke
       // resolves. Publish the prepared lifecycle first so that channel cannot

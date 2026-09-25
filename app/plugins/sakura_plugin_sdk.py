@@ -1016,7 +1016,9 @@ class _LoggingProxy:
                 self._stopping = True
 
     def model_call(self, candidate: Mapping[str, Any]) -> object:
-        return self._emit("debug", "模型请求已结束", {"event": "model.call.metric", "modelCall": dict(candidate)})
+        # This typed record is validated by Core, not the bounded free-form log
+        # sanitizer (which truncates mappings and redacts numeric token fields).
+        return self._enqueue("debug", "模型请求已结束", {"event": "model.call.metric", "modelCall": dict(candidate)})
 
     def debug(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
         return self._emit("debug", message, fields)
@@ -1036,22 +1038,25 @@ class _LoggingProxy:
             if severity in {"warning", "error"} and current_error is not None:
                 fields = {**(fields or {}), **_exception_diagnostics(current_error)}
             message, fields = prepare_log_payload(message, fields)
-            with self._condition:
-                if self._stopping:
-                    return False
-                if len(self._pending) >= 128:
-                    self._dropped += 1
-                    if severity not in {"warning", "error"}:
-                        return False
-                    victim = next((r for r in self._pending if r["severity"] in {"debug", "info"}), None)
-                    if victim is None:
-                        return False
-                    self._pending.remove(victim)
-                self._pending.append({"severity": severity, "message": message, "fields": fields})
-                self._condition.notify()
-            return True
+            return self._enqueue(severity, message, fields)
         except Exception:
             return False
+
+    def _enqueue(self, severity: str, message: str, fields: Mapping[str, Any]) -> bool:
+        with self._condition:
+            if self._stopping:
+                return False
+            if len(self._pending) >= 128:
+                self._dropped += 1
+                if severity not in {"warning", "error"}:
+                    return False
+                victim = next((r for r in self._pending if r["severity"] in {"debug", "info"}), None)
+                if victim is None:
+                    return False
+                self._pending.remove(victim)
+            self._pending.append({"severity": severity, "message": message, "fields": fields})
+            self._condition.notify()
+        return True
 
     def _run(self) -> None:
         while True:
