@@ -11,6 +11,7 @@ function fail(code) {
 }
 
 export function formatSettingsError(value) {
+  if (typeof value === "string" && !value.trim()) return "";
   return errorText(value);
 }
 

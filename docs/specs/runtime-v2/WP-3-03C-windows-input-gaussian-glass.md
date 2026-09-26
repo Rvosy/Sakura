@@ -20,9 +20,10 @@ updated: 2026-08-31
   `solid` 或 `gaussian_blur`，缺失时默认为 `gaussian_blur`，未知值拒绝。
 - 该字段不得写入 `character_theme_overrides`，也不迁移旧 `system_config.yaml`。
 - Appearance publication 使用 schema v1，`values.visualEffectMode` 为必填字段。
-- Windows 仅在 Build 22000 及以上、系统高级视觉效果启用、节能策略未禁用且 Composition effect 能力
-  可用时发布高斯 capability；其他 Windows 环境把该 feature 标为 `unavailable`。macOS/Linux 的能力
-  由各自原生后端独立发布。
+- Windows 直接尝试创建和应用原生高斯模糊，以 HostBackdrop、Composition 效果及窗口提交的实际结果
+  发布 capability。不按系统版本号、节能模式、高级视觉效果开关、减少动画或透明效果偏好提前禁用，
+  也不以 `AreEffectsSupported`、`AreEffectsFast` 的概括性结果代替实际调用。macOS/Linux 的能力由各自
+  原生后端独立发布。
 - 偏好和有效模式是两个状态：非 Windows 或原生失败时有效模式为 `solid`，但保存其他外观字段必须原样
   保留偏好，不能静默改写。
 - 设置页选项名称固定为“纯色块 / 高斯模糊”。预览即时生效，取消恢复打开页面时的 baseline，保存后
@@ -34,7 +35,7 @@ updated: 2026-08-31
 - 第一次最终布局和外观均可用后，必须在 `reveal_pet_window` 前提交模式、主题和 input region。
 - 只有 input region 可以显示，bubble region 永不创建或启用。
 - `gaussian_blur` 显示原生 region，`solid` 隐藏它并使用 WebView 不透明输入栏。
-- 初始化、系统策略检查或更新失败返回稳定诊断、隐藏 region、有效模式降级纯色并继续产品生命周期。
+- 原生初始化或更新实际失败时返回稳定诊断、隐藏 region、有效模式降级纯色并继续产品生命周期。
   降级原因必须写入本次运行日志；桌宠界面必须提示用户右键打开“运行日志”查看原因。系统条件恢复后允许
   用户通过重启重新尝试，不在当前进程自动重建原生资源。
 - 保留最终 `activeBounds` 后的 surface-local 同步及未变化拖动松手提交去重；角色切换、缩放、布局、DPI、
@@ -61,5 +62,6 @@ updated: 2026-08-31
 - 前端覆盖 Appearance v3、平台能力、预览/取消/保存/rebind 和 CSS 不泄漏到气泡。
 - 配置覆盖旧文档默认、两值往返、角色主题隔离及非 Windows 保存保留偏好。
 - Windows 实机以 `origin/main` 同背景 A/B，覆盖 100%/150% DPI、动态背景、短拖/长拖、角色切换、
-  布局变化、模式切换、取消、重启与强制初始化失败。不得出现左侧漏带、右侧闪影、角色轮廓或黑块。
+  布局变化、模式切换、取消、重启与强制初始化失败；开启节能模式、关闭系统动画或高级视觉效果时，
+  原生效果仍能成功创建和应用就必须保持高斯模糊。不得出现左侧漏带、右侧闪影、角色轮廓或黑块。
 - 自动门通过后只可进入 `stabilizing`/`manual_pending`；项目负责人视觉验收前不得标记 accepted。

@@ -1,4 +1,4 @@
-import { errorText } from "./core/error-display.js";
+import { errorSummary, errorText } from "./core/error-display.js";
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createTtsController } from "./audio/tts-controller.js";
 import { createAsrController } from "./audio/asr-controller.js";
@@ -253,7 +253,7 @@ async function listenAppEvent(eventName, handler) {
 }
 
 function showRecoverableError(message) {
-  const text = String(message || "角色表现暂时不可用");
+  const text = errorSummary(message, "角色表现暂时不可用");
   if (!presentationError.hidden && recoverableErrorMessage === text) return;
   clearRecoverableError();
   recoverableErrorMessage = text;
@@ -1312,7 +1312,15 @@ const waitingIndicator = createWaitingIndicator({
   },
 });
 
+const chatErrorLog = document.getElementById("chat-error-log");
+chatErrorLog.addEventListener("click", () => {
+  void invoke("activate_pet_context_menu_action", { actionId: "sakura.runtime-log.open" })
+    .catch(error => showRecoverableError(errorSummary(error)));
+});
+
 function render(state, bubbleUpdate = {}) {
+  chatErrorLog.hidden = characterVisualPreviewActive || state.showingReplyHistorySegment
+    || !(state.phase === "error" || state.lifecycle === "failed");
   surfaceVisibilityController?.setPhase(state.phase);
   let bubbleCommitted = false;
   const commitBubble = () => {
