@@ -2001,7 +2001,11 @@ impl CoreHostRuntime {
     }
 
     pub fn shutdown(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
-        self.shutdown_using_policy(PRODUCTION_SHUTDOWN_POLICY)
+        self.shutdown_using_policy(PRODUCTION_SHUTDOWN_POLICY, false)
+    }
+
+    pub fn shutdown_for_app_exit(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+        self.shutdown_using_policy(PRODUCTION_SHUTDOWN_POLICY, true)
     }
 
     #[cfg(test)]
@@ -2009,17 +2013,19 @@ impl CoreHostRuntime {
         self,
         policy: ShutdownPolicy,
     ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
-        self.shutdown_using_policy(policy)
+        self.shutdown_using_policy(policy, false)
     }
 
     fn shutdown_using_policy(
         mut self,
         policy: ShutdownPolicy,
+        app_exiting: bool,
     ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
         if self.router.is_some() {
             let started = Instant::now();
-            let request =
-                self.build_request_frame("shutdown", "system.shutdown", json!({}), policy.graceful);
+            let request = self.build_request_frame(
+                "shutdown", "system.shutdown", json!({"appExiting": app_exiting}), policy.graceful,
+            );
             let (primary, graceful_deadline, absolute_deadline) = match request {
                 Ok((message, expectation, written_at)) => {
                     let absolute_deadline =
@@ -2065,8 +2071,9 @@ impl CoreHostRuntime {
             };
             return self.finish_exit_until(absolute_deadline, graceful_deadline, primary);
         }
-        let write_result =
-            self.write_request_frame("shutdown", "system.shutdown", json!({}), policy.graceful);
+        let write_result = self.write_request_frame(
+            "shutdown", "system.shutdown", json!({"appExiting": app_exiting}), policy.graceful,
+        );
         let (primary, graceful_deadline, absolute_deadline) = match write_result {
             Ok((expectation, written_at)) => {
                 let Some(absolute_deadline) = written_at.checked_add(policy.total) else {
@@ -3247,6 +3254,31 @@ mod tests {
             PRODUCTION_SHUTDOWN_POLICY.total,
             Duration::from_millis(5000)
         );
+    }
+
+    #[test]
+    fn shutdown_wire_distinguishes_app_exit_from_core_stop() {
+        for app_exiting in [false, true] {
+            let path = std::env::temp_dir().join(format!("sakura-shutdown-{}.bin", uuid::Uuid::new_v4()));
+            let mut host = cleanup_runtime(
+                Box::new(InjectedTree),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(None)),
+            );
+            host.stdin = Some(File::create(&path).expect("isolated transport capture"));
+            let exit = if app_exiting {
+                host.shutdown_for_app_exit()
+            } else {
+                host.shutdown()
+            }.expect("shutdown releases transport owners");
+            assert!(exit.tree_empty);
+            let bytes = fs::read(&path).expect("shutdown request was written");
+            fs::remove_file(&path).expect("remove transport capture");
+            let request = crate::core_host_protocol::decode_frame(&bytes).expect("valid shutdown frame");
+            assert_eq!(request["name"], "system.shutdown");
+            assert_eq!(request["payload"]["appExiting"], app_exiting);
+        }
     }
 
     #[test]

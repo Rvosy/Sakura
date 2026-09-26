@@ -749,7 +749,7 @@ fn run_worker(
                         json!({"outcome": "started", "stage":"stop_generation", "reason_code":match reason { StopReason::User=>"CORE_STOP_USER", StopReason::Restart=>"CORE_STOP_RESTART", StopReason::Failure=>"CORE_STOP_FAILURE", StopReason::AppShutdown=>"CORE_STOP_SHUTDOWN" }}),
                     );
                     publish(&state, &publication);
-                    let cleaned = stop_generation(&mut state);
+                    let cleaned = stop_generation(&mut state, reason);
                     log_lifecycle(
                         &state,
                         if cleaned {
@@ -1176,12 +1176,17 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
     Ok(())
 }
 
-fn stop_generation(state: &mut WorkerState) -> bool {
+fn stop_generation(state: &mut WorkerState, reason: StopReason) -> bool {
     invalidate_generation_surfaces(state);
     let Some(host) = state.host.take() else {
         return true;
     };
-    match host.shutdown() {
+    let result = if reason == StopReason::AppShutdown {
+        host.shutdown_for_app_exit()
+    } else {
+        host.shutdown()
+    };
+    match result {
         Ok(exit) => exit.tree_empty && exit.stderr_stats.eof && !exit.stderr_stats.read_failed,
         Err(failure) => failure.into_recovery().is_none(),
     }

@@ -94,6 +94,11 @@ API key 或 Provider 原始异常。
 
 ## 4. 写入、Turn 与展示
 
+- 角色表现或 Assistant 会话首次就绪时，Host 为当前角色写一条独立 `system` Turn：首次 Core generation
+  使用 `app.started`，同一应用内后续 generation 使用 `app.reconnected`，不把后台重连描述成用户重新打开应用。
+  Shell 确认退出整个应用后，Host 写 `app.closed`，表示正在正常退出；重复初始化或关闭请求不重复写入。
+  后台停止、重启、崩溃、管道断开和托盘隐藏/显示不写应用退出记录。尚未绑定角色时不猜测归属。
+  这些记录与聊天共用 Timeline 和带时区的 `created_at`，不另建事件历史文件；写入失败记录诊断，不阻断启动或退出。
 - Core 接受一次外部或主动交互时生成一个 `turn_id`。用户文字与手动截图可以是同一 Turn 内的 `human` 和
   `observation` 两个条目；定时截图只有 `observation` 触发条目。
 - 普通插件通过 `sakura.host.chat` 提交的互动使用 `origin=host` 的 observation，记录 `sourcePluginId`，
@@ -174,14 +179,19 @@ sakura.host.chat.completed {
 轮次顺序取该 Turn 首条记录的位置。交错写入的轮次也不能被分页切开。它遵守：
 
 - `human` 投影为真实 user history；`assistant` 的 segments 按顺序合成一个历史 assistant message；
+- 普通聊天 Turn 前附一条宿主时间消息，保留该轮用户发言、助手回复及系统事实的原始带时区时间。
+  时间与正文作为完整 Turn 一起计入预算、选择或丢弃，不改写已保存正文。当前时间仍由每步的 `runtime.time`
+  提供；历史中的相对日期按当时的时间解释，跨会话不默认旧任务或状态仍在持续。
+- 非空且时间有效的 system-only Turn 作为带时间的 Host fact 进入对话候选预算，按原位置保留启动、退出等
+  会话边界；它不是用户发言或新指令，不要求模型逐条复述。
 - 当前 observation 可以按 Provider 约束使用 user-role 容器，但必须携带内部 observation provenance；历史
   observation 以 Host runtime fact/安全描述投影，绝不写成用户说过的话；
 - 最近两小时内成功语义分析的 observation-only Turn 投影为带观察时间的 untrusted Host fact；若同 Turn
   有实际可见 assistant 回复，则作为同一原子 Turn 的 assistant message 一并投影，不得重复注入；
-- 过期、只有捕获占位、分析失败、system-only、空内容和损坏 Turn 不进入普通对话历史；候选阶段的 drop
+- 过期、只有捕获占位、分析失败、空内容和损坏 Turn 不进入普通对话历史；候选阶段的 drop
   reason 按类别和原因聚合进入 Trace，不逐条列出全部过期观察；
 - 最近 60 分钟最多 3 条实际 proactive assistant utterance 可以作为独立短期连续性事实注入，用于防复读；
-  它们不恢复内部 observation prompt、不变成普通聊天 Turn，也不单独写入长期记忆；
+  它们保留发言时间，不恢复内部 observation prompt、不变成普通聊天 Turn，也不单独写入长期记忆；
 - 选中 Turn 最终按旧到新输出，不颠倒真实会话顺序；
 - 不创建有状态 TurnAssembler、Turn cache 或 Turn lifecycle。投影失败只影响对应候选，不修改 Timeline。
 

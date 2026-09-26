@@ -497,10 +497,13 @@ def test_projection_keeps_manual_observation_as_host_fact_and_drops_observation_
     )
 
     projection = assemble_recent_turns(store.read_all("sakura"))
+    for turn in projection.turns:
+        assert turn.messages[0]["role"] == "system"
+        assert NOW in turn.messages[0]["content"]
     assert [
         dict(message)
         for turn in projection.turns
-        for message in turn.messages
+        for message in turn.messages[1:]
     ] == [
         {"role": "user", "content": "look"},
         {"role": "system", "content": "[Host fact] manual screen"},
@@ -684,7 +687,7 @@ def test_projection_exposes_only_recent_proactive_utterances_as_short_term_conte
     projection = assemble_recent_turns(store.read_all("sakura"))
 
     assert [turn.turn_id for turn in projection.recent_proactive] == ["recent"]
-    assert projection.recent_proactive[0].messages[0]["content"] == "刚才已经提醒过午饭了"
+    assert projection.recent_proactive[0].messages[0]["content"] == f"[{recent}] 刚才已经提醒过午饭了"
 
 
 @pytest.mark.parametrize(

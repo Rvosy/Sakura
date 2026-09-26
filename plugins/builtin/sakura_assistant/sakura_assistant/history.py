@@ -241,6 +241,26 @@ def assemble_recent_turns(
     proactive_candidates: list[tuple[datetime, _ProjectedTurn]] = []
     for turn_id, turn_entries in grouped.items():
         kinds = [str(entry.kind) for entry in turn_entries]
+        if kinds and set(kinds) == {"system"}:
+            facts = [
+                f"[{entry.created_at}] {entry.payload['text'].strip()}"
+                for entry in turn_entries
+                if isinstance(entry.payload.get("text"), str) and entry.payload["text"].strip()
+                and _timeline_entry_datetime(entry) is not None
+            ]
+            if facts:
+                content = wrap_untrusted_runtime_facts(
+                    "\n".join(facts),
+                    source="timeline.host",
+                    fragment_id="system_facts",
+                    intro="以下是已发生的系统事实。启动与退出标记会话边界，不是用户发言；不要逐条复述。",
+                )
+                turns.append(_ProjectedTurn(
+                    turn_id, ({"role": "system", "content": content},), "conversation",
+                ))
+            else:
+                dropped.append((turn_id, "corrupt_or_empty", "conversation"))
+            continue
         if "human" not in kinds:
             semantic_observation = next(
                 (
@@ -325,8 +345,6 @@ def assemble_recent_turns(
                 if has_successful_observation
                 else "observation_without_semantic_summary"
                 if "observation" in kinds
-                else "system_only"
-                if kinds and set(kinds) == {"system"}
                 else "incomplete"
             )
             dropped.append(
@@ -365,7 +383,7 @@ def assemble_recent_turns(
                                 created,
                                 _ProjectedTurn(
                                     turn_id=turn_id,
-                                    messages=({"role": "assistant", "content": text},),
+                                    messages=({"role": "assistant", "content": f"[{assistant.created_at}] {text}"},),
                                     category="proactive",
                                 ),
                             )
@@ -380,7 +398,7 @@ def assemble_recent_turns(
             dropped.append((turn_id, "corrupt_or_empty", "conversation"))
             continue
         try:
-            messages: list[dict[str, str]] = []
+            messages: list[dict[str, str]] = [_turn_time_message(turn_entries)]
             for entry in turn_entries:
                 if str(entry.kind) == "human":
                     text = entry.payload["text"]
@@ -428,6 +446,16 @@ def assemble_recent_turns(
         if created.timestamp() >= cutoff
     )[-RECENT_PROACTIVE_LIMIT:]
     return _TurnProjection(tuple(turns), tuple(dropped), recent_proactive)
+
+
+def _turn_time_message(entries: list[HistoryEntry]) -> dict[str, str]:
+    labels = {"human": "用户发言", "assistant": "助手回复", "observation": "观察", "system": "系统事实"}
+    times = [
+        f"{labels[str(entry.kind)]}：{entry.created_at}"
+        for entry in entries
+        if str(entry.kind) in labels and _timeline_entry_datetime(entry) is not None
+    ]
+    return {"role": "system", "content": "【历史记录时间】\n" + "\n".join(times)}
 
 
 def messages_from_turn_projection(projection: _TurnProjection) -> list[dict[str, Any]]:
