@@ -11,6 +11,7 @@ function fail(code) {
 }
 
 export function formatSettingsError(value) {
+  if (value === "") return "";
   return errorText(value);
 }
 

@@ -1,0 +1,60 @@
+:root {
+  --primary: var(--review-accent) !important;
+  --primary-hover: var(--review-accent-text) !important;
+  --text: var(--review-text) !important;
+  --secondary-text: var(--review-secondary) !important;
+  --muted-text: var(--review-secondary) !important;
+  --page-background: var(--review-body) !important;
+  --panel-background: var(--review-sidebar) !important;
+  --input-background: var(--review-card) !important;
+  --bubble-background: var(--review-input) !important;
+  --border: var(--review-border) !important;
+  --surface-panel: var(--review-body);
+  --surface-record: var(--review-card);
+  --surface-selected: var(--review-card);
+  --hairline: var(--review-border);
+  --focus-ring: color-mix(in srgb, var(--review-accent) 30%, transparent);
+}
+.log-shell { padding: 30px 36px 20px; gap: 20px; }
+.log-head h1 { color: var(--review-text); font-size: 28px; font-weight: 650; }
+.log-toolbar { flex-wrap: wrap; gap: 16px; }
+.log-view-controls { flex-wrap: wrap; margin-left: auto; }
+.log-scroll { padding: 0 6px 3px 0; border: 0; border-radius: 0; scrollbar-color: var(--review-border) transparent; }
+.log-list { gap: 12px; }
+.log-record, .log-record.severity-warning, .log-record.severity-error { background: var(--review-card); border-radius: 14px; }
+.log-record[aria-selected="true"] { border-color: var(--review-accent); box-shadow: none; }
+.record-main { padding: 18px 20px; gap: 9px; }
+.record-headline { gap: 12px; flex-wrap: wrap; }
+.record-message { font-size: 14px; white-space: normal; }
+.record-time { font-size: 11px; }
+.record-category { background: var(--review-input); }
+.record-level { border-radius: 6px; padding: 2px 8px; background: var(--warning-soft); }
+.record-level-error { background: var(--error-soft); }
+.record-raw { margin-top: 0; padding: 12px 14px; border: 0; border-radius: 8px; background: var(--review-input); }
+.record-details { margin: 0 20px; padding: 16px 0 18px; gap: 12px 24px; }
+.record-details dt, .record-details dd { font-size: 12px; }
+.severity-error .record-details dd { color: var(--review-secondary); }
+.record-disclosure > summary::after, .severity-warning .record-disclosure > summary::after, .severity-error .record-disclosure > summary::after { top: 29px; right: 18px; }
+.log-actions { border-top: 1px solid var(--review-border); padding-top: 18px; }
+.log-actions .astryx-mount { flex-shrink: 0; }
+.log-problem-switch { display: flex; align-items: center; gap: 10px; }
+.astryx-log-list { display: grid; gap: 14px; }
+.astryx-log-card { display: grid; gap: 14px; border-radius: 16px; outline: none; box-shadow: none; }
+.astryx-log-card[data-selected="true"] { border-color: var(--review-accent); box-shadow: none; }
+.astryx-log-card:focus-visible { outline: 2px solid var(--review-accent); outline-offset: 2px; }
+.log-record-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.log-record-heading time { color: var(--review-secondary); font: 11px Consolas, monospace; margin-right: 4px; }
+.log-record-heading strong { font-size: 14px; font-weight: 600; }
+.log-record-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; text-align: left; border-radius: 6px; }
+.log-record-toggle > svg { flex-shrink: 0; color: var(--review-secondary); }
+.log-record-toggle:focus-visible { outline: 2px solid var(--review-accent); outline-offset: 5px; }
+.log-record-details[hidden] { display: none; }
+.log-record-description { margin: 0; font-size: 13px; color: var(--review-secondary); }
+.log-record-details { display: grid; gap: 16px; border-top: 1px solid var(--review-border); padding-top: 18px; overflow-wrap: anywhere; }
+.log-record-details dd { white-space: pre-wrap; font-size: 12px; }
+@media (max-width: 760px) {
+  .log-shell { padding: 22px 18px 16px; gap: 16px; }
+  .log-view-controls { margin-left: 0; }
+  .record-main { padding: 14px; }
+  .record-details { margin: 0 14px; }
+}

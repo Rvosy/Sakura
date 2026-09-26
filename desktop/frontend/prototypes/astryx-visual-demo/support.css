@@ -1,0 +1,10 @@
+/* Only the browser demo's native-action placeholder; no production selectors. */
+[hidden] { display: none !important; }
+html[data-review-version="original"] .astryx-mount,
+html[data-review-version="original"] .astryx-history-root { display: none !important; }
+html[data-review-version="proposed"] [data-review-original] { display: none !important; }
+.demo-dialog { width: min(440px, calc(100vw - 40px)); padding: 28px; border: 1px solid var(--sakura-border); border-radius: 20px; color: var(--sakura-text); background: var(--sakura-input-bg); font: inherit; box-shadow: 0 20px 80px #24272922; }
+.demo-dialog::backdrop { background: #24272933; backdrop-filter: blur(4px); }
+.demo-dialog h2 { margin: 0 0 16px; font-size: 20px; }
+.demo-dialog p { line-height: 1.8; }
+.demo-dialog footer { display: flex; justify-content: end; border: 0; padding: 14px 0 0; }

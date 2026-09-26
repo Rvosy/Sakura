@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Sakura · 界面对照</title>
+    <link rel="stylesheet" href="./dist/components.css">
+    <link rel="stylesheet" href="./demo.css">
+  </head>
+  <body>
+    <header class="review-bar">
+      <div class="review-brand"><span class="brand-dot"></span><strong>Sakura</strong><span>界面对照</span></div>
+      <div class="review-switch" role="group" aria-label="界面对照">
+        <button id="original" aria-pressed="false">当前外观</button>
+        <button id="proposed" aria-pressed="true">改造方案</button>
+      </div>
+      <div class="review-actions"><span>本地预览</span><button id="reset">重置</button></div>
+    </header>
+    <div id="theme-controls" class="astryx-mount"></div>
+    <main>
+      <iframe id="settings" title="Sakura 设置" sandbox="allow-scripts allow-same-origin allow-forms allow-modals"></iframe>
+      <iframe id="history" title="Sakura 聊天记录" sandbox="allow-scripts allow-same-origin allow-forms allow-modals" hidden></iframe>
+      <iframe id="logs" title="Sakura 运行日志" sandbox="allow-scripts allow-same-origin allow-forms allow-modals" hidden></iframe>
+      <div id="loading" role="status">正在载入设置…</div>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

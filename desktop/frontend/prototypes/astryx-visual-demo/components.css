@@ -1,0 +1,40 @@
+@layer sakura-original, reset, astryx-base, astryx-theme;
+@import "@astryxdesign/core/astryx.css";
+@import "@astryxdesign/theme-neutral/theme.css";
+/* Scope the form reset to the React islands; production controls keep their baseline. */
+@layer reset {
+  :where(.astryx-mount, .astryx-root) :where(button, input, select, textarea) {
+    appearance: none; border: 0 solid; margin: 0; padding: 0;
+    font: inherit; color: inherit; background: transparent;
+    min-width: 0; min-height: 0; max-width: none; width: auto;
+    border-radius: 0; box-shadow: none; outline: none; transform: none;
+    transition: none;
+  }
+  :where(.astryx-mount, .astryx-root) button { cursor: pointer; }
+}
+.astryx-select [role="combobox"] { border-radius: 10px; min-height: 34px; }
+[data-astryx-theme] [role="listbox"] { border-radius: 12px; padding: 5px; }
+[data-astryx-theme] [role="option"] { border-radius: 8px; min-height: 30px; padding-block: 5px; font-size: 13px; }
+.theme-color-editor { display: flex; align-items: center; gap: 10px; }
+.theme-color-editor > input[type="color"] { width: 30px; height: 30px; border: 1px solid var(--review-border); padding: 2px; border-radius: 8px; cursor: pointer; }
+.theme-highlight-preview { color: var(--review-highlight); font-weight: 600; }
+.astryx-button[data-variant="primary"]:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--review-hover); background-image: none; }
+.astryx-mount { min-width: 0; font-family: "Sakura Noto Sans SC", "Microsoft YaHei UI", sans-serif; }
+.astryx-mount > [data-astryx-theme] { display: contents; }
+.astryx-mount *, .astryx-mount *::before, .astryx-mount *::after { box-sizing: border-box; }
+.astryx-mount button, .astryx-mount input { font-family: inherit; }
+.astryx-range { width: 100%; flex: 1; }
+.astryx-select { width: 100%; }
+.theme-demo { display: grid; gap: 22px; }
+.theme-demo h2 { font-size: 15px; margin: 0 0 22px; }
+.theme-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.theme-row + .theme-row { margin-top: 22px; }
+.theme-colors-demo { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.theme-colors-demo button { border: 2px solid transparent; outline: 0; border-radius: 50%; width: 28px; height: 28px; min-width: 28px; min-height: 28px; padding: 0; cursor: pointer; }
+.theme-demo .xds-card { border-radius: 19px; }
+.theme-colors-demo button[aria-pressed="true"] { outline: 2px solid var(--color-accent); outline-offset: 3px; border-color: var(--color-background-card); }
+.theme-colors-demo input { width: 32px; height: 30px; padding: 0; border: 1px solid var(--color-border); background: none; cursor: pointer; }
+.theme-example { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--color-border); }
+.theme-description { font-size: 12px; color: var(--color-text-secondary); margin: 20px 0 0; line-height: 1.7; }
+.review-theme-controls { display: flex; align-items: center; gap: 10px; }
+.review-theme-controls .color-choice { width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; }

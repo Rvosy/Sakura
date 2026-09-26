@@ -1,0 +1,46 @@
+:root {
+  --primary: var(--review-accent) !important;
+  --primary-hover: var(--review-accent-text) !important;
+  --text: var(--review-text) !important;
+  --secondary-text: var(--review-secondary) !important;
+  --muted-text: var(--review-secondary) !important;
+  --page-background: var(--review-body) !important;
+  --panel-background: var(--review-sidebar) !important;
+  --input-background: var(--review-card) !important;
+  --bubble-background: var(--review-input) !important;
+  --border: var(--review-border) !important;
+  --surface-panel: var(--review-body);
+  --surface-system: var(--review-input);
+  --surface-user: color-mix(in srgb, var(--review-accent) 12%, var(--review-card));
+  --hairline: var(--review-border);
+  --focus-ring: color-mix(in srgb, var(--review-accent) 30%, transparent);
+}
+.history-shell { grid-template-rows: auto auto auto minmax(0, 1fr) auto; padding: 30px 36px 20px; gap: 18px; }
+.history-heading h1 { color: var(--review-text); font-size: 28px; font-weight: 650; }
+.history-review-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.history-source { font-size: 12px; color: var(--review-secondary); }
+.history-scroll { border: 0; border-radius: 0; padding: 10px 18px 24px; scrollbar-color: var(--review-border) transparent; }
+.history-list, .tool-preview { max-width: 920px; margin: 0 auto; }
+.history-list { gap: 10px; }
+.history-actions { justify-content: flex-end; border-top: 1px solid var(--review-border); padding-top: 18px; }
+.entry-meta { color: var(--review-secondary); }
+.entry-column-assistant .entry-meta { color: var(--review-highlight); }
+.entry-bubble { color: var(--review-text); }
+.entry-bubble-human { border-color: color-mix(in srgb, var(--review-accent) 23%, var(--review-border)); }
+.tool-preview { display: grid; gap: 18px; }
+.tool-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.tool-activity-block { width: min(82%, 640px); }
+.tool-call-details { display: grid; gap: 12px; padding: 12px 0; }
+.tool-call-error { color: var(--color-text-error); white-space: pre-wrap; }
+html:not([data-history-view="tools"]) .tool-preview-mount { display: none; }
+html[data-history-view="tools"] #history-list,
+html[data-history-view="tools"] .history-load-row,
+html[data-history-view="tools"] #history-empty { display: none; }
+html[data-history-view="tools"] #history-status { display: none; }
+html[data-history-view="tools"] .history-shell { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+@media (max-width: 760px) {
+  .history-shell { padding: 22px 18px 16px; gap: 14px; }
+  .history-scroll { padding: 6px 4px 18px; }
+  .history-review-controls { flex-wrap: wrap; }
+  .tool-activity-block { width: 100%; }
+}

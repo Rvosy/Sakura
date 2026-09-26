@@ -17,6 +17,8 @@ import {
 } from "../settings/root-settings-runtime.js";
 
 test("settings errors retain the code, context and original message", () => {
+  assert.equal(formatSettingsError(""), "", "successful operations can clear the previous error");
+  assert.equal(formatSettingsError({}), "未提供错误详情", "an actual empty error still has a fallback");
   assert.equal(
     formatSettingsError("MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。"),
     "MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。",

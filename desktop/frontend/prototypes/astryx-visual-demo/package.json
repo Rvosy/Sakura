@@ -1,0 +1,19 @@
+{
+  "name": "sakura-astryx-review",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node serve.mjs"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "0.6.3",
+    "@astryxdesign/theme-neutral": "0.6.3",
+    "@stylexjs/stylex": "^0.19.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

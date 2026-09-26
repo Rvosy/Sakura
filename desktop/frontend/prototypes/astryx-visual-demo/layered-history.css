@@ -1,0 +1,2 @@
+@layer sakura-original, reset, astryx-base, astryx-theme;
+@import "../../history/styles.css" layer(sakura-original);

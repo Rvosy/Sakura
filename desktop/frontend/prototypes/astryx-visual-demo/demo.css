@@ -1,0 +1,29 @@
+@import url("../../assets/fonts/fonts.css");
+:root { font-family: "Sakura Noto Sans SC", "Microsoft YaHei UI", sans-serif; color: #292c2f; background: #ffffff; font-size: 12px; }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100dvh; display: flex; flex-direction: column; }
+.review-bar, #theme-controls { user-select: none; }
+.review-bar { min-height: 66px; padding: 10px 26px; display: flex; gap: 24px; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid #e5e5e5; }
+.review-brand, .review-actions { display: flex; align-items: center; gap: 12px; }
+.review-brand strong { font-size: 17px; letter-spacing: -.5px; }
+.review-brand > span:last-child, .review-actions > span { color: #777b7d; }
+.brand-dot { width: 10px; height: 10px; border-radius: 50%; background: #4b9ac4; box-shadow: 0 0 0 5px #eef6fa; margin-right: 4px; }
+.review-switch { display: flex; padding: 4px; gap: 4px; border-radius: 12px; background: #f5f5f5; }
+.review-bar button { font: inherit; cursor: pointer; border: 0; color: #737779; background: transparent; border-radius: 9px; padding: 8px 18px; white-space: nowrap; }
+.review-bar button[aria-pressed="true"] { color: #2c779f; background: white; box-shadow: 0 1px 5px #24272912; }
+.review-bar button:hover { color: #2c779f; background: #eaf3f7; }
+.review-bar button:focus-visible { outline: 2px solid #4b9ac4; outline-offset: 2px; }
+#reset { border: 1px solid #e5e7e5; padding: 7px 12px; }
+main { flex: 1; min-height: 0; position: relative; }
+iframe { width: 100%; height: 100%; border: 0; display: block; }
+#loading { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; background: #ffffff; }
+#loading[hidden] { display: none; }
+iframe[hidden] { display: none; }
+#theme-controls { flex-shrink: 0; padding: 12px 26px; background: var(--review-card, #fff); border-bottom: 1px solid var(--review-border, #e5e5e5); }
+.review-theme-controls { justify-content: flex-end; }
+.review-bar { background: var(--review-card, #fff); border-color: var(--review-border, #e5e5e5); color: var(--review-text, #262a2d); }
+.review-switch { background: var(--review-input, #f5f5f5); }
+.review-switch button[aria-pressed="true"] { color: var(--review-accent-text, #327fa9); background: var(--review-card, white); }
+.review-brand > span:last-child, .review-actions > span { color: var(--review-secondary, #777b7d); }
+@media(max-width: 900px) { .review-actions > span { display: none; } }
+@media(max-width: 600px) { .review-bar { padding: 10px 12px; gap: 10px; flex-wrap: wrap; } .review-brand > span:last-child { display: none; } button { padding: 8px 12px; } }
