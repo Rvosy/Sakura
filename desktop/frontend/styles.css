@@ -238,28 +238,6 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .identity { display: flex; align-items: center; min-width: 0; }
-.reply-read-button {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  border: 1px solid color-mix(in srgb, var(--primary) 26%, var(--border));
-  border-radius: 9px;
-  padding: 4px;
-  color: var(--primary);
-  background: color-mix(in srgb, var(--bubble-background) 84%, transparent);
-  font: inherit;
-  font-size: 16px;
-  cursor: pointer;
-}
-.reply-read-button[hidden] { display: none; }
-.reply-read-button .sakura-morph-icon { width: 16px; height: 16px; }
-.reply-read-button:disabled { opacity: .4; cursor: default; }
-.reply-read-button:not(:disabled):hover,
-.reply-read-button:focus-visible {
-  background: color-mix(in srgb, var(--primary) 14%, var(--bubble-background));
-}
 .identity strong {
   overflow: hidden;
   color: var(--primary);

@@ -18,7 +18,8 @@ updated: 2026-09-27
 - `assistant.tts-v1` 为已完成聊天中的 `operationId + segmentIndex` 准备自动语音，也接受已保存的
   `historyEntryId + segmentIndex` 手动朗读。Core 只读取当前角色 Timeline 的 assistant 段落，正文、语气和
   立绘取自原记录；`suppressTts` 和语言守卫必须 fail closed。WebView 不得提交文本、路径、generation 或音频描述符。
-- 气泡与聊天记录页提供按段朗读和停止。优先播放同一角色、同一 entry、同一原始 segmentIndex 的保留 WAV；
+- 手动按段朗读和停止入口仅位于聊天记录页，桌宠主气泡继续按回复顺序自动播放语音。
+  优先播放同一角色、同一 entry、同一原始 segmentIndex 的保留 WAV；
   命中时不查询或启动 Hub/Provider，不要求语音引擎或模型目录可用。录音缺失、损坏或已被留存规则淘汰时，
   才使用当前角色语音配置合成并留存；关闭语音或 Provider 不可用时明确说明原因。朗读不修改 Timeline，
   不重放表现动作；human、system、observation 和禁止朗读的段落不提供入口。
