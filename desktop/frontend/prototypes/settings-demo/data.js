@@ -538,7 +538,7 @@ export function createState(scenario = "portrait") {
       description: "在局域网或 Tailscale 中，用手机网页和 Sakura 聊天。",
       provides: [],
       requires: [
-        "sakura.host.mobile",
+        "sakura.host.conversation", "sakura.host.character", "sakura.host.timeline",
         "sakura.host.artifacts",
         "sakura.host.settings",
       ],
@@ -669,7 +669,7 @@ export function createState(scenario = "portrait") {
       mio: { enabled: false, providerId: null },
     },
     asr: { inputDeviceId: "" },
-    timing: { subtitleTypingIntervalMs: 35, replySegmentPauseMs: 300 },
+    timing: { subtitleTypingIntervalMs: 35, replySegmentPauseMs: 300, silentSegmentPauseMs: 2000 },
     bubble: { autoHideEnabled: false, autoHideDelaySeconds: 15 },
     screen: {
       enabled: false,
@@ -770,5 +770,6 @@ export function capabilityManifest() {
       ]),
     ),
     unavailableReasons: {},
+    liveCharacterVisualPreview: true,
   };
 }

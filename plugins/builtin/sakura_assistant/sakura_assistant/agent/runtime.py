@@ -74,9 +74,8 @@ if TYPE_CHECKING:
 _VISUAL_OBSERVATION_REPLY_INSTRUCTION = """
 本轮消息包含图片时，最终 JSON 除 segments 外，必须额外包含顶层 visual_observation。
 visual_observation 只给系统保存短期视觉记忆，不会展示给用户；请用事实摘要，不要用角色口吻。
-格式：
+segments 继续遵循回复协议，包括当前形态要求的 control。仅在顶层追加以下字段：
 {
-  "segments": [{"ja":"日文原文","zh":"中文译文","tone":"中性"}],
   "visual_observation": {
     "summary": "一句到三句话概括画面",
     "visible_texts": ["明确可见文字或台词"],
@@ -359,8 +358,8 @@ class AgentRuntime:
                     "content": (
                     "上一条 assistant 输出不是合格的 Sakura 回复 JSON。"
                     "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
-                    "格式必须是 {\"segments\":[{\"ja\":\"自然日语\",\"zh\":\"中文译文\","
-                    "\"tone\":\"中性\"}]}。"
+                    "完整结构遵循系统中的回复协议，保留 segments 和各段字段。"
+                    "已绑定角色形态时，每段必须包含符合该形态格式的 control；保留已有合法控制，补齐缺失字段。"
                     "ja 字段只能写自然日语，不能包含中文。"
                     "如果 ja 中有中文，请把它的意思翻译成自然日语，不要用固定兜底句替代。"
                     "zh 保留或补充与 ja 对应的中文译文。"
@@ -1520,8 +1519,7 @@ class AgentRuntime:
                 "- 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。",
                 "- 工具执行成功不等于任务完成；最终回答必须有结果支撑，信息不足时继续获取或明确说明不足。",
                 "- 可以在 assistant content 中写一句可直接说给用户听的短句；不要提前给最终结论。",
-                "- 不要臆造工具名；只能使用 API tools 列表中的工具。",
-                "- 当前是用户驱动的助手模式；工具调用会直接执行，不要声称正在等待权限、授权或二次确认。",
+                "- 工具调用会直接执行；仅在用户请求范围内操作，不要声称存在未实际提供的权限确认流程。主动观察只使用低风险只读工具。",
                 "- 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。",
                 screen_observation_rule,
                 browser_page_rule,
@@ -1595,7 +1593,7 @@ class AgentRuntime:
         snapshot: ContextSnapshot | None = None,
     ):
         event_rules = build_event_system_prompt(
-            "", self.reply_tones, self.reply_visual, event_type=event_type
+            "", event_type=event_type
         )
         sections = [
             *self._persona_sections(),

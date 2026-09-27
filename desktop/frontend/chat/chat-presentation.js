@@ -1,4 +1,5 @@
 import { isChatReadyLifecycle } from "../lifecycle.js";
+import { errorSummary } from "../core/error-display.js";
 
 const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
@@ -77,7 +78,7 @@ function normalizedSegments(reply) {
   );
 }
 
-export function createChatPresentationReducer({ initialMessage } = {}) {
+export function createChatPresentationReducer({ initialMessage, initialMessageTranslation = "" } = {}) {
   if (!initialMessage) throw new Error("character presentation is required");
   let state = initialState();
   let hasReachedReady = false;
@@ -124,13 +125,13 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
         if (!Number.isSafeInteger(event.revision) || event.revision < 0) return result(false);
         if (event.generationNumber === state.generationNumber && event.revision < state.revision) return result(false);
         const generationChanged = event.generationNumber > state.generationNumber;
-        const establishedPresentation = hasReachedReady;
+        const establishedPresentation = hasReachedReady || greetingStarted;
         const initialStartup = !establishedPresentation && ["startup", "initializing"].includes(event.status);
         const [lifecycleLabel, defaultLifecycleHeadline] = LIFECYCLE_COPY[event.status];
         const lifecycleHeadline = event.status === "failed"
           && typeof event.failure?.message === "string"
           && event.failure.message
-          ? event.failure.message
+          ? errorSummary(event.failure, "无法开始对话。")
           : defaultLifecycleHeadline;
         const chatReady = isChatReadyLifecycle(event.status);
         const activeReplyInterrupted = establishedPresentation
@@ -145,7 +146,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
         const preserveGreeting = greetingStarted
           && state.phase === "typing"
           && !state.operationId
-          && (["startup", "initializing"].includes(event.status) || chatReady);
+          && (["startup", "initializing", "rehydrating"].includes(event.status) || chatReady);
         const preserved = {
           ...state,
           generationId: event.generationId,
@@ -169,7 +170,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
             : preserveVisualState || preserveGreeting
             ? state.bubbleText
             : chatReady || initialStartup
-              ? state.bubbleText
+              ? (state.phase === "booting" ? "" : state.bubbleText)
               : lifecycleHeadline,
           subtitleTracks: !activeReplyInterrupted && (preserveVisualState || preserveGreeting || chatReady || initialStartup)
             ? state.subtitleTracks : [],
@@ -267,7 +268,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
         return result(true);
       }
       if (event.type === "chat.failed" && state.phase === "thinking") {
-        const message = typeof event.error?.message === "string" ? event.error.message : "暂时无法完成回复。";
+        const message = errorSummary(event.error, "暂时无法完成回复。");
         state = freezeState({
           ...state,
           phase: "error",
@@ -356,7 +357,7 @@ export function createChatPresentationReducer({ initialMessage } = {}) {
         showingReplyHistorySegment: false,
         segments: Object.freeze([Object.freeze({
           text: initialMessage,
-          translation: "",
+          translation: typeof initialMessageTranslation === "string" ? initialMessageTranslation : "",
           tone: "calm",
 
           suppressTts: true,

@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-16
+updated: 2026-09-22
 ---
 
 # Sakura Service 与私人控制台合同
@@ -101,7 +101,7 @@ artifact，不得降低 Tauri Updater 的安装包签名校验和用户确认门
 | `releaseUrl` | 与 `latest` 对应的 `Rvosy/Sakura` GitHub Release HTTPS 页面。 |
 | `publishedAt` | GitHub Release 的 RFC 3339 发布时间。 |
 | `urgent` | 维护者提示位；不得自动下载、安装、退出或重启。 |
-| `downloads` | 三个固定平台资产的 GitHub Release HTTPS URL；文件本体不经过 Sakura Service。 |
+| `downloads` | Windows Setup、Windows Portable 和 macOS DMG 的 GitHub Release HTTPS URL 为必需；可选 `linuxX64AppImage` 指向该版本的 Linux x64 `.AppImage`。文件本体不经过 Sakura Service。 |
 | `updaterManifestUrl` | 新发布指向国内 `latest.json`；旧发行流程的 GitHub 清单地址仍可读。该字段不在运行时覆盖客户端配置的 Updater endpoint。 |
 
 服务端发布命令必须拒绝缺失/额外字段、无效类型、非稳定版本、非 GitHub 资产 URL、版本与 URL 不一致和自动降级。
@@ -113,6 +113,12 @@ artifact，不得降低 Tauri Updater 的安装包签名校验和用户确认门
 `platforms`、`portable`。`platforms` 必须包含 `windows-x86_64` 和 `darwin-aarch64`，各自具有非空
 `signature` 和固定版本资产 `url`；Portable 保持 `portable.windows-x86_64.url` 合同，不新增签名或摘要字段。
 下载 URL 仅接受该版本 `Rvosy/Sakura` 的既有正式文件名。客户端仍由 Tauri 比较版本和校验安装包签名。
+
+Linux 更新为可选项。提供 `release.downloads.linuxX64AppImage` 时，必须同时提供
+`updater.platforms.linux-x86_64`，其 `url` 指向同版本的 `linux-x64.AppImage.tar.gz`，并带非空 `signature`；
+反之亦然。下载入口使用 `.AppImage`，签名更新使用 `.AppImage.tar.gz`。两项不成对时返回
+`SERVICE_LINUX_RELEASE_INCOMPLETE`；未知下载键或平台仍返回 `SERVICE_FIELDS_INVALID`。
+未提供 Linux 的既有 Windows/macOS 清单继续可读。
 
 CI 在指定 tag 的最终 `latest.json` 发布后推送草稿，由维护者登录控制台确认发布。服务器不在用户请求时向 GitHub 转发或重定向，也不
 定时拉取 GitHub。GitHub 不可达时，国内检查可以成功，但下载仍可能失败；这一步不承诺下载加速。
@@ -146,6 +152,11 @@ CI 在指定 tag 的最终 `latest.json` 发布后推送草稿，由维护者登
 发布，再生成并推送 `{schema: 1, release: releases.json, updater: latest.json}`。
 受限 SSH 入口只校验并保存草稿，不能直接修改公开清单。提交必须包含完整 updater；旧 CI 的单份版本资料被明确拒绝，
 不会继续自动发布。GitHub Release 仍正常上线，因此使用 GitHub 更新入口的旧客户端仍可能先收到更新。
+
+旧的单份 `releases.json` 发布入口只兼容 Windows/macOS 资料；含 Linux 下载时返回
+`SERVICE_UPDATER_MANIFEST_REQUIRED`，必须提交完整 `{schema, release, updater}` 以校验配对关系。
+控制台从 GitHub 导入时，只要发现任一 Linux 资产，就要求 `.AppImage` 与 `.AppImage.tar.gz` 两个资产均存在，
+且清单 URL 与对应 Release 资产一致。
 
 同一稳定版本的首次 CI 导入建立版本到草稿的持久映射，并保存原始导入内容。重跑时直接比较原始字段：相同提交返回
 原草稿，包括已编辑、已发布或已丢弃状态；内容不同则失败，要求维护者从后台重新导入核对。不得覆盖编辑或重复创建草稿。

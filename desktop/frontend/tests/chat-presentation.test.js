@@ -39,6 +39,52 @@ function readyReducer() {
   return reducer;
 }
 
+test("initial resource preparation cannot replace or interrupt the greeting", () => {
+  for (const finished of [false, true]) {
+    const reducer = createChatPresentationReducer({ initialMessage: "问候" });
+    reducer.reduce(lifecycle("initializing"));
+    reducer.beginGreeting();
+    reducer.setTypingText("问候");
+    if (finished) reducer.finishTyping();
+    reducer.reduce(lifecycle("rehydrating", 1, 2));
+    assert.equal(reducer.current().bubbleText, "问候");
+    assert.equal(reducer.current().phase, finished ? "settled" : "typing");
+    reducer.reduce(lifecycle("ready", 1, 3));
+    assert.equal(reducer.current().bubbleText, "问候");
+  }
+});
+
+test("ready clears an initial lifecycle notice before the greeting starts", () => {
+  const reducer = createChatPresentationReducer({ initialMessage: "问候" });
+  reducer.reduce(lifecycle("rehydrating"));
+  reducer.reduce(lifecycle("ready", 1, 2));
+  assert.equal(reducer.current().bubbleText, "");
+  assert.equal(reducer.beginGreeting().applied, true);
+});
+
+test("chat failure keeps diagnostics out of the bubble and clears the error on the next turn", () => {
+  const reducer = readyReducer();
+  const identity = { generationId: "generation-1", generationNumber: 1, operationId: "op-error" };
+  const diagnostic = 'PermissionDeniedError: HTTP 403\n  File "transport.py", line 206\n' + 'frame\n'.repeat(1000);
+  reducer.reduce({ type: "chat.started", ...identity });
+  reducer.reduce({ type: "chat.failed", ...identity, error: {
+    code: "PROVIDER_REQUEST_FAILED", message: "模型服务拒绝访问（HTTP 403）。", diagnostic,
+  } });
+  assert.equal(reducer.current().bubbleText.includes("transport.py"), false);
+  reducer.reduce({ type: "chat.started", ...identity, operationId: "next" });
+  assert.equal(reducer.current().error, null);
+});
+
+test("a verbose failure message remains bounded in the bubble", () => {
+  const reducer = readyReducer();
+  const identity = { generationId: "generation-1", generationNumber: 1, operationId: "op-error" };
+  reducer.reduce({ type: "chat.started", ...identity });
+  const message = 'upstream '.repeat(200) + '\nTraceback\n  File "transport.py"';
+  reducer.reduce({ type: "chat.failed", ...identity, error: { message } });
+  assert.ok(reducer.current().bubbleText.length <= 181);
+  assert.ok(!reducer.current().bubbleText.includes("Traceback"));
+});
+
 
 test("degraded lifecycle remains interactive when the selected character session is usable", () => {
   const reducer = createChatPresentationReducer({
@@ -405,6 +451,28 @@ test("Core failure gives active work one interrupted terminal and preserves earl
   assert.equal(reducer.current().lifecycle, "ready");
 });
 
+test("missing voice uses the longer pause and finished playback keeps the short pause", async () => {
+  const timers = [];
+  const typewriter = createTypewriter({
+    intervalMs: 10,
+    segmentPauseMs: 20,
+    silentSegmentPauseMs: 800,
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onSegmentComplete(_segment, index) {
+      return Promise.resolve(index === 0);
+    },
+  });
+  typewriter.start([{ text: "a" }, { text: "b" }, { text: "c" }]);
+  timers.shift().callback();
+  await Promise.resolve();
+  assert.equal(timers.at(-1).delay, 20);
+  timers.shift().callback();
+  timers.shift().callback();
+  await Promise.resolve();
+  assert.equal(timers.at(-1).delay, 800);
+});
+
 test("timing updates are snapshotted for the next reply without retiming the active one", () => {
   const timers = [];
   const typewriter = createTypewriter({
@@ -535,6 +603,19 @@ test("bilingual subtitles pair translation and original without empty or duplica
   assert.equal(selectSegmentText({ text: "同文", translation: " 同文 " }, "bilingual"), "同文");
   assert.equal(selectSegmentText({ text: "かな", translation: "中文" }, "bilingual_ja"), "かな\n中文");
   assert.equal(selectSegmentText({ text: "かな", translation: " " }, "bilingual_ja"), "かな");
+});
+
+test("greeting uses the subtitle language tracks", () => {
+  const reducer = createChatPresentationReducer({
+    initialMessage: "……起動した。用事があるなら、呼んで。",
+    initialMessageTranslation: "……启动了。有事的话，叫我。",
+  });
+  reducer.reduce(lifecycle("ready"));
+  const segment = reducer.beginGreeting().state.segments[0];
+  assert.equal(selectSegmentText(segment, "zh"), segment.translation);
+  assert.equal(selectSegmentText(segment, "ja"), segment.text);
+  assert.equal(selectSegmentText(segment, "bilingual"), `${segment.translation}\n${segment.text}`);
+  assert.equal(selectSegmentText(segment, "bilingual_ja"), `${segment.text}\n${segment.translation}`);
 });
 
 test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {

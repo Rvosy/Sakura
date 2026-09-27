@@ -239,7 +239,8 @@ class TimelineStore:
                       AND human.turn_id = head.turn_id
                       AND human.seq <= :snapshot AND human.kind = 'human'
                 )"""
-                eligibility = human_exists
+                # Lifecycle facts are standalone system turns, not human input.
+                eligibility = f"({human_exists} OR head.kind = 'system')"
                 if category != "conversation":
                     kind, origin, cutoff = (
                         ("observation", "scheduled_screen", observation_text)
@@ -319,7 +320,7 @@ class TimelineStore:
     ) -> list[TimelineEntry]:
         """Read only turns that can participate in the next chat context.
 
-        Human turns remain unbounded so the adaptive context policy can use large
+        Human and system turns remain unbounded so the context policy can use large
         provider windows. Scheduled observations and assistant-only proactive
         turns are limited at the database boundary, which avoids decoding every
         expired screenshot observation on each request.
@@ -343,7 +344,7 @@ class TimelineStore:
                     WITH eligible_turns(turn_id) AS (
                         SELECT turn_id
                         FROM timeline_entries
-                        WHERE character_id = ? AND kind = 'human'
+                        WHERE character_id = ? AND kind IN ('human', 'system')
                         UNION
                         SELECT turn_id
                         FROM timeline_entries

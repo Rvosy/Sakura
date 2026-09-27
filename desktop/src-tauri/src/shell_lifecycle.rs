@@ -749,7 +749,7 @@ fn run_worker(
                         json!({"outcome": "started", "stage":"stop_generation", "reason_code":match reason { StopReason::User=>"CORE_STOP_USER", StopReason::Restart=>"CORE_STOP_RESTART", StopReason::Failure=>"CORE_STOP_FAILURE", StopReason::AppShutdown=>"CORE_STOP_SHUTDOWN" }}),
                     );
                     publish(&state, &publication);
-                    let cleaned = stop_generation(&mut state);
+                    let cleaned = stop_generation(&mut state, reason);
                     log_lifecycle(
                         &state,
                         if cleaned {
@@ -1176,12 +1176,17 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
     Ok(())
 }
 
-fn stop_generation(state: &mut WorkerState) -> bool {
+fn stop_generation(state: &mut WorkerState, reason: StopReason) -> bool {
     invalidate_generation_surfaces(state);
     let Some(host) = state.host.take() else {
         return true;
     };
-    match host.shutdown() {
+    let result = if reason == StopReason::AppShutdown {
+        host.shutdown_for_app_exit()
+    } else {
+        host.shutdown()
+    };
+    match result {
         Ok(exit) => exit.tree_empty && exit.stderr_stats.eof && !exit.stderr_stats.read_failed,
         Err(failure) => failure.into_recovery().is_none(),
     }
@@ -1296,11 +1301,30 @@ fn ready_character_generation(
 ) -> Option<String> {
     let generation_id = available_generation_id(publication)?;
     let snapshot = publication.snapshot.as_ref()?;
-    let presentation = publication.character_presentation.as_ref()?;
-    let ready = publication.supervisor.generation_number > previous_generation_number
+    let generation_advanced = publication.supervisor.generation_number > previous_generation_number
         && generation_id != previous_generation_id
-        && snapshot.generation_id == generation_id
-        && presentation.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
+        && snapshot.generation_id == generation_id;
+    if !generation_advanced {
+        return None;
+    }
+    if target_character_id.is_empty() {
+        let presentation = publication.character_presentation.as_ref();
+        let presented = presentation
+            .and_then(|value| value.get("characterId"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let generation_ok = match presentation {
+            None => true,
+            Some(value) => {
+                value.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
+            }
+        };
+        return (snapshot.readiness == "setup_required" && presented.is_empty() && generation_ok)
+            .then_some(generation_id);
+    }
+    let presentation = publication.character_presentation.as_ref()?;
+    let ready = presentation.get("generationId").and_then(Value::as_str)
+        == Some(generation_id.as_str())
         && presentation.get("characterId").and_then(Value::as_str) == Some(target_character_id);
     ready.then_some(generation_id)
 }
@@ -2360,6 +2384,20 @@ mod tests {
         }
         publication.character_presentation = None;
         assert!(ready_character_generation(&publication, "generation-a", 1, "beta").is_none());
+
+        publication.snapshot.as_mut().expect("snapshot").readiness = "initializing".to_string();
+        assert!(ready_character_generation(&publication, "generation-a", 1, "").is_none());
+        publication.snapshot.as_mut().expect("snapshot").readiness = "setup_required".to_string();
+        publication.character_presentation = None;
+        assert_eq!(
+            ready_character_generation(&publication, "generation-a", 1, "").as_deref(),
+            Some("generation-b")
+        );
+        publication.character_presentation = Some(json!({
+            "generationId": generation,
+            "characterId": "beta",
+        }));
+        assert!(ready_character_generation(&publication, "generation-a", 1, "").is_none());
     }
 
     #[test]

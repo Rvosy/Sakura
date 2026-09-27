@@ -24,8 +24,8 @@ updated: 2026-09-20
 目录选择完成后，页面必须立即显示 `inspecting` 状态和不确定进度；扫描失败时回到 `selected`，允许重新选择目录后再次检查。
 取消只在 staging/validating 接受，commit 后必须完成或回滚。
 
-只支持同平台的 Windows 0.9.x → Windows v2 与 macOS 0.9.x → macOS v2；不支持跨平台搬运运行资源。
-来源平台以发行 Runtime 布局识别，不能仅凭目录名或仓库中可能同时存在的多平台启动脚本推断。Windows/macOS 的
+Windows/macOS 当前版本可从可识别的旧版数据目录导入配置、聊天记录和记忆；缺少旧发行 Runtime、版本标记或来源平台不同，不阻止这些用户数据迁移。
+TTS 等平台专属运行资源只在来源平台可识别且与当前平台一致时尝试导入，否则跳过并记录 warning。来源平台以发行 Runtime 布局识别，不能仅凭目录名或仓库中可能同时存在的多平台启动脚本推断。
 0.9.x 来源与 1.0.x 目标必须位于不同物理目录；相同、包含或被包含关系继续 fail closed。1.0.x 安装器、
 Updater 和普通启动不扫描或复用 0.9.x，也不建立旧目录 snapshot；唯一入口是用户显式选择后的只读导入。
 各自版本内部的发行根与用户根可以相同；目标中已有角色、Timeline、Memory、配置、TTS或用户插件不得阻止迁移重试。首次迁移使用
@@ -47,7 +47,7 @@ Timeline 按稳定 entry ID、Memory 按 point ID、history row ID 和 profile k
 导入器位于 `app/legacy_import`，使用当前发行 Python 离线运行，不 import 旧安装源码。源目录全程只读。inspect
 按 `data/config`、`data/chat_history` 等结构与 schema 识别，不以目录名作为唯一依据。
 长期使用后只剩部分有效域的 0.9.x 来源仍可迁移：`data/config` 与 `data/chat_history` 不要求同时存在，
-但必须至少识别到一个旧版用户数据域，并继续通过同平台发行 Runtime 与 0.9.x 版本证据门禁。缺失配置时生成
+但必须至少识别到一个旧版用户数据域；发行 Runtime 和版本标记仅用于诊断，不作为用户数据迁移门禁。缺失配置时生成
 当前安全默认投影；仅有旧 JSONL 历史时可作为 0.9.x 结构证据。来源/目标重叠、目标链接、活动旧进程、事务恢复和
 目标 Memory 损坏等会危及数据一致性的条件不得因此放宽。
 所有 legacy-import Python 命令必须经同一个跨平台 managed process-tree runner 启动：stdout 按行流式解析机器协议，

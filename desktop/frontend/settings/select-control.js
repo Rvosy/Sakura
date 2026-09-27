@@ -84,7 +84,33 @@ export function enhanceSelect(select) {
       item.setAttribute("role", "option");
       item.setAttribute("aria-selected", String(index === select.selectedIndex));
       item.setAttribute("aria-disabled", String(option.disabled));
-      item.textContent = option.textContent;
+      const optionLabel = document.createElement("span");
+      optionLabel.className = "custom-select__option-label";
+      optionLabel.textContent = option.textContent;
+      item.append(optionLabel);
+      if (select.dataset.optionDelete === "true" && option.value) {
+        item.classList.add("has-delete");
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "custom-select__option-delete";
+        remove.textContent = "删除";
+        remove.setAttribute("aria-label", `删除「${option.textContent}」`);
+        remove.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        remove.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const value = option.value;
+          close();
+          select.dispatchEvent(new CustomEvent("option-delete", {
+            bubbles: true,
+            detail: { value },
+          }));
+        });
+        item.append(remove);
+      }
       if (option.dataset.tooltip) item.dataset.tooltip = option.dataset.tooltip;
       item.addEventListener("pointerdown", (event) => event.preventDefault());
       item.addEventListener("click", (event) => { event.stopPropagation(); choose(index); });
@@ -100,8 +126,10 @@ export function enhanceSelect(select) {
     const above = rect.top - 14;
     const upwards = below < Math.min(menu.scrollHeight, 260) && above > below;
     menu.style.maxHeight = `${Math.max(40, Math.min(260, upwards ? above : below))}px`;
-    menu.style.minWidth = `${Math.min(rect.width, window.innerWidth - 16)}px`;
+    const menuWidth = Math.min(rect.width, window.innerWidth - 16);
+    menu.style.minWidth = `${menuWidth}px`;
     menu.style.maxWidth = `${window.innerWidth - 16}px`;
+    if (select.dataset.optionDelete === "true") menu.style.width = `${menuWidth}px`;
     menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`;
     menu.style.top = `${upwards ? Math.max(8, rect.top - menu.offsetHeight - 6) : rect.bottom + 6}px`;
     wrapper.classList.add("is-open");

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-09-14
 ---
 
 # 桌宠窗口表面
@@ -56,9 +56,11 @@ macOS 在 AppKit 主线程维护精确矩形快照，根据鼠标位置切换 `N
 
 ### Linux
 
-Linux 用 `cairo::Region` 和 GTK `input_shape_combine_region` 应用输入区域。物理像素写入 cairo 前要按 GTK scale 向外取整。
+Linux 用 `cairo::Region` 和 GTK `input_shape_combine_region` 应用输入区域。物理像素写入 cairo 前要按 GTK scale 向外取整。立绘 PNG 的逐像素轮廓不会写入 GTK：XShape 无法稳定承载站立立绘那种上千个矩形，设置页预览切换角色时会直接把 WebKitGTK 打崩。Linux 原生形状只使用已经裁过透明边的外接矩形，切换角色时也不会把上一张立绘的剪影塞进 `extra_native_rectangles`；精确到像素的命中仍由 WebView 按 alpha 判断。透明 overlay 也不能在解码新立绘时被 resize，因此 Linux 与 Windows 一样保留常驻最大包络。Linux 的设置能力清单把 `liveCharacterVisualPreview` 设为 false：下拉改选只记下待切换角色，不请求 Core 立绘、不改设置窗背景、也不把新 PNG 打进桌宠 WebView；点应用后才换立绘。
 
-X11/XWayland 可以在手势首尾 `move_resize`；原生 Wayland 只请求 resize，窗口位置由 compositor 决定。该降级必须出现在诊断中，不能宣称绝对定位成功。
+打开右键菜单时放宽整窗命中，并按当前左上角 `resize`，不再带着缓存坐标 `move_resize`。部分窗口管理器会把带位置的放大当成一次平移，角色就会跳到屏幕右侧。
+
+X11/XWayland 可以在拖动等需要改位置的提交里 `move_resize`；原生 Wayland 只请求 resize，窗口位置由 compositor 决定。该降级必须出现在诊断中，不能宣称绝对定位成功。
 
 ## 设置项
 

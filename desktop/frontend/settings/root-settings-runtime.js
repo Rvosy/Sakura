@@ -11,6 +11,7 @@ function fail(code) {
 }
 
 export function formatSettingsError(value) {
+  if (typeof value === "string" && !value.trim()) return "";
   return errorText(value);
 }
 
@@ -115,6 +116,11 @@ export function createRootSettingsClient({ invoke }) {
     async characterExport(path, characterId, kind) {
       return normalizeCharacterExportReceipt(
         await invoke("settings_character_export", { path, characterId, kind }),
+      );
+    },
+    async characterDelete(characterId) {
+      return normalizeCharacterSwitchReceipt(
+        await invoke("settings_character_delete", { characterId }),
       );
     },
     async characterSelect(characterId, visualSelections) {

@@ -44,6 +44,10 @@ class CharacterVoice:
     text_lang: str = "ja"
 
 
+DEFAULT_INITIAL_MESSAGE = "……起動した。用事があるなら、呼んで。"
+DEFAULT_INITIAL_MESSAGE_TRANSLATION = "……启动了。有事的话，叫我。"
+
+
 @dataclass(frozen=True)
 class CharacterProfile:
     id: str
@@ -51,6 +55,7 @@ class CharacterProfile:
     package_dir: Path
     card_path: Path
     initial_message: str
+    initial_message_translation: str = ""
     visual_resources: tuple[CharacterVisualResource, ...] = ()
     default_visual_id: str | None = None
     visual_providers: dict[str, str] = field(default_factory=dict)
@@ -162,7 +167,10 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
 
     character_id = _validate_character_id(_required_text(raw_data, "id", manifest_path), manifest_path)
     display_name = _required_text(raw_data, "display_name", manifest_path)
-    initial_message = _optional_text(raw_data, "initial_message", "……起動した。用事があるなら、呼んで。")
+    initial_message = _optional_text(raw_data, "initial_message", DEFAULT_INITIAL_MESSAGE)
+    initial_message_translation = _optional_text(raw_data, "initial_message_translation", "")
+    if not initial_message_translation and initial_message == DEFAULT_INITIAL_MESSAGE:
+        initial_message_translation = DEFAULT_INITIAL_MESSAGE_TRANSLATION
     card_path = _resolve_required_file(package_dir, _required_text(raw_data, "card", manifest_path), "角色卡")
 
     from app.config.plugin_requirements import parse_requirements
@@ -191,6 +199,7 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
         package_dir=package_dir,
         card_path=card_path,
         initial_message=initial_message,
+        initial_message_translation=initial_message_translation,
         visual_resources=visual_resources,
         default_visual_id=default_visual_id,
         visual_providers=dict(raw_data.get("visuals", {}).get("providers", {})),

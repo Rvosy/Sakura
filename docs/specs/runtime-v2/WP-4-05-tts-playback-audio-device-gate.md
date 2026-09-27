@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-19
+updated: 2026-09-27
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范

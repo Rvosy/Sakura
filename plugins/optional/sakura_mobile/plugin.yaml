@@ -10,7 +10,9 @@ enabled: false
 priority: 70
 provides: []
 requires:
-  - sakura.host.mobile
+  - sakura.host.conversation
+  - sakura.host.character
+  - sakura.host.timeline
   - sakura.host.artifacts
   - sakura.host.settings
 presentation:

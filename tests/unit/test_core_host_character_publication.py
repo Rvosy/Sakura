@@ -17,7 +17,7 @@ def _summary(role):
 
 def _presentation(role):
     return dict(schemaVersion=2, generationId="generation", characterId=role,
-                displayName=role, initialMessage=f"hello {role}", themeTokens={},
+                displayName=role, initialMessage=f"hello {role}", initialMessageTranslation="", themeTokens={},
                 visual=None, visualReasonCode="VISUAL_RESOURCE_MISSING")
 
 

@@ -95,12 +95,15 @@ export async function waitForCharacterSwitch({
   timeoutMs = CHARACTER_SWITCH_TIMEOUT_MS,
 }) {
   if (receipt?.restartState !== "requested" && !receipt?.characterChanged) return null;
+  const expectedCharacterId = receipt.targetCharacterId || "";
   if (
     !Number.isSafeInteger(previousGenerationNumber)
     || typeof receipt.previousCoreGenerationId !== "string"
     || !receipt.previousCoreGenerationId
-    || typeof receipt.targetCharacterId !== "string"
-    || !receipt.targetCharacterId
+    || (
+      receipt.targetCharacterId !== null
+      && (typeof receipt.targetCharacterId !== "string" || !receipt.targetCharacterId)
+    )
   ) throw new Error("CHARACTER_SWITCH_IDENTITY_INVALID");
 
   const deadline = now() + timeoutMs;
@@ -112,19 +115,25 @@ export async function waitForCharacterSwitch({
     const generationChanged = Number.isSafeInteger(supervisor?.generationNumber)
       && supervisor.generationNumber > previousGenerationNumber
       && supervisor.generationId !== receipt.previousCoreGenerationId;
-    const generationConsistent = (generationChanged || (receipt.characterChanged
-      && supervisor?.generationId === receipt.previousCoreGenerationId))
-      && snapshot?.generationId === supervisor.generationId
-      && presentation?.generationId === supervisor.generationId;
+    const sameGenerationRefresh = Boolean(receipt.characterChanged)
+      && supervisor?.generationId === receipt.previousCoreGenerationId;
+    const presentedId = presentation?.characterId || "";
+    const presentationMatches = expectedCharacterId
+      ? presentation?.generationId === supervisor.generationId
+        && presentedId === expectedCharacterId
+      : presentedId === ""
+        && (!presentation || presentation.generationId === supervisor.generationId);
     if (
-      generationConsistent
+      (generationChanged || sameGenerationRefresh)
+      && snapshot?.generationId === supervisor.generationId
       && PRESENTATION_READY_STATES.has(snapshot.readiness)
-      && presentation.characterId === receipt.targetCharacterId
+      && presentationMatches
     ) return lifecycle;
     if (
       (generationChanged || (receipt.characterChanged && supervisor?.generationId === receipt.previousCoreGenerationId))
       && snapshot?.generationId === supervisor.generationId
       && TERMINAL_FAILURE_STATES.has(snapshot.readiness)
+      && !(expectedCharacterId === "" && snapshot.readiness === "setup_required")
     ) throw new Error("CHARACTER_SWITCH_INITIALIZATION_FAILED");
     await delay(100);
   }

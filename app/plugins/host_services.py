@@ -16,6 +16,7 @@ HOST_LOGGING_SERVICE = "sakura.host.logging"
 HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_CHARACTER_SERVICE = "sakura.host.character"
 HOST_MODEL_SLOTS_SERVICE = "sakura.host.model_slots.v2"
+HOST_CONVERSATION_SERVICE = "sakura.host.conversation"
 HOST_MOBILE_SERVICE = "sakura.host.mobile"
 HOST_SETTINGS_SERVICE = "sakura.host.settings"
 HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
@@ -32,6 +33,7 @@ __all__ = [
     "HOST_CONTEXT_SERVICE",
     "HOST_DIAGNOSTICS_SERVICE",
     "HOST_LOGGING_SERVICE",
+    "HOST_CONVERSATION_SERVICE",
     "HOST_MOBILE_SERVICE",
     "HOST_MODEL_SLOTS_SERVICE",
     "HOST_SETTINGS_COLLECTION_V0_SERVICE",

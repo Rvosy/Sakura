@@ -49,7 +49,9 @@ def prepare(python_root: Path, target: str, lock: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True, choices=("windows-x64", "macos-arm64"))
+    parser.add_argument(
+        "--target", required=True, choices=("windows-x64", "macos-arm64", "linux-x64")
+    )
     parser.add_argument("--python-root", required=True, type=Path)
     parser.add_argument("--lock", required=True, type=Path)
     args = parser.parse_args()

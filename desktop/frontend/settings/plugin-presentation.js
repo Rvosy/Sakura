@@ -125,6 +125,15 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
       reasonCode,
     );
   }
+  if (reasonCode === "PLUGIN_DEPENDENCIES_MISSING" || reasonCode === "PLUGIN_DEPENDENCIES_STALE") {
+    return result(
+      "缺少依赖",
+      reasonCode === "PLUGIN_DEPENDENCIES_STALE"
+        ? "插件依赖与当前 Python 版本不一致，需要重新安装。"
+        : "插件依赖还没有安装，暂时无法使用。",
+      reasonCode,
+    );
+  }
   if (reasonCode === "PLUGIN_MANIFEST_INVALID") {
     return result(
       "插件信息有误",

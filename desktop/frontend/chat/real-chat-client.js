@@ -266,7 +266,8 @@ export function createRealChatClient({
     if (event.type === "chat.started" && interaction?.operationId !== event.operationId) {
       if (interaction?.started) return;
       sealInteraction();
-      interaction = { identity: currentIdentity, epoch: interactionEpoch, presentation: "silent",
+      interaction = { identity: currentIdentity, epoch: interactionEpoch,
+        presentation: event.presentation === "interactive" ? "interactive" : "silent",
         operationId: event.operationId, response: { ...event, cancelHandle: event.cancelHandle },
         started: false, terminal: false, cancelRequested: false, channel: { onmessage: () => {} } };
     }

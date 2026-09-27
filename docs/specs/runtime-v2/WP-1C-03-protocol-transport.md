@@ -48,6 +48,11 @@ hello 前除 `system.hello` 外的消息返回 `HANDSHAKE_REQUIRED`；成功后�
 `HANDSHAKE_ALREADY_COMPLETE`。协商失败后 generation 被标为 handshake failed，后续 initialize
 返回 `HANDSHAKE_FAILED`，不能继续初始化。公共协商规则不按 OS 分叉。
 
+`system.shutdown` 的 payload 可携带 `appExiting: boolean`。Shell 仅在 `StopReason::AppShutdown` 时
+传 `true`，后台停止、重启或故障清理传 `false`；缺省不视为应用退出。Core 只在该字段严格为 `true`
+且已有角色绑定时保存应用退出事实，随后沿用原有资源回收流程。该事实的存储与上下文投影见
+[Typed Timeline](WP-4-07R-typed-timeline-adaptive-context.md)。
+
 ## 3. Generation credential
 
 Rust 在每次 `CoreHostRuntime::launch` 内从 OS 随机源生成独立 128-bit credential，使用 32 个小写

@@ -276,3 +276,21 @@ test("failed target initialization does not rebind or retry the committed mutati
   assert.equal(rebound, false);
   assert.deepEqual(switching, [true, false]);
 });
+
+test("last-character delete completes when the next generation has no presentation", async () => {
+  const result = await waitForCharacterSwitch({
+    receipt: {
+      restartState: "requested",
+      previousCoreGenerationId: "generation-a",
+      targetCharacterId: null,
+    },
+    previousGenerationNumber: 1,
+    readLifecycle: async () => ({
+      supervisor: { generationId: "generation-b", generationNumber: 2 },
+      snapshot: { generationId: "generation-b", readiness: "setup_required" },
+    }),
+    delay: async () => {},
+  });
+  assert.equal(result.snapshot.readiness, "setup_required");
+  assert.equal(result.characterPresentation, undefined);
+});

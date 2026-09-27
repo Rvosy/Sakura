@@ -9,48 +9,7 @@ pub const LIQUID_GLASS_POC_ENV: &str = "SAKURA_WINDOWS_LIQUID_GLASS_POC";
 
 const INPUT_CORNER_RADIUS: f64 = 28.0;
 const BASE_GAUSSIAN_STANDARD_DEVIATION: f32 = 8.0;
-const MINIMUM_HOST_BACKDROP_BUILD: u32 = 22_000;
 const LIQUID_GLASS_NOT_IMPLEMENTED: &str = "WINDOWS_LIQUID_GLASS_NOT_IMPLEMENTED";
-
-fn windows_glass_policy_failure(
-    os_build: u32,
-    advanced_effects_enabled: bool,
-    energy_saver_active: bool,
-) -> Option<&'static str> {
-    if os_build < MINIMUM_HOST_BACKDROP_BUILD {
-        Some("WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000")
-    } else if !advanced_effects_enabled {
-        Some("WINDOWS_ADVANCED_EFFECTS_DISABLED")
-    } else if energy_saver_active {
-        Some("WINDOWS_ENERGY_SAVER_ACTIVE")
-    } else {
-        None
-    }
-}
-
-#[cfg(windows)]
-fn validate_windows_glass_policy() -> Result<(), NativeGlassError> {
-    use windows::{System::Power::PowerManager, UI::ViewManagement::UISettings};
-
-    let os_build = windows_version::OsVersion::current().build;
-    let advanced_effects_enabled = UISettings::new()
-        .and_then(|settings| settings.AdvancedEffectsEnabled())
-        .map_err(|error| NativeGlassError::at("WINDOWS_ADVANCED_EFFECTS_QUERY_FAILED", error))?;
-    let energy_saver_active = PowerManager::EnergySaverStatus()
-        .map(|status| status == windows::System::Power::EnergySaverStatus::On)
-        .map_err(|error| NativeGlassError::at("WINDOWS_ENERGY_SAVER_QUERY_FAILED", error))?;
-    if let Some(code) =
-        windows_glass_policy_failure(os_build, advanced_effects_enabled, energy_saver_active)
-    {
-        return Err(NativeGlassError::at(
-            code,
-            format!(
-                "os_build={os_build}, advanced_effects_enabled={advanced_effects_enabled}, energy_saver_active={energy_saver_active}"
-            ),
-        ));
-    }
-    Ok(())
-}
 
 fn resolve_windows_requested_mode(
     requested: InputVisualEffectMode,
@@ -198,10 +157,6 @@ impl WindowsInputGlassState {
 
         #[cfg(windows)]
         {
-            if let Err(error) = validate_windows_glass_policy() {
-                self.record_failure(error.code, &error.detail);
-                return;
-            }
             if enabled_value(std::env::var_os(LIQUID_GLASS_POC_ENV).as_deref()) {
                 eprintln!(
                     "[windows-input-glass] LIQUID_GLASS_UNSAFE_BACKEND_RETIRED: ignoring legacy PoC switch"
@@ -238,10 +193,6 @@ impl WindowsInputGlassState {
         }
         #[cfg(windows)]
         {
-            if let Err(error) = validate_windows_glass_policy() {
-                self.record_failure(error.code, &error.detail);
-                return Ok(self.status());
-            }
             let result = self
                 .layer
                 .lock()
@@ -289,10 +240,6 @@ impl WindowsInputGlassState {
         #[cfg(windows)]
         {
             if self.status().outcome == "degraded" {
-                return Ok(());
-            }
-            if let Err(error) = validate_windows_glass_policy() {
-                self.record_failure(error.code, &error.detail);
                 return Ok(());
             }
             let result = self
@@ -759,28 +706,8 @@ impl NativeGlassLayer {
                 })?,
             )
         };
-        if let Ok(capabilities) =
-            windows::UI::Composition::CompositionCapabilities::GetForCurrentView()
-        {
-            let effects_supported = capabilities.AreEffectsSupported().map_err(|error| {
-                NativeGlassError::at("GLASS_EFFECT_SUPPORT_QUERY_FAILED", error)
-            })?;
-            let effects_fast = capabilities.AreEffectsFast().map_err(|error| {
-                NativeGlassError::at("GLASS_EFFECT_PERFORMANCE_QUERY_FAILED", error)
-            })?;
-            if !effects_supported {
-                return Err(NativeGlassError::at(
-                    "GLASS_EFFECTS_UNSUPPORTED",
-                    "composition effects are unavailable",
-                ));
-            }
-            if !effects_fast {
-                return Err(NativeGlassError::at(
-                    "GLASS_EFFECTS_NOT_FAST",
-                    "composition effects are disabled for this graphics environment",
-                ));
-            }
-        }
+        // Attempt the requested effect directly. Power, accessibility and general
+        // composition capability hints must not veto a working native backend.
         let compositor = Compositor::new()
             .map_err(|error| NativeGlassError::at("GLASS_COMPOSITOR_CREATE_FAILED", error))?;
         let interop: ICompositorDesktopInterop = compositor
@@ -1470,23 +1397,6 @@ mod tests {
             assert!(!visibility.gaussian, "{mode:?}");
             assert!(!visibility.liquid_requested, "{mode:?}");
         }
-    }
-
-    #[test]
-    fn windows_glass_policy_rejects_unsupported_or_disabled_environments() {
-        assert_eq!(
-            windows_glass_policy_failure(21_999, true, false),
-            Some("WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000")
-        );
-        assert_eq!(
-            windows_glass_policy_failure(22_000, false, false),
-            Some("WINDOWS_ADVANCED_EFFECTS_DISABLED")
-        );
-        assert_eq!(
-            windows_glass_policy_failure(22_000, true, true),
-            Some("WINDOWS_ENERGY_SAVER_ACTIVE")
-        );
-        assert_eq!(windows_glass_policy_failure(22_000, true, false), None);
     }
 
     #[test]

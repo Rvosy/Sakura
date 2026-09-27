@@ -34,6 +34,12 @@ test("settings errors retain the code, context and original message", () => {
   assert.equal(formatSettingsError("请先选择模型。"), "请先选择模型。");
 });
 
+test("clearing settings feedback does not create an unknown error", () => {
+  assert.equal(formatSettingsError(""), "");
+  assert.equal(formatSettingsError("  \n"), "");
+  assert.ok(formatSettingsError(new Error("connection failed")).includes("connection failed"));
+});
+
 const emptyCharacters = Object.freeze({
   schemaVersion: 1,
   revision: 0,
@@ -267,6 +273,7 @@ test("typed root settings client uses only frozen character storage, update, and
   await client.characterImport("/tmp/role.char");
   await client.characterVoiceImport("/tmp/role.voice", "role");
   await client.characterExport("/tmp/role.char", "role", "full");
+  await client.characterDelete("role");
   await client.characterSelect("role");
   await client.storageGet();
   await client.storageOpenUserRoot();
@@ -294,6 +301,7 @@ test("typed root settings client uses only frozen character storage, update, and
     ["settings_character_import", { path: "/tmp/role.char" }],
     ["settings_character_import_voice", { path: "/tmp/role.voice", characterId: "role" }],
     ["settings_character_export", { path: "/tmp/role.char", characterId: "role", kind: "full" }],
+    ["settings_character_delete", { characterId: "role" }],
     ["settings_character_select", { characterId: "role" }],
     ["settings_storage_get", undefined],
     ["settings_storage_open_user_root", undefined],

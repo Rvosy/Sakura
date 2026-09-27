@@ -473,7 +473,13 @@ impl ChatBridge {
                         .map(str::to_owned)
                 })
                 .flatten(),
-            presentation: host_event.then(|| "silent".to_string()),
+            presentation: host_event.then(|| {
+                if payload.get("presentation").and_then(Value::as_str) == Some("interactive") {
+                    "interactive".to_string()
+                } else {
+                    "silent".to_string()
+                }
+            }),
             cancel_handle: (host_event && event_type == "chat.started")
                 .then(|| active.publication.cancel_handle.clone()),
             reply: (event_type == "chat.completed")
@@ -530,7 +536,11 @@ fn response_error(response: &Value, fallback: &str) -> String {
         Ok(error) => format!(
             "{}: {}",
             error["code"].as_str().unwrap_or(fallback),
-            error["message"].as_str().unwrap_or("")
+            error["diagnostic"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .or_else(|| error["message"].as_str())
+                .unwrap_or("")
         ),
         Err(_) => fallback.to_string(),
     }
@@ -570,14 +580,16 @@ fn project_error(error: Option<&Value>) -> Result<Value, String> {
         })
         .unwrap_or("CHAT_FAILED");
     let details = crate::runtime_log::error_details(&Value::Object(error.clone()));
-    let message = if details.is_empty() {
-        code.to_string()
-    } else {
-        details
-    };
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(code);
+    let message = crate::runtime_log::error_details(&json!({"message": message}));
     Ok(json!({
         "code": code,
         "message": message,
+        "diagnostic": details,
         "retryable": error.get("retryable").and_then(Value::as_bool).unwrap_or(false),
     }))
 }
@@ -709,7 +721,10 @@ mod tests {
                     "code": "PROVIDER_FAILED",
                     "message": "Authorization: Bearer must-not-project C:\\private",
                     "retryable": true,
-                    "details": {"apiKey": "must-not-project", "path": "C:\\private"}
+                    "details": {"diagnostics": {
+                        "diagnostic": "PermissionDeniedError: HTTP 403 api_key=must-not-project",
+                        "exception_stack": "Traceback\n  File \"transport.py\", line 206"
+                    }}
                 }
             }),
             "chat.completed" => json!({
@@ -739,45 +754,48 @@ mod tests {
 
     #[test]
     fn host_interaction_uses_the_existing_slot_and_cancel_handle() {
-        let bridge = bridge();
-        assert!(bridge.listen_host("settings", channel()).is_err());
-        bridge.listen_host("main", channel()).unwrap();
-        let mut started = event("plugin-turn", "chat.started");
-        started["name"] = json!("host.chat.started");
-        started["payload"]["characterId"] = json!("sakura");
-        let publication = bridge.observe_event(&started).unwrap().unwrap();
-        assert_eq!(publication.presentation.as_deref(), Some("silent"));
-        assert_eq!(publication.character_id.as_deref(), Some("sakura"));
-        assert!(bridge
-            .send_with_attachment("main", "busy".into(), None, channel())
-            .is_err());
-        assert!(
-            bridge
+        for presentation in ["silent", "interactive"] {
+            let bridge = bridge();
+            assert!(bridge.listen_host("settings", channel()).is_err());
+            bridge.listen_host("main", channel()).unwrap();
+            let mut started = event("plugin-turn", "chat.started");
+            started["name"] = json!("host.chat.started");
+            started["payload"]["characterId"] = json!("sakura");
+            started["payload"]["presentation"] = json!(presentation);
+            let publication = bridge.observe_event(&started).unwrap().unwrap();
+            assert_eq!(publication.presentation.as_deref(), Some(presentation));
+            assert_eq!(publication.character_id.as_deref(), Some("sakura"));
+            assert!(bridge
+                .send_with_attachment("main", "busy".into(), None, channel())
+                .is_err());
+            assert!(
+                bridge
+                    .cancel(
+                        "main",
+                        "plugin-turn",
+                        publication.cancel_handle.as_deref().unwrap()
+                    )
+                    .unwrap()
+                    .accepted
+            );
+            let mut terminal = event("plugin-turn", "chat.completed");
+            terminal["name"] = json!("host.chat.completed");
+            assert_eq!(
+                bridge.observe_event(&terminal).unwrap().unwrap().event_type,
+                "chat.completed"
+            );
+            assert!(bridge.observe_event(&terminal).unwrap().is_none());
+            assert!(bridge
                 .cancel(
                     "main",
                     "plugin-turn",
                     publication.cancel_handle.as_deref().unwrap()
                 )
-                .unwrap()
-                .accepted
-        );
-        let mut terminal = event("plugin-turn", "chat.completed");
-        terminal["name"] = json!("host.chat.completed");
-        assert_eq!(
-            bridge.observe_event(&terminal).unwrap().unwrap().event_type,
-            "chat.completed"
-        );
-        assert!(bridge.observe_event(&terminal).unwrap().is_none());
-        assert!(bridge
-            .cancel(
-                "main",
-                "plugin-turn",
-                publication.cancel_handle.as_deref().unwrap()
-            )
-            .is_err());
-        assert!(bridge
-            .send_with_attachment("main", "next".into(), None, channel())
-            .is_ok());
+                .is_err());
+            assert!(bridge
+                .send_with_attachment("main", "next".into(), None, channel())
+                .is_ok());
+        }
     }
 
     #[test]
@@ -842,6 +860,11 @@ mod tests {
             failed.error.as_ref().unwrap()["message"],
             "Authorization: Bearer [REDACTED] C:\\private"
         );
+        let diagnostic = failed.error.as_ref().unwrap()["diagnostic"]
+            .as_str()
+            .unwrap();
+        assert!(diagnostic.contains("HTTP 403"));
+        assert!(diagnostic.contains("transport.py"));
         assert_eq!(failed.error.unwrap()["retryable"], true);
         assert!(bridge
             .send_with_attachment("main", "next".to_string(), None, channel())

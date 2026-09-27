@@ -548,29 +548,31 @@ test("queued cancellation failure does not reject an already accepted send", asy
   client.dispose();
 });
 
-test("plugin proactive messages enter the ordinary cancellable operation and silent presentation", async () => {
-  const response = { accepted: true, operationId: "screen", cancelHandle: "cancel", generationId: "generation-1", generationNumber: 1 };
-  const env = harness();
-  const events = [];
-  let hostChannel;
-  const client = env.create(event => events.push(event), { listenHost: async channel => { hostChannel = channel; } });
-  await client.start();
-  hostChannel.onmessage({ ...response, type: "chat.started" });
-  assert.equal(client.isBusy(), true);
-  assert.equal(events.at(-1).presentation, "silent");
-  assert.equal(await client.cancel("screen"), true);
-  assert.deepEqual(env.calls.find(([name]) => name === "chat_cancel"), [
-    "chat_cancel", { payload: { operationId: "screen", cancelHandle: "cancel" } }]);
-  hostChannel.onmessage({ ...response, type: "chat.completed", reply: { segments: [] } });
-  assert.equal(events.at(-1).presentation, "silent");
-  assert.equal(client.isBusy(), false);
-  const before = events.length;
-  hostChannel.onmessage({ ...response, type: "chat.completed", reply: { segments: [] } });
-  assert.equal(events.length, before);
-  client.dispose();
-  hostChannel.onmessage({ ...response, type: "chat.started" });
-  assert.equal(events.length, before);
-});
+for (const presentation of ["silent", "interactive"]) {
+  test(`host ${presentation} messages enter the ordinary cancellable operation`, async () => {
+    const response = { accepted: true, operationId: "screen", cancelHandle: "cancel", generationId: "generation-1", generationNumber: 1, presentation };
+    const env = harness();
+    const events = [];
+    let hostChannel;
+    const client = env.create(event => events.push(event), { listenHost: async channel => { hostChannel = channel; } });
+    await client.start();
+    hostChannel.onmessage({ ...response, type: "chat.started" });
+    assert.equal(client.isBusy(), true);
+    assert.equal(events.at(-1).presentation, presentation);
+    assert.equal(await client.cancel("screen"), true);
+    assert.deepEqual(env.calls.find(([name]) => name === "chat_cancel"), [
+      "chat_cancel", { payload: { operationId: "screen", cancelHandle: "cancel" } }]);
+    hostChannel.onmessage({ ...response, type: "chat.completed", reply: { segments: [] } });
+    assert.equal(events.at(-1).presentation, presentation);
+    assert.equal(client.isBusy(), false);
+    const before = events.length;
+    hostChannel.onmessage({ ...response, type: "chat.completed", reply: { segments: [] } });
+    assert.equal(events.length, before);
+    client.dispose();
+    hostChannel.onmessage({ ...response, type: "chat.started" });
+    assert.equal(events.length, before);
+  });
+}
 
 test("host subscription is rebound on generation change and cannot replace an accepted manual operation", async () => {
   const env = harness([{ accepted: true, operationId: "manual", cancelHandle: "cancel",

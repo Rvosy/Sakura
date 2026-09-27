@@ -36,6 +36,16 @@ fn linux_bounds_request(
     scale_factor: f64,
     native_wayland: bool,
 ) -> Result<LinuxBoundsRequest, &'static str> {
+    linux_bounds_request_with_mode(placement, scale_factor, native_wayland, false)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_bounds_request_with_mode(
+    placement: &PhysicalPlacement,
+    scale_factor: f64,
+    native_wayland: bool,
+    preserve_top_left: bool,
+) -> Result<LinuxBoundsRequest, &'static str> {
     if !scale_factor.is_finite() || scale_factor <= 0.0 {
         return Err("Linux GTK scale must be positive and finite");
     }
@@ -46,7 +56,7 @@ fn linux_bounds_request(
     if size.width <= 0 || size.height <= 0 {
         return Err("Linux GTK window size must be positive");
     }
-    if native_wayland {
+    if native_wayland || preserve_top_left {
         Ok(LinuxBoundsRequest::WaylandResizeOnly {
             width: size.width,
             height: size.height,
@@ -530,39 +540,8 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
 
         #[cfg(target_os = "linux")]
         {
-            use gtk::prelude::{GtkWindowExt, WidgetExt};
-
-            let gtk_window = window
-                .gtk_window()
-                .map_err(|error| map_error("apply_bounds", error.to_string()))?;
-            let request = linux_bounds_request(
-                placement,
-                f64::from(gtk_window.scale_factor()),
-                crate::window_geometry::native_wayland_session(),
-            )
-            .map_err(|error| map_error("apply_bounds", error))?;
-            match request {
-                LinuxBoundsRequest::X11MoveResize {
-                    x,
-                    y,
-                    width,
-                    height,
-                } => {
-                    if gtk_window.window().is_none() {
-                        gtk_window.realize();
-                    }
-                    gtk_window
-                        .window()
-                        .ok_or_else(|| {
-                            native_failure("apply_bounds", "GTK surface is unavailable")
-                        })?
-                        .move_resize(x, y, width, height);
-                }
-                LinuxBoundsRequest::WaylandResizeOnly { width, height } => {
-                    gtk_window.resize(width, height);
-                }
-            }
-            Ok(())
+            linux_apply_bounds(window, placement, false)
+                .map_err(|error| map_error("apply_bounds", error))
         }
 
         #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
@@ -616,7 +595,13 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
             ))
         }
 
-        #[cfg(all(not(windows), not(target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        {
+            window_interaction::relax_native_hit_regions(window)
+                .map_err(|error| map_error("relax_hit_regions", error))
+        }
+
+        #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
         {
             window
                 .set_ignore_cursor_events(false)
@@ -676,11 +661,58 @@ impl NativeWindowInteractionBackend {
                 .map_err(|error| map_error("apply_bounds_preserving_top_left", error))
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            linux_apply_bounds(window, placement, true)
+                .map_err(|error| map_error("apply_bounds_preserving_top_left", error))
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             self.apply_bounds(window, placement)
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_apply_bounds(
+    window: &tauri::WebviewWindow,
+    placement: &PhysicalPlacement,
+    preserve_top_left: bool,
+) -> Result<(), String> {
+    use gtk::prelude::{GtkWindowExt, WidgetExt};
+
+    let gtk_window = window
+        .gtk_window()
+        .map_err(|error| format!("failed to access GTK pet window: {error}"))?;
+    gtk_window.set_gravity(gdk::Gravity::NorthWest);
+    let scale_factor = f64::from(gtk_window.scale_factor());
+    let native_wayland = crate::window_geometry::native_wayland_session();
+    let request = if preserve_top_left {
+        linux_bounds_request_with_mode(placement, scale_factor, native_wayland, true)?
+    } else {
+        linux_bounds_request(placement, scale_factor, native_wayland)?
+    };
+    match request {
+        LinuxBoundsRequest::X11MoveResize {
+            x,
+            y,
+            width,
+            height,
+        } => {
+            if gtk_window.window().is_none() {
+                gtk_window.realize();
+            }
+            gtk_window
+                .window()
+                .ok_or_else(|| "GTK surface is unavailable".to_string())?
+                .move_resize(x, y, width, height);
+        }
+        LinuxBoundsRequest::WaylandResizeOnly { width, height } => {
+            gtk_window.resize(width, height);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -767,6 +799,13 @@ mod tests {
             }
         );
         assert!(linux_bounds_request(&placement, 0.0, false).is_err());
+        assert_eq!(
+            linux_bounds_request_with_mode(&placement, 1.5, false, true).unwrap(),
+            LinuxBoundsRequest::WaylandResizeOnly {
+                width: 600,
+                height: 400,
+            }
+        );
     }
 
     #[cfg(windows)]

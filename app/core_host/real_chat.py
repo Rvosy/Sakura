@@ -178,7 +178,7 @@ class RealChatBoundary:
             if session is None:
                 raise RealChatRejection("ASSISTANT_NOT_READY", "Assistant is not ready")
             if expected_character_id is not None and str(session.character.id) != expected_character_id:
-                raise RealChatRejection("MOBILE_CHARACTER_NOT_CURRENT", "角色已切换，请重新选择角色。")
+                raise RealChatRejection("CHAT_CHARACTER_NOT_CURRENT", "角色已切换，请重新选择角色。")
             if operation_id in self._executions:
                 raise RealChatRejection("DUPLICATE_CHAT_IDENTITY", "chat identity is already in use")
             if len(self._executions) >= REAL_CHAT_EXECUTION_LIMIT:
@@ -697,6 +697,7 @@ class RealChatBoundary:
         *,
         operation_id: str | None = None,
         expected_character_id: str | None = None,
+        expected_session_id: str | None = None,
     ) -> str:
         """Accept the host turn before returning its asynchronous job identity."""
 
@@ -706,8 +707,8 @@ class RealChatBoundary:
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat message is empty")
         if clean_image and not clean_image.startswith("data:image/"):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat image is invalid")
-        operation_id = operation_id or f"mobile-{uuid.uuid4().hex}"
-        if re.fullmatch(r"mobile-[0-9a-f]{32}", operation_id) is None:
+        operation_id = operation_id or f"conversation-{uuid.uuid4().hex}"
+        if re.fullmatch(r"(?:mobile|conversation)-[0-9a-f]{32}", operation_id) is None:
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat operation is invalid")
         attachment = None
         if clean_image:
@@ -722,7 +723,7 @@ class RealChatBoundary:
                         width=0,
                         height=0,
                         captured_at=_now_iso(),
-                        screen_name="mobile",
+                        screen_name="conversation",
                     ),
                 ),
                 item_ids=(f"shot-{secrets.token_hex(16)}",),
@@ -733,14 +734,15 @@ class RealChatBoundary:
             ChatTurnInput(operation_id, clean_message or "请看这张图片。"),
             screen_attachment=attachment,
             expected_character_id=expected_character_id,
+            expected_session_id=expected_session_id,
         )
         return operation_id
 
-    def run_reserved_host_message(self, operation_id: str) -> dict[str, Any]:
+    def run_reserved_host_message(self, operation_id: str, *, emit: Callable | None = None) -> dict[str, Any]:
         from app.core.interaction import interaction_context
 
         with interaction_context(operation_id):
-            outcome = self._run_turn(operation_id)
+            outcome = self._run_turn(operation_id, emit=emit)
         result = outcome.payload
         if outcome.terminal != "chat.completed":
             error = result.get("error")
@@ -772,6 +774,7 @@ class RealChatBoundary:
             "reply_raw": "\n".join(item["raw_content"] for item in segments),
             "segments": segments,
             "actions": [],
+            **({"historyEntryId": reply["historyEntryId"]} if "historyEntryId" in reply else {}),
         }
 
     def run_host_message(

@@ -17,6 +17,8 @@ venv/
 runtime/
 runtime-v2-dependencies/
 /tts/
+/memory/
+/envs/
 env/
 node_modules/
 tools/settings-tauri/src-tauri/target/
@@ -86,6 +88,10 @@ data/runtime_v2/config/ui.json
 task.md
 log.txt
 _cleanup_log.py
+
+# 开发机旁路角色种子（本机 .char/.voice，不进入发行包）
+/base_characters/
+/base_charaters/
 
 # Plugin 安装目录（只跟踪仓库内置插件，用户安装的其他插件继续忽略）
 plugins/*
