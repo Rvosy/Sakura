@@ -104,17 +104,21 @@ def import_seed_characters(
 
     Combined pre-0.9.5 ``.char`` copies lose to a split card+voice pack with the
     same logical identity. Already-installed IDs stay in place unless they are
-    that outdated identity of a split pack being imported.
+    that outdated identity of a split pack being imported. Explicitly deleted
+    IDs remain excluded from automatic imports; manual imports are unaffected.
     """
 
     user = Path(user_root)
     imported: list[SeedCharacterImport] = []
     seen_ids: set[str] = set()
     settings = AppSettingsService(user)
+    excluded_ids = {value.casefold() for value in settings.load_seed_import_exclusions()}
     current_was = settings.load_current_character_id(CharacterRegistry(user))
     select_after: str | None = None
 
     for candidate in _preferred_seed_packs(distribution_root, issue_sink):
+        if candidate.character_id.casefold() in excluded_ids:
+            continue
         result, replaced_current = _import_candidate(
             candidate,
             user,

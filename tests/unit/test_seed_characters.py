@@ -18,6 +18,7 @@ from app.config.seed_characters import (
     import_seed_characters,
 )
 from app.config.settings_service import AppSettingsService
+from app.core_host.character_settings import CharacterSettingsBoundary
 
 
 def test_discover_seed_roots_accepts_canonical_and_typo_names(tmp_path: Path) -> None:
@@ -146,6 +147,37 @@ def test_import_seed_characters_is_idempotent_and_skips_duplicate_ids(
     assert [item.character_id for item in first_pass] == ["sakura"]
     assert second_pass == ()
     assert list(CharacterRegistry(user).profiles) == ["sakura"]
+
+
+def test_deleted_seed_stays_removed_after_restart_without_blocking_new_imports(
+    tmp_path: Path,
+) -> None:
+    distribution = tmp_path / "repo"
+    user = tmp_path / "user"
+    archive = _write_character_archive(
+        distribution / "base_charaters" / "Navi" / "navi.card.char", "navi"
+    )
+    import_seed_characters(distribution, user, issue_sink=_silent)
+    boundary = CharacterSettingsBoundary("generation", "a" * 32, user)
+
+    deleted = boundary.delete_archive("navi")
+
+    assert deleted["changePlan"] == "core_restart_required"
+    assert deleted["snapshot"]["currentCharacterId"] is None
+    assert import_seed_characters(distribution, user, issue_sink=_silent) == ()
+    assert CharacterRegistry(user).all() == []
+
+    _write_character_archive(
+        distribution / "base_characters" / "Other" / "other.char", "other"
+    )
+    imported = import_seed_characters(distribution, user, issue_sink=_silent)
+    assert [item.character_id for item in imported] == ["other"]
+    assert import_seed_characters(distribution, user, issue_sink=_silent) == ()
+
+    restarted_boundary = CharacterSettingsBoundary("next-generation", "b" * 32, user)
+    restarted_boundary.import_archive(str(archive))
+    assert set(CharacterRegistry(user).profiles) == {"navi", "other"}
+    assert import_seed_characters(distribution, user, issue_sink=_silent) == ()
 
 
 def test_import_seed_characters_attaches_voice_left_behind_on_a_later_scan(

@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-09-27
 ---
 
 # Runtime v2 发行与存储合同
@@ -56,6 +56,11 @@ ID 已被其他可访问角色占用，则为遗留副本分配带序号的新 I
 `voice`、没有插件资源 `extensions` 的角色补齐语音资源扩展；已有资源字段保留。此过程不启用语音或选择引擎，
 运行选择仅保存在应用用户根的 `data/plugins/sakura.tts/config.json` 中。
 不存在默认 `sakura` 角色、首角色 fallback 或默认角色 prompt。开发仓库根目录下的 `base_characters/`（以及历史拼写 `base_charaters/`）不是发行内容：仅当这些目录存在时，Core 启动会扫描其中直接含有 `.char` / `.card.char` 的文件夹（含嵌套目录），把尚未安装的逻辑 ID 导入 `user_root/characters`，同目录 `.voice` 一并导入。同一角色同时存在 0.9.5 之前的整包 `.char` 和拆分后的 `.card.char` + `.voice` 时，只导入拆分包，并替换已安装的同名过期整包。已安装且 ID 完全相同的包不重复导入。当前角色仍只在用户尚未选择、或刚被过期整包替换时，按与手动首次导入相同的规则选中。发行包不得复制该目录。
+
+在设置中删除角色后，该逻辑 ID 不再参与种子自动导入，重启 Core 也不会将其恢复；其他新种子和手动导入不受影响。
+排除记录由 [`AppSettingsService.forget_character`](../../../app/config/settings_service.py) 保存在
+`config/characters.yaml` 的 `seed_import_exclusions` 中，角色选择和配置保存保留此记录。旧配置没有该字段时按空集合读取，无需迁移。
+[`import_seed_characters`](../../../app/config/seed_characters.py) 按现有种子去重的大小写归一规则比较逻辑 ID。
 
 主程序自带默认浅蓝主题。当前角色携带主题时覆盖它，否则所有窗口都使用主程序默认主题。
 角色无主题时也不得从角色名、旧 prompt 或内置角色资源推断默认外观。
