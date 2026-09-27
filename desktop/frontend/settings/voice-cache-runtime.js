@@ -54,9 +54,11 @@ export function createVoiceCacheController({ document, invoke, onDirty }) {
         throw new Error("语音缓存容量超出允许范围");
       }
       const saved = await invoke("settings_voice_cache_save", {
-        directory: draft.directory,
-        maxMegabytes: draft.maxMegabytes,
-        idleFill: draft.idleFill,
+        request: {
+          directory: draft.directory,
+          maxMegabytes: draft.maxMegabytes,
+          idleFill: draft.idleFill,
+        },
       });
       baseline = {
         directory: saved.directory,
