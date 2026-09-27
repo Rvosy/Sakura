@@ -567,7 +567,7 @@ class RealChatBoundary:
             terminal = "chat.completed"
             terminal_payload = {
                 "operationId": operation_id,
-                "reply": {"segments": segments},
+                "reply": {"segments": segments, **({"historyEntryId": assistant_entry_id} if assistant_committed else {})},
                 "historyStatus": history_status,
             }
             if assistant_committed:

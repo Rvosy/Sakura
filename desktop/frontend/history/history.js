@@ -2,6 +2,7 @@ import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
 import { renderSubtitleText } from "../pet/multilingual-text.js";
+import { createTtsController } from "../audio/tts-controller.js";
 import {
   preservePrependScroll,
   projectHistoryEntries,
@@ -38,6 +39,26 @@ const languageGuard = createHistoryLoadGuard();
 let initialReloadPending = false;
 const runtimeFontsReady = waitForRuntimeFonts();
 let revealPromise = null;
+let playbackState = { state: "idle" };
+const ttsController = invoke && listen ? createTtsController({
+  invoke, listen,
+  onDiagnostic: message => { status.textContent = message; },
+  onPlaybackState: state => {
+    playbackState = state;
+    updatePlaybackButtons();
+  },
+}) : null;
+
+function updatePlaybackButtons() {
+  for (const button of list.querySelectorAll(".entry-read-button")) {
+    const active = playbackState.state !== "idle"
+      && playbackState.historyEntryId === button.dataset.historyEntryId
+      && playbackState.segmentIndex === Number(button.dataset.segmentIndex);
+    button.textContent = active ? "停止" : "朗读";
+    button.setAttribute("aria-label", active ? "停止朗读" : "朗读这条回复");
+    button.setAttribute("aria-busy", String(active && playbackState.state === "preparing"));
+  }
+}
 
 function revealInitialWindow() {
   if (!invoke) return Promise.resolve();
@@ -110,10 +131,25 @@ function render({ animateRecent = false, animatedEntryIds = null } = {}) {
       pendingText.push([bubble, item]);
     }
     column.append(bubble);
+    if (ttsController && item.role === "assistant" && !item.suppressTts) {
+      const read = document.createElement("button");
+      read.type = "button";
+      read.className = "entry-read-button";
+      read.dataset.historyEntryId = item.historyEntryId;
+      read.dataset.segmentIndex = String(item.segmentIndex);
+      read.addEventListener("click", () => {
+        const active = playbackState.state !== "idle" && playbackState.historyEntryId === item.historyEntryId
+          && playbackState.segmentIndex === item.segmentIndex;
+        if (active) ttsController.stop();
+        else void ttsController.playHistorySegment(item);
+      });
+      column.append(read);
+    }
     row.append(column);
     fragment.append(row);
   }
   list.replaceChildren(fragment);
+  updatePlaybackButtons();
   for (const [bubble, item] of pendingText) renderSubtitleText(bubble, item.content, item.subtitleTracks, item.subtitleTracks, subtitleLanguage);
   empty.hidden = entries.length !== 0;
 }
@@ -217,6 +253,7 @@ async function loadInitial() {
 }
 
 function resetForCharacterSwitch() {
+  ttsController?.cancel();
   loadGuard.invalidate();
   entries = [];
   identity = null;
@@ -258,11 +295,16 @@ async function loadEarlier() {
 
 refresh.addEventListener("click", () => void loadInitial());
 loadMore.addEventListener("click", () => void loadEarlier());
-close.addEventListener("click", () => void invoke?.("close_history_window"));
+close.addEventListener("click", () => {
+  ttsController?.cancel();
+  void invoke?.("close_history_window");
+});
+window.addEventListener("pagehide", () => ttsController?.dispose(), { once: true });
 
 // Install the native listener before the first history request. Otherwise an
 // A -> B reset can race the asynchronous listen() registration and an already
 // opened window can paint A after both reset/ready events were missed.
+await ttsController?.start();
 await subscribeHistoryRefresh(listen, (event) => {
   const action = historyRefreshAction(event?.payload);
   if (action.reset) resetForCharacterSwitch();

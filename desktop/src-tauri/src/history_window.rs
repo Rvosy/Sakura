@@ -51,10 +51,12 @@ struct AssistantPayload {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AssistantSegment {
     text: String,
     translation: String,
+    #[serde(default, rename = "suppressTts")]
+    _suppress_tts: bool,
 }
 
 pub fn validate_page(value: Value) -> Result<HistoryPage, String> {

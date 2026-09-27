@@ -64,6 +64,20 @@ test("observations and system facts become centered plain-text records", () => {
   assert.equal("visualId" in projected[0], false);
 });
 
+test("only assistant bubbles carry stable recording identity with original segment indices", () => {
+  const projected = projectHistoryEntries([
+    entry("human", { text: "hello" }),
+    entry("assistant", { segments: [{ text: "silent", suppressTts: true }, { text: "read me" }] }),
+    entry("system", { text: "system fact" }),
+  ]);
+  assert.deepEqual(projected.filter(item => item.historyEntryId).map(item => ({
+    historyEntryId: item.historyEntryId, segmentIndex: item.segmentIndex, suppressTts: item.suppressTts,
+  })), [
+    { historyEntryId: "entry-assistant", segmentIndex: 0, suppressTts: true },
+    { historyEntryId: "entry-assistant", segmentIndex: 1, suppressTts: false },
+  ]);
+});
+
 test("bilingual history pairs each assistant segment and preserves human text", () => {
   const projected = projectHistoryEntries([
     entry("human", { text: "你好" }),

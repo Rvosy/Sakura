@@ -14,7 +14,7 @@ use std::{
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{Emitter, State, WebviewWindow};
+use tauri::{Emitter, Manager, State, WebviewWindow};
 
 use crate::{
     product_shell::{self, assert_settings_identity},
@@ -211,6 +211,7 @@ pub type AudioEventCallback = Arc<dyn Fn(AudioPlaybackEvent) + Send + Sync + 'st
 pub struct AudioManager {
     registry: AudioRegistry,
     registration_revision: Mutex<u64>,
+    closed: AtomicBool,
     sender: Mutex<Option<mpsc::Sender<AudioCommand>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
@@ -228,6 +229,7 @@ impl AudioManager {
         Ok(Self {
             registry,
             registration_revision: Mutex::new(0),
+            closed: AtomicBool::new(false),
             sender: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
         })
@@ -236,9 +238,15 @@ impl AudioManager {
     pub fn registration_revision(&self) -> Result<u64, String> {
         self.registration_revision
             .lock()
-            .map(|revision| *revision)
             .map_err(|source_error| {
                 crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
+            })
+            .and_then(|revision| {
+                if self.closed.load(Ordering::SeqCst) {
+                    Err("STALE_GENERATION".into())
+                } else {
+                    Ok(*revision)
+                }
             })
     }
 
@@ -250,7 +258,7 @@ impl AudioManager {
         let revision = self.registration_revision.lock().map_err(|source_error| {
             crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
         })?;
-        if *revision != expected_revision {
+        if self.closed.load(Ordering::SeqCst) || *revision != expected_revision {
             self.registry.discard_unregistered(&descriptor.opaque_id);
             return Err("STALE_GENERATION".to_string());
         }
@@ -280,7 +288,10 @@ impl AudioManager {
     }
 
     pub fn shutdown(&self) {
-        self.registry.clear();
+        if let Ok(_revision) = self.registration_revision.lock() {
+            self.closed.store(true, Ordering::SeqCst);
+            self.registry.clear();
+        }
         if let Ok(mut sender) = self.sender.lock() {
             if let Some(sender) = sender.take() {
                 let _ = sender.send(AudioCommand::Shutdown);
@@ -314,9 +325,15 @@ impl Drop for AudioManager {
     }
 }
 
+struct AudioSession {
+    generation: String,
+    manager: Arc<AudioManager>,
+    operation: Option<(String, String)>,
+}
+
 pub struct AudioState {
     user_root: PathBuf,
-    active: Mutex<Option<(String, Arc<AudioManager>)>>,
+    active: Mutex<Option<AudioSession>>,
     input_active: Arc<AtomicBool>,
 }
 
@@ -351,10 +368,21 @@ impl AudioState {
         }
     }
 
+    #[cfg(test)]
     pub fn manager(
         &self,
         generation_id: &str,
         callback: AudioEventCallback,
+    ) -> Result<Arc<AudioManager>, String> {
+        self.open_manager(generation_id, None, callback, || {})
+    }
+
+    fn open_manager(
+        &self,
+        generation_id: &str,
+        operation: Option<(&str, &str)>,
+        callback: AudioEventCallback,
+        on_started: impl FnOnce(),
     ) -> Result<Arc<AudioManager>, String> {
         validate_generation_id(generation_id)?;
         let mut active = self.active.lock().map_err(|source_error| {
@@ -363,21 +391,66 @@ impl AudioState {
         if self.input_active.load(Ordering::SeqCst) {
             return Err("TTS_PAUSED_FOR_VOICE_INPUT".into());
         }
-        if let Some((active_generation, manager)) = active.as_ref() {
-            if active_generation == generation_id {
-                return Ok(manager.clone());
+        if let Some(session) = active.as_ref() {
+            if operation.is_none() && session.generation == generation_id {
+                return Ok(session.manager.clone());
             }
         }
-        if let Some((_generation, manager)) = active.take() {
-            manager.shutdown();
+        if let Some(session) = active.take() {
+            let _ = session.manager.stop_and_clear();
+            session.manager.shutdown();
         }
         let root = self
             .user_root
             .join("data/cache/tts/runtime-v2")
             .join(generation_id);
         let manager = Arc::new(AudioManager::start(root, callback)?);
-        *active = Some((generation_id.to_string(), manager.clone()));
+        *active = Some(AudioSession {
+            generation: generation_id.to_string(),
+            manager: manager.clone(),
+            operation: operation.map(|(id, owner)| (id.to_string(), owner.to_string())),
+        });
+        on_started();
         Ok(manager)
+    }
+
+    fn manager_for_operation(
+        &self,
+        generation: &str,
+        operation: &str,
+    ) -> Result<Arc<AudioManager>, String> {
+        let active = self.active.lock().map_err(|_| "AUDIO_PLAYBACK_FAILED")?;
+        active
+            .as_ref()
+            .filter(|session| {
+                session.generation == generation
+                    && session
+                        .operation
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == operation)
+            })
+            .map(|session| session.manager.clone())
+            .ok_or_else(|| "TTS_SYNTHESIS_CANCELLED".into())
+    }
+
+    fn stop_window(&self, owner: &str, operation: Option<&str>) -> Option<(String, String)> {
+        let mut active = self.active.lock().ok()?;
+        if !active
+            .as_ref()?
+            .operation
+            .as_ref()
+            .is_some_and(|(id, window)| {
+                window == owner && operation.is_none_or(|operation| operation == id)
+            })
+        {
+            return None;
+        }
+        let session = active.take()?;
+        let _ = session.manager.stop_and_clear();
+        session.manager.shutdown();
+        session
+            .operation
+            .map(|(operation, _)| (session.generation, operation))
     }
 
     #[cfg(test)]
@@ -388,16 +461,30 @@ impl AudioState {
                 crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", source_error)
             })?
             .as_ref()
-            .filter(|(active, _)| active == generation_id)
-            .map(|(_, manager)| manager.clone())
+            .filter(|session| session.generation == generation_id)
+            .map(|session| session.manager.clone())
             .ok_or_else(|| "STALE_GENERATION".to_string())
     }
 
     pub fn shutdown(&self) {
         if let Ok(mut active) = self.active.lock() {
-            if let Some((_generation, manager)) = active.take() {
-                let _ = manager.stop_and_clear();
-                manager.shutdown();
+            if let Some(session) = active.take() {
+                let _ = session.manager.stop_and_clear();
+                session.manager.shutdown();
+            }
+        }
+    }
+
+    pub(crate) fn shutdown_generation(&self, generation: &str) {
+        if let Ok(mut active) = self.active.lock() {
+            if active
+                .as_ref()
+                .is_some_and(|session| session.generation == generation)
+            {
+                if let Some(session) = active.take() {
+                    let _ = session.manager.stop_and_clear();
+                    session.manager.shutdown();
+                }
             }
         }
     }
@@ -424,9 +511,9 @@ impl AudioState {
         }
         active
             .as_ref()
-            .filter(|(id, _)| id == generation)
+            .filter(|session| session.generation == generation)
             .ok_or("STALE_GENERATION")?
-            .1
+            .manager
             .play(payload)
     }
 }
@@ -592,8 +679,82 @@ pub(crate) struct TtsPrepareSegmentRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TtsPrepareHistorySegmentRequest {
+    operation_id: String,
+    history_entry_id: String,
+    segment_index: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct TtsCancelSynthesisRequest {
     operation_id: String,
+}
+
+#[tauri::command]
+pub(crate) fn tts_begin_reply(
+    window: WebviewWindow,
+    payload: TtsCancelSynthesisRequest,
+    app_handle: tauri::AppHandle,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, AudioState>,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<(), String> {
+    validate_playback_window(window.label())?;
+    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
+        return Err("TTS_SEGMENT_NOT_AUTHORIZED".into());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation = handle
+        .available_generation_id()
+        .map_err(|error| error.to_string())?
+        .ok_or("STALE_GENERATION")?;
+    let callback_app = app_handle.clone();
+    let observer_generation = generation.clone();
+    let playback_log = runtime_log.inner().clone();
+    let playback_generation = generation.clone();
+    audio_state.open_manager(
+        &generation,
+        Some((&payload.operation_id, window.label())),
+        Arc::new(move |event| {
+            record_tts_playback(&playback_log, &playback_generation, &event);
+            for label in ["main", "history"] {
+                let _ = callback_app.emit_to(label, "sakura://tts-playback-event", event.clone());
+            }
+            observe_tts_playback(handle.clone(), observer_generation.clone(), event);
+        }),
+        || {
+            for label in ["main", "history"] {
+                let _ = app_handle.emit_to(
+                    label,
+                    "sakura://tts-operation-started",
+                    json!({"operationId": payload.operation_id}),
+                );
+            }
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn close_playback_window(app: &tauri::AppHandle, owner: &str) {
+    let Some((generation, operation)) = app.state::<AudioState>().stop_window(owner, None) else {
+        return;
+    };
+    let Ok(handle) = settings_core_handle(&app.state::<ShellLifecycleState>()) else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        if handle.available_generation_id().ok().flatten().as_deref() == Some(generation.as_str()) {
+            let _ = dispatch_settings_request(
+                handle,
+                None,
+                "tts.synthesis.cancel",
+                json!({"operationId": operation}),
+                Duration::from_secs(3),
+            )
+            .await;
+        }
+    });
 }
 
 #[tauri::command]
@@ -603,12 +764,58 @@ pub(crate) async fn tts_prepare_segment(
     app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
     audio_state: State<'_, AudioState>,
-    runtime_log: State<'_, RuntimeLogService>,
 ) -> Result<AudioDescriptor, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
+    prepare_segment(
+        payload.operation_id,
+        payload.segment_index,
+        None,
+        app_handle,
+        lifecycle,
+        audio_state,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn tts_prepare_history_segment(
+    window: WebviewWindow,
+    payload: TtsPrepareHistorySegmentRequest,
+    app_handle: tauri::AppHandle,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, AudioState>,
+) -> Result<AudioDescriptor, String> {
+    validate_playback_window(window.label())?;
+    prepare_segment(
+        payload.operation_id,
+        payload.segment_index,
+        Some(payload.history_entry_id),
+        app_handle,
+        lifecycle,
+        audio_state,
+    )
+    .await
+}
+
+fn validate_playback_window(label: &str) -> Result<(), String> {
+    if matches!(label, "main" | "history") {
+        Ok(())
+    } else {
+        Err("PET_WINDOW_REQUIRED".into())
+    }
+}
+
+async fn prepare_segment(
+    operation_id: String,
+    segment_index: u64,
+    history_entry_id: Option<String>,
+    app_handle: tauri::AppHandle,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, AudioState>,
+) -> Result<AudioDescriptor, String> {
+    if operation_id.trim().is_empty() || operation_id.len() > 128 {
         return Err("TTS_SEGMENT_NOT_AUTHORIZED".to_string());
     }
     let handle = settings_core_handle(&lifecycle)?;
@@ -616,28 +823,20 @@ pub(crate) async fn tts_prepare_segment(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "STALE_GENERATION".to_string())?;
-    let callback_app = app_handle.clone();
-    let observer_handle = handle.clone();
-    let observer_generation = generation_id.clone();
-    let playback_log = runtime_log.inner().clone();
-    let playback_generation = generation_id.clone();
-    let manager = audio_state.manager(
-        &generation_id,
-        Arc::new(move |event| {
-            record_tts_playback(&playback_log, &playback_generation, &event);
-            let _ = callback_app.emit_to("main", "sakura://tts-playback-event", event.clone());
-            observe_tts_playback(observer_handle.clone(), observer_generation.clone(), event);
-        }),
-    )?;
+    let manager = audio_state.manager_for_operation(&generation_id, &operation_id)?;
     let registration_revision = manager.registration_revision()?;
+    let mut request = json!({"operationId": operation_id, "segmentIndex": segment_index});
+    let request_name = if let Some(entry_id) = history_entry_id {
+        request["historyEntryId"] = json!(entry_id);
+        "tts.history.prepare"
+    } else {
+        "tts.synthesis.start"
+    };
     let response = dispatch_settings_request(
         handle.clone(),
         None,
-        "tts.synthesis.start",
-        json!({
-            "operationId": payload.operation_id,
-            "segmentIndex": payload.segment_index,
-        }),
+        request_name,
+        request,
         std::time::Duration::from_secs(305),
     )
     .await?;
@@ -660,8 +859,8 @@ pub(crate) async fn tts_prepare_segment(
             "sakura://tts-synthesis-event",
             json!({
                 "type": "tts.synthesis.ready",
-                "operationId": payload.operation_id,
-                "segmentIndex": payload.segment_index,
+                "operationId": operation_id,
+                "segmentIndex": segment_index,
                 "descriptor": descriptor.clone(),
             }),
         )
@@ -677,9 +876,7 @@ pub(crate) async fn tts_cancel_synthesis(
     payload: TtsCancelSynthesisRequest,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<bool, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
+    validate_playback_window(window.label())?;
     if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
         return Err("TTS_SYNTHESIS_CANCELLED".to_string());
     }
@@ -705,9 +902,7 @@ pub(crate) fn tts_play_prepared(
     lifecycle: State<'_, ShellLifecycleState>,
     audio_state: State<'_, AudioState>,
 ) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
+    validate_playback_window(window.label())?;
     let generation_id = lifecycle
         .handle
         .as_ref()
@@ -721,15 +916,14 @@ pub(crate) fn tts_play_prepared(
 #[tauri::command]
 pub(crate) fn tts_stop_playback(
     window: WebviewWindow,
+    payload: TtsCancelSynthesisRequest,
     audio_state: State<'_, AudioState>,
 ) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
+    validate_playback_window(window.label())?;
     // Playback belongs to the active AudioState, not to whichever Core
     // generation happens to be queryable at command time. During restart the
     // lifecycle intentionally exposes no available generation.
-    audio_state.shutdown();
+    audio_state.stop_window(window.label(), Some(&payload.operation_id));
     Ok(())
 }
 
@@ -900,6 +1094,95 @@ mod tests {
     };
 
     static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn saved_voice_commands_are_limited_to_chat_and_history_windows() {
+        assert!(validate_playback_window("main").is_ok());
+        assert!(validate_playback_window("history").is_ok());
+        for label in ["settings", "studio", "plugin-panel", "capture-1"] {
+            assert!(validate_playback_window(label).is_err());
+        }
+    }
+
+    #[test]
+    fn new_window_operation_rejects_old_preparation_and_old_window_stop() {
+        let root = temp_root();
+        let state = AudioState::new(root.clone());
+        let first = state
+            .open_manager(
+                "generation",
+                Some(("history-old", "history")),
+                Arc::new(|_| {}),
+                || {},
+            )
+            .unwrap();
+        let revision = first.registration_revision().unwrap();
+        state
+            .open_manager(
+                "generation",
+                Some(("chat-new", "main")),
+                Arc::new(|_| {}),
+                || {},
+            )
+            .unwrap();
+        assert!(state
+            .manager_for_operation("generation", "history-old")
+            .is_err());
+        assert!(state.stop_window("history", Some("history-old")).is_none());
+        assert!(state.stop_window("main", Some("chat-old")).is_none());
+        let audio = descriptor("0123456789abcdef0123456789abcdef", wav_bytes().len() as u64);
+        fs::write(
+            root.join("data/cache/tts/runtime-v2/generation")
+                .join(format!("{}.wav", audio.opaque_id)),
+            wav_bytes(),
+        )
+        .unwrap();
+        assert!(first.register_at_revision(&audio, revision).is_err());
+        assert!(state
+            .manager_for_operation("generation", "chat-new")
+            .is_ok());
+        assert_eq!(
+            state.stop_window("main", None),
+            Some(("generation".into(), "chat-new".into()))
+        );
+        assert!(state
+            .manager_for_operation("generation", "chat-new")
+            .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn generation_end_revokes_history_audio_without_stopping_a_new_generation() {
+        let root = temp_root();
+        let state = AudioState::new(root.clone());
+        let old = state
+            .open_manager(
+                "old-generation",
+                Some(("history-old", "history")),
+                Arc::new(|_| {}),
+                || {},
+            )
+            .unwrap();
+        state.shutdown_generation("old-generation");
+        assert!(old.registration_revision().is_err());
+        assert!(state
+            .manager_for_operation("old-generation", "history-old")
+            .is_err());
+        state
+            .open_manager(
+                "new-generation",
+                Some(("history-new", "history")),
+                Arc::new(|_| {}),
+                || {},
+            )
+            .unwrap();
+        state.shutdown_generation("old-generation");
+        assert!(state
+            .manager_for_operation("new-generation", "history-new")
+            .is_ok());
+        state.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn temp_root() -> PathBuf {
         let nonce = SystemTime::now()
@@ -1106,7 +1389,16 @@ mod tests {
         assert!(
             matches!(state.current("generation-asr"), Err(error) if error == "STALE_GENERATION")
         );
-        assert_ne!(manager.registration_revision().unwrap(), revision);
+        assert!(manager.registration_revision().is_err());
+        assert_eq!(
+            manager
+                .register_at_revision(
+                    &descriptor("0123456789abcdef0123456789abcdef", 44),
+                    revision,
+                )
+                .unwrap_err(),
+            "STALE_GENERATION"
+        );
         let fresh = state.manager("generation-asr", Arc::new(|_| {})).unwrap();
         assert!(!Arc::ptr_eq(&fresh, &manager));
         state.shutdown();

@@ -111,6 +111,26 @@ test("completed replies preserve the waiting frame until their first text segmen
   assert.equal(reducer.setWaitingText("...").applied, false);
 });
 
+test("reply history preserves Timeline identity and original segment positions across turns", () => {
+  const reducer = readyReducer();
+  for (const operationId of ["first", "second"]) {
+    const identity = { generationId: "generation-1", generationNumber: 1, operationId };
+    reducer.reduce({ type: "chat.started", ...identity });
+    reducer.reduce({ type: "chat.completed", ...identity, reply: {
+      historyEntryId: `entry-${operationId}`, segments: [null, { text: "readable" }],
+    } });
+    reducer.setTypingSegment(reducer.current().segments[0], 0);
+    reducer.finishTyping();
+  }
+  const { replyHistorySegments } = reducer.current();
+  assert.deepEqual(replyHistorySegments.map(({ historyEntryId, segmentIndex }) => ({ historyEntryId, segmentIndex })), [
+    { historyEntryId: "entry-first", segmentIndex: 1 },
+    { historyEntryId: "entry-second", segmentIndex: 1 },
+  ]);
+  reducer.reviewReplyAt(0, "readable");
+  assert.equal(reducer.current().replyHistorySegments[reducer.current().replyHistoryIndex].historyEntryId, "entry-first");
+});
+
 test("a new request replaces a completed reply that is still typing or playing audio", () => {
   const reducer = readyReducer();
   reducer.reduce({

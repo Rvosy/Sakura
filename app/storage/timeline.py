@@ -147,6 +147,25 @@ class TimelineStore:
         except sqlite3.DatabaseError as exc:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
 
+    def get_entry(self, character_id: str, entry_id: str) -> TimelineEntry | None:
+        """Read one committed entry within its character boundary."""
+        _bounded_text("character_id", character_id, MAX_ID_CHARS)
+        _bounded_text("entry_id", entry_id, MAX_ID_CHARS)
+        if not self.path.is_file():
+            raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
+        try:
+            with self._connect_existing() as connection:
+                _assert_activated_connection(connection)
+                row = connection.execute(
+                    """SELECT seq, entry_id, turn_id, character_id, kind, origin,
+                              created_at, payload_json
+                       FROM timeline_entries WHERE character_id = ? AND entry_id = ?""",
+                    (character_id, entry_id),
+                ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
+        return _entry_from_row(row) if row is not None else None
+
     def read_all(self, character_id: str) -> list[TimelineEntry]:
         _bounded_text("character_id", character_id, MAX_ID_CHARS)
         if not self.path.is_file():

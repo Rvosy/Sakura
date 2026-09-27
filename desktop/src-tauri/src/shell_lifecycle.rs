@@ -476,6 +476,7 @@ enum DesktopProjection {
     Chat(ChatEventPublication),
     Host(Value),
     PluginMigrationStarted(String),
+    GenerationInvalidated(String),
 }
 
 impl ShellLifecycleSession {
@@ -568,6 +569,10 @@ impl ShellLifecycleSession {
         self.chat_projector = Some(thread::spawn(move || {
             while let Ok(event) = events.recv() {
                 match event {
+                    DesktopProjection::GenerationInvalidated(generation) => {
+                        app.state::<crate::audio::AudioState>()
+                            .shutdown_generation(&generation);
+                    }
                     DesktopProjection::Chat(event) => {
                         let _ = update_coordinator.observe_chat_event(&event);
                     }
@@ -636,6 +641,7 @@ impl Drop for ShellLifecycleSession {
 }
 
 struct WorkerState {
+    desktop_events: Sender<DesktopProjection>,
     failure_diagnostic: Option<String>,
     request: RuntimeLocationRequest,
     supervisor: CoreSupervisor,
@@ -666,6 +672,7 @@ fn run_worker(
         .map_or(0, |duration| duration.as_nanos() as u64)
         ^ u64::from(std::process::id());
     let mut state = WorkerState {
+        desktop_events: chat_events.clone(),
         failure_diagnostic: None,
         request,
         supervisor: CoreSupervisor::new(nonce),
@@ -1188,6 +1195,18 @@ fn stop_generation(state: &mut WorkerState) -> bool {
 }
 
 fn invalidate_generation_surfaces(state: &mut WorkerState) {
+    if let Some(generation) = state
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.get("generationId"))
+        .and_then(Value::as_str)
+    {
+        let _ = state
+            .desktop_events
+            .send(DesktopProjection::GenerationInvalidated(
+                generation.to_string(),
+            ));
+    }
     clear_settings_transport(state);
     clear_chat_bridge(state);
     if let Some(bridge) = state.chat_bridge.take() {
@@ -2138,6 +2157,8 @@ mod tests {
             Some("unexpected_exit")
         );
         let diagnostic = &failed.supervisor.failure.as_ref().unwrap().message;
+        assert!(session.chat_events.as_ref().unwrap().try_iter().any(|event|
+            matches!(event, DesktopProjection::GenerationInvalidated(ref id) if id == &first_id)));
         assert!(
             diagnostic.contains("GENERATION_INVALIDATED")
                 || diagnostic.contains("CORE_PROCESS")

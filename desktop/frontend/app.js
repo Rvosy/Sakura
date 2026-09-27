@@ -138,6 +138,8 @@ const bubbleCopy = document.querySelector("#bubble-copy");
 const bubbleBody = document.querySelector(".reply-body");
 const replyHistoryPrevious = document.querySelector("#reply-history-previous");
 const replyHistoryNext = document.querySelector("#reply-history-next");
+const replyRead = document.querySelector("#reply-read");
+let ttsPlaybackState = { state: "idle" };
 const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
 const characterName = document.querySelector("#character-name");
@@ -1163,12 +1165,14 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
 const ttsController = createTtsController({
   invoke,
   listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
-  onDiagnostic: (code) => runtimeDiagnostics.record({
-    level: "warn",
-    event: "webview.tts.degraded",
-    outcome: "failed",
-    code,
-  }),
+  onPlaybackState: (state) => {
+    ttsPlaybackState = state;
+    renderReplyRead(presentation.current());
+  },
+  onDiagnostic: (code, { history = false } = {}) => {
+    runtimeDiagnostics.record({ level: "warn", event: "webview.tts.degraded", outcome: "failed", code });
+    if (history) showRecoverableError(code);
+  },
 });
 await ttsController.start();
 
@@ -1340,9 +1344,22 @@ function render(state, bubbleUpdate = {}) {
   );
   replyHistoryPrevious.disabled = !state.canReviewPrevious;
   replyHistoryNext.disabled = !state.canReviewNext;
+  renderReplyRead(state);
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
   return Promise.resolve({ applied: true });
+}
+
+function renderReplyRead(state) {
+  const segment = state.showingReplyHistorySegment ? state.replyHistorySegments[state.replyHistoryIndex] : null;
+  const active = ttsPlaybackState.state !== "idle";
+  const readable = Boolean(segment?.historyEntryId) && !segment.suppressTts;
+  replyRead.hidden = !active && !readable;
+  replyRead.textContent = active ? "停止" : "朗读";
+  replyRead.setAttribute("aria-label", active ? "停止朗读" : "朗读这条回复");
+  replyRead.setAttribute("aria-busy", String(ttsPlaybackState.state === "preparing"));
+  replyRead.disabled = !active && (!readable || !["settled", "error"].includes(state.phase)
+    || presentationUnavailable || asrController?.active() === true);
 }
 
 function handleCoreEvent(event) {
@@ -2168,12 +2185,23 @@ function reviewReplyBy(offset) {
     targetIndex, selectSegmentText(segment, subtitleLanguage), selectSegmentTracks(segment, subtitleLanguage), subtitleLanguage,
   );
   if (result.applied) {
+    ttsController.stop();
     void rendererHost.review(segment);
     render(result.state, { reason: "history", forceEnd: true });
   }
 }
 replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));
 replyHistoryNext.addEventListener("click", () => reviewReplyBy(1));
+replyRead.addEventListener("click", () => {
+  if (ttsPlaybackState.state !== "idle") {
+    ttsController.stop();
+    return;
+  }
+  const state = presentation.current();
+  const segment = state.replyHistorySegments[state.replyHistoryIndex];
+  if (replyRead.disabled || !segment?.historyEntryId || segment.suppressTts) return;
+  void ttsController.playHistorySegment(segment);
+});
 window.addEventListener("focus", () => inputFocus.handleWindowFocus());
 window.addEventListener("blur", () => {
   inputFocus.handleWindowBlur();

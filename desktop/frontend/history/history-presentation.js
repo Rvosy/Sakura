@@ -74,8 +74,11 @@ function scheduledScreenBubble(entries, { formatTime }) {
 function entryBubbles(entry, { assistantName, subtitleLanguage, formatTime }) {
   const createdAt = formatTime(entry.createdAt);
   if (entry.kind === "assistant") {
-    return entry.payload.segments.map((segment) => ({
+    return entry.payload.segments.map((segment, segmentIndex) => ({
       entryId: entry.entryId,
+      historyEntryId: entry.entryId,
+      segmentIndex,
+      suppressTts: segment.suppressTts === true,
       turnId: entry.turnId,
       role: "assistant",
       group: "assistant",
