@@ -12,8 +12,12 @@ function isScreenObservation(entry) {
       && entry.payload.sourcePluginId && entry.payload.visual?.imageCount > 0));
 }
 
-function observationDisplayText(entry) {
+function entryDisplayText(entry) {
   const content = text(entry.payload.text);
+  if (entry.kind === "system") {
+    if (entry.payload.eventType === "app.started") return "桌宠已启动";
+    if (entry.payload.eventType === "app.closed") return "桌宠正在退出";
+  }
   if (entry.kind === "observation" && entry.origin === "host" && entry.payload.sourcePluginId
       && !entry.payload.visual && content === "插件发起了一次互动。") return "想和你聊聊。";
   if (entry.kind !== "observation" || entry.origin !== "manual_screen") return content;
@@ -110,7 +114,7 @@ function entryBubbles(entry, { assistantName, subtitleLanguage, formatTime }) {
     align: "center",
     roleName,
     createdAt,
-    content: observationDisplayText(entry),
+    content: entryDisplayText(entry),
   }];
 }
 

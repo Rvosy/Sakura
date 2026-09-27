@@ -5,6 +5,7 @@ Sakura 的功能图标统一使用 [Lucide 1.41.0](https://github.com/lucide-ico
 Sakura 标识、服务商品牌标识和角色图片保留原资源。设置页的图标只显示轮廓，不单独添加圆角底座。
 
 TTS 提供方统一使用 `audio-lines`（声波），包括 Genie 和 GPT-SoVITS；`speech`（侧脸声波）预留给语音输入插件。
+气泡与历史记录中的朗读按钮使用 `volume-2`（喇叭），沿用 Morphicons 在喇叭、准备时的加载环与播放时的停止方块间过渡。
 
 静态图标由 `core/icons.css` 以 CSS mask 呈现，颜色跟随 `currentColor`，无需联网或额外构建。
 HTML 使用 `sakura-icon icon-brain` 等类；动态节点使用 `core/icons.js` 的 `createIcon` 或 `iconMarkup`。

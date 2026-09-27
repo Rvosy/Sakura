@@ -187,6 +187,14 @@ def _entry_mapping(entry: object) -> dict[str, Any]:
         }
     else:
         public_payload = {"text": str(payload.get("text", ""))}
+        if kind_text == "observation":
+            if "sourcePluginId" in payload:
+                public_payload["sourcePluginId"] = payload["sourcePluginId"]
+            visual = payload.get("visual")
+            if visual and "imageCount" in visual:
+                public_payload["visual"] = {"imageCount": visual["imageCount"]}
+        elif kind_text == "system" and "eventType" in payload:
+            public_payload["eventType"] = payload["eventType"]
     return {
         "entryId": str(getattr(entry, "entry_id")),
         "turnId": str(getattr(entry, "turn_id")),

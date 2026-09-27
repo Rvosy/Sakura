@@ -1,6 +1,7 @@
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
+import { createPlaybackActionIndicator } from "../audio/playback-action-indicator.js";
 import { renderSubtitleText } from "../pet/multilingual-text.js";
 import { createTtsController } from "../audio/tts-controller.js";
 import {
@@ -40,6 +41,12 @@ let initialReloadPending = false;
 const runtimeFontsReady = waitForRuntimeFonts();
 let revealPromise = null;
 let playbackState = { state: "idle" };
+const playbackIndicators = new Map();
+function clearPlaybackIndicators() {
+  for (const indicator of playbackIndicators.values()) indicator.dispose();
+  playbackIndicators.clear();
+}
+window.addEventListener("pagehide", clearPlaybackIndicators, { once: true });
 const ttsController = invoke && listen ? createTtsController({
   invoke, listen,
   onDiagnostic: message => { status.textContent = message; },
@@ -50,13 +57,11 @@ const ttsController = invoke && listen ? createTtsController({
 }) : null;
 
 function updatePlaybackButtons() {
-  for (const button of list.querySelectorAll(".entry-read-button")) {
+  for (const [button, indicator] of playbackIndicators) {
     const active = playbackState.state !== "idle"
       && playbackState.historyEntryId === button.dataset.historyEntryId
       && playbackState.segmentIndex === Number(button.dataset.segmentIndex);
-    button.textContent = active ? "停止" : "朗读";
-    button.setAttribute("aria-label", active ? "停止朗读" : "朗读这条回复");
-    button.setAttribute("aria-busy", String(active && playbackState.state === "preparing"));
+    indicator.setState(active ? playbackState.state : "idle");
   }
 }
 
@@ -87,6 +92,7 @@ function setLoading(active, message) {
 }
 
 function render({ animateRecent = false, animatedEntryIds = null } = {}) {
+  clearPlaybackIndicators();
   const fragment = document.createDocumentFragment();
   const pendingText = [];
   const bubbles = projectHistoryEntries(entries, { assistantName, subtitleLanguage });
@@ -130,11 +136,18 @@ function render({ animateRecent = false, animatedEntryIds = null } = {}) {
       if (item.subtitleTracks?.length === 2) bubble.classList.add("entry-bubble-bilingual");
       pendingText.push([bubble, item]);
     }
-    column.append(bubble);
     if (ttsController && item.role === "assistant" && !item.suppressTts) {
+      const segment = document.createElement("div");
+      segment.className = "entry-segment";
+      if (item.subtitleTracks?.length === 2) segment.classList.add("entry-segment-bilingual");
       const read = document.createElement("button");
       read.type = "button";
       read.className = "entry-read-button";
+      const icon = document.createElement("span");
+      icon.className = "sakura-morph-icon";
+      icon.setAttribute("aria-hidden", "true");
+      read.append(icon);
+      playbackIndicators.set(read, createPlaybackActionIndicator({ button: read }));
       read.dataset.historyEntryId = item.historyEntryId;
       read.dataset.segmentIndex = String(item.segmentIndex);
       read.addEventListener("click", () => {
@@ -143,7 +156,10 @@ function render({ animateRecent = false, animatedEntryIds = null } = {}) {
         if (active) ttsController.stop();
         else void ttsController.playHistorySegment(item);
       });
-      column.append(read);
+      segment.append(bubble, read);
+      column.append(segment);
+    } else {
+      column.append(bubble);
     }
     row.append(column);
     fragment.append(row);

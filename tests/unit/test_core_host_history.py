@@ -108,7 +108,7 @@ def test_history_boundary_returns_only_current_character_typed_entries(tmp_path)
                 "kind": "observation",
                 "origin": "manual_screen",
                 "createdAt": NOW,
-                "payload": {"text": "safe screen summary"},
+                "payload": {"text": "safe screen summary", "visual": {"imageCount": 1}},
             },
         ],
         "beforeCursor": None,
@@ -146,3 +146,49 @@ def test_history_boundary_rejects_character_changes_and_invalid_shapes(tmp_path)
     assert mismatch["error"]["code"] == "HISTORY_CHARACTER_MISMATCH"
     assert invalid["ok"] is False
     assert invalid["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_history_preserves_observation_and_system_presentation_fields_without_visual_identity(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    store = TimelineStore(StoragePaths(tmp_path).timeline_database())
+    store.initialize()
+    store.append_many(
+        [
+            NewTimelineEntry(
+                entry_id="screen-observation",
+                turn_id="screen-turn",
+                character_id="sakura",
+                kind=TimelineKind.OBSERVATION,
+                origin="host",
+                created_at=NOW,
+                payload={
+                    "text": "原始观察内容",
+                    "sourcePluginId": "sakura.screen_awareness",
+                    "visual": {"imageCount": 3, "visualId": "vis-private", "capturedAt": NOW},
+                },
+            ),
+            NewTimelineEntry(
+                entry_id="startup-event",
+                turn_id="startup-turn",
+                character_id="sakura",
+                kind=TimelineKind.SYSTEM,
+                origin="host",
+                created_at=NOW,
+                payload={"text": "原始启动事件内容", "eventType": "app.started"},
+            ),
+        ]
+    )
+    result = _boundary(tmp_path, ["sakura"]).handle(
+        _request({"expectedCharacterId": "sakura", "beforeCursor": None, "limit": 50})
+    )
+
+    assert result["ok"] is True
+    assert [entry["payload"] for entry in result["payload"]["entries"]] == [
+        {
+            "text": "原始观察内容",
+            "sourcePluginId": "sakura.screen_awareness",
+            "visual": {"imageCount": 3},
+        },
+        {"text": "原始启动事件内容", "eventType": "app.started"},
+    ]

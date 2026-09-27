@@ -18,7 +18,9 @@
             <span id="chat-phase" class="visually-hidden" role="status">正在准备</span>
           </div>
           <button type="button" id="chat-error-log" class="chat-error-log" data-interactive="true" hidden>查看运行日志</button>
-          <button type="button" id="reply-read" class="reply-read-button" data-interactive="true" hidden>朗读</button>
+          <button type="button" id="reply-read" class="reply-read-button" data-interactive="true" aria-label="朗读这条回复" hidden>
+            <span class="sakura-morph-icon" aria-hidden="true"></span>
+          </button>
         </header>
         <div class="reply-body">
           <div id="bubble-copy" class="bubble-copy" aria-live="polite">

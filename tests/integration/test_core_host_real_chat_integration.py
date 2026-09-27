@@ -1638,7 +1638,7 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
                     "kind": "system",
                     "origin": "host",
                     "createdAt": started.created_at,
-                    "payload": {"text": started.payload["text"]},
+                    "payload": {"text": started.payload["text"], "eventType": "app.started"},
                 },
                 {
                     "entryId": human.entry_id,

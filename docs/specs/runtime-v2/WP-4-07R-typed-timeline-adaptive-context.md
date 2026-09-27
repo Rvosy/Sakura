@@ -161,6 +161,10 @@ Shell 的历史窗口通过内部请求 `ui.history.page` 读取同一 Timeline�
 `sakura.host.timeline` 插件接口。角色或 Core generation 改变时明确失败，窗口要求用户刷新，不把旧页和新页
 拼在一起。
 
+显示投影保留观察记录的 `sourcePluginId` 与 `visual.imageCount`，供历史窗口将同一 Turn 的截图触发与摘要合并为
+默认折叠的记录；不输出视觉资源 ID、截图路径或资源句柄。系统记录保留 `eventType`，启动与退出提示按事件类型
+显示简短文案，已有 Timeline 正文不改写。
+
 完成事实调整为：
 
 ```text

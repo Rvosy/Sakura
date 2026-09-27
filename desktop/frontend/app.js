@@ -1,6 +1,7 @@
 import { errorSummary, errorText } from "./core/error-display.js";
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createTtsController } from "./audio/tts-controller.js";
+import { createPlaybackActionIndicator } from "./audio/playback-action-indicator.js";
 import { createAsrController } from "./audio/asr-controller.js";
 import { createAsrWaveform } from "./audio/asr-waveform.js";
 import { createAsrPresentation } from "./audio/asr-presentation.js";
@@ -139,6 +140,8 @@ const bubbleBody = document.querySelector(".reply-body");
 const replyHistoryPrevious = document.querySelector("#reply-history-previous");
 const replyHistoryNext = document.querySelector("#reply-history-next");
 const replyRead = document.querySelector("#reply-read");
+const replyReadIndicator = createPlaybackActionIndicator({ button: replyRead });
+window.addEventListener("pagehide", () => replyReadIndicator.dispose(), { once: true });
 let ttsPlaybackState = { state: "idle" };
 const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
@@ -1367,9 +1370,7 @@ function renderReplyRead(state) {
   const active = ttsPlaybackState.state !== "idle";
   const readable = Boolean(segment?.historyEntryId) && !segment.suppressTts;
   replyRead.hidden = !active && !readable;
-  replyRead.textContent = active ? "停止" : "朗读";
-  replyRead.setAttribute("aria-label", active ? "停止朗读" : "朗读这条回复");
-  replyRead.setAttribute("aria-busy", String(ttsPlaybackState.state === "preparing"));
+  replyReadIndicator.setState(ttsPlaybackState.state);
   replyRead.disabled = !active && (!readable || !["settled", "error"].includes(state.phase)
     || presentationUnavailable || asrController?.active() === true);
 }

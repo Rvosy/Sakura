@@ -1,4 +1,9 @@
 /* Lucide Animated motion adapted to native CSS. See assets/lucide/README.md. */
+.sakura-morph-icon { display: block; flex: none; width: 22px; height: 22px; pointer-events: none; }
+.sakura-morph-icon > svg, .sakura-morph-icon > .sakura-icon { display: block; width: 100%; height: 100%; }
+.sakura-morph-icon > svg { overflow: visible; }
+.sakura-morph-icon path { fill: currentColor; fill-opacity: 0; transition: fill-opacity 180ms ease; }
+.sakura-morph-icon[data-icon="stop"] path { fill-opacity: 1; }
 @keyframes lucide-nudge { 50% { transform: translate(2px, -2px); } }
 @keyframes lucide-bounce { 45% { transform: translateY(2px); } 75% { transform: translateY(-1px); } }
 @keyframes lucide-turn { to { transform: rotate(180deg); } }

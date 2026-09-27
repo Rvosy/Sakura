@@ -45,6 +45,31 @@ struct TextPayload {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservationPayload {
+    text: String,
+    #[serde(rename = "sourcePluginId")]
+    _source_plugin_id: Option<String>,
+    #[serde(rename = "visual")]
+    _visual: Option<ObservationVisual>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservationVisual {
+    #[serde(rename = "imageCount")]
+    _image_count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SystemPayload {
+    text: String,
+    #[serde(rename = "eventType")]
+    _event_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AssistantPayload {
     segments: Vec<AssistantSegment>,
@@ -81,14 +106,19 @@ pub fn validate_page(value: Value) -> Result<HistoryPage, String> {
         }
         match entry.kind.as_str() {
             "human" | "observation" | "system" => {
-                let payload: TextPayload =
-                    serde_json::from_value(entry.payload.clone()).map_err(|source_error| {
-                        crate::runtime_log::diagnostic_error(
-                            "HISTORY_RESPONSE_INVALID",
-                            source_error,
-                        )
-                    })?;
-                if payload.text.trim().is_empty() {
+                let value = entry.payload.clone();
+                let text = match entry.kind.as_str() {
+                    "observation" => serde_json::from_value::<ObservationPayload>(value)
+                        .map(|payload| payload.text),
+                    "system" => {
+                        serde_json::from_value::<SystemPayload>(value).map(|payload| payload.text)
+                    }
+                    _ => serde_json::from_value::<TextPayload>(value).map(|payload| payload.text),
+                }
+                .map_err(|source_error| {
+                    crate::runtime_log::diagnostic_error("HISTORY_RESPONSE_INVALID", source_error)
+                })?;
+                if text.trim().is_empty() {
                     return Err("HISTORY_RESPONSE_INVALID".to_string());
                 }
             }
@@ -327,5 +357,44 @@ mod tests {
             validate_page(mismatched_cursor),
             Err("HISTORY_RESPONSE_INVALID".to_string())
         );
+    }
+
+    #[test]
+    fn history_page_preserves_public_observation_and_system_metadata() {
+        let mut value = page();
+        value["entries"][0]["kind"] = json!("observation");
+        value["entries"][0]["payload"] = json!({
+            "text": "请看看屏幕。",
+            "sourcePluginId": "sakura.screen_awareness",
+            "visual": {"imageCount": 3}
+        });
+        value["entries"][1]["kind"] = json!("system");
+        value["entries"][1]["payload"] = json!({
+            "text": "这是启动时保留的原始记录。",
+            "eventType": "app.started"
+        });
+
+        let validated = validate_page(value.clone()).unwrap();
+        for (index, entry) in validated.entries.iter().enumerate() {
+            assert_eq!(entry.payload, value["entries"][index]["payload"]);
+        }
+
+        let mut legacy = value.clone();
+        legacy["entries"][0]["payload"] = json!({"text": "旧观察记录"});
+        legacy["entries"][1]["payload"] = json!({"text": "旧系统记录"});
+        assert!(validate_page(legacy).is_ok());
+
+        for field in ["visualId", "capturedAt", "path"] {
+            let mut private = value.clone();
+            private["entries"][0]["payload"]["visual"][field] = json!("private");
+            assert!(validate_page(private)
+                .unwrap_err()
+                .starts_with("HISTORY_RESPONSE_INVALID: unknown field"));
+        }
+        let mut private = value;
+        private["entries"][1]["payload"]["details"] = json!({"private": true});
+        assert!(validate_page(private)
+            .unwrap_err()
+            .starts_with("HISTORY_RESPONSE_INVALID: unknown field"));
     }
 }

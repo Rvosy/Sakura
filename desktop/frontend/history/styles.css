@@ -1,5 +1,6 @@
 @import url("../assets/fonts/fonts.css");
 @import url("../core/selection.css");
+@import url("../core/icons.css");
 @import url("../pet/subtitle.css");
 
 :root {
@@ -173,16 +174,39 @@ h1 {
 
 .entry-bubble-bilingual { width: 100%; }
 
+.entry-segment { position: relative; width: fit-content; max-width: 100%; transition: transform 140ms ease; }
+.entry-segment-bilingual { width: 100%; }
+.entry-segment > .entry-bubble { padding-inline-end: 42px; }
+
 .entry-read-button {
-  justify-self: start;
-  margin: 0 4px;
-  padding: 2px 5px;
+  position: absolute;
+  inset-inline-end: 6px;
+  bottom: 6px;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 4px;
   border: 0;
   border-radius: 5px;
   color: var(--primary);
   background: transparent;
-  font-size: 12px;
+  font-size: 16px;
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+  touch-action: manipulation;
+  transition: opacity 160ms ease, background-color 160ms ease;
+}
+.entry-read-button .sakura-morph-icon { width: 16px; height: 16px; }
+.entry-segment:hover .entry-read-button,
+.entry-segment:focus-within .entry-read-button,
+.entry-read-button[data-playback-state="preparing"],
+.entry-read-button[data-playback-state="playing"] { opacity: 1; pointer-events: auto; }
+@media (hover: none) {
+  .entry-read-button { opacity: 1; pointer-events: auto; }
 }
 .entry-read-button:hover,
 .entry-read-button:focus-visible {
@@ -319,7 +343,8 @@ button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px
     opacity 140ms ease, transform 140ms ease;
 }
 .load-more:hover,
-.entry-bubble:hover,
+.entry-column > .entry-bubble:hover,
+.entry-segment:hover,
 .button:hover:not(:disabled) {
   transform: translateY(-1px);
 }
