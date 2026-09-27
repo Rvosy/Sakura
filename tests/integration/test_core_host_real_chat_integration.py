@@ -1594,9 +1594,21 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         assert "LOCAL_TEST_KEY" not in serialized_request
 
         history = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
-        assert [entry.kind for entry in history] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
-        assert history[0].payload["text"] == "ただいま"
-        assert history[1].payload["segments"][0]["text"] == "おかえり。"
+        assert [entry.kind for entry in history] == [
+            TimelineKind.SYSTEM, TimelineKind.HUMAN, TimelineKind.ASSISTANT,
+        ]
+        started, human, assistant = history
+        assert started.origin == "host"
+        assert started.payload["eventType"] == "app.started"
+        assert started.turn_id != human.turn_id == assistant.turn_id
+        assert human.payload["text"] == "ただいま"
+        assert assistant.payload["segments"][0]["text"] == "おかえり。"
+        assert any(
+            message["role"] == "system"
+            and started.payload["text"] in message["content"]
+            and started.created_at in message["content"]
+            for message in _ProviderHandler.requests[-1]["messages"]
+        )
         history_page = _exchange(
             process,
             _request(
@@ -1614,22 +1626,30 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
             "schemaVersion": 1,
             "coreGenerationId": GENERATION_ID,
             "characterId": "sakura",
-            "totalCount": 2,
+            "totalCount": 3,
             "entries": [
                 {
-                    "entryId": history[0].entry_id,
-                    "turnId": history[0].turn_id,
+                    "entryId": started.entry_id,
+                    "turnId": started.turn_id,
+                    "kind": "system",
+                    "origin": "host",
+                    "createdAt": started.created_at,
+                    "payload": {"text": started.payload["text"]},
+                },
+                {
+                    "entryId": human.entry_id,
+                    "turnId": human.turn_id,
                     "kind": "human",
                     "origin": "chat",
-                    "createdAt": history[0].created_at,
+                    "createdAt": human.created_at,
                     "payload": {"text": "ただいま"},
                 },
                 {
-                    "entryId": history[1].entry_id,
-                    "turnId": history[1].turn_id,
+                    "entryId": assistant.entry_id,
+                    "turnId": assistant.turn_id,
                     "kind": "assistant",
                     "origin": "chat",
-                    "createdAt": history[1].created_at,
+                    "createdAt": assistant.created_at,
                     "payload": {
                         "segments": [
                             {"text": "おかえり。", "translation": "欢迎回来。"}
@@ -1640,9 +1660,14 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
             "beforeCursor": None,
             "hasMore": False,
         }
-        shutdown = _exchange(process, _request("shutdown", "system.shutdown", {}))
+        shutdown = _exchange(process, _request("shutdown", "system.shutdown", {"appExiting": True}))
         assert shutdown["payload"] == {"accepted": True}
         assert process.wait(timeout=5) == 0
+        after_shutdown = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
+        assert after_shutdown[:-1] == history
+        assert after_shutdown[-1].kind is TimelineKind.SYSTEM
+        assert after_shutdown[-1].origin == "host"
+        assert after_shutdown[-1].payload["eventType"] == "app.closed"
         assert process.stderr is not None
         stderr = _stderr_text(process)
         assert "LOCAL_TEST_KEY" not in stderr
@@ -1694,13 +1719,19 @@ def test_real_next_turn_reads_imported_legacy_timeline(tmp_path: Path) -> None:
         serialized_request = json.dumps(_ProviderHandler.requests, ensure_ascii=False)
         assert "LEGACY_CONTEXT_USER_8F21" in serialized_request
         assert "LEGACY_CONTEXT_REPLY_4A17" in serialized_request
+        assert all(record["created_at"] in serialized_request for record in records)
         entries = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
         assert [entry.kind for entry in entries] == [
             TimelineKind.HUMAN,
             TimelineKind.ASSISTANT,
+            TimelineKind.SYSTEM,
             TimelineKind.HUMAN,
             TimelineKind.ASSISTANT,
         ]
+        assert entries[2].origin == "host"
+        assert entries[2].payload["eventType"] == "app.started"
+        assert entries[2].payload["text"] in serialized_request
+        assert entries[2].created_at in serialized_request
         _exchange(process, _request("shutdown-after-import", "system.shutdown", {}))
     finally:
         _stop(process)
@@ -1745,8 +1776,10 @@ def test_invalid_provider_json_fails_once_without_poisoning_core(tmp_path: Path)
         assert snapshot["payload"]["readiness"] == "ready"
         assert snapshot["payload"]["activeInteractionSummary"] is None
         history = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
-        assert [entry.kind for entry in history] == [TimelineKind.HUMAN]
-        assert history[0].payload == {"text": "hello"}
+        assert [entry.kind for entry in history] == [TimelineKind.SYSTEM, TimelineKind.HUMAN]
+        assert history[0].origin == "host"
+        assert history[0].payload["eventType"] == "app.started"
+        assert history[1].payload == {"text": "hello"}
         _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert process.wait(timeout=5) == 0
     finally:

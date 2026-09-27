@@ -88,9 +88,9 @@ class PortraitService:
             return {"error": "VISUAL_RESOURCE_INVALID", "message": str(error)}
         choices = list(paths)[1:]
         return {
-            "prompt": "立绘控制：在 control.payload.key 中填写图片标签。可选标签："
+            "prompt": "每段都必须在 control.payload.key 中选择一个图片标签，按本段情绪和内容选择。可选标签："
                 + "、".join([DEFAULT_KEY, *choices])
-                + "。按本段内容选择，缺省使用默认图。",
+                + "。标签必须原样填写，不要填写文件路径，也不要用 tone 代替 key；无合适表情时填写默认标签 " + DEFAULT_KEY + "。",
             "outputSchema": {"type": "object", "properties": {"key": {"type": "string", "enum": [DEFAULT_KEY, *choices]}}, "required": ["key"], "additionalProperties": False},
             "rendererData": {"defaultKey": DEFAULT_KEY, "keys": list(paths), "metadata": metadata},
             "parserData": {"keys": list(paths)},
