@@ -34,6 +34,12 @@ test("settings errors retain the code, context and original message", () => {
   assert.equal(formatSettingsError("请先选择模型。"), "请先选择模型。");
 });
 
+test("clearing settings feedback does not create an unknown error", () => {
+  assert.equal(formatSettingsError(""), "");
+  assert.equal(formatSettingsError("  \n"), "");
+  assert.ok(formatSettingsError(new Error("connection failed")).includes("connection failed"));
+});
+
 const emptyCharacters = Object.freeze({
   schemaVersion: 1,
   revision: 0,

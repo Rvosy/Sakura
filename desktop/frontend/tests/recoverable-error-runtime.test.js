@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { errorSummary } from "../core/error-display.js";
 
 const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
 const callbacks = source.slice(source.indexOf("function showRecoverableError("),
@@ -11,6 +12,7 @@ function fixture(t) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const element = { hidden: true, textContent: "", dataset: {} };
   const context = vm.createContext({
+    errorSummary,
     presentationError: element,
     recoverableErrorTimer: null,
     recoverableErrorMessage: "",

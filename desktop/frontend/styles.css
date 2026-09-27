@@ -350,6 +350,17 @@ body[data-chat-state="thinking"] .bubble::after {
   font-family: var(--font-latin);
 }
 
+.chat-error-log {
+  flex-shrink: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .presentation-error {
   position: absolute;
   z-index: 3;

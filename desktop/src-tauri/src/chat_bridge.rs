@@ -530,7 +530,11 @@ fn response_error(response: &Value, fallback: &str) -> String {
         Ok(error) => format!(
             "{}: {}",
             error["code"].as_str().unwrap_or(fallback),
-            error["message"].as_str().unwrap_or("")
+            error["diagnostic"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .or_else(|| error["message"].as_str())
+                .unwrap_or("")
         ),
         Err(_) => fallback.to_string(),
     }
@@ -570,14 +574,16 @@ fn project_error(error: Option<&Value>) -> Result<Value, String> {
         })
         .unwrap_or("CHAT_FAILED");
     let details = crate::runtime_log::error_details(&Value::Object(error.clone()));
-    let message = if details.is_empty() {
-        code.to_string()
-    } else {
-        details
-    };
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(code);
+    let message = crate::runtime_log::error_details(&json!({"message": message}));
     Ok(json!({
         "code": code,
         "message": message,
+        "diagnostic": details,
         "retryable": error.get("retryable").and_then(Value::as_bool).unwrap_or(false),
     }))
 }
@@ -709,7 +715,10 @@ mod tests {
                     "code": "PROVIDER_FAILED",
                     "message": "Authorization: Bearer must-not-project C:\\private",
                     "retryable": true,
-                    "details": {"apiKey": "must-not-project", "path": "C:\\private"}
+                    "details": {"diagnostics": {
+                        "diagnostic": "PermissionDeniedError: HTTP 403 api_key=must-not-project",
+                        "exception_stack": "Traceback\n  File \"transport.py\", line 206"
+                    }}
                 }
             }),
             "chat.completed" => json!({
@@ -842,6 +851,11 @@ mod tests {
             failed.error.as_ref().unwrap()["message"],
             "Authorization: Bearer [REDACTED] C:\\private"
         );
+        let diagnostic = failed.error.as_ref().unwrap()["diagnostic"]
+            .as_str()
+            .unwrap();
+        assert!(diagnostic.contains("HTTP 403"));
+        assert!(diagnostic.contains("transport.py"));
         assert_eq!(failed.error.unwrap()["retryable"], true);
         assert!(bridge
             .send_with_attachment("main", "next".to_string(), None, channel())
