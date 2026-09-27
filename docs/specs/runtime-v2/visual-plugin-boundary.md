@@ -119,8 +119,16 @@ request = {characterId, resource:{id,type,root,entry}, segment?}
 资产值仍须通过包内路径授权。内部 Snapshot 允许增加字段，消费层不重复验证完整结构。
 描述不另设容量、资产数量或提示词长度门槛；`outputSchema` 必须是对象。跨进程数据遵循插件通信帧预算。
 宿主把私有载荷说明和 Schema 组合进公共提示词，不执行 Schema 中的外部引用。
-公共提示词只声明 control 的 version、resourceId、payload 字段及固定目标，不生成空 payload 作为通用示例。
-payload 的必填字段和可省略内容由当前插件的格式定义。
+绑定角色形态时，公共回复协议要求每个 segment 输出 `control`，并以完整回复 JSON Schema 声明
+`control` 为必填字段、固定 `version` 与 `resourceId`，将插件 `outputSchema` 放入 `payload` 的格式定义。
+不再提供省略 control 的回复示例，也不生成空 payload 作为通用示例；payload 的必填字段和可省略内容
+仍由当前插件定义。立绘必须显式选择 `control.payload.key`，语音 tone 不代替图片标签。
+没有绑定形态时不要求 control。图片观察只追加顶层 `visual_observation` 说明，格式修复沿用完整回复协议，
+不能把各段缩减成只有文本和语气。这里的 Schema 是模型提示内容，不要求供应商支持严格结构化输出。
+
+普通对话与工具循环使用同一份分段和翻译规则。主动事件只追加任务要求，公共回复协议由模型客户端添加一次；
+事件明确的篇幅要求优先于通用分段建议。提示中的必填要求不改变下述接收兼容规则：模型仍可能遗漏控制，
+宿主保留文字与语音，由插件处理旧字段或缺失控制，不因缺失形态而丢弃整条回复或额外重试。
 
 绑定保存描述的独立副本，提示词与解析使用同一份 `parserData` 快照；重新绑定才更新。解析时 `request.segment`
 提供本段公共信息，例如 TTS `tone`。`describe` 与 `parseControl` 不执行动作；进程级资源仍使用 v4 effect 回收。

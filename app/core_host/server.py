@@ -158,6 +158,8 @@ class ReadinessController:
     ) -> None:
         self._config = config
         self._initializer_factory = initializer_factory
+        from .lifecycle_history import LifecycleHistory
+        self._lifecycle_history = LifecycleHistory(config.user_root, config.generation_number)
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
@@ -266,6 +268,13 @@ class ReadinessController:
             if self._closed or self._readiness not in {"ready", "degraded"}:
                 return None
             return self._session
+
+    def record_normal_shutdown(self) -> None:
+        with self._lock:
+            character_id = getattr(getattr(self._session, "character", None), "id", None)
+            if character_id is None and self._current_character_presentation is not None:
+                character_id = self._current_character_presentation["characterId"]
+        self._lifecycle_history.finish(character_id)
 
     def published_character_presentation(self) -> dict[str, object] | None:
         """Return the generation-frozen character even when chat still needs setup."""
@@ -699,6 +708,9 @@ class ReadinessController:
             if application_closed:
                 return
 
+            if presentation is not None:
+                self._lifecycle_history.start(str(presentation["characterId"]))
+
             stage = "assistant_plugin"
             if plugin_application is not None:
                 plugin_application.start_assistant()
@@ -729,6 +741,9 @@ class ReadinessController:
             project = getattr(plugin_application, "visual_presentation", None)
             if callable(project):
                 presentation = self._project_presentation(project()) or presentation
+            character_id = getattr(getattr(result.session, "character", None), "id", None)
+            if character_id and not self._cancel.is_set():
+                self._lifecycle_history.start(character_id)
             with self._lock:
                 if self._closed:
                     claimed = self._claim_initializer_close_locked()
@@ -1336,6 +1351,8 @@ class ControlDispatcher:
             except (ValueError, LookupError) as error:
                 return self._error_response(request, "SCREEN_ATTACHMENT_REJECTED", str(error)), False
         elif name == "system.shutdown":
+            if request["payload"].get("appExiting") is True:
+                self._readiness.record_normal_shutdown()
             payload = {"accepted": True}
         else:
             return (

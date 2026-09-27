@@ -4,9 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from sakura_assistant.llm.prompts.blocks import (
-    AGENT_REPLY_FORMAT,
     DEFAULT_REPLY_TONES,
-    SEGMENTED_REPLY_FORMAT,
     build_segment_protocol,
     context_acquisition_strategy_block,
     labels_or_default,
@@ -18,33 +16,19 @@ from sakura_context import PromptBlock
 def build_segmented_reply_instruction(
     reply_tones: list[str] | None,
     reply_visual: Mapping[str, Any] | None = None,
-    *,
-    simple_segments: str = "2-3",
-    default_segments: str = "3-4",
-    include_translation_rules: bool = True,
-    include_no_single_segment_rule: bool = False,
 ) -> str:
     tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
     visual = reply_visual
     rules = [
-        f"- 尽量输出 {default_segments} 段文本，每段是一条可以单独显示和朗读的完整小消息，不要把一句话机械切碎。",
-        "- 单段建议 35-90 个中文或日文字符；内容需要完整自然，宁可少分段也不要短到像碎片。",
-        f"- 如果用户只问很简单的问题，可以只输出 {simple_segments} 段。",
-        "- 需要对每段文本的语气进行标注，语气标签放在 tone 字段中。优先选择中性，除非文本明显带有其他语气；如果文本中同时包含多种语气，请选择最突出的一种。",
+        "- 按内容自然分段，每段是一条可单独显示和朗读的完整小消息，不要机械拆句或为了凑段数补话。",
+        "- 简单回应通常 1-2 段，需要解释或步骤时通常 2-4 段；事件或任务另有篇幅要求时遵循该要求。",
+        "- tone 按本段最突出的语气选择，没有明显情绪时使用中性语气对应的可用标签。",
     ]
-    if include_no_single_segment_rule:
-        rules.extend(
-            [
-                "- 用户问题包含多个要点、步骤、原因或较长说明时，优先输出 3-4 段，让桌宠可以逐段显示和朗读。",
-                "- 不要因为返回格式示例里只写了一条 segment，就把完整回复固定成一段。",
-            ]
-        )
     return build_segment_protocol(
         tones,
         visual,
-        format_text=SEGMENTED_REPLY_FORMAT,
         segment_rules="\n".join(rules),
-        include_translation_rules=include_translation_rules,
+        include_translation_rules=True,
     )
 
 
@@ -52,45 +36,7 @@ def build_agent_reply_protocol(
     reply_tones: list[str] | None,
     reply_visual: Mapping[str, Any] | None = None,
 ) -> str:
-    tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
-    visual = reply_visual
-    segment_rules = "\n".join(
-        [
-            "- 尽量输出 2-4 段文本，每段是一条可以单独显示和朗读的完整小消息，不要把一句话机械切碎。",
-            "- 单段建议 35-90 个中文或日文字符；内容需要完整自然，宁可少分段也不要短到像碎片。",
-            "- 如果用户只问很简单的问题，可以只输出 1-2 段。",
-            "- 用户问题包含多个要点、步骤、原因或较长说明时，优先输出 3-4 段，让桌宠可以逐段显示和朗读。",
-            "- 不要因为返回格式示例里只写了一条 segment，就把完整回复固定成一段。",
-        ]
-    )
-    return build_segment_protocol(
-        tones,
-        visual,
-        format_text=AGENT_REPLY_FORMAT,
-        segment_rules=segment_rules,
-        include_translation_rules=True,
-    )
-
-
-def build_event_reply_protocol(
-    reply_tones: list[str] | None,
-    reply_visual: Mapping[str, Any] | None = None,
-    *,
-    example_tone: str = "请求",
-    segment_rules: str = "",
-) -> str:
-    tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
-    visual = reply_visual
-    format_text = (
-        f'{{"segments":[{{"ja":"日文原文","zh":"中文译文","tone":"{example_tone}"}}]}}'
-    )
-    return build_segment_protocol(
-        tones,
-        visual,
-        format_text=format_text,
-        segment_rules=segment_rules,
-        include_translation_rules=True,
-    )
+    return build_segmented_reply_instruction(reply_tones, reply_visual)
 
 
 
@@ -135,34 +81,27 @@ def build_runtime_context_text(
 
 def build_event_system_prompt(
     character_prompt: str,
-    reply_tones: list[str] | None,
-    reply_visual: Mapping[str, Any] | None,
     *,
     event_type: str = "reminder_due",
 ) -> str:
-    """构建主动事件直接回复路径使用的系统提示词。"""
+    """构建事件任务规则；公共回复协议由模型客户端统一追加。"""
 
     blocks: list[PromptBlock] = [
         PromptBlock(None, character_prompt.strip()),
-        PromptBlock(None, "你正在处理 Sakura 桌宠的主动事件。请用角色语气自然搭话、提问用户。"),
+        PromptBlock(None, "你正在处理 Sakura 桌宠的主动事件。请用角色语气自然通知用户，不必为了延续对话而提问。"),
     ]
     if event_type == "update_available":
         blocks.extend(
             [
                 PromptBlock(
                     None,
-                    build_event_reply_protocol(
-                        reply_tones,
-                        reply_visual,
-                        example_tone="通知",
-                        segment_rules="\n".join(
-                            [
-                                "- 只输出 1-2 段简短消息。",
-                                "- 必须明确说出发现的新版本号，并引导用户前往“设置 → 关于”查看和更新。",
-                                "- 可以概括更新说明中的事实，但不得补写、推断或虚构未提供的变化。",
-                                "- 不得声称更新已经下载、安装或将在未经用户确认时自动执行。",
-                            ]
-                        ),
+                    "\n".join(
+                        [
+                            "- 只输出 1-2 段简短消息。",
+                            "- 必须明确说出发现的新版本号，并引导用户前往“设置 → 关于”查看和更新。",
+                            "- 可以概括更新说明中的事实，但不得补写、推断或虚构未提供的变化。",
+                            "- 不得声称更新已经下载、安装或将在未经用户确认时自动执行。",
+                        ]
                     ),
                 ),
                 PromptBlock(
@@ -176,14 +115,6 @@ def build_event_system_prompt(
     else:
         blocks.extend(
             [
-                PromptBlock(
-                    None,
-                    build_event_reply_protocol(
-                        reply_tones,
-                        reply_visual,
-                        example_tone="请求",
-                    ),
-                ),
                 PromptBlock(None, "- 不要提及内部事件类型、JSON 或工具实现。"),
             ]
         )

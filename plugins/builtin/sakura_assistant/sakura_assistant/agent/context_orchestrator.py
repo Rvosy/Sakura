@@ -241,7 +241,11 @@ def _builtin_fragments(request: ContextRequest) -> list[ContextFragment]:
         ContextFragment(
             fragment_id="runtime.time",
             source="runtime",
-            content=f"当前本地时间：{request.current_time}",
+            content=(
+                f"当前本地时间：{request.current_time}\n"
+                "历史记录时间适用于紧随其后的那轮对话；其中的‘今天、昨天、刚才’以当时为准。"
+                "跨会话时，不假定旧任务或状态仍在持续。"
+            ),
             priority=100,
             token_budget=128,
             sensitivity="public",

@@ -15,7 +15,6 @@ from sakura_context import ContextRequest
 from sakura_cancellation import OperationCancelled
 from sakura_assistant.history import PagedHistory
 from sakura_assistant.llm.prompts.runtime import ContextPolicy
-from sakura_assistant.llm.token_estimation import estimate_message_tokens
 
 
 NOW = datetime(2026, 9, 18, 12, tzinfo=timezone.utc)
@@ -90,7 +89,7 @@ def test_real_paged_history_replays_cache_and_reads_more_only_for_a_larger_budge
     store, _, _, proxy, history, _ = history_for(
         tmp_path, [entry(str(index), str(index), text=text) for index in range(2_000)],
     )
-    cost = estimate_message_tokens({"role": "user", "content": text})
+    cost = next(iter(history.source().conversations)).estimated_tokens
     initial = select(history, cost * 10)
     assert [turn.turn_id for turn in initial.selected_turns] == [str(index) for index in range(1_990, 2_000)]
     assert len([request for request in proxy.requests if request["category"] == "conversation"]) == 1
@@ -102,9 +101,9 @@ def test_real_paged_history_replays_cache_and_reads_more_only_for_a_larger_budge
     assert select(history, cost * 10).selected_turns == initial.selected_turns
     assert len(proxy.requests) == requests
     messages = history.messages(initial)
-    assert len(messages) == 10
-    assert {message["role"] for message in messages} == {"user"}
-    assert all(message["content"] == text for message in messages)
+    assert len(messages) == 20
+    assert all(message["role"] == "system" and NOW.isoformat() in message["content"] for message in messages[::2])
+    assert all(message["role"] == "user" and message["content"] == text for message in messages[1::2])
 
 
 def test_large_complete_turn_uses_artifact_and_releases_it_after_reading(tmp_path):
@@ -114,7 +113,7 @@ def test_large_complete_turn_uses_artifact_and_releases_it_after_reading(tmp_pat
     snapshot = select(history, 1_000_000)
     assert [turn.turn_id for turn in snapshot.selected_turns] == ["large"]
     messages = history.messages(snapshot)
-    assert len(messages) == 21
+    assert len(messages) == 22
     assert messages[-1]["content"] == "[Host fact] " + "x" * 65_536
     assert any("artifact" in response for response in proxy.responses)
     assert artifacts.count == 0
@@ -239,3 +238,59 @@ def test_cancellation_after_receiving_a_large_page_releases_its_artifact(tmp_pat
         select(history, 1_000_000)
     assert artifacts.count == 0
     assert len(proxy.requests) == 1
+
+
+def test_next_day_model_request_keeps_history_times_and_session_boundaries(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from sakura_assistant.agent.runtime import AgentRuntime
+    from sakura_assistant.llm.api_client import AssistantModelClient, DialogueSettings
+    from tests.model_fixture import LocalModelClient
+
+    yesterday = NOW - timedelta(days=1)
+    answered = yesterday + timedelta(minutes=1)
+    closed = yesterday + timedelta(minutes=2)
+    reopened = NOW - timedelta(minutes=1)
+    entries = [
+        entry("human", "chat", created_at=yesterday, text="我今天下午要写报告"),
+        entry("assistant", "chat", kind=TimelineKind.ASSISTANT, created_at=answered, text="今日の午後ですね。"),
+        replace(entry("closed", "closed", kind=TimelineKind.SYSTEM, created_at=closed),
+                origin="host", payload={"text": "桌宠正在正常退出，本次运行会话结束。", "eventType": "app.closed"}),
+        replace(entry("opened", "opened", kind=TimelineKind.SYSTEM, created_at=reopened),
+                origin="host", payload={"text": "桌宠已启动，这是本次运行会话的开始。", "eventType": "app.started"}),
+    ]
+    store, _, _, _, history, _ = history_for(tmp_path, entries)
+    before = store.read_all("sakura")
+    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
+    captured = []
+
+    def post(payload, **_kwargs):
+        captured.append(payload)
+        return {"choices": [{"message": {"role": "assistant", "content":
+            '{"segments":[{"ja":"こんにちは。","zh":"你好。","tone":"中性"}]}'}}]}
+
+    monkeypatch.setattr(client, "_post_chat_completions", post)
+    monkeypatch.setattr("sakura_assistant.agent.context_orchestrator.datetime", SimpleNamespace(now=lambda: NOW))
+    runtime = AgentRuntime(client, "测试角色", reply_tones=["中性"])
+    runtime.context_orchestrator.history = history
+    runtime.handle_user_message([{"role": "user", "content": "我回来了"}])
+
+    messages = captured[0]["messages"]
+    assert [message["content"] for message in messages if message["role"] == "user"] == [
+        "我今天下午要写报告", "我回来了",
+    ]
+    old_turn = next(index for index, message in enumerate(messages) if message["content"] == "我今天下午要写报告")
+    timestamp = messages[old_turn - 1]
+    assert timestamp["role"] == "system"
+    assert yesterday.isoformat() in timestamp["content"] and answered.isoformat() in timestamp["content"]
+    closed_index = next(index for index, message in enumerate(messages) if "本次运行会话结束" in str(message["content"]))
+    reopened_index = next(index for index, message in enumerate(messages) if "本次运行会话的开始" in str(message["content"]))
+    assert old_turn < closed_index < reopened_index < len(messages) - 1
+    assert messages[closed_index]["role"] == messages[reopened_index]["role"] == "system"
+    assert closed.isoformat() in messages[closed_index]["content"]
+    assert reopened.isoformat() in messages[reopened_index]["content"]
+    assert any(NOW.astimezone().isoformat(timespec="seconds") in str(message["content"]) for message in messages)
+    assert store.read_all("sakura") == before
+    assert {row.entry_id for row in store.read_context_candidates(
+        "sakura", observation_since=NOW - timedelta(hours=2), proactive_since=NOW - timedelta(hours=1),
+    )} == {item.entry_id for item in entries}
