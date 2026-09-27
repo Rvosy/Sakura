@@ -141,6 +141,7 @@ export function projectHistoryEntries(
   const bubbles = [];
   const consumedScheduledTurns = new Set();
   for (const entry of entries) {
+    if (entry.kind === "system" && entry.payload.eventType === "app.reconnected") continue;
     if (isScreenObservation(entry)) {
       if (consumedScheduledTurns.has(entry.turnId)) continue;
       consumedScheduledTurns.add(entry.turnId);

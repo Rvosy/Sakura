@@ -72,15 +72,17 @@ def test_published_session_and_confirmed_app_exit_write_character_history(tmp_pa
     assert rows(tmp_path, "other-character") == []
 
 
-def test_new_core_generation_records_reconnection_instead_of_a_new_app_opening(tmp_path):
+def test_new_core_generation_does_not_write_history_but_retains_confirmed_app_exit(tmp_path):
     first = LifecycleHistory(tmp_path, 1)
     first.start("sakura")
     second = LifecycleHistory(tmp_path, 2)
     second.start("sakura")
     second.start("sakura")
+    assert [row.payload["eventType"] for row in rows(tmp_path)] == ["app.started"]
+    second.finish("sakura")
     second.finish("sakura")
     assert [row.payload["eventType"] for row in rows(tmp_path)] == [
-        "app.started", "app.reconnected", "app.closed",
+        "app.started", "app.closed",
     ]
 
 
