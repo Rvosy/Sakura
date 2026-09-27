@@ -55,7 +55,9 @@ class _Context:
 
     def get(self, service_key: str) -> object:
         return {
-            "sakura.host.mobile": self.mobile_service,
+            "sakura.host.conversation": self.mobile_service,
+            "sakura.host.character": object(),
+            "sakura.host.timeline": object(),
             "sakura.host.artifacts": self.artifacts,
             "sakura.host.logging": Mock(),
             "sakura.host.settings": self.settings,
@@ -168,7 +170,7 @@ def test_mobile_http_activity_uses_host_logger_without_access_file(tmp_path) -> 
     from plugins.optional.sakura_mobile.server import run_mobile_server
 
     logger = Mock()
-    server = run_mobile_server(tmp_path, object(), object(), host="127.0.0.1", port=0, token="private-token", logger=logger)
+    server = run_mobile_server(tmp_path, object(), object(), character=object(), timeline=object(), host="127.0.0.1", port=0, token="private-token", logger=logger)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

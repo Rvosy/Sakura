@@ -473,7 +473,13 @@ impl ChatBridge {
                         .map(str::to_owned)
                 })
                 .flatten(),
-            presentation: host_event.then(|| "silent".to_string()),
+            presentation: host_event.then(|| {
+                if payload.get("presentation").and_then(Value::as_str) == Some("interactive") {
+                    "interactive".to_string()
+                } else {
+                    "silent".to_string()
+                }
+            }),
             cancel_handle: (host_event && event_type == "chat.started")
                 .then(|| active.publication.cancel_handle.clone()),
             reply: (event_type == "chat.completed")
@@ -748,45 +754,48 @@ mod tests {
 
     #[test]
     fn host_interaction_uses_the_existing_slot_and_cancel_handle() {
-        let bridge = bridge();
-        assert!(bridge.listen_host("settings", channel()).is_err());
-        bridge.listen_host("main", channel()).unwrap();
-        let mut started = event("plugin-turn", "chat.started");
-        started["name"] = json!("host.chat.started");
-        started["payload"]["characterId"] = json!("sakura");
-        let publication = bridge.observe_event(&started).unwrap().unwrap();
-        assert_eq!(publication.presentation.as_deref(), Some("silent"));
-        assert_eq!(publication.character_id.as_deref(), Some("sakura"));
-        assert!(bridge
-            .send_with_attachment("main", "busy".into(), None, channel())
-            .is_err());
-        assert!(
-            bridge
+        for presentation in ["silent", "interactive"] {
+            let bridge = bridge();
+            assert!(bridge.listen_host("settings", channel()).is_err());
+            bridge.listen_host("main", channel()).unwrap();
+            let mut started = event("plugin-turn", "chat.started");
+            started["name"] = json!("host.chat.started");
+            started["payload"]["characterId"] = json!("sakura");
+            started["payload"]["presentation"] = json!(presentation);
+            let publication = bridge.observe_event(&started).unwrap().unwrap();
+            assert_eq!(publication.presentation.as_deref(), Some(presentation));
+            assert_eq!(publication.character_id.as_deref(), Some("sakura"));
+            assert!(bridge
+                .send_with_attachment("main", "busy".into(), None, channel())
+                .is_err());
+            assert!(
+                bridge
+                    .cancel(
+                        "main",
+                        "plugin-turn",
+                        publication.cancel_handle.as_deref().unwrap()
+                    )
+                    .unwrap()
+                    .accepted
+            );
+            let mut terminal = event("plugin-turn", "chat.completed");
+            terminal["name"] = json!("host.chat.completed");
+            assert_eq!(
+                bridge.observe_event(&terminal).unwrap().unwrap().event_type,
+                "chat.completed"
+            );
+            assert!(bridge.observe_event(&terminal).unwrap().is_none());
+            assert!(bridge
                 .cancel(
                     "main",
                     "plugin-turn",
                     publication.cancel_handle.as_deref().unwrap()
                 )
-                .unwrap()
-                .accepted
-        );
-        let mut terminal = event("plugin-turn", "chat.completed");
-        terminal["name"] = json!("host.chat.completed");
-        assert_eq!(
-            bridge.observe_event(&terminal).unwrap().unwrap().event_type,
-            "chat.completed"
-        );
-        assert!(bridge.observe_event(&terminal).unwrap().is_none());
-        assert!(bridge
-            .cancel(
-                "main",
-                "plugin-turn",
-                publication.cancel_handle.as_deref().unwrap()
-            )
-            .is_err());
-        assert!(bridge
-            .send_with_attachment("main", "next".into(), None, channel())
-            .is_ok());
+                .is_err());
+            assert!(bridge
+                .send_with_attachment("main", "next".into(), None, channel())
+                .is_ok());
+        }
     }
 
     #[test]

@@ -838,6 +838,12 @@ class _CharacterProxy:
         )
         return {"id": result["id"], "systemPrompt": result["systemPrompt"]}
 
+    def list(self) -> list[dict[str, Any]]:
+        return self._context._remote_call("sakura.host.character", "list", [])
+
+    def presentation(self) -> dict[str, Any]:
+        return self._context._remote_call("sakura.host.character", "presentation", [])
+
     def get(self, character_id: str) -> dict[str, Any]:
         result = self._context._remote_call(
             "sakura.host.character",

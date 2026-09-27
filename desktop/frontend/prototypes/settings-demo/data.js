@@ -538,7 +538,7 @@ export function createState(scenario = "portrait") {
       description: "在局域网或 Tailscale 中，用手机网页和 Sakura 聊天。",
       provides: [],
       requires: [
-        "sakura.host.mobile",
+        "sakura.host.conversation", "sakura.host.character", "sakura.host.timeline",
         "sakura.host.artifacts",
         "sakura.host.settings",
       ],

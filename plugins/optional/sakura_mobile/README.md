@@ -19,16 +19,17 @@ Windows 将上述 Python 路径替换为 `runtime\python.exe`。
 
 ## Runtime v2 当前状态
 
-Runtime v2 通过普通 `sakura.host.mobile` Host Service 提供当前角色、Timeline 和聊天入口。聊天使用显式
+当前角色和主题通过 `sakura.host.character` 读取，历史使用 `sakura.host.timeline`，用户聊天使用
+`sakura.host.conversation`。聊天使用显式
 `begin/poll/cancel`，避免让一次模型回合占住短时 Plugin RPC；图片先写入现有
-`sakura.host.artifacts`，跨进程只传有界 descriptor。
+`sakura.host.artifacts`，跨进程只传有界 descriptor。回复同时进入桌面字幕和 TTS 流程，语音在电脑播放；手机网页接收文字和段落结果。
 
 ## 激活后的能力边界
 
 插件激活后会：
 
 - 使用 Python 标准库 `ThreadingHTTPServer` 提供手机网页和 JSON API；
-- 通过 `sakura.host.mobile` 读取当前角色、历史和提交聊天，不直接访问 Core/UI/Qdrant 内部对象；
+- 通过通用角色、Timeline 和 conversation 接口读取资料并提交用户原文；
 - 通过 `sakura.host.artifacts` 传递图片，不把大型 data URL 塞进 Plugin IPC；
 - 通过 root Effect 关闭 HTTP server 并等待监听线程退出；
 - 使用 `sakura.host.settings` 注册声明式设置、状态和刷新 action；
