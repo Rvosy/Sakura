@@ -139,7 +139,7 @@ test("started and terminal events may win the send response race without leaving
     generationId: "generation-1",
     generationNumber: 1,
     operationId: "op-1",
-    reply: { segments: [{ text: "done" }] },
+    reply: { historyEntryId: "saved-assistant", segments: [{ text: "done" }] },
   });
   response.resolve({
     accepted: true,
@@ -151,6 +151,7 @@ test("started and terminal events may win the send response race without leaving
   await first;
   await client.send({ message: "second" });
   assert.deepEqual(events.slice(1).map((event) => event.type), ["chat.started", "chat.completed"]);
+  assert.equal(events.at(-1).reply.historyEntryId, "saved-assistant");
   assert.equal(env.calls.filter(([name]) => name === "chat_send").length, 2);
   client.dispose();
 });

@@ -136,6 +136,9 @@ function createMorph(el, icon, options) {
 		plan = rest ? planBetween(target, icon) : buildPlan(snapshot(), sampledOf(icon));
 		out = allocOutputs(plan);
 		closed = plan.items.map((it) => it.closed);
+		// A same-frame retarget must snapshot the source shape, not zeroed buffers.
+		interpPolar(plan, 0, out);
+		t = 0;
 		target = icon;
 		rest = false;
 	};

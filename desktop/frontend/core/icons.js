@@ -47,6 +47,7 @@ export const iconNames = Object.freeze([
   "terminal",
   "triangle-alert",
   "user-round",
+  "volume-2",
   "wrench",
   "x"
 ]);

@@ -16,10 +16,227 @@ from app.core_host import tts_boundary as tts_boundary_module
 from app.core_host.tts_boundary import TTSBoundary
 from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
+from app.storage.paths import StoragePaths
+from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
+from app.voice.recording_store import VoiceRecordingStore
 
 
 GENERATION = "generation-tts-1"
 CREDENTIAL = "1" * 32
+
+
+def _history_entry(root: Path, *, entry_id="saved-reply", character_id="sakura", kind=TimelineKind.ASSISTANT):
+    timeline = TimelineStore(StoragePaths(root).timeline_database())
+    timeline.initialize()
+    payload = {"segments": [
+        {"text": text, "translation": "译文", "tone": "happy", "portrait": "smile", "suppressTts": suppressed}
+        for text, suppressed in [("第一段", False), ("第二段", False), ("不可朗读", True)]
+    ]} if kind is TimelineKind.ASSISTANT else {"text": "不是角色回复"}
+    return timeline.append(NewTimelineEntry(
+        entry_id=entry_id, turn_id=f"turn-{entry_id}", character_id=character_id,
+        kind=kind, origin="chat", created_at="2026-09-27T12:00:00+08:00", payload=payload,
+    ))
+
+
+def _history_request(index=0, *, entry_id="saved-reply", operation_id="history-request-1"):
+    return _request("tts.history.prepare", {
+        "operationId": operation_id, "historyEntryId": entry_id, "segmentIndex": index,
+    })
+
+
+def test_saved_segments_survive_restart_without_provider_or_tts_resources(tmp_path):
+    _history_entry(tmp_path)
+    first = _boundary(tmp_path, [])
+    descriptors = [first.handle(_history_request(index, operation_id=f"history-create-{index}"))["payload"]
+                   for index in (0, 1)]
+    legacy = first._recordings.commit(
+        tmp_path / "data/cache/tts/runtime-v2" / GENERATION / f"{descriptors[1]['opaqueId']}.wav",
+        character_id="sakura", history_entry_id="saved-reply", provider="legacy-provider",
+    )
+    first.close()
+    config = tmp_path / "config"
+    config.mkdir(exist_ok=True)
+    (config / "storage.json").write_text(json.dumps({
+        "schemaVersion": 1, "ttsRoot": str(tmp_path / "disconnected-tts-drive"),
+    }))
+    second = TTSBoundary(GENERATION, CREDENTIAL, tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")))
+    try:
+        for index in (0, 1):
+            replayed = second.handle(_history_request(index, operation_id=f"history-read-{index}"))
+            assert replayed["ok"] is True
+            assert replayed["payload"]["recordingId"] == descriptors[index]["recordingId"]
+            assert replayed["payload"]["opaqueId"] != descriptors[index]["opaqueId"]
+        assert second._recordings.get(legacy.recording_id).segment_index is None
+        assert len(second._recordings.scan_and_prune()) == 3
+    finally:
+        second.close()
+
+
+def test_pruned_segment_is_regenerated_from_original_timeline_and_then_reused(tmp_path):
+    _history_entry(tmp_path)
+    worker = _ImmediatePluginApplication(tmp_path)
+    boundary = TTSBoundary(GENERATION, CREDENTIAL, tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        plugin_application_provider=lambda: worker,
+        recording_store=VoiceRecordingStore(tmp_path, non_favorite_limit=1))
+    try:
+        first = boundary.handle(_history_request())["payload"]
+        boundary.handle(_history_request(1, operation_id="history-second"))
+        assert boundary._recordings.get(first["recordingId"]) is None
+        regenerated = boundary.handle(_history_request(operation_id="history-regenerate"))["payload"]
+        assert regenerated["recordingId"] != first["recordingId"]
+        assert worker.calls.count("begin") == 3
+        record = boundary._recordings.get(regenerated["recordingId"])
+        assert (record.history_entry_id, record.segment_index, record.tone, record.portrait) == ("saved-reply", 0, "happy", "smile")
+        reused = boundary.handle(_history_request(operation_id="history-reuse"))["payload"]
+        assert reused["recordingId"] == regenerated["recordingId"]
+        assert worker.calls.count("begin") == 3
+    finally:
+        boundary.close()
+
+
+def test_recording_pruned_between_lookup_and_playback_copy_is_regenerated(tmp_path, monkeypatch):
+    _history_entry(tmp_path)
+    boundary = _boundary(tmp_path, [])
+    boundary._recordings.non_favorite_limit = 1
+    first = boundary.handle(_history_request())["payload"]
+    ready, release = threading.Event(), threading.Event()
+    original = boundary._recording_descriptor
+    def delayed(recording_id):
+        if recording_id == first["recordingId"]:
+            ready.set()
+            assert release.wait(5)
+        return original(recording_id)
+    monkeypatch.setattr(boundary, "_recording_descriptor", delayed)
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(boundary.handle(
+        _history_request(operation_id="history-racing-prune"))))
+    thread.start()
+    try:
+        assert ready.wait(5)
+        boundary.handle(_history_request(1, operation_id="history-pruning-commit"))
+        assert boundary._recordings.get(first["recordingId"]) is None
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert result["ok"] is True
+        assert result["payload"]["recordingId"] != first["recordingId"]
+        assert boundary._recordings.get(result["payload"]["recordingId"]).segment_index == 0
+    finally:
+        release.set()
+        thread.join(5)
+        boundary.close()
+
+
+@pytest.mark.parametrize("gate", ["before_authorization", "before_provider"])
+def test_history_cancel_before_authorization_or_provider_prevents_synthesis(tmp_path, monkeypatch, gate):
+    _history_entry(tmp_path)
+    boundary = _boundary(tmp_path, [])
+    ready, release = threading.Event(), threading.Event()
+    method = "_handle_history_prepare" if gate == "before_authorization" else "_synthesize_with_plugin"
+    original = getattr(boundary, method)
+    def delayed(*args, **kwargs):
+        ready.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(boundary, method, delayed)
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(boundary.handle(
+        _history_request(operation_id="history-early-cancel"))))
+    thread.start()
+    try:
+        assert ready.wait(5)
+        cancelled = boundary.handle(_request("tts.synthesis.cancel", {"operationId": "history-early-cancel"}))
+        assert cancelled["payload"]["accepted"] is True
+        if gate == "before_authorization":
+            for index in range(tts_boundary_module.MAX_AUTHORIZATIONS + 1):
+                boundary.handle(_request("tts.synthesis.cancel", {"operationId": f"history-another-{index}"}))
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
+        assert "begin" not in boundary._plugin_application().calls
+        assert boundary._recordings.scan_and_prune() == ()
+    finally:
+        release.set()
+        thread.join(5)
+        boundary.close()
+
+
+@pytest.mark.parametrize("damage", ["missing", "invalid"])
+def test_missing_or_invalid_saved_wav_falls_back_to_synthesis(tmp_path, damage):
+    _history_entry(tmp_path)
+    boundary = _boundary(tmp_path, [])
+    try:
+        first = boundary.handle(_history_request())["payload"]
+        record = boundary._recordings.get(first["recordingId"])
+        if damage == "missing":
+            record.audio_path.unlink()
+        else:
+            record.audio_path.write_bytes(b"invalid wav")
+        result = boundary.handle(_history_request(operation_id="history-recover"))
+        assert result["ok"] is True
+        assert result["payload"]["recordingId"] != first["recordingId"]
+        assert boundary._plugin_application().calls.count("begin") == 2
+    finally:
+        boundary.close()
+
+
+@pytest.mark.parametrize("entry_id,index", [("missing", 0), ("other-reply", 0), ("human-entry", 0),
+    ("system-entry", 0), ("saved-reply", 3), ("saved-reply", 2), ("saved-reply", -1), ("saved-reply", True)])
+def test_history_reading_accepts_only_current_character_playable_assistant_segments(tmp_path, entry_id, index):
+    _history_entry(tmp_path)
+    _history_entry(tmp_path, entry_id="other-reply", character_id="other")
+    _history_entry(tmp_path, entry_id="human-entry", kind=TimelineKind.HUMAN)
+    _history_entry(tmp_path, entry_id="system-entry", kind=TimelineKind.SYSTEM)
+    boundary = _boundary(tmp_path, [])
+    try:
+        result = boundary.handle(_history_request(index, entry_id=entry_id))
+        assert result["error"]["code"] == "TTS_SEGMENT_NOT_AUTHORIZED"
+        assert boundary._plugin_application().calls == []
+    finally:
+        boundary.close()
+
+
+@pytest.mark.parametrize("interrupt", ["cancel", "character", "generation"])
+def test_saved_audio_preparation_cannot_publish_after_interruption(tmp_path, monkeypatch, interrupt):
+    _history_entry(tmp_path)
+    events = []
+    boundary = _boundary(tmp_path, events)
+    descriptor = boundary.handle(_history_request())["payload"]
+    events.clear()
+    ready, release = threading.Event(), threading.Event()
+    make_descriptor = boundary._recording_descriptor
+    def delayed(recording_id):
+        result = make_descriptor(recording_id)
+        ready.set()
+        assert release.wait(5)
+        return result
+    monkeypatch.setattr(boundary, "_recording_descriptor", delayed)
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(boundary.handle(
+        _history_request(operation_id="history-interrupt"))))
+    thread.start()
+    try:
+        assert ready.wait(5)
+        if interrupt == "cancel":
+            cancelled = boundary.handle(_request("tts.synthesis.cancel", {"operationId": "history-interrupt"}))
+            assert cancelled["payload"]["accepted"] is True
+        elif interrupt == "character":
+            boundary.reset_character()
+        else:
+            boundary.close()
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
+        assert not any(event["name"] == "tts.synthesis.ready" for event in events)
+        assert boundary._recordings.get(descriptor["recordingId"]) is not None
+    finally:
+        release.set()
+        thread.join(5)
+        boundary.close()
 
 
 def _request(name: str, payload: dict, *, request_id: str = "request-1") -> dict:

@@ -15,8 +15,15 @@ updated: 2026-09-27
 
 ## 产品行为
 
-- `assistant.tts-v1` 只为已完成聊天中的 `operationId + segmentIndex` 合成，`suppressTts` 和语言守卫必须
-  fail closed。WebView 不得提交文本、路径、generation 或音频描述符。
+- `assistant.tts-v1` 为已完成聊天中的 `operationId + segmentIndex` 准备自动语音，也接受已保存的
+  `historyEntryId + segmentIndex` 手动朗读。Core 只读取当前角色 Timeline 的 assistant 段落，正文、语气和
+  立绘取自原记录；`suppressTts` 和语言守卫必须 fail closed。WebView 不得提交文本、路径、generation 或音频描述符。
+- 气泡与聊天记录页提供按段朗读和停止。优先播放同一角色、同一 entry、同一原始 segmentIndex 的保留 WAV；
+  命中时不查询或启动 Hub/Provider，不要求语音引擎或模型目录可用。录音缺失、损坏或已被留存规则淘汰时，
+  才使用当前角色语音配置合成并留存；关闭语音或 Provider 不可用时明确说明原因。朗读不修改 Timeline，
+  不重放表现动作；human、system、observation 和禁止朗读的段落不提供入口。
+  聊天记录中的每段回复保留独立按钮，置于气泡右下角，不另占一行；悬停、键盘聚焦或播放期间显示，
+  触摸界面常显。正文保持可选择，点击气泡本身不触发播放。图标沿用 Morphicons，在喇叭、准备加载环和停止方块间过渡。
 - 每段字幕与立绘共用一个开始时点。该段有语音时，先等待合成完成，再以原生播放的 `started` 事件
   同时触发立绘切换与字幕打字；合成期间保留上一段画面，首段保留回复等待指示。字幕显示完且该段音频
   结束后，经过配置的段间停顿再进入下一段。允许提前合成下一段，但不得提前切换画面或播放。
@@ -27,6 +34,8 @@ updated: 2026-09-27
   语音诊断，并放行当前段的字幕与立绘，不改变聊天终态。快进只完成已开始段落的字幕，不能跳过语音准备
   或播放等待；切换字幕语言不重播音频。历史导航不自动重播；新回复、切角色和关闭窗口使旧段落失效，
   并取消尚未完成的合成、停止播放。录音开始时停止语音并放行字幕，结束后不补播被中断或录音期间的回复。
+  主窗口与历史窗口共用一个原生播放管理器；手动朗读会中断旧语音序列，新回复会中断历史朗读。停止在准备
+  阶段同样有效，失去播放所有权的窗口不得停止另一窗口的新播放。
 - 输出始终使用播放时的系统默认设备；不提供设备选择器。设备断开只结束当前项，下一次播放重新探测。
 - Provider 插件拥有自身 Endpoint、健康检查、预热和 Managed Runtime；Runtime v2 Core 不读取 Provider 私有
   配置，也不构造具体实现。当前角色启用 TTS 且选中 Sakura 托管 Provider 时，Core 在启动期 Session 发布、可选插件注册完成后
@@ -70,11 +79,14 @@ updated: 2026-09-27
   收藏不计入上限。损坏或未来 schema 只隔离对应记录。`record.json` 保持 schema v1，录音使用既有
   `recordingId`，只保存音频格式和 `byteLength` 等必要元数据，不再生成 SHA 字段。读取旧记录时忽略该字段，
   按长度和 WAV 格式（含尾帧可读性）检查，不遍历音频计算摘要；收藏更新移除旧摘要字段。
+- 新录音在 schema v1 增加非负整数 `segmentIndex`，与 `historyEntryId` 共同定位原回复的一段。留存上限按
+  录音文件计数，不按对话轮数或天数计数。旧录音缺少索引时仍能按 recordingId 读取和播放，但不参与按段
+  匹配，不猜测所属段落，也不迁移或改写旧文件。
 - 持久 recording 与 generation 临时播放副本分离；启动清理只触碰临时目录。跨边界 DTO 不含裸路径。
 
 ## 接口、故障与回退
 
-Core 只开放 TTS synthesis、动态 settings/status 和 playback-observe allowlist；合成只调用 `sakura.tts`
+Core 只开放 TTS synthesis、history prepare、动态 settings/status 和 playback-observe allowlist；合成只调用 `sakura.tts`
 的 `begin/poll/cancel`，角色语音关闭时正常跳过；已启用但 Hub 缺失、未选 Provider 或 Provider 不可用时明确失败。Core 不保留旧 Provider Registry、
 合成队列或 Managed Runtime 实现。旧 TTS 配置只在显式导入时转换，并由当前 Provider 插件 parser 校验；
 角色声线清单由各 Provider 插件读取，普通启动不读取旧 `api.yaml.tts`。
@@ -85,6 +97,13 @@ Settings sections，不含音频路径、正文、凭据或 Provider 私有字�
 已安装 bundle、新插件配置或下载分片。没有当前角色时 schema v1 的 `character` 与 `selection` 为 `null`，
 `providers` 与 `sections` 仍按 Hub 和通用 Settings surface 返回。已选角色但聊天 Provider 尚未配置时，TTS
 设置必须使用当前 generation 已发布的角色身份，不能因 Assistant Session 尚未创建而把角色误报为未选择。
+
+`chat.completed.reply.historyEntryId` 标识已提交的 assistant Timeline 条目。`tts.history.prepare` 接收
+`{operationId, historyEntryId, segmentIndex}`，其中随机 `history-` operationId 仅用于本次请求取消，不参与
+录音匹配。Core 拒绝其他角色、非 assistant、越界和禁止朗读的段落，返回现有不透明播放描述符；
+`tts.synthesis.cancel` 同样取消手动请求。Rust 的 `tts_begin_reply` 为主窗口或历史窗口建立一次语音所有权，
+`tts_prepare_history_segment` 复用原生准备、播放、停止与麦克风互斥边界；切角色、generation 失效、取消或
+窗口关闭后，迟到的描述符不得注册或播放。
 
 设置页必须由 Runtime v2 voice controller 独占 TTS 控件。Provider 选择器来自 Hub，Provider 私有字段只通过
 `surface=voice` 声明式 Settings section 呈现；保存 Provider section 与角色选择不承诺跨文件事务，部分成功

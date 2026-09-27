@@ -1,7 +1,9 @@
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
+import { createPlaybackActionIndicator } from "../audio/playback-action-indicator.js";
 import { renderSubtitleText } from "../pet/multilingual-text.js";
+import { createTtsController } from "../audio/tts-controller.js";
 import {
   preservePrependScroll,
   projectHistoryEntries,
@@ -38,6 +40,30 @@ const languageGuard = createHistoryLoadGuard();
 let initialReloadPending = false;
 const runtimeFontsReady = waitForRuntimeFonts();
 let revealPromise = null;
+let playbackState = { state: "idle" };
+const playbackIndicators = new Map();
+function clearPlaybackIndicators() {
+  for (const indicator of playbackIndicators.values()) indicator.dispose();
+  playbackIndicators.clear();
+}
+window.addEventListener("pagehide", clearPlaybackIndicators, { once: true });
+const ttsController = invoke && listen ? createTtsController({
+  invoke, listen,
+  onDiagnostic: message => { status.textContent = message; },
+  onPlaybackState: state => {
+    playbackState = state;
+    updatePlaybackButtons();
+  },
+}) : null;
+
+function updatePlaybackButtons() {
+  for (const [button, indicator] of playbackIndicators) {
+    const active = playbackState.state !== "idle"
+      && playbackState.historyEntryId === button.dataset.historyEntryId
+      && playbackState.segmentIndex === Number(button.dataset.segmentIndex);
+    indicator.setState(active ? playbackState.state : "idle");
+  }
+}
 
 function revealInitialWindow() {
   if (!invoke) return Promise.resolve();
@@ -66,6 +92,7 @@ function setLoading(active, message) {
 }
 
 function render({ animateRecent = false, animatedEntryIds = null } = {}) {
+  clearPlaybackIndicators();
   const fragment = document.createDocumentFragment();
   const pendingText = [];
   const bubbles = projectHistoryEntries(entries, { assistantName, subtitleLanguage });
@@ -109,11 +136,36 @@ function render({ animateRecent = false, animatedEntryIds = null } = {}) {
       if (item.subtitleTracks?.length === 2) bubble.classList.add("entry-bubble-bilingual");
       pendingText.push([bubble, item]);
     }
-    column.append(bubble);
+    if (ttsController && item.role === "assistant" && !item.suppressTts) {
+      const segment = document.createElement("div");
+      segment.className = "entry-segment";
+      if (item.subtitleTracks?.length === 2) segment.classList.add("entry-segment-bilingual");
+      const read = document.createElement("button");
+      read.type = "button";
+      read.className = "entry-read-button";
+      const icon = document.createElement("span");
+      icon.className = "sakura-morph-icon";
+      icon.setAttribute("aria-hidden", "true");
+      read.append(icon);
+      playbackIndicators.set(read, createPlaybackActionIndicator({ button: read }));
+      read.dataset.historyEntryId = item.historyEntryId;
+      read.dataset.segmentIndex = String(item.segmentIndex);
+      read.addEventListener("click", () => {
+        const active = playbackState.state !== "idle" && playbackState.historyEntryId === item.historyEntryId
+          && playbackState.segmentIndex === item.segmentIndex;
+        if (active) ttsController.stop();
+        else void ttsController.playHistorySegment(item);
+      });
+      segment.append(bubble, read);
+      column.append(segment);
+    } else {
+      column.append(bubble);
+    }
     row.append(column);
     fragment.append(row);
   }
   list.replaceChildren(fragment);
+  updatePlaybackButtons();
   for (const [bubble, item] of pendingText) renderSubtitleText(bubble, item.content, item.subtitleTracks, item.subtitleTracks, subtitleLanguage);
   empty.hidden = entries.length !== 0;
 }
@@ -217,6 +269,7 @@ async function loadInitial() {
 }
 
 function resetForCharacterSwitch() {
+  ttsController?.cancel();
   loadGuard.invalidate();
   entries = [];
   identity = null;
@@ -258,11 +311,16 @@ async function loadEarlier() {
 
 refresh.addEventListener("click", () => void loadInitial());
 loadMore.addEventListener("click", () => void loadEarlier());
-close.addEventListener("click", () => void invoke?.("close_history_window"));
+close.addEventListener("click", () => {
+  ttsController?.cancel();
+  void invoke?.("close_history_window");
+});
+window.addEventListener("pagehide", () => ttsController?.dispose(), { once: true });
 
 // Install the native listener before the first history request. Otherwise an
 // A -> B reset can race the asynchronous listen() registration and an already
 // opened window can paint A after both reset/ready events were missed.
+await ttsController?.start();
 await subscribeHistoryRefresh(listen, (event) => {
   const action = historyRefreshAction(event?.payload);
   if (action.reset) resetForCharacterSwitch();

@@ -45,6 +45,7 @@ class VoiceRecording:
     favorite: bool
     directory: Path
     audio_path: Path
+    segment_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ class VoiceRecordingStore:
         *,
         character_id: str,
         history_entry_id: str,
+        segment_index: int | None = None,
         tone: str = "",
         portrait: str = "",
         provider: str,
@@ -119,6 +121,8 @@ class VoiceRecordingStore:
             _require_safe_id(recording_id, "recording_id")
             if not character_id.strip() or not history_entry_id.strip() or not provider.strip():
                 raise ValueError("recording associations must not be empty")
+            if segment_index is not None and (type(segment_index) is not int or segment_index < 0):
+                raise ValueError("recording segment index is invalid")
             created_at = created_at or datetime.now(timezone.utc).astimezone().isoformat(
                 timespec="milliseconds"
             )
@@ -154,6 +158,8 @@ class VoiceRecordingStore:
                 "byteLength": byte_length,
                 "favorite": False,
             }
+            if segment_index is not None:
+                metadata["segmentIndex"] = segment_index
             stage = "write_metadata"
             atomic_write_text(
                 staging / "record.json",
@@ -232,6 +238,16 @@ class VoiceRecordingStore:
             if candidate.is_dir() and not candidate.is_symlink():
                 return self._load_record(candidate)
         return None
+
+    def for_segment(
+        self, character_id: str, history_entry_id: str, segment_index: int,
+    ) -> VoiceRecording | None:
+        """Find an exact segment; legacy recordings without an index stay readable."""
+        records = self._scan_character_directory(self.paths.voice_recordings_for(character_id))
+        candidates = (record for record in records
+                      if record.history_entry_id == history_entry_id
+                      and record.segment_index == segment_index)
+        return max(candidates, key=lambda item: (_timestamp(item.created_at), item.recording_id), default=None)
 
     def set_favorite(self, recording_id: str, favorite: bool) -> VoiceRecording:
         record = self.get(recording_id)
@@ -368,6 +384,9 @@ def _record_from_json(data: Any, directory: Path) -> VoiceRecording:
         raise ValueError("invalid recording byte length")
     if not isinstance(data.get("favorite"), bool):
         raise ValueError("invalid favorite flag")
+    segment_index = data.get("segmentIndex")
+    if segment_index is not None and (type(segment_index) is not int or segment_index < 0):
+        raise ValueError("invalid recording segment index")
     _parse_timestamp(data["createdAt"])
     return VoiceRecording(
         recording_id=data["recordingId"],
@@ -382,6 +401,7 @@ def _record_from_json(data: Any, directory: Path) -> VoiceRecording:
         favorite=data["favorite"],
         directory=directory,
         audio_path=directory / "audio.wav",
+        segment_index=segment_index,
     )
 
 

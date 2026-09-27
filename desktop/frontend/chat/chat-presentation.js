@@ -63,9 +63,10 @@ function normalizedSegments(reply) {
   if (!Array.isArray(reply?.segments)) return Object.freeze([]);
   return Object.freeze(
     reply.segments
-      .filter((segment) => segment && typeof segment === "object")
-      .map((segment) =>
+      .map((segment, segmentIndex) => segment && typeof segment === "object" ?
         Object.freeze({
+          historyEntryId: reply.historyEntryId ?? null,
+          segmentIndex,
           text: typeof segment.text === "string" ? segment.text : "",
           translation: typeof segment.translation === "string" ? segment.translation : "",
           tone: typeof segment.tone === "string" ? segment.tone : "calm",
@@ -73,8 +74,8 @@ function normalizedSegments(reply) {
           suppressTts: segment.suppressTts === true,
           // The renderer owns control validation; keep invalid input visible there.
           ...(segment.control != null ? { control: segment.control } : {}),
-        }),
-      ),
+        }) : null,
+      ).filter(Boolean),
   );
 }
 
