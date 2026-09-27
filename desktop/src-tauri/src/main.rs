@@ -2836,10 +2836,8 @@ fn open_pet_context_menu(
     {
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
-    let manifest = product_shell::product_menu_capability_manifest(
-        subtitle.get()?,
-        topmost.enabled()?,
-    );
+    let manifest =
+        product_shell::product_menu_capability_manifest(subtitle.get()?, topmost.enabled()?);
     // Repositioning an already-open menu must keep the first frame as the close target. Replacing
     // these snapshots with the expanded frame would make Escape permanently retain the menu size.
     if geometry.context_menu_open {
