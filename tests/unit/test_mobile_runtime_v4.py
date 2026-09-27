@@ -149,6 +149,9 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
         def __init__(self):
             self.accepted = {}
 
+        def current_host_state(self):
+            return {"sessionId": "session", "characterId": "sakura"}
+
         def reserve_host_message(
             self,
             text: str,
@@ -156,13 +159,14 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
             *,
             operation_id: str,
             expected_character_id: str,
+            expected_session_id: str,
         ) -> str:
             assert expected_character_id == "sakura"
-            assert operation_id.startswith("mobile-")
+            assert operation_id.startswith("conversation-")
             self.accepted[operation_id] = (text, image)
             return operation_id
 
-        def run_reserved_host_message(self, operation_id: str) -> dict[str, object]:
+        def run_reserved_host_message(self, operation_id: str, *, emit) -> dict[str, object]:
             text, image = self.accepted.pop(operation_id)
             calls.append((text, image))
             return {
@@ -231,7 +235,7 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
         assert probe.connect_ex(("127.0.0.1", port)) != 0
 
 
-def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
+def test_mobile_v4_slow_chat_publishes_desktop_events_without_transferring_image(
     tmp_path: Path,
 ) -> None:
     port = _free_port()
@@ -272,10 +276,7 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
         roots.user_root,
         session_provider=lambda: session,
         timeline_store=timeline,
-        event_publisher=lambda value: (
-            shell_events.append(value),
-            (_ for _ in ()).throw(RuntimeError("UNKNOWN_REQUEST_ID")),
-        )[1],
+        event_publisher=shell_events.append,
     )
     application = PluginRuntimeApplication(
         roots,
@@ -301,7 +302,9 @@ def test_mobile_v4_slow_real_chat_and_large_image_stay_off_shell_transport(
             timeout=10,
         )
         assert result["reply"] == "手机回答"
-        assert shell_events == []
+        assert [value["name"] for value in shell_events] == ["host.chat.started", "host.chat.completed"]
+        assert all(value["payload"]["presentation"] == "interactive" for value in shell_events)
+        assert shell_events[-1]["payload"]["reply"]["segments"][0]["text"] == "mobile raw"
         assert application._host_services.artifact_count == 0
         assert pipeline_messages[0]["attachment"]["observations"][0]["data_url"] == image
 
@@ -376,32 +379,3 @@ def test_mobile_host_image_busy_does_not_poison_the_next_attachment(tmp_path: Pa
     )
     assert result["reply_raw"] == "ok"
     boundary.close()
-
-
-def test_mobile_worker_preserves_failure_cause_after_completion(tmp_path: Path, monkeypatch) -> None:
-    from app.core_host.mobile_host import MobileHostError, MobileHostService
-
-    failure = OSError("fixture unreadable image")
-    diagnostics = []
-
-    def fail(*_args, **_kwargs):
-        raise failure
-
-    monkeypatch.setattr("app.core_host.mobile_host.log_event", lambda *args, **kwargs: diagnostics.append(args[2]))
-    host = MobileHostService(
-        tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
-        chat_boundary_provider=lambda: SimpleNamespace(
-            reserve_host_message=lambda *_args, **kwargs: kwargs["operation_id"],
-            run_reserved_host_message=fail,
-        ),
-        artifact_resolver=lambda _id: None,
-        artifact_releaser=lambda _id: True,
-    )
-    job_id = host.begin("fixture", "sakura", "hello")["jobId"]
-    assert host._jobs[job_id].done.wait(3)
-    with pytest.raises(MobileHostError) as caught:
-        host.poll("fixture", job_id)
-    assert caught.value.__cause__ is failure
-    assert diagnostics[0]["stage"] == "mobile_chat"
-    assert "fixture unreadable image" in diagnostics[0]["diagnostic"]

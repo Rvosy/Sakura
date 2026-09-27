@@ -40,7 +40,7 @@ def _invoke_after_scope_clear(manager, process, service, method, request, replac
         try:
             results.append(manager._handle_plugin_request(
                 "consumer", "service.call",
-                {"serviceKey": service, "method": method, "args": [request]},
+                {"serviceKey": service, "method": method, "args": list(request) if isinstance(request, tuple) else [request]},
                 calling_process=process,
             ))
         except BaseException as error:
@@ -160,3 +160,22 @@ def test_late_visual_apply_cannot_parse_or_publish_after_scope_clear(tmp_path, m
     assert parsed == []
     assert events == []
     assert visual._receipts == {}
+
+
+@pytest.mark.parametrize("replacement", [False, True], ids=["disabled", "reloaded"])
+def test_late_conversation_releases_reservation_after_scope_clear(tmp_path, monkeypatch, replacement):
+    from app.core_host.conversation_host import ConversationHostService
+
+    manager, process = _manager(tmp_path)
+    boundary = RealChatBoundary("generation", "credential", tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="character")), timeline_store=object())
+    host = ConversationHostService(chat_boundary_provider=lambda: boundary,
+        artifact_resolver=lambda _id: pytest.fail("no image expected"), artifact_releaser=lambda _id: True,
+        emit_callback=lambda *_args: pytest.fail("revoked caller cannot publish"),
+        commit_scope=lambda owner, commit: manager.commit_plugin_scope(*owner, commit))
+    manager.install_host_service("sakura.host.conversation", host, exports=("begin", "poll", "cancel"))
+    _invoke_after_scope_clear(manager, process, "sakura.host.conversation", "begin",
+        ("character", "user input"), replacement, monkeypatch)
+    assert host._jobs == {}
+    assert boundary.current_host_state()["idle"]
+    boundary.close()

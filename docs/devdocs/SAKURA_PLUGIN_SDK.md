@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-22
+updated: 2026-09-27
 ---
 
 # 编写 Sakura 插件
@@ -348,11 +348,12 @@ ServiceProxy、回调、资源 descriptor 和文件 artifact 都会失效，不�
 | `sakura.host.settings.collection-v0` | 注册分页查询和 CRUD Collection。 |
 | `sakura.host.logging` | 提交插件运行日志，见下文日志示例。 |
 | `sakura.host.model_slots.v2` | 注册模型用途，读取目录并解析用户选择。 |
-| `sakura.host.character` | 读取当前角色、插件私有角色扩展和角色资源。 |
+| `sakura.host.character` | 读取角色列表、当前角色资料、插件私有角色扩展和角色资源。 |
 | `sakura.host.timeline` | 按当前角色读取只读 Timeline。 |
 | `sakura.host.storage` | 取得明确授权的共享 data/cache 目录。 |
 | `sakura.host.artifacts` | 分配、提交和释放受控大文件。 |
-| `sakura.host.mobile` | 使用 Core 持有的当前角色、历史和聊天能力。 |
+| `sakura.host.conversation` | 代表用户向当前角色发送文字或图片，接入桌面聊天和语音。 |
+| `sakura.host.mobile` | 旧移动端接口的兼容门面；新插件使用 conversation、character 和 timeline。 |
 | `sakura.host.ui.composer-tools-v0` | Host 已实现，但公共 SDK 暂不能注册；见后文限制。 |
 
 Host Contribution 的 `register()` 会返回一个可提前撤销的 disposer，同时已经绑定插件 Effect。正常情况下
@@ -1089,11 +1090,16 @@ character = context.get("sakura.host.character")
 current = character.current()
 character_id = current["id"]
 system_prompt = current["systemPrompt"]
+profiles = character.list()
+presentation = character.presentation()
 
 extension = character.get(character_id)
 updated = character.update(character_id, {"voice": "alice"})
 resource_path = character.resolve_resource(character_id, "voices/alice.wav")
 ```
+
+`list()` 返回角色的 `id/displayName/initialMessage/current`，`current` 为布尔值；`presentation()` 返回当前角色的
+公开资料及 `themeTokens`，不携带角色资源路径。它不选择角色，聊天仍只受理桌面当前角色。
 
 `get()` 和 `update()` 只能看到当前插件 ID 对应的 `character.json.extensions` 子对象，不会泄漏或覆盖其他
 插件的数据。单插件角色扩展最多 64 KiB。`resolve_resource()` 只解析角色包内部既有资源，并拒绝路径逃逸。
@@ -1199,21 +1205,31 @@ resolve 只接受已提交、由本插件拥有或 Host 明确授权给本插件
 发送方可以用 `release_delivered(artifact_id, operation_id)` 撤销本次交付，其他发送方或错误 operationId 无权撤销。
 `release()`、`release_received()`、`release_delivered()` 均支持 `timeout_seconds`，用于共用有界回收预算。
 
-### 移动端聊天能力
+### 用户聊天能力
 
-`sakura.host.mobile` 是为替代前端或远程入口准备的较窄接口，普通业务插件通常不需要它。当前方法为：
+字幕悬浮窗、手机网页和其他用户输入入口使用 `sakura.host.conversation`。插件在 manifest 的 `requires` 中声明它，
+然后通过公共代理调用：
 
-```text
-characters()
-history(character_id, limit)
-theme()
-begin(plugin_id, character_id, text, artifact_descriptor_or_none) -> {jobId}
-poll(plugin_id, job_id)
-cancel(plugin_id, job_id)
+```python
+conversation = context.get("sakura.host.conversation")
+job = conversation.begin(character_id, text, artifact_descriptor_or_none)
+state = conversation.poll(job["jobId"])
+# state 为 {"status": "running"} 或 {"status": "completed", "result": {...}}
+# 用户取消等待时调用 conversation.cancel(job["jobId"])
 ```
 
-调用 `begin/poll/cancel` 时传 `context.plugin_id`，只能访问当前角色，图片必须来自本插件已提交的 artifact。
-聊天是 job 合同，应轮询并设置自己的超时，退出时取消未完成 job。
+`begin()` 返回 `jobId` 和本次 `operationId`。插件自行轮询和设置等待期限，超时或退出时取消未完成任务；完成结果只取一次。
+不传插件 ID，调用者由 Runtime 的认证实例确定。图片使用本插件已提交的 artifact descriptor。
+`result` 保留 `character_id/reply/reply_raw/segments/actions`，并携带 `operationId`；其中 `reply` 是显示文本，
+`reply_raw` 是回复原文。已写入历史且宿主提供该身份时，另有 `historyEntryId`，供历史条目定位使用。
+
+用户原文写入 `HUMAN`，回复进入桌面现有字幕、角色表现和 TTS 流程。语音在桌面播放；轮询结果不传音频。
+主动搭话插件继续使用 `sakura.host.chat`，其输入属于宿主观察。完整受理、取消和事件合同见
+[Runtime 用户聊天入口](../specs/runtime-v2/sakura-plugin-runtime-v4.md#用户聊天入口)。
+
+当前角色列表和主题使用 `sakura.host.character.list()/presentation()`，历史使用 `sakura.host.timeline`。
+旧 `sakura.host.mobile` 保留 `characters/history/theme` 和带 `plugin_id` 的 `begin/poll/cancel` 参数形式，
+聊天委托同一 conversation 实现；旧调用中的插件 ID 必须等于认证调用者。
 
 ## 当前暂不开放的界面能力
 

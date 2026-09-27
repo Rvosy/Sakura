@@ -58,6 +58,23 @@ class PluginCharacterStore:
                 raise PluginCharacterError("CHARACTER_RESOURCE_INVALID")
             return {"id": profile.id, "systemPrompt": prompt}
 
+    def list(self) -> list[dict[str, Any]]:
+        with self._lock:
+            profiles = CharacterRegistry(self._app_root).profiles
+            return [{"id": profile.id, "displayName": profile.display_name,
+                     "initialMessage": profile.initial_message,
+                     "current": profile.id == self._active_character_id}
+                    for profile in sorted(profiles.values(), key=lambda item: item.display_name.casefold())]
+
+    def presentation(self) -> dict[str, Any]:
+        from app.core_host.character_presentation import project_character_presentation
+
+        with self._lock:
+            if self._active_character_id is None:
+                raise PluginCharacterError("CHARACTER_NOT_FOUND")
+            profile = CharacterRegistry(self._app_root).get(self._active_character_id)
+            return project_character_presentation(profile)
+
     def _load_active_character_id(self) -> str | None:
         try:
             registry = CharacterRegistry(self._app_root)
