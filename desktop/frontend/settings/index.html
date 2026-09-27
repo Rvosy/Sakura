@@ -274,6 +274,30 @@
         </section>
 
         <section id="page-voice" class="settings-page">
+          <fieldset class="settings-group" id="voiceCacheSettings">
+            <legend>语音缓存</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="voiceCacheDirectory">
+                <span class="setting-title">缓存目录</span>
+                <span class="setting-desc">按角色保存每一句。更改目录不会移动已有文件。</span>
+              </label>
+              <input id="voiceCacheDirectory" type="text" spellcheck="false" />
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="voiceCacheMaxMegabytes">
+                <span class="setting-title">最大容量</span>
+                <span class="setting-desc">超过后按时间删除较早的非收藏缓存。</span>
+              </label>
+              <span class="field-unit"><input id="voiceCacheMaxMegabytes" type="number" min="32" max="20480" step="1" /><span class="unit">MB</span></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="voiceCacheIdleFill">
+                <span class="setting-title">空闲补齐</span>
+                <span class="setting-desc">缓存还有余量且本机不忙时，补上还没有语音的句子。不播放。</span>
+              </label>
+              <span class="setting-toggle"><input id="voiceCacheIdleFill" type="checkbox" /></span>
+            </div>
+          </fieldset>
           <div id="voiceUnavailable" class="plugin-surface" hidden></div>
           <div id="voiceSettings" class="voice-settings">
           <fieldset class="settings-group" data-settings-feature="voice.tts">

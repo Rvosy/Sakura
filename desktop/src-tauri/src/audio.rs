@@ -927,6 +927,132 @@ pub(crate) fn tts_stop_playback(
     Ok(())
 }
 
+const VOICE_CACHE_MIN_MEGABYTES: u64 = 32;
+const VOICE_CACHE_MAX_MEGABYTES: u64 = 20480;
+const VOICE_CACHE_DEFAULT_MEGABYTES: u64 = 512;
+
+fn voice_cache_document(user_root: &Path) -> (String, u64, bool) {
+    let default_dir = user_root.join("data/voice/recordings");
+    let mut directory = default_dir.display().to_string();
+    let mut max_megabytes = VOICE_CACHE_DEFAULT_MEGABYTES;
+    let mut idle_fill = false;
+    let path = user_root.join("config/voice_cache.json");
+    if let Ok(bytes) = fs::read(&path) {
+        if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+            if value.get("schemaVersion").and_then(Value::as_u64) == Some(1) {
+                if let Some(max_bytes) = value.get("maxBytes").and_then(Value::as_u64) {
+                    let min = VOICE_CACHE_MIN_MEGABYTES * 1024 * 1024;
+                    let max = VOICE_CACHE_MAX_MEGABYTES * 1024 * 1024;
+                    if (min..=max).contains(&max_bytes) {
+                        max_megabytes = max_bytes / (1024 * 1024);
+                    }
+                }
+                if let Some(raw) = value.get("directory").and_then(Value::as_str) {
+                    if !raw.trim().is_empty() {
+                        directory = raw.to_string();
+                    }
+                }
+                idle_fill = value
+                    .get("idleFill")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            }
+        }
+    }
+    (directory, max_megabytes, idle_fill)
+}
+
+impl AudioState {
+    fn voice_cache_snapshot(&self) -> Value {
+        let (directory, max_megabytes, idle_fill) = voice_cache_document(&self.user_root);
+        json!({
+            "directory": directory,
+            "defaultDirectory": self.user_root.join("data/voice/recordings").display().to_string(),
+            "maxMegabytes": max_megabytes,
+            "idleFill": idle_fill,
+            "limits": [VOICE_CACHE_MIN_MEGABYTES, VOICE_CACHE_MAX_MEGABYTES],
+        })
+    }
+
+    fn save_voice_cache(
+        &self,
+        directory: &str,
+        max_megabytes: u64,
+        idle_fill: bool,
+    ) -> Result<Value, String> {
+        if !(VOICE_CACHE_MIN_MEGABYTES..=VOICE_CACHE_MAX_MEGABYTES).contains(&max_megabytes) {
+            return Err("VOICE_CACHE_SIZE_INVALID".to_string());
+        }
+        let default_dir = self.user_root.join("data/voice/recordings");
+        fs::create_dir_all(&default_dir)
+            .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
+        let default_resolved = fs::canonicalize(&default_dir)
+            .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
+        let trimmed = directory.trim();
+        let resolved = if trimmed.is_empty() {
+            default_resolved.clone()
+        } else {
+            let path = PathBuf::from(trimmed);
+            if !path.is_absolute() {
+                return Err("VOICE_CACHE_DIRECTORY_INVALID".to_string());
+            }
+            fs::create_dir_all(&path)
+                .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
+            fs::canonicalize(&path)
+                .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?
+        };
+        let stored = if resolved == default_resolved {
+            String::new()
+        } else {
+            resolved.display().to_string()
+        };
+        let document = json!({
+            "schemaVersion": 1,
+            "directory": stored,
+            "maxBytes": max_megabytes * 1024 * 1024,
+            "idleFill": idle_fill,
+        });
+        let mut bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        let config = self.user_root.join("config/voice_cache.json");
+        crate::ui_config::atomic_write(&config, &bytes, "VOICE_CACHE")?;
+        Ok(json!({
+            "directory": resolved.display().to_string(),
+            "defaultDirectory": default_resolved.display().to_string(),
+            "maxMegabytes": max_megabytes,
+            "idleFill": idle_fill,
+            "limits": [VOICE_CACHE_MIN_MEGABYTES, VOICE_CACHE_MAX_MEGABYTES],
+        }))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct VoiceCacheSaveRequest {
+    directory: String,
+    max_megabytes: u64,
+    idle_fill: bool,
+}
+
+#[tauri::command]
+pub(crate) fn settings_voice_cache_get(
+    window: WebviewWindow,
+    audio: State<'_, AudioState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    Ok(audio.voice_cache_snapshot())
+}
+
+#[tauri::command]
+pub(crate) fn settings_voice_cache_save(
+    window: WebviewWindow,
+    audio: State<'_, AudioState>,
+    request: VoiceCacheSaveRequest,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    audio.save_voice_cache(&request.directory, request.max_megabytes, request.idle_fill)
+}
+
 #[tauri::command]
 pub(crate) async fn settings_voice_get(
     window: WebviewWindow,
