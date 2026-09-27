@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.config.character_loader import CharacterProfile
 from app.core_host.assistant_adapter import ReadinessResult
+from app.core_host.character_presentation import project_character_presentation
 from app.core_host.lifecycle_history import LifecycleHistory
 from app.core_host.server import ControlDispatcher, HostConfig, ReadinessController
 from app.storage.paths import StoragePaths
@@ -85,9 +87,8 @@ def test_new_core_generation_records_reconnection_instead_of_a_new_app_opening(t
 def test_visual_session_is_recorded_even_when_assistant_has_not_started(tmp_path, monkeypatch):
     entered = Event()
     release = Event()
-    presentation = dict(schemaVersion=2, generationId="generation", characterId="sakura",
-                        displayName="Sakura", initialMessage="你好。", themeTokens={},
-                        visual=None, visualReasonCode="VISUAL_RESOURCE_MISSING")
+    character = CharacterProfile("sakura", "Sakura", tmp_path, tmp_path / "system.md", "你好。")
+    presentation = project_character_presentation(character, reason_code="VISUAL_RESOURCE_MISSING")
 
     class Application:
         def start_character_presentation(self):
