@@ -14,6 +14,7 @@ updated: 2026-09-24
 - [运行统计与错误报告](REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
 - [数据与存储](RUNTIME_V2_STORAGE.md)
 - [macOS 使用说明](MACOS_SETUP.md)
+- [Linux 使用说明](LINUX_SETUP.md)
 - [窗口交互](RUNTIME_V2_WINDOW_INTERACTION.md)
 - [外观设置](RUNTIME_V2_APPEARANCE.md)
 - [MCP 基础组件](RUNTIME_V2_MCP.md)

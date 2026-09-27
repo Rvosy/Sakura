@@ -217,9 +217,8 @@ export function mount({ container, resource, host, signal }) {
     assets, defaultKey: data.defaultKey,
     loadImage: (source) => new Promise((resolve, reject) => {
       const image = new Image();
-      image.onload = async () => {
+      image.onload = () => {
         try {
-          await image.decode();
           const key = Object.keys(assets).find((key) => assets[key] === source);
           const expected = data.metadata[key];
           if (image.naturalWidth !== expected.width || image.naturalHeight !== expected.height) {

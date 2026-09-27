@@ -172,7 +172,7 @@ enum ContextMenuRegionPolicy {
 }
 
 const fn current_context_menu_region_policy() -> ContextMenuRegionPolicy {
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "linux")) {
         ContextMenuRegionPolicy::RelaxedWholeWindow
     } else {
         ContextMenuRegionPolicy::PreciseOverlay
@@ -425,7 +425,9 @@ const fn portrait_scale_platform_capabilities(
         platform::PlatformTarget::LinuxX64 => PortraitScalePlatformCapabilities {
             stable_bounds_during_gesture: true,
             precise_hit_regions_during_gesture: true,
-            resident_stable_bounds: false,
+            // WebKitGTK aborts if the transparent overlay is resized while a
+            // new portrait is decoded. Keep one backing envelope, like Windows.
+            resident_stable_bounds: true,
         },
     }
 }
@@ -1311,7 +1313,7 @@ fn apply_pet_layout(
                 .as_ref()
                 .is_none_or(|previous| !same_surface_geometry(previous, &native_application));
             if geometry_changed {
-                if let Err(error) = apply_native_pet_surface_bounds_transaction(
+                if let Err(error) = apply_native_pet_surface_bounds_transaction_preserving_top_left(
                     &window,
                     &native_application,
                     previous_application.as_ref(),
@@ -1760,7 +1762,11 @@ fn build_native_interaction_regions(
         contract.viewport.portrait_anchor,
         cfg!(target_os = "macos"),
     )?;
-    physical.portrait_alpha_mask = native_portrait_alpha_mask;
+    physical.portrait_alpha_mask = if cfg!(target_os = "linux") {
+        None
+    } else {
+        native_portrait_alpha_mask
+    };
     interaction_latency::stage_elapsed("interaction-regions-build-return", started);
     Ok(physical)
 }
@@ -2196,7 +2202,7 @@ fn apply_native_pet_surface_transaction(
                 .map_err(|error| error.to_string())?;
         }
 
-        if !cfg!(target_os = "macos") && !previous_region_relaxed {
+        if !cfg!(any(target_os = "macos", target_os = "linux")) && !previous_region_relaxed {
             if let (Some(previous_application), Some(previous_regions)) =
                 (previous_application, previous_regions)
             {
@@ -2830,8 +2836,10 @@ fn open_pet_context_menu(
     {
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
-    let manifest =
-        product_shell::product_menu_capability_manifest(subtitle.get()?, topmost.enabled()?);
+    let manifest = product_shell::product_menu_capability_manifest(
+        subtitle.get()?,
+        topmost.enabled()?,
+    );
     // Repositioning an already-open menu must keep the first frame as the close target. Replacing
     // these snapshots with the expanded frame would make Escape permanently retain the menu size.
     if geometry.context_menu_open {
@@ -4067,6 +4075,14 @@ struct SettingsCharacterAppearanceSnapshot {
     limits: character_appearance::AppearanceLimits,
 }
 
+fn publishes_live_character_visual_preview_to_pet() -> bool {
+    // Selecting a character in settings used to preview Core presentation,
+    // retint the settings window, and rebind the pet overlay. On Linux any of
+    // those steps can abort WebKitGTK while decoding 夜乃桜-scale PNGs, so
+    // settings skip them until Apply.
+    !cfg!(target_os = "linux")
+}
+
 const CHARACTER_VISUAL_PREVIEW_EVENT: &str = "sakura://character-visual-preview";
 const SETTINGS_APPEARANCE_ACTIVE_EVENT: &str = "sakura://settings-appearance-active";
 
@@ -4193,6 +4209,9 @@ async fn settings_character_visual_preview(
     appearance: State<'_, character_appearance::CharacterAppearanceState>,
 ) -> Result<CharacterVisualPreviewPublication, String> {
     product_shell::validate_settings_window(&window)?;
+    if !publishes_live_character_visual_preview_to_pet() {
+        return Err("CHARACTER_VISUAL_PREVIEW_SKIPPED".to_string());
+    }
     let window_generation = shell.generation()?;
     let generation_id = lifecycle
         .handle
@@ -4225,9 +4244,11 @@ async fn settings_character_visual_preview(
     };
     if accepted {
         sync_settings_window_appearance_background(&window, &publication.appearance)?;
-        app_handle
-            .emit_to("main", CHARACTER_VISUAL_PREVIEW_EVENT, publication.clone())
-            .map_err(|error| format!("CHARACTER_VISUAL_PREVIEW_PUBLICATION_FAILED: {error}"))?;
+        if publishes_live_character_visual_preview_to_pet() {
+            app_handle
+                .emit_to("main", CHARACTER_VISUAL_PREVIEW_EVENT, publication.clone())
+                .map_err(|error| format!("CHARACTER_VISUAL_PREVIEW_PUBLICATION_FAILED: {error}"))?;
+        }
     }
     Ok(publication)
 }
@@ -4530,12 +4551,11 @@ fn character_restart_target(snapshot: &Value, change_plan: &str) -> Result<Optio
     if change_plan != "core_restart_required" {
         return Ok(None);
     }
-    snapshot
-        .get("currentCharacterId")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| Some(value.to_string()))
-        .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())
+    match snapshot.get("currentCharacterId") {
+        Some(Value::Null) | None => Ok(Some(String::new())),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.clone())),
+        _ => Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string()),
+    }
 }
 
 fn reveal_pet_when_session_ready(
@@ -4973,6 +4993,43 @@ async fn settings_character_export(
     )
     .await?;
     Ok(receipt)
+}
+
+#[tauri::command]
+async fn settings_character_delete(
+    window: WebviewWindow,
+    character_id: String,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, audio::AudioState>,
+) -> Result<Value, String> {
+    let (
+        snapshot,
+        _change_plan,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+        _requirements,
+    ) = character_settings_change_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.settings.delete",
+        json!({"characterId": character_id}),
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    finish_character_settings_change(
+        app_handle,
+        &audio_state,
+        snapshot,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+    )
 }
 
 #[tauri::command]
@@ -5677,14 +5734,17 @@ fn prepare_portrait_transition(
         .as_ref()
         .zip(next_target)
         .map(|(mask, target)| (mask.clone(), target));
-    if let Some(next_native_portrait_alpha_mask) = next_native_portrait_alpha_mask {
-        let mut next_physical = window_interaction::scale_hit_regions_for_surface(
-            &next_logical,
-            application.scale_factor * application.content_scale,
-            application.active_bounds,
-            contract.viewport.portrait_anchor,
-        )?;
-        next_physical.portrait_alpha_mask = Some(next_native_portrait_alpha_mask.clone());
+    let next_physical = window_interaction::scale_hit_regions_for_surface(
+        &next_logical,
+        application.scale_factor * application.content_scale,
+        application.active_bounds,
+        contract.viewport.portrait_anchor,
+    )?;
+    if cfg!(target_os = "linux") {
+        combined.drag.extend(next_physical.drag.iter().copied());
+    } else if let Some(next_native_portrait_alpha_mask) = next_native_portrait_alpha_mask {
+        let mut next_physical = next_physical;
+        next_physical.portrait_alpha_mask = Some(next_native_portrait_alpha_mask);
         combined
             .extra_native_rectangles
             .extend(window_interaction::native_hit_rectangles(
@@ -7576,6 +7636,13 @@ fn main() {
         std::env::set_var("GDK_BACKEND", "x11");
     }
 
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // Ubuntu 24.04 WebKitGTK's DMA-BUF renderer has aborted this process
+        // when the transparent pet overlay decodes a replacement portrait.
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     #[cfg(not(debug_assertions))]
     if std::env::var_os("SAKURA_WP_4_01_MANUAL_ROOT").is_some() {
         show_startup_message(
@@ -7778,7 +7845,7 @@ fn main() {
             ui_config_repository.clone(),
         ))
         .manage(chat_settings::SubtitleLanguageState::new(
-            ui_config_repository,
+            ui_config_repository.clone(),
         ))
         .manage(plugin_marketplace::MarketplaceState::new(
             character_resource_root.clone(),
@@ -8105,6 +8172,7 @@ fn main() {
             settings_character_import,
             settings_character_import_voice,
             settings_character_export,
+            settings_character_delete,
             settings_character_select,
             open_character_studio,
             studio_bootstrap,
@@ -8371,7 +8439,7 @@ mod tests {
         });
         assert_eq!(
             character_restart_target(&empty_snapshot, "core_restart_required"),
-            Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string())
+            Ok(Some(String::new()))
         );
         assert_eq!(
             character_restart_target(&empty_snapshot, "unchanged"),
@@ -9111,6 +9179,9 @@ mod tests {
         )
         .unwrap();
 
+        #[cfg(target_os = "linux")]
+        assert!(precise.portrait_alpha_mask.is_none());
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(precise.portrait_alpha_mask.as_ref(), Some(&mask));
         assert_eq!(
             first_guard, second_guard,
@@ -9651,13 +9722,21 @@ mod tests {
     }
 
     #[test]
-    fn product_menu_region_policy_relaxes_only_windows_menu_sessions() {
-        let expected = if cfg!(windows) {
+    fn product_menu_region_policy_relaxes_windows_and_linux_menu_sessions() {
+        let expected = if cfg!(any(windows, target_os = "linux")) {
             ContextMenuRegionPolicy::RelaxedWholeWindow
         } else {
             ContextMenuRegionPolicy::PreciseOverlay
         };
         assert_eq!(current_context_menu_region_policy(), expected);
+    }
+
+    #[test]
+    fn linux_does_not_rebind_the_pet_overlay_during_settings_character_preview() {
+        assert_eq!(
+            publishes_live_character_visual_preview_to_pet(),
+            !cfg!(target_os = "linux")
+        );
     }
 
     #[test]
@@ -10000,14 +10079,14 @@ mod tests {
     }
 
     #[test]
-    fn window_surface_regression_resident_envelope_is_windows_only() {
+    fn window_surface_regression_resident_envelope_covers_windows_and_linux() {
         assert_eq!(
             uses_resident_stable_surface_bounds(true, false),
-            cfg!(windows)
+            cfg!(any(windows, target_os = "linux"))
         );
         assert_eq!(
             uses_resident_stable_surface_bounds(false, true),
-            cfg!(windows)
+            cfg!(any(windows, target_os = "linux"))
         );
         assert!(!uses_resident_stable_surface_bounds(false, false));
     }
@@ -10038,15 +10117,15 @@ mod tests {
         assert!(!windows.precise_hit_regions_during_gesture);
         assert!(windows.resident_stable_bounds);
 
-        for target in [
-            platform::PlatformTarget::MacOsArm64,
-            platform::PlatformTarget::LinuxX64,
-        ] {
-            let capabilities = portrait_scale_platform_capabilities(target);
-            assert!(capabilities.stable_bounds_during_gesture);
-            assert!(capabilities.precise_hit_regions_during_gesture);
-            assert_eq!(capabilities.resident_stable_bounds, false);
-        }
+        let macos = portrait_scale_platform_capabilities(platform::PlatformTarget::MacOsArm64);
+        assert!(macos.stable_bounds_during_gesture);
+        assert!(macos.precise_hit_regions_during_gesture);
+        assert!(!macos.resident_stable_bounds);
+
+        let linux = portrait_scale_platform_capabilities(platform::PlatformTarget::LinuxX64);
+        assert!(linux.stable_bounds_during_gesture);
+        assert!(linux.precise_hit_regions_during_gesture);
+        assert!(linux.resident_stable_bounds);
         assert_eq!(
             current_portrait_scale_platform_capabilities().stable_bounds_during_gesture,
             defers_native_portrait_scale_frames()

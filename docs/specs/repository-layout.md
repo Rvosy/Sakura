@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-30
+updated: 2026-09-13
 ---
 
 # 仓库根目录与发布入口契约
@@ -63,9 +63,9 @@ tools/
 - `requirements.txt` 是 Core 和发行安装工具的通用运行依赖入口，必须留在根目录；插件专属依赖不得加入。
 - `tools/requirements-dev.txt` 是开发与 CI 的完整安装入口，通过 `-r ../requirements.txt` 引入 Core 依赖，
   并仅为插件测试显式引入各插件自己的 requirements。
-- 正式发行依赖由 `packaging/requirements-windows-x64.lock` 与
-  `packaging/requirements-macos-arm64.lock` 以完整 SHA-256 锁定，并安装到发行 Python 的原生
-  `site-packages`。
+- 正式发行依赖由 `packaging/requirements-windows-x64.lock`、
+  `packaging/requirements-macos-arm64.lock` 与 `packaging/requirements-linux-x64.lock`
+  以完整 SHA-256 锁定，并安装到发行 Python 的原生 `site-packages`。
 - 完整安装包不得携带用户数据、测试、文档素材、历史桌面实现或仅供仓库维护的工具。
 
 ## 验收条件

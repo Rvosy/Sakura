@@ -13,12 +13,15 @@ from services.sakura import releases as service
 from tools.release.updater_manifest import build_manifest
 
 
-def documents(tmp_path: Path, version: str = "1.2.0") -> tuple[dict, dict]:
+def documents(tmp_path: Path, version: str = "1.2.0", *, linux: bool = False) -> tuple[dict, dict]:
     releases = []
-    for target, suffix in (
+    targets = [
         ("windows-x64", "windows-x64-setup.exe"),
         ("macos-arm64", "macos-arm64.app.tar.gz"),
-    ):
+    ]
+    if linux:
+        targets.append(("linux-x64", "linux-x64.AppImage.tar.gz"))
+    for target, suffix in targets:
         artifact = tmp_path / f"Sakura-{version}-{suffix}"
         artifact.write_bytes(b"signed artifact fixture")
         signature = artifact.with_suffix(artifact.suffix + ".sig")
@@ -30,6 +33,8 @@ def documents(tmp_path: Path, version: str = "1.2.0") -> tuple[dict, dict]:
         version=version, notes="更新说明", releases=releases, portable=portable,
         base_url=f"https://github.com/Rvosy/Sakura/releases/download/v{version}",
         pub_date="2026-09-13T00:00:00Z",
+        # Historical two-platform releases remain valid service input.
+        require_all_platforms=linux,
     )
     metadata = {
         "schema": 1, "latest": version, "minimumSupported": None,
@@ -42,6 +47,8 @@ def documents(tmp_path: Path, version: str = "1.2.0") -> tuple[dict, dict]:
         },
         "updaterManifestUrl": service.GITHUB_ENDPOINT,
     }
+    if linux:
+        metadata["downloads"]["linuxX64AppImage"] = service.asset_url(version, "linux-x64.AppImage")
     return metadata, updater
 
 
@@ -61,8 +68,9 @@ def test_old_domestic_ci_payload_publishes_to_new_domain(tmp_path: Path) -> None
     assert json.loads((root / "latest.json").read_text(encoding="utf-8")) == updater
 
 
-def test_publish_generated_updater_preserves_urls_signatures_and_portable(tmp_path: Path) -> None:
-    metadata, updater = documents(tmp_path)
+@pytest.mark.parametrize("linux", [False, True])
+def test_publish_generated_updater_preserves_urls_signatures_and_portable(tmp_path: Path, linux: bool) -> None:
+    metadata, updater = documents(tmp_path, linux=linux)
     root = tmp_path / "public"
     root.mkdir()
     payload = service.build_payload(metadata, updater)
@@ -109,6 +117,44 @@ def test_invalid_publication_preserves_both_live_documents(tmp_path: Path, fault
     assert {name: (root / name).read_bytes() for name in before} == before
 
 
+@pytest.mark.parametrize("fault,code", [
+    ("download_only", "SERVICE_LINUX_RELEASE_INCOMPLETE"),
+    ("updater_only", "SERVICE_LINUX_RELEASE_INCOMPLETE"),
+    ("download_url", "SERVICE_ASSET_URL_INVALID"),
+    ("updater_url", "SERVICE_ASSET_URL_INVALID"),
+    ("signature", "SERVICE_SIGNATURE_MISSING"),
+    ("unknown_download", "SERVICE_FIELDS_INVALID"),
+    ("unknown_platform", "SERVICE_FIELDS_INVALID"),
+])
+def test_invalid_linux_release_rejects_build_and_preserves_live_documents(tmp_path: Path, fault: str, code: str) -> None:
+    metadata, updater = documents(tmp_path)
+    root = tmp_path / "public"
+    root.mkdir()
+    service.publish(encoded(service.build_payload(metadata, updater)), root)
+    before = {name: (root / name).read_bytes() for name in ("latest.json", "releases.json")}
+    metadata, updater = documents(tmp_path, linux=True)
+    if fault == "download_only":
+        del updater["platforms"]["linux-x86_64"]
+    elif fault == "updater_only":
+        del metadata["downloads"]["linuxX64AppImage"]
+    elif fault == "download_url":
+        metadata["downloads"]["linuxX64AppImage"] += ".wrong"
+    elif fault == "updater_url":
+        updater["platforms"]["linux-x86_64"]["url"] = metadata["downloads"]["linuxX64AppImage"]
+    elif fault == "signature":
+        updater["platforms"]["linux-x86_64"]["signature"] = ""
+    elif fault == "unknown_download":
+        metadata["downloads"]["linuxArm64AppImage"] = metadata["downloads"]["linuxX64AppImage"]
+    else:
+        updater["platforms"]["linux-aarch64"] = updater["platforms"]["linux-x86_64"]
+    with pytest.raises(ValueError, match=code):
+        service.build_payload(metadata, updater)
+    metadata["updaterManifestUrl"] = service.SERVICE_ENDPOINT
+    with pytest.raises(ValueError, match=code):
+        service.publish(encoded({"schema": 1, "release": metadata, "updater": updater}), root)
+    assert {name: (root / name).read_bytes() for name in before} == before
+
+
 def test_old_ci_payload_still_works_but_cannot_downgrade_domestic_updater(tmp_path: Path) -> None:
     root = tmp_path / "public"
     root.mkdir()
@@ -120,6 +166,15 @@ def test_old_ci_payload_still_works_but_cannot_downgrade_domestic_updater(tmp_pa
     with pytest.raises(ValueError, match="SERVICE_VERSION_DOWNGRADE"):
         service.publish(encoded(old), root)
     assert json.loads((root / "releases.json").read_bytes())["latest"] == "1.10.0"
+
+
+def test_linux_metadata_requires_the_companion_updater_manifest(tmp_path: Path) -> None:
+    metadata, _ = documents(tmp_path, linux=True)
+    root = tmp_path / "public"
+    root.mkdir()
+    with pytest.raises(ValueError, match="SERVICE_UPDATER_MANIFEST_REQUIRED"):
+        service.publish(encoded(metadata), root)
+    assert list(root.iterdir()) == []
 
 
 def test_partial_publication_can_be_repaired_without_allowing_downgrade(tmp_path: Path, monkeypatch) -> None:

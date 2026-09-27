@@ -86,6 +86,23 @@ def test_open_uses_real_current_character_in_catalog(tmp_path: Path) -> None:
     assert not next(item for item in result["characters"] if item["id"] == "alpha")["isCurrent"]
 
 
+def test_initial_message_translation_survives_draft_and_publish(tmp_path: Path) -> None:
+    _write_character(tmp_path, "alpha")
+    boundary = CharacterStudioBoundary(GENERATION, CREDENTIAL, tmp_path)
+    opened = boundary.handle(_request("studio.character.open", {"characterId": "alpha"}))["payload"]
+    doc = opened["doc"]
+    doc["initialMessageTranslation"] = "\u3053\u3093\u306b\u3061\u306f"
+    saved = boundary.handle(_request("studio.draft.save", {
+        "workspaceId": opened["workspaceId"], "doc": doc,
+    }))
+    assert saved["ok"] is True, saved
+    assert saved["payload"]["doc"]["initialMessageTranslation"] == "\u3053\u3093\u306b\u3061\u306f"
+    published = boundary.handle(_request("studio.character.publish", {
+        "workspaceId": opened["workspaceId"], "doc": saved["payload"]["doc"],
+    }))
+    assert published["ok"] is True, published
+    assert json.loads((tmp_path / "characters/alpha/character.json").read_text(encoding="utf-8"))["initial_message_translation"] == "\u3053\u3093\u306b\u3061\u306f"
+
 @pytest.mark.parametrize("provider,enabled", [
     ("sakura.tts.gpt-sovits", True),
     ("sakura.tts.gpt-sovits", False),

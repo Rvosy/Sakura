@@ -142,6 +142,7 @@ export function createBridge(win, state, hooks) {
     limits: {
       subtitleTypingIntervalMs: [0, 200, 35],
       replySegmentPauseMs: [0, 3000, 300],
+      silentSegmentPauseMs: [0, 10000, 2000],
     },
   });
   const bubble = () => ({

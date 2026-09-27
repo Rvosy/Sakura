@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,19 @@ def allocate_character_installation(
             return candidate, root / directory_name
         used_ids.add(candidate)
         candidate = _unique_character_id(requested_id, used_ids)
+
+
+def remove_character_installation(characters_dir: Path, package_dir: Path) -> None:
+    """Delete a character package that is a direct child of ``characters/``."""
+
+    root = Path(characters_dir).resolve()
+    candidate = Path(package_dir)
+    if candidate.is_symlink():
+        raise ValueError("CHARACTER_PACKAGE_PATH_INVALID")
+    target = candidate.resolve(strict=False)
+    if target == root or target.parent != root or not target.is_dir():
+        raise ValueError("CHARACTER_PACKAGE_PATH_INVALID")
+    shutil.rmtree(target)
 
 
 def ensure_legacy_voice_extensions(

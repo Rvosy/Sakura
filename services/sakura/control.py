@@ -101,6 +101,10 @@ def import_draft(version):
     assets = {a.get("name"): a for a in remote.get("assets", [])}
     expected = ["latest.json", *(f"Sakura-{version}-{suffix}" for suffix in (
         "windows-x64-setup.exe", "windows-x64-portable.zip", "macos-arm64.dmg", "macos-arm64.app.tar.gz"))]
+    linux_assets = [f"Sakura-{version}-{suffix}" for suffix in ("linux-x64.AppImage", "linux-x64.AppImage.tar.gz")]
+    has_linux = any(name in assets for name in linux_assets)
+    if has_linux:
+        expected.extend(linux_assets)
     for name in expected:
         if name not in assets or assets[name].get("browser_download_url") != prefix + name:
             raise ValueError("该版本的正式下载文件尚未齐全。")
@@ -114,6 +118,8 @@ def import_draft(version):
         }.items()},
         "updaterManifestUrl": releases.SERVICE_ENDPOINT,
     }
+    if has_linux:
+        metadata["downloads"]["linuxX64AppImage"] = releases.asset_url(version, "linux-x64.AppImage")
     payload = releases.build_payload(metadata, updater)
     return store_draft(payload)
 

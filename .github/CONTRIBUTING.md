@@ -36,7 +36,9 @@ git remote add upstream https://github.com/Rvosy/Sakura.git
 git fetch upstream
 ```
 
-项目使用根目录下的 bundled Python Runtime，不使用系统 Python 替代。源码检出不包含 `runtime/`，请从 [Releases](https://github.com/Rvosy/sakura/releases) 获取对应平台的 Runtime 或完整包。
+项目使用根目录下的 bundled Python Runtime，不使用系统 Python 替代。源码检出不包含 `runtime/`。
+`scripts/install.sh` 与 `scripts/install.bat` 会在缺少 Runtime 时按当前平台清单下载冻结的 CPython；
+Linux 还需要 WebKitGTK 4.1 开发包，见 [Linux 使用说明](../docs/userdocs/LINUX_SETUP.md)。
 
 Windows：
 

@@ -299,6 +299,30 @@ class AppSettingsService:
             data.pop("visual_selections", None)
         save_yaml_mapping(self.characters_config_path, data)
 
+    def forget_character(
+        self,
+        character_registry: CharacterRegistry,
+        removed_id: str,
+        next_character_id: str | None,
+    ) -> None:
+        data = load_yaml_mapping(self.characters_config_path)
+        if next_character_id:
+            character_registry.get(next_character_id)
+            data["current_character_id"] = next_character_id
+        else:
+            configured = str(data.get("current_character_id", "")).strip()
+            if configured == removed_id or configured not in character_registry.profiles:
+                data.pop("current_character_id", None)
+        selections = self.load_visual_selections()
+        selections.pop(removed_id, None)
+        for key in [item for item in selections if item not in character_registry.profiles]:
+            selections.pop(key, None)
+        if selections:
+            data["visual_selections"] = selections
+        else:
+            data.pop("visual_selections", None)
+        save_yaml_mapping(self.characters_config_path, data)
+
     def _system_section(self, name: str) -> dict[str, Any]:
         return _mapping(self._system_document().get(name))
 

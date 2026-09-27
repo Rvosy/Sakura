@@ -6,7 +6,11 @@ import {
   validateChatTimingSnapshot,
 } from "../settings/chat-timing-runtime.js";
 
-function snapshot(values = { subtitleTypingIntervalMs: 28, replySegmentPauseMs: 160 }) {
+function snapshot(values = {
+  subtitleTypingIntervalMs: 28,
+  replySegmentPauseMs: 160,
+  silentSegmentPauseMs: 2000,
+}) {
   return {
     schemaVersion: 1,
     windowGeneration: 4,
@@ -14,6 +18,7 @@ function snapshot(values = { subtitleTypingIntervalMs: 28, replySegmentPauseMs: 
     limits: {
       subtitleTypingIntervalMs: [5, 200, 28],
       replySegmentPauseMs: [0, 3000, 160],
+      silentSegmentPauseMs: [0, 10000, 2000],
     },
   };
 }
@@ -31,7 +36,16 @@ function input() {
 
 test("timing snapshot is exact, bounded, and generation-scoped", () => {
   assert.equal(validateChatTimingSnapshot(snapshot()).windowGeneration, 4);
-  assert.throws(() => validateChatTimingSnapshot(snapshot({ subtitleTypingIntervalMs: 4, replySegmentPauseMs: 160 })));
+  assert.throws(() => validateChatTimingSnapshot(snapshot({
+    subtitleTypingIntervalMs: 4,
+    replySegmentPauseMs: 160,
+    silentSegmentPauseMs: 2000,
+  })));
+  assert.throws(() => validateChatTimingSnapshot(snapshot({
+    subtitleTypingIntervalMs: 28,
+    replySegmentPauseMs: 160,
+    silentSegmentPauseMs: 10001,
+  })));
   assert.throws(() => validateChatTimingSnapshot({ ...snapshot(), windowGeneration: 0 }));
 });
 
@@ -39,6 +53,7 @@ test("failed timing save retains the committed baseline and dirty draft", async 
   const controls = {
     subtitleTypingInterval: input(),
     replySegmentPause: input(),
+    silentSegmentPause: input(),
   };
   let dirtyCalls = 0;
   const controller = createChatTimingController({
@@ -63,6 +78,7 @@ for (const value of ["", "3001", "160.5"]) {
     const controls = {
       subtitleTypingInterval: input(),
       replySegmentPause: input(),
+      silentSegmentPause: input(),
     };
     const calls = [];
     let dirtyCalls = 0;
@@ -92,7 +108,7 @@ for (const value of ["", "3001", "160.5"]) {
     await controller.save();
     assert.deepEqual(calls[0], ["settings_chat_presentation_timing_save", {
       windowGeneration: 4,
-      values: { subtitleTypingIntervalMs: 28, replySegmentPauseMs: 0 },
+      values: { subtitleTypingIntervalMs: 28, replySegmentPauseMs: 0, silentSegmentPauseMs: 2000 },
     }]);
     assert.equal(controller.isDirty(), false);
 

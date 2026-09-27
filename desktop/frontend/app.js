@@ -916,6 +916,7 @@ const rendererHost = createRendererHost({
 
 let presentation = createChatPresentationReducer({
   initialMessage: characterPresentation.initialMessage,
+  initialMessageTranslation: characterPresentation.initialMessageTranslation,
 });
 let pendingCharacterGreeting = false;
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderSubtitleText });
@@ -1094,12 +1095,14 @@ const phaseLabels = Object.freeze({
 let chatTiming = Object.freeze({
   subtitleTypingIntervalMs: 28,
   replySegmentPauseMs: 160,
+  silentSegmentPauseMs: 2000,
 });
 try {
   const persistedTiming = await invoke("current_chat_presentation_timing");
   if (
     Number.isSafeInteger(persistedTiming?.subtitleTypingIntervalMs)
     && Number.isSafeInteger(persistedTiming?.replySegmentPauseMs)
+    && Number.isSafeInteger(persistedTiming?.silentSegmentPauseMs)
   ) chatTiming = Object.freeze(persistedTiming);
 } catch {
   // Defaults remain valid when the isolated ui.json timing slice cannot be read.
@@ -1272,6 +1275,7 @@ document.addEventListener("keydown", (event) => {
 const typewriter = createTypewriter({
   intervalMs: chatTiming.subtitleTypingIntervalMs,
   segmentPauseMs: chatTiming.replySegmentPauseMs,
+  silentSegmentPauseMs: chatTiming.silentSegmentPauseMs,
   language: subtitleLanguage,
   onStart: () => bubbleScroll.beginReply(),
   onText: (text, bubbleUpdate) => {
@@ -2078,11 +2082,13 @@ await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
   if (
     !Number.isSafeInteger(values?.subtitleTypingIntervalMs)
     || !Number.isSafeInteger(values?.replySegmentPauseMs)
+    || !Number.isSafeInteger(values?.silentSegmentPauseMs)
   ) return;
   chatTiming = Object.freeze(values);
   typewriter.updateTiming({
     intervalMs: values.subtitleTypingIntervalMs,
     segmentPauseMs: values.replySegmentPauseMs,
+    silentSegmentPauseMs: values.silentSegmentPauseMs,
   });
 });
 

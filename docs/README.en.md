@@ -20,6 +20,7 @@ The user guides are maintained in Chinese. Start with the installation guide, th
 - [Web search and page reading](userdocs/WEB_SEARCH.md)
 - [Usage statistics and error reports](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
 - [macOS guide](userdocs/MACOS_SETUP.md)
+- [Linux guide](userdocs/LINUX_SETUP.md)
 - [Window interaction](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
 - [Appearance](userdocs/RUNTIME_V2_APPEARANCE.md)
 - [MCP component](userdocs/RUNTIME_V2_MCP.md)

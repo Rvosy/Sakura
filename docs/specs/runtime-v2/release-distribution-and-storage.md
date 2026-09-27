@@ -22,7 +22,9 @@ Runtime v2 只接受 `distribution_root` 与 `user_root`。Shell 必须通过
 - Windows Setup/Portable：两根均为用户选择的 Sakura 安装目录；
 - macOS：发行根为 `.app/Contents/Resources`，用户根为
   `~/Library/Application Support/Sakura`；
-- Linux（仅保留编译）：用户根为 `${XDG_DATA_HOME:-~/.local/share}/Sakura`。
+- Linux x64：发行用户根为 `${XDG_DATA_HOME:-~/.local/share}/Sakura`，开发构建使用同目录下的
+  `Sakura Development`。源码安装由 `scripts/install.sh` 按 `linux-x64` manifest 下载冻结
+  Runtime。发行包格式为 x86_64 AppImage，可选同时生成 `.deb`。
 
 0.9.x 与 1.0.x 是两套独立安装，发行根和用户根都不得复用同一个物理目录。1.0.x 正常启动、安装器和
 Updater 不扫描、不读取也不复用 0.9.x 目录；旧数据只允许用户从首次导航或设置页显式选择后，由只读
@@ -53,7 +55,7 @@ ID 已被其他可访问角色占用，则为遗留副本分配带序号的新 I
 回写清单；导入或保存主题时写入当前来源标记。只有旧式
 `voice`、没有插件资源 `extensions` 的角色补齐语音资源扩展；已有资源字段保留。此过程不启用语音或选择引擎，
 运行选择仅保存在应用用户根的 `data/plugins/sakura.tts/config.json` 中。
-不存在默认 `sakura` 角色、首角色 fallback 或默认角色 prompt。
+不存在默认 `sakura` 角色、首角色 fallback 或默认角色 prompt。开发仓库根目录下的 `base_characters/`（以及历史拼写 `base_charaters/`）不是发行内容：仅当这些目录存在时，Core 启动会扫描其中直接含有 `.char` / `.card.char` 的文件夹（含嵌套目录），把尚未安装的逻辑 ID 导入 `user_root/characters`，同目录 `.voice` 一并导入。同一角色同时存在 0.9.5 之前的整包 `.char` 和拆分后的 `.card.char` + `.voice` 时，只导入拆分包，并替换已安装的同名过期整包。已安装且 ID 完全相同的包不重复导入。当前角色仍只在用户尚未选择、或刚被过期整包替换时，按与手动首次导入相同的规则选中。发行包不得复制该目录。
 
 主程序自带默认浅蓝主题。当前角色携带主题时覆盖它，否则所有窗口都使用主程序默认主题。
 角色无主题时也不得从角色名、旧 prompt 或内置角色资源推断默认外观。

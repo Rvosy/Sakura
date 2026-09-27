@@ -433,6 +433,7 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
             "characterId",
             "displayName",
             "initialMessage",
+            "initialMessageTranslation",
             "themeTokens",
             "visual",
             "visualReasonCode",

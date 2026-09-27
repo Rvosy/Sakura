@@ -126,12 +126,30 @@ GPT_SOVITS_MACOS_INSTALLER = TTSBundleEntry(
     python_path_name="miniforge3/envs/gpt-sovits310/bin/python",
     tts_config_path_name="GPT-SoVITS/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml",
 )
+GPT_SOVITS_LINUX_INSTALLER = TTSBundleEntry(
+    key="gpt_sovits_linux",
+    label="GPT-SoVITS Linux 源码安装包",
+    provider="gpt-sovits",
+    supported_systems=("linux",),
+    install_method="script",
+    installer_script="scripts/install_gpt_sovits_linux.sh",
+    work_dir_name="GPT-SoVITS",
+    python_path_name="sovits/bin/python",
+    tts_config_path_name="GPT-SoVITS/GPT_SoVITS/configs/tts_infer_sakura_linux.yaml",
+)
 GPT_SOVITS_BUNDLES = (
     GPT_SOVITS_STANDARD,
     GPT_SOVITS_NVIDIA50,
     GPT_SOVITS_MACOS_INSTALLER,
+    GPT_SOVITS_LINUX_INSTALLER,
 )
-TTS_BUNDLES = (GENIE_TTS, GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50, GPT_SOVITS_MACOS_INSTALLER)
+TTS_BUNDLES = (
+    GENIE_TTS,
+    GPT_SOVITS_STANDARD,
+    GPT_SOVITS_NVIDIA50,
+    GPT_SOVITS_MACOS_INSTALLER,
+    GPT_SOVITS_LINUX_INSTALLER,
+)
 MIN_GPT_SOVITS_VRAM_GB = 6.0
 _GPT_SOVITS_VRAM_TOLERANCE_GB = 0.25
 _SYSTEM_LABELS = {

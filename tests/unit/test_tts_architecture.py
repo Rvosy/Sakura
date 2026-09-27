@@ -96,6 +96,48 @@ def test_custom_synthesis_reports_stable_network_errors(
     assert failures == ["TTS_RUNTIME_UNAVAILABLE"]
 
 
+def test_managed_synthesis_restarts_owned_runtime_after_connection_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import wave
+
+    output = io.BytesIO()
+    with wave.open(output, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16_000)
+        handle.writeframes(b"\x01\x00" * 320)
+    audio = output.getvalue()
+    attempts = {"n": 0}
+
+    def read_url(*_args: object, **_kwargs: object) -> tuple[bytes, int]:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise urllib.error.URLError("connection refused")
+        return audio, 200
+
+    monkeypatch.setattr(_support, "_read_url", read_url)
+    settings = replace(_settings(tmp_path), custom_base_url=None)
+    queue = _queue(settings)
+    queue._cache_dir = tmp_path
+    restarts: list[bool] = []
+    queue._supervisor._ensure_service_available = lambda _fail: True
+    queue._supervisor._ensure_character_weights = lambda _fail, cancel_checker=None: True
+    queue._supervisor._restart_owned_runtime = lambda: restarts.append(True) or True
+
+    result = _support.GPTSoVITSSynthesisEngine().synthesize(
+        queue,
+        _support._TTSRequest(text="hello", tone="neutral"),
+        fail=lambda message: pytest.fail(message),
+        skip=lambda _message: None,
+    )
+
+    assert result is not None
+    assert attempts["n"] == 2
+    assert restarts == [True]
+
+
 @pytest.mark.parametrize(
     ("text", "language", "expected"),
     [
