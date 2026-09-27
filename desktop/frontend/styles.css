@@ -238,6 +238,23 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .identity { display: flex; align-items: center; min-width: 0; }
+.reply-read-button {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--primary) 26%, var(--border));
+  border-radius: 9px;
+  padding: 4px 9px;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--bubble-background) 84%, transparent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.reply-read-button[hidden] { display: none; }
+.reply-read-button:disabled { opacity: .4; cursor: default; }
+.reply-read-button:not(:disabled):hover,
+.reply-read-button:focus-visible {
+  background: color-mix(in srgb, var(--primary) 14%, var(--bubble-background));
+}
 .identity strong {
   overflow: hidden;
   color: var(--primary);

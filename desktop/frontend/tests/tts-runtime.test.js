@@ -23,15 +23,19 @@ const descriptor = {
   expiresAt: "2099-01-01T00:00:00Z",
 };
 
-async function harness(implementation = () => descriptor) {
+async function harness(implementation = () => descriptor, { emitBegin = true } = {}) {
   const calls = [];
   const diagnostics = [];
   const waiters = [];
-  let listener;
+  const listeners = new Map();
+  const states = [];
   const controller = createTtsController({
-    listen: async (_name, callback) => { listener = callback; return () => {}; },
+    listen: async (name, callback) => { listeners.set(name, callback); return () => listeners.delete(name); },
     invoke(name, args) {
       calls.push([name, args]);
+      if (name === "tts_begin_reply" && emitBegin) {
+        listeners.get("sakura://tts-operation-started")?.({ payload: args.payload });
+      }
       for (const waiter of waiters) {
         const matching = calls.filter(([command]) => command === waiter.name);
         if (matching.length >= waiter.count) waiter.resolve(matching.at(-1));
@@ -39,11 +43,13 @@ async function harness(implementation = () => descriptor) {
       return implementation(name, args);
     },
     onDiagnostic: (code) => diagnostics.push(code),
+    onPlaybackState: state => states.push(state),
   });
   await controller.start();
   return {
-    controller, calls, diagnostics,
-    emit: (playbackId, state) => listener({ payload: { playbackId, state } }),
+    controller, calls, diagnostics, states,
+    emit: (playbackId, state) => listeners.get("sakura://tts-playback-event")({ payload: { playbackId, state } }),
+    operationStarted: operationId => listeners.get("sakura://tts-operation-started")({ payload: { operationId } }),
     waitFor(name, count = 1) {
       const matching = calls.filter(([command]) => command === name);
       if (matching.length >= count) return Promise.resolve(matching.at(-1));
@@ -53,6 +59,118 @@ async function harness(implementation = () => descriptor) {
 }
 
 const appSource = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+
+test("reply ownership begins before synthesis even when the first segment is suppressed", async () => {
+  const begun = deferred();
+  const h = await harness(name => name === "tts_begin_reply" ? begun.promise : descriptor);
+  const segments = [{ text: "silent", suppressTts: true }, { text: "spoken", segmentIndex: 1 }];
+  h.controller.beginReply("automatic", segments);
+  await h.controller.beforeSegment(segments[0], 0);
+  const waiting = h.controller.beforeSegment(segments[1], 1);
+  assert.deepEqual(h.calls.map(([name]) => name), ["tts_begin_reply"]);
+  begun.resolve();
+  const [, { payload }] = await h.waitFor("tts_prepare_segment");
+  assert.equal(payload.segmentIndex, 1);
+  const [, play] = await h.waitFor("tts_play_prepared");
+  h.emit(play.payload.playbackId, "started");
+  await waiting;
+  h.controller.dispose();
+});
+
+test("cancelling while reply ownership begins prevents synthesis after its late acknowledgement", async () => {
+  const begun = deferred();
+  const h = await harness(name => name === "tts_begin_reply" ? begun.promise : descriptor);
+  const waiting = h.controller.playHistorySegment({ historyEntryId: "saved", segmentIndex: 0 });
+  h.controller.stop();
+  await waiting;
+  begun.resolve();
+  await begun.promise;
+  assert.equal(h.calls.some(([name]) => name.startsWith("tts_prepare")), false);
+  h.controller.dispose();
+});
+
+test("a delayed previous ownership event cannot cancel the newer pending reply", async () => {
+  const h = await harness(undefined, { emitBegin: false });
+  const first = h.controller.playHistorySegment({ historyEntryId: "saved", segmentIndex: 0 });
+  const second = h.controller.playHistorySegment({ historyEntryId: "saved", segmentIndex: 1 });
+  const begins = h.calls.filter(([name]) => name === "tts_begin_reply");
+  h.operationStarted(begins[0][1].payload.operationId);
+  h.operationStarted(begins[1][1].payload.operationId);
+  const [, play] = await h.waitFor("tts_play_prepared");
+  h.emit(play.payload.playbackId, "started");
+  await Promise.all([first, second]);
+  const prepared = h.calls.filter(([name]) => name === "tts_prepare_history_segment");
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0][1].payload.segmentIndex, 1);
+  assert.equal(h.states.at(-1).state, "playing");
+  h.controller.dispose();
+});
+
+test("history playback prepares the stable segment and uses a fresh cancellable operation each time", async () => {
+  const h = await harness();
+  const segment = { historyEntryId: "saved-assistant", segmentIndex: 3 };
+  const operations = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const waiting = h.controller.playHistorySegment(segment);
+    const [, { payload }] = await h.waitFor("tts_prepare_history_segment", attempt);
+    assert.equal(payload.historyEntryId, segment.historyEntryId);
+    assert.equal(payload.segmentIndex, 3);
+    operations.push(payload.operationId);
+    h.operationStarted(payload.operationId);
+    const [, play] = await h.waitFor("tts_play_prepared", attempt);
+    assert.equal(play.payload.opaqueId, descriptor.opaqueId);
+    h.emit(play.payload.playbackId, "started");
+    await waiting;
+    assert.deepEqual(h.states.at(-1), { state: "playing", ...segment });
+    h.emit(play.payload.playbackId, "finished");
+    assert.equal(h.states.at(-1).state, "idle");
+  }
+  assert.notEqual(operations[0], operations[1]);
+  assert.equal(h.calls.some(([name]) => name === "tts_prepare_segment"), false);
+  h.controller.dispose();
+});
+
+for (const interruption of ["stop", "cancel", "capture", "another-window"]) {
+  test(`history ${interruption} cancels pending preparation and cannot play its late descriptor`, async () => {
+    const prepared = deferred();
+    const h = await harness(name => name === "tts_prepare_history_segment" ? prepared.promise : undefined);
+    const waiting = h.controller.playHistorySegment({ historyEntryId: "saved-assistant", segmentIndex: 2 });
+    const [, { payload }] = await h.waitFor("tts_prepare_history_segment");
+    if (interruption === "capture") h.controller.setInputCaptureActive(true);
+    else if (interruption === "another-window") h.operationStarted("foreign-operation");
+    else h.controller[interruption]();
+    await waiting;
+    assert.ok(h.calls.some(([name, args]) => name === "tts_cancel_synthesis" && args.payload.operationId === payload.operationId));
+    if (interruption !== "another-window") {
+      assert.ok(h.calls.some(([name, args]) => name === "tts_stop_playback" && args.payload.operationId === payload.operationId));
+    }
+    prepared.resolve(descriptor);
+    await prepared.promise;
+    assert.equal(h.calls.some(([name]) => name === "tts_play_prepared"), false);
+    assert.equal(h.states.at(-1).state, "idle");
+    h.controller.dispose();
+    if (interruption === "another-window") {
+      assert.equal(h.calls.some(([name]) => name === "tts_stop_playback"), false);
+    }
+  });
+}
+
+test("another window taking audio keeps later automatic segments silent while subtitles proceed", async () => {
+  const h = await harness();
+  const segments = [{ text: "first" }, { text: "second" }];
+  h.controller.beginReply("automatic", segments);
+  await h.waitFor("tts_prepare_segment");
+  h.operationStarted("history-other-window");
+  const shown = [];
+  for (const [index, segment] of segments.entries()) {
+    await h.controller.beforeSegment(segment, index, { onStarted: () => shown.push(index) });
+  }
+  assert.deepEqual(shown, [0, 1]);
+  assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
+  assert.equal(h.calls.some(([name]) => name === "tts_play_prepared"), false);
+  h.controller.dispose();
+  assert.equal(h.calls.some(([name]) => name === "tts_stop_playback"), false);
+});
 const typewriterBinding = appSource.slice(
   appSource.indexOf("const typewriter = createTypewriter({"),
   appSource.indexOf("\nconst waitingIndicator =", appSource.indexOf("const typewriter = createTypewriter({")),
@@ -337,11 +455,11 @@ for (const failure of ["synthesis", "descriptor", "command", "event", "disabled"
 }
 
 test("disabled TTS skips the rest of the reply without repeated synthesis", async () => {
-  const h = await harness(() => { throw new Error("TTS_DISABLED"); });
+  const h = await harness(name => { if (name === "tts_prepare_segment") throw new Error("TTS_DISABLED"); });
   const segments = [{ text: "one" }, { text: "two" }];
   h.controller.beginReply("disabled", segments);
   for (const [index, segment] of segments.entries()) await h.controller.beforeSegment(segment, index);
-  assert.deepEqual(h.calls.map(([name]) => name), ["tts_prepare_segment"]);
+  assert.deepEqual(h.calls.map(([name]) => name), ["tts_begin_reply", "tts_prepare_segment"]);
   assert.deepEqual(h.diagnostics, []);
   h.controller.dispose();
 });
@@ -354,6 +472,7 @@ for (const stage of ["synthesis", "playback"]) {
     const shown = [];
     h.controller.beginReply("capture", segments);
     const gate = h.controller.beforeSegment(segments[0], 0, { onStarted: () => shown.push(0) });
+    await h.waitFor("tts_prepare_segment");
     if (stage === "playback") {
       pending.resolve(descriptor);
       await h.waitFor("tts_play_prepared");

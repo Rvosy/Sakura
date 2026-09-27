@@ -173,6 +173,22 @@ h1 {
 
 .entry-bubble-bilingual { width: 100%; }
 
+.entry-read-button {
+  justify-self: start;
+  margin: 0 4px;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--primary);
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+.entry-read-button:hover,
+.entry-read-button:focus-visible {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
 .entry-bubble-human {
   border-color: color-mix(in srgb, var(--primary) 23%, var(--border));
   border-radius: 14px 14px 4px 14px;

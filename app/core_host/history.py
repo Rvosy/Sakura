@@ -179,6 +179,7 @@ def _entry_mapping(entry: object) -> dict[str, Any]:
                 {
                     "text": str(segment.get("text", "")),
                     "translation": str(segment.get("translation", "")),
+                    "suppressTts": segment.get("suppressTts") is True,
                 }
                 for segment in segments
                 if isinstance(segment, Mapping)

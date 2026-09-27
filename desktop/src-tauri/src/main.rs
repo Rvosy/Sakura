@@ -7931,6 +7931,9 @@ fn main() {
             }
         })
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                audio::close_playback_window(window.app_handle(), window.label());
+            }
             if window.label() == "main" {
                 match event {
                     tauri::WindowEvent::Destroyed => {
@@ -8101,6 +8104,8 @@ fn main() {
             composer_tools_get,
             composer_tool_invoke,
             audio::tts_prepare_segment,
+            audio::tts_begin_reply,
+            audio::tts_prepare_history_segment,
             asr::asr_prepare,
             asr::asr_availability,
             asr::asr_poll,

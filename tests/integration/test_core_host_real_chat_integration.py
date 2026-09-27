@@ -670,6 +670,7 @@ def test_started_worker_failure_logs_and_releases_chat_execution(
 
 def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
     plugin_events: list[tuple[str, dict[str, object]]] = []
+    chat_events = []
 
     class Worker:
         def emit_event(self, name, payload):  # type: ignore[no-untyped-def]
@@ -709,6 +710,7 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
         session_provider=lambda: session,
         plugin_application_provider=lambda: worker,
         timeline_store=timeline,
+        event_publisher=chat_events.append,
     )
     request = _request(
         "completed-fact",
@@ -722,6 +724,7 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
     assert [entry.kind for entry in stored] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
     assert stored[0].payload["text"] == request["payload"]["message"]
     assert len(stored[1].payload["segments"]) == 1
+    assert chat_events[-1]["payload"]["reply"]["historyEntryId"] == stored[1].entry_id
     assert plugin_events[-1] == (
         "sakura.host.chat.completed",
         {
@@ -1569,9 +1572,15 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         assert names[0] == "chat.started"
         assert set(names[1:]) == {"chat.send", "chat.completed"}
         terminal = next(frame["payload"] for frame in frames if frame.get("name") == "chat.completed")
+        history = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
+        assert [entry.kind for entry in history] == [
+            TimelineKind.SYSTEM, TimelineKind.HUMAN, TimelineKind.ASSISTANT,
+        ]
+        started, human, assistant = history
         assert terminal == {
             "operationId": "chat-local",
             "reply": {
+                "historyEntryId": assistant.entry_id,
                 "segments": [
                     {
                         "text": "おかえり。",
@@ -1593,11 +1602,6 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         serialized_request = json.dumps(_ProviderHandler.requests, ensure_ascii=False)
         assert "LOCAL_TEST_KEY" not in serialized_request
 
-        history = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
-        assert [entry.kind for entry in history] == [
-            TimelineKind.SYSTEM, TimelineKind.HUMAN, TimelineKind.ASSISTANT,
-        ]
-        started, human, assistant = history
         assert started.origin == "host"
         assert started.payload["eventType"] == "app.started"
         assert started.turn_id != human.turn_id == assistant.turn_id
@@ -1652,7 +1656,7 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
                     "createdAt": assistant.created_at,
                     "payload": {
                         "segments": [
-                            {"text": "おかえり。", "translation": "欢迎回来。"}
+                            {"text": "おかえり。", "translation": "欢迎回来。", "suppressTts": False}
                         ]
                     },
                 },
