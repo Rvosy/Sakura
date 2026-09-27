@@ -457,6 +457,8 @@ class _CharacterHostService:
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         try:
+            if method in {"list", "presentation"} and not args:
+                return getattr(self._store, method)()
             if method == "current" and len(args) == 1:
                 return getattr(self._store, "current")(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),

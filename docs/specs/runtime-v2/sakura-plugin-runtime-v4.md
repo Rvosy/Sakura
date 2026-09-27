@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-22
+updated: 2026-09-27
 ---
 
 # Sakura Plugin Runtime v4
@@ -166,6 +166,31 @@ Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件�
 通过 `sakura.host.visual` 提交当前表现目标的控制。截图句柄、聊天操作和表现回执均绑定调用实例；
 实例退出后撤销资源和过期结果。宿主只负责资源与受理，具体采样、提示词和触发策略归普通插件。
 接口见[主动屏幕感知](WP-4-07-proactive-reminders-todos.md)与[表现插件合同](visual-plugin-boundary.md)。
+
+### 用户聊天入口
+
+`sakura.host.conversation` 提供 `begin(character_id, text, artifact_descriptor=None)`、`poll(job_id)` 和
+`cancel(job_id)`，用于用户通过插件输入的普通对话。调用实例由 Runtime 认证，不能由参数指定。
+`begin` 受理后返回 `{jobId, operationId}`，`poll` 返回 `running` 或一次性的 `completed/result`；失败保留稳定错误码。
+`cancel` 返回 `{accepted}`，只能操作同一实例的任务，插件重载后不能读取或取消前一实例的 job。
+
+文字和可选图片进入同一 RealChat 排他通道。受理时重新校验当前角色、角色会话和调用实例；
+空角色 ID 表示受理时的当前角色。已切换的角色返回 `CHAT_CHARACTER_NOT_CURRENT`，过期会话返回
+`CHAT_SESSION_STALE`，忙碌沿用 `CHAT_EXECUTION_LIMIT_EXCEEDED`，不排队。图片只能来自当前插件已提交的 artifact，
+使用后回收，伪造其他插件的 descriptor 不能读取或删除其文件。
+
+输入按用户原文记录为 `HUMAN`，不改写为主动观察；`sakura.host.chat.submit` 继续使用原有 `OBSERVATION` 语义。
+RealChat 独占历史写入、语音授权和插件事实事件发布，不因新增入口重复发送 `sakura.host.chat.completed`。
+桌面通过现有 `host.chat.started/completed/failed/cancelled` 接收结果，`presentation=interactive` 使用普通聊天的
+思考、字幕、角色表现和 TTS；主动搭话保持 `silent`。完整 reply 字段沿该事件链传递，`operationId` 只标识本次操作。
+
+停用插件、切换角色或关闭 generation 会取消未完成任务，并隔离旧结果。尚未发布 started 的已撤销任务不再向桌面发布；
+已发布 started 的操作仍交付 RealChat 决定的唯一终态。回复写入历史并认领完成后，撤销来源不能将完成改成取消。
+轮询返回文字与段落结果，音频由桌面播放；该接口不负责远程音频传输。
+
+`sakura.host.character.list()` 复用角色目录，返回 `id/displayName/initialMessage/current`；`presentation()` 返回
+当前角色的公开表现资料和主题 token。两者只读；历史复用 `sakura.host.timeline`。旧 `sakura.host.mobile` 保留
+既有参数形式与移动端错误码，聊天委托 conversation；仓库手机插件使用上述通用接口。
 
 ### 4.1 统一宿主日志
 

@@ -89,24 +89,50 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
 class MobilePluginService:
     """HTTP 层到宿主插件服务门面的轻量适配器。"""
 
-    def __init__(self, base_dir: Path, mobile_service: Any, artifacts: Any, logger: Any = None) -> None:
+    def __init__(self, base_dir: Path, conversation: Any, artifacts: Any, character: Any, timeline: Any, logger: Any = None) -> None:
         self.logger = logger
         self.base_dir = base_dir
-        self.mobile_service = mobile_service
+        self.conversation = conversation
+        self.character = character
+        self.timeline = timeline
         self.artifacts = artifacts
 
     def characters(self) -> list[dict[str, str]]:
-        return self.mobile_service.characters()
+        return [{"id": item["id"], "name": item["displayName"],
+                 "initial_message": item["initialMessage"], "current": "true" if item["current"] else "false"}
+                for item in self.character.list()]
 
     def history(self, character_id: str, *, limit: int = 50) -> list[dict[str, str]]:
-        return self.mobile_service.history(character_id, limit)
+        current = self.character.presentation()["characterId"]
+        if character_id and character_id != current:
+            raise RuntimeError("MOBILE_CHARACTER_NOT_CURRENT")
+        page = self.timeline.read_recent({"limit": max(1, min(int(limit), 200))})
+        result = []
+        for entry in page["entries"]:
+            if entry["characterId"] != current:
+                raise RuntimeError("MOBILE_CHARACTER_NOT_CURRENT")
+            payload = entry["payload"]
+            if entry["kind"] == "human":
+                raw = str(payload.get("text") or "").strip()
+                content, translation, role = raw, "", "user"
+            elif entry["kind"] == "assistant":
+                segments = payload["segments"]
+                raw = "\n".join(item["text"] for item in segments if item.get("text"))
+                content = "\n".join(item.get("translation") or item["text"] for item in segments if item.get("text"))
+                translation = "\n".join(item["translation"] for item in segments if item.get("translation"))
+                role = "assistant"
+            else:
+                continue
+            if content:
+                result.append({"created_at": entry["createdAt"], "role": role, "content": content,
+                               "raw_content": raw, "translation": translation})
+        return result
 
     def chat(self, character_id: str, text: str, image_data_url: str = "") -> dict[str, Any]:
         artifact = self._image_artifact(image_data_url) if image_data_url else {}
         job_id = ""
         try:
-            started = self.mobile_service.begin(
-                "sakura_mobile",
+            started = self.conversation.begin(
                 character_id,
                 text,
                 artifact,
@@ -116,14 +142,14 @@ class MobilePluginService:
                 raise RuntimeError("MOBILE_CHAT_JOB_INVALID")
             deadline = time.monotonic() + CHAT_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
-                state = self.mobile_service.poll("sakura_mobile", job_id)
+                state = self.conversation.poll(job_id)
                 if isinstance(state, dict) and state.get("status") == "completed":
                     result = state.get("result")
                     if not isinstance(result, dict):
                         raise RuntimeError("MOBILE_CHAT_RESULT_INVALID")
                     return result
                 time.sleep(CHAT_POLL_SECONDS)
-            self.mobile_service.cancel("sakura_mobile", job_id)
+            self.conversation.cancel(job_id)
             raise RuntimeError("MOBILE_CHAT_TIMEOUT")
         except Exception as error:
             if getattr(error, "code", "") == "CHAT_EXECUTION_LIMIT_EXCEEDED":
@@ -160,25 +186,22 @@ class MobilePluginService:
         return dict(committed)
 
     def theme(self) -> dict[str, object]:
-        theme = getattr(self.mobile_service, "theme", None)
-        if callable(theme):
-            result = theme()
-            if isinstance(result, dict):
-                return result
-        return {}
+        return self.character.presentation()["themeTokens"]
 
 
 def run_mobile_server(
     base_dir: Path,
-    mobile_service: Any,
+    conversation: Any,
     artifacts: Any,
     *,
+    character: Any,
+    timeline: Any,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     token: str = "",
     logger: Any = None,
 ) -> ThreadingHTTPServer:
-    service = MobilePluginService(base_dir, mobile_service, artifacts, logger)
+    service = MobilePluginService(base_dir, conversation, artifacts, character, timeline, logger)
     clean_token = token.strip() or secrets.token_urlsafe(10)
     handler_class = _build_handler(service, clean_token)
     server = SakuraMobileHTTPServer((host, port), handler_class)

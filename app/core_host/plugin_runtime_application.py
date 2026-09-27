@@ -15,6 +15,7 @@ from app.core_host.visual_host import VisualHost, VISUAL_INACTIVE_REASONS
 from app.core.runtime_log import log_event
 from app.core.diagnostics import exception_diagnostics
 from app.core_host.mobile_host import MobileHostService
+from app.core_host.conversation_host import ConversationHostService
 from app.core_host.chat_host import ChatHost, HOST_CHAT_SERVICE
 from app.core_host.visual_control_host import HostVisualService, HOST_VISUAL_SERVICE
 from app.core_host.screen_host import ScreenHost, HOST_SCREEN_SERVICE, migrate_legacy_screen_settings
@@ -27,6 +28,7 @@ from app.plugins.host_services import (
     HOST_DIAGNOSTICS_SERVICE,
     HOST_LOGGING_SERVICE,
     HOST_MODEL_SLOTS_SERVICE,
+    HOST_CONVERSATION_SERVICE,
     HOST_MOBILE_SERVICE,
     HOST_SETTINGS_COLLECTION_V0_SERVICE,
     HOST_SETTINGS_SERVICE,
@@ -50,7 +52,7 @@ _HOST_EXPORTS = {
     HOST_LOGGING_SERVICE: ("emit",),
     HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release", "resolve", "release_received", "deliver", "release_delivered"),
     HOST_DIAGNOSTICS_SERVICE: ("emit",),
-    HOST_CHARACTER_SERVICE: ("current", "get", "update", "resolve_resource"),
+    HOST_CHARACTER_SERVICE: ("current", "list", "presentation", "get", "update", "resolve_resource"),
     HOST_TOOLS_SERVICE: ("register", "unregister", "catalog", "execute"),
     HOST_CONTEXT_SERVICE: ("register", "unregister", "describe", "catalog", "collect"),
     HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve", "active", "register_provider", "unregister_provider"),
@@ -178,18 +180,21 @@ class PluginRuntimeApplication:
                 _HostServiceAdapter(self._host_services, service_key),
                 exports=_HOST_EXPORTS[service_key],
             )
+        commit_scope = lambda owner, commit: self._manager.commit_plugin_scope(*owner, commit)
+        self.conversation = ConversationHostService(
+            chat_boundary_provider=lambda: self._chat_boundary,
+            artifact_resolver=self._host_services.resolve_committed_artifact,
+            artifact_releaser=self._host_services.release_committed_artifact,
+            emit_callback=self._emit_desktop_event, commit_scope=commit_scope,
+        )
+        self._manager.install_host_service(HOST_CONVERSATION_SERVICE, self.conversation,
+            exports=("begin", "poll", "cancel"))
         self._manager.install_host_service(
             HOST_MOBILE_SERVICE,
-            MobileHostService(
-                roots.user_root,
-                session_provider=lambda: self._session,
-                chat_boundary_provider=lambda: self._chat_boundary,
-                artifact_resolver=self._host_services.resolve_committed_artifact,
-                artifact_releaser=self._host_services.release_committed_artifact,
-            ),
+            MobileHostService(roots.user_root, session_provider=lambda: self._session,
+                conversation=self.conversation, characters=self._character_store),
             exports=("characters", "history", "begin", "poll", "cancel", "theme"),
         )
-        commit_scope = lambda owner, commit: self._manager.commit_plugin_scope(*owner, commit)
         self.screen = ScreenHost(generation_id, commit_scope=commit_scope,
             session_provider=lambda: self._chat_boundary.current_host_state()["sessionId"] if self._chat_boundary else None,
             emit_callback=self._emit_desktop_event)
@@ -389,6 +394,7 @@ class PluginRuntimeApplication:
             raise
         self._session = session
         self.chat.invalidate_session()
+        self.conversation.invalidate_session()
         self.screen.invalidate_session()
         self._tool_registry.set_event_emitter(lambda name, payload: self.emit_event(name, payload or {}))
         session.visual_binding = candidate.binding
@@ -572,6 +578,7 @@ class PluginRuntimeApplication:
             self._session.visual_binding = None
         self._session = None
         self.chat.invalidate_session()
+        self.conversation.invalidate_session()
         self.screen.invalidate_session()
         self._bound.clear()
         if hasattr(registry, "set_event_emitter"):
@@ -758,6 +765,7 @@ class PluginRuntimeApplication:
             return
         self._closed = True
         self.chat.close()
+        self.conversation.close()
         self.screen.close()
         self.visual_controls.close()
         self.visuals.close()
