@@ -1,5 +1,6 @@
 ﻿param(
-    [string]$UserRoot = (Join-Path $env:LOCALAPPDATA 'Sakura Development')
+    [string]$UserRoot = (Join-Path $env:LOCALAPPDATA 'Sakura Development'),
+    [switch]$UseEnvironmentProxy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,17 +21,28 @@ if (@(Get-Process -Name 'sakura' -ErrorAction SilentlyContinue).Count -gt 0) {
     exit 1
 }
 
-# This launch uses the original data directly; it does not prepare a new profile.
-$acceptancePreviousRoot = $env:SAKURA_RUNTIME_USER_ROOT
-$acceptancePreviousLocation = Get-Location
-try {
-    $env:SAKURA_RUNTIME_USER_ROOT = $acceptanceUserRoot
-    Set-Location -LiteralPath $acceptanceRepository
-    Write-Host ('正在使用已有数据：' + $acceptanceUserRoot)
-    & $acceptanceExecutable
-    $acceptanceExitCode = $LASTEXITCODE
-} finally {
-    $env:SAKURA_RUNTIME_USER_ROOT = $acceptancePreviousRoot
-    Set-Location -LiteralPath $acceptancePreviousLocation
+# This desktop entry follows the current Windows proxy settings by default.
+# Keep inherited proxy overrides only when explicitly requested; stale terminal
+# values would otherwise shadow the system proxy in both Shell and plugins.
+$acceptanceStartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+$acceptanceStartInfo.FileName = $acceptanceExecutable
+$acceptanceStartInfo.WorkingDirectory = $acceptanceRepository
+$acceptanceStartInfo.UseShellExecute = $false
+$acceptanceStartInfo.EnvironmentVariables['SAKURA_RUNTIME_USER_ROOT'] = $acceptanceUserRoot
+if (-not $UseEnvironmentProxy) {
+    foreach ($acceptanceProxyName in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')) {
+        $acceptanceStartInfo.EnvironmentVariables.Remove($acceptanceProxyName)
+        $acceptanceStartInfo.EnvironmentVariables.Remove($acceptanceProxyName.ToLowerInvariant())
+    }
 }
-if ($null -ne $acceptanceExitCode) { exit $acceptanceExitCode }
+
+# This launch uses the original data directly; it does not prepare a new profile.
+Write-Host ('正在使用已有数据：' + $acceptanceUserRoot)
+$acceptanceProcess = [System.Diagnostics.Process]::Start($acceptanceStartInfo)
+try {
+    $acceptanceProcess.WaitForExit()
+    $acceptanceExitCode = $acceptanceProcess.ExitCode
+} finally {
+    $acceptanceProcess.Dispose()
+}
+exit $acceptanceExitCode
