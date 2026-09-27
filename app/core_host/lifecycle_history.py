@@ -26,7 +26,7 @@ class LifecycleHistory:
                 return
             self._started = True
             if self._generation_number == 1:
-                self._append(character_id, "app.started", "桌宠已启动，这是本次运行会话的开始。")
+                self._append(character_id, "app.started", "桌宠已启动")
             else:
                 self._append(character_id, "app.reconnected", "桌宠运行服务已重新连接；这不表示用户关闭后重新打开了应用。")
 
@@ -36,7 +36,7 @@ class LifecycleHistory:
                 return
             self._closed = True
             if self._started and character_id:
-                self._append(character_id, "app.closed", "桌宠正在正常退出，本次运行会话结束。")
+                self._append(character_id, "app.closed", "桌宠正在退出")
 
     def _append(self, character_id: str, event_type: str, text: str) -> None:
         try:
