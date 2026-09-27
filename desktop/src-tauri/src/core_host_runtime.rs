@@ -2024,7 +2024,10 @@ impl CoreHostRuntime {
         if self.router.is_some() {
             let started = Instant::now();
             let request = self.build_request_frame(
-                "shutdown", "system.shutdown", json!({"appExiting": app_exiting}), policy.graceful,
+                "shutdown",
+                "system.shutdown",
+                json!({"appExiting": app_exiting}),
+                policy.graceful,
             );
             let (primary, graceful_deadline, absolute_deadline) = match request {
                 Ok((message, expectation, written_at)) => {
@@ -2072,7 +2075,10 @@ impl CoreHostRuntime {
             return self.finish_exit_until(absolute_deadline, graceful_deadline, primary);
         }
         let write_result = self.write_request_frame(
-            "shutdown", "system.shutdown", json!({"appExiting": app_exiting}), policy.graceful,
+            "shutdown",
+            "system.shutdown",
+            json!({"appExiting": app_exiting}),
+            policy.graceful,
         );
         let (primary, graceful_deadline, absolute_deadline) = match write_result {
             Ok((expectation, written_at)) => {
@@ -3259,7 +3265,8 @@ mod tests {
     #[test]
     fn shutdown_wire_distinguishes_app_exit_from_core_stop() {
         for app_exiting in [false, true] {
-            let path = std::env::temp_dir().join(format!("sakura-shutdown-{}.bin", uuid::Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("sakura-shutdown-{}.bin", uuid::Uuid::new_v4()));
             let mut host = cleanup_runtime(
                 Box::new(InjectedTree),
                 Arc::new(Mutex::new(Vec::new())),
@@ -3271,11 +3278,13 @@ mod tests {
                 host.shutdown_for_app_exit()
             } else {
                 host.shutdown()
-            }.expect("shutdown releases transport owners");
+            }
+            .expect("shutdown releases transport owners");
             assert!(exit.tree_empty);
             let bytes = fs::read(&path).expect("shutdown request was written");
             fs::remove_file(&path).expect("remove transport capture");
-            let request = crate::core_host_protocol::decode_frame(&bytes).expect("valid shutdown frame");
+            let request =
+                crate::core_host_protocol::decode_frame(&bytes).expect("valid shutdown frame");
             assert_eq!(request["name"], "system.shutdown");
             assert_eq!(request["payload"]["appExiting"], app_exiting);
         }
