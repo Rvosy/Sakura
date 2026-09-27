@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-27
+updated: 2026-09-28
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -54,7 +54,8 @@ updated: 2026-09-27
   回复本身的语言等约束。实际合成时由 Hub 的 `begin` 检查角色级开关和选择，直接调用已绑定 Provider 的
   `begin`，不先调用 `status`。角色未启用语音时返回 `TTS_DISABLED`，作为正常跳过处理，前端跳过本轮后续语音
   等待，Core 不发布合成失败事件，Hub 不记录失败日志。Worker、Service 或 Provider 异常仍保留独立语音诊断。
-- Voice 页面把 Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
+- Voice 页面将“开口说话”开关、语音引擎选择及当前引擎的服务配置放在同一“角色语音”分组，
+  语音缓存位于页面底部。Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
   Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
   `customBaseUrl` 推导，保存后写入 `endpointMode`，切换模式不得丢弃非活动服务地址。
 - Genie 的 `Sakura 内置` 固定使用内部 loopback 端点并自动绑定当前 TTS 根下已安装的 `cpu` 整合包；不得要求
@@ -85,7 +86,8 @@ updated: 2026-09-27
   读取和播放，但不参与按段匹配，不猜测所属段落，也不迁移或改写旧文件。
 - 语音缓存目录默认是 `data/voice/recordings/<角色>/`。`config/voice_cache.json` schema v1 保存
   `directory`、`maxBytes` 和 `idleFill`。目录留空表示默认位置；容量为 32 MB 到 20480 MB，缺省 512 MB。
-  更改目录不移动已有文件。
+  更改目录不移动已有文件。Windows 界面使用普通盘符或 UNC 格式显示目录，读取与保存成功后的显示一致；
+  显示转换不改写底层 canonical 路径或已有配置。
 - 「空闲补齐」默认关闭。打开后，当前角色 Timeline 里有正文、未标记 `suppressTts`、且没有对应录音的段落，
   会在没有用户语音任务、缓存仍有余量、并且本机负载未到峰值时逐句生成并写入缓存，不播放。缓存被删、容量
   刚调大，或当时没有可用的语音连接，都属于可补齐的缺失。1 分钟负载达到 CPU 数量的 70%，或可见 GPU

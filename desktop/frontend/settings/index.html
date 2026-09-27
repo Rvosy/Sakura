@@ -274,12 +274,31 @@
         </section>
 
         <section id="page-voice" class="settings-page">
+          <div id="voiceUnavailable" class="plugin-surface" hidden></div>
+          <div id="voiceSettings" class="voice-settings">
+            <fieldset class="settings-group" data-settings-feature="voice.tts">
+              <legend>角色语音</legend>
+              <div class="setting-row">
+                <label class="setting-row-text" for="ttsEnabled">
+                  <span class="setting-title">开口说话</span>
+                </label>
+                <span class="setting-toggle"><input id="ttsEnabled" type="checkbox" /></span>
+              </div>
+              <div class="setting-row">
+                <label class="setting-row-text" for="ttsProvider">
+                  <span class="setting-title">语音引擎</span>
+                </label>
+                <select id="ttsProvider"></select>
+              </div>
+              <div id="ttsProviderSettings"></div>
+            </fieldset>
+          </div>
           <fieldset class="settings-group" id="voiceCacheSettings">
             <legend>语音缓存</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="voiceCacheDirectory">
                 <span class="setting-title">缓存目录</span>
-                <span class="setting-desc">按角色保存每一句。更改目录不会移动已有文件。</span>
+                <span class="setting-desc">更改目录不会移动已有文件。</span>
               </label>
               <input id="voiceCacheDirectory" type="text" spellcheck="false" />
             </div>
@@ -293,30 +312,11 @@
             <div class="setting-row">
               <label class="setting-row-text" for="voiceCacheIdleFill">
                 <span class="setting-title">空闲补齐</span>
-                <span class="setting-desc">缓存还有余量且本机不忙时，补上还没有语音的句子。不播放。</span>
+                <span class="setting-desc">后台补齐缺失的语音缓存，不自动播放。</span>
               </label>
               <span class="setting-toggle"><input id="voiceCacheIdleFill" type="checkbox" /></span>
             </div>
           </fieldset>
-          <div id="voiceUnavailable" class="plugin-surface" hidden></div>
-          <div id="voiceSettings" class="voice-settings">
-          <fieldset class="settings-group" data-settings-feature="voice.tts">
-            <legend>语音输出 · 当前角色</legend>
-            <div class="setting-row">
-              <label class="setting-row-text" for="ttsEnabled">
-                <span class="setting-title">朗读角色回复</span>
-              </label>
-              <span class="setting-toggle"><input id="ttsEnabled" type="checkbox" /></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="ttsProvider">
-                <span class="setting-title">语音引擎</span>
-              </label>
-              <select id="ttsProvider"></select>
-            </div>
-          </fieldset>
-          <div id="ttsProviderSettings"></div>
-          </div>
         </section>
 
         <section id="page-appearance" class="settings-page">

@@ -931,6 +931,31 @@ const VOICE_CACHE_MIN_MEGABYTES: u64 = 32;
 const VOICE_CACHE_MAX_MEGABYTES: u64 = 20480;
 const VOICE_CACHE_DEFAULT_MEGABYTES: u64 = 512;
 
+fn voice_cache_display_directory(directory: &Path) -> String {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+
+        let mut components = directory.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            // Settings use ordinary path spelling; storage and I/O keep canonical paths.
+            let mut ordinary = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut unc = PathBuf::from(r"\\");
+                    unc.push(server);
+                    unc.push(share);
+                    unc
+                }
+                _ => return directory.display().to_string(),
+            };
+            ordinary.extend(components);
+            return ordinary.display().to_string();
+        }
+    }
+    directory.display().to_string()
+}
+
 fn voice_cache_document(user_root: &Path) -> (String, u64, bool) {
     let default_dir = user_root.join("data/voice/recordings");
     let mut directory = default_dir.display().to_string();
@@ -966,8 +991,8 @@ impl AudioState {
     fn voice_cache_snapshot(&self) -> Value {
         let (directory, max_megabytes, idle_fill) = voice_cache_document(&self.user_root);
         json!({
-            "directory": directory,
-            "defaultDirectory": self.user_root.join("data/voice/recordings").display().to_string(),
+            "directory": voice_cache_display_directory(Path::new(&directory)),
+            "defaultDirectory": voice_cache_display_directory(&self.user_root.join("data/voice/recordings")),
             "maxMegabytes": max_megabytes,
             "idleFill": idle_fill,
             "limits": [VOICE_CACHE_MIN_MEGABYTES, VOICE_CACHE_MAX_MEGABYTES],
@@ -1016,13 +1041,7 @@ impl AudioState {
         bytes.push(b'\n');
         let config = self.user_root.join("config/voice_cache.json");
         crate::ui_config::atomic_write(&config, &bytes, "VOICE_CACHE")?;
-        Ok(json!({
-            "directory": resolved.display().to_string(),
-            "defaultDirectory": default_resolved.display().to_string(),
-            "maxMegabytes": max_megabytes,
-            "idleFill": idle_fill,
-            "limits": [VOICE_CACHE_MIN_MEGABYTES, VOICE_CACHE_MAX_MEGABYTES],
-        }))
+        Ok(self.voice_cache_snapshot())
     }
 }
 
@@ -1220,6 +1239,77 @@ mod tests {
     };
 
     static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(windows)]
+    #[test]
+    fn voice_cache_snapshot_displays_drive_and_unc_paths_without_changing_config() {
+        let root = temp_root();
+        let state = AudioState::new(root.canonicalize().unwrap());
+        let config = root.join("config/voice_cache.json");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        for (stored, displayed) in [
+            (
+                r"\\?\C:\Sakura 角色\recordings",
+                r"C:\Sakura 角色\recordings",
+            ),
+            (
+                r"\\?\UNC\server\share\recordings",
+                r"\\server\share\recordings",
+            ),
+            (r"C:\Sakura\recordings", r"C:\Sakura\recordings"),
+            (r"\\server\share\recordings", r"\\server\share\recordings"),
+        ] {
+            let bytes =
+                serde_json::to_vec(&json!({"schemaVersion": 1, "directory": stored})).unwrap();
+            fs::write(&config, &bytes).unwrap();
+            let snapshot = state.voice_cache_snapshot();
+            assert_eq!(snapshot["directory"], displayed);
+            assert_eq!(
+                snapshot["defaultDirectory"],
+                root.join("data")
+                    .join("voice")
+                    .join("recordings")
+                    .display()
+                    .to_string()
+            );
+            assert_eq!(fs::read(&config).unwrap(), bytes);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn voice_cache_save_and_reload_keep_display_paths_and_canonical_storage_consistent() {
+        let root = temp_root();
+        let state = AudioState::new(root.canonicalize().unwrap());
+        let directory = root.join("cache with 空格");
+        let saved = state
+            .save_voice_cache(&directory.display().to_string(), 128, true)
+            .unwrap();
+        assert_eq!(state.voice_cache_snapshot(), saved);
+        let displayed = saved["directory"].as_str().unwrap();
+        #[cfg(windows)]
+        assert!(!displayed.starts_with(r"\\?\"));
+        assert_eq!(
+            Path::new(displayed).canonicalize().unwrap(),
+            directory.canonicalize().unwrap()
+        );
+        let config = root.join("config/voice_cache.json");
+        let document: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        assert_eq!(
+            document["directory"],
+            directory.canonicalize().unwrap().display().to_string()
+        );
+        assert_eq!(state.save_voice_cache(displayed, 128, true).unwrap(), saved);
+
+        let default = state.save_voice_cache("", 64, false).unwrap();
+        assert_eq!(state.voice_cache_snapshot(), default);
+        assert_eq!(default["directory"], default["defaultDirectory"]);
+        #[cfg(windows)]
+        assert!(!default["directory"].as_str().unwrap().starts_with(r"\\?\"));
+        let document: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
+        assert_eq!(document["directory"], "");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn saved_voice_commands_are_limited_to_chat_and_history_windows() {
