@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-18
+updated: 2026-09-22
 ---
 
 # WP-5-03 安全角色切换、Session 与历史分页
@@ -23,6 +23,10 @@ Assistant Session 的热配置：切换先阻止新聊天、取消并等待旧�
 导入角色包只有在首次导入并自动成为当前角色时要求重启；
 导入非当前角色不重启。
 
+设置页可以删除已安装的角色包。删除前必须确认。确认后 Core 只移除 `characters/` 下该角色的直接子目录，
+不删除聊天记录和记忆。删除当前角色时按显示名选择下一个角色并受控重启；删掉最后一个角色后当前角色为空，
+新 generation 以 `setup_required` 完成。删除非当前角色不重启。
+
 设置页可以给当前已提交角色导入 `.voice`，也可以导出完整角色包、单角色包或语音包。给当前角色导入语音返回
 `character_refresh`：支持资源更新协议的语音服务暂停任务并失效权重缓存，保留推理进程；其他语音服务局部重载。
 Core generation 保持不变。
@@ -33,7 +37,7 @@ Core generation 保持不变。
 
 ## 2. 配置提交与 restart 协议
 
-Python `characters.settings.select/import/import_voice` 在校验归档或目标角色后保存数据，返回固定 envelope：
+Python `characters.settings.select/import/import_voice/delete` 在校验归档或目标角色后保存数据，返回固定 envelope：
 
 ```json
 {
@@ -60,6 +64,9 @@ Core 记录尚未成功应用的选择；用户再次提交同一目标时重新
 `schemaVersion`、`outputPath` 和用户提示。Python Core 负责校验角色及语音模型，并通过临时文件替换目标归档；
 Rust 和 WebView 不直接读取角色目录。
 
+`characters.settings.delete` 只接收 `characterId`。成功时返回与 select/import 相同的 change envelope。
+最后一个角色删除后 `currentCharacterId` 可以为空，Rust 仍派发一次受控 restart。
+
 设置页的角色下拉不得直接调用 `characters.settings.select`。它可以通过独立的只读视觉预览命令加载目标角色
 已保存的主题、默认立绘和初始问候语，但不得改变 active character、Core generation、Chat reducer、Memory/Timeline、TTS
 或插件 identity。统一保存流程先提交当前 generation 的其他设置，
@@ -72,8 +79,10 @@ Rust 和 WebView 不直接读取角色目录。
 
 1. `characterChanged` 回执允许保持原 generation；旧版 restart 回执仍要求 generation number 增加；
 2. Core Snapshot 的 generation ID 与 Supervisor 一致；
-3. Snapshot readiness 为 `ready`、`degraded`，或带有效目标表现的 `setup_required`；
-4. Character Presentation 的 generation ID 一致且 `characterId` 等于已提交目标。
+3. 目标非空时，Character Presentation 的 generation ID 一致且 `characterId` 等于已提交目标；
+   角色与表现就绪不依赖 Assistant 的 readiness，缺少模型配置不应阻止设置页完成切换；
+4. 删除最后一个角色后目标为空时，必须等待新 generation 为 `setup_required` 且没有角色 Presentation；
+   `initializing` 期间的暂时空状态不视为完成。
 
 任一条件缺失都不能显示新角色历史或宣告切换成功。目标到达 `failed` 时报告初始化失败，不自动恢复。
 
@@ -117,12 +126,15 @@ Core generation 表示进程寿命，角色 ID 表示会话归属。切换阻止
   Character Presentation。放弃或选回已提交角色时恢复正式角色主题、当前回复对应立绘和精确点击区域。
   气泡同时恢复 reducer 当前应显示的内容；预览期间到达的回复只更新 reducer 状态，不覆盖预览问候语。
   暂存期间暂停角色 Collection 请求，global Collection 仍可使用。
+  Linux 的 `liveCharacterVisualPreview` 为 `false`，暂存目标时不请求目标立绘、不更新设置窗口背景或桌宠预览，
+  只在应用角色后加载新表现，避免 WebKitGTK 在透明窗口调整期间解码新图片。
 - 已提交的角色切换回执才进入 switching；`characterChanged` 即使不伴随 Core 重启也必须等待目标角色及表现绑定。角色切换或 Core 转场期间所有 Collection 暂停请求，删除确认返回后复核编辑器与实例。
   本地切换与外部重绑定各自完成后释放锁，过期 generation 和普通目录通知不能提前解除另一操作的锁。
 - 实际角色变化清空角色集合的页面、编辑器、筛选、游标和在途请求；global 草稿保留。同角色局部刷新或 Core 重启保留仍存在集合的草稿，并使刷新前的回执失效。
   新快照绑定新的请求状态，旧查询、错误或写入回执不回填，也不自动重放写入；结束后恢复当前搜索。
 - 当前角色仍有外观、语音或角色集合修改时禁止导入语音。全局草稿不属于此门禁。
   导出读取已保存的角色包；有待应用角色时，导入语音和导出仍禁用。
+  展开当前角色列表后，每一行可以删除对应角色包；角色包区域的删除仍删除当前选中项。两者都必须先确认；切换进行中禁用删除。
 - 全局字段与 global Collection 草稿可在“应用”后保留，角色变更最后提交；“保存并关闭”必须先处理所有未保存集合，不能暗示记录已保存。
 - 主桌宠只有在角色 ID 变化时替换 Chat Presentation reducer，清除旧回复浏览/打字/TTS 状态并显示新角色
   初始消息。同角色普通 restart 保留已经稳定显示的画面。

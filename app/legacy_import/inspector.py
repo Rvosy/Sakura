@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import errno
 import os
-import platform
 import re
 import shutil
 from pathlib import Path
@@ -25,7 +24,6 @@ _KNOWN_TTS_CHILDREN = {
     "GPT-SoVITS",
     "GPT_SoVITS",
 }
-_TARGET_PLATFORMS = {"Windows": "windows", "Darwin": "macos"}
 
 
 def inspect_installation(source: Path, target: Path) -> LegacyInspection:
@@ -41,14 +39,9 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         blockers.append({"code": "LEGACY_LAYOUT_UNRECOGNIZED", "stage": "inspect"})
     if legacy_source_is_active(source):
         blockers.append({"code": "LEGACY_SOURCE_ACTIVE", "stage": "inspect"})
+    # User data is portable even when the old installation lacks a launcher.
+    # Platform-specific TTS is handled separately during staging.
     source_platform = detect_legacy_source_platform(source)
-    target_platform = _TARGET_PLATFORMS.get(platform.system(), "unknown")
-    if source_platform == "unknown":
-        blockers.append({"code": "LEGACY_PLATFORM_UNSUPPORTED", "stage": "inspect"})
-    if target_platform == "unknown":
-        blockers.append({"code": "LEGACY_TARGET_PLATFORM_UNSUPPORTED", "stage": "inspect"})
-    elif source_platform != "unknown" and source_platform != target_platform:
-        blockers.append({"code": "LEGACY_CROSS_PLATFORM_UNSUPPORTED", "stage": "inspect"})
 
     try:
         source.relative_to(target)
@@ -109,8 +102,6 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
             blockers.append({"code": exc.code, "stage": "inspect"})
 
     version = _detect_version(source)
-    if not version.startswith("0.9"):
-        blockers.append({"code": "LEGACY_VERSION_UNSUPPORTED", "stage": "inspect"})
 
     domains: dict[str, DomainInspection] = {}
     domains["config"] = _domain(source / "data" / "config")

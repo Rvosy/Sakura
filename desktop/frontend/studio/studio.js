@@ -600,6 +600,9 @@ function collectDoc() {
     id: fields.characterId.value.trim(),
     display_name: fields.displayName.value.trim(),
     initial_message: fields.initialMessage.value,
+    initial_message_translation: fields.initialMessage.value.trim() === String(currentDoc?.initial_message || "").trim()
+      ? String(currentDoc?.initial_message_translation || "")
+      : "",
     card_text: fields.cardText.value,
     reply_tones: replyTones,
     voice: hasVoiceResources ? {

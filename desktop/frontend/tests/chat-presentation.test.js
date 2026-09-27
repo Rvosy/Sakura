@@ -451,6 +451,28 @@ test("Core failure gives active work one interrupted terminal and preserves earl
   assert.equal(reducer.current().lifecycle, "ready");
 });
 
+test("missing voice uses the longer pause and finished playback keeps the short pause", async () => {
+  const timers = [];
+  const typewriter = createTypewriter({
+    intervalMs: 10,
+    segmentPauseMs: 20,
+    silentSegmentPauseMs: 800,
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onSegmentComplete(_segment, index) {
+      return Promise.resolve(index === 0);
+    },
+  });
+  typewriter.start([{ text: "a" }, { text: "b" }, { text: "c" }]);
+  timers.shift().callback();
+  await Promise.resolve();
+  assert.equal(timers.at(-1).delay, 20);
+  timers.shift().callback();
+  timers.shift().callback();
+  await Promise.resolve();
+  assert.equal(timers.at(-1).delay, 800);
+});
+
 test("timing updates are snapshotted for the next reply without retiming the active one", () => {
   const timers = [];
   const typewriter = createTypewriter({
@@ -581,6 +603,19 @@ test("bilingual subtitles pair translation and original without empty or duplica
   assert.equal(selectSegmentText({ text: "同文", translation: " 同文 " }, "bilingual"), "同文");
   assert.equal(selectSegmentText({ text: "かな", translation: "中文" }, "bilingual_ja"), "かな\n中文");
   assert.equal(selectSegmentText({ text: "かな", translation: " " }, "bilingual_ja"), "かな");
+});
+
+test("greeting uses the subtitle language tracks", () => {
+  const reducer = createChatPresentationReducer({
+    initialMessage: "……起動した。用事があるなら、呼んで。",
+    initialMessageTranslation: "……启动了。有事的话，叫我。",
+  });
+  reducer.reduce(lifecycle("ready"));
+  const segment = reducer.beginGreeting().state.segments[0];
+  assert.equal(selectSegmentText(segment, "zh"), segment.translation);
+  assert.equal(selectSegmentText(segment, "ja"), segment.text);
+  assert.equal(selectSegmentText(segment, "bilingual"), `${segment.translation}\n${segment.text}`);
+  assert.equal(selectSegmentText(segment, "bilingual_ja"), `${segment.text}\n${segment.translation}`);
 });
 
 test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {

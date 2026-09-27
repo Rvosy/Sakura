@@ -241,6 +241,11 @@ class _JobSupervisor:
             )
         )
 
+    def _restart_owned_runtime(self) -> bool:
+        self._job.check_cancelled()
+        restart = getattr(self._supervisor, "_restart_owned_runtime", None)
+        return bool(restart()) if callable(restart) else False
+
 
 class _EngineQueue:
     def __init__(

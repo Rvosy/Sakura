@@ -1,6 +1,7 @@
 const FIELDS = Object.freeze({
   subtitleTypingIntervalMs: "subtitleTypingInterval",
   replySegmentPauseMs: "replySegmentPause",
+  silentSegmentPauseMs: "silentSegmentPause",
 });
 
 const clone = (value) => JSON.parse(JSON.stringify(value));

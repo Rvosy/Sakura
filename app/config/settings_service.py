@@ -276,6 +276,10 @@ class AppSettingsService:
         raw = load_yaml_mapping(self.characters_config_path).get("visual_selections", {})
         return {key: value for key, value in raw.items() if isinstance(key, str) and isinstance(value, str)} if isinstance(raw, dict) else {}
 
+    def load_seed_import_exclusions(self) -> set[str]:
+        raw = load_yaml_mapping(self.characters_config_path).get("seed_import_exclusions", [])
+        return {value for value in raw if isinstance(value, str) and value} if isinstance(raw, list) else set()
+
     def selected_visual_resource(self, profile):
         resource_id = self.load_visual_selections().get(profile.id, profile.default_visual_id)
         return next((item for item in profile.visual_resources if item.id == resource_id), profile.current_visual_resource)
@@ -293,6 +297,31 @@ class AppSettingsService:
                 selections[target] = resource_id
             else:
                 raise ValueError("VISUAL_RESOURCE_NOT_FOUND")
+        if selections:
+            data["visual_selections"] = selections
+        else:
+            data.pop("visual_selections", None)
+        save_yaml_mapping(self.characters_config_path, data)
+
+    def forget_character(
+        self,
+        character_registry: CharacterRegistry,
+        removed_id: str,
+        next_character_id: str | None,
+    ) -> None:
+        data = load_yaml_mapping(self.characters_config_path)
+        data["seed_import_exclusions"] = sorted(self.load_seed_import_exclusions() | {removed_id})
+        if next_character_id:
+            character_registry.get(next_character_id)
+            data["current_character_id"] = next_character_id
+        else:
+            configured = str(data.get("current_character_id", "")).strip()
+            if configured == removed_id or configured not in character_registry.profiles:
+                data.pop("current_character_id", None)
+        selections = self.load_visual_selections()
+        selections.pop(removed_id, None)
+        for key in [item for item in selections if item not in character_registry.profiles]:
+            selections.pop(key, None)
         if selections:
             data["visual_selections"] = selections
         else:

@@ -27,6 +27,7 @@ function characterDocument() {
       this.disabled = false;
       this.inert = false;
       this.value = "";
+      this.dataset = {};
       this.className = "";
       this.classList = {
         contains: (name) => this.className.split(/\s+/).includes(name),
@@ -78,7 +79,7 @@ function characterDocument() {
   document.append(document.body);
   const fields = Object.fromEntries([
     "saveButton", "applyButton", "characterSelect", "characterImportButton", "ttsVoiceImportButton",
-    "characterExportButton", "characterEditorButton", "characterArchiveHint",
+    "characterExportButton", "characterDeleteButton", "characterEditorButton", "characterArchiveHint",
     "page-character", "page-appearance", "page-voice", "page-memory", "page-model",
   ].map((id) => [id, new Element()]));
   document.body.append(...Object.values(fields));
@@ -171,6 +172,7 @@ test("unsaved layout and pending character selection both allow opening Studio w
   assert.equal(feature.pendingCharacterId(), "beta");
   assert.equal(fields.characterEditorButton.disabled, false);
   assert.equal(fields.ttsVoiceImportButton.disabled, true);
+  assert.equal(fields.characterDeleteButton.disabled, false);
   assert.equal(fields["page-appearance"].inert, true);
   assert.equal(fields["page-model"].inert, false);
   await fields.characterEditorButton.click();
@@ -807,7 +809,7 @@ test("archive export keeps voice eligibility and the native path handoff while c
 test("preparing migrated archive controls keeps their accessible state usable", async () => {
   const { feature, fields } = await characterSettings();
   feature.prepareControls();
-  for (const id of ["characterExportButton", "ttsVoiceImportButton"]) {
+  for (const id of ["characterExportButton", "characterDeleteButton", "ttsVoiceImportButton"]) {
     assert.equal(fields[id].disabled, false);
     assert.notEqual(fields[id].getAttribute("aria-disabled"), "true");
   }
@@ -841,9 +843,28 @@ test("uninitialized and unavailable character catalogs retain a supported empty 
   assert.equal(fields.characterSelect.children.length, 0);
   assert.equal(fields.characterSelect.disabled, true);
   assert.equal(fields.characterImportButton.disabled, false);
+  assert.equal(fields.characterDeleteButton.disabled, true);
   assert.equal(fields.characterEditorButton.disabled, true);
   assert.match(errors.at(-1), /SETTINGS_CORE_UNAVAILABLE/);
   feature.dispose();
+});
+
+test("settings can skip live visual preview until the pending character is applied", async () => {
+  const fixture = await characterSettings({
+    feature: { liveCharacterVisualPreview: false },
+  });
+  await select(fixture, "beta");
+  await fixture.feature.waitForPreview();
+  assert.equal(fixture.feature.pendingCharacterId(), "beta");
+  assert.equal(fixture.feature.currentCharacterId(), "alpha");
+  assert.equal(fixture.feature.isDirty(), true);
+  assert.equal(
+    fixture.calls.some(([command]) => command === "settings_character_visual_preview"),
+    false,
+  );
+  assert.deepEqual(fixture.previews, []);
+  assert.deepEqual(fixture.errors, []);
+  fixture.feature.dispose();
 });
 
 test("disposing a character feature isolates pending catalog and visual preview results", async () => {
@@ -886,4 +907,89 @@ test("character and voice imports deliver plugin hints through the settings rece
     assert.ok(notices.some(item => item.level === "info" && item.message.includes("示例语音插件")));
     fixture.feature.dispose();
   }
+});
+
+test("deleting a character requires confirmation and does not invoke on cancel", async () => {
+  const confirms = [];
+  const fixture = await characterSettings({
+    feature: {
+      confirmAction: async (message, options) => {
+        confirms.push({ message, options });
+        return false;
+      },
+    },
+  });
+  await fixture.fields.characterDeleteButton.click();
+  assert.equal(confirms.length, 1);
+  assert.equal(confirms[0].message, "删除「alpha」？");
+  assert.equal(confirms[0].options.title, "删除角色");
+  assert.equal(confirms[0].options.danger, true);
+  assert.equal(confirms[0].options.confirmText, "删除");
+  assert.deepEqual(confirms[0].options.details, [
+    "角色包会从本机移除，无法恢复。",
+    "聊天记录和记忆仍会保留。",
+    "桌宠将切换到「beta」。",
+  ]);
+  assert.equal(fixture.calls.some(([command]) => command === "settings_character_delete"), false);
+  fixture.feature.dispose();
+});
+
+test("expanded character rows delete that character and the bottom button keeps the selection", async () => {
+  const confirms = [];
+  const fixture = await characterSettings({
+    feature: {
+      confirmAction: async (message, options) => {
+        confirms.push({ message, options });
+        return false;
+      },
+    },
+  });
+  await fixture.fields.characterSelect.fire("option-delete", { detail: { value: "gamma" } });
+  assert.equal(confirms.length, 1);
+  assert.equal(confirms[0].message, "删除「gamma」？");
+  assert.deepEqual(confirms[0].options.details, [
+    "角色包会从本机移除，无法恢复。",
+    "聊天记录和记忆仍会保留。",
+  ]);
+  await fixture.fields.characterDeleteButton.click();
+  assert.equal(confirms[1].message, "删除「alpha」？");
+  assert.equal(fixture.calls.some(([command]) => command === "settings_character_delete"), false);
+  fixture.feature.dispose();
+});
+
+test("confirmed character delete waits for the next generation", async () => {
+  let phase = "before";
+  const catalogs = { current: catalog() };
+  const fixture = await characterSettings({
+    handlers: {
+      settings_characters_get: () => catalogs.current,
+      runtime_lifecycle_snapshot: () => (
+        phase === "before"
+          ? lifecycle("generation-a", 1, "alpha")
+          : lifecycle("generation-b", 2, "beta")
+      ),
+      settings_character_delete: () => {
+        phase = "after";
+        catalogs.current = catalog(["beta", "gamma"], "beta");
+        return {
+          schemaVersion: 1,
+          snapshot: catalogs.current,
+          targetCharacterId: "beta",
+          previousCoreGenerationId: "generation-a",
+          restartState: "requested",
+        };
+      },
+    },
+    feature: { confirmAction: async () => true },
+  });
+  await fixture.fields.characterDeleteButton.click();
+  assert.deepEqual(fixture.calls.filter(([command]) => command === "settings_character_delete"), [
+    ["settings_character_delete", { characterId: "alpha" }],
+  ]);
+  assert.equal(fixture.feature.currentCharacterId(), "beta");
+  assert.deepEqual(fixture.transitions, [
+    ["clear"],
+    ["rebind", "generation-b"],
+  ]);
+  fixture.feature.dispose();
 });

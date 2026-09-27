@@ -613,7 +613,7 @@ def test_partial_legacy_source_without_config_imports_surviving_history(
     shutil.rmtree(source / "data/config")
     target = tmp_path / "target"
     target.mkdir()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Windows")
 
     report, pending = run_legacy_import(
         source,
@@ -635,6 +635,37 @@ def test_partial_legacy_source_without_config_imports_surviving_history(
     )
 
 
+@pytest.mark.parametrize("target_system", ["Windows", "Darwin", "Linux"])
+def test_markerless_legacy_data_imports_settings_history_and_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_system: str,
+) -> None:
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: target_system)
+    source = _legacy_fixture(tmp_path, source_platform="windows")
+    runtime_file = source / "tts/g50/runtime.bin"
+    runtime_file.parent.mkdir()
+    runtime_file.write_bytes(b"unverified runtime")
+    (source / "start.bat").unlink()
+    (source / "VERSION").unlink()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    inspection = inspect_legacy_installation(source, target)
+    assert inspection.compatible
+    assert inspection.source_platform == "unknown"
+
+    report, pending = run_legacy_import(
+        source, target, import_id="markerless-legacy-data", finalize=True,
+    )
+    assert pending is None
+    assert (target / "config/api.yaml").is_file()
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("Sakura")
+    assert (target / "data/memory/mem0_history.db").is_file()
+    assert report.counts["ttsSkipped"] == 1
+    assert any(w["code"] == "LEGACY_TTS_IMPORT_SKIPPED" for w in report.warnings)
+    assert not (target / "tts/g50/runtime.bin").exists()
+    assert runtime_file.read_bytes() == b"unverified runtime"
+
+
 def test_inspection_rejects_a_1_0x_target_inside_the_0_9x_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -642,7 +673,7 @@ def test_inspection_rejects_a_1_0x_target_inside_the_0_9x_source(
     source = _legacy_fixture(tmp_path, source_platform="windows")
     target = source / "runtime-v2"
     target.mkdir()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Windows")
 
     inspection = inspect_legacy_installation(source, target)
 
@@ -662,7 +693,7 @@ def test_inspection_reports_transformed_configuration_conflict(
     (target / "config/ui.json").write_text(
         '{"always_on_top": false}\n', encoding="utf-8"
     )
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Windows")
 
     inspection = inspect_legacy_installation(source, target)
 
@@ -670,22 +701,20 @@ def test_inspection_reports_transformed_configuration_conflict(
     assert "配置" in inspection.overwrite_domains
 
 
-def test_inspection_rejects_cross_platform_legacy_source(
+def test_inspection_allows_portable_data_from_cross_platform_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _macos_legacy_fixture(tmp_path)
     target = tmp_path / "target"
     target.mkdir()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Windows")
 
     inspection = inspect_legacy_installation(source, target)
 
-    assert not inspection.compatible
+    assert inspection.compatible
     assert inspection.source_platform == "macos"
-    assert "LEGACY_CROSS_PLATFORM_UNSUPPORTED" in {
-        str(blocker["code"]) for blocker in inspection.blockers
-    }
+    assert not inspection.blockers
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
@@ -696,7 +725,7 @@ def test_macos_import_copies_managed_tts_and_preserves_safe_links(
     source = _macos_legacy_fixture(tmp_path)
     target = tmp_path / "target"
     target.mkdir()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Darwin")
     before = _tree_state(source)
 
     report, pending = run_legacy_import(
@@ -1307,7 +1336,7 @@ def test_first_import_merges_and_preserves_all_atomic_target_trees(
     curation.parent.mkdir()
     curation.write_text('{"curation_cursor":"stale"}\n', encoding="utf-8")
     before = _tree_state(source)
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Windows")
     inspection = inspect_legacy_installation(source, target)
 
     assert inspection.compatible
@@ -1379,7 +1408,7 @@ def test_first_import_never_overwrites_cross_role_timeline_identity(
     with sqlite3.connect(timeline.path) as connection:
         write_history_identities(connection, read_history_identities(converted))
     connection.close()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Windows")
 
     run_legacy_import(
         source, target, import_id="test-first-import-cross-role", finalize=True,
@@ -1401,7 +1430,7 @@ def test_first_import_rejects_unreadable_target_memory_without_mutation(
     target_memory.mkdir(parents=True)
     (target_memory / "mem0_history.db").write_bytes(b"not a sqlite database")
     before = _tree_state(target)
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Windows")
 
     inspection = inspect_legacy_installation(source, target)
 
@@ -1907,7 +1936,7 @@ def test_legacy_auxiliary_validation_preserves_bytes_and_core_import(
         path.write_bytes(content)
     target = tmp_path / "target"
     target.mkdir()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(legacy_importer.platform, "system", lambda: "Windows")
 
     report, pending = run_legacy_import(
         source, target, import_id="auxiliary-data", finalize=True

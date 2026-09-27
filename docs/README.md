@@ -20,6 +20,7 @@ updated: 2026-09-24
 - [联网搜索与网页读取](userdocs/WEB_SEARCH.md)
 - [运行统计与错误报告](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
 - [macOS 使用说明](userdocs/MACOS_SETUP.md)
+- [Linux 使用说明](userdocs/LINUX_SETUP.md)
 - [窗口交互](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
 - [外观设置](userdocs/RUNTIME_V2_APPEARANCE.md)
 - [MCP 基础组件](userdocs/RUNTIME_V2_MCP.md)

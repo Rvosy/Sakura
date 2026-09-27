@@ -43,6 +43,7 @@ def project_character_presentation(profile: CharacterProfile, visual: dict | Non
         "characterId": profile.id,
         "displayName": profile.display_name,
         "initialMessage": profile.initial_message,
+        "initialMessageTranslation": translation if isinstance(translation := getattr(profile, "initial_message_translation", ""), str) else "",
         "themeTokens": {
             public_name: theme[source_name]
             for source_name, public_name in _THEME_TOKEN_NAMES.items()

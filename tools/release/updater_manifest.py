@@ -13,6 +13,7 @@ from urllib.parse import quote
 PLATFORM_KEYS = {
     "windows-x64": "windows-x86_64",
     "macos-arm64": "darwin-aarch64",
+    "linux-x64": "linux-x86_64",
 }
 
 
