@@ -630,7 +630,9 @@ def _copy_tts_optional(
         ),
         None,
     )
-    if inspection_issue is None and inspection.source_platform != target_platform:
+    if inspection_issue is None and (
+        inspection.source_platform == "unknown" or inspection.source_platform != target_platform
+    ):
         inspection_issue = "LEGACY_TTS_PLATFORM_UNVERIFIED"
     if inspection_issue is not None:
         _record_optional_domain_skipped(
