@@ -14,7 +14,6 @@ function freezeState(value) {
   const historyLength = value.replyHistorySegments.length;
   const reviewEnabled = ["settled", "error"].includes(value.phase) && historyLength > 1;
   const historyIndex = Number.isInteger(value.replyHistoryIndex) ? value.replyHistoryIndex : -1;
-  const currentHistorySegment = historyIndex >= 0 ? value.replyHistorySegments[historyIndex] : undefined;
   return Object.freeze({
     ...value,
     reviewingHistory: Boolean(value.showingReplyHistorySegment)
@@ -23,13 +22,6 @@ function freezeState(value) {
       && historyIndex < historyLength - 1,
     canReviewPrevious: reviewEnabled && historyIndex > 0,
     canReviewNext: reviewEnabled && historyIndex >= 0 && historyIndex < historyLength - 1,
-    canReplayCurrentReply: ["settled", "error"].includes(value.phase)
-      && Boolean(currentHistorySegment)
-      && currentHistorySegment.suppressTts !== true
-      && typeof currentHistorySegment.operationId === "string"
-      && Boolean(currentHistorySegment.operationId)
-      && Number.isInteger(currentHistorySegment.segmentIndex)
-      && currentHistorySegment.segmentIndex >= 0,
   });
 }
 
@@ -53,7 +45,6 @@ function initialState() {
     reviewingHistory: false,
     canReviewPrevious: false,
     canReviewNext: false,
-    canReplayCurrentReply: false,
     error: null,
 
     canCancel: false,
@@ -67,21 +58,18 @@ export function composerPlaceholder(displayName, phase) {
   return phase === "thinking" ? `${name}正在思考…` : `和${name}说点什么……`;
 }
 
-function normalizedSegments(reply, operationId) {
+function normalizedSegments(reply) {
   if (!Array.isArray(reply?.segments)) return Object.freeze([]);
-  const identity = typeof operationId === "string" ? operationId : "";
   return Object.freeze(
     reply.segments
       .filter((segment) => segment && typeof segment === "object")
-      .map((segment, segmentIndex) =>
+      .map((segment) =>
         Object.freeze({
           text: typeof segment.text === "string" ? segment.text : "",
           translation: typeof segment.translation === "string" ? segment.translation : "",
           tone: typeof segment.tone === "string" ? segment.tone : "calm",
           portrait: typeof segment.portrait === "string" ? segment.portrait : "idle",
           suppressTts: segment.suppressTts === true,
-          operationId: identity,
-          segmentIndex,
           // The renderer owns control validation; keep invalid input visible there.
           ...(segment.control != null ? { control: segment.control } : {}),
         }),
@@ -241,7 +229,7 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
 
       if (!event.operationId || event.operationId !== state.operationId) return result(false);
       if (event.type === "chat.completed" && (state.phase === "thinking" || state.silentInteraction)) {
-        const segments = normalizedSegments(event.reply, event.operationId);
+        const segments = normalizedSegments(event.reply);
         if (!segments.length) {
           if (!state.silentInteraction) return result(false);
           state = freezeState({

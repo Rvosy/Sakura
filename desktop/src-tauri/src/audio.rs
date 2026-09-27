@@ -588,8 +588,6 @@ fn validate_generation_id(value: &str) -> Result<(), String> {
 pub(crate) struct TtsPrepareSegmentRequest {
     operation_id: String,
     segment_index: u64,
-    #[serde(default)]
-    replay: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -632,18 +630,14 @@ pub(crate) async fn tts_prepare_segment(
         }),
     )?;
     let registration_revision = manager.registration_revision()?;
-    let mut request = json!({
-        "operationId": payload.operation_id,
-        "segmentIndex": payload.segment_index,
-    });
-    if payload.replay {
-        request["replay"] = json!(true);
-    }
     let response = dispatch_settings_request(
         handle.clone(),
         None,
         "tts.synthesis.start",
-        request,
+        json!({
+            "operationId": payload.operation_id,
+            "segmentIndex": payload.segment_index,
+        }),
         std::time::Duration::from_secs(305),
     )
     .await?;
