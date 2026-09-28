@@ -1247,6 +1247,8 @@ mod tests {
         let state = AudioState::new(root.canonicalize().unwrap());
         let config = root.join("config/voice_cache.json");
         fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let default_directory = root.join("data/voice/recordings");
+        fs::create_dir_all(&default_directory).unwrap();
         for (stored, displayed) in [
             (
                 r"\\?\C:\Sakura 角色\recordings",
@@ -1264,13 +1266,12 @@ mod tests {
             fs::write(&config, &bytes).unwrap();
             let snapshot = state.voice_cache_snapshot();
             assert_eq!(snapshot["directory"], displayed);
+            let displayed_default = snapshot["defaultDirectory"].as_str().unwrap();
+            assert!(!displayed_default.starts_with(r"\\?\"));
+            // Windows TEMP may use an 8.3 alias while AudioState uses the long path.
             assert_eq!(
-                snapshot["defaultDirectory"],
-                root.join("data")
-                    .join("voice")
-                    .join("recordings")
-                    .display()
-                    .to_string()
+                Path::new(displayed_default).canonicalize().unwrap(),
+                default_directory.canonicalize().unwrap()
             );
             assert_eq!(fs::read(&config).unwrap(), bytes);
         }
