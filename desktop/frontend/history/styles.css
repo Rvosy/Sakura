@@ -185,11 +185,11 @@ h1 {
 /* Only the final text line shares space with playback; earlier lines keep the full width. */
 .entry-segment > .entry-bubble:not(.entry-bubble-bilingual)::after,
 .entry-segment > .entry-bubble-bilingual > .subtitle-pair:last-child > .subtitle-line:not(:empty):is(:last-child, :has(+ .subtitle-line:empty))::after {
-  content: "";
-  display: inline-block;
-  width: 30px;
-  height: 28px;
-  vertical-align: bottom;
+  /* Keep the reserved corner with the last character instead of wrapping alone. */
+  content: "\2060";
+  padding-inline-end: 30px;
+  line-height: 28px;
+  user-select: none;
 }
 
 .entry-read-button {
