@@ -79,7 +79,9 @@ export function createPluginSettingsFeature({
     const write = (key, value) => { pluginSectionValues(plugin.id, section.section_id)[key] = value; refreshDirty(); };
     const presentation = section.presentation || { component: "form" };
     if (section.reason_code && !["READY", "CONFIG_RELOAD_REQUIRED", "CONFIG_APPLY_FAILED"].includes(section.reason_code)) {
-      const element = pluginNode("p", "error", section.reason_code === "SETTINGS_LOAD_FAILED" ? "设置加载失败。" : section.reason_code);
+      const label = pluginPresentation.presentPluginReason(section.reason_code)?.label || "设置不可用";
+      const element = pluginNode("div", "error");
+      element.append(pluginNode("p", "", label), errorDetailsButton(section.error || section.reason_code, label));
       return { element, dispose: () => element.remove() };
     }
     if (presentation.component === "connection-editor") {
@@ -259,13 +261,16 @@ export function createPluginSettingsFeature({
 
     const body = document.createElement("div");
     body.className = "resource-card__body";
-    if (model.message && model.message.trim() !== statusLabel.trim()) {
+    const failed = model.status === "failed" || model.statusTone === "error";
+    if (failed && (model.message || model.detail)) {
+      body.append(errorDetailsButton([model.message, model.detail].filter(Boolean).join("\n"), statusLabel));
+    } else if (model.message && model.message.trim() !== statusLabel.trim()) {
       const message = document.createElement("p");
       message.className = "resource-message";
       message.textContent = model.message;
       body.append(message);
     }
-    if (model.detail) {
+    if (model.detail && !failed) {
       const detail = document.createElement("p");
       detail.className = "resource-detail";
       detail.textContent = model.detail;
@@ -640,6 +645,22 @@ export function createPluginSettingsFeature({
     return status;
   }
 
+  function errorDetailsButton(error, message = "操作失败") {
+    const button = pluginNode("button", "secondary-button settings-error-details", "错误详情");
+    button.type = "button";
+    button.addEventListener("click", () => setError(error, message));
+    return button;
+  }
+
+  function renderStatusMessage(element, value) {
+    element.textContent = "";
+    element.hidden = !value?.message || ["ready", "neutral"].includes(value.state);
+    if (element.hidden) return;
+    if (["warning", "error", "failed"].includes(value.state)) {
+      element.append(errorDetailsButton(value, value.label || "插件状态异常"));
+    } else element.textContent = value.message;
+  }
+
   function pluginResourceStatus(value) {
     if (value.applicability === "not_required") return { state: "ready", label: "无需安装" };
     if (value.applicability === "unsupported") return { state: "warning", label: "不支持一键安装" };
@@ -779,7 +800,7 @@ export function createPluginSettingsFeature({
       if (value?.message && value.state !== "ready" && value.state !== "neutral") {
         const message = document.createElement("p");
         message.className = "plugin-status-message";
-        message.textContent = value.message;
+        renderStatusMessage(message, value);
         control.append(message);
       }
       return control;
@@ -935,7 +956,10 @@ export function createPluginSettingsFeature({
     } catch (error) {
       if (pluginCollectionState.get(collectionKey) !== state) return;
       if (collectionInteractionBlocked(collection)) return;
-      if (queryRevision === state.queryRevision) state.error = String(error);
+      if (queryRevision === state.queryRevision) {
+        state.error = "读取失败";
+        setError(error, "读取插件记录失败");
+      }
       else state.queryPending = true;
     } finally {
       if (pluginCollectionState.get(collectionKey) !== state) return;
@@ -1118,7 +1142,8 @@ export function createPluginSettingsFeature({
       }
     } catch (error) {
       if (!isCurrent()) return;
-      state.error = String(error);
+      state.error = operation === "delete" ? "删除失败" : "保存失败";
+      setError(error, state.error);
     } finally {
       if (!isCurrent()) return;
       state.loading = false;
@@ -1366,12 +1391,11 @@ export function createPluginSettingsFeature({
         const message = document.createElement("p");
         message.className = "plugin-status-message is-section-message";
         message.dataset.pluginStatusMessage = headerStatusField.key;
-        message.textContent = status?.message || "";
-        message.hidden = !status?.message || ["ready", "neutral"].includes(status.state);
+        renderStatusMessage(message, status);
         block.append(message);
       }
       if (section.error || (section.reason_code && section.reason_code !== "READY")) {
-        const error = document.createElement("p");
+        const error = document.createElement("div");
         error.className = "error";
         const stableError = typeof section.error === "string"
           && /^[A-Z0-9_]{1,64}$/.test(section.error)
@@ -1380,9 +1404,10 @@ export function createPluginSettingsFeature({
         const presentation = pluginPresentation.presentPluginReason(
           stableError || section.reason_code,
         );
-        error.textContent = section.error && !stableError
-          ? section.error
-          : [presentation?.message, presentation?.diagnostic].filter(Boolean).join(" ");
+        const label = presentation?.label || "设置不可用";
+        error.append(pluginNode("p", "", label), errorDetailsButton(
+          { code: section.reason_code, message: section.error, diagnostic: presentation?.diagnostic }, label,
+        ));
         block.append(error);
       }
       const advanced = pluginNode("details", "voice-advanced-settings");
@@ -1572,10 +1597,11 @@ export function createPluginSettingsFeature({
       await runtimePluginController.refreshCurrent();
       pluginActivityRefreshFailed = false;
       aboutComponentsReadError = "";
-    } catch {
+    } catch (error) {
       pluginActivityRefreshFailed = true;
       clearPluginActivityRefresh();
       aboutComponentsReadError = "暂时无法读取组件状态，请稍后刷新。";
+      setError(error, "读取组件状态失败");
       renderAboutComponents();
     } finally {
       pluginActivityRefreshInFlight = false;
@@ -1913,8 +1939,7 @@ export function createPluginSettingsFeature({
       activity.state === "warning" ? "长期记忆功能受限" : "长期记忆暂不可用"
     );
     const message = document.createElement("p");
-    message.textContent = activity.message || pluginFailure?.message || "";
-    message.hidden = !message.textContent || message.textContent === heading.textContent;
+    renderStatusMessage(message, { ...activity, message: activity.message || pluginFailure?.message || "" });
     const actions = document.createElement("div");
     const link = document.createElement("button");
     link.type = "button";
@@ -2245,10 +2270,6 @@ export function createPluginSettingsFeature({
   async function runPluginSettingsAction(plugin, section, action, focusResourceKey = "") {
     if (pluginState.managementBusy) return;
     if (pluginState.actionBusyKey) return;
-    if (pluginSettingsDialog?.installId === plugin.id) {
-      pluginSettingsDialog.error.textContent = "";
-      pluginSettingsDialog.error.hidden = true;
-    }
     const restoreAboutResourceKey = focusResourceKey
       || document.activeElement?.dataset?.aboutResourceKey
       || "";
@@ -2282,11 +2303,7 @@ export function createPluginSettingsFeature({
         await runtimePluginController.refreshCurrent();
       }
     } catch (error) {
-      setError(String(error));
-      if (pluginSettingsDialog?.installId === plugin.id) {
-        pluginSettingsDialog.error.textContent = String(error);
-        pluginSettingsDialog.error.hidden = false;
-      }
+      setError(error, "插件操作失败");
     } finally {
       pluginState.actionBusyKey = "";
       renderPluginPage();
@@ -2339,8 +2356,9 @@ export function createPluginSettingsFeature({
     if (plugin.description) fields.pluginDetail.append(pluginNode('p', 'detail-desc', plugin.description));
     if (status.message || status.diagnostic) {
       const notice = pluginNode('div', 'plugin-health-notice');
-      if (status.message) notice.append(pluginNode('p', '', status.message));
-      if (status.diagnostic) notice.append(pluginNode('p', 'plugin-health-notice__diagnostic', status.diagnostic));
+      if (status.diagnostic || ["warning", "error", "failed"].includes(status.state)) {
+        notice.append(errorDetailsButton(status, status.label));
+      } else if (status.message) notice.append(pluginNode('p', '', status.message));
       fields.pluginDetail.append(notice);
     }
     const enableRow = pluginNode('section', 'plugin-enable-row');
@@ -2421,7 +2439,7 @@ export function createPluginSettingsFeature({
       installedId = result.installId;
       notify("已安装", "success");
     } catch (error) {
-      setError(String(error));
+      setError(error, "安装插件失败");
     } finally {
       pluginState.managementBusy = false;
       if (installedId) selectManagedPlugin(installedId, { reveal: true });
@@ -2451,7 +2469,7 @@ export function createPluginSettingsFeature({
       await runtimePluginController.uninstall(plugin.install_id);
       notify("已卸载", "success");
     } catch (error) {
-      setError(String(error));
+      setError(error, "卸载插件失败");
     } finally {
       pluginState.managementBusy = false;
       renderPluginPage();
@@ -2825,8 +2843,7 @@ export function createPluginSettingsFeature({
       if (field.placement === 'section_header') {
         const message = current.closest('[data-plugin-section]')?.querySelector('[data-plugin-status-message]');
         if (message) {
-          message.textContent = value?.message || '';
-          message.hidden = !value?.message || ['ready', 'neutral'].includes(value.state);
+          renderStatusMessage(message, value);
         }
       }
       const inputId = current.id || current.querySelector('input,select,output')?.id;
@@ -2873,16 +2890,15 @@ export function createPluginSettingsFeature({
     const body = pluginNode('div', 'plugin-dialog-body');
     const general = renderPluginSettings(plugin);
     body.append(general);
-    const error = pluginNode('p', 'error plugin-dialog-error'); error.hidden = true; error.setAttribute('role', 'alert');
     const footer = pluginNode('footer', 'plugin-dialog-footer');
     footer.append(pluginNode('span', '', '应用设置后生效'));
     const actions = pluginNode('div', '');
     const cancel = pluginNode('button', 'secondary-button', '取消'); cancel.type = 'button';
     const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);
-    form.append(header, body, error, footer); dialog.append(form);
+    form.append(header, body, footer); dialog.append(form);
     const editor = {
       dialog, general, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
-      schema: pluginDialogSchema(plugin), error, closing: false,
+      schema: pluginDialogSchema(plugin), closing: false,
       initial: Object.fromEntries(pluginSettingsSections(plugin).filter((section) => !sectionDestination(section))
         .map((section) => [section.section_id, clonePlain(editablePluginSectionValues(section, pluginSectionValues(plugin.id, section.section_id)))])),
       async close(accept = false, restore = true) {

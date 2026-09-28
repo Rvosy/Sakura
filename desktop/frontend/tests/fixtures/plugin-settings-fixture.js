@@ -8,7 +8,7 @@ export const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 // Only the browser boundary is replaced. The feature renders its real controls,
 // handles their events, and calls the real plugin protocol controller.
-function browserFixture() {
+export function browserFixture() {
   const dataKey = (name) => name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
   class Element {
     constructor(tagName) {
@@ -53,6 +53,7 @@ function browserFixture() {
         child.remove(); child.parentElement = this; this.children.push(child);
       }
     }
+    replaceChildren(...children) { this.textContent = ""; this.append(...children); }
     remove() {
       if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
       this.parentElement = null;

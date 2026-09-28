@@ -259,9 +259,9 @@ export function createRuntimeAppearanceController({
       }
     } catch (error) {
       if (!rebinding) {
-        onError(transientCharacterPresentationError(error)
+        onError(error, transientCharacterPresentationError(error)
           ? "正在切换角色，请稍后调整外观。"
-          : String(error));
+          : "外观预览失败");
       }
     } finally {
       previewRunning = false;
@@ -427,7 +427,7 @@ export function createRuntimeAppearanceController({
     portraitScaleGestureStartPromise = start.catch((error) => {
       portraitScaleGestureBackendActive = false;
       portraitScaleGestureActive = false;
-      if (!rebinding) onError(String(error));
+      if (!rebinding) onError(error);
     });
   }
 
@@ -467,7 +467,7 @@ export function createRuntimeAppearanceController({
 
   function finishPortraitScaleGesture(event = undefined) {
     return endPortraitScaleGesture(event).catch((error) => {
-      if (!rebinding) onError(String(error));
+      if (!rebinding) onError(error);
     });
   }
 
@@ -497,7 +497,7 @@ export function createRuntimeAppearanceController({
       layoutGestureBackendActive = false;
       layoutGestureActive = false;
       layoutGestureOwner = null;
-      if (!rebinding) onError(String(error));
+      if (!rebinding) onError(error);
     });
   }
 
@@ -529,7 +529,7 @@ export function createRuntimeAppearanceController({
 
   function finishLayoutGesture(event = undefined) {
     return endLayoutGesture(event).catch((error) => {
-      if (!rebinding) onError(String(error));
+      if (!rebinding) onError(error);
     });
   }
 
@@ -570,7 +570,7 @@ export function createRuntimeAppearanceController({
       }
       if (!rebinding) schedulePreview();
     } catch (error) {
-      onError(String(error));
+      onError(error);
     }
   }
 
@@ -642,7 +642,7 @@ export function createRuntimeAppearanceController({
       }
       throw new Error(`APPEARANCE_CORE_REBIND_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
     })().catch((error) => {
-      onError("正在恢复外观设置，请稍后重试。");
+      onError(error, "正在恢复外观设置，请稍后重试。");
       throw error;
     }).finally(() => {
       rebinding = false;

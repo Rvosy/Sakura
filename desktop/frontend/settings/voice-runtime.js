@@ -145,13 +145,17 @@ export function createVoiceController({
           label.append(description);
         }
         let input;
+        const failedDisplay = field.type === "status" && ["error", "warning", "failed"].includes(field.value?.state)
+          || field.type === "resource" && field.value?.taskState === "failed";
         if (field.readonly || ["readonly", "status", "resource"].includes(field.type)) {
           input = document.createElement("output");
           input.className = "plugin-readonly-output";
           if (field.type === "status") {
-            input.textContent = [field.value?.label, field.value?.message].filter(Boolean).join(" · ");
+            input.textContent = failedDisplay ? field.value?.label || "异常"
+              : [field.value?.label, field.value?.message].filter(Boolean).join(" · ");
           } else if (field.type === "resource") {
-            input.textContent = [field.value?.subtitle, field.value?.message].filter(Boolean).join(" · ");
+            input.textContent = failedDisplay ? "下载失败"
+              : [field.value?.subtitle, field.value?.message].filter(Boolean).join(" · ");
           } else {
             input.textContent = field.value === null || field.value === undefined ? "" : String(field.value);
           }
@@ -186,6 +190,12 @@ export function createVoiceController({
         inputs.set(field.key, input);
         if (field.enabledWhen) conditionalFields.push({ field, input, row });
         row.append(label, input);
+        if (failedDisplay) {
+          const details = document.createElement("button");
+          details.type = "button"; details.className = "secondary-button"; details.textContent = "错误详情";
+          details.addEventListener("click", () => onStatus({ ...field.value, diagnostic: field.value?.detail }, "error"));
+          row.append(details);
+        }
         if (field.type === "select" && !field.readonly) enhanceSelect(input);
         if (field.placement === "advanced") {
           advancedBody.append(row);
@@ -226,7 +236,7 @@ export function createVoiceController({
             });
             onStatus(result?.message || "插件已重新加载。", "success");
             await refresh();
-          } catch (error) { onStatus(String(error), "error"); }
+          } catch (error) { onStatus(error, "error"); }
         });
         group.append(button);
       }
@@ -428,7 +438,10 @@ export function createVoiceController({
       return await refresh({ preserveDraft });
     } catch (error) {
       if (preserveDraft && snapshot) throw error;
-      if (!disposed) renderUnavailable({ state: "error" });
+      if (!disposed) {
+        renderUnavailable({ state: "error" });
+        onStatus(error, "error");
+      }
       return null;
     }
   }

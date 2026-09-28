@@ -1,4 +1,4 @@
-import { errorText } from "../core/error-display.js";
+import { createErrorDialog } from "../core/error-dialog.js";
 import { enhanceSelect, refreshSelect, closeSelects } from "../settings/select-control.js";
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
@@ -24,6 +24,7 @@ installDevtoolsShortcutGuard();
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
 const POLL_INTERVAL_MS = 700;
+const errorDialog = createErrorDialog({ document });
 
 const summary = document.querySelector("#log-summary");
 const status = document.querySelector("#log-status");
@@ -52,10 +53,22 @@ let viewMode = "all";
 let selectedItemKey = null;
 const disclosureStates = new Map();
 let pollActive = false;
+let pollFailed = false;
+let pollHandle = 0;
 let bootstrapActive = false;
 let requestGeneration = 0;
 const runtimeFontsReady = waitForRuntimeFonts();
 let revealPromise = null;
+
+window.addEventListener("pagehide", () => {
+  window.clearInterval(pollHandle);
+  errorDialog.dispose();
+}, { once: true });
+
+function showViewerError(message, error) {
+  status.textContent = message;
+  errorDialog.show({ title: "运行日志", message, error });
+}
 
 function revealInitialWindow() {
   if (!invoke) return Promise.resolve();
@@ -300,6 +313,7 @@ async function bootstrap() {
     return;
   }
   bootstrapActive = true;
+  pollFailed = false;
   const generation = ++requestGeneration;
   refresh.disabled = true;
   status.textContent = "正在读取本次运行记录…";
@@ -319,7 +333,8 @@ async function bootstrap() {
       : "等待新记录。";
     scrollToLatest();
   } catch (error) {
-    status.textContent = errorText(error);
+    pollFailed = true;
+    showViewerError("无法读取运行日志，请重试。", error);
   } finally {
     // Keep the viewer reachable even when the initial snapshot fails; in that
     // case its already-defined product fallback theme is the correct first frame.
@@ -338,13 +353,16 @@ async function poll() {
     const snapshot = await invoke("runtime_log_viewer_snapshot", { afterSequence: previousLatest });
     if (generation !== requestGeneration) return;
     applySnapshot(snapshot, { animateAfter: previousLatest });
+    if (pollFailed) status.textContent = "日志连接已恢复。";
+    pollFailed = false;
     if (viewerState.latestSequence > previousLatest) {
       status.textContent = "日志已更新。";
       scrollToLatest();
     }
   } catch (error) {
     if (generation === requestGeneration) {
-      status.textContent = errorText(error);
+      if (!pollFailed) showViewerError("日志更新失败，正在重新连接。", error);
+      pollFailed = true;
     }
   } finally {
     pollActive = false;
@@ -398,10 +416,16 @@ copy.addEventListener("click", async () => {
     await navigator.clipboard.writeText(text);
     status.textContent = "已复制。";
   } catch (error) {
-    status.textContent = errorText(error);
+    showViewerError("复制失败，请重试。", error);
   }
 });
-close.addEventListener("click", () => void invoke?.("close_runtime_log_viewer"));
+close.addEventListener("click", async () => {
+  try {
+    await invoke?.("close_runtime_log_viewer");
+  } catch (error) {
+    showViewerError("无法关闭运行日志。", error);
+  }
+});
 
 if (listen) {
   try {
@@ -416,4 +440,4 @@ if (listen) {
 }
 
 await bootstrap();
-window.setInterval(() => void poll(), POLL_INTERVAL_MS);
+pollHandle = window.setInterval(() => void poll(), POLL_INTERVAL_MS);

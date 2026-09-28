@@ -15,19 +15,18 @@ function fixture() {
     activeAppearance: { portraitScalePercent: 100 },
     currentSurface: { width: 320, height: 480, assetId: "old-resource" },
     PORTRAIT_HIT_TEST_NOTICE: "hit-test unavailable",
-    presentationError: { textContent: "", hidden: true },
+    errorDialog: { details: "", open: false },
     tracedInteractionInvoke: (command, args) => new Promise((resolve, reject) => {
       pending.push({ command, args, resolve, reject });
     }),
     commitSurfaceApplication: surface => commits.push(surface),
     showRecoverableError: message => {
       errors.push(message);
-      context.presentationError.textContent = message;
-      context.presentationError.hidden = false;
+      context.errorDialog.details = message;
+      context.errorDialog.open = true;
     },
     clearRecoverableError: () => {
-      context.presentationError.textContent = "";
-      context.presentationError.hidden = true;
+      assert.fail("background recovery must not dismiss a dialog being read");
     },
   });
   const activate = vm.runInContext(`(${callback})`, context);
@@ -47,32 +46,32 @@ test("a late failure from the previous form cannot warn after the replacement su
   assert.deepEqual(f.commits, [surface]);
 });
 
-test("a successful hit-region update clears its current warning early", async () => {
+test("a successful hit-region update preserves the error dialog until the user closes it", async () => {
   const f = fixture();
   const failed = f.activate("current");
   const failure = new Error("native update failed");
   f.pending[0].reject(failure);
   await assert.rejects(failed, error => error === failure);
-  assert.equal(f.context.presentationError.hidden, false);
+  assert.equal(f.context.errorDialog.open, true);
   const ignored = f.activate("current");
   f.pending[1].resolve(null);
   await ignored;
-  assert.equal(f.context.presentationError.hidden, false);
+  assert.equal(f.context.errorDialog.open, true);
   const recovered = f.activate("current");
   f.pending[2].resolve({ revision: 3 });
   await recovered;
-  assert.equal(f.context.presentationError.hidden, true);
+  assert.equal(f.context.errorDialog.open, true);
 });
 
 test("hit-region recovery preserves an unrelated error", async () => {
   const f = fixture();
-  f.context.presentationError.textContent = "microphone unavailable";
-  f.context.presentationError.hidden = false;
+  f.context.errorDialog.details = "microphone unavailable";
+  f.context.errorDialog.open = true;
   const current = f.activate("current");
   f.pending[0].resolve({ revision: 1 });
   await current;
-  assert.equal(f.context.presentationError.textContent, "microphone unavailable");
-  assert.equal(f.context.presentationError.hidden, false);
+  assert.equal(f.context.errorDialog.details, "microphone unavailable");
+  assert.equal(f.context.errorDialog.open, true);
 });
 
 for (const obsolete of ["revision", "signal", "operationSignal", "disposed"]) {

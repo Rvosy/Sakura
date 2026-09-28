@@ -65,7 +65,7 @@ export function createCharacterSettingsFeature({
   let closeExportKindDialog = null;
   let disposed = false;
   const listeners = [];
-  const visualSettings = createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty: refreshDirty, openPlugin, reportError });
+  const visualSettings = createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty: refreshDirty, openPlugin, reportError, onError: setError });
   fields.characterSelect.dataset.optionDelete = "true";
 
   const characterExportOptions = [
@@ -325,7 +325,7 @@ export function createCharacterSettingsFeature({
       }
     } catch (error) {
       if (!disposed) {
-        setError(`角色列表刷新失败：${String(error)}`);
+        setError(error, "角色列表刷新失败");
       }
     } finally {
       if (rebinding && !disposed) {
@@ -454,7 +454,7 @@ export function createCharacterSettingsFeature({
     try {
       await action();
     } catch (error) {
-      if (!disposed) setError(String(error));
+      if (!disposed) setError(error);
     } finally {
       setCharacterArchiveBusy(false);
     }
@@ -506,7 +506,7 @@ export function createCharacterSettingsFeature({
         && characterId === runtimeCharacterDraftId
         && !String(error).includes("CHARACTER_VISUAL_PREVIEW_SKIPPED")
       ) {
-        setError(`角色视觉预览失败：${String(error)}`);
+        setError(error, "角色视觉预览失败");
       }
     }
   }
@@ -641,7 +641,7 @@ export function createCharacterSettingsFeature({
           currentCharacterId: null,
           characters: [],
         });
-        setError(String(error));
+        setError(error, "角色列表读取失败");
       }
     },
     prepareControls() {

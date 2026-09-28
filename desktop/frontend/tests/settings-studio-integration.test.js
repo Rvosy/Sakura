@@ -468,7 +468,7 @@ test("Apply commits a character and ordinary settings while retaining global rec
     const noticeCount = notices.length;
     await fields.saveButton.click();
     assert.equal(closed, false, "Save and close cannot silently discard the retained record");
-    assert.match(errors.at(-1), /集合记录/);
+    assert.match(errors.at(-1).message, /集合记录/);
     assert.equal(notices.length, noticeCount, "a rejected save does not report success");
     assert.equal(writes.length, 1, "the ordinary field was already saved by Apply");
   } finally {
@@ -516,7 +516,7 @@ test("Apply rejects disabling the owner of an edited global record before the sn
     await toggle.fire("change");
     await fields.applyButton.click();
     assert.deepEqual(writes, [], "the plugin must remain active until its record is saved or reverted");
-    assert.match(errors.at(-1), /集合记录/);
+    assert.match(errors.at(-1).message, /集合记录/);
     assert.equal(plugins.feature.hasCollectionDrafts(), true);
     await plugins.openSettings();
     assert.equal(plugins.document.querySelector(".plugin-collection-editor textarea").value, "unsaved global record");
@@ -772,7 +772,7 @@ test("visual preview validation preserves the draft and reports an identity mism
   await select(fixture, "beta");
   assert.equal(fixture.feature.pendingCharacterId(), "beta");
   assert.equal(fixture.previews.length, 0);
-  assert.match(fixture.errors.at(-1), /CHARACTER_VISUAL_PREVIEW_INVALID/);
+  assert.match(fixture.errors.at(-1).message, /CHARACTER_VISUAL_PREVIEW_INVALID/);
   fixture.feature.dispose();
 });
 
@@ -845,7 +845,7 @@ test("uninitialized and unavailable character catalogs retain a supported empty 
   assert.equal(fields.characterImportButton.disabled, false);
   assert.equal(fields.characterDeleteButton.disabled, true);
   assert.equal(fields.characterEditorButton.disabled, true);
-  assert.match(errors.at(-1), /SETTINGS_CORE_UNAVAILABLE/);
+  assert.match(errors.at(-1).message, /SETTINGS_CORE_UNAVAILABLE/);
   feature.dispose();
 });
 

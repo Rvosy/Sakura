@@ -5,6 +5,56 @@ import { field, snapshot, featureFixture, queryResult, settle } from "./fixtures
 
 const collectionSurfaces = ["memory", null, "custom_archive"];
 
+for (const operation of ["query", "update"]) {
+  test(`collection ${operation} failure forwards diagnostics and retains the editable draft`, async () => {
+    const failure = new Error("COLLECTION_FIXTURE_FAILED", { cause: new Error("storage diagnostic") });
+    const ui = featureFixture(async (_command, args) => {
+      if (args.operation === operation) throw failure;
+      return queryResult("note", "saved content");
+    });
+    ui.feature.initialize(snapshot());
+    await ui.runTimers(0);
+    if (operation === "update") {
+      const controls = collectionControls(ui.document, "memory");
+      await controls.openRecord();
+      controls.input().value = "draft content";
+      await controls.input().fire("input");
+      await controls.save().fire("click");
+      assert.equal(controls.input().value, "draft content");
+      assert.equal(ui.feature.hasCollectionDrafts(), true);
+    }
+    assert.deepEqual(ui.errors, [failure]);
+    assert.doesNotMatch(ui.document.body.textContent, /COLLECTION_FIXTURE_FAILED|storage diagnostic/);
+    ui.feature.dispose();
+  });
+}
+
+test("plugin dialog action failure uses the shared error callback without inline diagnostics", async () => {
+  const failure = new Error("PLUGIN_ACTION_FIXTURE_FAILED", { cause: new Error("action diagnostic") });
+  const data = snapshot();
+  data.plugins[0].sections[0].actions = [{ actionId: "fixture", label: "Run fixture", description: "", danger: false }];
+  const ui = featureFixture(async (command) => { if (command === "settings_plugins_action") throw failure; return data; });
+  ui.feature.initialize(data); await ui.openSettings();
+  await ui.document.querySelector("[data-plugin-action-key]").fire("click");
+  assert.deepEqual(ui.errors, [failure]);
+  assert.equal(ui.document.querySelector(".plugin-settings-dialog").open, true);
+  assert.doesNotMatch(ui.document.body.textContent, /PLUGIN_ACTION_FIXTURE_FAILED|action diagnostic/);
+  ui.feature.dispose();
+});
+
+test("failed plugin status retains accessible diagnostics in the shared error dialog", async () => {
+  const data = snapshot();
+  data.plugins[0].state = "failed";
+  data.plugins[0].reasonCode = "PLUGIN_DEPENDENCIES_MISSING";
+  const ui = featureFixture(async () => data);
+  ui.feature.initialize(data);
+  assert.doesNotMatch(ui.document.body.textContent, /PLUGIN_DEPENDENCIES_MISSING/);
+  await ui.document.querySelector(".plugin-health-notice .settings-error-details").fire("click");
+  assert.equal(ui.errors.length, 1);
+  assert.match(ui.errors[0].diagnostic, /PLUGIN_DEPENDENCIES_MISSING/);
+  ui.feature.dispose();
+});
+
 test("plugin field availability follows boolean toggles without losing values", async () => {
   const data = snapshot();
   const section = data.plugins[0].sections[0];

@@ -2,6 +2,7 @@ import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
 import { createPlaybackActionIndicator } from "../audio/playback-action-indicator.js";
+import { createErrorDialog } from "../core/error-dialog.js";
 import { renderSubtitleText } from "../pet/multilingual-text.js";
 import { createTtsController } from "../audio/tts-controller.js";
 import {
@@ -28,6 +29,8 @@ const empty = document.querySelector("#history-empty");
 const loadMore = document.querySelector("#load-more");
 const refresh = document.querySelector("#refresh");
 const close = document.querySelector("#close");
+const errors = createErrorDialog({ document });
+window.addEventListener("pagehide", () => errors.dispose(), { once: true });
 
 let loading = false;
 let entries = [];
@@ -49,7 +52,11 @@ function clearPlaybackIndicators() {
 window.addEventListener("pagehide", clearPlaybackIndicators, { once: true });
 const ttsController = invoke && listen ? createTtsController({
   invoke, listen,
-  onDiagnostic: message => { status.textContent = message; },
+  onDiagnostic: error => errors.show({
+    title: "语音播放失败",
+    message: playbackErrorMessage(error),
+    error,
+  }),
   onPlaybackState: state => {
     playbackState = state;
     updatePlaybackButtons();
@@ -191,6 +198,17 @@ function errorMessage(error) {
   return "聊天记录读取失败，请稍后刷新。";
 }
 
+function playbackErrorMessage(error) {
+  const code = String(error?.code || error?.message || error).split(/[|:\n]/, 1)[0];
+  return {
+    TTS_SERVICE_UNAVAILABLE: "当前角色的语音服务不可用。",
+    TTS_DISABLED: "当前角色的语音已关闭。",
+    TTS_SYNTHESIS_TIMEOUT: "语音生成超时。",
+    TTS_SEGMENT_NOT_AUTHORIZED: "这条回复已不可用，请刷新聊天记录。",
+    AUDIO_RECORDING_INVALID: "这条语音缓存无法读取。",
+  }[code] || "这条回复暂时无法播放。";
+}
+
 function applyPage(page) {
   validateHistoryPage(page);
   if (
@@ -215,7 +233,8 @@ async function loadInitial() {
   }
   if (!invoke) {
     count.textContent = "读取失败";
-    status.textContent = "无法连接 Sakura，请重新打开聊天记录。";
+    status.textContent = "读取失败";
+    errors.show({ title: "无法读取聊天记录", message: "无法连接 Sakura，请重新打开聊天记录。", error: "HISTORY_HOST_UNAVAILABLE" });
     return;
   }
   const revision = loadGuard.begin();
@@ -252,7 +271,9 @@ async function loadInitial() {
     status.textContent = entries.length ? `已显示最近 ${entries.length} 条记录` : "暂无聊天记录";
     requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
   } catch (error) {
-    status.textContent = errorMessage(error);
+    if (!loadGuard.isCurrent(revision)) return;
+    status.textContent = "读取失败";
+    errors.show({ title: "无法读取聊天记录", message: errorMessage(error), error });
     // Bootstrap failures still reveal a usable error state with the product
     // fallback theme instead of leaving an unreachable hidden window. A stale
     // character load leaves revealing to the already-pending current reload.
@@ -303,7 +324,9 @@ async function loadEarlier() {
     });
     status.textContent = `已显示 ${entries.length} 条记录`;
   } catch (error) {
-    status.textContent = errorMessage(error);
+    if (!loadGuard.isCurrent(revision)) return;
+    status.textContent = "更早记录未加载";
+    errors.show({ title: "无法读取更早记录", message: errorMessage(error), error });
   } finally {
     setLoading(false);
   }

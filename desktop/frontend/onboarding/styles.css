@@ -1,5 +1,6 @@
 @import url("../assets/fonts/fonts.css");
 @import url("../core/selection.css");
+@import url("../core/error-dialog.css");
 
 :root {
   --sakura-primary: #4b9ac4;
@@ -355,6 +356,18 @@ button:focus-visible {
 
 .issue-list .warning {
   color: #80662d;
+}
+
+.issue-details {
+  margin-inline-start: 8px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--sakura-primary);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 .migration-progress progress {

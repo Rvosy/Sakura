@@ -9,14 +9,15 @@ function element() {
     fire: async (name) => events.get(name)?.(),
   };
 }
-function fixture() {
+function fixture(handlers = {}) {
   const controls = Object.fromEntries(["asrTestStart", "asrTestCancel", "asrTestResult", "asrTestLevel"].map((id) => [id, element()]));
-  const events = new Map(), keys = new Map(), calls = [];
+  const events = new Map(), keys = new Map(), calls = [], errors = [];
   let state = "recording";
   const testInput = createAsrInputTest({
     document: { getElementById: (id) => controls[id], addEventListener: (name, handler) => keys.set(name, handler), removeEventListener: (name) => keys.delete(name) },
     invoke: async (name, args) => {
       calls.push([name, args]);
+      if (handlers[name]) return handlers[name](args);
       if (name === "asr_prepare") return { recordingId: args.payload.recordingId, state: "ready" };
       if (name === "asr_capture_start") return { state: "recording" };
       if (name === "asr_capture_stop") { state = "succeeded"; return { state: "recognizing" }; }
@@ -25,8 +26,9 @@ function fixture() {
     },
     listen: async (name, handler) => { events.set(name, handler); return () => events.delete(name); },
     readProvider: () => "thirdparty.asr", readDevice: () => "device:selected",
+    onError: (error) => errors.push(error),
   });
-  return { controls, calls, events, keys, testInput };
+  return { controls, calls, events, keys, testInput, errors };
 }
 
 test("plugin input test uses test-only provider/device overrides and writes only its local result", async () => {
@@ -55,5 +57,17 @@ test("Esc cancels microphone test before the surrounding plugin dialog closes", 
   assert.equal(f.testInput.active(), false);
   assert.equal(f.controls.asrTestLevel.hidden, true);
   assert.ok(f.calls.some(([name]) => name === "asr_cancel"));
+  f.testInput.dispose();
+});
+
+test("microphone test sends diagnostics to the error dialog without replacing the transcript with an exception", async () => {
+  const f = fixture({ asr_prepare: () => { throw new Error("ASR_FIXTURE_FAILED", { cause: new Error("device diagnostic") }); } });
+  await f.testInput.activate();
+  assert.equal(f.testInput.active(), false);
+  assert.equal(f.errors.length, 1);
+  assert.match(f.errors[0], /ASR_FIXTURE_FAILED/);
+  assert.match(f.errors[0], /device diagnostic/);
+  assert.doesNotMatch(f.controls.asrTestResult.textContent, /ASR_FIXTURE_FAILED|device diagnostic/);
+  assert.equal(f.controls.asrTestStart.disabled, false);
   f.testInput.dispose();
 });

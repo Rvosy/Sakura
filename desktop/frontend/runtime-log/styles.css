@@ -1,5 +1,6 @@
 @import url("../assets/fonts/fonts.css");
 @import url("../core/selection.css");
+@import url("../core/error-dialog.css");
 
 :root {
   --primary: #4b9ac4;

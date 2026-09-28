@@ -79,7 +79,7 @@ export function createMigrationStatus({ document, window, invoke, onError, revea
   restart.addEventListener("click", async () => {
     restart.disabled = true;
     try { await invoke("settings_restart_after_migration"); }
-    catch (error) { onError(String(error)); }
+    catch (error) { onError(error); }
     finally { if (!disposed) restart.disabled = false; }
   });
   const timer = window.setInterval(refresh, 500);

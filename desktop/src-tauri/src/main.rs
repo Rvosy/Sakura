@@ -16,6 +16,7 @@ mod core_host_runtime;
 mod core_supervisor;
 mod download_sources;
 mod dynamic_hit_test;
+mod error_dialog_window;
 mod history_window;
 mod host_interaction;
 mod input_visual_effect;
@@ -7813,6 +7814,7 @@ fn main() {
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
         .manage(character_studio_window::CharacterStudioWindowState::default())
+        .manage(error_dialog_window::ErrorDialogState::default())
         .manage(color_picker::ColorPickerState::default())
         .manage(first_run_guide_state)
         .manage(legacy_import_state)
@@ -8133,6 +8135,10 @@ fn main() {
             runtime_log_window::runtime_log_viewer_snapshot,
             runtime_log_window::close_runtime_log_viewer,
             runtime_log_window::reveal_runtime_log_viewer,
+            error_dialog_window::show_error_dialog,
+            error_dialog_window::error_dialog_bootstrap,
+            error_dialog_window::reveal_error_dialog,
+            error_dialog_window::close_error_dialog,
             current_character_presentation,
             current_character_appearance,
             apply_input_visual_effect,

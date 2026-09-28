@@ -411,7 +411,6 @@ export function createConnectionEditor({ document, window, read, write, probe, c
   }
 
   function clearProbeError() {
-    fields.providerDetail.querySelector(".provider-probe-error")?.remove();
     setError("");
   }
 
@@ -422,7 +421,7 @@ export function createConnectionEditor({ document, window, read, write, probe, c
     const diagnostic = String(error);
     const code = diagnostic.match(/(?:^|Error: )([A-Z][A-Z0-9_]+)(?:\||:|$)/)?.[1];
     const httpStatus = diagnostic.match(/API HTTP (\d{3}):/)?.[1];
-    setError(httpStatus === "403" ? "服务拒绝访问。" : {
+    const message = httpStatus === "403" ? "服务拒绝访问。" : {
       AUTHENTICATION_FAILED: "验证失败，请检查 API Key。",
       MODEL_AUTHENTICATION_FAILED: "验证失败，请检查 API Key。",
       PROVIDER_ACCESS_FORBIDDEN: "服务拒绝访问。",
@@ -432,15 +431,8 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       MODEL_REQUEST_TIMEOUT: "请求超时。",
       MODEL_CONNECTION_FAILED: "无法连接模型服务。",
       MODEL_RATE_LIMITED: "请求过于频繁，请稍后重试。",
-    }[code] || fallback);
-    const details = document.createElement("details");
-    details.className = "provider-probe-error";
-    const summary = document.createElement("summary");
-    summary.textContent = "错误详情";
-    const content = document.createElement("p");
-    content.textContent = diagnostic;
-    details.append(summary, content);
-    fields.providerDetail.append(details);
+    }[code] || fallback;
+    setError(error, message);
   }
 
   async function autoDetectModels(profile, button) {

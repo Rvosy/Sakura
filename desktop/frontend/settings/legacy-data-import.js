@@ -1,12 +1,7 @@
-import { errorText } from '../core/error-display.js';
 import { enhanceSelect, refreshSelect, closeSelects } from './select-control.js';
 import { legacyDataImportPlanHasWork } from './root-settings-runtime.js';
 
-export function legacyImportError(error) {
-  return errorText(error);
-}
-
-export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = () => {} }) {
+export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = () => {}, onError = () => {} }) {
   const dialog = document.createElement('dialog');
   dialog.className = 'legacy-import-dialog';
   dialog.setAttribute('aria-label', '迁移角色和数据');
@@ -96,7 +91,7 @@ export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = 
       const label = text('label', '', 'legacy-import-warning'); confirmation = document.createElement('input'); confirmation.type = 'checkbox';
       confirmation.onchange = sync; label.append(confirmation, text('span', `同意覆盖 ${count(totals.historyConflicts + totals.memoryConflicts)} 条冲突记录，当前版本中的这些记录将被替换。`)); results.append(label);
     }
-    if (plan.blocked) feedback.textContent = legacyImportError('LEGACY_DATA_SCOPE_CONFLICT');
+    if (plan.blocked) feedback.textContent = '迁移范围有冲突';
     $('[data-summary]').textContent = plan.requiresMapping ? '请选择待关联角色' : legacyDataImportPlanHasWork(plan) ? `待导入 ${count(plan.packagesNew)} 个角色包 · 新增 ${count(totals.historyNew + totals.memoryNew)} 条` : '没有新数据';
     sync();
   };
@@ -113,7 +108,12 @@ export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = 
       plan = next || previous;
       if (!next) mapping = previousMapping;
       feedback.textContent = ''; render();
-    } catch (error) { plan = null; results.hidden = true; closeSelects(dialog); feedback.textContent = legacyImportError(error); }
+      if (next?.blocked) onError('LEGACY_DATA_SCOPE_CONFLICT', '迁移范围有冲突');
+    } catch (error) {
+      if (!alive) return;
+      plan = null; results.hidden = true; closeSelects(dialog); feedback.textContent = '扫描失败';
+      onError(error, '扫描旧版数据失败');
+    }
     finally { setOperation(false); }
   }
   choose.onclick = () => void scan();
@@ -128,8 +128,14 @@ export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = 
       const actual = report.plan?.totals || {};
       $('[data-receipt]').textContent = `导入 ${count(report.plan?.packagesNew)} 个角色包；新增 ${count(actual.historyNew + actual.memoryNew)} 条，跳过 ${count(actual.historyIdentical + actual.memoryIdentical)} 条，覆盖 ${count(actual.historyConflicts + actual.memoryConflicts)} 条，单独保留 ${count(actual.recoverableErrors)} 条坏数据，关联 ${count(report.plan?.reassociatedRecords)} 条已有记录。`;
       $('[data-summary]').textContent = ''; start.textContent = '完成'; cancel.hidden = true;
-      try { await onComplete(report); } catch (error) { feedback.textContent = `迁移已完成，角色列表刷新失败：${errorText(error)}`; }
-    } catch (error) { plan = null; feedback.textContent = legacyImportError(error); start.textContent = '开始迁移'; }
+      try { await onComplete(report); } catch (error) {
+        feedback.textContent = '迁移已完成，角色列表刷新失败';
+        onError(error, '角色列表刷新失败');
+      }
+    } catch (error) {
+      plan = null; feedback.textContent = '迁移失败'; start.textContent = '开始迁移';
+      onError(error, '迁移旧版数据失败');
+    }
     finally { setOperation(false); }
   };
   document.body.append(dialog); dialog.showModal();

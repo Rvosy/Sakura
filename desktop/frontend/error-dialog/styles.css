@@ -1,0 +1,7 @@
+@import url("../assets/fonts/fonts.css");
+@import url("../core/selection.css");
+@import url("../core/error-dialog.css");
+:root { font-family: "Sakura Noto Sans SC", "Microsoft YaHei UI", sans-serif; background: var(--page-background, #f8fcfe); }
+html, body { margin: 0; height: 100%; }
+.sakura-error-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 20px; box-shadow: none; }
+.sakura-error-dialog::backdrop { background: transparent; backdrop-filter: none; }
