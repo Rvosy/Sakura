@@ -176,7 +176,16 @@ h1 {
 
 .entry-segment { position: relative; width: fit-content; max-width: 100%; transition: transform 140ms ease; }
 .entry-segment-bilingual { width: 100%; }
-.entry-segment > .entry-bubble { padding-inline-end: 42px; }
+
+/* Only the final line shares space with playback; earlier lines keep the full width. */
+.entry-segment > .entry-bubble:not(.entry-bubble-bilingual)::after,
+.entry-segment > .entry-bubble-bilingual > .subtitle-pair:last-child > .subtitle-line:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 30px;
+  height: 28px;
+  vertical-align: bottom;
+}
 
 .entry-read-button {
   position: absolute;
