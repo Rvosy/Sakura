@@ -94,7 +94,7 @@ export function mountEditor({ container, data, host, signal }) {
         const footer = doc.createElement("footer"); const close = doc.createElement("button"); close.type = "button"; close.className = "secondary-button"; close.textContent = "关闭"; close.onclick = () => dialog.close();
         footer.append(close); dialog.append(heading, image, footer); container.append(dialog); dialog.addEventListener("close", () => dialog.remove(), { once: true }); dialog.showModal();
       };
-      const view = { line, radio, path, preview };
+      const view = { line, radio, label, path, preview };
       views.set(row, view);
       updateImage(view, row);
       const remove = doc.createElement("button"); remove.type = "button"; remove.className = "icon-button"; remove.setAttribute("aria-label", `移除图片${row.label || "立绘"}`);
@@ -129,10 +129,22 @@ export function mountEditor({ container, data, host, signal }) {
   const ready = Promise.any([...views.values()].map(view => view.ready.then(loaded => {
     if (!loaded) throw new Error("PORTRAIT_PREVIEW_UNAVAILABLE");
   }))).catch(() => {});
-  return { ready, collect, validate() {
+  function focusField(field) {
+    const index = field?.match(/^\/expressionRows\/(\d+)\/label$/)?.[1];
+    if (index !== undefined) views.get(rows[Number(index)])?.label.focus();
+  }
+  return { ready, collect, focusField, validate() {
     if (!rows.length || !rows.some((row) => row.selected)) throw new Error("请选择默认立绘。");
-    const labels = rows.map((row) => row.label.trim());
-    if (labels.some((label) => !label) || new Set(labels).size !== rows.length) throw new Error("表情标签不能为空或重复。");
+    const labels = new Set();
+    for (const [index, row] of rows.entries()) {
+      const label = row.label.trim();
+      if (!label || labels.has(label)) {
+        const error = new Error(`第 ${index + 1} 张立绘的表情标签${label ? "与前面的标签重复" : "不能为空"}。`);
+        error.field = `/expressionRows/${index}/label`;
+        throw error;
+      }
+      labels.add(label);
+    }
     return true;
   }, destroy() { releaseStyle(); container.replaceChildren(); } };
 }

@@ -1,4 +1,4 @@
-import { errorText } from '../core/error-display.js';
+import { errorText, errorSummary } from '../core/error-display.js';
 import { requirementSummary } from "../core/plugin-requirements.js";
 import { createVisualEditorHost, renderVisualThumbnail } from "./visual-editor-host.js";
 import { observeSelects } from "../settings/select-control.js";
@@ -13,6 +13,7 @@ import {
   selectBootstrapCharacter,
   uniqueReplyTones,
   validateStudioResponse,
+  visualValidationIssue,
 } from "./studio-model.js";
 import {
   applyRuntimeThemeTokens,
@@ -1983,7 +1984,13 @@ function validateThemeInputs() {
 }
 
 function validateExpressionInputs() {
-  try { return visualEditor.validate(); } catch (error) { switchPage("portrait"); setError(String(error)); return false; }
+  try { return visualEditor.validate(); } catch (error) {
+    switchPage("portrait");
+    if (typeof error.field === "string") visualEditor.focusField(error.field);
+    const resource = visualReferences().resources.find(item => item.id === selectedVisualId);
+    setError(`形态「${resource ? visualName(resource) : selectedVisualId}」：${errorSummary(error)}`);
+    return false;
+  }
 }
 
 function validateVoiceInputs() {
@@ -2096,7 +2103,7 @@ async function commitCharacter({ publish = false } = {}) {
         catch (error) { reloadFailure = errorText(error); }
       }
     } catch (error) {
-      void renderVisualResources({ flush: false });
+      if (!visualValidationIssue(error)) void renderVisualResources({ flush: false });
       throw error;
     }
     if (Array.isArray(payload.characters)) {
@@ -2153,14 +2160,24 @@ async function runBusy(action) {
   busy = true;
   refreshControls();
   setError("");
+  let visualField = null;
   try {
     await action();
   } catch (error) {
     runtimeDiagnostics.reportError(error, { command: "studio_action", code: "STUDIO_OPERATION_FAILED" });
-    setError(String(error));
+    const issue = visualValidationIssue(error);
+    if (issue && visualReferences().resources.some(item => item.id === issue.resourceId)) {
+      switchPage("portrait");
+      await renderVisualResources({ preferredId: issue.resourceId, flush: false });
+      visualField = issue.field;
+      setError(errorSummary(issue.message));
+    } else {
+      setError(String(error));
+    }
   } finally {
     busy = false;
     refreshControls();
+    if (visualField !== null) visualEditor.focusField(visualField);
   }
 }
 

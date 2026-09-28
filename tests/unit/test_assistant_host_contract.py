@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -58,8 +59,12 @@ def test_advertised_long_tool_deadline_reaches_both_rpc_and_callback_without_rep
         deadlines.append(("rpc", timeout))
         assert name == "service.call"
         return host.call(payload["method"], payload["args"])
-    runner = SimpleNamespace(_peer=SimpleNamespace(request=remote))
-    context = SimpleNamespace(_remote_request=lambda name, payload: PluginRunner._call_remote_request(runner, name, payload))
+    # Exercise the real runner methods without opening its process stdio peer.
+    runner = PluginRunner.__new__(PluginRunner)
+    runner._peer = SimpleNamespace(request=remote)
+    runner._startup_lock = threading.Lock()
+    runner._startup_thread = None
+    context = SimpleNamespace(_remote_request=runner._call_remote_request)
     proxy = _HostRegistrationProxy(context, "sakura.host.tools", "tools.handler")
     assert proxy.execute(row["registrationId"], "long_tool", {}, timeout_seconds=row["timeoutSeconds"])["content"] == "done"
     assert deadlines == [("rpc", 92.0), ("callback", 90.0)]

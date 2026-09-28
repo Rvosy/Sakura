@@ -54,9 +54,10 @@ _SETTINGS_RESOURCE_APPLICABILITY = frozenset(
 
 
 class HostServiceError(RuntimeError):
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
+    def __init__(self, code: str, message: str | None = None, *, field: str = "") -> None:
+        super().__init__(message or code)
         self.code = code
+        self.field = field
 
 
 class _DiagnosticsHostService:
@@ -489,7 +490,7 @@ class _CharacterHostService:
                 )
         except Exception as error:
             code = getattr(error, "code", "CHARACTER_OPERATION_FAILED")
-            raise HostServiceError(code if isinstance(code, str) else "CHARACTER_OPERATION_FAILED") from error
+            raise HostServiceError(code if isinstance(code, str) else "CHARACTER_OPERATION_FAILED", str(error)) from error
         raise HostServiceError("HOST_METHOD_INVALID")
 
     def clear(self) -> None:
@@ -1546,7 +1547,19 @@ class _SettingsHostService:
             "settings.save",
             editable,
         )
-        state = _application_state(result)
+        try:
+            state = _application_state(result)
+        except HostServiceError as error:
+            # Keep only the returned shape, never settings or arbitrary values.
+            has_state = isinstance(result, Mapping) and "applicationState" in result
+            error.diagnostics = {
+                "plugin_id": registration.plugin_id,
+                "section_id": registration.section_id,
+                "result_type": type(result).__name__,
+                "has_application_state": has_state,
+                "application_state_type": type(result["applicationState"]).__name__ if has_state else "missing",
+            }
+            raise
         reason_code = {
             "applied": "READY",
             "restart_required": "CONFIG_RELOAD_REQUIRED",
@@ -2739,15 +2752,26 @@ def _application_state(value: object) -> str:
     elif isinstance(value, list):
         states = value
     elif isinstance(value, Mapping):
+        if "applicationState" not in value:
+            raise HostServiceError("SETTINGS_SAVE_RESULT_INVALID",
+                "设置保存结果缺少 applicationState。", field="applicationState")
         state = value.get("applicationState")
         states = [state]
     else:
-        raise HostServiceError("SETTINGS_SAVE_RESULT_INVALID")
-    if not states or any(
-        state not in {"applied", "restart_required", "error"}
-        for state in states
-    ):
-        raise HostServiceError("SETTINGS_SAVE_RESULT_INVALID")
+        raise HostServiceError("SETTINGS_SAVE_RESULT_INVALID",
+            f"设置保存回调必须返回应用状态字符串、状态列表、含 applicationState 的对象或 null；实际类型为 {type(value).__name__}。",
+            field="result")
+    if not states:
+        raise HostServiceError("SETTINGS_SAVE_RESULT_INVALID",
+            "设置保存结果的应用状态列表不能为空。", field="result")
+    for index, state in enumerate(states):
+        field = "applicationState" if isinstance(value, Mapping) else f"/{index}" if isinstance(value, list) else "result"
+        if not isinstance(state, str):
+            raise HostServiceError("SETTINGS_SAVE_RESULT_INVALID",
+                f"应用状态必须是字符串；实际类型为 {type(state).__name__}。", field=field)
+        if state not in {"applied", "restart_required", "error"}:
+            raise HostServiceError("SETTINGS_SAVE_RESULT_INVALID",
+                "应用状态必须为 applied、restart_required 或 error。", field=field)
     if "error" in states:
         return "error"
     if "restart_required" in states:

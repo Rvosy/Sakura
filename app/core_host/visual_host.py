@@ -28,9 +28,10 @@ class VisualRuntime(Protocol):
 
 
 class VisualHostError(ValueError):
-    def __init__(self, code: str, message: str | None = None) -> None:
+    def __init__(self, code: str, message: str | None = None, *, field: str = "") -> None:
         super().__init__(message or code)
         self.code = code
+        self.field = field
 
 
 # These are availability states, not failed resource/plugin executions.
@@ -446,7 +447,9 @@ class VisualHost:
             self._runtime.call_service(capability.service, "describe", request),
         )
         if isinstance(description, dict) and description.get("error") == "VISUAL_RESOURCE_INVALID":
-            raise VisualHostError("VISUAL_RESOURCE_INVALID", description.get("message"))
+            field = description.get("field", "")
+            raise VisualHostError("VISUAL_RESOURCE_INVALID", description.get("message"),
+                                  field=field if isinstance(field, str) and field.startswith("/") else "")
         if (
             not isinstance(description, dict)
             or not {"prompt", "outputSchema", "rendererData", "parserData"} <= set(description)

@@ -129,6 +129,10 @@ def insert_v2(kind, payload):
                 r.evidence.get("diagnostic"), r.evidence.get("exception_stack"),
                 r.evidence.get("exception_chain"),
                 [frame.model_dump(exclude_none=True) for frame in r.stack],
+                [r.evidence.get(field) for field in (
+                    "plugin_id", "section_id", "validation_field", "detail_stage", "command", "service_key",
+                    "error_type", "cause_type", "cause_code",
+                )],
             ], ensure_ascii=False, separators=(",", ":"))
         rows.append(row)
         table = "error_events"

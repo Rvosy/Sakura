@@ -484,7 +484,7 @@ impl RuntimeLogService {
         let permitted = self.inner.config.level.permits(event.severity);
         // Capture diagnostic evidence before the local log viewer's attribute
         // projection. Only the known evidence fields are serialized remotely.
-        let telemetry_attributes = {
+        let mut telemetry_attributes = {
             let mut attributes = event.attributes.clone().unwrap_or_else(|| json!({}));
             if let Some(fields) = attributes.as_object_mut() {
                 for value in fields.values_mut() {
@@ -510,6 +510,12 @@ impl RuntimeLogService {
             attributes
         };
         let normalized = self.normalize_event(event);
+        if let (Some(fields), Some(request_id)) = (
+            telemetry_attributes.as_object_mut(),
+            normalized.record.request_id.as_ref(),
+        ) {
+            fields.insert("request_id".into(), Value::String(request_id.clone()));
+        }
         if let Ok(telemetry) = self.inner.telemetry.lock() {
             if let Some(telemetry) = telemetry
                 .as_ref()
@@ -1977,6 +1983,11 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         "recording_id",
         "stage",
         "detail_stage",
+        "service_key",
+        "startup_snapshot",
+        "timeout_ms",
+        "child_pid",
+        "process_alive",
         "copy_method",
         "return_code",
         "source_files",
@@ -1990,6 +2001,11 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         "cause_type",
         "cause_code",
         "validation_field",
+        "plugin_id",
+        "section_id",
+        "result_type",
+        "has_application_state",
+        "application_state_type",
         "exception_site",
         "command",
         "status",
@@ -2047,7 +2063,14 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         if rendered.is_empty() || rendered == "null" {
             continue;
         }
-        let label = viewer_detail_label(wanted);
+        let label = if wanted == "duration_ms"
+            && (record.event == "plugin.start.phase.completed"
+                || attributes.contains_key("startup_snapshot"))
+        {
+            "阶段耗时"
+        } else {
+            viewer_detail_label(wanted)
+        };
         if labels.contains(&label) {
             continue;
         }
@@ -2154,11 +2177,21 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "reason_code" => "原因码",
         "recording_id" => "录音编号",
         "stage" => "阶段",
-        "detail_stage" => "阶段",
+        "detail_stage" => "子阶段",
+        "service_key" => "等待服务",
+        "startup_snapshot" => "启动现场采集",
+        "timeout_ms" => "超时期限",
+        "child_pid" => "子进程",
+        "process_alive" => "进程存活",
         "error_type" | "provider_error_type" => "类型",
         "cause_type" => "根因类型",
         "cause_code" => "底层原因码",
         "validation_field" => "校验字段",
+        "plugin_id" => "插件 ID",
+        "section_id" => "设置分区",
+        "result_type" => "返回类型",
+        "has_application_state" => "包含应用状态",
+        "application_state_type" => "应用状态类型",
         "is_timeout" => "请求超时",
         "is_connect" => "连接失败",
         "endpoint_alias" => "请求目标",
@@ -2335,6 +2368,7 @@ fn business_message(event: &str) -> Option<&'static str> {
         "tts.conversion.failed" => "Genie ONNX 转换失败",
         "tts.conversion.cancelled" => "Genie ONNX 转换已取消",
         "plugin.loaded" => "插件已加载",
+        "plugin.start.phase.completed" => "插件启动阶段完成",
         "settings.provider_model.slot_save_failed" => "插件模型槽位保存失败",
         "settings.provider_model.slot_save_reconciled" => "插件模型槽位已通过回读确认保存",
         "startup.window_services.created" => "窗口服务已创建",
@@ -2504,6 +2538,7 @@ fn viewer_message(event: &str, severity: Severity) -> &'static str {
         "tts.process.cleanup.failed" => "TTS 服务清理失败",
         "tts.recording.failed" => "语音录制保存失败",
         "plugin.loaded" => "插件已加载",
+        "plugin.start.phase.completed" => "插件启动阶段完成",
         "python.logging.warning" => "Core 运行过程中出现提醒",
         "python.logging.error" => "Core 运行过程中发生错误",
         _ if severity == Severity::Error => "运行过程中发生错误",
@@ -2627,10 +2662,12 @@ fn short_correlation_id(value: &str) -> String {
 }
 
 fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
-    const DEFAULT_PRIORITY: [&str; 50] = [
+    const DEFAULT_PRIORITY: [&str; 52] = [
         "dependency",
         "stage",
         "detail_stage",
+        "service_key",
+        "startup_snapshot",
         "status",
         "outcome",
         "code",
@@ -2824,7 +2861,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "reason_code",
         "error_type",
     ];
-    const FAILURE_DETAIL_PRIORITY: [&str; 12] = [
+    const FAILURE_DETAIL_PRIORITY: [&str; 19] = [
         "diagnostic",
         "exception_chain",
         "exception_stack",
@@ -2837,6 +2874,13 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "error_type",
         "cause_type",
         "exception_site",
+        "cause_code",
+        "validation_field",
+        "plugin_id",
+        "section_id",
+        "result_type",
+        "has_application_state",
+        "application_state_type",
     ];
     let Some(object) = attributes.and_then(Value::as_object) else {
         return String::new();
@@ -3066,9 +3110,15 @@ fn sanitize_attribute_string(
     }
     if matches!(
         normalized_key,
-        "diagnostic" | "exception_chain" | "exception_stack" | "recovery_diagnostic"
+        "diagnostic"
+            | "exception_chain"
+            | "exception_stack"
+            | "recovery_diagnostic"
+            | "validation_field"
     ) {
-        let maximum = if normalized_key == "diagnostic" {
+        let maximum = if normalized_key == "validation_field" {
+            1024
+        } else if normalized_key == "diagnostic" {
             4096
         } else {
             8192
@@ -3165,6 +3215,13 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "io_error_kind"
             | "source_line"
             | "diagnostic_detail"
+            | "service_key"
+            | "startup_snapshot"
+            | "plugin_id"
+            | "section_id"
+            | "result_type"
+            | "has_application_state"
+            | "application_state_type"
             | "timeout_ms"
             | "exit_code"
             | "child_exited"
@@ -3375,6 +3432,13 @@ fn normalize_key(value: &str) -> String {
         .replace("clientepochms", "client_epoch_ms")
         .replace("clientperfms", "client_perf_ms")
         .replace("detailstage", "detail_stage")
+        .replace("servicekey", "service_key")
+        .replace("startupsnapshot", "startup_snapshot")
+        .replace("pluginid", "plugin_id")
+        .replace("sectionid", "section_id")
+        .replace("resulttype", "result_type")
+        .replace("hasapplicationstate", "has_application_state")
+        .replace("applicationstatetype", "application_state_type")
         .replace("droppedbytes", "dropped_bytes")
         .replace("droppedcount", "dropped_count")
         .replace("droppedrecords", "dropped_records")
@@ -3716,6 +3780,7 @@ fn core_message(event: &str) -> &'static str {
         "tts.weights.ready" => "TTS 角色权重已就绪",
         "tts.weights.failed" => "TTS 角色权重加载失败",
         "plugin.loaded" => "插件已加载",
+        "plugin.start.phase.completed" => "插件启动阶段完成",
         "startup.window_services.created" => "窗口服务已创建",
         "startup.background_services.created" => "后台服务已创建",
         "startup.background_services.injected" => "后台服务已接入窗口",
@@ -3985,7 +4050,14 @@ mod tests {
         log.submit(log.prepare_webview("settings", entry).unwrap());
         let snapshot = log.viewer_snapshot(None).unwrap();
         assert_eq!(snapshot.schema_version, 3);
-        assert_eq!(snapshot.records.len(), 11);
+        assert_eq!(
+            snapshot
+                .records
+                .iter()
+                .filter(|record| record.event_code != "plugin.start.phase.completed")
+                .count(),
+            11
+        );
         assert!(snapshot
             .records
             .windows(2)
@@ -3996,7 +4068,42 @@ mod tests {
                 .iter()
                 .filter(|r| r.plugin_id.as_deref() == Some(id))
                 .collect();
-            assert_eq!(records.len(), 4);
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record.event_code != "plugin.start.phase.completed")
+                    .count(),
+                4
+            );
+            let phases: Vec<_> = records
+                .iter()
+                .filter(|record| record.event_code == "plugin.start.phase.completed")
+                .map(|record| {
+                    assert!(record.details.iter().any(|detail| detail.label == "耗时"));
+                    assert!(record
+                        .details
+                        .iter()
+                        .any(|detail| detail.label == "阶段耗时"));
+                    record
+                        .details
+                        .iter()
+                        .find(|detail| detail.label == "阶段")
+                        .unwrap()
+                        .value
+                        .as_str()
+                })
+                .collect();
+            assert_eq!(
+                phases,
+                [
+                    "bootstrap",
+                    "context",
+                    "import",
+                    "construct",
+                    "setup",
+                    "commit"
+                ]
+            );
             assert!(records.iter().any(|r| r.event_code == "plugin.loaded"));
             assert!(records
                 .iter()
@@ -4954,7 +5061,7 @@ mod tests {
                 ("安全余量", "6554 tokens"),
                 ("错误码", "CONTEXT_WINDOW_EXCEEDED"),
                 ("原因码", "CONTEXT_WINDOW_EXCEEDED"),
-                ("阶段", "window_capacity"),
+                ("子阶段", "window_capacity"),
                 ("应用版本", env!("CARGO_PKG_VERSION")),
                 ("操作编号", "chat-context-budget-1"),
             ]

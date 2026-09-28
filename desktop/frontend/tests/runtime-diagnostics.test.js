@@ -231,3 +231,30 @@ test("Studio polling remains debug and failed calls keep the method without requ
   assert.match(entries.find(entry => entry.outcome === "failed").diagnostic, /worker went away/);
   assert.doesNotMatch(JSON.stringify(entries), /private-body/);
 });
+
+test("Core rejections keep a propagation breadcrumb without reporting the same failure again", async () => {
+  const failure = "VISUAL_RESOURCE_INVALID|||invalid expression label token=fixture-secret";
+  const env = harness(async () => { throw failure; });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(env.diagnostics.invoke("studio_request", { method: "studio.character.publish" }),
+      error => error === failure);
+    assert.equal(env.diagnostics.reportError(failure, { command: "studio_action" }), false);
+  }
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  const failures = entries.filter(entry => entry.outcome === "failed");
+  assert.equal(failures.length, 2, "separate actions each retain their propagation record");
+  assert.ok(failures.every(entry => entry.level === "info" && entry.command === "studio.character.publish"));
+  assert.ok(failures.every(entry => entry.code === "VISUAL_RESOURCE_INVALID"));
+  assert.doesNotMatch(JSON.stringify(entries), /fixture-secret/);
+});
+
+test("native failures without a Core response envelope remain reportable", async () => {
+  for (const failure of ["SETTINGS_CORE_UNAVAILABLE", "INVOKE_FAILED: connection lost", new TypeError("Cannot read label")]) {
+    const env = harness(async () => { throw failure; });
+    await assert.rejects(env.diagnostics.invoke("settings_voice_get"), error => error === failure);
+    await env.diagnostics.flush();
+    const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+    assert.equal(entries.find(entry => entry.outcome === "failed").level, "warn");
+  }
+});

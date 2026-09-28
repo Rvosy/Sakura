@@ -8,6 +8,7 @@ import importlib.abc
 import os
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -15,7 +16,7 @@ from typing import Any, Mapping, Sequence
 _PRIVATE_RUNTIME_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_PRIVATE_RUNTIME_ROOT))
 from process_paths import process_path
-from sakura_plugin_sdk import PluginApiError, PluginContext, RpcPeer
+from sakura_plugin_sdk import DEFAULT_CALL_TIMEOUT_SECONDS, PluginApiError, PluginContext, RpcPeer, _diagnostic_text
 sys.modules.pop("process_paths", None)
 sys.modules.pop("sakura_plugin_sdk", None)
 
@@ -73,6 +74,12 @@ class PluginRunner:
         self._context: PluginContext | None = None
         self._initialized = False
         self._close_lock = threading.Lock()
+        self._startup_lock = threading.Lock()
+        self._startup_started = time.monotonic()
+        self._startup_stage = "bootstrap"
+        self._startup_stage_started = self._startup_started
+        self._startup_thread: int | None = None
+        self._startup_call: dict[str, object] = {}
         self._windows_dll_handles: list[object] = []
         input_stream = sys.stdin.buffer
         output_stream = sys.stdout.buffer
@@ -148,6 +155,8 @@ class PluginRunner:
     def _handle_request(self, name: str, payload: Mapping[str, Any]) -> object:
         if name == "runtime.initialize":
             return self._initialize()
+        if name == "runtime.startup.snapshot":
+            return self._startup_snapshot()
         if name == "service.call":
             context = self._require_context()
             service_key = payload.get("serviceKey")
@@ -213,36 +222,104 @@ class PluginRunner:
         module_name, separator, class_name = self.entry.partition(":")
         if separator != ":":
             raise PluginApiError("PLUGIN_ENTRY_INVALID", plugin_id=self.plugin_id)
-        context = PluginContext(
-            self.plugin_id,
-            self.plugin_root,
-            self.data_dir,
-            self._call_remote_service,
-            self._call_remote_request,
-        )
+        with self._startup_lock:
+            self._startup_thread = threading.get_ident()
+        context = None
         try:
+            self._set_startup_stage("context")
+            context = PluginContext(
+                self.plugin_id,
+                self.plugin_root,
+                self.data_dir,
+                self._call_remote_service,
+                self._call_remote_request,
+            )
+            self._set_startup_stage("import")
             module = importlib.import_module(module_name)
+            self._set_startup_stage("construct")
             plugin_type = getattr(module, class_name)
             plugin = plugin_type()
             setup = getattr(plugin, "setup", None)
             if not callable(setup):
                 raise PluginApiError("PLUGIN_ENTRY_INVALID", plugin_id=self.plugin_id)
+            self._set_startup_stage("setup")
             setup(context)
+            self._set_startup_stage("commit")
             context.commit()
         except Exception as error:
+            # Cleanup may call Host services too; retain the failed setup call.
+            with self._startup_lock:
+                self._startup_thread = None
+                self._startup_call = getattr(error, "_startup_call", {})
             try:
-                context.close()
+                if context is not None:
+                    context.close()
             except Exception as cleanup_error:
                 raise ExceptionGroup(
                     "Plugin initialization and cleanup failed", [error, cleanup_error]
                 ) from error
             raise
+        finally:
+            with self._startup_lock:
+                self._startup_thread = None
         self._context = context
         self._initialized = True
+        self._set_startup_stage("ready")
         return {
             "pid": os.getpid(),
             "provides": context.service_exports(),
         }
+
+    def _set_startup_stage(self, stage: str) -> None:
+        now = time.monotonic()
+        with self._startup_lock:
+            previous, started = self._startup_stage, self._startup_stage_started
+            self._startup_stage, self._startup_stage_started = stage, now
+        self._peer.notify("runtime.startup.phase", {"stage": stage, "completedStage": previous,
+            "durationMs": round((now - started) * 1000, 2),
+            "elapsedMs": round((now - self._startup_started) * 1000, 2)})
+
+    def _startup_snapshot(self) -> dict[str, object]:
+        with self._startup_lock:
+            thread_id = self._startup_thread
+            result = {"detail_stage": self._startup_stage,
+                "duration_ms": round((time.monotonic() - self._startup_stage_started) * 1000, 2),
+                **self._startup_call}
+        frame = sys._current_frames().get(thread_id)
+        frames = []
+        while frame is not None and len(frames) < 32:
+            # Never inspect locals or source lines: setup can handle credentials.
+            frames.append(f"{frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}")
+            frame = frame.f_back
+        if frame is not None:
+            frames.append("[earlier frames omitted]")
+        result["exception_stack"] = _diagnostic_text("\n".join(reversed(frames)))
+        return result
+
+    def _request_remote(self, name: str, payload: Mapping[str, Any], **options) -> object:
+        with self._startup_lock:
+            initializing = self._startup_thread == threading.get_ident()
+            if initializing:
+                self._startup_call = {"command": name}
+                if "serviceKey" in payload:
+                    self._startup_call["service_key"] = payload["serviceKey"]
+                if "method" in payload:
+                    self._startup_call["command"] = name + "." + payload["method"]
+        try:
+            return self._peer.request(name, payload, **options)
+        except PluginApiError as error:
+            # Locally expired requests have no remote diagnostics. A timeout
+            # returned by the callee may have a different, unknown deadline.
+            if initializing:
+                with self._startup_lock:
+                    error._startup_call = dict(self._startup_call)
+                if error.code == "PLUGIN_CALL_TIMEOUT" and not error.diagnostics:
+                    error._startup_call["timeout_ms"] = options.get("timeout", DEFAULT_CALL_TIMEOUT_SECONDS) * 1000
+            raise
+        finally:
+            if initializing:
+                with self._startup_lock:
+                    self._startup_call = {}
 
     def _call_remote_service(
         self,
@@ -250,7 +327,7 @@ class PluginRunner:
         method: str,
         args: Sequence[Any],
     ) -> object:
-        return self._peer.request(
+        return self._request_remote(
             "service.call",
             {
                 "serviceKey": service_key,
@@ -267,7 +344,7 @@ class PluginRunner:
         timeout = payload.get("timeoutSeconds")
         if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 122):
             raise PluginApiError("PLUGIN_DEADLINE_INVALID")
-        return self._peer.request(name, payload, **({"timeout": float(timeout)} if timeout is not None else {}))
+        return self._request_remote(name, payload, **({"timeout": float(timeout)} if timeout is not None else {}))
 
     def _require_context(self) -> PluginContext:
         if self._context is None:

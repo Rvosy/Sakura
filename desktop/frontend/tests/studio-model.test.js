@@ -12,7 +12,18 @@ import {
   selectBootstrapCharacter,
   uniqueReplyTones,
   validateStudioResponse,
+  visualValidationIssue,
 } from "../studio/studio-model.js";
+
+test("visual validation preserves resource and plugin field through the native error envelope", () => {
+  const message = "形态「立绘」：标签无效|请修改。\n诊断详情";
+  assert.deepEqual(visualValidationIssue(`VISUAL_RESOURCE_INVALID|character.studio|/visuals/resources/portrait.2/expressionRows/1/label|${message}`), {
+    resourceId: "portrait.2", field: "/expressionRows/1/label", message,
+  });
+  assert.equal(visualValidationIssue("VISUAL_RESOURCE_INVALID|character.studio"), null);
+  assert.equal(visualValidationIssue("VISUAL_RESOURCE_INVALID|character.studio|theme.primary|invalid"), null);
+  assert.equal(visualValidationIssue("VISUAL_RESOURCE_INVALID|other|/visuals/resources/portrait|invalid"), null);
+});
 
 test("normalizes valid colors and preserves the requested fallback", () => {
   assert.equal(normalizeColorText("A1B2C3", "#000000"), "#a1b2c3");

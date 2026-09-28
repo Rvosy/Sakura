@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 
-import { createVoiceController, exactVoiceSnapshot } from "../settings/voice-runtime.js";
+import { createVoiceController as createController, exactVoiceSnapshot } from "../settings/voice-runtime.js";
+
+function hub(overrides = {}) {
+  return { pluginId: "example.voice-hub", provides: ["sakura.tts"], enabled: true, state: "active", ...overrides };
+}
+
+function createVoiceController(options) {
+  return createController({ getPlugins: () => [hub()], ...options });
+}
 
 function field(overrides = {}) {
   return {
@@ -299,7 +309,7 @@ test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled"
   let pluginPageOpens = 0;
   const controller = createVoiceController({
     document,
-    isAvailable: () => available,
+    getPlugins: () => [hub({ enabled: available, state: available ? "active" : "disabled" })],
     refreshAvailability: async () => { availabilityRefreshes += 1; available = true; },
     openPlugins: () => { pluginPageOpens += 1; },
     invoke: async (command) => {
@@ -315,9 +325,9 @@ test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled"
   assert.equal(controls.ttsProvider.disabled, true);
   assert.equal(controls.voiceSettings.hidden, true);
   assert.equal(controls.voiceUnavailable.hidden, false);
-  assert.equal(controls["page-voice"].dataset.voiceState, "unavailable");
+  assert.equal(controls["page-voice"].dataset.voiceState, "disabled");
   assert.equal(created.some((item) => item.textContent === "语音管理暂不可用"), true);
-  assert.equal(created.some((item) => item.textContent === "请确认语音插件已安装并启用。"), true);
+  assert.equal(created.some((item) => item.textContent === "语音插件已停用。"), true);
   assert.equal(controller.isDirty(), false);
 
   const refresh = created.find((item) => item.textContent === "重新检查");
@@ -333,6 +343,33 @@ test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled"
   assert.equal(controls.ttsEnabled.disabled, false);
   assert.equal(controls.ttsProvider.disabled, false);
   assert.equal(controller.isDirty(), false);
+});
+
+test("settings startup connects the voice controller to the installed plugin snapshot", async () => {
+  const source = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
+  const start = source.indexOf("runtimeVoiceController = createVoiceController({");
+  const endMarker = "await runtimeVoiceController.refreshCurrent();";
+  const end = source.indexOf(endMarker, start) + endMarker.length;
+  const { controls, document, created } = fixture();
+  let plugins = [hub({ enabled: false, state: "disabled" })];
+  let calls = 0;
+  const context = {
+    createVoiceController: createController, document,
+    invoke: async () => { calls++; return snapshot(); },
+    runtimePluginController: {
+      installedPlugins: () => plugins,
+      refreshCurrent: async () => { plugins = [hub()]; },
+      onVoiceSectionsRendered() {},
+    },
+    enhanceSelect() {}, refreshSelect() {}, refreshDirty() {}, notify() {}, showPage() {},
+    runtimeDiagnostics: { reportError() {} },
+  };
+  await vm.runInNewContext(`(async () => { let runtimeVoiceController; ${source.slice(start, end)} })()`, context);
+  assert.equal(calls, 0);
+  assert.equal(controls["page-voice"].dataset.voiceState, "disabled");
+  await created.find((item) => item.textContent === "重新检查").fireAsync("click");
+  assert.equal(calls, 1);
+  assert.equal(controls["page-voice"].dataset.voiceState, "available");
 });
 
 test("enabled TTS Hub without an enabled voice engine shows the page-level unavailable state", async () => {
@@ -351,6 +388,72 @@ test("enabled TTS Hub without an enabled voice engine shows the page-level unava
   assert.equal(controls.voiceUnavailable.hidden, false);
   assert.equal(created.some((item) => item.textContent === "语音管理暂不可用"), true);
   assert.equal(controller.isDirty(), false);
+});
+
+for (const state of ["missing", "starting", "failed"]) {
+  test(`${state} Hub does not issue a voice read and retains its state`, async () => {
+    const { controls, document } = fixture();
+    let calls = 0;
+    const controller = createController({
+      document,
+      getPlugins: () => state === "missing" ? [] : [hub({ state })],
+      invoke: async () => { calls++; throw new Error("Hub has no service"); },
+    });
+    await controller.refreshCurrent();
+    assert.equal(calls, 0);
+    assert.equal(controls["page-voice"].dataset.voiceState, state);
+  });
+}
+
+test("Hub state changing after the plugin snapshot is shown without a fabricated selection", async () => {
+  const { controls, document } = fixture();
+  const controller = createVoiceController({
+    document,
+    invoke: async () => snapshot({
+      availability: { state: "disabled", reasonCode: "TTS_HUB_DISABLED" },
+      selection: null, providers: [], sections: [],
+    }),
+  });
+  await controller.refreshCurrent();
+  assert.equal(controls["page-voice"].dataset.voiceState, "disabled");
+  assert.equal(controller.isDirty(), false);
+});
+
+test("a failed voice read is displayed as an error and recovers on the next read", async () => {
+  const { controls, document } = fixture();
+  let failed = true;
+  const controller = createVoiceController({
+    document,
+    invoke: async () => {
+      if (failed) throw new Error("TTS_SERVICE_UNAVAILABLE");
+      return snapshot();
+    },
+  });
+  await controller.refreshCurrent();
+  assert.equal(controls["page-voice"].dataset.voiceState, "error");
+  failed = false;
+  await controller.refreshCurrent();
+  assert.equal(controls["page-voice"].dataset.voiceState, "available");
+});
+
+test("voice rendering failures retain the original exception after a successful IPC read", async () => {
+  const { controls, document } = fixture();
+  const failure = new TypeError("voice control rendering failed");
+  const reports = [];
+  let failing = true;
+  const controller = createVoiceController({
+    document,
+    invoke: async () => snapshot(),
+    refreshSelect() {
+      if (failing) { failing = false; throw failure; }
+    },
+    reportError: (error, context) => reports.push({ error, context }),
+  });
+  await controller.refreshCurrent();
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].error, failure);
+  assert.equal(reports[0].context.stage, "voice.render");
+  assert.equal(controls["page-voice"].dataset.voiceState, "error");
 });
 
 test("voice save applies character selection locally and submits only changed Provider sections", async () => {

@@ -59,6 +59,29 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+def check_slider_value_editing(page, errors):
+    slider = page.locator("#controlPanelWidth")
+    output = page.locator("output[for='controlPanelWidth']")
+    editor = page.locator(".slider-value-editor")
+    slider.evaluate("element => { window.sliderInputs = []; element.addEventListener('input', () => window.sliderInputs.push(element.value)); }")
+
+    for draft, key, expected, emitted in [
+        ("720", "Enter", "720", ["720"]),
+        ("680", "Escape", "720", ["720"]),
+        ("700", "Tab", "700", ["720", "700"]),
+        ("9999", "Enter", "860", ["720", "700", "860"]),
+    ]:
+        output.click()
+        expect(editor).to_be_focused()
+        editor.fill(draft)
+        editor.press(key)
+        expect(editor).to_have_count(0)
+        expect(slider).to_have_value(expected)
+        expect(output).to_have_text(expected)
+        assert page.evaluate("window.sliderInputs") == emitted
+        assert not errors, errors
+
+
 def run():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(QuietHandler, directory=str(ROOT)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -91,6 +114,7 @@ def run():
             assert not page.locator(".nav-card").evaluate("element => element.inert")
             assert page.evaluate("window.nativeCalls.filter(c=>c.command==='reveal_settings_window').length") == 1
             assert page.evaluate("window.nativeCalls.findIndex(c=>c.command==='reveal_settings_window') < window.nativeCalls.findIndex(c=>c.command==='settings_asr_get')")
+            check_slider_value_editing(page, errors)
 
             page.reload()
             expect(banner).to_contain_text("2/6")
@@ -117,7 +141,7 @@ def run():
             page.screenshot(path=str(output / "migration-failed-narrow.png"), animations="disabled")
             assert not errors, errors
             browser.close()
-            print("PASS: visible migration before settings requests, plugin startup, recovery, restart and narrow layout")
+            print("PASS: migration startup/recovery/restart, numeric Enter/Escape/blur, bounds and narrow layout")
     finally:
         server.shutdown()
         server.server_close()

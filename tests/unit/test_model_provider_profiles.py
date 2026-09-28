@@ -90,6 +90,43 @@ def test_invalid_second_connection_does_not_partially_save(provider):
     assert context.config.get() == before
 
 
+@pytest.mark.parametrize(("returned", "result_type", "state_type", "has_state", "field", "reason"), [
+    (True, "bool", "missing", False, "result", "bool"),
+    ({"unexpected": SECRET}, "dict", "missing", False, "applicationState", "缺少 applicationState"),
+    ({"applicationState": SECRET}, "dict", "str", True, "applicationState", "applied"),
+    ({"applicationState": [SECRET]}, "dict", "list", True, "applicationState", "list"),
+    ([], "list", "missing", False, "result", "不能为空"),
+    (["applied", 42], "list", "missing", False, "/1", "int"),
+])
+def test_invalid_save_result_keeps_plugin_section_and_shape_without_values(
+    provider, tmp_path, returned, result_type, state_type, has_state, field, reason,
+):
+    from app.core_host.plugin_settings import PluginSettingsBoundary
+
+    profiles, context = provider
+    context.host._invoke_callback = lambda *_args: returned
+    application = SimpleNamespace(settings_save=lambda plugin, section, values: context.host.save(plugin, section, values)[1])
+    boundary = PluginSettingsBoundary("generation", "credential", tmp_path, application_provider=lambda: application)
+    result = boundary.handle({
+        "id": "save-shape", "name": "plugins.settings.save", "protocolMinor": 2,
+        "generationId": "generation", "generationCredential": "credential",
+        "payload": {"pluginId": SERVICE_KEY, "sectionId": "request", "values": {"timeout_seconds": 23}},
+    })
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "SETTINGS_SAVE_RESULT_INVALID"
+    details = result["error"]["details"]["diagnostics"]
+    assert {key: details[key] for key in (
+        "plugin_id", "section_id", "result_type", "has_application_state", "application_state_type",
+    )} == {
+        "plugin_id": SERVICE_KEY, "section_id": "request", "result_type": result_type,
+        "has_application_state": has_state, "application_state_type": state_type,
+    }
+    assert SECRET not in repr(result)
+    assert details["validation_field"] == field
+    assert reason in details["diagnostic"]
+
+
 @pytest.mark.parametrize("timeout", [None, "60", 0])
 def test_prior_handoff_profile_remains_editable_without_relaxing_new_saves(timeout):
     context = Context()

@@ -121,7 +121,8 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
       throw error;
     }
   }
-  return { open, freeze, clear, validate: () => instance?.validate?.() ?? true, collect: () => instance?.collect?.() };
+  return { open, freeze, clear, validate: () => container.inert ? true : instance?.validate?.() ?? true,
+    focusField: (field) => instance?.focusField?.(field), collect: () => instance?.collect?.() };
 }
 
 function validateThumbnail(url) {

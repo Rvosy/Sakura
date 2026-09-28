@@ -20,16 +20,26 @@ function setInputValue(field, input) {
   else input.value = field.value === null || field.value === undefined ? "" : String(field.value);
 }
 
+function hubAvailability(plugins) {
+  const hubs = plugins.filter((plugin) => plugin.provides.includes("sakura.tts"));
+  const hub = hubs.find((plugin) => plugin.enabled && plugin.state === "active")
+    || hubs.find((plugin) => plugin.enabled) || hubs[0];
+  if (!hub) return { state: "missing" };
+  if (!hub.enabled) return { state: "disabled" };
+  return { state: hub.state, reasonCode: hub.reasonCode };
+}
+
 export function createVoiceController({
   document,
   invoke,
-  isAvailable = () => true,
+  getPlugins = () => [],
   refreshAvailability = async () => {},
   openPlugins = () => {},
   enhanceSelect = () => {},
   refreshSelect = () => {},
   onDirty = () => {},
   onStatus = () => {},
+  reportError = () => {},
   onSectionsRendered = () => {},
 }) {
   const fields = {
@@ -267,8 +277,8 @@ export function createVoiceController({
     fields.unavailable.textContent = "";
   }
 
-  function showUnavailable() {
-    fields.page.dataset.voiceState = "unavailable";
+  function showUnavailable(availability) {
+    fields.page.dataset.voiceState = availability.state;
     fields.settings.hidden = true;
     fields.unavailable.hidden = false;
     fields.unavailable.textContent = "";
@@ -280,9 +290,16 @@ export function createVoiceController({
     mark.className = "memory-empty-mark";
     mark.append(createIcon(document, "audio-lines"));
     const heading = document.createElement("strong");
-    heading.textContent = "语音管理暂不可用";
+    heading.textContent = availability.state === "error" ? "语音设置读取失败" : "语音管理暂不可用";
     const message = document.createElement("p");
-    message.textContent = "请确认语音插件已安装并启用。";
+    message.textContent = {
+      missing: "请先安装语音插件。",
+      disabled: "语音插件已停用。",
+      starting: "语音插件正在启动。",
+      failed: "语音插件启动失败，请到插件页查看原因。",
+      unavailable: "当前没有已启用的语音引擎。",
+      error: "请重新检查；若仍然失败，可在运行日志中查看原因。",
+    }[availability.state] || "语音插件暂不可用，请到插件页查看状态。";
     const actions = document.createElement("div");
     const refresh = document.createElement("button");
     refresh.type = "button";
@@ -307,7 +324,7 @@ export function createVoiceController({
     fields.unavailable.append(empty);
   }
 
-  function renderUnavailable() {
+  function renderUnavailable(availability = { state: "unavailable" }) {
     snapshot = null;
     baseline = "";
     sectionInputs.clear();
@@ -319,7 +336,7 @@ export function createVoiceController({
     fields.provider.disabled = true;
     fields.sections.textContent = "";
     refreshSelect(fields.provider);
-    showUnavailable();
+    showUnavailable(availability);
     onDirty();
     onSectionsRendered();
   }
@@ -328,11 +345,11 @@ export function createVoiceController({
     const next = exactVoiceSnapshot(value);
     const previousDraft = preserveDraft ? currentDraft() : null;
     const previousBaseline = baseline ? JSON.parse(baseline) : null;
-    if (!next.providers.length) {
+    if ((next.availability && next.availability.state !== "active") || !next.providers.length) {
       if (previousDraft && draftSignature(previousDraft) !== baseline) {
         throw new Error("语音引擎暂不可用，请稍后重试。");
       }
-      renderUnavailable();
+      renderUnavailable(next.availability?.state !== "active" ? next.availability : undefined);
       return;
     }
     snapshot = next;
@@ -388,23 +405,30 @@ export function createVoiceController({
   async function refresh(options = {}) {
     if (disposed) return null;
     const next = await invoke("settings_voice_get");
-    if (!disposed) initialize(next, options);
+    if (!disposed) {
+      try { initialize(next, options); }
+      catch (error) {
+        reportError(error, { command: "settings_voice_get", stage: "voice.render" });
+        throw error;
+      }
+    }
     return snapshot;
   }
 
   async function refreshCurrent({ preserveDraft = false } = {}) {
-    if (!isAvailable()) {
+    const availability = hubAvailability(getPlugins());
+    if (availability.state !== "active") {
       if (preserveDraft && snapshot && draftSignature(currentDraft()) !== baseline) {
         throw new Error("语音设置暂不可用，请稍后重试。");
       }
-      if (!disposed) renderUnavailable();
+      if (!disposed) renderUnavailable(availability);
       return null;
     }
     try {
       return await refresh({ preserveDraft });
     } catch (error) {
       if (preserveDraft && snapshot) throw error;
-      if (!disposed) renderUnavailable();
+      if (!disposed) renderUnavailable({ state: "error" });
       return null;
     }
   }

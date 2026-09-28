@@ -43,6 +43,7 @@ updated: 2026-09-18
   关注的状态使用 info/warning/error。已登记业务事件继续使用固定中文，自定义消息采用 `runtime.message`。失败事件必须保留稳定错误码、异常类型、
   阶段和清洗后的原始 `diagnostic`。本地日志允许保存有界异常链和调用栈，不记录 locals、请求/回复正文或异常对象。
 - `elapsed_ms` 等耗时最多显示两位小数并移除末尾零，不得把 JavaScript 浮点误差直接写入文本日志。
+- 查看器分别显示“阶段”和“子阶段”，启动失败还可显示等待服务、超时期限、子进程及现场采集结果，不能因显示标签相同而丢掉具体阻塞位置。字段和远程投影见[远程诊断](remote-diagnostics-telemetry.md)。
 - 首次启动发现活动文件或 `.1` 至 `.5` 的任意一行仍是旧 JSON 记录（包括纯文本后混入 JSON）时，把
   整组文件原样移动到带时间戳的 `sakura-runtime-jsonl-archive-*` 归档名，再创建纯文本活动文件；不得
   解析、重写、截断或继续混写。
@@ -71,6 +72,7 @@ updated: 2026-09-18
 稳定事件族如下：
 
 - `shell.started`：每次桌面进程启动，并携带发行包的 `current_version`；
+- `plugin.start.phase.completed`：插件初始化阶段、该阶段耗时和累计耗时；`plugin.loaded` 表示初始化完成。启动超时保留最后阶段和有界现场栈，不能把尚未完成的阶段记为成功。
 - `chat.request.received/completed/cancelled/failed`：用户请求进入、最终送达或终止；
 - `memory.recall.started/finished/failed`：召回状态、候选/选中数量和耗时；
 - `context.dependencies.ready/degraded`：Prompt 构建前依赖的实际就绪状态、等待耗时和稳定原因；

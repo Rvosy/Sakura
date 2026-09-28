@@ -10,6 +10,33 @@ const container = () => {
 const descriptor = { presentation: { visual: { editor: "fixture:editor" } }, data: { Private_Key: 1 } };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test("validation and field focus use the active editor rather than its frozen predecessor", async () => {
+  const ready = deferred(), mounted = deferred();
+  const focused = [];
+  let mounts = 0;
+  const host = createVisualEditorHost({ container: container(), loadModule: async () => ({ mountEditor: () => {
+    const first = ++mounts === 1;
+    if (!first) mounted.resolve();
+    return { ready: first ? undefined : ready.promise, collect() {}, destroy() {},
+      validate() { if (first) throw Error("first draft invalid"); return true; },
+      focusField: field => focused.push([first, field]),
+    };
+  } }) });
+  await host.open(descriptor);
+  assert.throws(() => host.validate(), /first draft invalid/);
+  host.freeze();
+  assert.equal(host.validate(), true);
+  const opening = host.open(descriptor);
+  await mounted.promise;
+  assert.equal(host.validate(), true);
+  ready.resolve();
+  await opening;
+  assert.equal(host.validate(), true);
+  host.focusField("/plugin/private/field");
+  assert.deepEqual(focused, [[false, "/plugin/private/field"]]);
+  host.clear();
+});
+
 test("editor view survives save/remount and stays scoped to its resource and workspace", async () => {
   let view;
   const host = createVisualEditorHost({ container: container(), loadModule: async () => ({ mountEditor: () => {

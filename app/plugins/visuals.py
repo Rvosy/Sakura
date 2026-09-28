@@ -39,7 +39,7 @@ def resolve_resource_path(root: Path, relative: str) -> Path:
         resolved = (resolved_root / relative).resolve(strict=True)
         resolved.relative_to(resolved_root)
     except (OSError, ValueError, RuntimeError) as error:
-        raise ValueError("VISUAL_RESOURCE_INVALID") from error
+        raise ValueError(f"VISUAL_RESOURCE_INVALID: {error}") from error
     return resolved
 
 

@@ -97,6 +97,12 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "current_required_tokens",
         "deadline_ms",
         "detail_stage",
+        "service_key",
+        "startup_snapshot",
+        "section_id",
+        "result_type",
+        "has_application_state",
+        "application_state_type",
         "dependency",
         "code_source",
         "dependency_source",
@@ -355,6 +361,7 @@ _FIXED_MESSAGES = {
     "tts.conversion.failed": "Genie ONNX conversion failed",
     "tts.conversion.cancelled": "Genie ONNX conversion cancelled",
     "plugin.loaded": "Plugin loaded",
+    "plugin.start.phase.completed": "Plugin startup phase completed",
     "plugin.migration.started": "开始检查插件迁移",
     "plugin.migration.plugin_started": "开始迁移插件",
     "plugin.migration.plugin_completed": "插件迁移检查完成",
@@ -880,7 +887,11 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
                 continue
             safe[key] = value
         elif isinstance(value, str):
-            if key == "source_file":
+            if key == "validation_field":
+                field = safe_diagnostic_text(value, 1024)
+                if field:
+                    safe[key] = field
+            elif key == "source_file":
                 if (
                     value.startswith(
                         ("app/", "plugins/builtin/", "desktop/src-tauri/src/")

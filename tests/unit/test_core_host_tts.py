@@ -313,6 +313,58 @@ class _ImmediatePluginApplication:
         self.events.append((event_name, dict(payload)))
 
 
+@pytest.mark.parametrize("state", ["missing", "disabled", "starting", "active", "failed"])
+@pytest.mark.parametrize("request_name", ["tts.settings.get", "tts.status.get"])
+def test_missing_voice_service_is_an_expected_state_only_when_plugin_state_confirms_it(
+    tmp_path: Path, state: str, request_name: str,
+) -> None:
+    from app.plugins.runtime_v4 import PluginRuntimeError
+
+    class Worker:
+        def call_service(self, service_key: str, method: str, *args):
+            raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
+
+        def public_snapshot(self):
+            return {
+                "state": "ready",
+                "plugins": [] if state == "missing" else [{
+                    "provides": ["sakura.tts"], "enabled": state != "disabled", "state": state,
+                }],
+            }
+
+    boundary = TTSBoundary(
+        GENERATION, CREDENTIAL, tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="alpha", display_name="Alpha")),
+        plugin_application_provider=Worker,
+    )
+    result = boundary.handle(_request(request_name, {}))
+    if state in {"active", "failed"}:
+        assert result["ok"] is False
+        assert result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+    else:
+        assert result["ok"] is True
+        assert result["payload"]["availability"]["state"] == state
+        assert result["payload"]["character"]["characterId"] == "alpha"
+        assert result["payload"]["selection"] is None
+        assert result["payload"]["providers"] == []
+
+
+def test_voice_service_runtime_errors_are_not_normal_plugin_absence(tmp_path: Path) -> None:
+    from app.plugins.runtime_v4 import PluginRuntimeError
+
+    class Worker:
+        def call_service(self, service_key: str, method: str, *args):
+            raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT", service_key=service_key)
+
+    boundary = TTSBoundary(
+        GENERATION, CREDENTIAL, tmp_path,
+        session_provider=lambda: None, plugin_application_provider=Worker,
+    )
+    result = boundary.handle(_request("tts.settings.get", {}))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+
+
 def test_voice_settings_report_partial_provider_save_without_claiming_atomicity(
     tmp_path: Path,
 ) -> None:

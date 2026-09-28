@@ -1387,6 +1387,13 @@ impl ConcurrentRequestHandle {
                 "diagnostic",
                 "error_type",
                 "cause_type",
+                "cause_code",
+                "validation_field",
+                "plugin_id",
+                "section_id",
+                "result_type",
+                "has_application_state",
+                "application_state_type",
                 "exception_site",
                 "exception_chain",
                 "exception_stack",
@@ -4640,6 +4647,33 @@ mod tests {
                 .iter()
                 .any(|detail| detail.label == "请求编号"
                     && detail.value == "character-import-original-error"));
+            handle.log_request_result(
+                "settings-invalid-result", "plugins.settings.save",
+                &Ok(json!({"ok":false,"error":{"code":"SETTINGS_SAVE_RESULT_INVALID","details":{"diagnostics":{
+                    "diagnostic":"Plugin returned an invalid settings result",
+                    "cause_code":"SETTINGS_SAVE_RESULT_INVALID", "plugin_id":"sakura.model.openai_compatible",
+                    "validation_field":"/settings/profiles/applicationState",
+                    "section_id":"profiles", "result_type":"dict", "has_application_state":true,
+                    "application_state_type":"list"
+                }}}})), 2, Duration::from_secs(3),
+            );
+            let settings_error = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+            for (label, value) in [
+                ("校验字段", "/settings/profiles/applicationState"),
+                ("插件 ID", "sakura.model.openai_compatible"),
+                ("设置分区", "profiles"),
+                ("返回类型", "dict"),
+                ("包含应用状态", "true"),
+                ("应用状态类型", "list"),
+            ] {
+                assert!(
+                    settings_error
+                        .details
+                        .iter()
+                        .any(|detail| detail.label == label && detail.value == value),
+                    "missing {label}"
+                );
+            }
             drop(handle);
             drop(router);
             log.drain_and_shutdown_for_test();

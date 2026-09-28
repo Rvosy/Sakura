@@ -1043,6 +1043,13 @@ class TTSBoundary:
             )
             sections = getattr(application, "settings_sections")("voice")
         except Exception as exc:
+            if getattr(exc, "code", "") == "SERVICE_MISSING":
+                # Plugin state can change after the settings window inspected it.
+                # Only a confirmed expected absence is an empty settings state;
+                # an active/failed Hub with a missing service remains a failure.
+                unavailable = self._unavailable_voice_settings(application, character)
+                if unavailable is not None:
+                    return unavailable
             raise TTSBoundaryError(
                 "TTS_SERVICE_UNAVAILABLE",
                 "TTS capability settings are unavailable",
@@ -1054,6 +1061,7 @@ class TTSBoundary:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS Provider list is invalid")
         return {
             "schemaVersion": 1,
+            "availability": {"state": "active", "reasonCode": "READY"},
             "character": (
                 {
                     "characterId": character_id,
@@ -1099,6 +1107,35 @@ class TTSBoundary:
                 for item in sections
                 if isinstance(item, Mapping)
             ][:32],
+        }
+
+    @staticmethod
+    def _unavailable_voice_settings(
+        application: object,
+        character: tuple[str, str] | None,
+    ) -> dict[str, Any] | None:
+        runtime = getattr(application, "public_snapshot")()
+        if runtime["state"] == "stopped":
+            return None
+        hubs = [item for item in runtime["plugins"] if "sakura.tts" in item["provides"]]
+        enabled_hubs = [item for item in hubs if item["enabled"]]
+        if not hubs:
+            availability = {"state": "missing", "reasonCode": "TTS_HUB_NOT_INSTALLED"}
+        elif not enabled_hubs:
+            availability = {"state": "disabled", "reasonCode": "TTS_HUB_DISABLED"}
+        elif all(item["state"] == "starting" for item in enabled_hubs):
+            availability = {"state": "starting", "reasonCode": "PLUGIN_STARTING"}
+        else:
+            return None
+        return {
+            "schemaVersion": 1,
+            "availability": availability,
+            "character": {"characterId": character[0], "displayName": character[1][:120]}
+            if character is not None else None,
+            # An unavailable Hub cannot report the persisted character selection.
+            "selection": None,
+            "providers": [],
+            "sections": [],
         }
 
     def _voice_character_identity(self) -> tuple[str, str] | None:

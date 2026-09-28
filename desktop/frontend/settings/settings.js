@@ -1470,22 +1470,33 @@ function upgradeSliderControls() {
       editor.focus();
       editor.select();
 
-      function commit() {
-        const clamped = clampInt(editor.value, [Number(editor.min), Number(editor.max)]);
-        const changed = String(clamped) !== slider.value;
-        slider.value = String(clamped);
-        if (changed) {
-          slider.dispatchEvent(new Event("input", { bubbles: true }));
+      function finish(commitValue) {
+        // 移除聚焦输入框会同步触发 blur；先结束监听，避免重入提交或把取消变成提交。
+        editor.removeEventListener("blur", commit);
+        editor.removeEventListener("keydown", handleKeyDown);
+        if (commitValue) {
+          const clamped = clampInt(editor.value, [Number(editor.min), Number(editor.max)]);
+          const changed = String(clamped) !== slider.value;
+          slider.value = String(clamped);
+          if (changed) {
+            slider.dispatchEvent(new Event("input", { bubbles: true }));
+          }
         }
         output.textContent = slider.value;
         editor.replaceWith(output);
       }
 
+      function commit() { finish(true); }
+
+      function handleKeyDown(event) {
+        if (event.key === "Enter" || event.key === "Escape") {
+          event.preventDefault();
+          finish(event.key === "Enter");
+        }
+      }
+
       editor.addEventListener("blur", commit);
-      editor.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { e.preventDefault(); commit(); }
-        if (e.key === "Escape") { e.preventDefault(); output.textContent = slider.value; editor.replaceWith(output); }
-      });
+      editor.addEventListener("keydown", handleKeyDown);
     });
   });
 }
@@ -1884,6 +1895,8 @@ async function startSettingsFrontend() {
       runtimeVoiceController = createVoiceController({
         document,
         invoke,
+        getPlugins: () => runtimePluginController?.installedPlugins() || [],
+        reportError: (...args) => runtimeDiagnostics.reportError(...args),
         enhanceSelect,
         refreshSelect,
         refreshAvailability: async () => { await runtimePluginController?.refreshCurrent(); },

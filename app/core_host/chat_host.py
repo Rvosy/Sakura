@@ -24,6 +24,8 @@ class _ActiveTurn:
 
 
 class ChatHost:
+    shutdown_methods = frozenset({"cancel"})
+
     def __init__(self, *, boundary_provider: Callable, screen_host: ScreenHost,
                  emit_callback: Callable, commit_scope: Callable | None = None) -> None:
         self._boundary_provider = boundary_provider

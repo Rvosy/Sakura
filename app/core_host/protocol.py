@@ -281,7 +281,7 @@ def response(
                     for child in value:
                         collect_credentials(child, depth + 1)
             collect_credentials(request.get("payload"))
-            for key in DIAGNOSTIC_TEXT_KEYS & diagnostics.keys():
+            for key in (DIAGNOSTIC_TEXT_KEYS | {"validation_field"}) & diagnostics.keys():
                 diagnostics[key] = safe_diagnostic_text(diagnostics[key], TRACE_LIMIT, secrets=known_secrets)
             details = dict(error.get("details") or {})
             details["diagnostics"] = diagnostics

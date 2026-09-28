@@ -184,6 +184,7 @@ def test_v110_unpublished_portrait_draft_survives_editor_and_save(tmp_path, auto
 @pytest.mark.parametrize("failure", ["json", "png", "missing"])
 def test_portrait_resource_error_logs_target_and_original_cause(tmp_path, failure):
     import io
+    from app.core_host.character_studio import CharacterStudioBoundary
     from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
     distribution, user = tmp_path / "distribution", tmp_path / "user"
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_portrait", distribution / "plugins/builtin/sakura_portrait")
@@ -203,6 +204,22 @@ def test_portrait_resource_error_logs_target_and_original_cause(tmp_path, failur
         application.start()
         application.bind_visual_character(CharacterRegistry(user).get("demo"))
         assert application.visual_presentation()["visualReasonCode"] == "VISUAL_RESOURCE_INVALID"
+        boundary = CharacterStudioBoundary("g", "c", user, plugin_application_provider=lambda: application)
+        doc = boundary._dispatch("studio.character.open", {"characterId": "demo"})["doc"]
+        cause = {"json": "Expecting property name", "png": "PNG/IHDR", "missing": "happy.png"}[failure]
+        for method, params in [
+            ("studio.character.publish", {"workspaceId": "demo", "doc": doc}),
+            ("studio.visual.export", {"workspaceId": "demo", "resourceId": "portrait", "path": str(tmp_path / "portrait.visual")}),
+        ]:
+            result = boundary.handle({
+                "protocolMajor": 2, "protocolMinor": 2, "kind": "request", "id": method,
+                "name": method, "payload": params, "generationId": "g", "generationCredential": "c",
+                "deadlineMs": 3000, "priority": "interactive",
+            })
+            assert not result["ok"]
+            assert result["error"]["code"] == "VISUAL_RESOURCE_INVALID"
+            assert cause in result["error"]["message"]
+        assert (package / "visual/resource.json").read_text(encoding="utf-8") == config
     finally:
         application.close()
         bridge.close()
@@ -234,6 +251,50 @@ def test_portrait_encoded_size_does_not_limit_small_decoded_image(tmp_path: Path
         stream.write(PNG)
         stream.truncate(byte_length)
     assert module.inspect_png(image) == {"width": 1, "height": 1, "byteLength": byte_length}
+
+
+@pytest.mark.parametrize("operation", ["publish", "export"])
+def test_unopened_portrait_draft_reports_resource_and_field_without_losing_rows(tmp_path, operation):
+    from app.core_host.character_studio import CharacterStudioBoundary, CharacterStudioError
+
+    distribution, user = tmp_path / "distribution", tmp_path / "user"
+    shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_portrait", distribution / "plugins/builtin/sakura_portrait")
+    package = user / "characters/demo"
+    package.mkdir(parents=True)
+    (package / "card.md").write_text("demo", encoding="utf-8")
+    (package / "default.png").write_bytes(PNG)
+    config = {"default": "default.png", "expressions": {"平静": "default.png", "开心": "default.png"}}
+    resources = [{"id": name, "name": name, "type": "sakura.visual.portrait@1", "root": ".", "entry": f"{name}.json"} for name in ["first", "second"]]
+    for resource in resources:
+        (package / resource["entry"]).write_text(json.dumps(config), encoding="utf-8")
+    (package / "character.json").write_text(json.dumps({"id": "demo", "display_name": "Demo", "card": "card.md", "visuals": {"default": "first", "resources": resources}}), encoding="utf-8")
+    original = (package / "second.json").read_bytes()
+    application = PluginApplicationHost(RuntimeRoots(distribution, user), "g", ToolRegistry())
+    application.start()
+    try:
+        boundary = CharacterStudioBoundary("g", "c", user, plugin_application_provider=lambda: application)
+        request = boundary._dispatch
+        doc = request("studio.character.open", {"characterId": "demo"})["doc"]
+        unfinished = {**config, "expressionRows": [{"label": "平静", "path": "default.png", "selected": True}, {"label": "", "path": "default.png", "selected": False}]}
+        doc["visualData"] = {"second": unfinished}
+        request("studio.draft.save", {"workspaceId": "demo", "doc": doc})
+        method, payload = ("studio.character.publish", {"workspaceId": "demo", "doc": doc}) if operation == "publish" else ("studio.archive.export", {"workspaceId": "demo", "path": str(tmp_path / "demo.char"), "includeVoice": False})
+        with pytest.raises(CharacterStudioError) as failure:
+            request(method, payload)
+        public = failure.value.public_error()
+        assert public["code"] == "VISUAL_RESOURCE_INVALID"
+        assert public["details"] == {"feature": "character.studio", "field": "/visuals/resources/second/expressionRows/1/label"}
+        assert "second" in public["message"]
+        assert "第 2 张立绘的表情标签" in public["message"]
+        assert (package / "second.json").read_bytes() == original
+        assert not (tmp_path / "demo.char").exists()
+        reopened = request("studio.character.open", {"characterId": "demo"})["doc"]
+        assert reopened["visualData"]["second"] == unfinished
+        reopened["visualData"]["second"] = config
+        request("studio.character.publish", {"workspaceId": "demo", "doc": reopened})
+        assert json.loads((package / "second.json").read_text(encoding="utf-8")) == config
+    finally:
+        application.close()
 
 
 def test_large_portrait_collection_publishes_and_binds_without_truncation(tmp_path):

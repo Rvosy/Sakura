@@ -64,3 +64,12 @@ export function validateStudioResponse(value) {
   }
   return value;
 }
+
+export function visualValidationIssue(error) {
+  const text = typeof error === "string" ? error : error?.message;
+  if (typeof text !== "string") return null;
+  const [code, feature, field, ...message] = text.split("|");
+  if (code !== "VISUAL_RESOURCE_INVALID" || feature !== "character.studio") return null;
+  const target = field?.match(/^\/visuals\/resources\/([^/]+)(\/.*)?$/);
+  return target ? { resourceId: target[1], field: target[2] || "", message: message.join("|") } : null;
+}
