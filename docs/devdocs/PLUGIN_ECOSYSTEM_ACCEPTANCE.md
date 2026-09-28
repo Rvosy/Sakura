@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-09-27
 ---
 
 # 开放插件生态验收
@@ -17,10 +17,20 @@ updated: 2026-09-22
 Windows 默认使用 `%LOCALAPPDATA%\Sakura Development`，读取原角色、模型、插件开关和聊天记录。
 启动器不创建验收角色；聊天和主动保存直接写入这个日常目录。
 
+此入口默认跟随 Windows 当前系统代理。启动器只从 Sakura 子进程环境中移除继承的代理变量，
+避免旧终端的代理端口覆盖系统设置；不修改父终端、用户环境变量或系统代理。
+市场、模型及插件后续的新请求继续读取当时的系统代理。
+
 使用其他已有目录时：
 
 ```powershell
 scripts\start-existing-data.ps1 -UserRoot 'D:\Sakura'
+```
+
+需要使用当前终端的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 或 `NO_PROXY` 覆盖时，显式保留：
+
+```powershell
+scripts\start-existing-data.bat -UseEnvironmentProxy
 ```
 
 启动器使用仓库 debug 程序，不自动编译。需要更新时，在仓库根目录运行：

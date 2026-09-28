@@ -305,6 +305,15 @@ jobs:
               ], check=True, timeout=30)
           PY
 
+      - name: Verify Windows acceptance launcher environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip --python runtime/python.exe install --disable-pip-version-check "pytest>=8.0.0"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./runtime/python.exe -m pytest -c NUL --noconftest -p no:cacheprovider tests/unit/test_runtime_v2_launcher.py -q
+          exit $LASTEXITCODE
+
       - name: Run the complete Rust test suite (Windows)
         if: runner.os == 'Windows'
         working-directory: desktop
