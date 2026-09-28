@@ -141,7 +141,12 @@ class CharacterStudioBoundary:
     def _validate_visuals(self, character):
         application = self._plugin_application_provider()
         if application is not None:
-            application.validate_visual_draft(character)
+            try:
+                application.validate_visual_draft(character)
+            except VisualHostError as error:
+                if error.code == "VISUAL_RESOURCE_INVALID":
+                    raise CharacterStudioError(error.code, str(error), field=error.field) from error
+                raise
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -185,7 +190,7 @@ class CharacterStudioBoundary:
                 ).public_error(),
             )
         except (VisualHostError, PluginRuntimeError) as error:
-            public_error = CharacterStudioError(error.code, "表现资源操作失败，请查看运行日志。").public_error()
+            public_error = CharacterStudioError(error.code, str(error), field=getattr(error, "field", "")).public_error()
             return response(
                 request, generation_id=self._generation_id,
                 generation_credential=self._generation_credential, protocol_minor=2,

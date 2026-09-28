@@ -537,6 +537,11 @@ class PluginRuntimeApplication:
             try:
                 binding = self.visuals._describe(record, capability, {"characterId": token, "resource": resource.to_mapping()}, character.package_dir)
                 binding.close()
+            except VisualHostError as error:
+                if error.code == "VISUAL_RESOURCE_INVALID":
+                    raise VisualHostError(error.code, f"形态「{resource.name or resource.id}」：{error}",
+                                          field=f"/visuals/resources/{resource.id}{error.field}") from error
+                raise
             finally:
                 self._host_services.revoke_visual_workspace(token)
 

@@ -14,8 +14,8 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from playwright.sync_api import expect, sync_playwright
-from app.agent.tools import ToolRegistry
-from app.core_host.character_studio import CharacterStudioBoundary
+from app.plugin_sdk.sakura_tools import ToolRegistry
+from app.core_host.character_studio import CharacterStudioBoundary, CharacterStudioError
 from app.core_host.plugin_application import PluginApplicationHost
 from app.storage.runtime_roots import RuntimeRoots
 
@@ -66,7 +66,11 @@ def run():
                         return None
                     if command == "studio_choose_source": return [str(source)] if params.get("multiple") else str(source)
                     if command != "studio_request": raise ValueError(command)
-                    result = boundary._dispatch(params["method"], params["params"])
+                    try:
+                        result = boundary._dispatch(params["method"], params["params"])
+                    except CharacterStudioError as error:
+                        public = error.public_error()
+                        return {"__studioError": "|".join([public["code"], public["details"]["feature"], public["details"]["field"], public["message"]])}
                     if params["method"] == "studio.visual.open":
                         result["presentation"]["visual"]["editor"] = origin + "/plugins/builtin/sakura_portrait/frontend/editor.js"
                         prefix = "/preview/" + result["presentation"]["visual"]["bindingId"]
@@ -94,6 +98,7 @@ def run():
                   window.__TAURI__={core:{invoke:async (command,params)=>{
                     if(params?.method==='studio.draft.discard') window.__discardRequests++;
                     const result=await window.nativeInvoke(command,params);
+                    if(result?.__studioError) throw result.__studioError;
                     if(command==='studio_choose_export') window.__lastExportName=params.defaultName;
                     if(params?.method==='studio.draft.save' && window.__holdDraftSave) {
                       window.__holdDraftSave=false;
@@ -217,6 +222,22 @@ def run():
                 expect(page.locator("#visualName")).to_have_value("第二套立绘")
                 expect(page.locator("#defaultVisualButton")).to_be_disabled()
                 page.screenshot(path=str(output / "studio-default-form.png"), animations="disabled")
+                published_manifest = (package / "character.json").read_bytes()
+                for unfinished in ["", "平静"]:
+                    page.locator(".form-card").filter(has_text="日常立绘").click()
+                    expect(labels).to_have_count(2)
+                    labels.nth(1).fill(unfinished)
+                    page.wait_for_function("!document.body.classList.contains('is-dirty')")
+                    page.locator(".form-card").filter(has_text="第二套立绘").click()
+                    expect(labels).to_have_count(1)
+                    page.locator("#saveButton").click()
+                    expect(page.locator("#visualName")).to_have_value("日常立绘")
+                    expect(page.locator("#errorText")).to_contain_text("日常立绘")
+                    expect(page.locator("#errorText")).to_contain_text("第 2 张立绘的表情标签")
+                    expect(labels.nth(1)).to_have_value(unfinished)
+                    expect(labels.nth(1)).to_be_focused()
+                    assert (package / "character.json").read_bytes() == published_manifest
+                    labels.nth(1).fill("开心")
                 page.locator(".form-card").filter(has_text="日常立绘").click()
                 expect(page.locator(".portrait-plugin .expression-row")).to_have_count(2)
                 expect(page.get_by_role("textbox", name="表情标签", exact=True).first).to_have_value("平静")
@@ -246,7 +267,7 @@ def run():
                 expect(page.locator("#saveButton")).to_be_enabled()
                 saved = json.loads((package / "character.json").read_text(encoding="utf-8"))
                 missing = next(item for item in saved["visuals"]["resources"] if item["type"] == "fixture.missing@1")
-                assert saved["visuals"]["default"] == missing["id"]
+                assert saved["visuals"]["default"] == resources[1]["id"]
                 assert json.loads((package / missing["root"] / missing["entry"]).read_text(encoding="utf-8")) == {"private": True}
                 page.get_by_role("button", name="基础信息", exact=True).click()
                 expect(page.locator("#pluginRequirementsList")).to_contain_text("示例形态插件")

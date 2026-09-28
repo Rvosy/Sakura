@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-27
+updated: 2026-09-28
 ---
 
 # Sakura Plugin Runtime v4
@@ -245,7 +245,11 @@ setup 和清理同时失败时，RPC 诊断同时包含主错误及清理错误�
 
 关闭 generation 时，正在清理的插件进程还可调用其 `requires` 中声明且仍存活的插件服务，以完成 Provider 向 Hub 注销等清理。调用方必须是当前登记的关闭进程，目标仍须 active 且绑定同一进程；外部调用、旧进程身份和已停止的依赖继续拒绝。嵌套服务调用受剩余的统一关闭期限约束，不延长 generation 的退出预算。
 
-插件 RPC 保留底层异常的 `cause_code` 和 `validation_field`，外层 `PLUGIN_CALL_FAILED` 协议码保持不变。只接受错误码和字段名，不序列化任意异常 details 或字段值；这些元数据沿用凭据清洗规则。
+Host 服务类型可通过类属性 `shutdown_methods` 声明关闭期间仍允许的资源清理方法，Runtime 继续校验调用进程和剩余关闭期限，
+资源所有者继续校验调用 scope。当前 `ChatHost.shutdown_methods` 只允许 `cancel`，使屏幕感知插件能取消自己发起的互动；
+`submit` 等新业务调用仍被拒绝。清理结束后，Host 的 `revoke_scope` 回收剩余任务和资源。
+
+插件 RPC 保留底层异常的 `cause_code` 和 `validation_field`，外层 `PLUGIN_CALL_FAILED` 协议码保持不变。不序列化任意异常 details 或字段值；字段定位与凭据清洗规则见[远程诊断](remote-diagnostics-telemetry.md)。
 
 
 ### 4.2 内置及随附插件的日志分级
@@ -530,6 +534,16 @@ prepare/begin/poll/result/cancel/release、输入与结果 artifact、历史分�
 - Core 关闭也等待已经进入停用或退出清理的进程；并发、重复关闭不能因 Service 已移除而提前返回。
   单个插件清理失败时继续停止其余插件，再报告原始清理错误。失败实例保持 `PLUGIN_CLEANUP_FAILED`，
   不能在旧进程尚未确认退出时启动同 ID 的新实例，也不能把失败当作资源已可释放。
+
+Runner 在 bootstrap、context、import、construct、setup、commit 完成时记录 `plugin.start.phase.completed`，
+附带插件身份、该阶段耗时和 Runner 累计耗时；`plugin.loaded` 记录宿主观测的进程启动总耗时。
+初始化超时后，宿主在回收进程前请求一次 `runtime.startup.snapshot`，记录当前子阶段、阶段耗时、PID、存活状态、
+正在等待或已经失败的宿主 RPC 名称和 Service key。`timeout_ms` 记录实际触发超时的期限：外层初始化超时使用初始化期限，
+Runner 自己等待 RPC 超时使用该次 RPC 的期限；更深层服务返回超时但未提供期限时不猜测数值。失败 RPC 的信息不被随后的清理调用覆盖。
+线程快照只含文件、函数、行号，不含源码行、局部变量或请求参数。
+快照与初始化使用独立 RPC 请求线程；进程无响应时记录 `startup_snapshot` 错误码，保留最后收到的阶段及原始启动错误，继续回收进程。
+初始化期限和快照请求上限分别由 `app/plugins/runtime_v4.py` 的 `INITIALIZE_TIMEOUT_SECONDS`、
+`STARTUP_SNAPSHOT_TIMEOUT_SECONDS` 定义；快照不会重试初始化，也不会把超时启动改判为成功。
 
 角色切换保持 Core generation，重建 Assistant Session。依赖当前角色服务、且不属于明确按角色参数工作的
 表现/TTS Provider 的旧插件局部重载，详见[安全角色切换](WP-5-03-safe-character-switch.md)。

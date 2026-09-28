@@ -2279,6 +2279,229 @@ class Plugin:
         manager.close()
 
 
+@pytest.mark.parametrize("blocked_stage,snapshot_available", [("import", True), ("setup", True), ("host_call", True), ("import", False), ("recovered_rpc", True)])
+def test_initialization_timeout_records_live_stage_and_stack_without_request_values(tmp_path, monkeypatch, blocked_stage, snapshot_available):
+    from app.core import runtime_log
+
+    roots = _roots(tmp_path)
+    blocked, release_host = threading.Event(), threading.Event()
+    blocker = 'print("STARTUP_BLOCKED", flush=True)\nthreading.Event().wait()'
+    setup = ('context.get("fixture.host").block("private request value")' if blocked_stage == "host_call"
+             else blocker.replace("\n", "\n        ") if blocked_stage == "setup" else "pass")
+    if blocked_stage == "recovered_rpc":
+        setup = '''try:
+            context.get("fixture.host").invoke("block", ["private request value"], timeout_seconds=0.05)
+        except Exception:
+            print("STARTUP_BLOCKED", flush=True)
+            threading.Event().wait()'''
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.startup", "fixture.startup.service", body=f'''
+import threading
+{blocker if blocked_stage == "import" else ""}
+class Plugin:
+    def setup(self, context):
+        {setup}
+        context.provide("fixture.startup.service", object(), exports=())
+''')
+    captured = []
+
+    def capture(*args, **kwargs):
+        captured.append(kwargs)
+        if "STARTUP_BLOCKED" in str(kwargs.get("fields", {}).get("diagnostic", "")):
+            blocked.set()
+
+    monkeypatch.setattr(runtime_log, "log_message", capture)
+    manager = PluginRuntimeManager(roots, "generation-startup-evidence", PluginInventory(roots).scan().runtime_specs)
+
+    class SlowHost:
+        def block(self, value):
+            if blocked_stage != "recovered_rpc":
+                blocked.set()
+            release_host.wait(10)
+
+    manager.install_host_service("fixture.host", SlowHost(), exports=("block",))
+    original_request = RpcPeer.request
+    initializing = []
+
+    def expire_after_blocked(self, name, payload, *, timeout=3.0):
+        if name == "runtime.startup.snapshot" and not snapshot_available:
+            raise PluginApiError("PLUGIN_CALL_TIMEOUT")
+        if name != "runtime.initialize":
+            return original_request(self, name, payload, timeout=timeout)
+
+        def initialize():
+            try:
+                original_request(self, name, payload, timeout=10)
+            except PluginApiError:
+                pass
+
+        worker = threading.Thread(target=initialize, daemon=True)
+        initializing.append(worker)
+        worker.start()
+        assert blocked.wait(5), "fixture did not reach the blocked startup phase"
+        # Expire only after the actual worker or Host call enters its barrier.
+        raise PluginApiError("PLUGIN_CALL_TIMEOUT")
+
+    monkeypatch.setattr(RpcPeer, "request", expire_after_blocked)
+    try:
+        snapshot = manager.start()
+        assert snapshot["plugins"][0]["reasonCode"] == "PLUGIN_CALL_TIMEOUT"
+        failure = next(row["fields"] for row in captured if row.get("fields", {}).get("event") == "plugin.start.failed")
+        assert failure["child_pid"] > 0 and failure["process_alive"] is True
+        assert failure["timeout_ms"] == 8000
+        if snapshot_available:
+            assert failure["detail_stage"] == ("setup" if blocked_stage in {"host_call", "recovered_rpc"} else blocked_stage)
+            assert failure["startup_snapshot"] == "available"
+            assert failure["duration_ms"] >= 0 and failure["elapsed_ms"] >= failure["duration_ms"]
+            assert "Initializer thread:" in failure["exception_stack"]
+            assert "plugin.py:" in failure["exception_stack"]
+        else:
+            assert failure["startup_snapshot"] == "PLUGIN_CALL_TIMEOUT"
+            assert failure["detail_stage"] in {"process_spawn", "context", "import"}
+            assert failure["reason_code"] == "PLUGIN_CALL_TIMEOUT"
+        assert "private request value" not in json.dumps(failure)
+        if blocked_stage == "host_call":
+            assert failure["service_key"] == "fixture.host"
+            assert failure["command"] == "service.call.block"
+        if blocked_stage == "recovered_rpc":
+            assert "service_key" not in failure and "command" not in failure
+        _wait_pids_gone([failure["child_pid"]])
+    finally:
+        release_host.set()
+        manager.close()
+        for worker in initializing:
+            worker.join(timeout=2)
+            assert not worker.is_alive()
+
+
+@pytest.mark.parametrize("timeout_origin", ["runner", "callee"])
+def test_setup_rpc_timeout_keeps_actual_deadline_and_call_across_cleanup(tmp_path, monkeypatch, timeout_origin):
+    from app.core import runtime_log
+
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.rpc-timeout", "fixture.rpc-timeout.service", body='''
+class Plugin:
+    def setup(self, context):
+        host = context.get("fixture.host")
+        context.effect(host.cleanup)
+        host.block("private setup argument")
+''')
+    release, cleanup_called = threading.Event(), threading.Event()
+
+    class Host:
+        def block(self, value):
+            if timeout_origin == "callee":
+                # The callee owns this timeout; the runner cannot infer its limit.
+                raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT", "callee deadline expired")
+            release.wait(10)
+
+        def cleanup(self):
+            cleanup_called.set()
+
+    captured = []
+    monkeypatch.setattr(runtime_log, "log_message", lambda *args, **kwargs: captured.append(kwargs))
+    manager = PluginRuntimeManager(roots, "generation-rpc-timeout", PluginInventory(roots).scan().runtime_specs)
+    manager.install_host_service("fixture.host", Host(), exports=("block", "cleanup"))
+    try:
+        snapshot = manager.start()
+        assert snapshot["plugins"][0]["reasonCode"] == "PLUGIN_CALL_TIMEOUT"
+        assert cleanup_called.is_set()
+        failure = next(row["fields"] for row in captured if row.get("fields", {}).get("event") == "plugin.start.failed")
+        assert failure["detail_stage"] == "setup"
+        assert failure["service_key"] == "fixture.host"
+        assert failure["command"] == "service.call.block"
+        if timeout_origin == "runner":
+            assert failure["timeout_ms"] == 3000
+            assert "setup" in failure["exception_stack"]
+        else:
+            assert "timeout_ms" not in failure
+            assert "callee deadline expired" in failure["exception_chain"]
+            assert "test_plugin_runtime_v4:block" in failure["exception_stack"]
+        assert "private setup argument" not in json.dumps(failure)
+        _wait_pids_gone([failure["child_pid"]])
+    finally:
+        release.set()
+        manager.close()
+
+
+def test_generation_close_cancels_screen_awareness_operation_before_scope_revoke(tmp_path, monkeypatch):
+    import shutil
+    from app.core import runtime_log
+    from app.core_host.chat_host import ChatHost, _ActiveTurn
+
+    roots = _roots(tmp_path)
+    plugin = _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.screen", "fixture.screen.service", body='''
+from awareness import ScreenAwarenessRuntime
+class Plugin:
+    def setup(self, context):
+        runtime = ScreenAwarenessRuntime(object(), context.get("sakura.host.chat"), context.config)
+        runtime._operation = "owned-operation"
+        context.effect(runtime.close)
+        context.provide("fixture.screen.service", object(), exports=())
+''')
+    original = Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_screen_awareness"
+    for source in ("policy.py", "settings.py", "prompts.py", "plugin.py"):
+        shutil.copy2(original / source, plugin / ("awareness.py" if source == "plugin.py" else source))
+    manager = PluginRuntimeManager(roots, "generation-screen-cleanup", PluginInventory(roots).scan().runtime_specs)
+    calls, captured = [], []
+    monkeypatch.setattr(runtime_log, "log_message", lambda *args, **kwargs: captured.append(kwargs))
+
+    class Boundary:
+        def cancel_host_message(self, operation):
+            calls.append(operation)
+            return True
+
+    class RecordingChatHost(ChatHost):
+        def revoke_scope(self, plugin_id):
+            assert calls == ["owned-operation"]
+            super().revoke_scope(plugin_id)
+
+    host = RecordingChatHost(boundary_provider=lambda: None, screen_host=None, emit_callback=lambda *_: None)
+    manager.install_host_service("sakura.host.chat", host, exports=("current", "submit", "cancel"))
+    try:
+        manager.start()
+        process = manager._records["fixture.screen"].process
+        assert process is not None
+        host._active["owned-operation"] = _ActiveTurn(("fixture.screen", process.scope_id), Boundary(), {})
+        manager.close()
+        assert calls == ["owned-operation", "owned-operation"]
+        assert not [row for row in captured if row.get("fields", {}).get("event") == "plugin.cleanup.failed"]
+    finally:
+        manager.close()
+
+
+@pytest.mark.parametrize("condition", ["valid", "submit", "stale_caller", "foreign_operation", "expired"])
+def test_draining_chat_only_allows_current_scope_to_cancel_its_operation(tmp_path, condition):
+    from types import SimpleNamespace
+    from app.core_host.chat_host import ChatHost, _ActiveTurn
+    from app.plugins.runtime_v4 import _DrainingProcess
+
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.caller", "fixture.caller.service")
+    manager = PluginRuntimeManager(roots, "generation-chat-cleanup", PluginInventory(roots).scan().runtime_specs)
+    calls = []
+    host = ChatHost(boundary_provider=lambda: None, screen_host=None, emit_callback=lambda *_: None)
+    manager.install_host_service("sakura.host.chat", host, exports=("current", "submit", "cancel"))
+    caller = SimpleNamespace(scope_id="caller-scope")
+    owner = ("other-plugin", "other-scope") if condition == "foreign_operation" else ("fixture.caller", caller.scope_id)
+    host._active["operation"] = _ActiveTurn(owner, SimpleNamespace(cancel_host_message=lambda operation: calls.append(operation) or True), {})
+    manager._closed = True
+    manager._draining_processes["fixture.caller"] = _DrainingProcess(caller, time.monotonic() + (-1 if condition == "expired" else 1))
+
+    def invoke():
+        return manager._handle_plugin_request("fixture.caller", "service.call", {
+            "serviceKey": "sakura.host.chat", "method": "submit" if condition == "submit" else "cancel", "args": ["operation"],
+        }, calling_process=object() if condition == "stale_caller" else caller)
+
+    if condition == "valid":
+        assert invoke() == {"accepted": True}
+        assert calls == ["operation"]
+    else:
+        with pytest.raises(PluginApiError) as rejected:
+            invoke()
+        assert rejected.value.code == {"foreign_operation": "CHAT_OPERATION_UNAUTHORIZED", "expired": "PLUGIN_CALL_TIMEOUT"}.get(condition, "GENERATION_INVALIDATED")
+        assert calls == []
+
+
 def test_optional_observer_does_not_block_service_and_queued_work_is_owned_by_process(tmp_path: Path):
     roots = _roots(tmp_path)
     _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.observer", "fixture.observer.service", body='''

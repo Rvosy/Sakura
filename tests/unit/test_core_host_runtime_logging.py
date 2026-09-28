@@ -645,3 +645,30 @@ def test_chat_terminals_keep_their_event_identity_and_duration_on_the_core_bridg
     assert [r["attributes"]["outcome"] for r in records] == ["success", "failed", "cancelled"]
     assert all(r["event"] == "chat.finished" and r["severity"] == "info" for r in records)
     assert all(r["operation_id"] == "chat-1" and r["attributes"]["elapsed_ms"] == 123 for r in records)
+
+
+def test_plugin_startup_phases_and_timeout_context_reach_the_core_bridge() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        log_event("Plugin", "插件启动阶段完成", {
+            "stage": "import", "duration_ms": 120, "elapsed_ms": 150,
+        }, event="plugin.start.phase.completed", severity="info", verbosity=1,
+            plugin_id="sakura.model.openai_compatible")
+        log_event("Plugin", "插件启动失败", {
+            "stage": "initialize", "detail_stage": "setup", "service_key": "sakura.host.logging",
+            "startup_snapshot": "available", "timeout_ms": 8000, "elapsed_ms": 8001,
+            "duration_ms": 7851, "child_pid": 42, "process_alive": True,
+            "command": "emit", "diagnostic": "PLUGIN_CALL_TIMEOUT",
+        }, event="plugin.start.failed", severity="error", verbosity=0)
+    finally:
+        bridge.close()
+    phase, failure = _records(stream)
+    assert phase["event"] == "plugin.start.phase.completed"
+    assert phase["severity"] == "info"
+    assert phase["plugin_id"] == "sakura.model.openai_compatible"
+    assert phase["attributes"]["duration_ms"] == 120
+    assert failure["attributes"]["service_key"] == "sakura.host.logging"
+    assert failure["attributes"]["startup_snapshot"] == "available"
+    assert failure["attributes"]["detail_stage"] == "setup"
+    assert failure["attributes"]["timeout_ms"] == 8000

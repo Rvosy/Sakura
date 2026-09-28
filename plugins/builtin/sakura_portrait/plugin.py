@@ -10,6 +10,12 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 DEFAULT_KEY = "__default__"
 
 
+class PortraitConfigurationError(ValueError):
+    def __init__(self, message, field):
+        super().__init__(message)
+        self.field = field
+
+
 def _relative(value):
     if (not isinstance(value, str) or not value or "\\" in value
         or PurePosixPath(value).is_absolute() or PureWindowsPath(value).drive
@@ -29,8 +35,21 @@ def _legacy_path(value):
 
 
 def portrait_configuration(value, *, legacy=False):
-    if not isinstance(value, dict) or "expressionRows" in value:
-        raise ValueError("VISUAL_RESOURCE_INVALID: 立绘配置必须是对象，且不能使用 expressionRows")
+    if not isinstance(value, dict):
+        raise ValueError("VISUAL_RESOURCE_INVALID: 立绘配置必须是对象")
+    if "expressionRows" in value:
+        rows = value["expressionRows"]
+        if isinstance(rows, list):
+            labels = set()
+            for index, row in enumerate(rows):
+                label = row.get("label", "").strip() if isinstance(row, dict) and isinstance(row.get("label"), str) else ""
+                field = f"/expressionRows/{index}/label"
+                if not label:
+                    raise PortraitConfigurationError(f"第 {index + 1} 张立绘的表情标签不能为空。", field)
+                if label in labels:
+                    raise PortraitConfigurationError(f"第 {index + 1} 张立绘的表情标签与前面的标签重复。", field)
+                labels.add(label)
+        raise PortraitConfigurationError("立绘标签草稿尚未完成，请打开此形态并检查表情标签。", "/expressionRows")
     path_value = _legacy_path if legacy else _relative
     default = path_value(value.get("default"))
     expressions = value.get("expressions") or {}
@@ -85,7 +104,7 @@ class PortraitService:
             self.logger.warning(f"{target} 无法加载（{relative}）", fields={
                 "reason_code": "VISUAL_RESOURCE_INVALID", "stage": "visual.describe", "path": relative,
             })
-            return {"error": "VISUAL_RESOURCE_INVALID", "message": str(error)}
+            return {"error": "VISUAL_RESOURCE_INVALID", "message": str(error), "field": getattr(error, "field", "")}
         choices = list(paths)[1:]
         return {
             "prompt": "每段都必须在 control.payload.key 中选择一个图片标签，按本段情绪和内容选择。可选标签："

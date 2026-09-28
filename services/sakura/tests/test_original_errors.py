@@ -61,6 +61,25 @@ def test_original_report_still_rejects_wrong_types_and_oversize_body(client):
     assert client.post("/v3/errors", content=b" " * (128 * 1024 + 1), headers={"content-type": "application/json"}).status_code == 413
 
 
+def test_same_code_groups_by_plugin_and_failure_context(client):
+    for index, changed in enumerate((
+        {}, {"plugin_id": "sakura.second"},
+        {"validation_field": "/profiles/1/model"}, {"detail_stage": "load"},
+        {"request_id": "another-request", "elapsed_ms": 932},
+    )):
+        payload = original_report("invalid configuration", runId=f"run-{index}")
+        payload["evidence"].update({
+            "plugin_id": "sakura.first", "section_id": "profiles",
+            "validation_field": "/profiles/0/model", "detail_stage": "save",
+            **changed,
+        })
+        payload["error"]["fingerprint"] = f"context-{index}"
+        assert client.post("/v3/errors", json=payload).status_code == 202
+    groups = client.get("/admin/api/v2/groups").json()
+    assert groups["total"] == 4
+    assert sorted(row["reports"] for row in groups["items"]) == [1, 1, 1, 2]
+
+
 def test_actual_rust_wire_when_provided(client, tmp_path):
     """The integration command feeds Python bridge records through the Rust sender."""
     capture = os.environ.get("SAKURA_ACCEPTANCE_WIRE_OUTPUT")

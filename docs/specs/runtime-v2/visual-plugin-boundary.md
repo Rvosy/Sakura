@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-19
+updated: 2026-09-28
 ---
 
 # 表现插件：资源、编辑、控制与渲染
@@ -115,6 +115,10 @@ request = {characterId, resource:{id,type,root,entry}, segment?}
 
 `describe` 通过 `sakura.host.character.resolve_resource(characterId, relativePath)` 读取文件。`assets` 是
 `key -> 角色包内相对路径`；它列出供渲染或组件导出的文件。宿主不解释资源格式。
+资源校验失败可返回 `{error:"VISUAL_RESOURCE_INVALID", message, field?}`；`field` 为以 `/` 开头的插件私有字段路径。
+`message` 保留插件返回的实际原因；没有 `field` 只表示无法定位输入框，不把原因替换成通用错误提示。
+工坊发布和完整角色导出检查全部可用形态，给错误补上形态名称，并通过现有错误详情的 `field` 返回
+`/visuals/resources/<resourceId><field>`。缺失或停用插件的资源继续原样保留，不借此解释其私有数据。
 资产 key 与 rendererData 内部键属于插件语义，`secret`、`token` 等名称可以作为资源标识；不按宿主敏感字段名拒绝。
 资产值仍须通过包内路径授权。内部 Snapshot 允许增加字段，消费层不重复验证完整结构。
 描述不另设容量、资产数量或提示词长度门槛；`outputSchema` 必须是对象。跨进程数据遵循插件通信帧预算。
@@ -290,6 +294,10 @@ PNG data URL 上限 2 MiB，仅图片 CSP 允许 data URL，脚本授权不变�
 目录导入保留文件名、大小写和子目录关系，每次使用独立导入目录避免覆盖已有文件；拒绝符号链接和目录联接，
 不设文件数、目录数、目录深度和业务文件大小门槛。取消或失败清理本次导入，保留原草稿资源。
 `collect` 返回私有数据，修改时必须调用 changed；`validate` 返回布尔值或抛出可读错误。模块或挂载超时为 10 秒。
+`validate` 只检查当前活动编辑器；发布和完整角色导出的后端校验不依赖编辑器是否加载。
+后台返回可定位的资源错误时，工坊切回该形态，显示具体原因，并在恢复编辑后调用编辑器可选的 `focusField(field)`。
+字段含义和输入框定位由插件实现。内置立绘用 `expressionRows` 保留空标签或重复标签的未完成草稿，
+发布时报告具体行和标签问题；校验失败保留所有草稿行及原有已发布资源。
 桌面 CSP 不允许动态内联 `<style>`。插件可使用 `CSSStyleSheet.replaceSync` 与 `document.adoptedStyleSheets`
 安装有作用域的样式，在 destroy 时移除。signal 中止时停止异步工作，保留静态画面和样式，供宿主等待新实例就绪。
 编辑器可返回 `ready` Promise；宿主等待它完成后替换旧内容，模块、挂载和 ready 超时均为 10 秒。

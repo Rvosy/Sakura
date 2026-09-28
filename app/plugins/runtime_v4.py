@@ -31,6 +31,7 @@ INITIALIZE_TIMEOUT_SECONDS = 8.0
 CALL_TIMEOUT_SECONDS = 3.0
 CLOSE_TIMEOUT_SECONDS = 0.8
 TERMINATE_TIMEOUT_SECONDS = 2.0
+STARTUP_SNAPSHOT_TIMEOUT_SECONDS = 0.2
 
 
 def _create_windows_kill_job(process: subprocess.Popen[bytes]) -> int:
@@ -205,6 +206,29 @@ class _PluginProcess:
         self._exit_reported = False
         self._spawn_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._startup_started = time.monotonic()
+        self._startup_stage = "process_spawn"
+        self._startup_failure: dict[str, object] | None = None
+
+    def startup_diagnostics(self) -> dict[str, object]:
+        with self._state_lock:
+            if self._startup_failure is not None:
+                return dict(self._startup_failure)
+            return {"detail_stage": self._startup_stage, "elapsed_ms": round((time.monotonic() - self._startup_started) * 1000, 2),
+                    "child_pid": self._process.pid if self._process else None,
+                    "process_alive": self._process is not None and self._process.poll() is None}
+
+    def _startup_progress(self, name: str, payload: Mapping[str, Any]) -> None:
+        if name != "runtime.startup.phase":
+            return
+        from app.core.runtime_log import log_event
+
+        with self._state_lock:
+            self._startup_stage = payload["stage"]
+        log_event("PluginManager", "插件启动阶段完成",
+            {"stage": payload["completedStage"], "duration_ms": payload["durationMs"], "elapsed_ms": payload["elapsedMs"]},
+            event="plugin.start.phase.completed", severity="info", verbosity=1,
+            plugin_id=self._spec.plugin_id, plugin_name=self._spec.name)
 
     @property
     def pid(self) -> int | None:
@@ -297,6 +321,7 @@ class _PluginProcess:
                 plugin_id=self._spec.plugin_id,
                 request_handler=self._request_handler,
                 on_eof=self._process_exited,
+                notification_handler=self._startup_progress,
             )
             watcher = threading.Thread(
                 target=self._wait_for_process_exit,
@@ -323,6 +348,22 @@ class _PluginProcess:
                 timeout=INITIALIZE_TIMEOUT_SECONDS,
             )
         except PluginApiError as error:
+            details = self.startup_diagnostics()
+            if error.code == "PLUGIN_CALL_TIMEOUT":
+                try:
+                    snapshot = peer.request("runtime.startup.snapshot", {}, timeout=STARTUP_SNAPSHOT_TIMEOUT_SECONDS)
+                    if isinstance(snapshot, Mapping):
+                        details.update(snapshot)
+                        details["startup_snapshot"] = "available"
+                    else:
+                        details["startup_snapshot"] = "PLUGIN_RESPONSE_INVALID"
+                except PluginApiError as snapshot_error:
+                    details["startup_snapshot"] = snapshot_error.code
+                if not error.diagnostics:
+                    details["timeout_ms"] = INITIALIZE_TIMEOUT_SECONDS * 1000
+            details["elapsed_ms"] = round((time.monotonic() - self._startup_started) * 1000, 2)
+            with self._state_lock:
+                self._startup_failure = details
             self.close()
             raise PluginRuntimeError.from_api(error) from error
         if not isinstance(result, Mapping):
@@ -1411,6 +1452,11 @@ class PluginRuntimeManager:
                 )
         except PluginRuntimeError as error:
             diagnostics.update(exception_diagnostics(error, reason_code=error.code, stage="initialize"))
+            startup = process.startup_diagnostics()
+            stack = startup.pop("exception_stack", None)
+            diagnostics.update(startup)
+            if stack:
+                diagnostics["exception_stack"] = str(diagnostics.get("exception_stack", "")) + "\nInitializer thread:\n" + str(stack)
             process.close()
             with self._lock:
                 if record.process is not process:
@@ -1466,7 +1512,7 @@ class PluginRuntimeManager:
         log_event(
             "PluginManager",
             "插件已加载",
-            {},
+            {"elapsed_ms": process.startup_diagnostics()["elapsed_ms"]},
             event="plugin.loaded",
             plugin_id=spec.plugin_id,
             plugin_name=spec.name,
@@ -1586,6 +1632,11 @@ class PluginRuntimeManager:
                 and any(item.service_key == service_key and item.registration_id == detached_args[0]
                         and item.unregister_method == method
                         for item in self._host_registrations.get(caller_id, ())))
+            # Host owners may keep specific cancellation methods available.
+            # They still authenticate caller_scope and resource ownership.
+            draining_host_cleanup = (binding is not None and binding.host_service is not None
+                and draining is not None
+                and method in getattr(type(binding.host_service), "shutdown_methods", ()))
             # Reverse dependency shutdown keeps a worker's declared services
             # alive until its cleanup finishes. Unrelated or stale callers
             # must still lose access as soon as the generation closes.
@@ -1596,9 +1647,9 @@ class PluginRuntimeManager:
                 and provider_record is not None and provider_record.state == "active"
                 and provider_record.process is binding.process
             )
-            if self._closed and not (draining_log or draining_unregister or draining_dependency):
+            if self._closed and not (draining_log or draining_unregister or draining_dependency or draining_host_cleanup):
                 raise PluginRuntimeError("GENERATION_INVALIDATED")
-            if draining_dependency:
+            if draining_dependency or draining_host_cleanup:
                 remaining = draining.deadline - time.monotonic()
                 if remaining <= 0:
                     raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT", service_key=service_key)
@@ -1659,6 +1710,7 @@ class PluginRuntimeManager:
                 code = "HOST_SERVICE_CALL_FAILED"
             raise PluginRuntimeError(
                 code,
+                str(error),
                 service_key=service_key,
             ) from error
         finally:

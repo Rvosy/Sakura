@@ -120,6 +120,12 @@ def _diagnostic_token(value: object) -> str | None:
     return None
 
 
+def _diagnostic_field(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return safe_text(value, 1024) or None
+    return None
+
+
 class PluginApiError(RuntimeError):
     def __init__(
         self,
@@ -139,10 +145,13 @@ class PluginApiError(RuntimeError):
             for key, value in (diagnostics or {}).items()
             if key in {"diagnostic", "cause_type", "exception_chain", "exception_stack"} and isinstance(value, str)
         }
-        for key in ("error_type", "cause_code", "validation_field"):
+        for key in ("error_type", "cause_code"):
             value = _diagnostic_token((diagnostics or {}).get(key))
             if value is not None:
                 self.diagnostics[key] = value
+        field = _diagnostic_field((diagnostics or {}).get("validation_field"))
+        if field is not None:
+            self.diagnostics["validation_field"] = field
 
 
 def _safe_exception_message(error: BaseException) -> str:
@@ -157,8 +166,14 @@ def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | N
     chain, stacks, seen = [], [], set()
     current = error
     rpc_wrappers_only = True
+    validation_field = None
     while id(current) not in seen and len(chain) < 16:
         seen.add(id(current))
+        if validation_field is None:
+            try:
+                validation_field = _diagnostic_field(getattr(current, "field", None))
+            except Exception:
+                pass
         rpc_wrappers_only &= type(current).__name__ in {"PluginApiError", "PluginRuntimeError"}
         text = _safe_exception_message(current)
         chain.append(f"{type(current).__name__}: {text}")
@@ -175,22 +190,25 @@ def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | N
         current = cause
     result = {"diagnostic": _safe_exception_message(current), "error_type": type(error).__name__, "cause_type": type(current).__name__,
               "exception_chain": _diagnostic_text("\nCaused by: ".join(chain)), "exception_stack": _diagnostic_text("\n\n".join(stacks))}
-    for key, attribute in (("cause_code", "code"), ("validation_field", "field")):
-        try:
-            value = _diagnostic_token(getattr(current, attribute, None))
-        except Exception:
-            continue
-        if value is not None:
-            result[key] = value
+    try:
+        cause_code = _diagnostic_token(getattr(current, "code", None))
+    except Exception:
+        cause_code = None
+    if cause_code is not None:
+        result["cause_code"] = cause_code
+    if validation_field is not None:
+        result["validation_field"] = validation_field
     remote = getattr(current, "diagnostics", None)
     if isinstance(remote, Mapping):
         remote_error_type = _diagnostic_token(remote.get("error_type"))
         if rpc_wrappers_only and remote_error_type is not None:
             result["error_type"] = remote_error_type
-        for key in ("cause_code", "validation_field"):
-            value = _diagnostic_token(remote.get(key))
-            if value is not None:
-                result[key] = value
+        cause_code = _diagnostic_token(remote.get("cause_code"))
+        if cause_code is not None:
+            result["cause_code"] = cause_code
+        remote_field = _diagnostic_field(remote.get("validation_field"))
+        if "validation_field" not in result and remote_field is not None:
+            result["validation_field"] = remote_field
         for key in ("diagnostic", "cause_type"):
             if isinstance(remote.get(key), str):
                 result[key] = _diagnostic_text(remote[key])

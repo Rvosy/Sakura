@@ -173,10 +173,10 @@ def test_boundary_metadata_crosses_worker_and_core_log_bridge(custom):
     assert "private memory fixture" not in json.dumps(record)
 
 
-def test_boundary_metadata_rejects_free_text_and_does_not_read_arbitrary_details():
+def test_boundary_metadata_preserves_field_text_without_relaxing_error_codes_or_reading_details():
     class BoundaryError(ValueError):
         code = "private error text"
-        field = "private memory text"
+        field = "设置 > 模型 API 地址"
 
         @property
         def details(self):
@@ -185,7 +185,7 @@ def test_boundary_metadata_rejects_free_text_and_does_not_read_arbitrary_details
     for fields in (_exception_diagnostics(BoundaryError("failed")),
                    exception_diagnostics(BoundaryError("failed"), reason_code="FAILED", stage="test")):
         assert "cause_code" not in fields
-        assert "validation_field" not in fields
+        assert fields["validation_field"] == "设置 > 模型 API 地址"
 
 
 def test_boundary_metadata_honors_credential_redaction_and_broken_properties():
@@ -367,3 +367,64 @@ def test_failed_response_scrubs_request_credentials_from_the_entire_chain():
     assert "bare-private-credential" not in json.dumps(result)
     assert "invalid configuration" in result["error"]["details"]["diagnostics"]["diagnostic"]
     assert "diagnostics" not in json.dumps(success)
+
+
+@pytest.mark.parametrize("through_rpc", [False, True])
+def test_nested_validation_pointer_survives_response_and_core_log_bridge(through_rpc):
+    from app.core_host.character_studio import CharacterStudioError
+    from app.core_host.visual_host import VisualHostError
+    from app.core_host.protocol import response, error_payload
+
+    field = "/visuals/resources/second/expressionRows/1/label"
+    try:
+        try:
+            raise VisualHostError("VISUAL_RESOURCE_INVALID", field="/expressionRows/1/label")
+        except VisualHostError as leaf:
+            raise CharacterStudioError("STUDIO_SAVE_FAILED", "表情标签无效", field=field) from leaf
+    except CharacterStudioError as error:
+        failure = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=_exception_diagnostics(error)) if through_rpc else error
+
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        try:
+            raise failure
+        except Exception:
+            result = response({"id": "validate", "name": "studio.draft.save", "payload": {}},
+                generation_id="generation", generation_credential="credential",
+                error=error_payload("STUDIO_SAVE_FAILED", "保存失败"))
+            fields = result["error"]["details"]["diagnostics"]
+            log_event("Visual", "表现校验失败", fields, event="visual.binding.failed", severity="warning")
+    finally:
+        bridge.close()
+    record = json.loads(stream.getvalue().splitlines()[0][len(CORE_BRIDGE_PREFIX):])
+    assert fields["validation_field"] == field
+    assert fields["cause_code"] == "VISUAL_RESOURCE_INVALID"
+    assert record["attributes"]["validation_field"] == field
+    assert record["attributes"]["cause_code"] == "VISUAL_RESOURCE_INVALID"
+
+
+def test_validation_pointer_still_scrubs_known_request_credentials():
+    from app.core_host.protocol import response, error_payload
+
+    secret = "BarePrivateCredential9"
+    error = ValueError("invalid field")
+    error.field = f"/visuals/resources/{secret}/label"
+    request = {"id": "validate", "name": "studio.draft.save", "payload": {"credential": {"value": secret}}}
+    try:
+        raise error
+    except ValueError:
+        result = response(request, generation_id="generation", generation_credential="credential",
+            error=error_payload("STUDIO_SAVE_FAILED", "保存失败"))
+    assert secret not in json.dumps(result)
+    assert "[REDACTED]" in result["error"]["details"]["diagnostics"]["validation_field"]
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        log_event("Visual", "表现校验失败", result["error"]["details"]["diagnostics"],
+            event="visual.binding.failed", severity="warning")
+    finally:
+        bridge.close()
+    record = json.loads(stream.getvalue().splitlines()[0][len(CORE_BRIDGE_PREFIX):])
+    assert record["attributes"]["validation_field"] == "/visuals/resources/[REDACTED]/label"
+    assert secret not in json.dumps(record)

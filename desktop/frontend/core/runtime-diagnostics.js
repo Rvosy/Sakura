@@ -31,6 +31,13 @@ function stableCode(value) {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(value);
 }
 
+// shell_lifecycle::settings_response_payload projects an already logged Core
+// rejection into this four-part public error. Plain codes and JS exceptions do
+// not carry that guarantee and must still be captured here.
+function coreResponseError(error) {
+  return typeof error === "string" && /^[A-Z][A-Z0-9_]{0,63}\|[^|\r\n]*\|[^|\r\n]*\|/.test(error);
+}
+
 export function safeErrorText(value, maximum = 4096) {
   let text = String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   text = text
@@ -228,6 +235,7 @@ export function createRuntimeDiagnostics({
   const reportedErrors = new WeakSet();
 
   function reportError(error, { command, code, stage = command, level = "warn" } = {}) {
+    if (coreResponseError(error)) return false;
     if (error && typeof error === "object" && reportedErrors.has(error)) return false;
     const diagnostic = safeDiagnostic(error);
     const accepted = record({ ...diagnostic, level, event: "webview.command.failed", outcome: "failed",
@@ -308,7 +316,7 @@ export function createRuntimeDiagnostics({
         const diagnostic = safeDiagnostic(error);
         const expectedRetry = diagnostic && isExpectedReadinessRetry(command, diagnostic.code);
         record({
-          level: expectedRetry ? "debug" : "warn",
+          level: expectedRetry ? "debug" : coreResponseError(error) ? "info" : "warn",
           event: eventForCommand(command, "failed"),
           command: logCommand,
           outcome: "failed",

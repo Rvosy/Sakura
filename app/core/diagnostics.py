@@ -33,6 +33,13 @@ def diagnostic_token(value: object) -> str | None:
     return None
 
 
+def diagnostic_field(value: object) -> str | None:
+    """Field locations are diagnostic text, never an executable path."""
+    if isinstance(value, str) and value.strip():
+        return safe_diagnostic_text(value, 1024) or None
+    return None
+
+
 @contextmanager
 def diagnostic_secret_scope():
     """Keep known credentials local to one request, including nested logging."""
@@ -154,13 +161,22 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
         "reason_code": reason_code,
         "stage": str(getattr(error, "stage", "") or stage),
     }
-    for key, attribute in (("cause_code", "code"), ("validation_field", "field")):
+    try:
+        cause_code = diagnostic_token(getattr(root, "code", None))
+    except Exception:
+        cause_code = None
+    if cause_code is not None:
+        attributes["cause_code"] = cause_code
+    # Boundaries add the resource/section prefix as an exception propagates.
+    # Prefer that complete path over a leaf field from the original exception.
+    for item in chain:
         try:
-            value = diagnostic_token(getattr(root, attribute, None))
+            value = diagnostic_field(getattr(item, "field", None))
         except Exception:
             continue
         if value is not None:
-            attributes[key] = value
+            attributes["validation_field"] = value
+            break
     if isinstance(error, BaseException):
         summaries = [f"{type(item).__name__}: {_exception_message(item)}" for item in chain]
         provider_error = next((item for item in chain if type(item).__name__ == "ApiRequestError"), None)
@@ -199,10 +215,15 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
             if (remote_error_type is not None
                     and all(type(item).__name__ in {"PluginApiError", "PluginRuntimeError"} for item in chain)):
                 attributes["error_type"] = remote_error_type
-            for key in ("cause_code", "validation_field"):
+            for key in ("cause_code", "plugin_id", "section_id", "result_type", "application_state_type"):
                 value = diagnostic_token(remote.get(key))
                 if value is not None:
                     attributes[key] = value
+            remote_field = diagnostic_field(remote.get("validation_field"))
+            if "validation_field" not in attributes and remote_field is not None:
+                attributes["validation_field"] = remote_field
+            if isinstance(remote.get("has_application_state"), bool):
+                attributes["has_application_state"] = remote["has_application_state"]
             for key in ("diagnostic", "cause_type"):
                 if isinstance(remote.get(key), str):
                     attributes[key] = safe_diagnostic_text(remote[key])

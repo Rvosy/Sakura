@@ -580,7 +580,7 @@ impl TelemetryService {
         if !self.inner.enabled.load(Ordering::Acquire) {
             return;
         }
-        self.push_breadcrumb(source, severity, channel, event, attributes);
+        self.push_breadcrumb(source, severity, channel, event, operation_id, attributes);
         let cancelled = expected_cancellation(attributes);
         let runtime_event = match event {
             "core.initialize.completed" => Some("core.ready"),
@@ -954,6 +954,18 @@ impl TelemetryService {
         drop(breadcrumb_state);
         // Compare the actual failure, not a lossy code or a home-grown digest.
         let generation = self.diagnostic_context().generation;
+        let failure_context = [
+            "plugin_id",
+            "section_id",
+            "validation_field",
+            "detail_stage",
+            "command",
+            "service_key",
+            "error_type",
+            "cause_type",
+            "cause_code",
+        ]
+        .map(|field| candidate.evidence.get(field));
         let key = serde_json::to_string(&json!([
             generation,
             candidate.component,
@@ -965,6 +977,7 @@ impl TelemetryService {
             candidate.evidence.get("exception_stack"),
             candidate.evidence.get("exception_chain"),
             candidate.stack,
+            failure_context,
         ]))
         .map_err(|_| ())?;
         let fingerprint = Uuid::new_v4().to_string();
@@ -1083,6 +1096,7 @@ impl TelemetryService {
         severity: &str,
         channel: &str,
         event: &str,
+        operation_id: Option<&str>,
         attributes: Option<&Value>,
     ) {
         if matches!(
@@ -1109,10 +1123,7 @@ impl TelemetryService {
             ring.pop_front();
         }
         ring.push_back(BreadcrumbState {
-            diagnostic: attributes
-                .and_then(|a| a.get("diagnostic"))
-                .and_then(Value::as_str)
-                .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 512)),
+            diagnostic: breadcrumb_diagnostic(operation_id, attributes),
             elapsed_ms: self.inner.started_at.elapsed().as_millis() as u64,
             source: source.to_string(),
             severity: if severity == "trace" {
@@ -1126,7 +1137,8 @@ impl TelemetryService {
             code: stable_attribute(attributes, "code")
                 .or_else(|| stable_attribute(attributes, "reason_code")),
             outcome: outcome_attribute(attributes),
-            duration_ms: integer_attribute(attributes, "elapsed_ms")
+            duration_ms: integer_attribute(attributes, "duration_ms")
+                .or_else(|| integer_attribute(attributes, "elapsed_ms"))
                 .filter(|value| *value <= 86_400_000),
         });
     }
@@ -1927,6 +1939,41 @@ fn project_breadcrumbs(items: &VecDeque<BreadcrumbState>, now_ms: u64) -> Vec<Br
             elapsed_ms: item.duration_ms,
         })
         .collect()
+}
+
+// Keep this within v3's existing diagnostic field so installed receivers can
+// accept it. Only the operation's identity and phase are copied, never payloads.
+fn breadcrumb_diagnostic(operation_id: Option<&str>, attributes: Option<&Value>) -> Option<String> {
+    let mut context = Vec::new();
+    if let Some(operation) = operation_id.and_then(|value| valid_token(value, 128)) {
+        context.push(format!("operation_id={operation}"));
+    }
+    for key in [
+        "plugin_id",
+        "stage",
+        "detail_stage",
+        "command",
+        "service_key",
+        "request_id",
+    ] {
+        if let Some(value) = stable_token_attribute(attributes, key, 128) {
+            context.push(format!("{key}={value}"));
+        }
+    }
+    let diagnostic = attributes
+        .and_then(|a| a.get("diagnostic"))
+        .and_then(Value::as_str);
+    if context.is_empty() && diagnostic.is_none() {
+        return None;
+    }
+    let mut text = context.join(" ");
+    if let Some(diagnostic) = diagnostic {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(diagnostic);
+    }
+    Some(crate::runtime_log::sanitize_diagnostic(&text, &[], 512))
 }
 
 fn integer_attribute(attributes: Option<&Value>, key: &str) -> Option<u64> {
@@ -3276,6 +3323,7 @@ mod tests {
                 "info",
                 "runtime",
                 "agent.turn.started",
+                None,
                 Some(&json!({"elapsed_ms": index})),
             );
         }
@@ -3285,6 +3333,7 @@ mod tests {
             "trace",
             "runtime",
             "agent.turn.completed",
+            None,
             Some(&json!({"outcome": "completed", "elapsed_ms": 86_400_001_u64})),
         );
         let ring = service.inner.breadcrumbs.lock().unwrap();
@@ -3731,6 +3780,117 @@ mod tests {
     }
 
     #[test]
+    fn plugin_startup_failure_keeps_phase_request_and_waiting_service() {
+        use crate::runtime_log::{RuntimeLogConfig, RuntimeLogService};
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "startup-evidence", 128, TEST_WAIT);
+        service.activate_generation("startup-generation");
+        let log = RuntimeLogService::start_with_config(RuntimeLogConfig::production(
+            root.join("runtime.log"),
+        ));
+        log.attach_telemetry(service.clone());
+        let context = CoreLogContext {
+            generation_id: "startup-generation".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        let phase = json!({
+            "severity":"info", "verbosity":"info", "channel":"plugin", "event":"plugin.start.phase.completed",
+            "message":"Plugin startup phase completed", "plugin_id":"sakura.model.openai_compatible",
+            "attributes":{"stage":"import", "elapsed_ms":200, "duration_ms":150}
+        });
+        assert!(log
+            .submit_core_bridge(&phase.to_string(), &context)
+            .unwrap());
+        let failure = json!({
+            "severity":"warning", "verbosity":"warn", "channel":"plugin", "event":"plugin.start.failed",
+            "message":"Plugin startup failed", "plugin_id":"sakura.model.openai_compatible",
+            "request_id":"initialize-1", "operation_id":"startup-1",
+            "attributes":{"code":"PLUGIN_CALL_TIMEOUT", "stage":"initialize", "detail_stage":"setup",
+                "elapsed_ms":8001, "duration_ms":7801, "timeout_ms":8000, "child_pid":123, "process_alive":true,
+                "command":"emit", "service_key":"sakura.host.logging", "startup_snapshot":"available",
+                "exception_stack":"plugin.py:12 in setup", "diagnostic":"timed out token=fixture-secret"}
+        });
+        assert!(log
+            .submit_core_bridge(&failure.to_string(), &context)
+            .unwrap());
+        let (endpoint, body) = server.next_request(&service);
+        assert_eq!(endpoint, "/v3/errors");
+        let report: Value = serde_json::from_slice(&body).unwrap();
+        for key in [
+            "detail_stage",
+            "elapsed_ms",
+            "duration_ms",
+            "timeout_ms",
+            "child_pid",
+            "process_alive",
+            "command",
+            "service_key",
+            "startup_snapshot",
+        ] {
+            assert_eq!(
+                report["evidence"][key], failure["attributes"][key],
+                "missing {key}"
+            );
+        }
+        assert_eq!(report["evidence"]["request_id"], "initialize-1");
+        assert_eq!(report["operationId"], "startup-1");
+        let breadcrumbs = report["breadcrumbs"].as_array().unwrap();
+        let completed = breadcrumbs
+            .iter()
+            .find(|b| b["event"] == "plugin.start.phase.completed")
+            .unwrap();
+        assert_eq!(completed["elapsedMs"], 150);
+        assert!(completed["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("stage=import"));
+        assert!(completed["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("plugin_id=sakura.model.openai_compatible"));
+        let last = breadcrumbs.last().unwrap()["diagnostic"].as_str().unwrap();
+        assert!(
+            last.contains("operation_id=startup-1") && last.contains("request_id=initialize-1")
+        );
+        assert!(!String::from_utf8(body).unwrap().contains("fixture-secret"));
+        // The WebView receives the public rejection later: retain the route,
+        // but do not create another failure sample from its info breadcrumb.
+        let before = service.inner.reports.lock().unwrap().len();
+        service.observe_runtime_event("webview", "info", "ipc", "webview.command.failed", None,
+            Some(&json!({"code":"PLUGIN_CALL_TIMEOUT", "command":"settings_plugins_get", "diagnostic":"timed out"})));
+        assert_eq!(service.inner.reports.lock().unwrap().len(), before);
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        let failure_view = snapshot
+            .records
+            .iter()
+            .find(|record| record.event_code == "plugin.start.failed")
+            .unwrap();
+        assert!(failure_view
+            .details
+            .iter()
+            .any(|detail| detail.label == "阶段" && detail.value == "initialize"));
+        assert!(failure_view
+            .details
+            .iter()
+            .any(|detail| detail.label == "子阶段" && detail.value == "setup"));
+        assert!(failure_view
+            .details
+            .iter()
+            .any(|detail| detail.label == "等待服务" && detail.value == "sakura.host.logging"));
+        log.drain_and_shutdown_for_test();
+        let text = fs::read_to_string(root.join("sakura-plugins.log")).unwrap();
+        assert!(
+            text.contains("startup_snapshot=available")
+                && text.contains("service_key=sakura.host.logging")
+        );
+        drop(log);
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn successful_and_cancelled_chat_have_real_duration_and_no_error_severity() {
         let server = TestServer::start(202, Duration::ZERO);
         let (root, service) = service_for(&server, "chat-outcomes", 128, TEST_WAIT);
@@ -3798,6 +3958,57 @@ mod tests {
         if let Ok(path) = std::env::var("SAKURA_ACCEPTANCE_WIRE_OUTPUT") {
             fs::write(path, serde_json::to_vec_pretty(&captured).unwrap()).unwrap();
         }
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn same_code_keeps_distinct_plugin_and_failure_context() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "failure-context", 128, TEST_WAIT);
+        let base = json!({
+            "code":"PLUGIN_CALL_FAILED", "diagnostic":"invalid configuration",
+            "exception_stack":"settings.py:42 in save", "plugin_id":"sakura.first",
+            "section_id":"profiles", "validation_field":"/profiles/0/model",
+            "detail_stage":"save", "service_key":"sakura.host.settings"
+        });
+        for changed in [
+            json!({}),
+            json!({"plugin_id":"sakura.second"}),
+            json!({"validation_field":"/profiles/1/model"}),
+            json!({"detail_stage":"load"}),
+        ] {
+            let mut attributes = base.clone();
+            attributes
+                .as_object_mut()
+                .unwrap()
+                .extend(changed.as_object().unwrap().clone());
+            service.observe_runtime_event(
+                "core",
+                "warning",
+                "ipc",
+                "ipc.request.failed",
+                None,
+                Some(&attributes),
+            );
+        }
+        assert_eq!(service.inner.reports.lock().unwrap().len(), 4);
+        let mut repeated = base;
+        repeated["request_id"] = json!("another-request");
+        repeated["elapsed_ms"] = json!(932);
+        service.observe_runtime_event(
+            "core",
+            "warning",
+            "ipc",
+            "ipc.request.failed",
+            Some("another-operation"),
+            Some(&repeated),
+        );
+        let reports = service.inner.reports.lock().unwrap();
+        assert_eq!(reports.len(), 4);
+        assert_eq!(reports.values().map(|report| report.count).sum::<u64>(), 5);
+        drop(reports);
         service.shutdown();
         assert!(wait_for_sender_exit(&service));
         let _ = fs::remove_dir_all(root);
