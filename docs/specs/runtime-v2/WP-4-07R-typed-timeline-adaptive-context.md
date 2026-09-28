@@ -94,11 +94,12 @@ API key 或 Provider 原始异常。
 
 ## 4. 写入、Turn 与展示
 
-- 角色表现或 Assistant 会话首次就绪时，Host 为当前角色写一条独立 `system` Turn：首次 Core generation
-  使用 `app.started`，同一应用内后续 generation 使用 `app.reconnected`，不把后台重连描述成用户重新打开应用。
+- 首次 Core generation 的角色表现或 Assistant 会话首次就绪时，Host 为当前角色写一条独立 `system` Turn，
+  使用 `app.started`。同一应用内后续 generation 的重连仅保留运行日志，不写 Timeline。
   Shell 确认退出整个应用后，Host 写 `app.closed`，表示正在正常退出；重复初始化或关闭请求不重复写入。
   后台停止、重启、崩溃、管道断开和托盘隐藏/显示不写应用退出记录。尚未绑定角色时不猜测归属。
   这些记录与聊天共用 Timeline 和带时区的 `created_at`，不另建事件历史文件；写入失败记录诊断，不阻断启动或退出。
+  历史窗口隐藏旧 `system` 条目中的 `app.reconnected` 事件，数据库中的既有记录保持不变。
 - Core 接受一次外部或主动交互时生成一个 `turn_id`。用户文字与手动截图可以是同一 Turn 内的 `human` 和
   `observation` 两个条目；定时截图只有 `observation` 触发条目。
 - 普通插件通过 `sakura.host.chat` 提交的互动使用 `origin=host` 的 observation，记录 `sourcePluginId`，

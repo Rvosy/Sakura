@@ -64,6 +64,25 @@ test("observations and system facts become centered plain-text records", () => {
   assert.equal("visualId" in projected[0], false);
 });
 
+test("legacy reconnection events are hidden without changing stored entries or other records", () => {
+  const reconnectText = "legacy reconnection notice";
+  const entries = [
+    entry("system", { text: "start", eventType: "app.started" }, { entryId: "started" }),
+    entry("system", { text: reconnectText, eventType: "app.reconnected" }, { entryId: "reconnected" }),
+    entry("human", { text: reconnectText }, { entryId: "human" }),
+    entry("system", { text: reconnectText }, { entryId: "system-fact" }),
+    entry("system", { text: "close", eventType: "app.closed" }, { entryId: "closed" }),
+  ];
+  const storedEntries = structuredClone(entries);
+
+  const projected = projectHistoryEntries(entries);
+
+  assert.deepEqual(projected.map(({ entryId }) => entryId), ["started", "human", "system-fact", "closed"]);
+  assert.equal(projected[1].content, reconnectText);
+  assert.equal(projected[2].content, reconnectText);
+  assert.deepEqual(entries, storedEntries);
+});
+
 test("only assistant bubbles carry stable recording identity with original segment indices", () => {
   const projected = projectHistoryEntries([
     entry("human", { text: "hello" }),

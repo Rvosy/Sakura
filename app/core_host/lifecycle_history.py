@@ -27,8 +27,6 @@ class LifecycleHistory:
             self._started = True
             if self._generation_number == 1:
                 self._append(character_id, "app.started", "桌宠已启动")
-            else:
-                self._append(character_id, "app.reconnected", "桌宠运行服务已重新连接；这不表示用户关闭后重新打开了应用。")
 
     def finish(self, character_id: str | None) -> None:
         with self._lock:
