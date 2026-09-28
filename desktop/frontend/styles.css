@@ -361,20 +361,6 @@ body[data-chat-state="thinking"] .bubble::after {
   cursor: pointer;
 }
 
-.presentation-error {
-  position: absolute;
-  z-index: 3;
-  right: 20px;
-  bottom: 7px;
-  left: 20px;
-  margin: 0;
-  overflow: hidden;
-  color: var(--muted-text);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .composer {
   --input-text-height: 40px;
   --input-toolbar-staging-shift: 0px;

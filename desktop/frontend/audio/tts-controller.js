@@ -85,7 +85,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {}, o
     } else if (["finished", "stopped", "failed"].includes(event.state)) {
       openPlayback(item, event);
       releasePlayback();
-      if (event.state === "failed") onDiagnostic(event.error?.code || "AUDIO_PLAYBACK_FAILED", { history: item.reply.history });
+      if (event.state === "failed") onDiagnostic(errorText(event.error, "AUDIO_PLAYBACK_FAILED"), { history: item.reply.history });
     }
   }
 

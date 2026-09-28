@@ -1,4 +1,4 @@
-import { errorSummary, errorText } from "./core/error-display.js";
+import { errorText } from "./core/error-display.js";
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createTtsController } from "./audio/tts-controller.js";
 import { createAsrController } from "./audio/asr-controller.js";
@@ -141,9 +141,6 @@ const replyHistoryNext = document.querySelector("#reply-history-next");
 const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
 const characterName = document.querySelector("#character-name");
-const presentationError = document.querySelector("#presentation-error");
-let recoverableErrorTimer = null;
-let recoverableErrorMessage = "";
 const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
@@ -202,8 +199,6 @@ const sessionBlockedAtStartup = await initialSessionBlocker();
 const composerActionIndicator = createComposerActionIndicator({ button: send });
 
 let lastInputVisualEffectFallback = "";
-let inputVisualEffectFallbackActive = false;
-let activeInputVisualEffectFallbackNotice = "";
 
 async function applyInputVisualEffect(values) {
   const status = await invoke("apply_input_visual_effect", { values }).catch(() => ({
@@ -217,9 +212,6 @@ async function applyInputVisualEffect(values) {
     ? status.effectiveMode
     : "solid";
   const notice = inputVisualEffectFallbackNotice(values, status);
-  const previousNotice = activeInputVisualEffectFallbackNotice;
-  inputVisualEffectFallbackActive = Boolean(notice);
-  activeInputVisualEffectFallbackNotice = notice;
   const fallbackKey = notice
     ? `${values?.visualEffectMode || "unknown"}:${status.errorCode || status.outcome || "unknown"}`
     : "";
@@ -228,9 +220,6 @@ async function applyInputVisualEffect(values) {
     showRecoverableError(notice);
   } else if (!notice) {
     lastInputVisualEffectFallback = "";
-    if (previousNotice && presentationError.textContent === previousNotice) {
-      clearRecoverableError();
-    }
   }
   return status;
 }
@@ -252,23 +241,9 @@ async function listenAppEvent(eventName, handler) {
   if (typeof unlisten === "function") appEventUnlisteners.push(unlisten);
 }
 
-function showRecoverableError(message) {
-  const text = errorSummary(message, "角色表现暂时不可用");
-  if (!presentationError.hidden && recoverableErrorMessage === text) return;
-  clearRecoverableError();
-  recoverableErrorMessage = text;
-  presentationError.textContent = text;
-  presentationError.hidden = false;
-  recoverableErrorTimer = setTimeout(clearRecoverableError, 5000);
-}
-
-function clearRecoverableError() {
-  clearTimeout(recoverableErrorTimer);
-  recoverableErrorTimer = null;
-  recoverableErrorMessage = "";
-  delete presentationError.dataset.asrError;
-  presentationError.hidden = true;
-  presentationError.textContent = "";
+function showRecoverableError(error, { title = "操作失败", message = "" } = {}) {
+  void invoke("show_error_dialog", { payload: { title, message, details: errorText(error) } })
+    .catch(failure => runtimeDiagnostics.reportError(failure, { command: "show_error_dialog" }));
 }
 
 function isBubbleScrollbarHit(event) {
@@ -393,7 +368,6 @@ const layoutController = createLayoutController({
     }
     if (layoutDegraded) {
       layoutDegraded = false;
-      if (presentationError.textContent === LAYOUT_DEGRADED_NOTICE) clearRecoverableError();
     }
   },
 });
@@ -483,7 +457,6 @@ characterName.textContent = characterPresentation.displayName;
 input.placeholder = composerPlaceholder(characterPresentation.displayName, "ready");
 portraitFallbackName.textContent = characterPresentation.displayName;
 portrait.setAttribute("aria-label", `${characterPresentation.displayName} 的立绘，可拖动窗口`);
-if (!presentationUnavailable && !inputVisualEffectFallbackActive) clearRecoverableError();
 
 let portraitHitRevision = 0;
 let portraitSurfaceMutationDepth = 0;
@@ -792,7 +765,6 @@ function activatePortraitHitTest(
   ).then((surface) => {
     if (!surface || !isCurrent()) return null;
     commitSurfaceApplication(surface);
-    if (presentationError.textContent === PORTRAIT_HIT_TEST_NOTICE) clearRecoverableError();
     return surface;
   }).catch((error) => {
     if (!isCurrent()) return null;
@@ -1200,7 +1172,6 @@ asrController = createAsrController({
     if (saved) input.setSelectionRange(saved.selectionStart, saved.selectionEnd, saved.selectionDirection);
   },
   onState: ({ state }) => {
-    if (state === "preparing" && presentationError.dataset.asrError === "true") clearRecoverableError();
     const busy = state !== "idle";
     const waiting = state === "preparing" || state === "recognizing";
     asrPresentation.setState(state);
@@ -1218,26 +1189,7 @@ asrController = createAsrController({
   },
   onLevel: (level) => waveform.push(level),
   onError: (message) => {
-    showRecoverableError(message);
-    presentationError.dataset.asrError = "true";
-    const copy = document.createElement("span");
-    copy.textContent = message;
-    const retry = document.createElement("button");
-    retry.type = "button";
-    retry.textContent = "重试";
-    retry.dataset.interactive = "true";
-    retry.addEventListener("click", () => {
-      if (asrAvailability.enabled() && !presentationUnavailable) void asrController.start();
-    });
-    const settings = document.createElement("button");
-    settings.type = "button";
-    settings.textContent = "打开设置";
-    settings.dataset.interactive = "true";
-    settings.addEventListener("click", () => {
-      void invoke("activate_pet_context_menu_action", { actionId: "sakura.settings.open" })
-        .catch(() => showRecoverableError("设置暂时无法打开，请重试。"));
-    });
-    presentationError.replaceChildren(copy, retry, settings);
+    showRecoverableError(message, { title: "语音输入失败" });
   },
 });
 await asrController.connect();
@@ -1316,7 +1268,7 @@ const waitingIndicator = createWaitingIndicator({
 const chatErrorLog = document.getElementById("chat-error-log");
 chatErrorLog.addEventListener("click", () => {
   void invoke("activate_pet_context_menu_action", { actionId: "sakura.runtime-log.open" })
-    .catch(error => showRecoverableError(errorSummary(error)));
+    .catch(error => showRecoverableError(error));
 });
 
 function render(state, bubbleUpdate = {}) {
@@ -1382,6 +1334,12 @@ function handleCoreEvent(event) {
   }
   const result = presentation.reduce(event);
   if (!result.applied) return;
+  if (event.type === "chat.failed" && !before.silentInteraction) {
+    showRecoverableError(event.error, { title: "回复失败" });
+  } else if (event.type === "lifecycle" && event.status === "failed"
+      && (before.lifecycle !== "failed" || before.generationId !== event.generationId)) {
+    showRecoverableError(event.failure || "CORE_UNAVAILABLE", { title: "桌宠服务不可用" });
+  }
   if (event.type === "lifecycle") hostInteraction.handleLifecycle(event);
   if (event.type === "chat.started") rendererHost.begin(event.operationId);
   if (["chat.failed", "chat.cancelled"].includes(event.type) || (event.type === "lifecycle" && !isChatReadyLifecycle(event.status))) rendererHost.cancel("interrupted");
@@ -2100,7 +2058,7 @@ await listenAppEvent("sakura://bubble-auto-hide-changed", (event) => {
 });
 
 await listenAppEvent("sakura://screen-attachment", (event) => {
-  if (screenAttachment.handleAttached(event?.payload)) clearRecoverableError();
+  screenAttachment.handleAttached(event?.payload);
 });
 await listenAppEvent("sakura://screen-capture-cancelled", (event) => {
   screenAttachment.handleCancelled(event?.payload);
@@ -2200,7 +2158,6 @@ document.addEventListener("visibilitychange", () => {
 function dispose() {
   if (disposed) return;
   disposed = true;
-  clearRecoverableError();
   asrController?.dispose();
   asrAvailability.dispose();
   waveform.stop();

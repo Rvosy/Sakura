@@ -1,13 +1,5 @@
 import { safeErrorText } from './runtime-diagnostics.js';
 
-// The bubble is a summary surface. Full diagnostics remain available in the log.
-export function errorSummary(error, fallback = '操作失败，请查看运行日志。') {
-  const message = typeof error === 'string' ? error : error?.message;
-  const firstLine = typeof message === 'string' ? message.trim().split(/\r?\n/, 1)[0] : '';
-  const text = safeErrorText(firstLine || fallback);
-  return text.length > 180 ? `${text.slice(0, 180)}…` : text;
-}
-
 // Keep protocol codes and source diagnostics together at every user boundary.
 // Render the result as text, never HTML.
 export function errorText(error, fallback = '未提供错误详情') {

@@ -12,6 +12,7 @@
 @import url("./legacy-data-import.css");
 @import url("./plugin-marketplace.css");
 @import url("../core/tooltip.css");
+@import url("../core/error-dialog.css");
 
 :root {
   --sakura-primary: #4b9ac4;
@@ -3051,6 +3052,24 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 .error {
   color: var(--sakura-accent);
   font-weight: var(--font-weight-semibold);
+}
+
+#errorText:not(:empty) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-error-details {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--sakura-primary);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 /* ---------- 底栏与按钮 ---------- */

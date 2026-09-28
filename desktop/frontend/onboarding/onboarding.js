@@ -1,4 +1,4 @@
-import { errorText } from '../core/error-display.js';
+import { createErrorDialog } from '../core/error-dialog.js';
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { createRuntimeDiagnostics } from "../core/runtime-diagnostics.js";
 import {
@@ -11,6 +11,8 @@ document.addEventListener("contextmenu", (event) => event.preventDefault());
 
 const runtimeDiagnostics = createRuntimeDiagnostics({ invoke: window.__TAURI__.core.invoke });
 const invoke = runtimeDiagnostics.invoke;
+const errorDialog = createErrorDialog({ document });
+window.addEventListener("pagehide", () => errorDialog.dispose(), { once: true });
 window.addEventListener("beforeunload", () => runtimeDiagnostics.dispose({ settings: true }), { once: true });
 const routeView = document.getElementById("routeView");
 const migrationView = document.getElementById("migrationView");
@@ -160,7 +162,7 @@ async function openFirstUseGuide() {
     window.location.replace("../settings/index.html?guide=first-run");
   } catch (error) {
     firstUseButton.disabled = false;
-    setAnimatedText(startupStatus, `无法启动 Sakura：${String(error)}`);
+    showOperationError(startupStatus, "无法启动 Sakura。", error);
   }
 }
 
@@ -188,7 +190,7 @@ async function runMacosOpenHelpAction(button, command, successMessage) {
     await invoke(command);
     setAnimatedText(macosOpenHelpStatus, successMessage);
   } catch (error) {
-    setAnimatedText(macosOpenHelpStatus, `无法完成操作：${String(error)}`);
+    showOperationError(macosOpenHelpStatus, "无法完成操作。", error);
   } finally {
     button.disabled = false;
   }
@@ -214,7 +216,7 @@ migrationContinueButton.addEventListener("click", async () => {
     await invoke("resolve_settings_close", { discard: true });
   } catch (error) {
     migrationContinueButton.disabled = false;
-    setAnimatedText(migrationError, `无法关闭导入窗口：${String(error)}`);
+    showOperationError(migrationError, "无法关闭导入窗口。", error);
   }
 });
 migrationButton.addEventListener("click", showMigrationView);
@@ -253,8 +255,9 @@ function formatBytes(value) {
   return `${number.toFixed(number >= 10 ? 1 : 2)} ${unit}`;
 }
 
-function publicError(error) {
-  return errorText(error);
+function showOperationError(target, message, error) {
+  setAnimatedText(target, message);
+  errorDialog.show({ title: "操作失败", message, error });
 }
 
 function renderInspection(snapshot) {
@@ -289,11 +292,34 @@ function renderInspection(snapshot) {
   const issues = [...(inspection.blockers || []), ...(inspection.warnings || [])];
   for (const [index, issue] of issues.entries()) {
     const item = document.createElement("li");
-    item.className = (inspection.blockers || []).includes(issue) ? "blocking" : "warning";
+    const blocking = (inspection.blockers || []).includes(issue);
+    item.className = blocking ? "blocking" : "warning";
     item.style.setProperty("--issue-order", Math.min(index, 4));
-    item.textContent = issue.code === "LEGACY_TTS_EXTERNAL_COPY"
-      ? "外置语音资源将复制到当前版本，删除旧版后仍可使用。"
-      : publicError(issue);
+    item.textContent = {
+      LEGACY_SOURCE_NOT_DIRECTORY: "请选择旧版本目录。",
+      LEGACY_LAYOUT_UNRECOGNIZED: "未找到可导入的旧版本数据。",
+      LEGACY_SOURCE_ACTIVE: "请先关闭旧版本 Sakura。",
+      LEGACY_SOURCE_TARGET_OVERLAP: "旧版目录与当前数据目录不能相互包含。",
+      LEGACY_TARGET_NOT_DIRECTORY: "当前数据目录不可用。",
+      LEGACY_IMPORT_RECOVERY_REQUIRED: "请先恢复上次未完成的导入。",
+      LEGACY_COMMIT_TARGET_LINK_UNSUPPORTED: "当前数据目录含有无法覆盖的链接。",
+      LEGACY_DATA_SCOPE_CONFLICT: "角色数据存在冲突，无法导入。",
+      LEGACY_TARGET_SPACE_UNAVAILABLE: "无法检查当前数据目录的可用空间。",
+      LEGACY_TARGET_SPACE_INSUFFICIENT: "可用空间不足，请先释放磁盘空间。",
+      LEGACY_TTS_LINK_BROKEN: "外置语音资源链接已失效，无法导入这些资源。",
+      LEGACY_TTS_EXTERNAL_COPY: "外置语音资源将复制到当前版本，删除旧版后仍可使用。",
+      LEGACY_TTS_TARGET_OVERLAP: "外置语音资源与当前目录重叠，将跳过这些资源。",
+      LEGACY_TTS_LAYOUT_UNRECOGNIZED: "语音资源格式无法识别，将跳过这些资源。",
+    }[issue.code] || (blocking ? "目录检查未通过。" : "部分数据需要检查。");
+    if (issue.code !== "LEGACY_TTS_EXTERNAL_COPY") {
+      const details = document.createElement("button");
+      details.type = "button";
+      details.className = "issue-details";
+      details.textContent = "查看详情";
+      const message = item.textContent;
+      details.addEventListener("click", () => errorDialog.show({ title: "导入检查", message, error: issue }));
+      item.append(details);
+    }
     migrationIssues.append(item);
   }
   migrationStartButton.disabled = !inspection.compatible || !selectionId;
@@ -336,6 +362,7 @@ function renderProgress(snapshot) {
   const previous = previousProgressSnapshot;
   const stageText = state === "completed"
     ? "导入完成"
+    : state === "failed" ? "导入失败"
     : (inspectionProgress?.stageText || snapshot.message || "正在导入");
   const percent = Number(snapshot.percent || 0);
   if (isProgressRegression(previous, state, percent)) return;
@@ -352,7 +379,7 @@ function renderProgress(snapshot) {
   } else {
     migrationProgressBar.value = percent;
   }
-  migrationMessage.textContent = snapshot.message || "";
+  migrationMessage.textContent = state === "failed" ? "" : snapshot.message || "";
   migrationChooseButton.disabled = active;
   migrationBackButton.disabled = active;
   migrationBackButton.hidden = state === "completed";
@@ -386,7 +413,12 @@ function renderProgress(snapshot) {
     replayAnimation(migrationCancelButton, "is-revealing");
   }
 
-  if (state === "failed") setAnimatedText(migrationError, publicError(snapshot.error));
+  if (state === "failed") {
+    setAnimatedText(migrationError, "导入失败。");
+    if (previous?.state !== "failed") {
+      errorDialog.show({ title: "导入失败", message: "旧版数据未能完成导入。", error: snapshot.error });
+    }
+  }
   if (state === "cancelled") {
     setAnimatedText(migrationError, "导入已取消，旧版和当前数据均未改变。");
   }
@@ -452,7 +484,7 @@ async function chooseLegacySource() {
     if (selectedSnapshot && selectionId === selectedSnapshot.selectionId) {
       renderSelection(selectedSnapshot);
     }
-    setAnimatedText(migrationError, publicError(error));
+    showOperationError(migrationError, "无法检查旧版目录。", error);
   } finally {
     migrationChooseButton.disabled = false;
   }
@@ -475,7 +507,7 @@ async function startMigration() {
       confirmedOverwriteDomains,
     }));
   } catch (error) {
-    setAnimatedText(migrationError, publicError(error));
+    showOperationError(migrationError, "无法开始导入。", error);
   }
 }
 
@@ -484,7 +516,7 @@ async function cancelMigration() {
   try {
     renderProgress(await invoke("legacy_import_cancel"));
   } catch (error) {
-    setAnimatedText(migrationError, publicError(error));
+    showOperationError(migrationError, "无法取消导入。", error);
   } finally {
     migrationCancelButton.disabled = false;
   }
@@ -494,10 +526,12 @@ async function bindWindowLifecycle() {
   const listen = window.__TAURI__?.event?.listen;
   if (!listen) return;
   await listen("sakura://settings-close-requested", () => {
-    invoke("resolve_settings_close", { discard: true }).catch(() => {});
+    invoke("resolve_settings_close", { discard: true })
+      .catch(error => showOperationError(startupStatus, "无法关闭欢迎页。", error));
   });
   await listen("sakura://settings-exit-requested", (event) => {
-    invoke("resolve_settings_exit", { discard: true, revision: event.payload }).catch(() => {});
+    invoke("resolve_settings_exit", { discard: true, revision: event.payload })
+      .catch(error => showOperationError(startupStatus, "无法退出 Sakura。", error));
   });
   await listen("sakura://settings-exit-timeout", () => {
     setAnimatedText(startupStatus, "退出请求已取消，请重试。");
@@ -515,14 +549,14 @@ async function start() {
       return;
     }
   } catch (error) {
-    setAnimatedText(startupStatus, `无法读取首次启动状态：${String(error)}`);
+    showOperationError(startupStatus, "无法读取首次启动状态。", error);
   }
   await configureMacosOpenHelp();
   await invoke("reveal_settings_window");
-  firstUseButton.focus();
+  if (!document.querySelector("dialog[open]")) firstUseButton.focus();
 }
 
 start().catch((error) => {
-  setAnimatedText(startupStatus, `欢迎页暂时无法启动：${String(error)}`);
+  showOperationError(startupStatus, "欢迎页暂时无法启动。", error);
   invoke("reveal_settings_window").catch(() => {});
 });

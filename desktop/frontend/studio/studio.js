@@ -1,4 +1,4 @@
-import { errorText, errorSummary } from '../core/error-display.js';
+import { createErrorDialog } from "../core/error-dialog.js";
 import { requirementSummary } from "../core/plugin-requirements.js";
 import { createVisualEditorHost, renderVisualThumbnail } from "./visual-editor-host.js";
 import { observeSelects } from "../settings/select-control.js";
@@ -28,7 +28,9 @@ import { createRuntimeDiagnostics } from "../core/runtime-diagnostics.js";
 
 const runtimeDiagnostics = createRuntimeDiagnostics({ invoke: window.__TAURI__.core.invoke });
 const invoke = runtimeDiagnostics.invoke;
+const errorDialog = createErrorDialog({ document });
 window.addEventListener("beforeunload", () => runtimeDiagnostics.dispose(), { once: true });
+window.addEventListener("pagehide", () => errorDialog.dispose(), { once: true });
 
 const studioMethodMap = Object.freeze({
   "studio.open_character": "studio.character.open",
@@ -153,13 +155,18 @@ function setError(message) {
   fields.errorText.textContent = message || "";
 }
 
+function showError(error, title = "操作失败") {
+  setError(title);
+  errorDialog.show({ title, error });
+}
+
 function notify(message, type = "info") {
-  const text = String(message || "").trim();
-  if (!text) {
+  if (type === "error") {
+    showError(message);
     return;
   }
-  if (type === "error") {
-    setError(text);
+  const text = String(message || "").trim();
+  if (!text) {
     return;
   }
   const stack = document.getElementById("toastStack");
@@ -236,7 +243,7 @@ async function cancelActiveOperation() {
       ? "正在取消…"
       : "操作已经结束。";
   } catch (error) {
-    setError(`取消操作失败：${String(error)}`);
+    showError(error, "取消操作失败");
     fields.operationCancelButton.disabled = false;
   }
 }
@@ -648,7 +655,7 @@ function scheduleDraftAutosave() {
   }
   window.clearTimeout(draftAutosaveTimer);
   draftAutosaveTimer = window.setTimeout(() => {
-    flushDraftAutosave().catch((error) => setError(`草稿自动保存失败：${error}`));
+    flushDraftAutosave().catch((error) => showError(error, "草稿自动保存失败"));
   }, 650);
 }
 
@@ -826,7 +833,7 @@ const visualEditor = createVisualEditorHost({
   container: fields.expressionList,
   onError(error, stage) {
     runtimeDiagnostics.reportError(error, { command: "studio_visual_editor", stage, code: "VISUAL_EDITOR_FAILED" });
-    if (stage === "studio.visual.editor") setError("形态编辑失败，请查看运行日志。");
+    if (stage === "studio.visual.editor") showError(error, "形态编辑失败");
   },
   onPreview: updateVisualPreview,
   onChange(data) {
@@ -1012,7 +1019,7 @@ function renderVisualMeta(resource) {
       handleEditorChanged(); void renderVisualResources();
     }, true));
   }); remove.id = "removeVisualButton";
-  actions.append(makeDefault, visualButton("导出形态", () => exportVisualComponent(resource.id).catch(error => setError(String(error)))), remove);
+  actions.append(makeDefault, visualButton("导出形态", () => exportVisualComponent(resource.id).catch(error => showError(error, "形态导出失败"))), remove);
   meta.append(field, actions);
 }
 async function renderVisualResources({ flush = true, preferredId = null } = {}) {
@@ -1072,7 +1079,7 @@ async function openVisualEditor(resource, revision = visualEditorRevision, { flu
     const text = document.createElement("p"); text.textContent = "此表现暂时无法编辑。保存其他修改会保留原有资源。";
     fields.expressionList.append(text);
     runtimeDiagnostics.reportError(error, { command: "studio_visual_open", code: "VISUAL_EDITOR_FAILED" });
-    setError("形态编辑器加载失败，请查看运行日志。");
+    showError(error, "形态编辑器加载失败");
   }
 }
 async function addVisualResource() {
@@ -1114,7 +1121,7 @@ async function addVisualResource() {
         await renderVisualResources({ preferredId: currentDoc.visuals.resources.at(-1).id });
       });
       modal.close();
-    } catch (failure) { error.textContent = String(failure); }
+    } catch (failure) { showError(failure, "形态添加失败"); }
     finally { adding = false; modal.dialog.querySelectorAll("button, input").forEach(control => { control.disabled = false; }); }
   }, true);
   add.disabled = !available.length;
@@ -1170,7 +1177,7 @@ document.getElementById("importVisualComponent").onclick = async () => {
       handleEditorChanged();
       await renderVisualResources();
     });
-  } catch (error) { setError(String(error)); }
+  } catch (error) { showError(error, "形态导入失败"); }
 };
 
 function collectReferenceAudios() {
@@ -1662,7 +1669,7 @@ async function pickActiveThemeColor() {
     }
     updateActiveThemeColor(color);
   } catch (error) {
-    setError(`屏幕取色失败：${error}`);
+    showError(error, "屏幕取色失败");
   } finally {
     themeEditor.pick.disabled = false;
   }
@@ -1699,7 +1706,7 @@ async function selectCharacter(characterId) {
   } catch (error) {
     fields.studioCharacterSelect.value = previousId;
     refreshSelect(fields.studioCharacterSelect);
-    setError(`切换前保存草稿失败：${String(error)}`);
+    showError(error, "切换前保存草稿失败");
     return;
   }
   await runBusy(async () => {
@@ -1778,7 +1785,7 @@ async function createCharacter() {
   try {
     await flushDraftAutosave();
   } catch (error) {
-    setError(`新建角色前保存草稿失败：${String(error)}`);
+    showError(error, "新建角色前保存草稿失败");
     return;
   }
   const draft = await openCreateCharacterDialog();
@@ -1988,7 +1995,7 @@ function validateExpressionInputs() {
     switchPage("portrait");
     if (typeof error.field === "string") visualEditor.focusField(error.field);
     const resource = visualReferences().resources.find(item => item.id === selectedVisualId);
-    setError(`形态「${resource ? visualName(resource) : selectedVisualId}」：${errorSummary(error)}`);
+    showError(error, `形态「${resource ? visualName(resource) : selectedVisualId}」校验失败`);
     return false;
   }
 }
@@ -2100,7 +2107,7 @@ async function commitCharacter({ publish = false } = {}) {
       }
       if (!reloadFailure) {
         try { await loadVisualCatalog(); }
-        catch (error) { reloadFailure = errorText(error); }
+        catch (error) { reloadFailure = error; }
       }
     } catch (error) {
       if (!visualValidationIssue(error)) void renderVisualResources({ flush: false });
@@ -2117,7 +2124,7 @@ async function commitCharacter({ publish = false } = {}) {
     await renderEditor({ openVisuals: !reloadFailure });
     markBaseline();
     notify(payload.message || (publish ? "角色已添加到列表。" : "角色已保存。"), "success");
-    if (reloadFailure) setError(reloadFailure);
+    if (reloadFailure) showError(reloadFailure, "角色已保存，运行状态更新失败");
   });
 }
 
@@ -2161,24 +2168,26 @@ async function runBusy(action) {
   refreshControls();
   setError("");
   let visualField = null;
+  let failure = null;
   try {
     await action();
   } catch (error) {
     runtimeDiagnostics.reportError(error, { command: "studio_action", code: "STUDIO_OPERATION_FAILED" });
+    failure = { error, title: "操作失败" };
     const issue = visualValidationIssue(error);
-    if (issue && visualReferences().resources.some(item => item.id === issue.resourceId)) {
+    const resource = issue && visualReferences().resources.find(item => item.id === issue.resourceId);
+    if (resource) {
       switchPage("portrait");
       await renderVisualResources({ preferredId: issue.resourceId, flush: false });
       visualField = issue.field;
-      setError(errorSummary(issue.message));
-    } else {
-      setError(String(error));
+      failure.title = `形态「${visualName(resource)}」校验失败`;
     }
   } finally {
     busy = false;
     refreshControls();
     if (visualField !== null) visualEditor.focusField(visualField);
   }
+  if (failure) showError(failure.error, failure.title);
 }
 
 function refreshControls() {
@@ -2260,7 +2269,7 @@ async function closeStudio({ exitAfter = false } = {}) {
     await invoke(exitAfter ? "close_character_studio_for_exit" : "close_character_studio");
   } catch (error) {
     closingStudio = false;
-    setError(`关闭前保存草稿失败：${String(error)}`);
+    showError(error, "关闭前保存草稿失败");
   }
 }
 
@@ -2326,7 +2335,7 @@ fields.createCharacterForm.addEventListener("submit", (event) => {
   closeCreateCharacterDialog({ characterId, displayName });
 });
 fields.discardDraftButton.addEventListener("click", discardCurrentDraft);
-fields.addExpressionButton.addEventListener("click", () => addVisualResource().catch((error) => setError(String(error))));
+fields.addExpressionButton.addEventListener("click", () => addVisualResource().catch((error) => showError(error, "形态添加失败")));
 fields.importGptModelButton.addEventListener("click", () => importVoiceModel("gpt"));
 fields.importSovitsModelButton.addEventListener("click", () => importVoiceModel("sovits"));
 fields.clearGptModelButton.addEventListener("click", () => {
@@ -2357,7 +2366,7 @@ fields.operationCancelButton.addEventListener("click", cancelActiveOperation);
 ].forEach((element) => element.addEventListener("input", handleEditorChanged));
 
 window.__TAURI__?.event?.listen?.("sakura://studio-navigate", ({ payload }) => {
-  void navigateToVisual(payload || {}).catch(error => setError(String(error)));
+  void navigateToVisual(payload || {}).catch(error => showError(error, "形态打开失败"));
 });
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);
 window.__TAURI__?.event?.listen?.("sakura://studio-exit-requested", () => {
@@ -2370,10 +2379,10 @@ async function startStudio() {
     await loadVisualCatalog();
     await load();
   } catch (error) {
-    setError(String(error));
+    showError(error, "角色工坊加载失败");
   }
   await invoke("show_studio");
   runtimeDiagnostics.markReady();
 }
 
-startStudio().catch((error) => setError(String(error)));
+startStudio().catch((error) => showError(error, "角色工坊启动失败"));

@@ -19,6 +19,7 @@ HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <script type="module">
 import { createPluginMarketplace } from '/desktop/frontend/settings/plugin-marketplace.js';
 import { catalogPlugins } from '/desktop/frontend/settings/plugin-marketplace-source.js';
+import { createErrorDialog } from '/desktop/frontend/core/error-dialog.js';
 const release = version => ({version, manifest:{id:'sakura.visual.spine', name:'Spine',
   author:'Sakura', api:4, description:'Spine 3.6 角色的表情、动画和编辑。',
   presentation:{category:'visual', kind:'provider'}}, package:{url:'https://example.test/plugin.zip'}});
@@ -29,6 +30,8 @@ const fixture = window.fixture = {
   local:[{pluginId:'sakura.visual.spine',installId:'local-spine',version:'0.2.7',enabled:true,source:'user'}],
   opened:[], installs:[]
 };
+fixture.errorDialog = createErrorDialog({document});
+fixture.showError = options => fixture.errorDialog.show(options);
 const host = { installedPlugins:()=>fixture.local, openPlugin:id=>fixture.opened.push(id),
   async refreshCurrent(){ const enabled = fixture.local[0]?.enabled ?? false;
     fixture.local = [{pluginId:'sakura.visual.spine',installId:'local-spine',
@@ -41,7 +44,7 @@ fixture.source = { canUpdate:true, async load(){return {state:'ready',plugins:fi
     await new Promise(resolve=>{fixture.finish=resolve;});
   }
 };
-fixture.market = createPluginMarketplace({document, host, notify(){},source:fixture.source});
+fixture.market = createPluginMarketplace({document, host, notify(){},showError:fixture.showError,source:fixture.source});
 fixture.market.setView('market',{load:false});
 await fixture.market.refresh();
 </script></body></html>"""
@@ -185,6 +188,26 @@ def run():
             expect(reinstall).to_be_enabled()
             assert page.evaluate('fixture.local[0].enabled') is True
 
+            # An install failure opens full diagnostics without filling the details page.
+            page.evaluate("""fixture.source.install = async () => {
+              throw Object.assign(Error('archive download failed'), {
+                code:'PLUGIN_DOWNLOAD_FAILED', diagnostic:'tcp connect error 10061'
+              });
+            }""")
+            reinstall.click()
+            failure = page.locator('.sakura-error-dialog')
+            expect(failure).to_be_visible()
+            expect(failure.locator('pre')).to_contain_text('PLUGIN_DOWNLOAD_FAILED')
+            expect(failure.locator('pre')).to_contain_text('tcp connect error 10061')
+            expect(dialog.locator('.task-error')).not_to_contain_text('10061')
+            failure.get_by_role('button', name='关闭', exact=True).click()
+            dialog.locator('[data-task-error]').click()
+            expect(failure).to_be_visible()
+            failure.get_by_role('button', name='关闭', exact=True).click()
+            page.evaluate('fixture.source.install = async () => {}')
+            dialog.locator('[data-retry]').click()
+            expect(reinstall).to_be_enabled()
+
             # Documentation errors and late responses never block management or replace a newer README.
             page.evaluate("""async () => {
               fixture.source.readme = async () => { throw Error('offline'); };
@@ -194,6 +217,12 @@ def run():
             expect(dialog.locator('[data-retry-document]')).to_be_visible()
             expect(dialog.locator('.plugin-readme')).to_be_visible()
             expect(dialog.locator('[data-manage]')).to_be_enabled()
+            expect(dialog.locator('.detail-document-state')).not_to_contain_text('offline')
+            dialog.locator('[data-document-error]').click()
+            expect(failure).to_be_visible()
+            expect(failure.locator('pre')).to_contain_text('offline')
+            failure.get_by_role('button', name='关闭', exact=True).click()
+            expect(dialog.locator('[data-document-error]')).to_be_focused()
             page.evaluate("""() => {
               fixture.pendingDocs = [];
               fixture.source.readme = () => new Promise(resolve => fixture.pendingDocs.push(resolve));
@@ -224,7 +253,7 @@ def run():
                 args.progress.onmessage({source:'slow network'});
                 return new Promise((resolve,reject)=>{fixture.completeRefresh=resolve;fixture.failRefresh=reject;});
               }});
-              fixture.market=createPluginMarketplace({document,host:{installedPlugins:()=>[]},notify(){},source:fixture.source});
+              fixture.market=createPluginMarketplace({document,host:{installedPlugins:()=>[]},notify(){},showError:fixture.showError,source:fixture.source});
               fixture.market.setView('market',{load:false});
               fixture.refresh=fixture.market.refresh();
             }""")
@@ -253,18 +282,27 @@ def run():
             page.evaluate("""async () => {
               fixture.market.dispose();
               const {createPluginMarketplace} = await import('/desktop/frontend/settings/plugin-marketplace.js');
-              fixture.market=createPluginMarketplace({document,host:{installedPlugins:()=>[]},notify(){},source:{
+              fixture.market=createPluginMarketplace({document,host:{installedPlugins:()=>[]},notify(){},showError:fixture.showError,source:{
                 async load({onProgress}) {
                   onProgress('<img src=x onerror=window.injected=true>');
-                  throw Error('mirror <img src=x onerror=window.injected=true> returned 502');
+                  throw Object.assign(Error('mirror <img src=x onerror=window.injected=true> returned 502'), {
+                    code:'MARKETPLACE_FETCH_FAILED', diagnostic:'tcp connect error 10061'
+                  });
                 }
               }});
               fixture.market.setView('market',{load:false});
               await fixture.market.refresh();
             }""")
-            expect(page.locator('#catalog [role="status"]')).to_have_text('mirror <img src=x onerror=window.injected=true> returned 502')
+            expect(page.locator('#catalog [role="status"]')).not_to_contain_text('returned 502')
+            page.locator('[data-catalog-error]').click()
+            expect(failure).to_be_visible()
+            expect(failure.locator('pre')).to_contain_text('mirror <img src=x onerror=window.injected=true> returned 502')
+            expect(failure.locator('pre')).to_contain_text('tcp connect error 10061')
             assert page.locator('#catalog img').count() == 0
+            assert failure.locator('img').count() == 0
             assert page.evaluate('window.injected === undefined')
+            failure.get_by_role('button', name='关闭', exact=True).click()
+            expect(page.locator('[data-catalog-error]')).to_be_focused()
             assert not errors, errors
             browser.close()
             print('PASS: marketplace management, update guards, disclosure refresh, safe notes and responsive dialog')

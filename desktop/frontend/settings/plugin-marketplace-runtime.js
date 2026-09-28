@@ -41,7 +41,7 @@ export function createCatalogLoader(source, onChange) {
         accept({ ...result, refreshing: false });
       } catch (error) {
         if (active()) onChange({ ...(lastGood || {}), state: lastGood ? "cached" : "error",
-          refreshing: false, error: String(error.message || error) });
+          refreshing: false, error });
       }
     },
     dispose() { disposed = true; request?.abort(); },

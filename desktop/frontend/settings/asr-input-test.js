@@ -1,13 +1,17 @@
-import { errorText } from '../core/error-display.js';
 import { createAsrController } from "../audio/asr-controller.js";
 
 export function createAsrInputTest({ document, invoke, listen, readProvider, readDevice,
-  readContext = () => "settings-asr-test" }) {
+  readContext = () => "settings-asr-test", onError = () => {} }) {
   const start = document.getElementById("asrTestStart");
   const cancel = document.getElementById("asrTestCancel");
   const output = document.getElementById("asrTestResult");
   const level = document.getElementById("asrTestLevel");
   let connected = null, disposed = false;
+  const reportFailure = (error) => {
+    if (disposed) return;
+    output.textContent = "测试失败";
+    onError(error, "语音识别测试失败");
+  };
   const controller = createAsrController({
     invoke, listen,
     readContext,
@@ -15,7 +19,7 @@ export function createAsrInputTest({ document, invoke, listen, readProvider, rea
     prepareOptions: () => ({ purpose: "test", providerId: readProvider(), inputDeviceId: readDevice() }),
     writeDraft: ({ value }) => { output.textContent = value; start.focus?.({ preventScroll: true }); },
     onLevel: (value) => { level.value = value; },
-    onError: (message) => { output.textContent = message; },
+    onError: reportFailure,
     onState: ({ state }) => {
       const busy = state !== "idle";
       start.disabled = state === "preparing" || state === "recognizing";
@@ -33,7 +37,7 @@ export function createAsrInputTest({ document, invoke, listen, readProvider, rea
     if (!readProvider()) { output.textContent = "请先选择要测试的识别引擎。"; return; }
     connected ||= controller.connect();
     try { await connected; if (!disposed) await controller.start(); }
-    catch (error) { output.textContent = errorText(error); }
+    catch (error) { reportFailure(error); }
   }
   function cancelTest() { return controller.cancel({ restore: false }); }
   function onKey(event) {

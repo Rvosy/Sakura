@@ -1,6 +1,6 @@
 import { normalizeVisualSettings } from "./visual-settings-runtime.js";
 
-export function createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty, openPlugin, reportError = () => {} }) {
+export function createCharacterVisualSettings({ document, invoke, refreshSelect, onDirty, openPlugin, reportError = () => {}, onError = () => {} }) {
   const select = document.getElementById("visualSelect");
   if (!select) return { refresh: async () => {}, sync() {}, discard() {}, isDirty: () => false, selections: () => ({}), committed() {}, dispose() {} };
   const status = document.getElementById("visualStatus");
@@ -60,7 +60,8 @@ export function createCharacterVisualSettings({ document, invoke, refreshSelect,
     } catch (failure) {
       if (!disposed && current === revision) {
         reportError(failure, { command: "settings_character_visuals_get", stage: "visual.settings.read", code: "VISUAL_SETTINGS_INVALID" });
-        error = "显示方式读取失败，请重新打开设置。";
+        error = "显示方式读取失败";
+        onError(failure, error);
       }
     }
     finally { if (!disposed && current === revision) { busy = false; render(); onDirty(); } }
@@ -75,8 +76,10 @@ export function createCharacterVisualSettings({ document, invoke, refreshSelect,
     try {
       await invoke("open_character_studio", { characterId, resourceId: selected.id });
     } catch (failure) {
+      if (disposed) return;
       reportError(failure, { command: "open_character_studio", code: "STUDIO_OPEN_FAILED" });
-      error = "打开角色工坊失败，请重试。";
+      error = "打开角色工坊失败";
+      onError(failure, error);
     } finally { busy = false; if (!disposed) render(); }
   };
   select.addEventListener("change", change); action.addEventListener("click", showPlugin); configure.addEventListener("click", settings);

@@ -6,7 +6,6 @@ export async function openDownloadSources({ document, invoke, notify }) {
   dialog.setAttribute("aria-label", "下载源");
   const heading = document.createElement("h2"); heading.textContent = "下载源"; dialog.append(heading);
   const rows = document.createElement("div"); dialog.append(rows);
-  const message = document.createElement("p"); message.setAttribute("role", "status"); message.hidden = true; dialog.append(message);
   function render() {
     rows.replaceChildren();
     sources.forEach((source, index) => {
@@ -37,7 +36,7 @@ export async function openDownloadSources({ document, invoke, notify }) {
   save.onclick = async () => {
     save.disabled = true;
     try { await invoke("settings_download_sources_save", { value: sources }); dialog.close(); notify("已保存下载源", "success"); }
-    catch (error) { message.hidden = false; message.textContent = String(error.message || error); }
+    catch (error) { notify(error, "error"); }
     finally { save.disabled = false; }
   };
   actions.append(add, close, save); dialog.append(actions); dialog.addEventListener("close", () => dialog.remove(), { once: true });

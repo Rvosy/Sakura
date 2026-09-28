@@ -63,7 +63,17 @@ test("persistent cache is usable while fetching and survives a failed background
   assert.equal(states.at(-1).state, "cached");
   assert.equal(states.at(-1).plugins[0].id, "local");
   assert.equal(states.at(-1).refreshing, false);
-  assert.equal(states.at(-1).error, "offline");
+  assert.equal(states.at(-1).error.message, "offline");
+});
+
+test("catalog errors retain structured diagnostics for the error dialog", async () => {
+  const error = Object.assign(new Error("download failed", { cause: new Error("tcp connect error 10061") }), {
+    code: "MARKETPLACE_FETCH_FAILED", diagnostics: { diagnostic: "mirror connection refused" },
+  });
+  const states = [];
+  await createCatalogLoader({ async load() { throw error; } }, state => states.push(state)).load();
+  assert.equal(states.at(-1).error, error);
+  assert.equal(states.at(-1).error.cause.message, "tcp connect error 10061");
 });
 
 test("refresh retains visible results and ignores cached events from superseded requests", async () => {

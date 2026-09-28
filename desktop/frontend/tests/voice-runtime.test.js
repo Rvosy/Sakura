@@ -97,6 +97,27 @@ function fixture() {
   };
 }
 
+for (const type of ["status", "resource"]) {
+  test(`voice ${type} failure keeps diagnostics behind the shared error dialog`, async () => {
+    const { document, created } = fixture();
+    const value = { state: "error", label: "异常", taskState: "failed", message: "VOICE_FIXTURE_FAILED", detail: "voice diagnostic" };
+    const data = snapshot();
+    data.sections[0].fields = [field({ key: "health", type, readonly: true, value })];
+    data.sections[0].values = { health: value };
+    const statuses = [];
+    const controller = createVoiceController({ document, invoke: async () => data, onStatus: (...args) => statuses.push(args) });
+    controller.initialize(data);
+    assert.equal(created.some(item => /VOICE_FIXTURE_FAILED|voice diagnostic/.test(item.textContent)), false);
+    const details = created.find(item => item.tagName === "button" && item.textContent === "错误详情");
+    await details.fireAsync("click");
+    assert.equal(statuses.length, 1);
+    assert.equal(statuses[0][0].message, value.message);
+    assert.equal(statuses[0][0].diagnostic, value.detail);
+    assert.equal(statuses[0][1], "error");
+    controller.dispose();
+  });
+}
+
 for (const sameCharacter of [true, false]) {
   test(`Studio refresh ${sameCharacter ? "preserves edited voice fields" : "does not carry voice drafts to another character"}`, async () => {
     const { controls, document, created } = fixture();
@@ -421,19 +442,26 @@ test("Hub state changing after the plugin snapshot is shown without a fabricated
 
 test("a failed voice read is displayed as an error and recovers on the next read", async () => {
   const { controls, document } = fixture();
+  const failure = new Error("TTS_SERVICE_UNAVAILABLE");
+  const statuses = [];
   let failed = true;
   const controller = createVoiceController({
     document,
     invoke: async () => {
-      if (failed) throw new Error("TTS_SERVICE_UNAVAILABLE");
+      if (failed) throw failure;
       return snapshot();
     },
+    onStatus: (error, type) => statuses.push({ error, type }),
   });
   await controller.refreshCurrent();
   assert.equal(controls["page-voice"].dataset.voiceState, "error");
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].error, failure);
+  assert.equal(statuses[0].type, "error");
   failed = false;
   await controller.refreshCurrent();
   assert.equal(controls["page-voice"].dataset.voiceState, "available");
+  assert.equal(statuses.length, 1);
 });
 
 test("voice rendering failures retain the original exception after a successful IPC read", async () => {

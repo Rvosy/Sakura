@@ -1,4 +1,3 @@
-import { errorText } from "../core/error-display.js";
 import { iconMarkup as icon } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects } from "./select-control.js";
 import { marketplaceMarkup } from "./plugin-marketplace-view.js";
@@ -11,7 +10,7 @@ const submissionUrl = "https://github.com/Rvosy/Sakura-Registry/issues/new?templ
 
 // Source returns a display DTO. Compatibility and recommended version are resolved upstream.
 // No registry URL, sample catalog, or simulated task is used by the production default.
-export function createPluginMarketplace({ document, host, notify, source = null, openSources = null }) {
+export function createPluginMarketplace({ document, host, notify, showError = ({ error }) => notify(error, "error"), source = null, openSources = null }) {
   const $ = id => document.getElementById(id);
   const page = $("page-plugins");
   const template = document.createElement("template");
@@ -96,7 +95,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     $("categories").innerHTML = categories.map(c => `<button aria-pressed="${category === c}" data-category="${c}">${c}</button>`).join("");
     const cached = view === "market" && catalogState === "cached" && catalogError;
     $("notice").hidden = !cached;
-    $("notice").innerHTML = cached ? '<span>暂未获取最新目录，当前显示本地缓存</span><button class="plain" data-reconnect>重试</button>' : "";
+    $("notice").innerHTML = cached ? '<span>暂未获取最新目录，当前显示本地缓存</span><button class="plain" data-catalog-error>查看错误详情</button><button class="plain" data-reconnect>重试</button>' : "";
     $("catalog-state").textContent = ["ready", "cached"].includes(catalogState) ? `${refreshing ? "正在检查更新" : catalogState === "cached" ? "本地目录" : "目录已更新"}${updatedAt ? " · " + updatedAt : ""}` : "";
     const query = $("search").value.trim().toLocaleLowerCase();
     let matches = plugins.filter(p => (!$("compatible").checked || recommended(p))
@@ -120,9 +119,9 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     if (catalogState === "restoring") {
       $("catalog").innerHTML = "";
     } else if (unavailable) {
-      const message = {unconfigured: "市场暂未开放", loading: sourceName ? `正在通过 ${sourceName} 加载` : "正在加载", error: catalogError || "无法连接市场"}[catalogState];
+      const message = {unconfigured: "市场暂未开放", loading: sourceName ? `正在通过 ${sourceName} 加载` : "正在加载", error: "无法连接市场"}[catalogState];
       $("result-count").textContent = "";
-      $("catalog").innerHTML = `<div class="empty">${icon(catalogState === "error" ? "cloud" : "puzzle")}<h3 role="status">${escape(message)}</h3>${catalogState === "error" ? '<button data-reconnect>重试</button>' : ""}</div>`;
+      $("catalog").innerHTML = `<div class="empty">${icon(catalogState === "error" ? "cloud" : "puzzle")}<h3 role="status">${escape(message)}</h3>${catalogState === "error" ? '<button class="plain" data-catalog-error>查看错误详情</button> <button data-reconnect>重试</button>' : ""}</div>`;
     } else if (!matches.length) {
       $("catalog").innerHTML = `<div class="empty">${icon("search")}<h3>${plugins.length ? "没有匹配的插件" : "暂无已收录插件"}</h3>${plugins.length ? '<button class="secondary-button" data-clear>清除筛选</button>' : ""}</div>`;
     } else {
@@ -142,9 +141,10 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     const doc = documents.get(documentKey(p));
     const projectUrl = documentationUrl(p.repository);
     const links = source?.openUrl ? `${projectUrl ? `<a href="${escape(projectUrl)}" data-document-link>${icon("globe")}项目主页</a>` : ""}${doc?.url ? `<a href="${escape(doc.url)}" data-document-link>${icon("file-text")}查看原文</a>` : ""}` : "";
-    const readme = doc?.state === "ready" ? `<section class="detail-readme" aria-label="项目说明"><div class="detail-readme-heading"><h3>项目说明</h3>${doc.previous ? `<span>v${escape(doc.version)}</span>` : ""}</div><div class="plugin-readme">${doc.html}</div>${doc.refreshFailed ? `<div class="detail-document-state">${escape(doc.error)}<button class="plain" data-retry-document>重试</button></div>` : ""}</section>`
+    const documentFailure = `<div class="detail-document-state" role="status"><span>项目说明${doc?.refreshFailed ? "更新" : "加载"}失败</span><button class="plain" data-document-error>查看错误详情</button><button class="plain" data-retry-document>重试</button></div>`;
+    const readme = doc?.state === "ready" ? `<section class="detail-readme" aria-label="项目说明"><div class="detail-readme-heading"><h3>项目说明</h3>${doc.previous ? `<span>v${escape(doc.version)}</span>` : ""}</div><div class="plugin-readme">${doc.html}</div>${doc.refreshFailed ? documentFailure : ""}</section>`
       : doc?.state === "loading" ? '<p class="detail-document-state" role="status">正在加载项目说明…</p>'
-      : doc?.state === "failed" ? `<div class="detail-document-state" role="status">${escape(doc.error)}<button class="plain" data-retry-document>重试</button></div>` : "";
+      : doc?.state === "failed" ? documentFailure : "";
     const description = p.description?.trim() || "";
     const body = p.body?.trim() || "";
     const versionRow = v => `<div class="version-row"><div class="version-title"><strong>v${escape(v.number)}</strong>${v.yanked ? '<span class="version-label warning">已撤回</span>' : v.prerelease ? '<span class="version-label warning">预发布</span>' : v.compatible === false ? '<span class="version-label warning">不兼容</span>' : ""}${v.date ? `<time>${escape(v.date)}</time>` : ""}</div>${v.notes?.trim() ? `<p>${escape(v.notes)}</p>` : ""}${v.yanked || v.reason ? `<p>${escape(v.yanked || v.reason)}</p>` : ""}</div>`;
@@ -166,7 +166,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     else if (updating(p) && p.enabled) compatibility = '<div class="compat-note">更新时会短暂停止插件，完成后自动恢复启用。</div>';
     const taskMarkup = task?.state === "running"
       ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.reinstall ? "正在重新安装" : task.update ? "正在更新" : "正在安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""} · ${Math.round(task.progress)}%</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
-      : task?.state === "failed" ? `<div class="task-state task-error" role="alert">${escape(task.error)}</div>` : "";
+      : task?.state === "failed" ? `<div class="task-state task-error" role="alert">${task.installed ? "插件列表刷新失败" : "安装失败"} <button class="plain" data-task-error>查看错误详情</button></div>` : "";
     $("detail").innerHTML = `<div class="drawer-top"><span>插件详情</span><button class="icon-button" data-close aria-label="关闭插件详情">${icon("x")}</button></div>
       <div class="drawer-scroll"><div class="drawer-identity">${mark(p)}<div><h2 id="detail-title">${escape(p.name)}</h2><div class="detail-byline">${escape([p.author, p.category === "表现" ? "角色表现" : p.category].filter(Boolean).join(" · "))}${example(p)}</div></div></div>
       ${description ? `<p class="detail-summary">${escape(description)}</p>` : ""}
@@ -214,7 +214,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
       if (disposed || entry.abort.signal.aborted || documents.get(key) !== entry) return;
       apply(result);
     } catch (error) {
-      entry.error = errorText(error);
+      entry.error = error;
       if (disposed || entry.abort.signal.aborted || documents.get(key) !== entry) return;
       if (entry.state === "ready") entry.refreshFailed = true;
       else entry.state = "failed";
@@ -284,7 +284,10 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     } catch (error) {
       if (disposed || tasks.get(id) !== task) return;
       if (abort.signal.aborted && task.phase !== "installing") { tasks.delete(id); notify("已取消安装"); }
-      else { task.state = "failed"; task.error = task.installed ? "列表刷新失败" : String(error.message || error); }
+      else {
+        task.state = "failed"; task.error = error;
+        showError({ title: task.installed ? "插件列表刷新失败" : "插件安装失败", error });
+      }
     }
     if (!disposed) { render(); refreshDetail(); }
   }
@@ -306,7 +309,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     if (link) {
       event.preventDefault();
       const url = documentationUrl(link.getAttribute("href"));
-      if (url && source?.openUrl) void Promise.resolve().then(() => source.openUrl(url)).catch(error => notify(errorText(error), "error"));
+      if (url && source?.openUrl) void Promise.resolve().then(() => source.openUrl(url)).catch(error => showError({ title: "无法打开链接", error }));
       return;
     }
     const button = event.target.closest("button");
@@ -322,6 +325,16 @@ export function createPluginMarketplace({ document, host, notify, source = null,
     if (button.hasAttribute("data-install") || button.hasAttribute("data-retry")) void startTask(selected);
     if (button.hasAttribute("data-cancel-task")) cancelTask();
     if (button.hasAttribute("data-retry-document")) void loadDocument(plugins.find(p => p.id === selected), true);
+    if (button.hasAttribute("data-catalog-error")) showError({ title: "无法连接市场", error: catalogError });
+    if (button.hasAttribute("data-document-error")) {
+      const plugin = plugins.find(p => p.id === selected);
+      const doc = plugin && documents.get(documentKey(plugin));
+      if (doc?.error) showError({ title: "项目说明加载失败", error: doc.error });
+    }
+    if (button.hasAttribute("data-task-error")) {
+      const task = tasks.get(selected);
+      if (task?.error) showError({ title: task.installed ? "插件列表刷新失败" : "插件安装失败", error: task.error });
+    }
     if (button.hasAttribute("data-manage")) {
       const local = host.installedPlugins().find(p => p.pluginId === selected);
       $("detail-dialog").close(); setView("installed");
@@ -336,7 +349,7 @@ export function createPluginMarketplace({ document, host, notify, source = null,
   });
   $("market-submit-issue").disabled = !source?.openUrl;
   listen($("market-submit-issue"), "click", () => {
-    void Promise.resolve().then(() => source.openUrl(submissionUrl)).catch(error => notify(errorText(error), "error"));
+    void Promise.resolve().then(() => source.openUrl(submissionUrl)).catch(error => showError({ title: "无法打开投稿页面", error }));
   });
   listen(submitDialog, "click", event => {
     if (event.target.closest("[data-close-submit]")) submitDialog.close();

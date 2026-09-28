@@ -1,5 +1,4 @@
 import { isChatReadyLifecycle } from "../lifecycle.js";
-import { errorSummary } from "../core/error-display.js";
 
 const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
@@ -128,11 +127,7 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
         const establishedPresentation = hasReachedReady || greetingStarted;
         const initialStartup = !establishedPresentation && ["startup", "initializing"].includes(event.status);
         const [lifecycleLabel, defaultLifecycleHeadline] = LIFECYCLE_COPY[event.status];
-        const lifecycleHeadline = event.status === "failed"
-          && typeof event.failure?.message === "string"
-          && event.failure.message
-          ? errorSummary(event.failure, "无法开始对话。")
-          : defaultLifecycleHeadline;
+        const lifecycleHeadline = defaultLifecycleHeadline;
         const chatReady = isChatReadyLifecycle(event.status);
         const activeReplyInterrupted = establishedPresentation
           && ["thinking", "typing"].includes(state.phase)
@@ -268,12 +263,11 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
         return result(true);
       }
       if (event.type === "chat.failed" && state.phase === "thinking") {
-        const message = errorSummary(event.error, "暂时无法完成回复。");
         state = freezeState({
           ...state,
           phase: "error",
           operationId: null,
-          bubbleText: message,
+          bubbleText: "回复失败",
           subtitleTracks: [],
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,

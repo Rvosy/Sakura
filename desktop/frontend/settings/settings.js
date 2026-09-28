@@ -1,10 +1,9 @@
-import { errorText } from "../core/error-display.js";
+import { createErrorDialog } from "../core/error-dialog.js";
 import { openLegacyDataImport } from './legacy-data-import.js';
 import { installClickIconMotion } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from "./select-control.js";
 import {
   createRootSettingsClient,
-  formatSettingsError,
 } from "./root-settings-runtime.js";
 import {
   hasCharacterScopedDrafts,
@@ -220,20 +219,39 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
   runtimeCharacterFeature?.prepareControls();
 }
 
-function setError(message) {
-  fields.errorText.textContent = formatSettingsError(message);
+const errorDialog = createErrorDialog({ document });
+
+function showError({ title = "操作失败", message = "", error }) {
+  const status = document.createElement("span");
+  status.textContent = message || title;
+  const details = document.createElement("button");
+  details.type = "button";
+  details.className = "settings-error-details";
+  details.textContent = "查看错误详情";
+  const show = () => errorDialog.show({ title, message, error });
+  details.addEventListener("click", show);
+  fields.errorText.replaceChildren(status, details);
+  show();
 }
 
-// 反馈分流：错误常驻 footer 红字（role=alert）走 setError；成功/信息走右上角 toast，自动消失。
+function setError(error, message = "操作失败") {
+  if (error == null || (typeof error === "string" && !error.trim())) {
+    fields.errorText.replaceChildren();
+    return;
+  }
+  showError({ title: message, error });
+}
+
+// 错误详情进入弹窗，底栏保留重新查看入口；成功和信息使用短暂通知。
 const toastStack = document.getElementById("toastStack");
 
 function notify(message, type = "info") {
-  const text = String(message ?? "").trim();
-  if (!text) {
+  if (type === "error") {
+    setError(message);
     return;
   }
-  if (type === "error") {
-    setError(text);
+  const text = String(message ?? "").trim();
+  if (!text) {
     return;
   }
   setError("");
@@ -354,7 +372,7 @@ async function requestCancelClose() {
     });
   } catch (error) {
     bypassCloseGuard = false;
-    setError(String(error));
+    setError(error);
   } finally {
     setSubmissionBusy(false);
     closeRequestInFlight = false;
@@ -410,7 +428,7 @@ async function requestAppExitClose(event) {
   } catch (error) {
     bypassCloseGuard = false;
     await invoke("resolve_settings_exit", { discard: false, revision: event.payload }).catch(() => {});
-    setError(String(error));
+    setError(error);
   } finally {
     setSubmissionBusy(false);
     exitRequestInFlight = false;
@@ -794,7 +812,7 @@ async function chooseTtsStorageRoot() {
       notify("TTS 位置已切换；已有文件不会自动搬运。", "success");
     }
   } catch (error) {
-    setError(String(error));
+    setError(error);
   }
 }
 
@@ -803,7 +821,7 @@ async function resetTtsStorageRoot() {
     applyStorageSnapshot(await rootSettingsClient.storageResetTtsRoot());
     notify("TTS 位置已恢复为默认目录。", "success");
   } catch (error) {
-    setError(String(error));
+    setError(error);
   }
 }
 
@@ -813,6 +831,7 @@ function importLegacyRoleData() {
   legacyImportDialog = openLegacyDataImport({
     client: rootSettingsClient,
     setBusy: setSubmissionBusy,
+    onError: setError,
     onComplete: async () => {
       fields.legacyRoleDataImportStatus.textContent = "迁移完成。";
       await runtimeCharacterFeature?.refreshCatalog({});
@@ -880,7 +899,7 @@ async function setTelemetryEnabled() {
     } catch {
       fields.telemetryEnabled.checked = false;
     }
-    setError(String(error));
+    setError(error);
   } finally {
     fields.telemetryEnabled.disabled = false;
   }
@@ -893,7 +912,7 @@ async function regenerateTelemetryInstallationId() {
     applyTelemetrySnapshot(snapshot);
     notify("诊断 ID 已重新生成。", "success");
   } catch (error) {
-    setError(String(error));
+    setError(error);
   } finally {
     fields.telemetryRegenerateButton.disabled = false;
   }
@@ -918,7 +937,7 @@ async function checkForUpdates() {
     fields.updateCheckButton.classList.add("primary-button");
     fields.updateCheckButton.classList.remove("secondary-button");
     fields.updateCheckLabel.textContent = "重新检查";
-    setError(String(error));
+    setError(error);
   } finally {
     fields.updateCheckButton.disabled = updateActionBusy;
     fields.updateActionButton.disabled = updateActionBusy;
@@ -933,7 +952,7 @@ async function saveUpdatePreferences() {
     notify(snapshot.autoCheckEnabled ? "已开启自动检测更新。" : "已关闭自动检测更新。", "success");
   } catch (error) {
     fields.updateAutoCheck.checked = !fields.updateAutoCheck.checked;
-    setError(String(error));
+    setError(error);
   } finally {
     fields.updateAutoCheck.disabled = false;
   }
@@ -967,7 +986,7 @@ async function runUpdateAction() {
       : "重新尝试安装";
     fields.updateActionButton.disabled = false;
     fields.updateCheckButton.disabled = false;
-    setError(String(error));
+    setError(error);
   }
 }
 
@@ -1519,22 +1538,22 @@ layoutSliders.forEach((fieldKey) => {
   fields[fieldKey].addEventListener("change", preview);
 });
 fields.storageOpenUserRoot.addEventListener("click", () => {
-  rootSettingsClient.storageOpenUserRoot().catch((error) => setError(String(error)));
+  rootSettingsClient.storageOpenUserRoot().catch((error) => setError(error));
 });
 fields.storageChooseTtsRoot.addEventListener("click", chooseTtsStorageRoot);
 fields.storageResetTtsRoot.addEventListener("click", resetTtsStorageRoot);
 fields.legacyRoleDataImportButton.addEventListener("click", importLegacyRoleData);
 fields.aboutWebsiteButton.addEventListener("click", () => {
-  rootSettingsClient.aboutOpenWebsite().catch((error) => setError(String(error)));
+  rootSettingsClient.aboutOpenWebsite().catch((error) => setError(error));
 });
 fields.aboutRepositoryButton.addEventListener("click", () => {
-  rootSettingsClient.aboutOpenRepository().catch((error) => setError(String(error)));
+  rootSettingsClient.aboutOpenRepository().catch((error) => setError(error));
 });
 fields.aboutChangelogButton.addEventListener("click", () => {
-  rootSettingsClient.aboutOpenChangelog().catch((error) => setError(String(error)));
+  rootSettingsClient.aboutOpenChangelog().catch((error) => setError(error));
 });
 fields.aboutSponsorButton.addEventListener("click", () => {
-  rootSettingsClient.aboutOpenSponsor().catch((error) => setError(String(error)));
+  rootSettingsClient.aboutOpenSponsor().catch((error) => setError(error));
 });
 fields.systemFirstRunGuideButton.addEventListener("click", () => {
   firstRunGuideController?.start({ persist: false });
@@ -1546,7 +1565,8 @@ async function runMacosOpenHelpAction(button, action, successMessage) {
     await action();
     fields.macosSettingsOpenHelpStatus.textContent = successMessage;
   } catch (error) {
-    fields.macosSettingsOpenHelpStatus.textContent = `无法完成操作：${String(error)}`;
+    fields.macosSettingsOpenHelpStatus.textContent = "操作失败";
+    setError(error);
   } finally {
     button.disabled = false;
   }
@@ -1569,7 +1589,7 @@ fields.updateCheckButton.addEventListener("click", checkForUpdates);
 fields.updateAutoCheck.addEventListener("change", saveUpdatePreferences);
 fields.telemetryEnabled.addEventListener("change", setTelemetryEnabled);
 fields.telemetryHelpButton.addEventListener("click", () => {
-  rootSettingsClient.telemetryOpenDocumentation().catch((error) => setError(String(error)));
+  rootSettingsClient.telemetryOpenDocumentation().catch((error) => setError(error));
 });
 fields.telemetryCopyButton.addEventListener("click", async () => {
   const value = fields.telemetryInstallationId.textContent?.trim() || "";
@@ -1578,7 +1598,7 @@ fields.telemetryCopyButton.addEventListener("click", async () => {
     await navigator.clipboard.writeText(value);
     notify("诊断 ID 已复制。", "success");
   } catch (error) {
-    setError(errorText(error));
+    setError(error);
   }
 });
 fields.telemetryRegenerateButton.addEventListener("click", regenerateTelemetryInstallationId);
@@ -1605,7 +1625,7 @@ fields.saveButton.addEventListener("click", async () => {
     await closeSettingsWindow();
   } catch (error) {
     bypassCloseGuard = false;
-    setError(String(error));
+    setError(error);
   } finally {
     setSubmissionBusy(false);
     fields.saveButton.textContent = original;
@@ -1623,7 +1643,7 @@ fields.applyButton.addEventListener("click", async () => {
     await saveRuntimeSettings({ keepGlobalCollectionDrafts: true });
     notify("已应用。", "success");
   } catch (error) {
-    setError(String(error));
+    setError(error);
   } finally {
     setSubmissionBusy(false);
   }
@@ -1686,6 +1706,7 @@ detailCard?.addEventListener("input", (event) => {
 
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
+  errorDialog.dispose();
   runtimeAppearanceController?.dispose();
   migrationStatusController?.dispose();
   runtimeCharacterFeature?.dispose();
@@ -1706,7 +1727,7 @@ async function initializeRuntimeSettingsSection(initialize) {
   try {
     await initialize();
   } catch (error) {
-    if (!settingsWindowClosing) setError(String(error));
+    if (!settingsWindowClosing) setError(error);
   }
 }
 
@@ -1883,9 +1904,9 @@ async function startSettingsFrontend() {
       const { createPluginMarketplace } = await import("./plugin-marketplace.js");
       const { createMarketplaceSource } = await import("./plugin-marketplace-source.js");
       const { openDownloadSources } = await import("./download-source-settings.js");
-      runtimePluginMarketplace = createPluginMarketplace({ document, host: runtimePluginController, notify,
+      runtimePluginMarketplace = createPluginMarketplace({ document, host: runtimePluginController, notify, showError,
         source: createMarketplaceSource({ invoke, Channel: window.__TAURI__.core.Channel, host: runtimePluginController }),
-        openSources: () => openDownloadSources({ document, invoke, notify }).catch(error => setError(String(error))),
+        openSources: () => openDownloadSources({ document, invoke, notify }).catch(error => setError(error)),
       });
     });
   }
@@ -1939,7 +1960,7 @@ async function startSettingsFrontend() {
       try {
         snapshot = await invoke("settings_autostart_get");
       } catch (error) {
-        throw new Error(autostartErrorMessage(error));
+        throw new Error(autostartErrorMessage(error), { cause: error });
       }
       runtimeAutostartController.initialize(snapshot);
     });
@@ -1974,6 +1995,6 @@ startSettingsFrontend()
   .catch((error) => {
     if (!settingsWindowClosing && error?.code !== "MEMORY_INITIALIZATION_CANCELLED") {
       migrationStatusController?.finishStartup();
-      setError(String(error));
+      setError(error);
     }
   });

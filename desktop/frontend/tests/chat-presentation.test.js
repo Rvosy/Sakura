@@ -23,7 +23,7 @@ test("only a stopped Core failure exposes the manual retry action", () => {
     message: "Core 进程意外退出。",
   }));
   assert.equal(reducer.current().canRetry, true);
-  assert.equal(reducer.current().lifecycleHeadline, "Core 进程意外退出。");
+  assert.ok(!reducer.current().lifecycleHeadline.includes("Core 进程意外退出"));
   reducer.reduce(lifecycle("rehydrating", 2, 1, false));
   assert.equal(reducer.current().canRetry, false);
 });
@@ -75,7 +75,7 @@ test("chat failure keeps diagnostics out of the bubble and clears the error on t
   assert.equal(reducer.current().error, null);
 });
 
-test("a verbose failure message remains bounded in the bubble", () => {
+test("a verbose failure message stays outside the bubble", () => {
   const reducer = readyReducer();
   const identity = { generationId: "generation-1", generationNumber: 1, operationId: "op-error" };
   reducer.reduce({ type: "chat.started", ...identity });
@@ -83,6 +83,7 @@ test("a verbose failure message remains bounded in the bubble", () => {
   reducer.reduce({ type: "chat.failed", ...identity, error: { message } });
   assert.ok(reducer.current().bubbleText.length <= 181);
   assert.ok(!reducer.current().bubbleText.includes("Traceback"));
+  assert.ok(!reducer.current().bubbleText.includes("upstream"));
 });
 
 

@@ -1,0 +1,66 @@
+.sakura-error-dialog {
+  --error-primary: var(--sakura-primary, var(--primary, #4b9ac4));
+  --error-primary-hover: var(--sakura-primary-hover, var(--primary-hover, #3b83aa));
+  --error-text: var(--sakura-text, var(--text, #27445a));
+  --error-secondary: var(--sakura-secondary-text, var(--secondary-text, #54768b));
+  --error-background: var(--sakura-input-bg, var(--input-background, #ffffff));
+  --error-panel: var(--sakura-panel-bg, var(--panel-background, #eaf5fa));
+  --error-border: var(--sakura-border, var(--border, #accfde));
+  box-sizing: border-box;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 24px;
+  overflow: auto;
+  border: 1px solid var(--error-border);
+  border-radius: 16px;
+  color: var(--error-text);
+  background: var(--error-background);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: start;
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--error-text) 18%, transparent);
+}
+.sakura-error-dialog[open] { animation: sakura-error-arrive 180ms ease-out both; }
+.sakura-error-dialog::backdrop {
+  background: color-mix(in srgb, var(--error-text) 28%, transparent);
+  backdrop-filter: blur(3px);
+}
+.sakura-error-dialog h2 { margin: 0; color: var(--error-text); font-size: 20px; line-height: 1.4; }
+.sakura-error-message { margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sakura-error-message[hidden] { display: none; }
+.sakura-error-details { margin-top: 18px; }
+.sakura-error-details > summary { color: var(--error-secondary); cursor: pointer; }
+.sakura-error-details > pre {
+  box-sizing: border-box;
+  max-height: min(42vh, 320px);
+  margin: 10px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--error-border) 70%, transparent);
+  border-radius: 9px;
+  color: var(--error-text);
+  background: var(--error-panel);
+  font: 12px/1.65 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+}
+.sakura-error-actions { display: flex; justify-content: flex-end; margin-top: 22px; }
+.sakura-error-actions > button {
+  min-width: 76px;
+  padding: 7px 16px;
+  border: 1px solid var(--error-primary);
+  border-radius: 9px;
+  color: var(--error-background);
+  background: var(--error-primary);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+.sakura-error-actions > button:hover { background: var(--error-primary-hover); }
+.sakura-error-dialog :focus-visible { outline: 3px solid color-mix(in srgb, var(--error-primary) 35%, transparent); outline-offset: 2px; }
+@keyframes sakura-error-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sakura-error-dialog[open], .sakura-error-dialog * { animation: none; transition: none; } }

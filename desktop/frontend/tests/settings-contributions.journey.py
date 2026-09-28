@@ -27,8 +27,10 @@ from app.storage.runtime_roots import RuntimeRoots, DistributionPaths
 SCRIPT = r"""
 import { createPluginSettingsFeature } from './plugin-settings.js';
 import { createProviderSettingsFeature } from './provider-settings.js';
+import { createErrorDialog } from '../core/error-dialog.js';
 import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from './select-control.js';
 let feature, models;
+const errorDialog = createErrorDialog({ document });
 function showPage(id) {
   document.querySelectorAll('.settings-page').forEach(p=>{p.classList.toggle('is-active',p.id==='page-'+id);p.hidden=p.id!=='page-'+id;});
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('is-active',b.dataset.page===id));
@@ -36,7 +38,7 @@ function showPage(id) {
   feature?.onPageChanged(id);
 }
 function dirty(){document.getElementById('applyButton').disabled=!(feature?.isDirty()||models?.isDirty());}
-feature=createPluginSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:message=>{window.lastError=message;},notify:()=>{},confirmAction:async()=>true,enhanceSelect,refreshSelect,closeSelects,focusSelect,replayMotion:()=>{},getVoiceController:()=>null,removeOverlayAfterExit:async e=>e.remove(),showPage,isCharacterTransitioning:()=>false,hasPendingCharacterSelection:()=>false,onModelCatalogChanged:()=>models?.refreshChoices()});
+feature=createPluginSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:(error,message)=>{window.lastError=message;if(error)errorDialog.show({error,message});else errorDialog.close();},notify:()=>{},confirmAction:async()=>true,enhanceSelect,refreshSelect,closeSelects,focusSelect,replayMotion:()=>{},getVoiceController:()=>null,removeOverlayAfterExit:async e=>e.remove(),showPage,isCharacterTransitioning:()=>false,hasPendingCharacterSelection:()=>false,onModelCatalogChanged:()=>models?.refreshChoices()});
 models=createProviderSettingsFeature({document,invoke:window.nativeInvoke,onDirty:dirty,onError:e=>{throw e;},enhanceSelect,getProviderCatalog:()=>feature.providerCatalog()});
 feature.initialize(await window.nativeInvoke('settings_plugins_get')); await models.initialize();
 window.feature=feature; window.models=models; window.showPage=showPage;
@@ -144,12 +146,13 @@ def run():
                 expect(page.locator('.model-chip').filter(has_text='manual-model')).to_be_visible()
                 page.locator('[data-provider-field="base_url"]').fill(origin+'/denied/v1')
                 page.get_by_role('button',name='获取模型列表',exact=True).click()
-                expect(page.locator('.provider-probe-error')).to_be_visible()
-                page.locator('.provider-probe-error summary').click()
-                expect(page.locator('.provider-probe-error p')).to_contain_text('API HTTP 403: model access denied')
-                expect(page.locator('.provider-probe-error p')).not_to_contain_text('fixture-draft-key')
+                expect(page.locator('.sakura-error-dialog')).to_be_visible()
+                page.locator('.sakura-error-dialog summary').click()
+                expect(page.locator('.sakura-error-dialog pre')).to_contain_text('API HTTP 403: model access denied')
+                expect(page.locator('.sakura-error-dialog pre')).not_to_contain_text('fixture-draft-key')
                 assert page.evaluate('window.lastError') == '服务拒绝访问。'
                 page.screenshot(animations="disabled", path=str(output/'probe-error.png'))
+                page.locator('.sakura-error-dialog').get_by_role('button', name='关闭', exact=True).click()
                 page.locator('[data-provider-field="base_url"]').fill(origin+'/draft/v1')
                 page.evaluate('window.lastError = null')
                 page.evaluate("showPage('model')")

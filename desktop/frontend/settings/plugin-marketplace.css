@@ -82,7 +82,7 @@ kbd { border: 1px solid var(--hairline); border-radius: 3px; color: var(--sakura
 .detail-links a:active { background: var(--tint-soft); }
 .detail-links .sakura-icon { width: 14px; height: 14px; }
 .plugin-readme a { color: var(--sakura-primary-hover); text-decoration: underline; text-underline-offset: 3px; }
-.detail-document-state { display: flex; align-items: center; gap: 14px; margin: 24px 0; font-size: 13px; color: var(--sakura-secondary-text); }
+.detail-document-state { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 24px 0; font-size: 13px; color: var(--sakura-secondary-text); }
 .detail-readme { margin: 26px 0; }
 .detail-readme-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
 .detail-readme-heading h3 { font-size: 14px; margin: 0; }
@@ -135,7 +135,7 @@ button:not(.custom-select__trigger):focus-visible, a:focus-visible, summary:focu
 .market-tools { padding: 3px; }
 .market-content { padding: 0 2px 12px 0; }
 .market-foot { padding: 10px 0 0; }
-.market-notice { margin: 0 0 12px; }
+.market-notice { margin: 0 0 12px; flex-wrap: wrap; }
 @media (max-width: 1040px) { .market-tools { gap: 10px; } }
 }
 

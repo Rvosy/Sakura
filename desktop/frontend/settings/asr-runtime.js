@@ -1,4 +1,3 @@
-import { errorText } from "../core/error-display.js";
 import { createAsrInputTest } from "./asr-input-test.js";
 
 export function createAsrSettingsController({ document, invoke, enhanceSelect = () => {},
@@ -16,6 +15,7 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
   const inputTest = listen ? createAsrInputTest({
     document, invoke, listen, readProvider: () => pluginProvider || provider.value,
     readDevice: () => device?.value || "",
+    onError: (error) => onStatus(error, "error"),
   }) : null;
   let snapshot = null;
   let baseline = "";
@@ -54,7 +54,7 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
       }
       selectDevice(selected);
     } catch (error) {
-      if (!disposed && request === deviceRevision) onStatus(errorText(error), "error");
+      if (!disposed && request === deviceRevision) onStatus(error, "error");
     }
   }
 

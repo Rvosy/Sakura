@@ -308,7 +308,7 @@ export function createFirstRunGuide({
       notify("引导已完成。", "success");
       previousFocus?.focus?.({ preventScroll: true });
     } catch (error) {
-      notify(`无法保存引导状态：${String(error)}`, "error");
+      notify(error, "error");
     } finally {
       skipButton.disabled = false;
       nextButton.disabled = false;
