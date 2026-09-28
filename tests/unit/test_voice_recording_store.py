@@ -185,6 +185,51 @@ def test_legacy_digest_is_ignored_and_invalid_audio_is_isolated(tmp_path: Path) 
     assert record.directory.exists()
 
 
+def test_size_cap_drops_the_oldest_non_favorite_and_keeps_the_new_line(tmp_path: Path) -> None:
+    custom = tmp_path / "custom-cache"
+    store = VoiceRecordingStore(tmp_path, non_favorite_limit=100)
+    store.apply_cache_settings(custom, 1024 * 1024 * 1024)
+    favorite = store.commit(
+        _wav(tmp_path / "fav.wav", 1),
+        character_id="sakura",
+        history_entry_id="entry-line",
+        segment_index=0,
+        provider="gpt-sovits",
+        recording_id="record-0001",
+        created_at=_stamp(1),
+    )
+    store.set_favorite(favorite.recording_id, True)
+    older = store.commit(
+        _wav(tmp_path / "old.wav", 2),
+        character_id="sakura",
+        history_entry_id="entry-line",
+        segment_index=1,
+        provider="gpt-sovits",
+        recording_id="record-0002",
+        created_at=_stamp(2),
+    )
+    store.apply_cache_settings(custom, favorite.byte_length + older.byte_length)
+    newest = store.commit(
+        _wav(tmp_path / "new.wav", 3),
+        character_id="sakura",
+        history_entry_id="entry-line",
+        segment_index=2,
+        provider="gpt-sovits",
+        recording_id="record-0003",
+        created_at=_stamp(3),
+    )
+
+    assert favorite.audio_path.exists()
+    assert not older.directory.exists()
+    assert newest.audio_path.exists()
+    assert newest.directory.parent == custom / "sakura"
+    found = store.for_segment("sakura", "entry-line", 2)
+    assert found is not None and found.recording_id == "record-0003"
+    assert store.for_segment("sakura", "entry-line", 1) is None
+    assert store.has_room("sakura", headroom=0)
+    assert not store.has_room("sakura", headroom=1)
+
+
 def test_truncated_wav_is_rejected_at_commit(tmp_path: Path) -> None:
     source = _wav(tmp_path / "truncated.wav")
     source.write_bytes(source.read_bytes()[:-2])

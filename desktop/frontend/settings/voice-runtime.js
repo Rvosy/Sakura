@@ -42,7 +42,7 @@ export function createVoiceController({
   };
   const characterNotice = document.createElement("p");
   characterNotice.className = "page-note";
-  characterNotice.textContent = "选择角色后可启用语音输出。";
+  characterNotice.textContent = "选择角色后可开启语音。";
   characterNotice.hidden = true;
   fields.settings.append(characterNotice);
   let snapshot = null;
@@ -103,6 +103,9 @@ export function createVoiceController({
         && item.sectionId === section.sectionId)?.values || {};
       const group = document.createElement("fieldset");
       group.className = "settings-group plugin-voice-section";
+      if (!snapshot.sections.some((item) => item !== section && item.pluginId === section.pluginId)) {
+        group.className += " plugin-voice-section--single";
+      }
       group.voiceProviderId = section.pluginId;
       group.hidden = section.pluginId !== fields.provider.value;
       const legend = document.createElement("legend");

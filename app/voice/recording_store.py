@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from app.storage.atomic import atomic_write_text, rename_with_retry
-from app.storage.paths import StoragePaths
+from app.storage.paths import StoragePaths, sanitize_directory_component
 
 
 RECORDING_SCHEMA_VERSION = 1
@@ -79,6 +79,8 @@ class VoiceRecordingStore:
             raise ValueError("non_favorite_limit must not be negative")
         self.paths = StoragePaths(Path(app_root))
         self.non_favorite_limit = non_favorite_limit
+        self.max_bytes: int | None = None
+        self._recordings_root: Path | None = None
         self._diagnostic_sink = diagnostic_sink
         self._diagnostics: list[RecordingDiagnostic] = []
 
@@ -86,9 +88,35 @@ class VoiceRecordingStore:
     def diagnostics(self) -> tuple[RecordingDiagnostic, ...]:
         return tuple(self._diagnostics)
 
+    def apply_cache_settings(self, directory: Path | None, max_bytes: int | None) -> None:
+        if max_bytes is not None and (
+            isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0
+        ):
+            raise ValueError("max_bytes is invalid")
+        self._recordings_root = None if directory is None else Path(directory)
+        self.max_bytes = max_bytes
+
+    def recordings_root(self) -> Path:
+        if self._recordings_root is not None:
+            return self._recordings_root
+        return self.paths.voice_recordings_dir
+
+    def recordings_for(self, character_id: str) -> Path:
+        return self.recordings_root() / sanitize_directory_component(character_id)
+
+    def has_room(self, character_id: str, *, headroom: int = 0) -> bool:
+        records = list(self._scan_character_directory(self.recordings_for(character_id)))
+        non_favorite = sum(not record.favorite for record in records)
+        if non_favorite >= self.non_favorite_limit:
+            return False
+        if self.max_bytes is None:
+            return True
+        used = sum(record.byte_length for record in records)
+        return used + headroom <= self.max_bytes
+
     def scan_and_prune(self) -> tuple[VoiceRecording, ...]:
         healthy: list[VoiceRecording] = []
-        root = self.paths.voice_recordings_dir
+        root = self.recordings_root()
         if not root.is_dir():
             return ()
         for character_dir in sorted(root.iterdir(), key=lambda item: item.name):
@@ -129,7 +157,7 @@ class VoiceRecordingStore:
             _parse_timestamp(created_at)
 
             stage = "create_staging"
-            character_dir = self.paths.voice_recordings_for(character_id)
+            character_dir = self.recordings_for(character_id)
             character_dir.mkdir(parents=True, exist_ok=True)
             final_dir = character_dir / recording_id
             if final_dir.exists():
@@ -201,7 +229,7 @@ class VoiceRecordingStore:
                 stage=stage,
             )
         try:
-            self.prune_character(character_id)
+            self.prune_character(character_id, protect=recording_id)
         except (OSError, ValueError) as exc:
             raise VoiceRecordingError(
                 "AUDIO_RECORDING_INVALID",
@@ -210,11 +238,9 @@ class VoiceRecordingStore:
             ) from exc
         return record
 
-    def prune_character(self, character_id: str) -> tuple[str, ...]:
-        records = list(
-            self._scan_character_directory(self.paths.voice_recordings_for(character_id))
-        )
-        return self._prune_records(records)
+    def prune_character(self, character_id: str, *, protect: str | None = None) -> tuple[str, ...]:
+        records = list(self._scan_character_directory(self.recordings_for(character_id)))
+        return self._prune_records(records, protect=protect)
 
     def latest_for_history(self, history_entry_id: str) -> VoiceRecording | None:
         candidates = [
@@ -228,7 +254,7 @@ class VoiceRecordingStore:
 
     def get(self, recording_id: str) -> VoiceRecording | None:
         _require_safe_id(recording_id, "recording_id")
-        root = self.paths.voice_recordings_dir
+        root = self.recordings_root()
         if not root.is_dir():
             return None
         for character_dir in root.iterdir():
@@ -243,7 +269,7 @@ class VoiceRecordingStore:
         self, character_id: str, history_entry_id: str, segment_index: int,
     ) -> VoiceRecording | None:
         """Find an exact segment; legacy recordings without an index stay readable."""
-        records = self._scan_character_directory(self.paths.voice_recordings_for(character_id))
+        records = self._scan_character_directory(self.recordings_for(character_id))
         candidates = (record for record in records
                       if record.history_entry_id == history_entry_id
                       and record.segment_index == segment_index)
@@ -342,16 +368,41 @@ class VoiceRecordingStore:
             self._report(recording_id, character_hint, "AUDIO_RECORDING_INVALID")
             return None
 
-    def _prune_records(self, records: Iterable[VoiceRecording]) -> tuple[str, ...]:
+    def _prune_records(
+        self,
+        records: Iterable[VoiceRecording],
+        *,
+        protect: str | None = None,
+    ) -> tuple[str, ...]:
+        all_records = list(records)
         candidates = sorted(
-            (record for record in records if not record.favorite),
+            (record for record in all_records if not record.favorite),
             key=lambda item: (_timestamp(item.created_at), item.recording_id),
         )
-        excess = max(0, len(candidates) - self.non_favorite_limit)
         removed: list[str] = []
-        for record in candidates[:excess]:
+        excess = max(0, len(candidates) - self.non_favorite_limit)
+        for record in candidates:
+            if excess <= 0:
+                break
+            if record.recording_id == protect:
+                continue
             shutil.rmtree(record.directory)
             removed.append(record.recording_id)
+            excess -= 1
+        if self.max_bytes is None:
+            return tuple(removed)
+        removed_ids = set(removed)
+        remaining = [record for record in all_records if record.recording_id not in removed_ids]
+        total = sum(record.byte_length for record in remaining)
+        for record in candidates:
+            if total <= self.max_bytes:
+                break
+            if record.recording_id in removed_ids or record.recording_id == protect or record.favorite:
+                continue
+            shutil.rmtree(record.directory)
+            removed.append(record.recording_id)
+            removed_ids.add(record.recording_id)
+            total -= record.byte_length
         return tuple(removed)
 
     def _report(self, recording_id: str, character_id: str, code: str) -> None:

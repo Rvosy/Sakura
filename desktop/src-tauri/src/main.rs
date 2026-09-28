@@ -8122,6 +8122,8 @@ fn main() {
             audio::settings_voice_get,
             audio::settings_voice_status_get,
             audio::settings_voice_save,
+            audio::settings_voice_cache_get,
+            audio::settings_voice_cache_save,
             chat_settings::current_chat_presentation_timing,
             chat_settings::current_bubble_auto_hide,
             chat_settings::current_subtitle_language,
