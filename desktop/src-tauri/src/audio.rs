@@ -927,6 +927,151 @@ pub(crate) fn tts_stop_playback(
     Ok(())
 }
 
+const VOICE_CACHE_MIN_MEGABYTES: u64 = 32;
+const VOICE_CACHE_MAX_MEGABYTES: u64 = 20480;
+const VOICE_CACHE_DEFAULT_MEGABYTES: u64 = 512;
+
+fn voice_cache_display_directory(directory: &Path) -> String {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+
+        let mut components = directory.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            // Settings use ordinary path spelling; storage and I/O keep canonical paths.
+            let mut ordinary = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut unc = PathBuf::from(r"\\");
+                    unc.push(server);
+                    unc.push(share);
+                    unc
+                }
+                _ => return directory.display().to_string(),
+            };
+            ordinary.extend(components);
+            return ordinary.display().to_string();
+        }
+    }
+    directory.display().to_string()
+}
+
+fn voice_cache_document(user_root: &Path) -> (String, u64, bool) {
+    let default_dir = user_root.join("data/voice/recordings");
+    let mut directory = default_dir.display().to_string();
+    let mut max_megabytes = VOICE_CACHE_DEFAULT_MEGABYTES;
+    let mut idle_fill = false;
+    let path = user_root.join("config/voice_cache.json");
+    if let Ok(bytes) = fs::read(&path) {
+        if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+            if value.get("schemaVersion").and_then(Value::as_u64) == Some(1) {
+                if let Some(max_bytes) = value.get("maxBytes").and_then(Value::as_u64) {
+                    let min = VOICE_CACHE_MIN_MEGABYTES * 1024 * 1024;
+                    let max = VOICE_CACHE_MAX_MEGABYTES * 1024 * 1024;
+                    if (min..=max).contains(&max_bytes) {
+                        max_megabytes = max_bytes / (1024 * 1024);
+                    }
+                }
+                if let Some(raw) = value.get("directory").and_then(Value::as_str) {
+                    if !raw.trim().is_empty() {
+                        directory = raw.to_string();
+                    }
+                }
+                idle_fill = value
+                    .get("idleFill")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            }
+        }
+    }
+    (directory, max_megabytes, idle_fill)
+}
+
+impl AudioState {
+    fn voice_cache_snapshot(&self) -> Value {
+        let (directory, max_megabytes, idle_fill) = voice_cache_document(&self.user_root);
+        json!({
+            "directory": voice_cache_display_directory(Path::new(&directory)),
+            "defaultDirectory": voice_cache_display_directory(&self.user_root.join("data/voice/recordings")),
+            "maxMegabytes": max_megabytes,
+            "idleFill": idle_fill,
+            "limits": [VOICE_CACHE_MIN_MEGABYTES, VOICE_CACHE_MAX_MEGABYTES],
+        })
+    }
+
+    fn save_voice_cache(
+        &self,
+        directory: &str,
+        max_megabytes: u64,
+        idle_fill: bool,
+    ) -> Result<Value, String> {
+        if !(VOICE_CACHE_MIN_MEGABYTES..=VOICE_CACHE_MAX_MEGABYTES).contains(&max_megabytes) {
+            return Err("VOICE_CACHE_SIZE_INVALID".to_string());
+        }
+        let default_dir = self.user_root.join("data/voice/recordings");
+        fs::create_dir_all(&default_dir)
+            .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
+        let default_resolved = fs::canonicalize(&default_dir)
+            .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
+        let trimmed = directory.trim();
+        let resolved = if trimmed.is_empty() {
+            default_resolved.clone()
+        } else {
+            let path = PathBuf::from(trimmed);
+            if !path.is_absolute() {
+                return Err("VOICE_CACHE_DIRECTORY_INVALID".to_string());
+            }
+            fs::create_dir_all(&path)
+                .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
+            fs::canonicalize(&path)
+                .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?
+        };
+        let stored = if resolved == default_resolved {
+            String::new()
+        } else {
+            resolved.display().to_string()
+        };
+        let document = json!({
+            "schemaVersion": 1,
+            "directory": stored,
+            "maxBytes": max_megabytes * 1024 * 1024,
+            "idleFill": idle_fill,
+        });
+        let mut bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        let config = self.user_root.join("config/voice_cache.json");
+        crate::ui_config::atomic_write(&config, &bytes, "VOICE_CACHE")?;
+        Ok(self.voice_cache_snapshot())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct VoiceCacheSaveRequest {
+    directory: String,
+    max_megabytes: u64,
+    idle_fill: bool,
+}
+
+#[tauri::command]
+pub(crate) fn settings_voice_cache_get(
+    window: WebviewWindow,
+    audio: State<'_, AudioState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    Ok(audio.voice_cache_snapshot())
+}
+
+#[tauri::command]
+pub(crate) fn settings_voice_cache_save(
+    window: WebviewWindow,
+    audio: State<'_, AudioState>,
+    request: VoiceCacheSaveRequest,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    audio.save_voice_cache(&request.directory, request.max_megabytes, request.idle_fill)
+}
+
 #[tauri::command]
 pub(crate) async fn settings_voice_get(
     window: WebviewWindow,
@@ -1094,6 +1239,78 @@ mod tests {
     };
 
     static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(windows)]
+    #[test]
+    fn voice_cache_snapshot_displays_drive_and_unc_paths_without_changing_config() {
+        let root = temp_root();
+        let state = AudioState::new(root.canonicalize().unwrap());
+        let config = root.join("config/voice_cache.json");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let default_directory = root.join("data/voice/recordings");
+        fs::create_dir_all(&default_directory).unwrap();
+        for (stored, displayed) in [
+            (
+                r"\\?\C:\Sakura 角色\recordings",
+                r"C:\Sakura 角色\recordings",
+            ),
+            (
+                r"\\?\UNC\server\share\recordings",
+                r"\\server\share\recordings",
+            ),
+            (r"C:\Sakura\recordings", r"C:\Sakura\recordings"),
+            (r"\\server\share\recordings", r"\\server\share\recordings"),
+        ] {
+            let bytes =
+                serde_json::to_vec(&json!({"schemaVersion": 1, "directory": stored})).unwrap();
+            fs::write(&config, &bytes).unwrap();
+            let snapshot = state.voice_cache_snapshot();
+            assert_eq!(snapshot["directory"], displayed);
+            let displayed_default = snapshot["defaultDirectory"].as_str().unwrap();
+            assert!(!displayed_default.starts_with(r"\\?\"));
+            // Windows TEMP may use an 8.3 alias while AudioState uses the long path.
+            assert_eq!(
+                Path::new(displayed_default).canonicalize().unwrap(),
+                default_directory.canonicalize().unwrap()
+            );
+            assert_eq!(fs::read(&config).unwrap(), bytes);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn voice_cache_save_and_reload_keep_display_paths_and_canonical_storage_consistent() {
+        let root = temp_root();
+        let state = AudioState::new(root.canonicalize().unwrap());
+        let directory = root.join("cache with 空格");
+        let saved = state
+            .save_voice_cache(&directory.display().to_string(), 128, true)
+            .unwrap();
+        assert_eq!(state.voice_cache_snapshot(), saved);
+        let displayed = saved["directory"].as_str().unwrap();
+        #[cfg(windows)]
+        assert!(!displayed.starts_with(r"\\?\"));
+        assert_eq!(
+            Path::new(displayed).canonicalize().unwrap(),
+            directory.canonicalize().unwrap()
+        );
+        let config = root.join("config/voice_cache.json");
+        let document: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        assert_eq!(
+            document["directory"],
+            directory.canonicalize().unwrap().display().to_string()
+        );
+        assert_eq!(state.save_voice_cache(displayed, 128, true).unwrap(), saved);
+
+        let default = state.save_voice_cache("", 64, false).unwrap();
+        assert_eq!(state.voice_cache_snapshot(), default);
+        assert_eq!(default["directory"], default["defaultDirectory"]);
+        #[cfg(windows)]
+        assert!(!default["directory"].as_str().unwrap().starts_with(r"\\?\"));
+        let document: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
+        assert_eq!(document["directory"], "");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn saved_voice_commands_are_limited_to_chat_and_history_windows() {

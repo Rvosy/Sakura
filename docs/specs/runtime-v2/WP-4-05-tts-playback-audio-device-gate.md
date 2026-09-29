@@ -55,7 +55,8 @@ updated: 2026-09-28
   回复本身的语言等约束。实际合成时由 Hub 的 `begin` 检查角色级开关和选择，直接调用已绑定 Provider 的
   `begin`，不先调用 `status`。角色未启用语音时返回 `TTS_DISABLED`，作为正常跳过处理，前端跳过本轮后续语音
   等待，Core 不发布合成失败事件，Hub 不记录失败日志。Worker、Service 或 Provider 异常仍保留独立语音诊断。
-- Voice 页面把 Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
+- Voice 页面将“开口说话”开关、语音引擎选择及当前引擎的服务配置放在同一“角色语音”分组，
+  语音缓存位于页面底部。Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
   Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
   `customBaseUrl` 推导，保存后写入 `endpointMode`，切换模式不得丢弃非活动服务地址。
 - Genie 的 `Sakura 内置` 固定使用内部 loopback 端点并自动绑定当前 TTS 根下已安装的 `cpu` 整合包；不得要求
@@ -80,9 +81,18 @@ updated: 2026-09-28
   收藏不计入上限。损坏或未来 schema 只隔离对应记录。`record.json` 保持 schema v1，录音使用既有
   `recordingId`，只保存音频格式和 `byteLength` 等必要元数据，不再生成 SHA 字段。读取旧记录时忽略该字段，
   按长度和 WAV 格式（含尾帧可读性）检查，不遍历音频计算摘要；收藏更新移除旧摘要字段。
-- 新录音在 schema v1 增加非负整数 `segmentIndex`，与 `historyEntryId` 共同定位原回复的一段。留存上限按
-  录音文件计数，不按对话轮数或天数计数。旧录音缺少索引时仍能按 recordingId 读取和播放，但不参与按段
-  匹配，不猜测所属段落，也不迁移或改写旧文件。
+- 新录音在 schema v1 增加非负整数 `segmentIndex`，与 `historyEntryId` 共同定位原回复的一段。留存同时受
+  每角色 100 条非收藏和设置中的字节容量约束，不按对话轮数或天数计数。超过容量时按创建时间删除较早的
+  非收藏录音，当次刚写入的一句保留。收藏不因条数或容量被删除。旧录音缺少索引时仍能按 recordingId
+  读取和播放，但不参与按段匹配，不猜测所属段落，也不迁移或改写旧文件。
+- 语音缓存目录默认是 `data/voice/recordings/<角色>/`。`config/voice_cache.json` schema v1 保存
+  `directory`、`maxBytes` 和 `idleFill`。目录留空表示默认位置；容量为 32 MB 到 20480 MB，缺省 512 MB。
+  更改目录不移动已有文件。Windows 界面使用普通盘符或 UNC 格式显示目录，读取与保存成功后的显示一致；
+  显示转换不改写底层 canonical 路径或已有配置。
+- 「空闲补齐」默认关闭。打开后，当前角色 Timeline 里有正文、未标记 `suppressTts`、且没有对应录音的段落，
+  会在没有用户语音任务、缓存仍有余量、并且本机负载未到峰值时逐句生成并写入缓存，不播放。缓存被删、容量
+  刚调大，或当时没有可用的语音连接，都属于可补齐的缺失。1 分钟负载达到 CPU 数量的 70%，或可见 GPU
+  忙碌度达到 70%，视为峰值并暂停。用户开始朗读或自动语音时取消正在进行的补齐。
 - 持久 recording 与 generation 临时播放副本分离；启动清理只触碰临时目录。跨边界 DTO 不含裸路径。
 
 ## 接口、故障与回退

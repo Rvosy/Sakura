@@ -429,7 +429,7 @@ test("Apply commits a character and ordinary settings while retaining global rec
   vm.runInNewContext(`${saveSettingsSource}\n${submitButtonsSource}`, {
     fields, document: plugins.document, runtimePluginController: plugins.feature, runtimeCharacterFeature: characters.feature,
     runtimeAsrController: null, runtimeAppearanceController: null, runtimeScreenAwarenessController: null,
-    runtimeProviderFeature: null, runtimeChatTimingController: null, runtimeBubbleAutoHideController: null,
+    runtimeProviderFeature: null, runtimeChatTimingController: null, runtimeVoiceCacheController: null, runtimeBubbleAutoHideController: null,
     runtimeAutostartController: null, runtimeToolsController: null, runtimeVoiceController: null,
     refreshRuntimeVoiceCurrent: async () => {}, setError: (error) => { if (error) errors.push(error); },
     setSubmissionBusy: (value) => { state.submitting = value; characters.feature.syncControls(); },
@@ -498,7 +498,7 @@ test("Apply rejects disabling the owner of an edited global record before the sn
   vm.runInNewContext(`${saveSettingsSource}\n${submitButtonsSource}`, {
     fields, document: plugins.document, runtimePluginController: plugins.feature, runtimeCharacterFeature: null,
     runtimeAsrController: null, runtimeAppearanceController: null, runtimeScreenAwarenessController: null,
-    runtimeProviderFeature: null, runtimeChatTimingController: null, runtimeBubbleAutoHideController: null,
+    runtimeProviderFeature: null, runtimeChatTimingController: null, runtimeVoiceCacheController: null, runtimeBubbleAutoHideController: null,
     runtimeAutostartController: null, runtimeToolsController: null, runtimeVoiceController: null,
     refreshRuntimeVoiceCurrent: async () => {}, setError: (error) => { if (error) errors.push(error); },
     setSubmissionBusy() {}, notify() {}, closeSettingsWindow: async () => {}, bypassCloseGuard: false,

@@ -124,6 +124,7 @@ let runtimeAppearanceController = null;
 let runtimeCharacterFeature = null;
 let runtimeProviderFeature = null;
 let runtimeChatTimingController = null;
+let runtimeVoiceCacheController = null;
 let runtimeBubbleAutoHideController = null;
 let runtimeToolsController = null;
 let runtimePluginController = null;
@@ -277,6 +278,7 @@ function computeDirty() {
     runtimeAppearanceController?.isDirty()
     || runtimeProviderFeature?.isDirty()
     || runtimeChatTimingController?.isDirty()
+    || runtimeVoiceCacheController?.isDirty()
     || runtimeBubbleAutoHideController?.isDirty()
     || runtimeToolsController?.isDirty()
     || runtimePluginController?.isDirty()
@@ -360,6 +362,7 @@ async function requestCancelClose() {
         setSubmissionBusy(true);
         await runtimeAppearanceController?.cancelPreview();
         runtimeChatTimingController?.discard();
+        runtimeVoiceCacheController?.discard();
         runtimeBubbleAutoHideController?.discard();
         runtimeAutostartController?.discard();
         runtimeToolsController?.discard();
@@ -405,6 +408,7 @@ async function requestAppExitClose(event) {
         setSubmissionBusy(true);
         await runtimeAppearanceController?.cancelPreview();
         runtimeChatTimingController?.discard();
+        runtimeVoiceCacheController?.discard();
         runtimeBubbleAutoHideController?.discard();
         runtimeAutostartController?.discard();
         runtimeToolsController?.discard();
@@ -1435,6 +1439,9 @@ async function saveRuntimeSettings({ keepGlobalCollectionDrafts = false } = {}) 
   if (runtimeChatTimingController?.isDirty()) {
     result = await runtimeChatTimingController.save();
   }
+  if (runtimeVoiceCacheController?.isDirty()) {
+    result = await runtimeVoiceCacheController.save();
+  }
   if (runtimeBubbleAutoHideController?.isDirty()) {
     result = await runtimeBubbleAutoHideController.save();
   }
@@ -1712,6 +1719,7 @@ window.addEventListener("beforeunload", () => {
   runtimeCharacterFeature?.dispose();
   runtimeProviderFeature?.dispose();
   runtimeChatTimingController?.dispose();
+  runtimeVoiceCacheController?.dispose();
   runtimeBubbleAutoHideController?.dispose();
   runtimeToolsController?.dispose();
   runtimePluginController?.dispose();
@@ -1910,6 +1918,15 @@ async function startSettingsFrontend() {
       });
     });
   }
+  await initializeRuntimeSettingsSection(async () => {
+    const { createVoiceCacheController } = await import("./voice-cache-runtime.js");
+    runtimeVoiceCacheController = createVoiceCacheController({
+      document,
+      invoke,
+      onDirty: refreshDirty,
+    });
+    runtimeVoiceCacheController.initialize(await invoke("settings_voice_cache_get"));
+  });
   if (featureStatus(manifest, "voice.tts") === "available") {
     await initializeRuntimeSettingsSection(async () => {
       const { createVoiceController } = await import("./voice-runtime.js");
