@@ -164,11 +164,12 @@ def test_application_close_reclaims_inputs_after_manager_cleanup(cleanup_fails):
     application._closed = False
     application.visuals, application.audio_input = Mock(), Mock()
     application.chat, application.screen, application.visual_controls = Mock(), Mock(), Mock()
-    application.conversation = Mock()
+    application.conversation, application.speech = Mock(), Mock()
     application.unbind_session = Mock()
     application._loaded = threading.Event()
 
     def cleanup():
+        application.speech.close.assert_called_once_with()
         assert set(application._assistant_inputs) == {"old-input", "new-input"}
         if cleanup_fails:
             raise PluginRuntimeError("PLUGIN_CLEANUP_FAILED")
