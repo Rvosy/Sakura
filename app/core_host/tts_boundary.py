@@ -17,6 +17,14 @@ from app.core.runtime_log import log_event
 from app.storage.tts_storage import TtsStorage, TtsStorageUnavailable
 from app.storage.paths import StoragePaths
 from app.storage.timeline import TimelineDataError, TimelineKind, TimelineStore
+from app.voice.cache_settings import VoiceCacheSettings, load_voice_cache_settings
+from app.voice.device_load import device_below_peak
+from app.voice.idle_fill import (
+    IDLE_FILL_BACKOFF_SECONDS,
+    IDLE_FILL_HEADROOM_BYTES,
+    IdleFillCursor,
+    next_missing_speech,
+)
 from app.voice.recording_store import VoiceRecordingError, VoiceRecordingStore
 
 
@@ -189,6 +197,10 @@ class TTSBoundary:
         self._cancelled_history: set[str] = set()
         self._handles: dict[str, object] = {}
         self._closed = False
+        self._idle_stop = threading.Event()
+        self._idle_thread: threading.Thread | None = None
+        self._idle_pause_until = 0.0
+        self._idle_cursor = IdleFillCursor()
 
     def set_event_publisher(self, publisher: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:
@@ -323,6 +335,7 @@ class TTSBoundary:
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
             self._validate_generation(request)
+            self._refresh_cache_settings()
             name = str(request.get("name", ""))
             if name == "tts.synthesis.start":
                 payload = self._handle_start(request)
@@ -356,7 +369,115 @@ class TTSBoundary:
                 error=error.public_error(),
             )
 
+    def start_idle_fill(self, *, interval_seconds: float = 15.0) -> None:
+        with self._lock:
+            if self._idle_thread is not None or self._closed:
+                return
+            thread = threading.Thread(
+                target=self._idle_loop,
+                args=(interval_seconds,),
+                name="sakura-voice-idle-fill",
+                daemon=True,
+            )
+            self._idle_thread = thread
+            thread.start()
+
+    def fill_once(self) -> bool:
+        """Synthesize one missing line when idle fill is on and the machine is quiet."""
+
+        settings = self._refresh_cache_settings()
+        if not settings.idle_fill or monotonic() < self._idle_pause_until or not device_below_peak():
+            return False
+        with self._lock:
+            if self._closed:
+                return False
+            self._expire_locked()
+            if self._user_voice_busy_locked(""):
+                return False
+            identity = self._voice_character_identity()
+        if identity is None:
+            return False
+        character_id = identity[0]
+        if not self._recordings.has_room(character_id, headroom=IDLE_FILL_HEADROOM_BYTES):
+            return False
+        try:
+            missing = next_missing_speech(
+                self._timeline, self._recordings, character_id, self._idle_cursor,
+            )
+        except TimelineDataError:
+            return False
+        if missing is None:
+            return False
+        operation_id = f"idle-{uuid.uuid4().hex}"
+        if not self.authorize_segment(
+            operation_id=operation_id,
+            segment_index=missing.segment_index,
+            text=missing.text,
+            tone=missing.tone,
+            portrait=missing.portrait,
+            character_id=character_id,
+            history_entry_id=missing.history_entry_id,
+        ):
+            return False
+        try:
+            self._handle_start(
+                {"payload": {"operationId": operation_id, "segmentIndex": missing.segment_index}},
+                reuse_recording=False,
+                recording_only=True,
+            )
+        except TTSBoundaryError as error:
+            if error.retryable or error.code in {
+                "TTS_SERVICE_UNAVAILABLE",
+                "TTS_SYNTHESIS_FAILED",
+                "TTS_SYNTHESIS_TIMEOUT",
+            }:
+                self._idle_pause_until = monotonic() + IDLE_FILL_BACKOFF_SECONDS
+            return False
+        return True
+
+    def _idle_loop(self, interval_seconds: float) -> None:
+        while not self._idle_stop.wait(interval_seconds):
+            try:
+                self.fill_once()
+            except Exception:
+                log_event(
+                    "TTS",
+                    "idle voice fill failed",
+                    {},
+                    event="tts.idle_fill.failed",
+                    severity="warning",
+                )
+
+    def _refresh_cache_settings(self) -> VoiceCacheSettings:
+        settings = load_voice_cache_settings(self._user_root)
+        self._recordings.apply_cache_settings(settings.directory, settings.max_bytes)
+        return settings
+
+    def _user_voice_busy_locked(self, idle_operation_id: str) -> bool:
+        return any(
+            item.operation_id != idle_operation_id
+            and item.state in {"authorized", "synthesizing", "committing", "cancelling"}
+            for item in self._authorizations.values()
+        )
+
+    def _preempt_idle_fill(self) -> None:
+        with self._lock:
+            request_ids: list[str] = []
+            for item in self._authorizations.values():
+                if not item.operation_id.startswith("idle-"):
+                    continue
+                if item.state not in {"authorized", "synthesizing", "committing"}:
+                    continue
+                if item.request_id:
+                    item.state = "cancelling"
+                    request_ids.append(item.request_id)
+                else:
+                    item.state = "cancelled"
+        for request_id in request_ids:
+            self._cancel_request_id(request_id)
+
     def close(self) -> None:
+        self._idle_stop.set()
         self.cancel_all()
         with self._lock:
             if self._closed:
@@ -414,6 +535,7 @@ class TTSBoundary:
         if (not isinstance(entry_id, str) or not entry_id.strip() or len(entry_id) > 128
                 or type(index) is not int or index < 0):
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "朗读段落标识无效")
+        self._preempt_idle_fill()
         with self._lock:
             self._ensure_open_locked()
             self._expire_locked()
@@ -447,6 +569,7 @@ class TTSBoundary:
     def prepare_speech(self, operation_id: str, segment_index: int):
         """Prepare a recording without acquiring or publishing desktop playback."""
         try:
+            self._refresh_cache_settings()
             return self._handle_start(
                 {"payload": {"operationId": operation_id, "segmentIndex": segment_index}},
                 reuse_recording=True, recording_only=True,
@@ -476,6 +599,8 @@ class TTSBoundary:
             or segment_index < 0
         ):
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "invalid segment identity")
+        if not operation_id.startswith("idle-"):
+            self._preempt_idle_fill()
         with self._lock:
             self._ensure_open_locked()
             self._expire_locked()
@@ -484,6 +609,9 @@ class TTSBoundary:
                 raise TTSBoundaryError(
                     "TTS_SEGMENT_NOT_AUTHORIZED", "segment is not authorized for synthesis"
                 )
+            if operation_id.startswith("idle-") and self._user_voice_busy_locked(operation_id):
+                authorization.state = "cancelled"
+                raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "空闲补齐已让出")
             try:
                 recording = self._recordings.for_segment(
                     authorization.character_id, authorization.history_entry_id, segment_index,

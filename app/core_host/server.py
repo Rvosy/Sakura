@@ -1568,6 +1568,7 @@ def run_host(
                 dispatcher, "published_plugin_application", lambda: None
             ),
         )
+        tts_boundary.start_idle_fill()
         chat_boundary = (
             chat_boundary_factory(dispatcher)
             if chat_boundary_factory is not None

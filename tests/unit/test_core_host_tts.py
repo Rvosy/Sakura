@@ -1664,6 +1664,9 @@ class InstantTTSPlugin:
 
 def test_recording_os_error_is_reported_as_audio_recording_invalid(tmp_path: Path) -> None:
     class FailingRecordingStore:
+        def apply_cache_settings(self, _directory, _max_bytes) -> None:
+            return None
+
         def commit(self, *_args, **_kwargs):
             raise OSError("fixture storage failure")
 
@@ -2148,3 +2151,49 @@ def test_cancel_is_rejected_after_synthesis_enters_recording_commit(tmp_path: Pa
     assert [item["name"] for item in events if item["name"].startswith("tts.synthesis.")] == [
         "tts.synthesis.ready"
     ]
+
+
+def test_idle_fill_caches_a_missing_line_without_playback_and_pauses_at_peak(tmp_path, monkeypatch):
+    _history_entry(tmp_path)
+    custom = tmp_path / "idle-cache"
+    custom.mkdir()
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "voice_cache.json").write_text(json.dumps({
+        "schemaVersion": 1,
+        "directory": str(custom),
+        "maxBytes": 512 * 1024 * 1024,
+        "idleFill": True,
+    }), encoding="utf-8")
+    worker = _ImmediatePluginApplication(tmp_path)
+    events = []
+    boundary = TTSBoundary(
+        GENERATION, CREDENTIAL, tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        plugin_application_provider=lambda: worker,
+        event_publisher=events.append,
+    )
+    monkeypatch.setattr(tts_boundary_module, "device_below_peak", lambda: True)
+    try:
+        assert boundary.fill_once() is True
+        assert worker.calls.count("begin") == 1
+        assert events == []
+        assert not list((tmp_path / "data/cache/tts/runtime-v2" / GENERATION).glob("*.wav"))
+        cached = boundary._recordings.for_segment("sakura", "saved-reply", 0)
+        assert cached is not None and cached.directory.parent == custom / "sakura"
+        assert boundary.fill_once() is True
+        assert boundary._recordings.for_segment("sakura", "saved-reply", 1) is not None
+        assert boundary.fill_once() is False
+        assert worker.calls.count("begin") == 2
+
+        monkeypatch.setattr(tts_boundary_module, "device_below_peak", lambda: False)
+        shutil.rmtree(boundary._recordings.for_segment("sakura", "saved-reply", 1).directory)
+        assert boundary.fill_once() is False
+        assert worker.calls.count("begin") == 2
+
+        monkeypatch.setattr(tts_boundary_module, "device_below_peak", lambda: True)
+        assert boundary.fill_once() is True
+        assert boundary._recordings.for_segment("sakura", "saved-reply", 1) is not None
+        assert worker.calls.count("begin") == 3
+    finally:
+        boundary.close()

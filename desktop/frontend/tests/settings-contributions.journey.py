@@ -44,7 +44,7 @@ feature.initialize(await window.nativeInvoke('settings_plugins_get')); await mod
 window.feature=feature; window.models=models; window.showPage=showPage;
 document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
 const runtimePluginController=feature,runtimeProviderFeature=models;
-const runtimeAsrController=null,runtimeAppearanceController=null,runtimeChatTimingController=null,runtimeBubbleAutoHideController=null,runtimeAutostartController=null,runtimeToolsController=null,runtimeVoiceController=null,runtimeCharacterFeature=null;
+const runtimeAsrController=null,runtimeAppearanceController=null,runtimeChatTimingController=null,runtimeVoiceCacheController=null,runtimeBubbleAutoHideController=null,runtimeAutostartController=null,runtimeToolsController=null,runtimeVoiceController=null,runtimeCharacterFeature=null;
 const refreshRuntimeVoiceCurrent=async()=>{};
 /* SAVE_SETTINGS */
 document.getElementById('applyButton').onclick=async()=>{try {await saveRuntimeSettings();dirty();}catch(e){window.lastError=String(e);}};

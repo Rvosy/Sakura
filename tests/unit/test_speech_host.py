@@ -117,6 +117,67 @@ def test_speech_reuses_saved_audio_without_desktop_playback_and_releases_more_th
     assert system.facts == system.desktop == []
 
 
+def test_speech_uses_current_cache_settings_and_reuses_the_selected_directory(system, tmp_path):
+    from app.voice.cache_settings import save_voice_cache_settings
+
+    cache = tmp_path / "selected-cache"
+    save_voice_cache_settings(tmp_path, str(cache), 64 * 1024 * 1024, False)
+    with caller():
+        result = completed(system)
+        recording = system.boundary._recordings.get(result["recordingId"])
+        assert recording.directory.parent == cache.resolve() / "sakura"
+        system.artifacts.call("release_received", [result["artifact"]["artifactId"]])
+        reused = completed(system)
+        assert reused["recordingId"] == result["recordingId"]
+        assert len(system.generated) == 1
+        system.artifacts.call("release_received", [reused["artifact"]["artifactId"]])
+    assert system.store.count == 0
+    assert system.facts == system.desktop == []
+
+
+def test_foreground_speech_cancels_in_progress_idle_fill(system, tmp_path, monkeypatch):
+    from app.voice.cache_settings import save_voice_cache_settings
+
+    save_voice_cache_settings(tmp_path, "", 64 * 1024 * 1024, True)
+    monkeypatch.setattr("app.core_host.tts_boundary.device_below_peak", lambda: True)
+    application = system.boundary._plugin_application()
+    original = application.call_service
+    polling, cancelled, release = threading.Event(), threading.Event(), threading.Event()
+    idle_request = None
+
+    def service(key, method, *args):
+        nonlocal idle_request
+        if method == "begin" and idle_request is None:
+            idle_request = args[0]["requestId"]
+        if method == "poll" and args[0] == idle_request:
+            polling.set()
+            assert release.wait(5)
+        if method == "cancel" and args[0] == idle_request:
+            cancelled.set()
+        return original(key, method, *args)
+
+    monkeypatch.setattr(application, "call_service", service)
+    results = []
+    idle = threading.Thread(target=lambda: results.append(system.boundary.fill_once()))
+    idle.start()
+    try:
+        assert polling.wait(5)
+        system.entry("foreground")
+        with caller():
+            result = completed(system, "foreground")
+            assert cancelled.is_set()
+            assert system.boundary._recordings.get(result["recordingId"]) is not None
+            system.artifacts.call("release_received", [result["artifact"]["artifactId"]])
+    finally:
+        release.set()
+        idle.join(5)
+    assert not idle.is_alive()
+    assert results == [False]
+    assert system.boundary._recordings.for_segment("sakura", "reply-one", 0) is None
+    assert system.store.count == 0
+    assert system.facts == system.desktop == []
+
+
 @pytest.mark.parametrize("plugin,scope", [("other", "other-scope"), ("remote", "replacement")])
 def test_jobs_and_audio_are_bound_to_the_authenticated_process(system, plugin, scope):
     with caller():
