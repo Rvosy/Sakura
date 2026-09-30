@@ -247,7 +247,10 @@ jobs:
           appimage="$(find desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
           update="$(find desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage.tar.gz' -print -quit)"
           deb="$(find desktop/src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
-          test -n "$appimage" && test -n "$deb" && test -n "$update" && test -f "${update}.sig"
+          if [[ -z "$appimage" || -z "$deb" || -z "$update" || ! -f "${update}.sig" ]]; then
+            echo 'Linux bundle or updater signature was not produced.' >&2
+            exit 1
+          fi
           appimage_out="artifacts/Sakura-${VERSION}-linux-x64.AppImage"
           update_out="artifacts/Sakura-${VERSION}-linux-x64.AppImage.tar.gz"
           deb_out="artifacts/Sakura-${VERSION}-linux-x64.deb"

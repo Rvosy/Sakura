@@ -36,6 +36,11 @@ def build_config(
     create_updater_artifacts = updater if updater_artifacts is None else updater_artifacts
     if create_updater_artifacts and not updater:
         raise ValueError("UPDATER_ARTIFACTS_REQUIRE_UPDATER")
+    # Linux 发布后台（services/sakura/releases.py）要求已签名的 .AppImage.tar.gz。
+    # Tauri 的 true 模式直接签名 .AppImage，不生成归档。
+    artifact_mode: bool | str = create_updater_artifacts
+    if target == "linux-x64" and create_updater_artifacts:
+        artifact_mode = "v1Compatible"
     resources = {
         "release-staging/VERSION": "VERSION",
         "release-staging/diagnostic-build.json": "diagnostic-build.json",
@@ -50,7 +55,7 @@ def build_config(
         "bundle": {
             "active": True,
             "resources": resources,
-            "createUpdaterArtifacts": create_updater_artifacts,
+            "createUpdaterArtifacts": artifact_mode,
             "targets": bundle_targets(target),
         }
     }

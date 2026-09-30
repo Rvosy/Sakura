@@ -889,6 +889,54 @@ def test_updater_overlay_requires_https_endpoint_and_public_key() -> None:
     assert client_only["bundle"]["createUpdaterArtifacts"] is False
 
 
+@pytest.mark.parametrize(
+    ("target", "artifact_mode"),
+    [("windows-x64", True), ("macos-arm64", True), ("linux-x64", "v1Compatible")],
+)
+def test_release_overlay_produces_the_signed_artifact_format(
+    target: str, artifact_mode: bool | str,
+) -> None:
+    config = build_config(
+        target=target,
+        updater=True,
+        endpoint="https://example.test/latest.json",
+        public_key="public-key",
+    )
+    assert config["bundle"]["createUpdaterArtifacts"] == artifact_mode
+
+
+def test_linux_release_collection_stops_before_copying_without_updater_archive(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+    step = next(
+        step for step in workflow["jobs"]["bundle"]["steps"]
+        if step.get("name") == "Collect Linux release artifacts"
+    )
+    bundle = tmp_path / "desktop/src-tauri/target/release/bundle"
+    (bundle / "appimage").mkdir(parents=True)
+    (bundle / "deb").mkdir()
+    (bundle / "appimage/Sakura.AppImage").write_bytes(b"appimage")
+    (bundle / "appimage/Sakura.AppImage.sig").write_text("signature", encoding="utf-8")
+    (bundle / "deb/Sakura.deb").write_bytes(b"deb")
+    if sys.platform == "win32":
+        git = shutil.which("git")
+        assert git is not None
+        bash = str(Path(git).resolve().parents[1] / "bin/bash.exe")
+    else:
+        bash = "bash"
+    result = subprocess.run(
+        [bash, "--noprofile", "--norc", "-c", step["run"]],
+        cwd=tmp_path,
+        env={**os.environ, "VERSION": "1.3.0"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert list((tmp_path / "artifacts").iterdir()) == []
+    assert "Linux bundle or updater signature was not produced." in result.stderr
+
+
 def test_static_updater_manifest_requires_signed_release_platforms(tmp_path: Path) -> None:
     releases = []
     for target, name in (
