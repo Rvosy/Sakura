@@ -760,13 +760,15 @@ class RealChatBoundary:
             raise RealChatRejection("INVALID_CHAT_REPLY", "chat reply was invalid")
         segments = [
             {
+                **segment,
+                "segmentIndex": index,
                 "content": str(segment.get("translation") or segment.get("text") or ""),
                 "raw_content": str(segment.get("text") or ""),
                 "translation": str(segment.get("translation") or ""),
                 "tone": str(segment.get("tone") or ""),
                 "portrait": str(segment.get("portrait") or ""),
             }
-            for segment in raw_segments
+            for index, segment in enumerate(raw_segments)
             if isinstance(segment, Mapping)
         ]
         return {

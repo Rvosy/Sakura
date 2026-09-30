@@ -353,6 +353,7 @@ ServiceProxy、回调、资源 descriptor 和文件 artifact 都会失效，不�
 | `sakura.host.storage` | 取得明确授权的共享 data/cache 目录。 |
 | `sakura.host.artifacts` | 分配、提交和释放受控大文件。 |
 | `sakura.host.conversation` | 代表用户向当前角色发送文字或图片，接入桌面聊天和语音。 |
+| `sakura.host.speech` | 为当前角色已保存的回复段落准备音频，供远程端播放。 |
 | `sakura.host.mobile` | 旧移动端接口的兼容门面；新插件使用 conversation、character 和 timeline。 |
 | `sakura.host.ui.composer-tools-v0` | Host 已实现，但公共 SDK 暂不能注册；见后文限制。 |
 
@@ -466,11 +467,15 @@ context.on(
 | `sakura.host.message.sent` | `{"role": "assistant", "characters": 24}` | 助手已生成消息；不含正文。 |
 | `sakura.host.chat.completed` | `{"characterId": "...", "turnId": "...", "cursor": "..."}` | 对话已写入 Timeline 后发送。 |
 | `sakura.host.tool.started/finished/failed` | 有界工具状态 | 工具执行状态通知。 |
-| `sakura.host.tts.started/ended` | 有界播放状态 | TTS 播放状态通知。 |
+| `sakura.host.tts.started/ended` | `playbackId/recordingId/outcome` | 桌面实际播放状态；有可信历史关联时另含 `characterId/historyEntryId/segmentIndex`。 |
 
 Host 事件是事实通知，不是可靠消息队列。派发是 best-effort，插件重启时不会补发。需要避免漏数据时，保存
 Timeline cursor，并在下一次事件或插件启动时调用 `sakura.host.timeline.read_since()` 补读。插件不能伪造
 或向其他插件发送 `sakura.host.*` 事件。
+
+字幕插件应按播放事件中的 `historyEntryId` 读取历史，并使用零基原始 `segmentIndex` 高亮；
+不要按收到 started 的次数推算段落。`playbackId` 用于隔离重复事件和上一段迟到的 ended。
+旧录音没有历史关联时不提供这些可选字段，插件应保留普通字幕显示，不猜测当前朗读内容。
 
 ## 贡献设置和页面
 
@@ -1114,12 +1119,15 @@ timeline = context.get("sakura.host.timeline")
 start = timeline.latest_cursor()  # {"cursor": "..."}
 recent = timeline.read_recent({"limit": 50})
 delta = timeline.read_since({"cursor": start["cursor"], "limit": 100})
+entry = timeline.get_entry({"entryId": history_entry_id})  # {"entry": {...} | None}
 ```
 
 `read_recent()` 返回 `{"entries": [...], "cursor": "..."}`；`read_since()` 返回
 `{"entries": [...], "nextCursor": "...", "hasMore": false}`。每个 entry 包含 `entryId`、`turnId`、
 `characterId`、`kind`、`origin`、`createdAt` 和 `payload`。`kind` 当前可为 `human`、`assistant`、
 `observation` 或 `system`。
+
+`get_entry()` 按 ID 精确读取当前角色的条目，不受最近记录条数限制；条目不存在或属于其他角色时返回 `entry: null`。
 
 limit 范围为 1–500。cursor 绑定角色和数据库 lineage，是不透明字符串；只能原样保存和回传，不能解析、
 拼接或当作整数。cursor 失效时会得到 `TIMELINE_CURSOR_INVALID`，由插件明确决定是否从 `read_recent()`
@@ -1222,6 +1230,8 @@ state = conversation.poll(job["jobId"])
 不传插件 ID，调用者由 Runtime 的认证实例确定。图片使用本插件已提交的 artifact descriptor。
 `result` 保留 `character_id/reply/reply_raw/segments/actions`，并携带 `operationId`；其中 `reply` 是显示文本，
 `reply_raw` 是回复原文。已写入历史且宿主提供该身份时，另有 `historyEntryId`，供历史条目定位使用。
+`segments` 保留原始 `text/translation/tone/portrait/suppressTts/control` 字段，另有零基原始 `segmentIndex`；
+旧显示字段 `content/raw_content` 继续保留。过滤空段或不朗读段落时，不能重新编号后再请求音频。
 
 用户原文写入 `HUMAN`，回复进入桌面现有字幕、角色表现和 TTS 流程。语音在桌面播放；轮询结果不传音频。
 主动搭话插件继续使用 `sakura.host.chat`，其输入属于宿主观察。完整受理、取消和事件合同见
@@ -1229,7 +1239,32 @@ state = conversation.poll(job["jobId"])
 
 当前角色列表和主题使用 `sakura.host.character.list()/presentation()`，历史使用 `sakura.host.timeline`。
 旧 `sakura.host.mobile` 保留 `characters/history/theme` 和带 `plugin_id` 的 `begin/poll/cancel` 参数形式，
-聊天委托同一 conversation 实现；旧调用中的插件 ID 必须等于认证调用者。
+聊天委托同一 conversation 实现；旧调用中的插件 ID 必须等于认证调用者。旧 mobile 的空字符串图片参数
+按无图片处理；conversation 使用 `None` 或空对象表示无图片，两者都不接收内联 data URL。
+
+### 回复段落音频
+
+远程播放使用 `sakura.host.speech`，并在 manifest 中声明 `sakura.host.speech` 和 `sakura.host.artifacts`：
+
+```python
+speech = context.get("sakura.host.speech")
+job = speech.begin(character_id, history_entry_id, segment_index)
+state = speech.poll(job["jobId"])
+# 未完成时为 {"status": "running"}，用户退出等待时调用 speech.cancel(job["jobId"])
+# 完成结果只取一次：
+# {"status": "completed", "result": {"artifact": descriptor, "recordingId": "...",
+#     "characterId": "...", "historyEntryId": "...", "segmentIndex": 0}}
+```
+
+宿主从当前角色的 Timeline 读取原文、语气和朗读限制，优先复用该段的保留录音；缺少可用录音时才合成。
+插件不能提交任意文本或 Provider 私有参数。空角色 ID 表示当前角色，其他角色返回 `SPEECH_CHARACTER_NOT_CURRENT`。
+任务绑定调用实例，旧实例不能轮询或取消新实例的任务。取消返回 `{accepted}`，取消结果为 `TTS_SYNTHESIS_CANCELLED`。
+
+完成后用 `artifacts.resolve()` 读取明确交付的音频，并在 `finally` 中调用 `release_received()`；
+释放的是插件持有的副本，不删除历史录音。停用插件、切换角色或关闭 generation 会撤销新的读取授权；
+已解析的文件等插件显式释放或所属进程停止后再删除，原实例仍可调用 `release_received()`。
+不要扫描语音缓存目录，也不要自行调用 Hub 后消费 Provider 私有文件。该能力只准备音频，不启动或中断桌面播放；
+手机端的播放开始、结束由手机端管理，不能把音频准备完成当作桌面的 `tts.started`。
 
 ## 当前暂不开放的界面能力
 

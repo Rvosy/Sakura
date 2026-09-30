@@ -108,7 +108,10 @@ class MobileHostService:
             raise MobileHostError(codes.get(code, code)) from error
 
     def begin(self, plugin_id: str, character_id: str, text: str,
-              artifact_descriptor: Mapping[str, Any] | None = None) -> dict[str, str]:
+              artifact_descriptor: Mapping[str, Any] | str | None = None) -> dict[str, str]:
+        # Older mobile clients use an empty string for a message without an image.
+        if artifact_descriptor == "":
+            artifact_descriptor = None
         result = self._call(plugin_id, "begin", character_id, text, artifact_descriptor)
         return {"jobId": result["jobId"]}
 

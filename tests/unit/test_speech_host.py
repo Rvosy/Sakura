@@ -1,0 +1,303 @@
+from __future__ import annotations
+
+import threading
+import wave
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from app.core_host.plugin_artifacts import PluginArtifactStore
+from app.core_host.plugin_host_services import _ArtifactsHostService, HostServiceError
+from app.core_host.speech_host import SpeechHostError, SpeechHostService
+from app.core_host.tts_boundary import TTSBoundary, TTSBoundaryError
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
+from app.storage.paths import StoragePaths
+from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
+
+
+@contextmanager
+def caller(plugin="remote", scope="original"):
+    owner = HOST_CALLER.set(plugin)
+    instance = HOST_CALLER_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        HOST_CALLER_SCOPE.reset(instance)
+        HOST_CALLER.reset(owner)
+
+
+@pytest.fixture
+def system(tmp_path):
+    store = PluginArtifactStore(tmp_path, "speech-generation")
+    accepted = {("remote", "original"), ("other", "other-scope")}
+    def commit(plugin, scope, action):
+        if (plugin, scope) not in accepted:
+            raise SpeechHostError("PLUGIN_CALLER_INVALID")
+        return action()
+    artifacts = _ArtifactsHostService(store, commit)
+    timeline = TimelineStore(StoragePaths(tmp_path).timeline_database())
+    timeline.initialize()
+    session = SimpleNamespace(character=SimpleNamespace(id="sakura"))
+    generated, facts, desktop = [], [], []
+    jobs = {}
+    def service(key, method, *args):
+        assert key == "sakura.tts"
+        if method == "begin":
+            request = args[0]
+            generated.append(request)
+            allocation = store.allocate("voice-provider", {"mediaType": "audio/wav", "suffix": ".wav"})
+            with wave.open(allocation["path"], "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                wav.writeframes(b"\x01\x00" * 160)
+            jobs[request["requestId"]] = store.commit("voice-provider", allocation["artifactId"])
+            return {"state": "running", "requestId": request["requestId"], "providerId": "voice-provider"}
+        if method == "poll":
+            return {"state": "succeeded", "requestId": args[0], "providerId": "voice-provider", "artifact": jobs[args[0]]}
+        if method == "cancel":
+            return {"accepted": args[0] in jobs}
+        raise AssertionError(method)
+    application = SimpleNamespace(
+        call_service=service, resolve_committed_artifact=store.resolve_committed_by_id,
+        release_committed_artifact=artifacts.release_committed,
+        emit_event=lambda *args: facts.append(args),
+    )
+    boundary = TTSBoundary("speech-generation", "credential", tmp_path,
+        session_provider=lambda: session, plugin_application_provider=lambda: application,
+        event_publisher=desktop.append)
+    host = SpeechHostService(boundary_provider=lambda: boundary, export_audio=artifacts.export_speech,
+        release_artifact=artifacts.release_speech, revoke_exports=artifacts.revoke_speech,
+        commit_scope=lambda owner, action: commit(*owner, action))
+    def entry(entry_id="reply-one", character="sakura", suppressed=False):
+        timeline.append(NewTimelineEntry(entry_id, "turn-" + entry_id, character,
+            TimelineKind.ASSISTANT, "chat", "2026-09-28T00:00:00Z",
+            {"segments": [{"text": "原文 " + entry_id, "translation": "译文", "tone": "happy",
+                            "portrait": "smile", "suppressTts": suppressed}]}))
+    entry()
+    yield SimpleNamespace(host=host, boundary=boundary, artifacts=artifacts, store=store,
+        accepted=accepted, session=session, generated=generated, facts=facts, desktop=desktop, entry=entry)
+    host.close()
+    boundary.close()
+    artifacts.clear()
+
+
+def completed(system, entry_id="reply-one"):
+    job_id = system.host.begin("sakura", entry_id, 0)["jobId"]
+    assert system.host._jobs[job_id].done.wait(3)
+    return system.host.poll(job_id)["result"]
+
+
+def test_speech_reuses_saved_audio_without_desktop_playback_and_releases_more_than_16_exports(system):
+    with caller():
+        first_recording = None
+        for index in range(20):
+            entry_id = f"reply-{index}"
+            system.entry(entry_id)
+            result = completed(system, entry_id)
+            descriptor = result["artifact"]
+            resolved = system.artifacts.call("resolve", [descriptor["artifactId"]])
+            assert Path(resolved["path"]).read_bytes().startswith(b"RIFF")
+            assert result["historyEntryId"] == entry_id
+            assert result["segmentIndex"] == 0
+            system.artifacts.call("release_received", [descriptor["artifactId"]])
+            assert system.store.count == 0
+            if index == 0:
+                first_recording = result["recordingId"]
+        reused = completed(system, "reply-0")
+        assert reused["recordingId"] == first_recording
+        assert len(system.generated) == 20
+        assert system.generated[0]["text"] == "原文 reply-0"
+        system.artifacts.call("release_received", [reused["artifact"]["artifactId"]])
+    assert system.store.count == 0
+    assert system.artifacts._speech_exports == set()
+    assert system.boundary._authorizations == {}
+    assert system.facts == system.desktop == []
+
+
+@pytest.mark.parametrize("plugin,scope", [("other", "other-scope"), ("remote", "replacement")])
+def test_jobs_and_audio_are_bound_to_the_authenticated_process(system, plugin, scope):
+    with caller():
+        job_id = system.host.begin("sakura", "reply-one", 0)["jobId"]
+        assert system.host._jobs[job_id].done.wait(3)
+    with caller(plugin, scope):
+        for method in (system.host.poll, system.host.cancel):
+            with pytest.raises(SpeechHostError, match="SPEECH_JOB_NOT_FOUND"):
+                method(job_id)
+    with caller():
+        artifact_id = system.host.poll(job_id)["result"]["artifact"]["artifactId"]
+    with caller(plugin, scope):
+        for method in ("resolve", "release_received"):
+            with pytest.raises(HostServiceError, match="ARTIFACT_NOT_FOUND"):
+                system.artifacts.call(method, [artifact_id])
+    with caller():
+        system.artifacts.call("release_received", [artifact_id])
+
+
+@pytest.mark.parametrize("revoke", ["cancel", "scope", "character", "generation"])
+def test_revocation_before_worker_runs_prevents_synthesis(system, monkeypatch, revoke):
+    workers = []
+    monkeypatch.setattr("app.core_host.speech_host.threading.Thread.start", lambda worker: workers.append(worker))
+    with caller():
+        job_id = system.host.begin("sakura", "reply-one", 0)["jobId"]
+        if revoke == "cancel":
+            assert system.host.cancel(job_id) == {"accepted": True}
+        elif revoke == "scope":
+            system.accepted.remove(("remote", "original"))
+            system.host.revoke_scope("remote")
+        elif revoke == "character":
+            system.host.invalidate_session()
+            system.session.character.id = "other"
+            system.boundary.reset_character()
+        else:
+            system.host.close()
+        workers[0].run()
+        with pytest.raises(SpeechHostError, match="TTS_SYNTHESIS_CANCELLED" if revoke == "cancel" else "SPEECH_JOB_NOT_FOUND"):
+            system.host.poll(job_id)
+    assert system.generated == []
+    assert system.store.count == 0
+
+
+@pytest.mark.parametrize("revoke", ["scope", "character", "generation"])
+def test_revocation_releases_export_without_removing_retained_recording(system, revoke):
+    with caller():
+        result = completed(system)
+        artifact_id = result["artifact"]["artifactId"]
+        issued_path = Path(system.artifacts.call("resolve", [artifact_id])["path"])
+        if revoke == "scope":
+            system.artifacts.revoke_scope("remote")
+            system.host.revoke_scope("remote")
+        elif revoke == "character":
+            system.host.invalidate_session()
+        else:
+            system.host.close()
+        with pytest.raises(HostServiceError, match="ARTIFACT_NOT_FOUND"):
+            system.artifacts.call("resolve", [result["artifact"]["artifactId"]])
+        if revoke != "scope":
+            assert issued_path.read_bytes().startswith(b"RIFF")
+            system.artifacts.call("release_received", [artifact_id])
+    assert system.boundary._recordings.get(result["recordingId"]) is not None
+    assert system.store.count == 0
+
+
+def test_cancellation_after_audio_is_prepared_cannot_export_a_late_result(system, monkeypatch):
+    prepared, release = threading.Event(), threading.Event()
+    original = system.boundary.prepare_speech
+    def delayed(*args):
+        recording = original(*args)
+        prepared.set()
+        assert release.wait(3)
+        return recording
+    monkeypatch.setattr(system.boundary, "prepare_speech", delayed)
+    with caller():
+        job_id = system.host.begin("sakura", "reply-one", 0)["jobId"]
+        job = system.host._jobs[job_id]
+        try:
+            assert prepared.wait(3)
+            assert system.host.cancel(job_id)["accepted"]
+        finally:
+            release.set()
+        assert job.done.wait(3)
+        with pytest.raises(SpeechHostError, match="TTS_SYNTHESIS_CANCELLED"):
+            system.host.poll(job_id)
+    assert system.store.count == 0
+    assert system.artifacts._speech_exports == set()
+    assert system.facts == []
+
+
+def test_character_switch_closes_speech_admission_until_the_new_character_is_published(system):
+    with caller():
+        result = completed(system)
+        with system.host.suspend_for_character_change():
+            with pytest.raises(SpeechHostError, match="SPEECH_UNAVAILABLE"):
+                system.host.begin("sakura", "reply-one", 0)
+            with pytest.raises(HostServiceError, match="ARTIFACT_NOT_FOUND"):
+                system.artifacts.call("resolve", [result["artifact"]["artifactId"]])
+            system.session.character.id = "other"
+            system.boundary.reset_character()
+        system.entry("other-entry", character="other")
+        with pytest.raises(TTSBoundaryError) as caught:
+            system.host.begin("sakura", "reply-one", 0)
+        assert caught.value.code == "SPEECH_CHARACTER_NOT_CURRENT"
+        job_id = system.host.begin("other", "other-entry", 0)["jobId"]
+        assert system.host._jobs[job_id].done.wait(3)
+        assert system.host.poll(job_id)["result"]["characterId"] == "other"
+
+
+def test_real_runtime_scope_stop_can_interrupt_export_copy_without_lock_inversion(system, tmp_path, monkeypatch):
+    from app.plugins.runtime_v4 import PluginRuntimeManager
+    from app.core_host import plugin_host_services
+
+    copying, release_copy, process_stopped = threading.Event(), threading.Event(), threading.Event()
+    manager = PluginRuntimeManager(tmp_path, "speech-generation", [])
+    process = SimpleNamespace(scope_id="original", close=lambda **_kwargs: process_stopped.set())
+    manager._records["remote"] = SimpleNamespace(process=process, pid=1, state="active", reason_code="READY",
+        spec=SimpleNamespace(plugin_id="remote", name="Remote", provides=(), requires=()))
+    manager.install_host_service("sakura.host.artifacts", system.artifacts, exports=())
+    manager.install_host_service("sakura.host.speech", system.host, exports=("begin", "poll", "cancel"))
+    system.artifacts._commit_scope = manager.commit_plugin_scope
+    system.host._commit_scope = lambda owner, action: manager.commit_plugin_scope(*owner, action)
+    original = plugin_host_services.shutil.copyfile
+    def delayed_copy(*args, **kwargs):
+        copying.set()
+        assert release_copy.wait(3)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(plugin_host_services.shutil, "copyfile", delayed_copy)
+    errors = []
+    def stop():
+        try:
+            manager._stop_process("remote", reason="PLUGIN_DISABLED", failed=False)
+        except BaseException as error:
+            errors.append(error)
+    with caller():
+        job_id = system.host.begin("sakura", "reply-one", 0)["jobId"]
+        job = system.host._jobs[job_id]
+        stopper = threading.Thread(target=stop)
+        try:
+            assert copying.wait(3)
+            stopper.start()
+            # Stopping must acquire the runtime lock while the file copy waits.
+            assert process_stopped.wait(3)
+        finally:
+            release_copy.set()
+        stopper.join(3)
+        assert not stopper.is_alive()
+        assert job.done.wait(3)
+        assert errors == []
+        with pytest.raises(SpeechHostError, match="SPEECH_JOB_NOT_FOUND"):
+            system.host.poll(job_id)
+    assert system.store.count == 0
+    assert system.artifacts._speech_exports == set()
+
+
+@pytest.mark.parametrize("entry_id,index,character,code", [
+    ("suppressed", 0, "sakura", "TTS_SEGMENT_NOT_AUTHORIZED"),
+    ("foreign", 0, "sakura", "TTS_SEGMENT_NOT_AUTHORIZED"),
+    ("missing", 0, "sakura", "TTS_SEGMENT_NOT_AUTHORIZED"),
+    ("reply-one", True, "sakura", "TTS_SEGMENT_NOT_AUTHORIZED"),
+    ("reply-one", 1, "sakura", "TTS_SEGMENT_NOT_AUTHORIZED"),
+    ("reply-one", 0, "other", "SPEECH_CHARACTER_NOT_CURRENT"),
+])
+def test_speech_only_accepts_current_character_playable_history(system, entry_id, index, character, code):
+    system.entry("suppressed", suppressed=True)
+    system.entry("foreign", character="other")
+    with caller(), pytest.raises(TTSBoundaryError, match=".*") as caught:
+        system.host.begin(character, entry_id, index)
+    assert caught.value.code == code
+    assert system.generated == []
+
+
+def test_playback_events_identify_the_actual_recording_and_unknown_recordings_stay_unidentified(system):
+    with caller():
+        result = completed(system)
+    assert system.facts == []
+    for recording_id in (result["recordingId"], "missing-recording"):
+        for state in ("started", "finished"):
+            system.boundary._handle_playback_observe({"payload": {
+                "playbackId": "play-" + recording_id, "recordingId": recording_id, "state": state}})
+    for _, payload in system.facts[:2]:
+        assert (payload["characterId"], payload["historyEntryId"], payload["segmentIndex"]) == ("sakura", "reply-one", 0)
+    for _, payload in system.facts[2:]:
+        assert not {"characterId", "historyEntryId", "segmentIndex"} & payload.keys()

@@ -50,23 +50,10 @@ class ConversationHostService:
     def begin(self, character_id: str, text: str,
               artifact_descriptor: Mapping[str, Any] | None = None) -> dict[str, str]:
         owner = caller_identity()
-        if not isinstance(character_id, str) or not isinstance(text, str):
-            raise ConversationHostError("INVALID_CHAT_PAYLOAD")
-        boundary = self._boundary_provider()
-        if boundary is None:
-            raise ConversationHostError("ASSISTANT_NOT_READY")
-        with self._lock:
-            epoch = self._session_epoch
-        state = boundary.current_host_state()
-        if not state["sessionId"]:
-            raise ConversationHostError("ASSISTANT_NOT_READY")
-        requested = character_id.strip() or state["characterId"]
-        if requested != state["characterId"]:
-            raise ConversationHostError("CHAT_CHARACTER_NOT_CURRENT")
+        boundary = None
         artifact_id = ""
         operation_id = "conversation-" + uuid.uuid4().hex
         job_id = "conversation-job-" + uuid.uuid4().hex
-        job = _ConversationJob(owner, operation_id, boundary)
         try:
             image_data_url = ""
             if artifact_descriptor is not None and artifact_descriptor != {}:
@@ -90,6 +77,20 @@ class ConversationHostService:
                     raise
                 except Exception as error:
                     raise ConversationHostError("CHAT_IMAGE_INVALID") from error
+            if not isinstance(character_id, str) or not isinstance(text, str):
+                raise ConversationHostError("INVALID_CHAT_PAYLOAD")
+            boundary = self._boundary_provider()
+            if boundary is None:
+                raise ConversationHostError("ASSISTANT_NOT_READY")
+            with self._lock:
+                epoch = self._session_epoch
+            state = boundary.current_host_state()
+            if not state["sessionId"]:
+                raise ConversationHostError("ASSISTANT_NOT_READY")
+            requested = character_id.strip() or state["characterId"]
+            if requested != state["characterId"]:
+                raise ConversationHostError("CHAT_CHARACTER_NOT_CURRENT")
+            job = _ConversationJob(owner, operation_id, boundary)
             boundary.reserve_host_message(text, image_data_url, operation_id=operation_id,
                 expected_character_id=requested, expected_session_id=state["sessionId"])
             with self._lock:
@@ -97,7 +98,8 @@ class ConversationHostService:
                     raise ConversationHostError("CHAT_SESSION_STALE")
                 self._commit_scope(owner, lambda: self._jobs.__setitem__(job_id, job))
         except Exception:
-            boundary.abandon_host_message(operation_id)
+            if boundary is not None:
+                boundary.abandon_host_message(operation_id)
             self._release_artifact(artifact_id)
             raise
 

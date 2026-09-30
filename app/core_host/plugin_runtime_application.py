@@ -16,6 +16,7 @@ from app.core.runtime_log import log_event
 from app.core.diagnostics import exception_diagnostics
 from app.core_host.mobile_host import MobileHostService
 from app.core_host.conversation_host import ConversationHostService
+from app.core_host.speech_host import SpeechHostService
 from app.core_host.chat_host import ChatHost, HOST_CHAT_SERVICE
 from app.core_host.visual_control_host import HostVisualService, HOST_VISUAL_SERVICE
 from app.core_host.screen_host import ScreenHost, HOST_SCREEN_SERVICE, migrate_legacy_screen_settings
@@ -29,6 +30,7 @@ from app.plugins.host_services import (
     HOST_LOGGING_SERVICE,
     HOST_MODEL_SLOTS_SERVICE,
     HOST_CONVERSATION_SERVICE,
+    HOST_SPEECH_SERVICE,
     HOST_MOBILE_SERVICE,
     HOST_SETTINGS_COLLECTION_V0_SERVICE,
     HOST_SETTINGS_SERVICE,
@@ -61,7 +63,7 @@ _HOST_EXPORTS = {
     HOST_SETTINGS_SURFACE_V0_SERVICE: ("register", "unregister"),
     HOST_SETTINGS_COLLECTION_V0_SERVICE: ("register", "unregister"),
     HOST_COMPOSER_TOOLS_V0_SERVICE: ("register", "unregister"),
-    HOST_TIMELINE_SERVICE: ("latest_cursor", "read_recent", "read_since", "read_turn_page"),
+    HOST_TIMELINE_SERVICE: ("latest_cursor", "get_entry", "read_recent", "read_since", "read_turn_page"),
 }
 
 _HOST_EVENT_NAMES = {
@@ -126,6 +128,7 @@ class PluginRuntimeApplication:
         self._assistant_input_lock = threading.Lock()
         self._session: object | None = None
         self._chat_boundary: object | None = None
+        self._tts_boundary: object | None = None
         self._closed = False
         self._loaded = threading.Event()
         self._bound = threading.Event()
@@ -181,6 +184,15 @@ class PluginRuntimeApplication:
                 exports=_HOST_EXPORTS[service_key],
             )
         commit_scope = lambda owner, commit: self._manager.commit_plugin_scope(*owner, commit)
+        self.speech = SpeechHostService(
+            boundary_provider=lambda: self._tts_boundary,
+            export_audio=self._host_services.export_speech_audio,
+            release_artifact=self._host_services.release_speech_audio,
+            revoke_exports=self._host_services.revoke_speech_audio,
+            commit_scope=commit_scope,
+        )
+        self._manager.install_host_service(HOST_SPEECH_SERVICE, self.speech,
+            exports=("begin", "poll", "cancel"))
         self.conversation = ConversationHostService(
             chat_boundary_provider=lambda: self._chat_boundary,
             artifact_resolver=self._host_services.resolve_committed_artifact,
@@ -395,6 +407,7 @@ class PluginRuntimeApplication:
         self._session = session
         self.chat.invalidate_session()
         self.conversation.invalidate_session()
+        self.speech.invalidate_session()
         self.screen.invalidate_session()
         self._tool_registry.set_event_emitter(lambda name, payload: self.emit_event(name, payload or {}))
         session.visual_binding = candidate.binding
@@ -584,6 +597,7 @@ class PluginRuntimeApplication:
         self._session = None
         self.chat.invalidate_session()
         self.conversation.invalidate_session()
+        self.speech.invalidate_session()
         self.screen.invalidate_session()
         self._bound.clear()
         if hasattr(registry, "set_event_emitter"):
@@ -594,6 +608,9 @@ class PluginRuntimeApplication:
 
     def bind_chat_boundary(self, boundary: object) -> None:
         self._chat_boundary = boundary
+
+    def bind_tts_boundary(self, boundary: object) -> None:
+        self._tts_boundary = boundary
 
     def pause_service_providers(self, prefix: str):
         return self._manager.pause_service_providers(prefix)
@@ -625,12 +642,15 @@ class PluginRuntimeApplication:
                     except Exception as error:
                         errors.append(error)
 
+    @contextmanager
     def prepare_character_switch(self):
-        records = self._manager.snapshot()["plugins"]
-        ids = [item["pluginId"] for item in records if item["state"] == "active"
-               and ({"sakura.host.character", "sakura.host.timeline"} & set(item["requires"]))
-               and not any(key == "sakura.tts" or key == "sakura.assistant" or key.startswith(("sakura.tts.provider.", "sakura.visual.")) for key in item["provides"])]
-        return self._manager.pause_plugins(ids)
+        with self.speech.suspend_for_character_change():
+            records = self._manager.snapshot()["plugins"]
+            ids = [item["pluginId"] for item in records if item["state"] == "active"
+                   and ({"sakura.host.character", "sakura.host.timeline", "sakura.host.speech"} & set(item["requires"]))
+                   and not any(key == "sakura.tts" or key == "sakura.assistant" or key.startswith(("sakura.tts.provider.", "sakura.visual.")) for key in item["provides"])]
+            with self._manager.pause_plugins(ids) as errors:
+                yield errors
 
     @contextmanager
     def plugin_update(self, plugin_id: str):
@@ -763,7 +783,7 @@ class PluginRuntimeApplication:
         return self._host_services.release_committed_artifact(artifact_id)
 
     def quiesce(self) -> None:
-        return None
+        self.speech.close()
 
     def close(self) -> None:
         if self._closed:
@@ -771,6 +791,7 @@ class PluginRuntimeApplication:
         self._closed = True
         self.chat.close()
         self.conversation.close()
+        self.speech.close()
         self.screen.close()
         self.visual_controls.close()
         self.visuals.close()

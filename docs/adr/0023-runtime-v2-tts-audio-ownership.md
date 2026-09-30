@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-28
 ---
 
 # ADR-0023：Runtime v2 分离 TTS 合成、播放与语音留存所有权
@@ -36,3 +36,16 @@ GPT-SoVITS 可能携带旧权重或损坏管道并持续返回 HTTP 400；`data/
 Core 只调用 `sakura.tts`，不保留 Provider Registry、合成队列或进程 supervisor 的备用实现。
 Core TTS boundary 独占 segment authorization、artifact 消费、recording 和 opaque playback descriptor；
 Rust 拥有默认设备与进程树的最终回收权。Provider 子进程不得脱离 Rust generation process group。
+
+## 插件输入与远程播放
+
+[讨论 #227](https://github.com/Rvosy/Sakura/issues/227) 暴露了旧手机入口与桌面聊天事件链分离的问题。
+[PR #230](https://github.com/Rvosy/Sakura/pull/230) 将插件用户输入接入统一 conversation 入口；
+字幕栏和远程端还需要知道具体播放哪条回复，以及如何取得可释放的音频。
+
+Core 提供按历史段落准备音频的 `sakura.host.speech`，沿用既有 TTS 授权和录音所有权。
+远程插件取得 scope 内的音频副本并负责传输与本端播放；Core 回收 Provider artifact，插件释放交付副本，
+Rust 继续独占桌面播放。这样远程端无需枚举缓存、读取 Provider 配置或接管桌面播放队列。
+
+播放事实事件携带来自录音元数据的历史条目和原始段落下标，字幕据此定位内容；仅有播放开始次数不足以
+区分静音段、历史回放和中断。接口合同见 [Plugin Runtime](../specs/runtime-v2/sakura-plugin-runtime-v4.md#已保存回复的语音与播放身份)。

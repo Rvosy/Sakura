@@ -7,6 +7,7 @@ import json
 import math
 import re
 import secrets
+import shutil
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -201,6 +202,16 @@ class _TimelineHostService:
         try:
             if method == "latest_cursor" and not args:
                 return {"cursor": getattr(self._store, "latest_cursor")(character_id)}
+            if method == "get_entry" and len(args) == 1:
+                from app.storage.timeline import MAX_ID_CHARS
+
+                request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
+                entry_id = request.get("entryId")
+                if (set(request) != {"entryId"} or not isinstance(entry_id, str)
+                        or not entry_id.strip() or len(entry_id) > MAX_ID_CHARS):
+                    raise HostServiceError("TIMELINE_ARGUMENTS_INVALID")
+                entry = self._store.get_entry(character_id, entry_id)
+                return {"entry": _timeline_entry_mapping(entry) if entry is not None else None}
             if method == "read_recent" and len(args) == 1:
                 request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
                 if set(request) != {"limit"}:
@@ -257,6 +268,8 @@ class _ArtifactsHostService:
         self._commit_scope = commit_scope
         self._received: dict[str, tuple[str, str]] = {}
         self._deliveries: dict[str, _ArtifactDelivery] = {}
+        self._speech_exports: set[str] = set()
+        self._revoked_speech: set[str] = set()
         self._received_lock = threading.RLock()
 
     def call(self, method: str, args: Sequence[Any]) -> object:
@@ -284,7 +297,7 @@ class _ArtifactsHostService:
                     return result
             if method == "release_received" and len(args) == 1:
                 with self._received_lock:
-                    self._resolve_received(str(args[0]))
+                    self._resolve_received(str(args[0]), releasing=True)
                     return {"released": self.release_committed(str(args[0]))}
             if method == "allocate" and len(args) == 2:
                 return getattr(self._store, "allocate")(
@@ -342,10 +355,14 @@ class _ArtifactsHostService:
             if released:
                 self._received.pop(artifact_id, None)
                 self._deliveries.pop(artifact_id, None)
+                self._speech_exports.discard(artifact_id)
+                self._revoked_speech.discard(artifact_id)
             return released
 
-    def _resolve_received(self, artifact_id):
+    def _resolve_received(self, artifact_id, *, releasing=False):
         with self._received_lock:
+            if artifact_id in self._revoked_speech and not releasing:
+                raise HostServiceError("ARTIFACT_NOT_FOUND")
             artifact = self.resolve_committed(artifact_id)
             caller = HOST_CALLER.get()
             received = self._received.get(artifact_id)
@@ -363,10 +380,52 @@ class _ArtifactsHostService:
             self._store.release(plugin_id, allocation["artifactId"])
             raise
 
+    def export_speech(self, owner: tuple[str, str], recording) -> dict[str, Any]:
+        """Grant a copy of a retained recording to one authenticated process."""
+        # Copy while scope cleanup is excluded, without holding the runtime lock.
+        # The final small grant then uses the same runtime -> artifact lock order
+        # as other Host deliveries. A departed scope cannot receive the result.
+        with self._received_lock:
+            allocation = self._store.allocate(owner[0], {"mediaType": recording.media_type, "suffix": ".wav"})
+            artifact_id = allocation["artifactId"]
+            try:
+                shutil.copyfile(recording.audio_path, allocation["path"])
+                descriptor = self._store.commit(owner[0], artifact_id)
+            except BaseException:
+                self._store.release(owner[0], artifact_id)
+                raise
+        def grant():
+            with self._received_lock:
+                self._received[artifact_id] = owner
+                self._speech_exports.add(artifact_id)
+                return descriptor
+        try:
+            return self._commit_scope(*owner, grant)
+        except BaseException:
+            with self._received_lock:
+                self._store.release(owner[0], artifact_id)
+            raise
+
+    def release_speech(self, artifact_id: str) -> None:
+        with self._received_lock:
+            if artifact_id in self._speech_exports:
+                owner = self._received[artifact_id]
+                self._release_owned(owner[0], artifact_id)
+
+    def revoke_speech(self, plugin_id: str | None = None) -> None:
+        with self._received_lock:
+            for artifact_id in tuple(self._speech_exports):
+                if plugin_id is None or self._received[artifact_id][0] == plugin_id:
+                    # An already issued path may still be read by the process.
+                    # Deny new reads; explicit release or scope-stop deletes it.
+                    self._revoked_speech.add(artifact_id)
+
     def clear(self) -> None:
         with self._received_lock:
             self._received.clear()
             self._deliveries.clear()
+            self._speech_exports.clear()
+            self._revoked_speech.clear()
             getattr(self._store, "clear")()
 
     def revoke_scope(self, plugin_id: str) -> None:
@@ -376,6 +435,8 @@ class _ArtifactsHostService:
                     self._release_owned(delivery.receiver[0], artifact_id)
             self._received = {artifact_id: identity for artifact_id, identity in self._received.items()
                               if identity[0] != plugin_id}
+            self._speech_exports.intersection_update(self._received)
+            self._revoked_speech.intersection_update(self._received)
             getattr(self._store, "release_plugin")(plugin_id)
 
     def resolve_committed(self, artifact_id: str) -> object:
@@ -385,6 +446,8 @@ class _ArtifactsHostService:
         with self._received_lock:
             self._received.pop(artifact_id, None)
             self._deliveries.pop(artifact_id, None)
+            self._speech_exports.discard(artifact_id)
+            self._revoked_speech.discard(artifact_id)
             artifact = self.resolve_committed(artifact_id)
             return bool(
                 getattr(self._store, "release")(
@@ -1993,6 +2056,15 @@ class PluginHostServices:
 
     def create_json_artifact(self, plugin_id, value):
         return self._artifacts.create_json(plugin_id, value)
+
+    def export_speech_audio(self, owner, recording):
+        return self._artifacts.export_speech(owner, recording)
+
+    def release_speech_audio(self, artifact_id):
+        self._artifacts.release_speech(artifact_id)
+
+    def revoke_speech_audio(self, plugin_id=None):
+        self._artifacts.revoke_speech(plugin_id)
 
     def release_owned_artifact(self, plugin_id, artifact_id):
         return self._artifacts._store.release(plugin_id, artifact_id)

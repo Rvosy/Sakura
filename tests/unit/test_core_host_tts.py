@@ -847,8 +847,8 @@ def test_character_reset_revokes_pending_and_late_synthesis(tmp_path, monkeypatc
             tone="happy", portrait="smile", character_id="sakura", history_entry_id=f"entry-{index}")
     ready, release = threading.Event(), threading.Event()
     synthesize = boundary._synthesize_with_plugin
-    def delayed(*args):
-        result = synthesize(*args)
+    def delayed(*args, **kwargs):
+        result = synthesize(*args, **kwargs)
         ready.set()
         assert release.wait(3)
         return result

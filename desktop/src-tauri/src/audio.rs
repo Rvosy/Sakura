@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File},
+    future::Future,
     io::Read,
     path::{Path, PathBuf},
     sync::{
@@ -334,6 +335,12 @@ struct AudioSession {
 pub struct AudioState {
     user_root: PathBuf,
     active: Mutex<Option<AudioSession>>,
+    observations: Mutex<
+        Option<(
+            String,
+            tokio::sync::mpsc::UnboundedSender<AudioPlaybackEvent>,
+        )>,
+    >,
     input_active: Arc<AtomicBool>,
 }
 
@@ -364,8 +371,32 @@ impl AudioState {
         Self {
             user_root,
             active: Mutex::new(None),
+            observations: Mutex::new(None),
             input_active: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn observation_sender(
+        &self,
+        generation: &str,
+        handle: shell_lifecycle::ShellLifecycleHandle,
+    ) -> Result<tokio::sync::mpsc::UnboundedSender<AudioPlaybackEvent>, String> {
+        let mut observations = self
+            .observations
+            .lock()
+            .map_err(|_| "AUDIO_PLAYBACK_FAILED")?;
+        if let Some((current, sender)) = observations.as_ref() {
+            if current == generation {
+                return Ok(sender.clone());
+            }
+        }
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let observer_generation = generation.to_string();
+        tauri::async_runtime::spawn(forward_playback_observations(receiver, move |event| {
+            observe_tts_playback(handle.clone(), observer_generation.clone(), event)
+        }));
+        *observations = Some((generation.to_string(), sender.clone()));
+        Ok(sender)
     }
 
     #[cfg(test)]
@@ -487,6 +518,14 @@ impl AudioState {
                 }
             }
         }
+        if let Ok(mut observations) = self.observations.lock() {
+            if observations
+                .as_ref()
+                .is_some_and(|(current, _)| current == generation)
+            {
+                observations.take();
+            }
+        }
     }
 
     pub(crate) fn pause_for_input(&self) -> InputPlaybackPause {
@@ -521,6 +560,9 @@ impl AudioState {
 impl Drop for AudioState {
     fn drop(&mut self) {
         self.shutdown();
+        if let Ok(observations) = self.observations.get_mut() {
+            observations.take();
+        }
     }
 }
 
@@ -710,7 +752,7 @@ pub(crate) fn tts_begin_reply(
         .map_err(|error| error.to_string())?
         .ok_or("STALE_GENERATION")?;
     let callback_app = app_handle.clone();
-    let observer_generation = generation.clone();
+    let observations = audio_state.observation_sender(&generation, handle)?;
     let playback_log = runtime_log.inner().clone();
     let playback_generation = generation.clone();
     audio_state.open_manager(
@@ -721,7 +763,7 @@ pub(crate) fn tts_begin_reply(
             for label in ["main", "history"] {
                 let _ = callback_app.emit_to(label, "sakura://tts-playback-event", event.clone());
             }
-            observe_tts_playback(handle.clone(), observer_generation.clone(), event);
+            let _ = observations.send(event);
         }),
         || {
             for label in ["main", "history"] {
@@ -1014,31 +1056,43 @@ pub(crate) async fn settings_voice_save(
     Ok(payload)
 }
 
-fn observe_tts_playback(
+// 同一 generation 的窗口和播放器共用队列，等上一条提交完成后再发送下一条，
+// 保证旧播放的 stopped 先于替代播放的 started 到达 Core。
+async fn forward_playback_observations<F, Fut>(
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<AudioPlaybackEvent>,
+    mut observe: F,
+) where
+    F: FnMut(AudioPlaybackEvent) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    while let Some(event) = receiver.recv().await {
+        observe(event).await;
+    }
+}
+
+async fn observe_tts_playback(
     handle: shell_lifecycle::ShellLifecycleHandle,
     generation_id: String,
     event: AudioPlaybackEvent,
 ) {
-    tauri::async_runtime::spawn(async move {
-        let current = handle.available_generation_id().ok().flatten();
-        if current.as_deref() != Some(generation_id.as_str()) {
-            return;
-        }
-        let error_code = event.error.as_ref().map(|error| error.code);
-        let _ = dispatch_settings_request(
-            handle,
-            None,
-            "tts.playback.observe",
-            json!({
-                "playbackId": event.playback_id,
-                "recordingId": event.recording_id,
-                "state": event.state,
-                "errorCode": error_code,
-            }),
-            std::time::Duration::from_secs(2),
-        )
-        .await;
-    });
+    let current = handle.available_generation_id().ok().flatten();
+    if current.as_deref() != Some(generation_id.as_str()) {
+        return;
+    }
+    let error_code = event.error.as_ref().map(|error| error.code);
+    let _ = dispatch_settings_request(
+        handle,
+        None,
+        "tts.playback.observe",
+        json!({
+            "playbackId": event.playback_id,
+            "recordingId": event.recording_id,
+            "state": event.state,
+            "errorCode": error_code,
+        }),
+        std::time::Duration::from_secs(2),
+    )
+    .await;
 }
 
 fn record_tts_playback(
@@ -1094,6 +1148,92 @@ mod tests {
     };
 
     static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn playback_observations_wait_for_submission_before_forwarding_the_next_event() {
+        use std::task::{Context, Poll, Waker};
+
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let mut held = Some(held);
+        let entered = Arc::new(Mutex::new(Vec::new()));
+        let completed = Arc::new(Mutex::new(Vec::new()));
+        let entered_observer = entered.clone();
+        let completed_observer = completed.clone();
+        let mut forwarding = Box::pin(forward_playback_observations(receiver, move |event| {
+            let held = held.take();
+            let entered = entered_observer.clone();
+            let completed = completed_observer.clone();
+            async move {
+                let identity = (event.playback_id, event.state);
+                entered.lock().unwrap().push(identity.clone());
+                if let Some(held) = held {
+                    held.await.unwrap();
+                }
+                completed.lock().unwrap().push(identity);
+            }
+        }));
+        let expected = vec![
+            ("old".to_string(), "started"),
+            ("old".to_string(), "stopped"),
+            ("new".to_string(), "started"),
+            ("new".to_string(), "finished"),
+        ];
+        for (playback_id, state) in &expected {
+            sender
+                .send(AudioPlaybackEvent {
+                    playback_id: playback_id.clone(),
+                    recording_id: Some("recording".to_string()),
+                    state,
+                    error: None,
+                })
+                .unwrap();
+        }
+        // 固定第一条 Core 提交尚未完成；旧的逐事件并发投递会让后续事件越过它。
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            forwarding.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        assert_eq!(*entered.lock().unwrap(), vec![expected[0].clone()]);
+        assert!(completed.lock().unwrap().is_empty());
+        release.send(()).unwrap();
+        assert!(matches!(
+            forwarding.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        assert_eq!(*entered.lock().unwrap(), expected);
+        assert_eq!(*completed.lock().unwrap(), expected);
+        drop(sender);
+        assert!(matches!(
+            forwarding.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
+    }
+
+    #[test]
+    fn playback_observation_queue_closes_with_its_generation_and_state() {
+        let state = AudioState::new(PathBuf::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        *state.observations.lock().unwrap() = Some(("new".into(), sender));
+        state.shutdown_generation("old");
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        state.shutdown_generation("new");
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        *state.observations.lock().unwrap() = Some(("last".into(), sender));
+        drop(state);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
 
     #[test]
     fn saved_voice_commands_are_limited_to_chat_and_history_windows() {

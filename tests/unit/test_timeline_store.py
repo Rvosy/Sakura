@@ -597,8 +597,11 @@ def test_timeline_host_service_exposes_only_current_character_typed_entries(
         }
     ]
     assert "seq" not in recent["entries"][0]
+    assert service.call("get_entry", [{"entryId": "entry-human"}]) == {"entry": recent["entries"][0]}
+    assert service.call("get_entry", [{"entryId": "missing"}]) == {"entry": None}
 
     current[0] = "other"
+    assert service.call("get_entry", [{"entryId": "entry-human"}]) == {"entry": None}
     with pytest.raises(HostServiceError, match="TIMELINE_CURSOR_INVALID") as error:
         service.call("read_since", [{"cursor": latest["cursor"], "limit": 10}])
     assert error.value.code == "TIMELINE_CURSOR_INVALID"
@@ -606,6 +609,14 @@ def test_timeline_host_service_exposes_only_current_character_typed_entries(
     with pytest.raises(HostServiceError, match="TIMELINE_LIMIT_INVALID") as error:
         service.call("read_recent", [{"limit": 501}])
     assert error.value.code == "TIMELINE_LIMIT_INVALID"
+
+
+@pytest.mark.parametrize("payload", [{}, {"entryId": ""}, {"entryId": 1},
+    {"entryId": "x" * 129}, {"entryId": "entry-human", "characterId": "other"}])
+def test_timeline_get_entry_rejects_invalid_requests(tmp_path, payload):
+    service = _TimelineHostService(TimelineStore(tmp_path / "timeline.sqlite3"), lambda: "sakura")
+    with pytest.raises(HostServiceError, match="TIMELINE_ARGUMENTS_INVALID"):
+        service.call("get_entry", [payload])
 
 
 def test_timeline_host_service_paginates_before_private_frame_limit(tmp_path: Path) -> None:

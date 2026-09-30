@@ -22,7 +22,7 @@ def caller(plugin="input.plugin", scope="original"):
         HOST_CALLER.reset(owner_token)
 
 
-def setup_host(tmp_path, *, gate_at=None):
+def setup_host(tmp_path, *, gate_at=None, reply=None):
     entered, resume = threading.Event(), threading.Event()
     requests, events, facts, speech = [], [], [], []
 
@@ -32,7 +32,7 @@ def setup_host(tmp_path, *, gate_at=None):
             entered.set()
             assert resume.wait(3)
         cancel_checker()
-        return SimpleNamespace(reply=ChatReply([ChatSegment(text="spoken reply")]), actions=[])
+        return SimpleNamespace(reply=reply or ChatReply([ChatSegment(text="spoken reply")]), actions=[])
 
     def release(*args, **kwargs):
         if gate_at == "release":
@@ -186,6 +186,65 @@ def test_foreign_image_descriptor_is_not_read_or_released(tmp_path, monkeypatch)
             turn.host.begin("sakura", "hello", {"artifactId": "foreign", "mediaType": "image/png", "byteLength": 7})
         assert released == []
         assert turn.boundary.current_host_state()["idle"]
+        assert turn.requests == []
+    finally:
+        turn.host.close()
+        turn.boundary.close()
+
+
+def test_conversation_returns_complete_segments_with_original_indexes(tmp_path):
+    turn = setup_host(tmp_path, reply=ChatReply([
+        ChatSegment(text="silent", translation="静音", suppress_tts=True),
+        ChatSegment(text="spoken", translation="朗读", portrait="smile"),
+    ]))
+    try:
+        with caller():
+            accepted = turn.host.begin("sakura", "hello")
+            assert turn.host._jobs[accepted["jobId"]].done.wait(3)
+            result = turn.host.poll(accepted["jobId"])["result"]
+        published = turn.events[-1][1]["reply"]
+        assert result["historyEntryId"] == published["historyEntryId"]
+        for index, (segment, original) in enumerate(zip(result["segments"], published["segments"], strict=True)):
+            assert segment == {**original, "segmentIndex": index,
+                "content": original["translation"], "raw_content": original["text"]}
+        assert result["segments"][0]["suppressTts"] is True
+        assert result["segments"][1]["suppressTts"] is False
+    finally:
+        turn.host.close()
+        turn.boundary.close()
+
+
+@pytest.mark.parametrize("rejection", ["unready", "character", "payload"])
+def test_rejected_conversation_releases_its_committed_image(tmp_path, monkeypatch, rejection):
+    turn = setup_host(tmp_path)
+    released = []
+    image = tmp_path / "image.png"
+    image.write_bytes(b"owned")
+    monkeypatch.setattr(turn.host, "_artifact_resolver", lambda _id: SimpleNamespace(
+        plugin_id="input.plugin", path=image, media_type="image/png", byte_length=5))
+    monkeypatch.setattr(turn.host, "_artifact_releaser", released.append)
+    if rejection == "unready":
+        monkeypatch.setattr(turn.host, "_boundary_provider", lambda: None)
+    character = "other" if rejection == "character" else "sakura"
+    text = None if rejection == "payload" else "hello"
+    code = {"unready": "ASSISTANT_NOT_READY", "character": "CHAT_CHARACTER_NOT_CURRENT",
+            "payload": "INVALID_CHAT_PAYLOAD"}[rejection]
+    try:
+        with caller(), pytest.raises(ConversationHostError, match=code):
+            turn.host.begin(character, text, {"artifactId": "owned", "mediaType": "image/png", "byteLength": 5})
+        assert released == ["owned"]
+        assert turn.boundary.current_host_state()["idle"]
+    finally:
+        turn.host.close()
+        turn.boundary.close()
+
+
+@pytest.mark.parametrize("descriptor", ["", "data:image/png;base64,aGVsbG8="])
+def test_conversation_rejects_string_image_descriptors(tmp_path, descriptor):
+    turn = setup_host(tmp_path)
+    try:
+        with caller(), pytest.raises(ConversationHostError, match="CHAT_IMAGE_INVALID"):
+            turn.host.begin("sakura", "hello", descriptor)
         assert turn.requests == []
     finally:
         turn.host.close()
