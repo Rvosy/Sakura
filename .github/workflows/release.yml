@@ -258,8 +258,7 @@ jobs:
           cp "$deb" "$deb_out"
           cp "$update" "$update_out"
           cp "${update}.sig" "${update_out}.sig"
-          "$RUNNER_TEMP/python-runtime/bin/python3" \
-            tools/release/verify_updater_signature.py \
+          python tools/release/verify_updater_signature.py \
             "$update_out" "${update_out}.sig"
           python tools/release/package_optional_plugin.py \
             --source plugins/optional/playwright_browser \

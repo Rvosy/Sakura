@@ -937,6 +937,83 @@ def test_linux_release_collection_stops_before_copying_without_updater_archive(
     assert "Linux bundle or updater signature was not produced." in result.stderr
 
 
+def test_linux_release_collection_verifies_with_the_build_python(tmp_path: Path) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+    step = next(
+        step for step in workflow["jobs"]["bundle"]["steps"]
+        if step.get("name") == "Collect Linux release artifacts"
+    )
+    bundle = tmp_path / "desktop/src-tauri/target/release/bundle"
+    (bundle / "appimage").mkdir(parents=True)
+    (bundle / "deb").mkdir()
+    (bundle / "appimage/Sakura.AppImage").write_bytes(b"appimage")
+    (bundle / "deb/Sakura.deb").write_bytes(b"deb")
+    update = bundle / "appimage/Sakura.AppImage.tar.gz"
+    with tarfile.open(update, "w:gz") as archive:
+        entry = tarfile.TarInfo("Sakura.AppImage")
+        entry.size = len(b"appimage")
+        archive.addfile(entry, io.BytesIO(b"appimage"))
+
+    key = Ed25519PrivateKey.generate()
+    key_id = b"12345678"
+    public_packet = b"Ed" + key_id + key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw,
+    )
+    public_document = "untrusted comment: test key\n" + base64.b64encode(public_packet).decode() + "\n"
+    signature = key.sign(update.read_bytes())
+    trusted_comment = b"timestamp:0\tfile:Sakura.AppImage.tar.gz"
+    signature_document = "\n".join([
+        "untrusted comment: test signature",
+        base64.b64encode(b"Ed" + key_id + signature).decode(),
+        "trusted comment: " + trusted_comment.decode(),
+        base64.b64encode(key.sign(signature + trusted_comment)).decode(),
+    ])
+    encoded_signature = base64.b64encode(signature_document.encode()).decode()
+    update.with_name(update.name + ".sig").write_text(encoded_signature, encoding="utf-8")
+
+    release_tools = tmp_path / "tools/release"
+    release_tools.mkdir(parents=True)
+    for name in ("verify_updater_signature.py", "package_optional_plugin.py"):
+        shutil.copy2(ROOT / "tools/release" / name, release_tools / name)
+    shutil.copytree(
+        ROOT / "plugins/optional/playwright_browser",
+        tmp_path / "plugins/optional/playwright_browser",
+    )
+    if sys.platform == "win32":
+        git = shutil.which("git")
+        assert git is not None
+        bash = str(Path(git).resolve().parents[1] / "bin/bash.exe")
+    else:
+        bash = "bash"
+    result = subprocess.run(
+        [bash, "--noprofile", "--norc", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "VERSION": "1.3.0",
+            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+            "RUNNER_TEMP": tmp_path.as_posix() + "/product-runtime-without-build-dependencies",
+            "SAKURA_UPDATER_PUBLIC_KEY": base64.b64encode(public_document.encode()).decode(),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    output = tmp_path / "artifacts/Sakura-1.3.0-linux-x64.AppImage.tar.gz"
+    assert output.read_bytes() == update.read_bytes()
+    assert output.with_name(output.name + ".sig").read_text(encoding="utf-8") == encoded_signature
+    manifest = build_manifest(
+        version="1.3.0", notes="release", base_url="https://example.test/downloads",
+        releases=[("linux-x64", output, output.with_name(output.name + ".sig"))],
+        portable=None, pub_date="2026-09-30T00:00:00Z", require_all_platforms=False,
+    )
+    assert manifest["platforms"]["linux-x86_64"]["signature"] == encoded_signature
+    assert manifest["platforms"]["linux-x86_64"]["url"].endswith(output.name)
+
+
 def test_static_updater_manifest_requires_signed_release_platforms(tmp_path: Path) -> None:
     releases = []
     for target, name in (
