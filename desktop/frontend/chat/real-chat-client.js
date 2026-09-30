@@ -1,12 +1,13 @@
 import { isChatReadyLifecycle, projectLifecycle } from "../lifecycle.js";
 
 const TERMINALS = new Set(["chat.completed", "chat.failed", "chat.cancelled"]);
-const STABLE_LIFECYCLE = new Set(["ready", "setup_required", "degraded", "failed"]);
 
 function canPrepareGeneration(publication, status) {
-  if (STABLE_LIFECYCLE.has(status)) return true;
+  if (isChatReadyLifecycle(status)) return true;
   const presentation = publication.characterPresentation;
-  return status === "initializing"
+  // CHARACTER_REQUIRED has no resources to load. Non-chat-ready states can
+  // still bind a published character while Assistant setup is pending or failed.
+  return ["initializing", "setup_required", "failed"].includes(status)
     && presentation?.generationId === publication.supervisor.generationId
     && typeof presentation.characterId === "string"
     && presentation.characterId.length > 0;
