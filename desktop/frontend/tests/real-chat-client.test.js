@@ -304,6 +304,68 @@ test("a new character binds while Assistant initializes and stays visible when c
   }
 });
 
+test("first use without a character stays quiet across polls and binds after the first import", async () => {
+  const events = [];
+  const prepared = [];
+  const env = harness();
+  const empty = lifecyclePublication(1, "running", "setup_required");
+  env.setPublication(empty);
+  const client = env.create(event => events.push(event), {
+    initialPreparedGenerationId: null,
+    prepareGeneration: async args => {
+      prepared.push(args);
+      return Boolean(args.characterId);
+    },
+  });
+  try {
+    await client.start();
+    await env.tick();
+    await env.tick();
+    assert.deepEqual(prepared, [], "no resources exist to load before character import");
+    assert.deepEqual(events.map(event => event.status), ["setup_required"]);
+    await assert.rejects(client.send({ message: "no character yet" }), /CHAT_NOT_READY/);
+
+    const characterPresentation = { generationId: "generation-1", characterId: "imported" };
+    env.setPublication({ ...empty, characterPresentation });
+    await env.tick();
+    assert.equal(prepared.length, 1);
+    assert.equal(prepared[0].characterId, "imported");
+    assert.equal(events.at(-1).status, "setup_required", "model setup does not block character binding");
+    await env.tick();
+    assert.equal(prepared.length, 1);
+
+    env.setPublication({ ...lifecyclePublication(), characterPresentation });
+    await env.tick();
+    assert.equal(events.at(-1).status, "ready");
+    assert.equal(prepared.length, 1);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a stale character publication cannot start resource loading while setup is incomplete or failed", async () => {
+  const events = [];
+  const prepared = [];
+  const env = harness();
+  const client = env.create(event => events.push(event), {
+    prepareGeneration: async args => { prepared.push(args); return false; },
+  });
+  try {
+    await client.start();
+    for (const readiness of ["setup_required", "failed"]) {
+      env.setPublication({ ...lifecyclePublication(2, "running", readiness),
+        characterPresentation: { generationId: "generation-1", characterId: "old" } });
+      await env.tick();
+      await env.tick();
+      assert.equal(events.at(-1).status, readiness);
+      assert.equal(events.at(-1).canRetry, false);
+      assert.deepEqual(prepared, []);
+    }
+  } finally {
+    client.dispose();
+  }
+});
+
 test("failed readiness stays non-retryable while Core is still running", async () => {
   const events = [];
   const env = harness();
@@ -312,7 +374,8 @@ test("failed readiness stays non-retryable while Core is still running", async (
   });
   await client.start();
 
-  env.setPublication(lifecyclePublication(2, "running", "failed"));
+  env.setPublication({ ...lifecyclePublication(2, "running", "failed"),
+    characterPresentation: { generationId: "generation-2", characterId: "alpha" } });
   await env.tick();
   assert.deepEqual(
     events.filter((event) => event.generationNumber === 2).map(({ status, canRetry }) => [status, canRetry]),
