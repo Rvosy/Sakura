@@ -177,7 +177,8 @@ Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件�
 文字和可选图片进入同一 RealChat 排他通道。受理时重新校验当前角色、角色会话和调用实例；
 空角色 ID 表示受理时的当前角色。已切换的角色返回 `CHAT_CHARACTER_NOT_CURRENT`，过期会话返回
 `CHAT_SESSION_STALE`，忙碌沿用 `CHAT_EXECUTION_LIMIT_EXCEEDED`，不排队。图片只能来自当前插件已提交的 artifact，
-使用后回收，伪造其他插件的 descriptor 不能读取或删除其文件。
+使用后回收；确认是本插件资源后，即使因宿主未就绪、角色不匹配或输入错误而拒绝，也必须回收。
+伪造其他插件的 descriptor 不能读取或删除其文件。
 
 输入按用户原文记录为 `HUMAN`，不改写为主动观察；`sakura.host.chat.submit` 继续使用原有 `OBSERVATION` 语义。
 RealChat 独占历史写入、语音授权和插件事实事件发布，不因新增入口重复发送 `sakura.host.chat.completed`。
@@ -186,11 +187,29 @@ RealChat 独占历史写入、语音授权和插件事实事件发布，不因�
 
 停用插件、切换角色或关闭 generation 会取消未完成任务，并隔离旧结果。尚未发布 started 的已撤销任务不再向桌面发布；
 已发布 started 的操作仍交付 RealChat 决定的唯一终态。回复写入历史并认领完成后，撤销来源不能将完成改成取消。
-轮询返回文字与段落结果，音频由桌面播放；该接口不负责远程音频传输。
+轮询返回文字与完整段落结果，保留朗读限制、表现控制及原始 `segmentIndex`；音频由桌面播放。
+需要远程音频的插件按 `historyEntryId + segmentIndex` 使用下述 speech 能力。
 
 `sakura.host.character.list()` 复用角色目录，返回 `id/displayName/initialMessage/current`；`presentation()` 返回
 当前角色的公开表现资料和主题 token。两者只读；历史复用 `sakura.host.timeline`。旧 `sakura.host.mobile` 保留
-既有参数形式与移动端错误码，聊天委托 conversation；仓库手机插件使用上述通用接口。
+既有参数形式与移动端错误码，聊天委托 conversation；其中旧空字符串图片参数按无图片处理，
+非空字符串仍拒绝。仓库手机插件使用上述通用接口。
+
+### 已保存回复的语音与播放身份
+
+`sakura.host.speech` 为插件准备当前角色已保存的 assistant 段落音频，复用 Core TTS 的历史段落授权、
+朗读限制、录音复用和 Provider artifact 消费。插件只提交角色、历史条目和原始段落下标；
+不得通过此入口提交任意文本或绕过 `suppressTts`。准备音频不改变桌面播放状态。
+远程语音与桌面朗读共用当前语音缓存目录和容量设置，用户请求优先于空闲补齐。
+空闲补齐与远程准备音频只生成保留录音，不创建桌面播放副本。
+
+任务与音频副本绑定调用 scope。完成结果只消费一次，音频通过已有 artifacts 解析和释放；
+取消、停用、切角色和 generation 关闭隔离旧结果并回收副本，不删除保留录音。接口形状与错误码见
+[SDK 回复段落音频](../../devdocs/SAKURA_PLUGIN_SDK.md#回复段落音频)。
+
+桌面 `sakura.host.tts.started/ended` 在可信录音元数据可用时携带 `characterId/historyEntryId/segmentIndex`，
+与 `playbackId` 一同标识实际播放内容。未知或旧录音不猜测历史关联。字幕插件可通过
+`sakura.host.timeline.get_entry({entryId})` 精确读取当前角色条目；跨角色条目不可见。
 
 ### 4.1 统一宿主日志
 

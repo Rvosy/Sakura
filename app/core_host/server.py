@@ -187,6 +187,7 @@ class ReadinessController:
         self._starting_plugin_application: object | None = None
         self._plugin_application: object | None = None
         self._chat_boundary: object | None = None
+        self._tts_boundary: object | None = None
         self._visual_selector = None
 
     def set_session_published_callback(self, callback: Callable[[], None]) -> None:
@@ -207,6 +208,13 @@ class ReadinessController:
             application = self._plugin_application
         if application is not None:
             getattr(application, "bind_chat_boundary")(boundary)
+
+    def bind_tts_boundary(self, boundary: object) -> None:
+        with self._lock:
+            self._tts_boundary = boundary
+            application = self._plugin_application
+        if application is not None:
+            getattr(application, "bind_tts_boundary")(boundary)
 
     def bind_visual_selector(self, callback) -> None:
         with self._lock:
@@ -676,9 +684,12 @@ class ReadinessController:
                 unpublished_resources.append(plugin_application)
                 with self._lock:
                     chat_boundary = self._chat_boundary
+                    tts_boundary = self._tts_boundary
                     visual_selector = self._visual_selector
                 if chat_boundary is not None:
                     plugin_application.bind_chat_boundary(chat_boundary)
+                if tts_boundary is not None:
+                    plugin_application.bind_tts_boundary(tts_boundary)
                 if visual_selector is not None:
                     plugin_application.bind_visual_selector(visual_selector)
                 with self._lock:
@@ -1090,6 +1101,7 @@ class ControlDispatcher:
         if self._tts_boundary is not None:
             raise RuntimeError("TTS boundary is already configured")
         self._tts_boundary = boundary
+        self._readiness.bind_tts_boundary(boundary)
         warmup = getattr(boundary, "warmup_current_selection", None)
         if callable(warmup):
             self._readiness.set_session_published_callback(warmup)

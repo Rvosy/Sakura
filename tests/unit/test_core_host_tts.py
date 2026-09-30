@@ -847,8 +847,8 @@ def test_character_reset_revokes_pending_and_late_synthesis(tmp_path, monkeypatc
             tone="happy", portrait="smile", character_id="sakura", history_entry_id=f"entry-{index}")
     ready, release = threading.Event(), threading.Event()
     synthesize = boundary._synthesize_with_plugin
-    def delayed(*args):
-        result = synthesize(*args)
+    def delayed(*args, **kwargs):
+        result = synthesize(*args, **kwargs)
         ready.set()
         assert release.wait(3)
         return result
@@ -2178,6 +2178,7 @@ def test_idle_fill_caches_a_missing_line_without_playback_and_pauses_at_peak(tmp
         assert boundary.fill_once() is True
         assert worker.calls.count("begin") == 1
         assert events == []
+        assert not list((tmp_path / "data/cache/tts/runtime-v2" / GENERATION).glob("*.wav"))
         cached = boundary._recordings.for_segment("sakura", "saved-reply", 0)
         assert cached is not None and cached.directory.parent == custom / "sakura"
         assert boundary.fill_once() is True

@@ -95,3 +95,32 @@ def test_mobile_compatibility_rejects_forged_plugin_id(tmp_path):
         assert boundary.current_host_state()["idle"]
     finally:
         boundary.close()
+
+
+@pytest.mark.parametrize("descriptor", [None, {}, ""])
+def test_mobile_legacy_empty_image_uses_normal_text_admission(tmp_path, monkeypatch, descriptor):
+    service, boundary = host(tmp_path)
+    workers = []
+    monkeypatch.setattr("app.core_host.conversation_host.threading.Thread.start", lambda worker: workers.append(worker))
+    try:
+        accepted = service.begin("mobile", "sakura", "hello", descriptor)
+        assert len(workers) == 1
+        assert service.cancel("mobile", accepted["jobId"]) == {"accepted": True}
+        workers[0].run()
+        with pytest.raises(MobileHostError, match="OPERATION_CANCELLED"):
+            service.poll("mobile", accepted["jobId"])
+        assert boundary.current_host_state()["idle"]
+    finally:
+        service._conversation.close()
+        boundary.close()
+
+
+def test_mobile_still_rejects_nonempty_inline_images(tmp_path):
+    service, boundary = host(tmp_path)
+    try:
+        with pytest.raises(MobileHostError, match="MOBILE_IMAGE_INVALID"):
+            service.begin("mobile", "sakura", "hello", "data:image/png;base64,aGVsbG8=")
+        assert boundary.current_host_state()["idle"]
+    finally:
+        service._conversation.close()
+        boundary.close()

@@ -194,6 +194,7 @@ def test_session_is_published_only_after_application_binding(
     release = threading.Event()
     retired = []
     published = []
+    speech_boundaries = []
     session = SimpleNamespace()
 
     class Initializer:
@@ -212,6 +213,9 @@ def test_session_is_published_only_after_application_binding(
 
     class Application:
         unbound = 0
+
+        def bind_tts_boundary(self, boundary):
+            speech_boundaries.append(boundary)
 
         def start_character_presentation(self):
             return None
@@ -241,10 +245,13 @@ def test_session_is_published_only_after_application_binding(
         initializer_factory=lambda *_: Initializer(),
     )
     controller.set_session_published_callback(lambda: published.append(controller.published_session()))
+    first_tts = object()
+    controller.bind_tts_boundary(first_tts)
     controller.enable_plugins()
     try:
         controller.begin({})
         assert entered.wait(2)
+        assert speech_boundaries == [first_tts]
         assert controller.published_session() is None
         assert controller.readiness() == "initializing"
         assert published == []
@@ -261,6 +268,9 @@ def test_session_is_published_only_after_application_binding(
             assert controller.published_session() is session
             assert retired == []
             assert published == [session]
+            replacement_tts = object()
+            controller.bind_tts_boundary(replacement_tts)
+            assert speech_boundaries == [first_tts, replacement_tts]
     finally:
         release.set()
         controller.close()
