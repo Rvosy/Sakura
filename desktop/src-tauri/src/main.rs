@@ -242,14 +242,13 @@ async fn first_run_start_core(
         .as_ref()
         .ok_or_else(|| "LIFECYCLE_UNAVAILABLE".to_string())?
         .clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        handle.start_core_and_wait_available()
-    })
-    .await
-    .map_err(|source_error| {
-        crate::runtime_log::diagnostic_error("CORE_START_ABORTED", source_error)
-    })?
-    .map_err(|error| error.to_string());
+    let result =
+        tauri::async_runtime::spawn_blocking(move || handle.start_core_and_wait_available())
+            .await
+            .map_err(|source_error| {
+                crate::runtime_log::diagnostic_error("CORE_START_ABORTED", source_error)
+            })?
+            .map_err(|error| error.to_string());
     match &result {
         Ok(()) => {
             let _ = runtime_log.submit(RuntimeLogEvent::rust(
