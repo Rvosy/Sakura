@@ -114,7 +114,7 @@ handle/fd/signal/PID/PGID。错误 message、details、Debug 和测试断言均�
 
 ## 6. Timeout、资源上限与三平台责任
 
-- hello 3 秒；initialize 接受 5 秒；readiness watchdog 30 秒；shutdown 3 秒；完整树停止 5 秒。
+- hello 与 initialize 接受保留协议请求期限；readiness 等待实际终态、显式停止或 generation 退出，不设整体启动倒计时。shutdown 3 秒；完整树停止 5 秒。
 - frame payload 最大 8 MiB；writer queue 32；stderr read chunk/record 4096 bytes；缓存 64 KiB。
 - Windows x64、macOS arm64、Linux x64 在同一最新 HEAD 分别运行 native Rust/Python lifecycle，
   bundled Python、shared lock、RuntimeLocator、ManagedProcessTree、协商、credential、initialize/

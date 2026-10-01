@@ -666,8 +666,9 @@ class GPTSoVITSProvider:
         return self._coordinator.finish_resources() if self._coordinator else True
 
     def begin(self, request: Mapping[str, Any]) -> str | dict[str, str]:
-        if self._config is None or not self._config.enabled or self._coordinator is None:
-            return {"errorCode": "TTS_PROVIDER_UNAVAILABLE"}
+        available, reason_code, _stage = _config_readiness(self._config)
+        if not available or self._coordinator is None:
+            return {"errorCode": reason_code if not available else "TTS_PROVIDER_UNAVAILABLE"}
         character_id = request.get("characterId")
         if not isinstance(character_id, str) or not character_id:
             return {"errorCode": "TTS_REQUEST_INVALID"}

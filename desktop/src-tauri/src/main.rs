@@ -243,7 +243,7 @@ async fn first_run_start_core(
         .ok_or_else(|| "LIFECYCLE_UNAVAILABLE".to_string())?
         .clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        handle.start_core_and_wait_available(std::time::Duration::from_secs(40))
+        handle.start_core_and_wait_available()
     })
     .await
     .map_err(|source_error| {

@@ -1,9 +1,5 @@
 const PRESENTATION_READY_STATES = new Set(["ready", "setup_required", "degraded"]);
 const TERMINAL_FAILURE_STATES = new Set(["setup_required", "failed"]);
-// Core can spend up to 5s stopping the old tree, then 3s/5s on the
-// hello/initialize handshakes and 30s reaching stable readiness. Keep the UI
-// locked across that complete lifecycle budget.
-export const CHARACTER_SWITCH_TIMEOUT_MS = 60_000;
 
 export function hasCharacterScopedDrafts({
   appearanceDirty = false,
@@ -91,8 +87,6 @@ export async function waitForCharacterSwitch({
   previousGenerationNumber,
   readLifecycle,
   delay,
-  now = () => Date.now(),
-  timeoutMs = CHARACTER_SWITCH_TIMEOUT_MS,
 }) {
   if (receipt?.restartState !== "requested" && !receipt?.characterChanged) return null;
   const expectedCharacterId = receipt.targetCharacterId || "";
@@ -106,9 +100,8 @@ export async function waitForCharacterSwitch({
     )
   ) throw new Error("CHARACTER_SWITCH_IDENTITY_INVALID");
 
-  const deadline = now() + timeoutMs;
-  while (now() < deadline) {
-    const lifecycle = await readLifecycle().catch(() => null);
+  while (true) {
+    const lifecycle = await readLifecycle();
     const supervisor = lifecycle?.supervisor;
     const snapshot = lifecycle?.snapshot;
     const presentation = lifecycle?.characterPresentation;
@@ -117,6 +110,13 @@ export async function waitForCharacterSwitch({
       && supervisor.generationId !== receipt.previousCoreGenerationId;
     const sameGenerationRefresh = Boolean(receipt.characterChanged)
       && supervisor?.generationId === receipt.previousCoreGenerationId;
+    if (supervisor?.appShutdown) throw new Error("CHARACTER_SWITCH_CANCELLED");
+    if ((generationChanged || sameGenerationRefresh) && supervisor?.state === "stopped") {
+      throw new Error("CHARACTER_SWITCH_CANCELLED");
+    }
+    if ((generationChanged || sameGenerationRefresh) && supervisor?.state === "failed") {
+      throw new Error("CHARACTER_SWITCH_INITIALIZATION_FAILED");
+    }
     const presentedId = presentation?.characterId || "";
     const presentationMatches = expectedCharacterId
       ? presentation?.generationId === supervisor.generationId
@@ -137,7 +137,6 @@ export async function waitForCharacterSwitch({
     ) throw new Error("CHARACTER_SWITCH_INITIALIZATION_FAILED");
     await delay(100);
   }
-  throw new Error("CHARACTER_SWITCH_TIMEOUT");
 }
 
 export async function applyCharacterSwitch({
@@ -149,8 +148,6 @@ export async function applyCharacterSwitch({
   setSwitching,
   readLifecycle,
   delay,
-  now,
-  timeoutMs,
 }) {
   applyCommittedSnapshot(receipt);
   if (receipt?.restartState !== "requested" && !receipt?.characterChanged) return null;
@@ -166,8 +163,6 @@ export async function applyCharacterSwitch({
       previousGenerationNumber,
       readLifecycle,
       delay,
-      now,
-      timeoutMs,
     });
     await rebindSettings(lifecycle);
     return lifecycle;

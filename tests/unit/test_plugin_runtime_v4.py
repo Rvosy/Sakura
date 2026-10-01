@@ -2279,98 +2279,59 @@ class Plugin:
         manager.close()
 
 
-@pytest.mark.parametrize("blocked_stage,snapshot_available", [("import", True), ("setup", True), ("host_call", True), ("import", False), ("recovered_rpc", True)])
-def test_initialization_timeout_records_live_stage_and_stack_without_request_values(tmp_path, monkeypatch, blocked_stage, snapshot_available):
+@pytest.mark.parametrize("blocked_stage", ["import", "setup", "host_call"])
+def test_generation_close_cancels_blocked_initialization_without_a_startup_deadline(tmp_path, monkeypatch, blocked_stage):
     from app.core import runtime_log
 
     roots = _roots(tmp_path)
     blocked, release_host = threading.Event(), threading.Event()
     blocker = 'print("STARTUP_BLOCKED", flush=True)\nthreading.Event().wait()'
-    setup = ('context.get("fixture.host").block("private request value")' if blocked_stage == "host_call"
+    setup = ('context.get("fixture.host").block()' if blocked_stage == "host_call"
              else blocker.replace("\n", "\n        ") if blocked_stage == "setup" else "pass")
-    if blocked_stage == "recovered_rpc":
-        setup = '''try:
-            context.get("fixture.host").invoke("block", ["private request value"], timeout_seconds=0.05)
-        except Exception:
-            print("STARTUP_BLOCKED", flush=True)
-            threading.Event().wait()'''
-    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.startup", "fixture.startup.service", body=f'''
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.startup", "fixture.startup.service", body=f"""
 import threading
 {blocker if blocked_stage == "import" else ""}
 class Plugin:
     def setup(self, context):
         {setup}
         context.provide("fixture.startup.service", object(), exports=())
-''')
-    captured = []
-
+""")
     def capture(*args, **kwargs):
-        captured.append(kwargs)
         if "STARTUP_BLOCKED" in str(kwargs.get("fields", {}).get("diagnostic", "")):
             blocked.set()
-
     monkeypatch.setattr(runtime_log, "log_message", capture)
-    manager = PluginRuntimeManager(roots, "generation-startup-evidence", PluginInventory(roots).scan().runtime_specs)
-
-    class SlowHost:
-        def block(self, value):
-            if blocked_stage != "recovered_rpc":
-                blocked.set()
-            release_host.wait(10)
-
-    manager.install_host_service("fixture.host", SlowHost(), exports=("block",))
-    original_request = RpcPeer.request
-    initializing = []
-
-    def expire_after_blocked(self, name, payload, *, timeout=3.0):
-        if name == "runtime.startup.snapshot" and not snapshot_available:
-            raise PluginApiError("PLUGIN_CALL_TIMEOUT")
-        if name != "runtime.initialize":
-            return original_request(self, name, payload, timeout=timeout)
-
-        def initialize():
-            try:
-                original_request(self, name, payload, timeout=10)
-            except PluginApiError:
-                pass
-
-        worker = threading.Thread(target=initialize, daemon=True)
-        initializing.append(worker)
-        worker.start()
-        assert blocked.wait(5), "fixture did not reach the blocked startup phase"
-        # Expire only after the actual worker or Host call enters its barrier.
-        raise PluginApiError("PLUGIN_CALL_TIMEOUT")
-
-    monkeypatch.setattr(RpcPeer, "request", expire_after_blocked)
+    manager = PluginRuntimeManager(roots, "generation-startup-cancel", PluginInventory(roots).scan().runtime_specs)
+    class Host:
+        def block(self):
+            blocked.set()
+            release_host.wait()
+    manager.install_host_service("fixture.host", Host(), exports=("block",))
+    errors = []
+    def start():
+        try:
+            manager.start()
+        except BaseException as error:
+            errors.append(error)
+    worker = threading.Thread(target=start, daemon=True)
+    worker.start()
     try:
-        snapshot = manager.start()
-        assert snapshot["plugins"][0]["reasonCode"] == "PLUGIN_CALL_TIMEOUT"
-        failure = next(row["fields"] for row in captured if row.get("fields", {}).get("event") == "plugin.start.failed")
-        assert failure["child_pid"] > 0 and failure["process_alive"] is True
-        assert failure["timeout_ms"] == 8000
-        if snapshot_available:
-            assert failure["detail_stage"] == ("setup" if blocked_stage in {"host_call", "recovered_rpc"} else blocked_stage)
-            assert failure["startup_snapshot"] == "available"
-            assert failure["duration_ms"] >= 0 and failure["elapsed_ms"] >= failure["duration_ms"]
-            assert "Initializer thread:" in failure["exception_stack"]
-            assert "plugin.py:" in failure["exception_stack"]
-        else:
-            assert failure["startup_snapshot"] == "PLUGIN_CALL_TIMEOUT"
-            assert failure["detail_stage"] in {"process_spawn", "context", "import"}
-            assert failure["reason_code"] == "PLUGIN_CALL_TIMEOUT"
-        assert "private request value" not in json.dumps(failure)
-        if blocked_stage == "host_call":
-            assert failure["service_key"] == "fixture.host"
-            assert failure["command"] == "service.call.block"
-        if blocked_stage == "recovered_rpc":
-            assert "service_key" not in failure and "command" not in failure
-        _wait_pids_gone([failure["child_pid"]])
+        assert blocked.wait(5)
+        assert manager.snapshot()["plugins"][0]["state"] == "starting"
+        process = manager._records["fixture.startup"].process
+        pid = process.pid
+        diagnostic = process._peer.request("runtime.startup.snapshot", {}, timeout=1)
+        assert diagnostic["detail_stage"] == ("setup" if blocked_stage == "host_call" else blocked_stage)
+        assert "plugin.py:" in diagnostic["exception_stack"]
+        manager.close()
+        worker.join(timeout=3)
+        assert not worker.is_alive()
+        assert errors == []
+        assert manager.snapshot()["state"] == "stopped"
+        _wait_pids_gone([pid])
     finally:
         release_host.set()
         manager.close()
-        for worker in initializing:
-            worker.join(timeout=2)
-            assert not worker.is_alive()
+        worker.join(timeout=3)
 
 
 @pytest.mark.parametrize("timeout_origin", ["runner", "callee"])

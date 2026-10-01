@@ -556,13 +556,18 @@ prepare/begin/poll/result/cancel/release、输入与结果 artifact、历史分�
 
 Runner 在 bootstrap、context、import、construct、setup、commit 完成时记录 `plugin.start.phase.completed`，
 附带插件身份、该阶段耗时和 Runner 累计耗时；`plugin.loaded` 记录宿主观测的进程启动总耗时。
-初始化超时后，宿主在回收进程前请求一次 `runtime.startup.snapshot`，记录当前子阶段、阶段耗时、PID、存活状态、
-正在等待或已经失败的宿主 RPC 名称和 Service key。`timeout_ms` 记录实际触发超时的期限：外层初始化超时使用初始化期限，
-Runner 自己等待 RPC 超时使用该次 RPC 的期限；更深层服务返回超时但未提供期限时不猜测数值。失败 RPC 的信息不被随后的清理调用覆盖。
+初始化等待插件完成、返回真实错误或进程生命周期结束，不设启动总时长上限。进程退出或 Core 关闭会解除等待；
+普通 Service RPC、网络请求及关闭回收仍保留各自期限。初始化中的 RPC 超时后，宿主在回收进程前请求一次
+`runtime.startup.snapshot`，记录当前子阶段、阶段耗时、PID、存活状态、正在等待或已经失败的宿主 RPC 名称和 Service key。
+`timeout_ms` 记录 Runner 自己等待 RPC 的实际期限；更深层服务返回超时但未提供期限时不猜测数值。失败 RPC 的信息不被随后的清理调用覆盖。
 线程快照只含文件、函数、行号，不含源码行、局部变量或请求参数。
 快照与初始化使用独立 RPC 请求线程；进程无响应时记录 `startup_snapshot` 错误码，保留最后收到的阶段及原始启动错误，继续回收进程。
-初始化期限和快照请求上限分别由 `app/plugins/runtime_v4.py` 的 `INITIALIZE_TIMEOUT_SECONDS`、
-`STARTUP_SNAPSHOT_TIMEOUT_SECONDS` 定义；快照不会重试初始化，也不会把超时启动改判为成功。
+快照请求上限由 `app/plugins/runtime_v4.py` 的 `STARTUP_SNAPSHOT_TIMEOUT_SECONDS` 定义；
+快照不会重试初始化，也不会把失败启动改判为成功。
+
+安装或迁移中的离线入口导入校验保留独立子进程期限。超过期限返回 `PLUGIN_ENTRY_IMPORT_TIMEOUT`，
+不能据此认定已安装插件损坏或触发迁移修复、重装；保留已有副本及启用状态，实际启动由 Runtime 执行。
+导入子进程正常返回的真实异常仍为 `PLUGIN_ENTRY_IMPORT_FAILED`，继续执行原有失败和恢复处理。
 
 角色切换保持 Core generation，重建 Assistant Session。依赖当前角色服务、且不属于明确按角色参数工作的
 表现/TTS Provider 的旧插件局部重载，详见[安全角色切换](WP-5-03-safe-character-switch.md)。
@@ -645,6 +650,7 @@ Core 使用 `plugins.marketplace.context` 返回当前 API 与服务，用 `plug
 安装器解包后先核对 ID/版本，再创建依赖环境和发布代码。首次安装默认停用；迁移失败后的显式市场安装恢复已保存的启停选择。
 Shell 在本地安装和市场安装中等待 Core 的实际终态或 generation 失效，保留临时包直到该等待结束。
 `deadlineMs` 仍约束执行前的队列等待；进入执行后由安装器管理依赖子进程与回滚期限，不再因 Shell 的通用响应超时提前报失败或删除 ZIP。
+插件设置保存和启停同样等待 Core 的实际结果或 generation 失效，避免在插件初始化仍进行时提前报保存失败；窗口与 generation 身份在响应后仍须核对。
 
 用户插件无论是否启用都可以直接更新；同版本提供“重新安装”，重建代码及私有依赖，保留配置、数据和启停选择。内置插件随应用更新，已有新版本不降级。
 Shell 安装入口重新读取 Core 清单并核对 revision，按 SemVer 优先级拒绝降级；Core 执行前继续核对 revision，阻止下载期间变化的旧请求。同优先级的 build metadata 差异可重新安装。

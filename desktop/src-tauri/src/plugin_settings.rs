@@ -4,7 +4,7 @@ use tauri::{State, WebviewWindow};
 use crate::{
     product_shell::{self, assert_settings_identity},
     shell_lifecycle::{
-        dispatch_settings_install, dispatch_settings_request, settings_core_handle,
+        dispatch_settings_request, dispatch_settings_transaction, settings_core_handle,
         settings_response_payload, ShellLifecycleState,
     },
 };
@@ -135,9 +135,8 @@ pub(crate) async fn settings_plugins_save(
     validate_settings_save_request(&plugin_id, &section_id, &values)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
+    let response = dispatch_settings_transaction(
         handle.clone(),
-        None,
         "plugins.settings.save",
         json!({"pluginId": plugin_id, "sectionId": section_id, "values": values}),
         std::time::Duration::from_secs(8),
@@ -163,9 +162,8 @@ pub(crate) async fn settings_plugins_enabled_set(
     validate_enabled_request(&revision, &install_id)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
+    let response = dispatch_settings_transaction(
         handle.clone(),
-        None,
         "plugins.enabled.set",
         json!({"revision": revision, "installId": install_id, "enabled": enabled}),
         std::time::Duration::from_secs(12),
@@ -255,7 +253,7 @@ pub(crate) async fn settings_plugins_install(
     {
         return Err("PLUGIN_INSTALL_SOURCE_INVALID".to_string());
     }
-    let response = dispatch_settings_install(
+    let response = dispatch_settings_transaction(
         handle.clone(),
         "plugins.install",
         json!({

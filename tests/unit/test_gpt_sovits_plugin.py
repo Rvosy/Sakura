@@ -26,6 +26,40 @@ GENERATION = "generation-gpt-plugin"
 CREDENTIAL = "4" * 32
 
 
+@pytest.mark.parametrize("stage,reason", [
+    ("directory", "TTS_RUNTIME_DIRECTORY_INVALID"),
+    ("entrypoint", "TTS_RUNTIME_ENTRY_MISSING"),
+    ("python", "TTS_RUNTIME_PYTHON_MISSING"),
+])
+def test_unavailable_managed_runtime_rejects_segments_before_allocating_jobs(tmp_path, monkeypatch, stage, reason):
+    from plugins.optional.sakura_gpt_sovits import plugin as provider_module
+
+    work = tmp_path / "runtime"
+    if stage != "directory":
+        work.mkdir()
+    if stage == "python":
+        (work / "api_v2.py").write_text("", encoding="utf-8")
+    context = SimpleNamespace(config=SimpleNamespace(get=lambda: {
+        "endpointMode": "managed", "workDir": str(work), "pythonPath": str(work / "missing-python"),
+    }))
+    monkeypatch.setattr(provider_module, "_parse_character_voice", lambda *_args: object())
+    character = SimpleNamespace(get=lambda _id: {})
+    allocations = []
+    def allocate(_descriptor):
+        allocations.append(True)
+        raise AssertionError("unavailable runtime must not allocate a synthesis job")
+    provider = provider_module.GPTSoVITSProvider(context, character, SimpleNamespace(allocate=allocate))
+    try:
+        assert provider.status()["available"] is False
+        for segment in range(3):
+            assert provider.begin({"requestId": f"segment-{segment}", "characterId": "fixture",
+                                   "text": "fixture", "options": {}}) == {"errorCode": reason}
+        assert allocations == []
+        assert provider._jobs == {}
+    finally:
+        provider.close()
+
+
 def test_resource_update_is_notified_when_running_task_finishes(tmp_path, monkeypatch):
     from plugins.optional.sakura_gpt_sovits import plugin as provider_module
 

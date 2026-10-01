@@ -47,6 +47,7 @@ window.__TAURI__ = {core:{invoke:async(command,args)=>{
     return {schemaVersion:1,windowGeneration:1,presentation,limits,appearance:{schemaVersion:1,coreGenerationId:'g',characterId:'sakura',values}};
   }
   if(command==='settings_asr_get') return {providers:[],preferences:{}};
+  if(command==='settings_voice_cache_get') return {directory:'',maxMegabytes:64,idleFill:false,limits:[32,20480]};
   if(command==='settings_restart_after_migration') {window.migrationPhase='running';return;}
   if(command==='interaction_latency_diagnostics_enabled') return false;
   return {};
@@ -115,6 +116,7 @@ def run():
             assert page.evaluate("window.nativeCalls.filter(c=>c.command==='reveal_settings_window').length") == 1
             assert page.evaluate("window.nativeCalls.findIndex(c=>c.command==='reveal_settings_window') < window.nativeCalls.findIndex(c=>c.command==='settings_asr_get')")
             check_slider_value_editing(page, errors)
+            expect(page.locator('.sakura-error-dialog')).to_have_count(0)
 
             page.reload()
             expect(banner).to_contain_text("2/6")
@@ -134,6 +136,7 @@ def run():
             expect(banner).to_be_hidden()
             expect(banner.get_by_role("button", name="重启核心")).to_be_hidden()
             page.screenshot(path=str(output / "migration-completed.png"), animations="disabled")
+            expect(page.locator('.sakura-error-dialog')).to_have_count(0)
             page.set_viewport_size({"width": 640, "height": 720})
             page.evaluate("window.migrationPhase='failed'")
             expect(banner.get_by_role("button", name="重启核心")).to_be_visible()

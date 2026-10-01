@@ -13,13 +13,6 @@ import threading
 import uuid
 from urllib.parse import urlsplit
 
-import httpx2
-from mcp import Client, StdioServerParameters, types
-from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamable_http_client
-from pydantic import TypeAdapter
-
 
 CALL_TIMEOUT_SECONDS = 10
 CLOSE_TIMEOUT_SECONDS = 10
@@ -60,6 +53,7 @@ def configuration(raw):
         if not isinstance(items, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in items.items()):
             raise MCPComponentError("MCP_CONFIG_INVALID")
     if transport == "stdio":
+        from mcp import StdioServerParameters
         if not isinstance(value.get("command"), str) or not value["command"].strip():
             raise MCPComponentError("MCP_COMMAND_REQUIRED")
         if not isinstance(value.get("args", []), list) or any(not isinstance(v, str) for v in value.get("args", [])):
@@ -73,6 +67,7 @@ def configuration(raw):
         if key in value and not isinstance(value[key], bool):
             raise MCPComponentError("MCP_CONFIG_INVALID")
     if "roots" in value:
+        from mcp import types
         types.ListRootsResult.model_validate({"roots": value["roots"]})
     if value.get("oauth") is not None and not isinstance(value["oauth"], (dict, bool)):
         raise MCPComponentError("MCP_CONFIG_INVALID")
@@ -197,6 +192,13 @@ class Component:
         config = conn["config"]
         self._log("info", "MCP 服务连接中", conn)
         try:
+            import httpx2
+            from mcp import Client, StdioServerParameters, types
+            from mcp.client.sse import sse_client
+            from mcp.client.stdio import stdio_client
+            from mcp.client.streamable_http import streamable_http_client
+            from pydantic import TypeAdapter
+
             if previous:
                 await asyncio.gather(*previous, return_exceptions=True)
             async with AsyncExitStack() as stack:
@@ -344,6 +346,9 @@ class Component:
         async def progress(progress, total=None, message=None):
             op["progress"] = {"progress": progress, "total": total, "message": message}
         try:
+            from mcp import types
+            from pydantic import TypeAdapter
+
             async with asyncio.timeout(conn["config"]["requestTimeout"]):
                 await conn["ready"].wait()
                 client = conn["client"]
@@ -503,6 +508,9 @@ class Component:
         pending = conn["pending"].get(request_id)
         if pending is None or pending["future"].done():
             raise MCPComponentError("MCP_INPUT_NOT_FOUND")
+        from mcp import types
+        from pydantic import TypeAdapter
+
         if pending["type"] == "elicitation":
             types.ElicitResult.model_validate(response)
         else:

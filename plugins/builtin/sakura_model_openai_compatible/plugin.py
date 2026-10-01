@@ -14,10 +14,8 @@ from sakura_cancellation import OperationCancelled
 from sakura_model import ModelError
 try:
     from .profiles import ProviderProfiles, SERVICE_KEY
-    from .transport import execute
 except ImportError:
     from profiles import ProviderProfiles, SERVICE_KEY
-    from transport import execute
 
 
 @dataclass
@@ -196,6 +194,11 @@ class ModelPlugin:
     def _run(self, job):
         try:
             job.check()
+            # Request SDK imports belong to the job, not runtime.initialize.
+            if __package__:
+                from .transport import execute
+            else:
+                from transport import execute
             request = self._read_request(job)
             def progress(event):
                 with self.changed:

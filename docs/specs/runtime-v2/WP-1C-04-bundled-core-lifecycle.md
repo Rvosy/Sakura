@@ -42,8 +42,8 @@ Python/sidecar，不得回退系统 Python、扫描 `PATH` 或由公共逻辑假
 - 覆盖正常 shutdown、Core crash、忽略 shutdown 后的强制整树回收、以及共享应用锁的立即重获。
 - 每个 generation 的 stdin/stdout/stderr pipe、reader/writer/init thread、native handle/fd、进程树和
   临时资源在正常、初始化失败、crash 和强杀后均须归零；旧 generation 不得影响新 generation。
-- 继续沿用 WP-1C-03 的 hello 3 秒、initialize 接受 5 秒、readiness watchdog 30 秒、shutdown 3 秒和
-  完整树停止 5 秒；失败安全关闭，不以延长或跳过门禁规避问题。
+- 沿用 WP-1C-03 的协议请求与进程回收期限；readiness 等待实际终态，不因插件导入或初始化耗时而停止健康进程。
+  显式停止、应用退出、连接丢失和实际失败仍结束等待并回收 generation。
 - `data/`、`runtime/`、角色、配置和历史在真实应用验收前后必须零非预期变化，以递归清单与内容摘要
   比较证明。
 

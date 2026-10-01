@@ -3,7 +3,7 @@ use crate::{
     download_sources::{self, DownloadSources},
     product_shell,
     shell_lifecycle::{
-        dispatch_settings_install, dispatch_settings_request, settings_core_handle,
+        dispatch_settings_request, dispatch_settings_transaction, settings_core_handle,
         settings_response_payload, ShellLifecycleState,
     },
 };
@@ -442,7 +442,7 @@ pub(crate) async fn settings_marketplace_install(
         crate::runtime_log::diagnostic_error("无法写入临时安装包。", source_error)
     })?;
     let _ = progress.send(json!({"phase":"installing","progress":100}));
-    let response = dispatch_settings_install(
+    let response = dispatch_settings_transaction(
         handle.clone(),
         "plugins.marketplace.install",
         json!({

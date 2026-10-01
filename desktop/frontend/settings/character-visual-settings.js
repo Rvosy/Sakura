@@ -43,23 +43,27 @@ export function createCharacterVisualSettings({ document, invoke, refreshSelect,
     characterId = target || "";
     const requestedCharacterId = characterId;
     const current = ++revision;
-    busy = Boolean(characterId); error = ""; render();
-    if (!characterId) return;
+    busy = Boolean(characterId) && !locked; error = ""; render();
+    if (!characterId || locked) return;
     try {
       let pending = pendingReads.get(requestedCharacterId);
       if (!pending) {
-        pending = Promise.resolve().then(() => invoke("settings_character_visuals_get", { characterId: requestedCharacterId }))
-          .then(value => normalizeVisualSettings(value, requestedCharacterId));
+        pending = Promise.resolve().then(() => invoke("settings_character_visuals_get", { characterId: requestedCharacterId }));
         pendingReads.set(requestedCharacterId, pending);
         const clear = () => { if (pendingReads.get(requestedCharacterId) === pending) pendingReads.delete(requestedCharacterId); };
         pending.then(clear, clear);
       }
-      const snapshot = await pending;
-      if (disposed || current !== revision) return;
+      const value = await pending;
+      if (disposed || locked || current !== revision) return;
+      let snapshot;
+      try { snapshot = normalizeVisualSettings(value, requestedCharacterId); }
+      catch (failure) {
+        reportError(failure, { command: "settings_character_visuals_get", stage: "visual.settings.read", code: "VISUAL_SETTINGS_INVALID" });
+        throw failure;
+      }
       snapshots.set(characterId, snapshot);
     } catch (failure) {
-      if (!disposed && current === revision) {
-        reportError(failure, { command: "settings_character_visuals_get", stage: "visual.settings.read", code: "VISUAL_SETTINGS_INVALID" });
+      if (!disposed && !locked && current === revision) {
         error = "显示方式读取失败";
         onError(failure, error);
       }
@@ -86,7 +90,13 @@ export function createCharacterVisualSettings({ document, invoke, refreshSelect,
   const selections = () => Object.fromEntries([...drafts].filter(([id, value]) => value !== savedSelection(id)));
   return {
     refresh,
-    sync(target, isLocked) { locked = isLocked; if ((target || "") !== characterId) void refresh(target); else render(); },
+    sync(target, isLocked) {
+      const wasLocked = locked;
+      locked = isLocked;
+      if (locked) { revision++; busy = false; error = ""; }
+      if ((target || "") !== characterId || (wasLocked && !locked)) void refresh(target);
+      else render();
+    },
     isDirty: () => Object.keys(selections()).length > 0,
     selections,
     committed() { for (const [id, value] of drafts) { const snapshot = snapshots.get(id); if (snapshot) snapshots.set(id, { ...snapshot, preferenceResourceId: value }); } drafts.clear(); render(); },
