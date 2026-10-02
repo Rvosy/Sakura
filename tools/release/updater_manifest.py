@@ -68,7 +68,9 @@ def build_manifest(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
-    parser.add_argument("--notes", default="Sakura Runtime v2 update")
+    notes_group = parser.add_mutually_exclusive_group()
+    notes_group.add_argument("--notes", default="Sakura Runtime v2 update")
+    notes_group.add_argument("--notes-file", type=Path)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--portable", type=Path)
@@ -82,7 +84,7 @@ def main() -> int:
     releases = [(target, Path(artifact), Path(signature)) for target, artifact, signature in args.release or []]
     manifest = build_manifest(
         version=args.version,
-        notes=args.notes,
+        notes=args.notes_file.read_text(encoding="utf-8").strip() if args.notes_file else args.notes,
         base_url=args.base_url,
         releases=releases,
         portable=args.portable,

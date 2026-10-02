@@ -67,6 +67,29 @@ Windows 的 `scripts\start.bat` 与 macOS/Linux 的 `scripts/start.sh` 都会增
 确认归档可解析后再复用；pip/uv 锁文件中的上游包哈希由安装工具校验。缓存失效时只重建对应缓存，
 不会把开发用 `runtime/` 中已经安装的包直接复制到发行包。
 
+## 正式发布正文
+
+Release 流水线自动生成下载表，读取 [更新日志](../docs/CHANGELOG.md) 中与 `VERSION` 对应的版本段落，并在
+结尾保留 GitHub 自动生成的 PR 列表与版本比较链接。每次发布只需维护对应版本的更新内容，无需另写正文或
+下载地址；缺少、重复或空的版本段落会在打包前报错。
+
+固定排版在 [Release 正文模板](../packaging/release-body.md)，生成入口为
+[`tools.release.release_notes`](../tools/release/release_notes.py)。Windows 可以先检查当前版本内容：
+
+```powershell
+.\runtime\python.exe -m tools.release.release_notes --check
+```
+
+汇总三个平台的产物后，可在本地预览下载表和版本更新日志：
+
+```powershell
+.\runtime\python.exe -m tools.release.release_notes --assets-dir release-assets --output release-body.md
+```
+
+GitHub 的 `What's Changed` 和 `Full Changelog` 由发布 Action 自动追加，本地预览不包含它们。
+Portable 尚未打包完成时不显示下载链接，上传后自动刷新正文。完整合同见
+[发行与存储 Spec](../docs/specs/runtime-v2/release-distribution-and-storage.md#release-正文)。
+
 ## 分支和提交
 
 准备贡献分支时，通常从最新 `dev` 建立分支：

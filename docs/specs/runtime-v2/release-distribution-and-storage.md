@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-27
+updated: 2026-10-02
 ---
 
 # Runtime v2 发行与存储合同
@@ -189,6 +189,24 @@ Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递
 `config/`、`data/`、`characters/`、`plugins/user/` 和默认 `tts/`，并在目录为空时移除安装目录；不得递归
 删除安装目录中的未知文件，也不得删除 `config/storage.json` 指向的安装目录外自定义 TTS 路径。Updater
 触发的卸载阶段始终保留用户数据。
+
+## Release 正文
+
+GitHub Release 正文由 [`tools.release.release_notes`](../../../tools/release/release_notes.py) 和
+[`packaging/release-body.md`](../../../packaging/release-body.md) 生成，顺序固定为下载表、当前版本更新日志、
+GitHub 自动生成的 `What's Changed` 与 `Full Changelog`。下载区包含已生成的 macOS 打开说明和可选
+Playwright 插件入口；表格不链接自动更新文件、签名或诊断资料。
+
+版本号只读取仓库 `VERSION`，更新内容只读取 [`docs/CHANGELOG.md`](../../CHANGELOG.md) 中同版本的二级标题
+段落，保留正文与下级标题，不复制日期、待发布标记或其他版本。缺少、重复或空的版本段落在打包前失败；
+不使用提交列表替代面向用户的更新日志。正文中的相对文档链接改为对应 Git tag 的仓库链接。
+
+下载表按实际产物生成。首次发布不包含未完成的 Windows Portable 链接，Portable 上传时用同一模板重新生成
+正文并保留 GitHub 自动说明，不追加第二份下载表或更新日志。GitHub 负责生成 PR、作者及版本比较链接。
+模板、版本内容和流水线修改一同进入代码审阅，不要求维护者每次手工编辑 Release 页面。
+
+Updater 的 `notes` 使用同一版本段落，包含对应版本的更新内容，不包含下载表和 GitHub PR 列表。导入私人
+控制台时保留生成清单中的 `notes`，不再用完整 Release 正文覆盖；控制台仍可编辑更新说明。
 
 ## 启动更新检测与用户操作
 
