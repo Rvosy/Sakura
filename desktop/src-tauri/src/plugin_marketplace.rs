@@ -397,6 +397,7 @@ pub(crate) async fn settings_marketplace_install(
     validate_install_version(&current, &revision, &plugin_id, &version)?;
     let sources = sources.load()?;
     let url = download_sources::https_url(release["package"]["url"].as_str().unwrap())?;
+    let package_size = release["package"]["size"].as_u64().unwrap() as usize;
     let (cancel, mut cancellation) = watch::channel(false);
     {
         let mut tasks = market.tasks.lock().map_err(|source_error| {
@@ -409,7 +410,7 @@ pub(crate) async fn settings_marketplace_install(
     }
     let _ = progress.send(json!({"phase":"downloading","progress":0}));
     let data = tokio::select! {
-        result = download_sources::fetch(&url, &sources, 64 * 1024 * 1024, |source, size, total| {
+        result = download_sources::fetch(&url, &sources, package_size, |source, size, total| {
             let percent = total.filter(|n| *n > 0).map(|n| (size as f64 / n as f64 * 100.0).min(100.0)).unwrap_or(0.0);
             let _ = progress.send(json!({"phase":"downloading","source":source,"progress":percent}));
         }) => result,
@@ -426,7 +427,7 @@ pub(crate) async fn settings_marketplace_install(
     if *cancellation.borrow() {
         return Err("下载已取消。".into());
     }
-    if Some(data.len() as u64) != release["package"]["size"].as_u64() {
+    if data.len() != package_size {
         return Err("安装包大小与目录不一致。".into());
     }
     product_shell::assert_settings_identity(

@@ -29,6 +29,21 @@ def run(settings=SETTINGS, request=REQUEST, **kwargs):
     return execute(settings, request, cancel_checker=kwargs.pop("cancel_checker", None), progress=kwargs.pop("progress", lambda _event: None), **kwargs)
 
 
+@pytest.mark.parametrize("operation", ["list_models", "test_connection", "generate"])
+def test_keyless_network_endpoint_uses_the_server_authentication_policy(monkeypatch, operation):
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"data": [{"id": "fixture"}]} if operation == "list_models"
+                              else {"choices": [{"message": {"content": "OK"}}]})
+    mock_http(monkeypatch, handler)
+    settings = {**SETTINGS, "base_url": "http://192.168.1.20:8000/v1", "api_key": ""}
+    result = run(settings, operation=operation)
+    assert len(requests) == 1
+    assert "Authorization" not in requests[0].headers
+    assert result["models"] == ["fixture"] if operation == "list_models" else result["message"]["content"] == "OK"
+
+
 def test_async_model_worker_preserves_cause_before_releasing_credentials(monkeypatch):
     from plugins.builtin.sakura_model_openai_compatible import plugin, transport
     def fail(*args, **kwargs):

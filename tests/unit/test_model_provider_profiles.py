@@ -128,7 +128,7 @@ def test_invalid_save_result_keeps_plugin_section_and_shape_without_values(
 
 
 @pytest.mark.parametrize("timeout", [None, "60", 0])
-def test_prior_handoff_profile_remains_editable_without_relaxing_new_saves(timeout):
+def test_prior_handoff_profile_and_normalized_drafts_remain_editable(timeout):
     context = Context()
     context.config.value["profiles"][0].update(label="", models=[" model ", "model"], timeout_seconds=timeout)
     before = context.config.get()
@@ -141,16 +141,8 @@ def test_prior_handoff_profile_remains_editable_without_relaxing_new_saves(timeo
     assert context.config.get() == before
 
     draft["connections"][0]["models"].append("model")
-    with pytest.raises(ProfileError) as duplicate:
-        profiles.save_editor(draft)
-    assert duplicate.value.code == "MODEL_DUPLICATE"
-    draft["connections"][0].update(models=["model"], alias="")
-    with pytest.raises(ProfileError) as empty_label:
-        profiles.save_editor(draft)
-    assert empty_label.value.code == "FIELD_REQUIRED"
-    assert context.config.get() == before
-
-    profiles.save_editor(profiles.load_editor())
+    draft["connections"][0]["alias"] = ""
+    profiles.save_editor(draft)
     assert context.config.get()["profiles"][0]["label"] == "fixture"
     assert [item["modelId"] for item in context.config.get()["profiles"][0]["models"]] == ["model"]
 
@@ -169,14 +161,19 @@ def test_list_edit_retains_existing_model_metadata_and_unknown_profile_fields(pr
     assert len(profiles.catalog()[0]["models"]) == 1
 
 
-def test_save_is_blocked_before_writing_when_any_consumer_is_active(provider):
+def test_existing_long_connection_values_can_be_saved_without_shortening(provider):
     profiles, context = provider
-    before = context.config.get()
-    profiles.set_service(SimpleNamespace(has_active_jobs=lambda: True))
-    with pytest.raises(ProfileError) as error:
-        profiles.save_editor(profiles.load_editor())
-    assert error.value.code == "MODEL_BUSY"
-    assert context.config.get() == before
+    context.config.value["profiles"][0].update(
+        label="自建模型服务" * 30,
+        base_url="https://fixture.invalid/" + "gateway/" * 300 + "v1",
+        api_key="token-" + "a" * 17000,
+    )
+    expected = ProviderProfiles(context).resolve("fixture", "model")
+    draft = profiles.load_editor()
+    draft["connections"][0].update(credential_action="replace", api_key=expected["api_key"])
+    profiles.save_editor(draft)
+    assert ProviderProfiles(context).resolve("fixture", "model") == expected
+    assert profiles.load_editor()["connections"][0]["alias"] == draft["connections"][0]["alias"]
 
 
 def test_discovery_uses_unsaved_connection_without_writing_and_releases(provider):

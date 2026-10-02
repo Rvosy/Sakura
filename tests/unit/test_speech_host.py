@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import wave
 from contextlib import contextmanager
@@ -118,10 +119,10 @@ def test_speech_reuses_saved_audio_without_desktop_playback_and_releases_more_th
 
 
 def test_speech_uses_current_cache_settings_and_reuses_the_selected_directory(system, tmp_path):
-    from app.voice.cache_settings import save_voice_cache_settings
-
     cache = tmp_path / "selected-cache"
-    save_voice_cache_settings(tmp_path, str(cache), 64 * 1024 * 1024, False)
+    config = tmp_path / "config/voice_cache.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(json.dumps({"schemaVersion": 1, "directory": str(cache), "maxBytes": 64 * 1024 * 1024, "idleFill": False}), encoding="utf-8")
     with caller():
         result = completed(system)
         recording = system.boundary._recordings.get(result["recordingId"])
@@ -136,9 +137,9 @@ def test_speech_uses_current_cache_settings_and_reuses_the_selected_directory(sy
 
 
 def test_foreground_speech_cancels_in_progress_idle_fill(system, tmp_path, monkeypatch):
-    from app.voice.cache_settings import save_voice_cache_settings
-
-    save_voice_cache_settings(tmp_path, "", 64 * 1024 * 1024, True)
+    config = tmp_path / "config/voice_cache.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(json.dumps({"schemaVersion": 1, "directory": "", "maxBytes": 64 * 1024 * 1024, "idleFill": True}), encoding="utf-8")
     monkeypatch.setattr("app.core_host.tts_boundary.device_below_peak", lambda: True)
     application = system.boundary._plugin_application()
     original = application.call_service

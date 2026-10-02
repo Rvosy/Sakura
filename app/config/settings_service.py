@@ -156,8 +156,6 @@ class AppSettingsService:
 
     def load_debug_log_settings(self) -> DebugLogSettings:
         debug = self._system_section("debug")
-        if "raw_tts_service_enabled" in debug:
-            raise ValueError("调试配置使用了已废止的字段。")
         return DebugLogSettings(
             enabled=_bool_value(debug.get("enabled"), True),
             body_enabled=_bool_value(debug.get("body_enabled"), False),

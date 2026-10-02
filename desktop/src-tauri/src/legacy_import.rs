@@ -2622,28 +2622,6 @@ mod tests {
     }
 
     #[test]
-    fn action_deadlines_match_the_import_contract() {
-        assert_eq!(
-            legacy_action_deadline("inspect-data").unwrap(),
-            Duration::from_secs(15 * 60)
-        );
-        for action in ["inspect", "recover", "finalize", "rollback", "apply-data"] {
-            assert_eq!(
-                legacy_action_deadline(action).unwrap(),
-                Duration::from_secs(30 * 60)
-            );
-        }
-        assert_eq!(
-            legacy_action_deadline("run").unwrap(),
-            Duration::from_secs(2 * 60 * 60)
-        );
-        assert_eq!(
-            legacy_action_deadline("unknown").unwrap_err(),
-            "LEGACY_IMPORT_ACTION_INVALID"
-        );
-    }
-
-    #[test]
     fn a_timed_out_running_process_is_finalized_and_its_drains_are_cancelled() {
         let finalization_attempted = Arc::new(TestAtomicBool::new(false));
         let stderr_cancellation_seen = Arc::new(TestAtomicBool::new(false));

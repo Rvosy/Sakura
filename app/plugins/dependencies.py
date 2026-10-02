@@ -46,8 +46,8 @@ class PluginDependencyRoots:
     """Build and validate one ``uv pip --target`` root per plugin.
 
     Resolution is intentionally invoked only from explicit install/update/retry
-    operations. Runtime startup checks the installed marker, declaration kind
-    and Python ABI; it never repairs or fingerprints the environment.
+    operations. Runtime startup checks the installed marker and Python ABI;
+    declaration format changes do not invalidate the installed environment.
     """
 
     def __init__(
@@ -157,7 +157,6 @@ class PluginDependencyRoots:
                 self._validate_entry(plugin_id, plugin_root, staging, entry)
             marker = {
                 "schemaVersion": 1,
-                "kind": declaration.kind,
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
             atomic_write_text(
@@ -233,7 +232,6 @@ class PluginDependencyRoots:
         if (
             not isinstance(marker, dict)
             or marker.get("schemaVersion") != 1
-            or marker.get("kind") != declaration.kind
             or marker.get("python") != expected_python
         ):
             raise PluginDependencyError("PLUGIN_DEPENDENCIES_STALE")

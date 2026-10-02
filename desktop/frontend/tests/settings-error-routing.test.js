@@ -5,6 +5,26 @@ import { createConnectionEditor } from "../settings/connection-editor.js";
 import { createCharacterVisualSettings } from "../settings/character-visual-settings.js";
 import { openDownloadSources } from "../settings/download-source-settings.js";
 
+for (const [buttonText, operation] of [["获取模型列表", "list_models"], ["测试连接", "test_connection"]]) {
+  test(`model ${operation} allows a connection without an API key`, async () => {
+    const { document, window } = browserFixture();
+    const calls = [], errors = [];
+    const editor = createConnectionEditor({ document, window,
+      read: () => [{ id: "local", base_url: "http://192.168.1.20:8000/v1", models: ["local-model"] }],
+      write() {}, cancel() {}, notify() {},
+      probe: async (...args) => { calls.push(args); return { models: [] }; },
+      onError: (error) => { if (error) errors.push(error); },
+    });
+    document.body.append(editor.element); editor.update();
+    await editor.element.querySelectorAll("button").find(button => button.textContent === buttonText).fire("click");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], operation);
+    assert.deepEqual(calls[0][1].credential, { action: "keep", value: "" });
+    assert.deepEqual(errors, []);
+    editor.dispose();
+  });
+}
+
 test("model probe forwards the original error and keeps its diagnostics out of the connection form", async () => {
   const { document, window } = browserFixture();
   const failure = new Error("MODEL_CONNECTION_FAILED", { cause: new Error("probe transport diagnostic") });

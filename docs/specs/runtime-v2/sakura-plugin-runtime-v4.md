@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-28
+updated: 2026-10-03
 ---
 
 # Sakura Plugin Runtime v4
@@ -604,10 +604,10 @@ Assistant 就绪不代表可选插件已注册完成；消费者等待自己需�
 `user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用相同格式的已安装 marker，
 Runner 接收的仍只是当前插件自己的 dependency root。
 
-`.sakura-dependencies.json` 保持 `schemaVersion: 1`，新标记只写入版本、声明类型 `kind` 和 Python
-主次版本 `python`。启动检查标记可读、schema、声明类型及 Python ABI；不匹配返回
+`.sakura-dependencies.json` 保持 `schemaVersion: 1`，新标记只写入 schema 版本和 Python
+主次版本 `python`。启动检查标记可读、schema 及 Python ABI；不匹配返回
 `PLUGIN_DEPENDENCIES_STALE`，标记缺失或不可读返回 `PLUGIN_DEPENDENCIES_MISSING`。
-旧标记的 `fingerprint` 直接忽略，不重算或改写。依赖声明内容或换行变化不再使已安装环境失效；
+旧标记的 `kind` 和 `fingerprint` 直接忽略，不重算或改写。依赖声明文件格式、内容或换行变化不使已安装环境失效；
 需要更新依赖时执行显式安装或更新，入口导入与运行错误仍按原有路径报告。
 
 ## 10. 插件管理与设置窗口
@@ -648,6 +648,10 @@ README 由 Shell 根据已加载目录中的 GitHub 仓库和固定 commit 获�
 下载阶段显示当前源并支持取消；进入安装后不能取消。Shell 仅按已加载目录选取安装包，不接收前端任意下载地址。
 Core 使用 `plugins.marketplace.context` 返回当前 API 与服务，用 `plugins.marketplace.install` 接收 revision、临时包路径、目标 ID 和版本。
 安装器解包后先核对 ID/版本，再创建依赖环境和发布代码。首次安装默认停用；迁移失败后的显式市场安装恢复已保存的启停选择。
+本地目录与 ZIP 安装不设插件数量、文件数量、单文件大小或包体积配额。复制或解包时检查路径越界、符号链接和路径冲突，
+之后信任隔离暂存目录，不再扫描整份内容重复校验；根清单确定插件身份，包内示例目录可以包含自己的 `plugin.yaml`。
+实际读写、解包或导入失败沿安装事务回滚，保留已有代码、依赖和配置。
+市场下载按发布目录声明的包大小检查完整性，不再另设固定包体积上限。
 Shell 在本地安装和市场安装中等待 Core 的实际终态或 generation 失效，保留临时包直到该等待结束。
 `deadlineMs` 仍约束执行前的队列等待；进入执行后由安装器管理依赖子进程与回滚期限，不再因 Shell 的通用响应超时提前报失败或删除 ZIP。
 插件设置保存和启停同样等待 Core 的实际结果或 generation 失效，避免在插件初始化仍进行时提前报保存失败；窗口与 generation 身份在响应后仍须核对。

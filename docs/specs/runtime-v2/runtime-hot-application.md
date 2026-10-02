@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-18
+updated: 2026-10-03
 ---
 
 # Runtime v2 热应用规范
@@ -44,7 +44,7 @@ updated: 2026-09-18
   插件清单 revision 直接比较安装记录与结构化开关配置，变化时分配随机 token，同一 Core 的不同
   Inventory 实例共享该状态。等价文件格式变化不更新 token；恢复旧状态也不复用旧 token。
   installId 使用来源与目录名的可逆编码，既有开关仍按 pluginId 保存。依赖就绪保留已安装 marker、
-  声明类型和 Python ABI 判断，忽略旧 fingerprint，不因声明内容变化重算摘要或自动安装。
+  Python ABI 判断，忽略旧 kind 和 fingerprint，不因声明格式或内容变化重算摘要或自动安装。
 - GPT-SoVITS/Genie：timeout、参考目录等请求参数原位更新；managed runtime 身份变化只关闭自己的
   子进程并在下次合成懒启动；custom endpoint 仅重置探测状态。
 - Playwright：配置变化只关闭浏览器实例并替换 config loader。

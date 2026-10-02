@@ -212,7 +212,6 @@ def stage_bundled_dependencies(stage: Path, target: str) -> None:
         )
         marker = {
             "schemaVersion": 1,
-            "kind": "requirements.txt",
             "python": python_version,
         }
         (dependency_root / ".sakura-dependencies.json").write_text(
@@ -396,7 +395,6 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
             if (
                 not isinstance(marker, dict)
                 or marker.get("schemaVersion") != 1
-                or marker.get("kind") != "requirements.txt"
                 or marker.get("python") != "3.12"
             ):
                 raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")

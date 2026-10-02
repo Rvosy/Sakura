@@ -128,7 +128,7 @@ export function createConnectionEditor({ document, window, read, write, probe, c
     const items = providerState.profiles;
     const configured = items.filter(
       (profile) => (profile.base_url || "").trim()
-        && ((profile.api_key || "").trim() || (profile.configured && profile.credential_action !== "clear")),
+        && profile.models.length,
     ).length;
     const totalModels = items.reduce((sum, profile) => sum + (profile.models || []).length, 0);
     renderStrip(fields.providerStatusStrip, [
@@ -439,15 +439,9 @@ export function createConnectionEditor({ document, window, read, write, probe, c
     if (disposed || !providerState.profiles.includes(profile)) return;
     clearProbeError();
     const baseUrl = (profile.base_url || "").trim();
-    const apiKey = (profile.api_key || "").trim();
     if (!baseUrl) {
       markInvalid(providerDetailInput("base_url"), true);
       setError("请先填写 API 地址。");
-      return;
-    }
-    if (!apiKey && !(profile.configured && profile.credential_action === "keep")) {
-      markInvalid(providerDetailInput("api_key"), true);
-      setError("请先填写 API Key。");
       return;
     }
     invalidateModelDiscovery(profile);
@@ -484,12 +478,10 @@ export function createConnectionEditor({ document, window, read, write, probe, c
     if (disposed || !providerState.profiles.includes(profile)) return;
     clearProbeError();
     const baseUrl = (profile.base_url || "").trim();
-    const apiKey = (profile.api_key || "").trim();
     const model = (profile.models || [])[0];
-    if (!baseUrl || (!apiKey && !(profile.configured && profile.credential_action === "keep"))) {
-      markInvalid(providerDetailInput("base_url"), !baseUrl);
-      markInvalid(providerDetailInput("api_key"), !apiKey);
-      setError("请先填写 API 地址和 API Key。");
+    if (!baseUrl) {
+      markInvalid(providerDetailInput("base_url"), true);
+      setError("请先填写 API 地址。");
       return;
     }
     if (!model) {

@@ -969,8 +969,6 @@ pub(crate) fn tts_stop_playback(
     Ok(())
 }
 
-const VOICE_CACHE_MIN_MEGABYTES: u64 = 32;
-const VOICE_CACHE_MAX_MEGABYTES: u64 = 20480;
 const VOICE_CACHE_DEFAULT_MEGABYTES: u64 = 512;
 
 fn voice_cache_display_directory(directory: &Path) -> String {
@@ -1008,10 +1006,8 @@ fn voice_cache_document(user_root: &Path) -> (String, u64, bool) {
         if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
             if value.get("schemaVersion").and_then(Value::as_u64) == Some(1) {
                 if let Some(max_bytes) = value.get("maxBytes").and_then(Value::as_u64) {
-                    let min = VOICE_CACHE_MIN_MEGABYTES * 1024 * 1024;
-                    let max = VOICE_CACHE_MAX_MEGABYTES * 1024 * 1024;
-                    if (min..=max).contains(&max_bytes) {
-                        max_megabytes = max_bytes / (1024 * 1024);
+                    if max_bytes > 0 {
+                        max_megabytes = max_bytes.div_ceil(1024 * 1024);
                     }
                 }
                 if let Some(raw) = value.get("directory").and_then(Value::as_str) {
@@ -1037,7 +1033,6 @@ impl AudioState {
             "defaultDirectory": voice_cache_display_directory(&self.user_root.join("data/voice/recordings")),
             "maxMegabytes": max_megabytes,
             "idleFill": idle_fill,
-            "limits": [VOICE_CACHE_MIN_MEGABYTES, VOICE_CACHE_MAX_MEGABYTES],
         })
     }
 
@@ -1047,28 +1042,25 @@ impl AudioState {
         max_megabytes: u64,
         idle_fill: bool,
     ) -> Result<Value, String> {
-        if !(VOICE_CACHE_MIN_MEGABYTES..=VOICE_CACHE_MAX_MEGABYTES).contains(&max_megabytes) {
-            return Err("VOICE_CACHE_SIZE_INVALID".to_string());
-        }
+        let max_bytes = max_megabytes
+            .checked_mul(1024 * 1024)
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "VOICE_CACHE_SIZE_INVALID".to_string())?;
         let default_dir = self.user_root.join("data/voice/recordings");
-        fs::create_dir_all(&default_dir)
-            .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
-        let default_resolved = fs::canonicalize(&default_dir)
-            .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
         let trimmed = directory.trim();
-        let resolved = if trimmed.is_empty() {
-            default_resolved.clone()
+        let path = if trimmed.is_empty() {
+            default_dir.clone()
         } else {
-            let path = PathBuf::from(trimmed);
-            if !path.is_absolute() {
-                return Err("VOICE_CACHE_DIRECTORY_INVALID".to_string());
-            }
-            fs::create_dir_all(&path)
-                .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
-            fs::canonicalize(&path)
-                .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?
+            PathBuf::from(trimmed)
         };
-        let stored = if resolved == default_resolved {
+        if !path.is_absolute() {
+            return Err("VOICE_CACHE_DIRECTORY_INVALID".to_string());
+        }
+        fs::create_dir_all(&path)
+            .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
+        let resolved = fs::canonicalize(&path)
+            .map_err(|error| format!("VOICE_CACHE_DIRECTORY_INVALID: {error}"))?;
+        let stored = if resolved == fs::canonicalize(&default_dir).unwrap_or(default_dir) {
             String::new()
         } else {
             resolved.display().to_string()
@@ -1076,7 +1068,7 @@ impl AudioState {
         let document = json!({
             "schemaVersion": 1,
             "directory": stored,
-            "maxBytes": max_megabytes * 1024 * 1024,
+            "maxBytes": max_bytes,
             "idleFill": idle_fill,
         });
         let mut bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
@@ -1363,6 +1355,40 @@ mod tests {
         assert!(!default["directory"].as_str().unwrap().starts_with(r"\\?\"));
         let document: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
         assert_eq!(document["directory"], "");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn voice_cache_accepts_user_capacity_and_custom_directory_when_default_is_unavailable() {
+        let root = temp_root();
+        let state = AudioState::new(root.canonicalize().unwrap());
+        let default_dir = root.join("data/voice/recordings");
+        fs::create_dir_all(default_dir.parent().unwrap()).unwrap();
+        fs::write(&default_dir, b"occupied").unwrap();
+        let directory = root.join("selected-cache");
+        for megabytes in [1, 32768] {
+            let saved = state
+                .save_voice_cache(&directory.display().to_string(), megabytes, false)
+                .unwrap();
+            assert_eq!(saved["maxMegabytes"], megabytes);
+            assert_eq!(state.voice_cache_snapshot(), saved);
+            let document: Value =
+                serde_json::from_slice(&fs::read(root.join("config/voice_cache.json")).unwrap())
+                    .unwrap();
+            assert_eq!(document["maxBytes"], megabytes * 1024 * 1024);
+        }
+        assert_eq!(fs::read(&default_dir).unwrap(), b"occupied");
+        let before = fs::read(root.join("config/voice_cache.json")).unwrap();
+        for invalid in [0, u64::MAX] {
+            assert_eq!(
+                state.save_voice_cache(&directory.display().to_string(), invalid, false),
+                Err("VOICE_CACHE_SIZE_INVALID".to_string())
+            );
+        }
+        assert_eq!(
+            fs::read(root.join("config/voice_cache.json")).unwrap(),
+            before
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

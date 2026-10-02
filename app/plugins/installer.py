@@ -1,4 +1,4 @@
-"""Bounded local ZIP/folder installation for trusted Plugin API v4 code."""
+"""Local ZIP/folder installation for trusted Plugin API v4 code."""
 
 from __future__ import annotations
 
@@ -29,13 +29,6 @@ from app.storage.paths import StoragePaths, sanitize_directory_component
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
-MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
-MAX_PLUGIN_BYTES = 32 * 1024 * 1024
-MAX_PLUGIN_FILE_BYTES = 16 * 1024 * 1024
-MAX_PLUGIN_FILES = 512
-MAX_PLUGIN_ENTRIES = 1024
-MAX_MANIFEST_BYTES = 64 * 1024
-MAX_DISCOVERED_PLUGINS = 64
 _PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _SERVICE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _PYTHON_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -109,8 +102,6 @@ class LocalPluginInstaller:
             elif source_kind == "zip":
                 if not source_path.is_file() or source_path.suffix.casefold() != ".zip":
                     raise PluginInstallError("PLUGIN_INSTALL_SOURCE_INVALID")
-                if source_path.stat().st_size > MAX_ARCHIVE_BYTES:
-                    raise PluginInstallError("PLUGIN_INSTALL_ARCHIVE_TOO_LARGE")
             else:
                 raise PluginInstallError("PLUGIN_INSTALL_SOURCE_INVALID")
         except OSError as error:
@@ -443,9 +434,7 @@ class LocalPluginInstaller:
         if (root / "plugin.yaml").is_file():
             return root
         candidates: list[Path] = []
-        for index, child in enumerate(root.iterdir(), start=1):
-            if index > MAX_PLUGIN_ENTRIES:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_FILES")
+        for child in root.iterdir():
             if child.is_dir() and not self._unsafe_node(child) and (child / "plugin.yaml").is_file():
                 candidates.append(child)
         if len(candidates) != 1:
@@ -455,8 +444,6 @@ class LocalPluginInstaller:
     def _validated_spec(self, plugin_root: Path) -> PluginSpec:
         manifest_path = plugin_root / "plugin.yaml"
         try:
-            if not manifest_path.is_file() or manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
-                raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
             raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID") from error
@@ -486,10 +473,6 @@ class LocalPluginInstaller:
             or not plugin_root.joinpath(*module_parts).with_suffix(".py").is_file()
         ):
             raise PluginInstallError("PLUGIN_ENTRY_INVALID")
-        manifests = [path for path in plugin_root.rglob("plugin.yaml") if path.is_file()]
-        if manifests != [manifest_path]:
-            raise PluginInstallError("PLUGIN_INSTALL_LAYOUT_INVALID")
-        self._validate_folder(plugin_root)
         return spec
 
     @staticmethod
@@ -521,8 +504,6 @@ class LocalPluginInstaller:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
         if any(item.plugin_id.casefold() == spec.plugin_id.casefold() for item in existing):
             raise PluginInstallError("PLUGIN_ID_CONFLICT")
-        if len(existing) >= MAX_DISCOVERED_PLUGINS:
-            raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_PLUGINS")
 
     def _copy_folder(self, source: Path, destination: Path) -> None:
         try:
@@ -534,14 +515,8 @@ class LocalPluginInstaller:
         if not stat.S_ISDIR(root_stat.st_mode):
             raise PluginInstallError("PLUGIN_INSTALL_LAYOUT_INVALID")
         destination.mkdir()
-        files = 0
-        entries = 0
-        total = 0
         seen: set[str] = set()
         for path in source.rglob("*"):
-            entries += 1
-            if entries > MAX_PLUGIN_ENTRIES:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_FILES")
             relative = path.relative_to(source)
             self._validate_parts(relative.parts)
             key = unicodedata.normalize("NFC", "/".join(relative.parts)).casefold()
@@ -560,68 +535,19 @@ class LocalPluginInstaller:
                 continue
             if not stat.S_ISREG(node_stat.st_mode):
                 raise PluginInstallError("PLUGIN_INSTALL_FILE_TYPE_INVALID")
-            files += 1
-            if files > MAX_PLUGIN_FILES:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_FILES")
             target.parent.mkdir(parents=True, exist_ok=True)
-            with self._open_regular_source(path) as (reader, declared_size):
-                if (
-                    declared_size > MAX_PLUGIN_FILE_BYTES
-                    or total + declared_size > MAX_PLUGIN_BYTES
-                ):
-                    raise PluginInstallError("PLUGIN_INSTALL_TOO_LARGE")
-                remaining = min(
-                    MAX_PLUGIN_FILE_BYTES,
-                    MAX_PLUGIN_BYTES - total,
-                )
+            with self._open_regular_source(path) as reader:
                 with target.open("xb") as writer:
-                    total += self._copy_bounded(reader, writer, remaining)
-
-    def _validate_folder(self, root: Path) -> None:
-        files = 0
-        entries = 0
-        total = 0
-        seen: set[str] = set()
-        for path in root.rglob("*"):
-            entries += 1
-            if entries > MAX_PLUGIN_ENTRIES:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_FILES")
-            if self._unsafe_node(path):
-                raise PluginInstallError("PLUGIN_INSTALL_SYMLINK_FORBIDDEN")
-            relative = path.relative_to(root)
-            self._validate_parts(relative.parts)
-            key = unicodedata.normalize("NFC", "/".join(relative.parts)).casefold()
-            if key in seen:
-                raise PluginInstallError("PLUGIN_INSTALL_PATH_CONFLICT")
-            seen.add(key)
-            if path.is_dir():
-                continue
-            if not path.is_file():
-                raise PluginInstallError("PLUGIN_INSTALL_FILE_TYPE_INVALID")
-            files += 1
-            size = path.stat().st_size
-            total += size
-            if files > MAX_PLUGIN_FILES:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_FILES")
-            if size > MAX_PLUGIN_FILE_BYTES or total > MAX_PLUGIN_BYTES:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_LARGE")
+                    shutil.copyfileobj(reader, writer)
 
     def _extract_zip(self, source: Path, destination: Path) -> None:
-        with self._open_regular_source(source) as (source_file, archive_size):
-            if archive_size > MAX_ARCHIVE_BYTES:
-                raise PluginInstallError("PLUGIN_INSTALL_ARCHIVE_TOO_LARGE")
+        with self._open_regular_source(source) as source_file:
             with zipfile.ZipFile(source_file) as archive:
                 self._extract_zip_entries(archive, destination)
 
     def _extract_zip_entries(self, archive: zipfile.ZipFile, destination: Path) -> None:
-        infos = archive.infolist()
-        if len(infos) > MAX_PLUGIN_ENTRIES:
-            raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_FILES")
-        files = 0
-        declared_total = 0
-        actual_total = 0
         seen: set[str] = set()
-        for info in infos:
+        for info in archive.infolist():
             parts = self._zip_parts(info.filename)
             key = unicodedata.normalize("NFC", "/".join(parts)).casefold()
             if key in seen:
@@ -639,22 +565,12 @@ class LocalPluginInstaller:
             if is_directory:
                 target.mkdir(parents=True, exist_ok=True)
                 continue
-            files += 1
-            declared_total += info.file_size
-            if files > MAX_PLUGIN_FILES:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_FILES")
-            if info.file_size > MAX_PLUGIN_FILE_BYTES or declared_total > MAX_PLUGIN_BYTES:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_LARGE")
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info) as reader, target.open("xb") as writer:
-                remaining = min(
-                    MAX_PLUGIN_FILE_BYTES,
-                    MAX_PLUGIN_BYTES - actual_total,
-                )
-                actual_total += self._copy_bounded(reader, writer, remaining)
+                shutil.copyfileobj(reader, writer)
 
     @contextmanager
-    def _open_regular_source(self, path: Path) -> Iterator[tuple[BinaryIO, int]]:
+    def _open_regular_source(self, path: Path) -> Iterator[BinaryIO]:
         try:
             before = path.lstat()
         except OSError as error:
@@ -681,7 +597,7 @@ class LocalPluginInstaller:
                 raise PluginInstallError("PLUGIN_INSTALL_SOURCE_CHANGED")
             with os.fdopen(descriptor, "rb", closefd=True) as stream:
                 descriptor = -1
-                yield stream, int(opened.st_size)
+                yield stream
         except OSError as error:
             raise PluginInstallError("PLUGIN_INSTALL_IO_FAILED") from error
         finally:
@@ -726,18 +642,6 @@ class LocalPluginInstaller:
                 if not path.exists():
                     return
         raise PluginInstallError(code)
-
-    @staticmethod
-    def _copy_bounded(reader: BinaryIO, writer: BinaryIO, remaining: int) -> int:
-        written = 0
-        while True:
-            chunk = reader.read(min(64 * 1024, remaining - written + 1))
-            if not chunk:
-                return written
-            written += len(chunk)
-            if written > remaining:
-                raise PluginInstallError("PLUGIN_INSTALL_TOO_LARGE")
-            writer.write(chunk)
 
     @staticmethod
     def _zip_parts(name: str) -> tuple[str, ...]:

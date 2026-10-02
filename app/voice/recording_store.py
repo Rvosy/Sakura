@@ -89,11 +89,7 @@ class VoiceRecordingStore:
         return tuple(self._diagnostics)
 
     def apply_cache_settings(self, directory: Path | None, max_bytes: int | None) -> None:
-        if max_bytes is not None and (
-            isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0
-        ):
-            raise ValueError("max_bytes is invalid")
-        self._recordings_root = None if directory is None else Path(directory)
+        self._recordings_root = directory
         self.max_bytes = max_bytes
 
     def recordings_root(self) -> Path:

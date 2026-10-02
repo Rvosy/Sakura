@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-28
+updated: 2026-10-03
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -86,7 +86,8 @@ updated: 2026-09-28
   非收藏录音，当次刚写入的一句保留。收藏不因条数或容量被删除。旧录音缺少索引时仍能按 recordingId
   读取和播放，但不参与按段匹配，不猜测所属段落，也不迁移或改写旧文件。
 - 语音缓存目录默认是 `data/voice/recordings/<角色>/`。`config/voice_cache.json` schema v1 保存
-  `directory`、`maxBytes` 和 `idleFill`。目录留空表示默认位置；容量为 32 MB 到 20480 MB，缺省 512 MB。
+  `directory`、`maxBytes` 和 `idleFill`。目录留空表示默认位置；容量接受可表示为字节数的正整数 MB，缺省 512 MB。
+  Rust 负责保存配置，Python 只读取。自定义目录不可用时报告读写错误，不静默改写到默认目录；默认目录不可用不妨碍选择其他目录。
   更改目录不移动已有文件。Windows 界面使用普通盘符或 UNC 格式显示目录，读取与保存成功后的显示一致；
   显示转换不改写底层 canonical 路径或已有配置。
 - 「空闲补齐」默认关闭。打开后，当前角色 Timeline 里有正文、未标记 `suppressTts`、且没有对应录音的段落，
