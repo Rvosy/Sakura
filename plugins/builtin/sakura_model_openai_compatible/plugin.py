@@ -63,10 +63,6 @@ class ModelPlugin:
             raise ModelError("MODEL_CALLER_SCOPE_REQUIRED")
         return owner
 
-    def has_active_jobs(self):
-        with self.changed:
-            return any(job.state == "running" for job in self.jobs.values())
-
     def catalog(self):
         return self.profiles.catalog()
 

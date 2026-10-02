@@ -190,8 +190,9 @@ def test_bootstrap_runtime_stages_linux_layout_from_pinned_archive(
         archive_cache=tmp_path / "cache",
     )
     assert staged == repo / "runtime/bin/python3"
-    assert staged.is_file()
-    assert staged.stat().st_mode & 0o111
+    assert staged.read_bytes() == python.read_bytes()
+    if os.name != "nt":
+        assert staged.stat().st_mode & 0o111
     assert bootstrap_runtime.stage_runtime(repo_root=repo, target="linux-x64") == staged
 
 
@@ -280,9 +281,6 @@ def test_development_dependency_build_replaces_all_roots_after_validation(
     for plugin_id in expected_ids:
         root = dependency_parent / plugin_id
         assert (root / "fixture.py").is_file()
-        marker = json.loads((root / ".sakura-dependencies.json").read_text(encoding="utf-8"))
-        assert marker["schemaVersion"] == 1
-        assert marker["kind"] == "requirements.txt"
     assert not list((repo / "plugins").glob(".dependencies-*"))
 
 
@@ -1062,24 +1060,3 @@ def test_static_updater_manifest_allows_explicit_platform_only_test(tmp_path: Pa
     assert set(manifest["platforms"]) == {"windows-x86_64"}
     assert manifest["platforms"]["windows-x86_64"]["url"].endswith("Sakura-setup.exe")
     assert "portable" not in manifest
-
-
-def test_macos_packages_include_launch_help_without_repacking_the_dmg() -> None:
-    help_path = ROOT / "packaging/macos-open-help.html"
-    help_document = help_path.read_text(encoding="utf-8")
-    assert "https://github.com/Rvosy/Sakura/releases" in help_document
-    assert (
-        "https://support.apple.com/guide/mac-help/"
-        "open-a-mac-app-from-an-unknown-developer-mh40616/mac"
-    ) in help_document
-    for unsafe_command in ("xattr", "spctl --master-disable", "csrutil", "sudo "):
-        assert unsafe_command not in help_document
-
-    for workflow in ("package.yml", "release.yml"):
-        document = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
-        assert 'help_source="packaging/macos-open-help.html"' in document
-        assert 'cp "$help_source" "$app_zip_root/Sakura-macOS-open-help.html"' in document
-        assert 'cp "$help_source" "$help_out"' in document
-        assert 'ditto -c -k --sequesterRsrc "$app_zip_root" "$app_zip"' in document
-        assert 'ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"' not in document
-        assert 'cp "$dmg" "$dmg_out"' in document

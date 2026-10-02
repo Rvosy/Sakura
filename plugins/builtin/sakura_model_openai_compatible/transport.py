@@ -12,7 +12,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from openai.resources.chat import AsyncChat  # Resolve lazy imports before serving jobs.
 
 from sakura_cancellation import check_cancelled
-from sakura_http import is_loopback_url, proxy_for_url
+from sakura_http import proxy_for_url
 from sakura_model import ModelError
 from sakura_provider_errors import public_provider_http_message
 
@@ -80,8 +80,6 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
     settings, request = deepcopy(settings), deepcopy(request)
     base_url = normalize_base_url(settings["base_url"])
     key = settings["api_key"]
-    if not key and not is_loopback_url(base_url):
-        raise ModelError("MODEL_CONFIGURATION_INVALID", "请先配置 API Key。")
     if operation == "generate":
         if not isinstance(request, dict) or not isinstance(request.get("messages"), list) or not request["messages"]:
             raise ModelError("MODEL_REQUEST_INVALID", "模型请求缺少消息。")

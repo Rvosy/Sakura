@@ -119,7 +119,7 @@ def test_existing_external_by_id_and_newer_version_are_not_overwritten(tmp_path)
     other = roots.user_root / "plugins/user/custom-mobile-name"
     shutil.copytree(SOURCE, other)
     manifest = other / "plugin.yaml"
-    manifest.write_text(manifest.read_text().replace("version: 1.0.0", "version: 9.0.0"))
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace("version: 1.0.0", "version: 9.0.0"), encoding="utf-8")
     (other / "plugin.py").write_text("# user's external version")
     PluginDesiredStateStore(roots.user_root).set(PLUGIN, False)
     for _ in range(2):
@@ -226,7 +226,7 @@ def test_retired_api_repair_prepares_before_moving_original(tmp_path, monkeypatc
     assert migrate_bundled_plugins(roots) == {}
     mark_120_completed(roots)
     manifest = installed(roots) / "plugin.yaml"
-    manifest.write_text(manifest.read_text() + "\nrequires: [sakura.host.model_slots]\n")
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "\nrequires: [sakura.host.model_slots]\n", encoding="utf-8")
     original = manifest.read_bytes()
     (installed(roots) / "local-notes.txt").write_text("preserve local edits")
     if fails:
@@ -408,11 +408,11 @@ def test_user_version_is_preserved_even_when_it_cannot_run(tmp_path, state, dama
     roots = roots_for(tmp_path)
     shutil.copytree(SOURCE, installed(roots))
     manifest = installed(roots) / "plugin.yaml"
-    manifest.write_text(manifest.read_text().replace("version: 1.0.0", "version: 9.0.0"))
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace("version: 1.0.0", "version: 9.0.0"), encoding="utf-8")
     if damage == "entry_missing":
         (installed(roots) / "plugin.py").unlink()
     else:
-        manifest.write_text(manifest.read_text() + "\nrequires: [sakura.host.model_slots]\n")
+        manifest.write_text(manifest.read_text(encoding="utf-8") + "\nrequires: [sakura.host.model_slots]\n", encoding="utf-8")
     before = manifest.read_bytes()
     marker(roots).write_text(json.dumps({PLUGIN: state}))
     assert migrate_bundled_plugins(roots) == {}

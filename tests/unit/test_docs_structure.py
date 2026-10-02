@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.check_docs import _parse_front_matter, check_docs
+from tools.check_docs import check_docs
 
 
 def _write(path: Path, value: str) -> None:
@@ -43,18 +43,6 @@ updated: 2026-08-26
     return spec
 
 
-def test_front_matter_parser_rejects_missing_metadata() -> None:
-    metadata, body, errors = _parse_front_matter(
-        "---\nkind: spec\nstatus: normative\n---\n\n# Title\n"
-    )
-    assert errors == []
-    assert metadata == {"kind": "spec", "status": "normative"}
-    assert body == "# Title"
-
-    _, _, errors = _parse_front_matter("# Missing metadata\n")
-    assert errors == ["missing YAML front matter"]
-
-
 def test_docs_check_rejects_unindexed_documents_and_broken_links(tmp_path: Path) -> None:
     spec = _minimal_spec_repo(tmp_path)
     index = tmp_path / "docs/specs/README.md"
@@ -72,6 +60,8 @@ def test_docs_check_rejects_unindexed_documents_and_broken_links(tmp_path: Path)
         encoding="utf-8",
     )
     assert any("broken local link: missing.md" in error for error in check_docs(tmp_path))
+    spec.write_text("# Missing metadata\n", encoding="utf-8")
+    assert any("missing YAML front matter" in error for error in check_docs(tmp_path))
 
 
 def test_docs_check_accepts_the_indexed_root_changelog(tmp_path: Path) -> None:

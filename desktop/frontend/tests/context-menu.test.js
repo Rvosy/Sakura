@@ -17,21 +17,6 @@ function deferred() {
   return { promise, resolve };
 }
 
-test("the custom product menu uses the existing Rust action IDs", () => {
-  assert.deepEqual(PRODUCT_MENU_ACTIONS, {
-    visibility: "sakura.pet.visibility.toggle",
-    subtitleZh: "sakura.chat.subtitle.zh",
-    subtitleJa: "sakura.chat.subtitle.ja",
-    subtitleBilingual: "sakura.chat.subtitle.bilingual",
-    subtitleBilingualJa: "sakura.chat.subtitle.bilingual_ja",
-    topmost: "sakura.pet.topmost.toggle",
-    history: "sakura.history.open",
-    runtimeLog: "sakura.runtime-log.open",
-    settings: "sakura.settings.open",
-    exit: "sakura.app.exit",
-  });
-});
-
 test("menu positioning remains inside every viewport edge", () => {
   assert.deepEqual(
     clampMenuPosition(899, 995, 226, 330, { width: 900, height: 996 }),

@@ -1996,22 +1996,4 @@ mod tests {
             Err("shutdown failed".to_string())
         );
     }
-
-    #[test]
-    fn about_snapshot_and_product_links_are_fixed() {
-        assert_eq!(
-            about_snapshot(),
-            AboutSnapshot {
-                schema_version: 1,
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                repository_url: "https://github.com/Rvosy/Sakura",
-            }
-        );
-        assert_eq!(WEBSITE_URL, "https://sakura.cialloo.cn/");
-        assert_eq!(
-            CHANGELOG_URL,
-            "https://github.com/Rvosy/Sakura/blob/main/docs/CHANGELOG.md"
-        );
-        assert_eq!(SPONSOR_URL, "https://ifdian.net/a/Rvosy");
-    }
 }

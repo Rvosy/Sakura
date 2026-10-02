@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-28
+updated: 2026-10-03
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -120,6 +120,7 @@ Runtime interaction context 和 Agent Trace operation；其中每次 Provider �
 
 - Agent Trace 是固定启用的本地诊断行为，不提供设置项、运行时开关或插件变更事件。旧配置中的
   `agent_trace.enabled` 不再读取；无论遗留值为何，新 operation 都按本规范记录。
+  已废弃的 `debug.raw_tts_service_enabled` 同样忽略，不阻止读取日志配置，也不改写旧文件。
 - 每次模型 request 和 reply 分别序列化为一个由 60 个 `=` 包围的人类可读文本块，块头为
   `[Agent Trace] 模型请求/模型回复`，已知字段、用途、来源、角色、状态和布尔值使用中文，内部 section
   用 60 个 `-` 分隔，块间恰好一个空行。活动文件不得显示 JSON 的对象/数组括号、带引号字段名、逗号或
@@ -224,18 +225,9 @@ best-effort 稳定诊断，不得改变聊天终态、工具执行、取消、Co
 
 ## 8. 验收条件
 
-自动测试必须捕获 mock Provider 的最终 payload，逐项比对 trace 顺序、role、来源、正文和统计；覆盖尾部
-system、尾部 user、合并首 system、初始对话、多步直接 tool loop、tool result、文本工具摘要、
-reply repair、合法 segments/visual_observation、普通文本、非法 JSON、tone 清洗和安全兜底。
+自动测试从真实调用与最终日志验证请求、回复及修复结果能正确关联，正文顺序得到保留；
+凭据和二进制正文不得落盘，大文本保留有界头尾。格式和字段排列通过人工阅读检查，不维护内部文档字典或固定标题、空行的快照。
 
-文件测试必须证明每个 request/reply 是独立完整文本块、块间一个空行、调用顺序、连续 history 分组不改变
-角色/正文顺序、工具摘要顺序和总量准确、summary 在正文前、中文不转义、长文本分行、结构化值以中文
-层级展开且活动文件没有 JSON 语法、未知字段不丢失、布尔与空值可辨认、并发 operation
-成块、崩溃恢复、跨日期不轮转、32 MiB 整块轮转、30 天/512 MiB 保留，以及遗留关闭配置不会停用记录。
-隐私测试同时断言
-普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL/混写文件整组归档、纯文本格式、
-插件 worker 转发、等级降噪、Provider/Core/WebView 安全错误详情、业务事件目录完整性和 writer 故障隔离；
-迁移测试还必须证明活动 Runtime 日志无 JSON 混写且 Python 子进程从不持有日志文件。另需覆盖 Memory
-loading→ready 后真实召回、
-Memory 等待超时与取消、Memory 初始化稳定根因投影，以及后台记忆整理
-request/reply 的独立 operation 与 Trace。
+持久化边界覆盖并发 operation 成块、崩溃恢复、整块轮转、留存清理、跨日期继续追加和写入失败不影响模型调用。
+旧日志迁移、插件 worker 转发及 Provider/Core/WebView 错误详情保留各自的进程和隐私边界证据。
+后台记忆整理的 request/reply 使用独立 operation；Memory 初始化、取消和召回行为由对应调用链测试覆盖。

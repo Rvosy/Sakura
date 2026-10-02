@@ -91,7 +91,6 @@ def prepare(repo: Path, python: Path) -> None:
             )
             marker = {
                 "schemaVersion": 1,
-                "kind": "requirements.txt",
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }
             (dependency_root / ".sakura-dependencies.json").write_text(

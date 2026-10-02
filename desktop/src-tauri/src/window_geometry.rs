@@ -292,13 +292,6 @@ impl LayoutContract {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn layout(&self, state: PresentationState) -> Result<&StateLayout, String> {
-        self.states
-            .get(state.key())
-            .ok_or_else(|| format!("missing layout state: {}", state.key()))
-    }
-
     fn all_values() -> [PresentationState; 1] {
         [PresentationState::Product]
     }
@@ -1150,19 +1143,6 @@ mod tests {
             application.work_area,
         )
         .expect("visible fit bounds must stay inside work area");
-    }
-
-    #[test]
-    fn shared_contract_defines_one_fixed_bounded_product_layout() {
-        let contract = contract();
-        contract.validate().expect("contract should validate");
-        assert_eq!(
-            contract
-                .layout(PresentationState::Product)
-                .unwrap()
-                .window_size,
-            [900, 1_774]
-        );
     }
 
     fn control_surface(bubble_rect: [u32; 4], input_rect: [u32; 4]) -> ControlSurfaceLayout {

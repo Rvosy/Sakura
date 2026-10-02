@@ -7,11 +7,10 @@ import subprocess
 import sys
 import threading
 import zipfile
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
-import yaml
 
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
@@ -65,6 +64,43 @@ def _plugin_zip(path: Path, *, manifest: str = MANIFEST) -> Path:
         archive.writestr("wrapper/plugin.py", PLUGIN_SOURCE)
         archive.writestr("wrapper/helper.py", HELPER_SOURCE)
     return path
+
+
+@pytest.mark.parametrize("source_kind", ["folder", "zip"])
+def test_resource_plugin_installs_without_file_size_or_inventory_quotas(tmp_path: Path, source_kind: str) -> None:
+    app_root = tmp_path / "app"
+    for index in range(64):
+        existing = app_root / "plugins/user" / f"existing{index}"
+        existing.mkdir(parents=True)
+        (existing / "plugin.yaml").write_text(MANIFEST.replace(
+            "com.example.local", f"com.example.existing{index}"
+        ) + "\nenabled: false\n", encoding="utf-8")
+        (existing / "plugin.py").write_text("class LocalPlugin: pass\n", encoding="utf-8")
+    source = _plugin_folder(tmp_path / "source", manifest=MANIFEST + "\n# " + "description " * 6000)
+    resource = source / "resource.bin"
+    with resource.open("wb") as stream:
+        stream.seek(17 * 1024 * 1024)
+        stream.write(b"resource end")
+    for index in range(520):
+        (source / f"asset-{index}.txt").write_text(f"asset {index}", encoding="utf-8")
+    examples = source / "examples"
+    examples.mkdir()
+    (examples / "plugin.yaml").write_text("example manifest", encoding="utf-8")
+    if source_kind == "zip":
+        archive_path = tmp_path / "resource-plugin.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in source.rglob("*"):
+                archive.write(path, arcname=path.relative_to(source))
+        source = archive_path
+
+    installed = LocalPluginInstaller(app_root).install(source, source_kind)
+
+    assert (installed.code_dir / "asset-519.txt").read_text(encoding="utf-8") == "asset 519"
+    with (installed.code_dir / "resource.bin").open("rb") as stream:
+        stream.seek(17 * 1024 * 1024)
+        assert stream.read() == b"resource end"
+    assert (installed.code_dir / "imported.marker").read_text(encoding="utf-8") == "imported"
+    assert len(PluginInventory(app_root).scan().records) == 65
 
 
 def _dependency_install_fixture(
@@ -729,31 +765,6 @@ def test_install_rejects_invalid_existing_plugin_config(tmp_path: Path) -> None:
     assert not user_root.exists() or not any(user_root.iterdir())
 
 
-def test_install_rejects_plugins_beyond_public_management_limit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.plugins import installer as installer_module
-
-    app_root = tmp_path / "app"
-    bundled = app_root / "plugins" / "builtin" / "bundled"
-    bundled.mkdir(parents=True)
-    (bundled / "plugin.yaml").write_text(
-        MANIFEST.replace("com.example.local", "com.example.bundled"),
-        encoding="utf-8",
-    )
-    (bundled / "plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
-    monkeypatch.setattr(installer_module, "MAX_DISCOVERED_PLUGINS", 1)
-
-    with pytest.raises(PluginInstallError, match="PLUGIN_INSTALL_TOO_MANY_PLUGINS"):
-        LocalPluginInstaller(app_root).install(
-            _plugin_folder(tmp_path / "source"),
-            "folder",
-        )
-
-
-
-
 def test_install_rejects_malformed_manifest_field_types(
     tmp_path: Path,
 ) -> None:
@@ -816,48 +827,6 @@ class LocalPlugin:
         runtime.close()
 
 
-
-
-def test_folder_copy_stays_bounded_when_source_grows_after_open(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.plugins import installer as installer_module
-
-    source = _plugin_folder(tmp_path / "source")
-    growing = source / "grow.bin"
-    growing.write_bytes(b"x")
-    original_open = LocalPluginInstaller._open_regular_source
-
-    @contextmanager
-    def grow_after_open(self, path: Path):
-        with original_open(self, path) as opened:
-            if path.name == "grow.bin":
-                with path.open("ab") as writer:
-                    writer.write(b"x" * 2048)
-            yield opened
-
-    monkeypatch.setattr(installer_module, "MAX_PLUGIN_FILE_BYTES", 1024)
-    monkeypatch.setattr(LocalPluginInstaller, "_open_regular_source", grow_after_open)
-    with pytest.raises(PluginInstallError, match="PLUGIN_INSTALL_TOO_LARGE"):
-        LocalPluginInstaller(tmp_path / "app").install(source.resolve(), "folder")
-
-
-def test_install_file_limit_rolls_back_promoted_code(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.plugins import installer as installer_module
-
-    source = _plugin_folder(tmp_path / "source")
-    monkeypatch.setattr(installer_module, "MAX_PLUGIN_FILES", 2)
-    app_root = tmp_path / "app"
-    with pytest.raises(PluginInstallError, match="PLUGIN_INSTALL_TOO_MANY_FILES"):
-        LocalPluginInstaller(app_root).install(source, "folder")
-    user_root = StoragePaths(app_root).user_plugins_dir
-    assert not user_root.exists() or not [
-        path for path in user_root.iterdir() if not path.name.startswith(".install-")
-    ]
 
 
 def test_marketplace_install_checks_identity_before_writing(tmp_path):

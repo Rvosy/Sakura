@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.storage.timeline import TimelineKind
-from app.voice.cache_settings import load_voice_cache_settings, save_voice_cache_settings
+from app.voice.cache_settings import load_voice_cache_settings
 from app.voice.device_load import device_below_peak
 from app.voice.idle_fill import IdleFillCursor, next_missing_speech
-from app.voice.recording_store import VoiceRecordingStore
+from app.voice.recording_store import VoiceRecordingError, VoiceRecordingStore
 from tests.unit.test_voice_recording_store import _stamp, _wav
 
 
@@ -76,23 +78,60 @@ def test_device_peak_uses_cpu_load_and_gpu_busy_percent() -> None:
     assert device_below_peak(load_reader=lambda: None, gpu_reader=lambda: None, cpu_count=4)
 
 
-def test_cache_settings_round_trip_and_invalid_document_falls_back(tmp_path: Path) -> None:
+def test_cache_settings_load_shell_document_and_invalid_document_falls_back(tmp_path: Path) -> None:
     fallback = load_voice_cache_settings(tmp_path)
     assert fallback.directory is None
     assert fallback.idle_fill is False
     assert fallback.max_bytes == 512 * 1024 * 1024
 
     custom = tmp_path / "elsewhere"
-    saved = save_voice_cache_settings(tmp_path, str(custom), 64 * 1024 * 1024, True)
+    config = tmp_path / "config/voice_cache.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({
+        "schemaVersion": 1, "directory": str(custom), "maxBytes": 64 * 1024 * 1024, "idleFill": True,
+    }), encoding="utf-8")
     loaded = load_voice_cache_settings(tmp_path)
-    assert saved == loaded
     assert loaded.directory == custom.resolve()
     assert loaded.idle_fill is True
-    document = json.loads((tmp_path / "config" / "voice_cache.json").read_text(encoding="utf-8"))
-    assert document["directory"] == str(custom.resolve())
-    assert document["idleFill"] is True
+    assert loaded.max_bytes == 64 * 1024 * 1024
 
     (tmp_path / "config" / "voice_cache.json").write_text("{", encoding="utf-8")
     broken = load_voice_cache_settings(tmp_path)
     assert broken.directory is None
     assert broken.idle_fill is False
+
+
+@pytest.mark.parametrize("max_megabytes", [1, 32768])
+def test_cache_settings_respect_user_capacity_outside_old_range(tmp_path: Path, max_megabytes: int) -> None:
+    config = tmp_path / "config/voice_cache.json"
+    config.parent.mkdir()
+    custom = tmp_path / "custom-cache"
+    config.write_text(json.dumps({
+        "schemaVersion": 1, "directory": str(custom),
+        "maxBytes": max_megabytes * 1024 * 1024, "idleFill": True,
+    }), encoding="utf-8")
+
+    settings = load_voice_cache_settings(tmp_path)
+
+    assert settings.max_bytes == max_megabytes * 1024 * 1024
+    assert settings.directory == custom
+    assert settings.idle_fill
+
+
+def test_unavailable_cache_does_not_silently_write_to_default_directory(tmp_path: Path) -> None:
+    custom = tmp_path / "unavailable-cache"
+    custom.write_text("a file occupies the selected directory", encoding="utf-8")
+    config = tmp_path / "config/voice_cache.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({
+        "schemaVersion": 1, "directory": str(custom), "maxBytes": 1024 * 1024,
+    }), encoding="utf-8")
+    settings = load_voice_cache_settings(tmp_path)
+    store = VoiceRecordingStore(tmp_path)
+    store.apply_cache_settings(settings.directory, settings.max_bytes)
+
+    with pytest.raises(VoiceRecordingError) as caught:
+        store.commit(_wav(tmp_path / "source.wav"), character_id="sakura", history_entry_id="entry", provider="fixture")
+    assert caught.value.code == "AUDIO_RECORDING_INVALID"
+    assert not store.paths.voice_recordings_dir.exists()
+    assert custom.is_file()

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 
 import pytest
@@ -25,9 +24,8 @@ class CharacterRegistryStub:
         return self.profiles[character_id]
 
 
-def test_settings_service_rejects_non_v1_system_config() -> None:
-    root = _runtime_root("system_schema")
-    service = AppSettingsService(root)
+def test_settings_service_rejects_non_v1_system_config(tmp_path: Path) -> None:
+    service = AppSettingsService(tmp_path)
     service.system_config_path.parent.mkdir(parents=True)
     service.system_config_path.write_text("config_version: 2\n", encoding="utf-8")
 
@@ -35,9 +33,8 @@ def test_settings_service_rejects_non_v1_system_config() -> None:
         service.load_startup_settings()
 
 
-def test_settings_service_saves_character_without_replacing_other_domains() -> None:
-    root = _runtime_root("yaml_save")
-    service = AppSettingsService(root)
+def test_settings_service_saves_character_without_replacing_other_domains(tmp_path: Path) -> None:
+    service = AppSettingsService(tmp_path)
     service.config_dir.mkdir(parents=True)
     service.characters_config_path.write_text(
         "current_character_id: sakura\nother: keep\n", encoding="utf-8"
@@ -53,9 +50,8 @@ def test_settings_service_saves_character_without_replacing_other_domains() -> N
     assert system["startup"]["launch_at_login"] is True
 
 
-def test_settings_service_reads_bubble_settings() -> None:
-    root = _runtime_root("yaml_bubble")
-    service = AppSettingsService(root)
+def test_settings_service_reads_bubble_settings(tmp_path: Path) -> None:
+    service = AppSettingsService(tmp_path)
     assert service.load_bubble_settings() == BubbleSettings()
     service.config_dir.mkdir(parents=True)
     service.system_config_path.write_text(
@@ -68,9 +64,8 @@ def test_settings_service_reads_bubble_settings() -> None:
     )
 
 
-def test_settings_service_reads_normalized_runtime_loop_settings() -> None:
-    root = _runtime_root("yaml_runtime_loop")
-    service = AppSettingsService(root)
+def test_settings_service_reads_normalized_runtime_loop_settings(tmp_path: Path) -> None:
+    service = AppSettingsService(tmp_path)
     assert service.load_runtime_loop_settings() == RuntimeLoopSettings()
     service.config_dir.mkdir(parents=True)
     service.system_config_path.write_text(
@@ -85,21 +80,19 @@ def test_settings_service_reads_normalized_runtime_loop_settings() -> None:
     assert loaded.max_tool_calls_per_turn == 6
 
 
-def test_settings_service_rejects_retired_debug_field() -> None:
-    root = _runtime_root("yaml_debug")
-    service = AppSettingsService(root)
+def test_settings_service_ignores_retired_debug_field(tmp_path: Path) -> None:
+    service = AppSettingsService(tmp_path)
     service.config_dir.mkdir(parents=True)
     service.system_config_path.write_text(
-        "config_version: 1\ndebug:\n  raw_tts_service_enabled: true\n", encoding="utf-8"
+        "config_version: 1\ndebug:\n  raw_tts_service_enabled: true\n  profile: debug\n", encoding="utf-8"
     )
+    before = service.system_config_path.read_bytes()
+    assert service.load_debug_log_settings().profile == "debug"
+    assert service.system_config_path.read_bytes() == before
 
-    with pytest.raises(ValueError, match="已废止"):
-        service.load_debug_log_settings()
 
-
-def test_settings_service_reads_theme_preferences_without_global_colors() -> None:
-    root = _runtime_root("yaml_theme")
-    service = AppSettingsService(root)
+def test_settings_service_reads_theme_preferences_without_global_colors(tmp_path: Path) -> None:
+    service = AppSettingsService(tmp_path)
     service.config_dir.mkdir(parents=True)
     service.system_config_path.write_text(
         "config_version: 1\nui:\n  theme:\n    primary_color: '#112233'\n"
@@ -112,9 +105,8 @@ def test_settings_service_reads_theme_preferences_without_global_colors() -> Non
     )
 
 
-def test_settings_service_reads_character_theme_overrides() -> None:
-    root = _runtime_root("yaml_character_theme_override")
-    service = AppSettingsService(root)
+def test_settings_service_reads_character_theme_overrides(tmp_path: Path) -> None:
+    service = AppSettingsService(tmp_path)
     service.config_dir.mkdir(parents=True)
     service.system_config_path.write_text(
         "config_version: 1\nui:\n  character_theme_overrides:\n    N.A.V.I:\n"
@@ -127,9 +119,8 @@ def test_settings_service_reads_character_theme_overrides() -> None:
     }
 
 
-def test_settings_service_loads_default_theme_for_invalid_values() -> None:
-    root = _runtime_root("yaml_theme_invalid")
-    service = AppSettingsService(root)
+def test_settings_service_loads_default_theme_for_invalid_values(tmp_path: Path) -> None:
+    service = AppSettingsService(tmp_path)
     service.config_dir.mkdir(parents=True)
     service.system_config_path.write_text(
         "config_version: 1\nui:\n  theme:\n    primary_color: bad\n"
@@ -139,9 +130,3 @@ def test_settings_service_loads_default_theme_for_invalid_values() -> None:
     )
 
     assert service.load_theme_settings() == ThemeSettings(ai_enabled=True)
-
-
-def _runtime_root(name: str) -> Path:
-    root = Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / uuid.uuid4().hex / name
-    root.mkdir(parents=True, exist_ok=True)
-    return root

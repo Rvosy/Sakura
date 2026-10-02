@@ -382,20 +382,21 @@ def test_streaming_message_and_tool_continuation_are_returned_on_the_next_reques
     assert tool_result["tool_call_id"] == "call-stream-1"
 
 
-def test_provider_apply_reclaims_consumer_started_after_idle_preflight(model_process, monkeypatch):
+@pytest.mark.parametrize("start_before_save", [True, False])
+def test_provider_save_and_reload_reclaim_old_requests_without_replay(model_process, monkeypatch, start_before_save):
     app, requests, gate, config = model_process
     provider = next(p for p in app.settings_snapshot()["plugins"] if p["pluginId"] == SERVICE)
     section = next(s for s in provider["sections"] if s["sectionId"] == "connections")
     draft = {"connections": section["values"]["connections"]}
     draft["connections"][0]["models"] = ["replacement"]
     previous = app.service_identity(SERVICE)
-    preflight_done, reload_allowed = threading.Event(), threading.Event()
+    saved, reload_allowed = threading.Event(), threading.Event()
     results, errors = [], []
     apply_result = app._apply_settings_result
 
     def delayed_reload(plugin_id, result):
         assert result["applicationState"] == "restart_required"
-        preflight_done.set()
+        saved.set()
         assert reload_allowed.wait(3)
         return apply_result(plugin_id, result)
 
@@ -407,14 +408,20 @@ def test_provider_apply_reclaims_consumer_started_after_idle_preflight(model_pro
         except BaseException as error:
             errors.append(error)
 
+    def start_consumer():
+        app.call_service("fixture.model.a", "start", REF, request("hold"))
+        assert requests.get(timeout=3)["model"] == "fixture"
+
+    if start_before_save:
+        start_consumer()
     worker = threading.Thread(target=apply)
     worker.start()
     try:
-        assert preflight_done.wait(3), errors
-        # This background consumer enters the old provider after the action's
-        # idle check. It must fail when that instance exits, never replay on new.
-        app.call_service("fixture.model.a", "start", REF, request("hold"))
-        assert requests.get(timeout=3)["model"] == "fixture"
+        assert saved.wait(3), errors
+        assert json.loads(config.read_text(encoding="utf-8"))["profiles"][0]["models"][0]["modelId"] == "replacement"
+        assert app.service_identity(SERVICE) == previous
+        if not start_before_save:
+            start_consumer()
     finally:
         reload_allowed.set()
         worker.join(5)

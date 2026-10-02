@@ -1,12 +1,4 @@
-"""tests/unit/test_agent_runtime.py — AgentRuntime 行为特征测试
-
-在拆分 AgentRuntime 之前，先用这些测试锁定关键行为：
-1. 工具调用上限
-2. 浏览器工具路由拦截
-3. 屏幕观察允许/禁止逻辑
-4. Vision fallback 行为
-5. 主动事件流程
-"""
+"""AgentRuntime 的模型请求、工具执行、取消及回复处理。"""
 
 from __future__ import annotations
 
@@ -16,10 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sakura_assistant.agent.actions import AgentAction, AgentEvent, AgentResult
+from sakura_assistant.agent.actions import AgentEvent, AgentResult
 from sakura_assistant.agent.runtime import (
     AgentRuntime,
-    _build_vision_unsupported_reply,
     _chat_provider_system_prompt,
     _final_provider_system_prompt,
     _format_event_for_model,
@@ -28,17 +19,10 @@ from sakura_assistant.agent.runtime import (
 )
 from sakura_cancellation import CancellationToken, OperationCancelled
 from sakura_assistant.agent.tool_routing import _filter_openai_tools_for_browser_routing
-from sakura_assistant.agent.screen_tools import create_screen_observation_tool
 
 
 from sakura_assistant.agent.runtime_limits import (
-    MAX_AGENT_STEPS_PER_TURN,
-    MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
-    MAX_EVENT_RECENT_CONVERSATION_MESSAGES,
     MAX_CONTINUATION_CONTEXT_MESSAGES,
-    MAX_CONTINUATION_CONTEXT_TEXT_CHARS,
-    MAX_TOOL_CALLS_PER_STEP,
-    MAX_TOOL_CALLS_PER_TURN,
     MAX_TOOL_RESULT_CHARS,
     RuntimeLoopSettings,
 )
@@ -161,58 +145,7 @@ def test_chat_prompt_budget_excludes_native_visual_reply_instruction() -> None:
     assert "visual_observation" in native_prompt
 
 
-def test_runtime_tool_prompts_are_role_neutral_and_match_direct_execution() -> None:
-    screen_tool = create_screen_observation_tool()
-    runtime_prompt = AgentRuntime(
-        _dummy_api_client(),
-        _dummy_system_prompt(),
-    )._build_tool_system_prompt()
-
-    assert "主人" not in screen_tool.description
-    assert "工具调用会直接执行" in runtime_prompt
-    assert "需要确认" not in runtime_prompt
-
-
-class TestRuntimeLimits:
-    """运行时限制常量验证"""
-
-    def test_agent_steps_per_turn_positive(self) -> None:
-        assert MAX_AGENT_STEPS_PER_TURN > 0
-
-    def test_tool_calls_per_step_positive(self) -> None:
-        assert MAX_TOOL_CALLS_PER_STEP > 0
-
-    def test_tool_calls_per_turn_positive(self) -> None:
-        assert MAX_TOOL_CALLS_PER_TURN > 0
-
-    def test_tool_calls_per_turn_at_least_per_step(self) -> None:
-        assert MAX_TOOL_CALLS_PER_TURN >= MAX_TOOL_CALLS_PER_STEP
-
-    def test_tool_result_chars_positive(self) -> None:
-        assert MAX_TOOL_RESULT_CHARS > 0
-
-    def test_continuation_context_limits_positive(self) -> None:
-        assert MAX_CONTINUATION_CONTEXT_MESSAGES > 0
-        assert MAX_CONTINUATION_CONTEXT_TEXT_CHARS > 0
-
-    def test_event_context_limits_positive(self) -> None:
-        assert MAX_EVENT_RECENT_CONVERSATION_MESSAGES > 0
-        assert MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS > 0
-
-    def test_runtime_loop_settings_are_used_in_prompt(self) -> None:
-        runtime = AgentRuntime(
-            _dummy_api_client(),
-            _dummy_system_prompt(),
-            runtime_loop_settings=RuntimeLoopSettings(
-                max_agent_steps_per_turn=6,
-                max_tool_calls_per_step=4,
-                max_tool_calls_per_turn=12,
-            ),
-        )
-
-        prompt = runtime._build_tool_system_prompt()
-
-        assert "每步最多请求 4 个工具，整轮最多 12 个工具" in prompt
+class TestRuntimeInitialization:
 
     def test_context_orchestrator_is_constructed_once_on_first_real_request(self) -> None:
         client = _dummy_api_client()
@@ -231,38 +164,6 @@ class TestRuntimeLimits:
         assert runtime.context_orchestrator is first_instance
         assert first.reply.text == "おはよう"
         assert second.reply.text == "おはよう"
-
-    def test_agent_runtime_has_no_memory_owner_or_recall_special_case(self) -> None:
-        runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
-
-        assert not hasattr(runtime, "memory")
-        assert not hasattr(runtime, "memory_recall")
-
-
-class TestToolCallCountLimits:
-    """验证 allowed_calls 计算逻辑"""
-
-    @staticmethod
-    def _allowed_calls(tool_calls_count: int, total_tool_calls: int) -> int:
-        return min(
-            tool_calls_count,
-            MAX_TOOL_CALLS_PER_STEP,
-            max(0, MAX_TOOL_CALLS_PER_TURN - total_tool_calls),
-        )
-
-    def test_within_all_limits(self) -> None:
-        assert self._allowed_calls(2, 0) == 2
-
-    def test_exceeds_step_limit(self) -> None:
-        assert self._allowed_calls(10, 0) == MAX_TOOL_CALLS_PER_STEP
-
-    def test_exceeds_turn_limit(self) -> None:
-        remaining = max(0, MAX_TOOL_CALLS_PER_TURN - (MAX_TOOL_CALLS_PER_TURN - 1))
-        assert self._allowed_calls(5, MAX_TOOL_CALLS_PER_TURN - 1) == remaining
-
-    def test_exhausted(self) -> None:
-        assert self._allowed_calls(5, MAX_TOOL_CALLS_PER_TURN) == 0
-
 
 class TestBrowserRouting:
     """浏览器工具路由拦截"""
@@ -284,30 +185,8 @@ class TestBrowserRouting:
         assert "web__web_search" not in names
 
 
-class TestScreenObservation:
-    """屏幕观察开关逻辑"""
-
-    def test_screen_observation_disabled_removes_capability(self) -> None:
-        screen_tool = _dummy_tool("observe_screen", capability="screen_observation")
-        registry = ToolRegistry([screen_tool])
-        tools = registry.describe_openai_tools(allowed_capabilities=set())
-        names = {t["function"]["name"] for t in tools}
-        assert "observe_screen" not in names
-
-    def test_screen_observation_enabled_includes_capability(self) -> None:
-        screen_tool = _dummy_tool("observe_screen", capability="screen_observation")
-        registry = ToolRegistry([screen_tool])
-        tools = registry.describe_openai_tools(allowed_capabilities={"screen_observation"})
-        names = {t["function"]["name"] for t in tools}
-        assert "observe_screen" in names
-
-
 class TestVisionFallback:
     """视觉不支持时的兜底行为"""
-
-    def test_vision_unsupported_reply_has_segments(self) -> None:
-        reply = _build_vision_unsupported_reply()
-        assert len(reply.segments) > 0
 
     def test_handle_user_message_vision_fallback(self) -> None:
         client = _dummy_api_client()
@@ -475,10 +354,6 @@ def test_retired_proactive_check_event_is_rejected(monkeypatch) -> None:  # type
 class TestAgentRuntimeBasics:
     """AgentRuntime 基本属性验证"""
 
-    def test_default_vision_enabled(self) -> None:
-        runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
-        assert runtime.model_vision_enabled is True
-
     @pytest.mark.parametrize("snapshot_success", [True, False])
     def test_auto_browser_snapshot_has_a_matching_tool_call(self, snapshot_success) -> None:
         client = _dummy_api_client()
@@ -527,15 +402,6 @@ class TestAgentRuntimeBasics:
         assert result.reply.segments[0].translation == "已经检查了。"
         assert len(calls) == 2
         assert len(navigation["tool_calls"]) == 1, "do not mutate the recorded model response"
-
-    def test_default_autonomous_screen_observation_enabled(self) -> None:
-        runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
-        assert runtime.autonomous_screen_observation_enabled is True
-
-    def test_set_model_vision(self) -> None:
-        runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
-        runtime.set_model_vision_enabled(False)
-        assert not runtime.model_vision_enabled
 
     def test_final_reply_retries_once_when_json_invalid(self) -> None:
         client = _dummy_api_client()

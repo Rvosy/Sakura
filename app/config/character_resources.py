@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -48,11 +49,9 @@ class CharacterVisualResource:
         )
 
     def to_mapping(self) -> dict[str, object]:
-        return {"id": self.id, "type": self.type, "root": self.root, "entry": self.entry, **({"name": self.name} if self.name else {}), **({"pluginRequirements": parse_requirements(list(self.plugin_requirements))} if self.plugin_requirements else {})}
+        return {"id": self.id, "type": self.type, "root": self.root, "entry": self.entry, **({"name": self.name} if self.name else {}), **({"pluginRequirements": deepcopy(list(self.plugin_requirements))} if self.plugin_requirements else {})}
 
     def validate_paths(self, package_dir: Path, *, require_exists: bool = True) -> None:
-        # Revalidate direct Python construction as well as deserialized input.
-        self.from_mapping(self.to_mapping())
         if not require_exists:
             try:
                 package_root = package_dir.resolve(strict=True)

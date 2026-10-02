@@ -61,22 +61,20 @@ def test_entry_validation_does_not_write_bytecode(tmp_path: Path) -> None:
     assert not list(dependency.rglob("*.pyc"))
 
 
-@pytest.mark.parametrize("kind", ["requirements.txt", "requirements.lock"])
-@pytest.mark.parametrize("current_newline", [b"\n", b"\r\n"])
 def test_dependency_verification_accepts_legacy_line_endings_without_reinstall(
-    tmp_path: Path, kind: str, current_newline: bytes,
+    tmp_path: Path,
 ) -> None:
     plugin_id = "fixture.asr"
     plugin_root = tmp_path / "distribution/plugins/builtin" / plugin_id
     plugin_root.mkdir(parents=True)
     dependency_root = tmp_path / "distribution/plugins/dependencies" / plugin_id
     dependency_root.mkdir(parents=True)
-    current = current_newline.join([b"sherpa-onnx==1.12.36", b"numpy==2.2.6", b""])
-    declaration_path = plugin_root / kind
+    current = b"sherpa-onnx==1.12.36\r\nnumpy==2.2.6\r\n"
+    declaration_path = plugin_root / "requirements.txt"
     declaration_path.write_bytes(current)
     marker = {
         "schemaVersion": 1,
-        "kind": kind,
+        "kind": "requirements.txt",
         "fingerprint": "old-unchecked-value",
         "python": f"{sys.version_info.major}.{sys.version_info.minor}",
     }
@@ -87,34 +85,21 @@ def test_dependency_verification_accepts_legacy_line_endings_without_reinstall(
 
     assert roots.verified_root(plugin_id, plugin_root, source="bundled") == dependency_root
     assert marker_path.read_bytes() == before
-    declaration = roots.declaration(plugin_root)
-    assert declaration is not None
-
-    declaration_path.write_bytes(current.replace(b"1.12.36", b"1.12.37"))
+    declaration_path.write_bytes(current.replace(b"1.12.36", b"1.12.37").replace(b"\r\n", b"\n"))
     assert roots.verified_root(plugin_id, plugin_root, source="bundled") == dependency_root
 
-    marker.pop("fingerprint")
-    marker_path.write_text(json.dumps(marker), encoding="utf-8")
-    assert roots.verified_root(plugin_id, plugin_root, source="bundled") == dependency_root
-
-    declaration_path.write_bytes(current)
     marker["python"] = "0.0"
     marker_path.write_text(json.dumps(marker), encoding="utf-8")
     with pytest.raises(PluginDependencyError, match="PLUGIN_DEPENDENCIES_STALE"):
         roots.verified_root(plugin_id, plugin_root, source="bundled")
 
-    marker["python"] = f"{sys.version_info.major}.{sys.version_info.minor}"
-    marker["kind"] = "other"
-    marker_path.write_text(json.dumps(marker), encoding="utf-8")
-    with pytest.raises(PluginDependencyError, match="PLUGIN_DEPENDENCIES_STALE"):
-        roots.verified_root(plugin_id, plugin_root, source="bundled")
     marker_path.unlink()
     with pytest.raises(PluginDependencyError, match="PLUGIN_DEPENDENCIES_MISSING"):
         roots.verified_root(plugin_id, plugin_root, source="bundled")
 
 
 @pytest.mark.parametrize("kind", ["requirements.txt", "pyproject.toml", "uv.lock"])
-def test_explicit_install_writes_marker_without_digest(tmp_path: Path, monkeypatch, kind: str) -> None:
+def test_explicit_install_produces_a_reusable_environment(tmp_path: Path, monkeypatch, kind: str) -> None:
     plugin_root = tmp_path / "plugin"
     plugin_root.mkdir()
     if kind == "requirements.txt":
@@ -127,7 +112,27 @@ def test_explicit_install_writes_marker_without_digest(tmp_path: Path, monkeypat
     roots = PluginDependencyRoots(tmp_path / "user")
     installed = roots.install("fixture", plugin_root)
     assert installed is not None
-    assert json.loads((installed / ".sakura-dependencies.json").read_text()) == {
-        "schemaVersion": 1, "kind": kind, "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-    }
     assert roots.verified_root("fixture", plugin_root) == installed
+
+
+def test_dependency_declaration_format_change_keeps_installed_imports(tmp_path: Path) -> None:
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "plugin.py").write_text("from fixture_dependency import value\nclass Plugin: pass\n", encoding="utf-8")
+    (plugin / "requirements.lock").write_text("fixture-dependency==1\n", encoding="utf-8")
+    dependency = tmp_path / "user/data/plugin-runtime/dependencies/fixture"
+    dependency.mkdir(parents=True)
+    (dependency / "fixture_dependency.py").write_text("value = 1\n", encoding="utf-8")
+    marker = dependency / ".sakura-dependencies.json"
+    marker.write_text(json.dumps({
+        "schemaVersion": 1, "kind": "requirements.txt", "fingerprint": "ignored",
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+    }), encoding="utf-8")
+    before = marker.read_bytes()
+    roots = PluginDependencyRoots(tmp_path / "user")
+
+    installed = roots.verified_root("fixture", plugin)
+    roots._validate_entry("fixture", plugin, installed, "plugin:Plugin")
+
+    assert installed == dependency
+    assert marker.read_bytes() == before

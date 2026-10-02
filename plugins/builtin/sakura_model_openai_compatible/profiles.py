@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-import json
 import re
 import threading
 import uuid
@@ -23,7 +22,7 @@ class ProfileError(ValueError):
         self.code = code
 
 
-def _text(value, *, required=False, maximum=16384):
+def _text(value, *, required=False, maximum=None):
     if not isinstance(value, str) or "\x00" in value or (maximum is not None and len(value) > maximum):
         raise ProfileError("FIELD_INVALID")
     value = value.strip()
@@ -32,8 +31,8 @@ def _text(value, *, required=False, maximum=16384):
     return value
 
 
-def _url(value, *, maximum=2048):
-    value = _text(value, required=True, maximum=maximum).rstrip("/")
+def _url(value):
+    value = _text(value, required=True).rstrip("/")
     try:
         parsed = urlparse(value)
         parsed.port
@@ -52,7 +51,7 @@ def _timeout(value, *, strict=True):
     return value
 
 
-def _models(raw, *, strict=True):
+def _models(raw):
     if isinstance(raw, str):
         raw = raw.splitlines()
     if not isinstance(raw, list):
@@ -65,8 +64,6 @@ def _models(raw, *, strict=True):
         if not model_id:
             continue
         if model_id in seen:
-            if strict:
-                raise ProfileError("MODEL_DUPLICATE")
             continue
         seen.add(model_id)
         item.pop("name", None)
@@ -83,7 +80,7 @@ def _models(raw, *, strict=True):
     return result
 
 
-def _profiles(config, *, strict=False):
+def _profiles(config):
     raw = config.get("profiles", [])
     if not isinstance(raw, list):
         raise ProfileError("PROFILES_INVALID")
@@ -100,12 +97,12 @@ def _profiles(config, *, strict=False):
         # Earlier handoffs copied empty aliases and duplicate model names. Keep
         # these files readable; only an explicit save writes normalized values.
         label = item.get("label", identity)
-        if label is None and not strict:
+        if label is None:
             label = ""
-        item.update(profileId=identity, label=_text(label, required=strict, maximum=120 if strict else None) or identity,
-                    base_url=_url(item["base_url"], maximum=2048 if strict else None) if item.get("base_url") else "",
-                    api_key=_text(item.get("api_key", ""), maximum=16384 if strict else None),
-                    timeout_seconds=_timeout(item.get("timeout_seconds", 60), strict=strict), models=_models(item.get("models", []), strict=strict))
+        item.update(profileId=identity, label=_text(label) or identity,
+                    base_url=_url(item["base_url"]) if item.get("base_url") else "",
+                    api_key=_text(item.get("api_key", "")),
+                    timeout_seconds=_timeout(item.get("timeout_seconds", 60), strict=False), models=_models(item.get("models", [])))
         result.append(item)
     return result
 
@@ -235,7 +232,9 @@ class ProviderProfiles:
     def resolve(self, profile_id, model_id):
         profile = self._profile(profile_id)
         description = self.describe(profile_id, model_id)
-        return {"base_url": _url(profile["base_url"], maximum=None), "api_key": profile["api_key"], "model": model_id,
+        if not profile["base_url"]:
+            raise ProfileError("FIELD_REQUIRED", "请填写 API 地址。")
+        return {"base_url": profile["base_url"], "api_key": profile["api_key"], "model": model_id,
                 "timeout_seconds": profile["timeout_seconds"],
                 "context_window_tokens": description["contextWindowTokens"], "context_window_source": description["contextWindowSource"]}
 
@@ -245,7 +244,7 @@ class ProviderProfiles:
         saved = next((item for item in _profiles(self._config.get()) if item["profileId"] == profile_id), {})
         credential = values.get("credential", {"action": "keep"})
         key = self._credential(saved.get("api_key", ""), credential)
-        return {"base_url": _url(values.get("base_url", saved.get("base_url", "")), maximum=2048 if "base_url" in values else None), "api_key": key,
+        return {"base_url": _url(values.get("base_url", saved.get("base_url", ""))), "api_key": key,
                 "model": _text(values.get("modelId", values.get("model", "")), required=require_model, maximum=256),
                 "timeout_seconds": _timeout(values.get("timeout_seconds", saved.get("timeout_seconds", 60)))}
 
@@ -279,28 +278,29 @@ class ProviderProfiles:
                     for p in self._saved()], "probeRequest": {}, "probeResult": dict(self._probe_result)}
 
     def save_editor(self, values):
-        if self._service is not None and self._service.has_active_jobs():
-            raise ProfileError("MODEL_BUSY", "模型仍在处理请求，请稍后应用。")
         raw = values.get("connections")
         if not isinstance(raw, list):
             raise ProfileError("PROFILES_INVALID")
         with self._lock:
             previous = {p["profileId"]: p for p in self._saved()}
             profiles = []
+            identities = set()
             for value in raw:
                 if not isinstance(value, Mapping):
                     raise ProfileError("PROFILE_INVALID")
                 identity = _text(value.get("id", ""), required=True, maximum=64)
+                if not _ID.fullmatch(identity) or identity in identities:
+                    raise ProfileError("PROFILE_ID_INVALID")
+                identities.add(identity)
                 old = previous.get(identity, {})
                 old_models = {m["modelId"]: m for m in old.get("models", [])}
                 models = [deepcopy(old_models.get(m["modelId"], m)) for m in _models(value.get("models", []))]
                 profiles.append(dict(old, profileId=identity,
-                    label=_text(value.get("alias", ""), required=True, maximum=120),
+                    label=_text(value.get("alias", "")) or identity,
                     base_url=_url(value.get("base_url", "")), models=models,
                     timeout_seconds=_timeout(value.get("timeout_seconds", old.get("timeout_seconds", self.load_timeout()["timeout_seconds"]))),
                     api_key=self._credential(old.get("api_key", ""), {"action": value.get("credential_action", "keep"), "value": value.get("api_key", "")})))
-            # Validate the entire set before its single write, including duplicate identities.
-            self._write(_profiles({"profiles": profiles}, strict=True))
+            self._write(profiles)
         return {"applicationState": "restart_required"}
 
     def load_timeout(self):
@@ -310,8 +310,6 @@ class ProviderProfiles:
 
     def save_timeout(self, values):
         timeout = _timeout(values.get("timeout_seconds"))
-        if self._service is not None and self._service.has_active_jobs():
-            raise ProfileError("MODEL_BUSY", "模型仍在处理请求，请稍后应用。")
         with self._lock:
             profiles = [dict(p, timeout_seconds=timeout) for p in self._saved()]
             if self._config.update({"timeout_seconds": timeout, "profiles": profiles}) == "error":
