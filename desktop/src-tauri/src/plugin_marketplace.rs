@@ -181,6 +181,27 @@ fn validate_install_version(
     Ok(())
 }
 
+fn validate_app_version(context: &Value, release: &Value) -> Result<(), String> {
+    let Some(minimum) = release["manifest"].get("min_app_version") else {
+        // Manifests predating this declaration remain installable.
+        return Ok(());
+    };
+    let minimum = minimum
+        .as_str()
+        .and_then(|value| semver::Version::parse(value).ok())
+        .ok_or("PLUGIN_MANIFEST_INVALID: 插件声明的最低 Sakura 版本无效。")?;
+    let current = context["appVersion"]
+        .as_str()
+        .and_then(|value| semver::Version::parse(value).ok())
+        .ok_or("APP_VERSION_UNAVAILABLE: 无法读取 Sakura 主程序版本，请检查安装。")?;
+    if current.cmp_precedence(&minimum).is_lt() {
+        return Err(format!(
+            "APP_VERSION_UNSUPPORTED: 该插件需要 Sakura {minimum} 或更高版本，请升级主程序后再安装。"
+        ));
+    }
+    Ok(())
+}
+
 fn readme_addresses(catalog: &Value, id: &str, version: &str) -> Result<(String, String), String> {
     let release = selected_release(catalog, id, version)?;
     let plugin = catalog["plugins"]
@@ -374,6 +395,16 @@ pub(crate) async fn settings_marketplace_install(
         window_generation,
         &core_generation_id,
     )?;
+    let context = settings_response_payload(
+        dispatch_settings_request(
+            handle.clone(),
+            None,
+            "plugins.marketplace.context",
+            json!({}),
+            std::time::Duration::from_secs(4),
+        )
+        .await?,
+    )?;
     let release = {
         let catalog = market.catalog.lock().map_err(|source_error| {
             crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
@@ -384,6 +415,7 @@ pub(crate) async fn settings_marketplace_install(
             &version,
         )?
     };
+    validate_app_version(&context, &release)?;
     let current = settings_response_payload(
         dispatch_settings_request(
             handle.clone(),
@@ -485,6 +517,57 @@ pub(crate) fn settings_marketplace_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_install_checks_minimum_app_version_before_download() {
+        let release = |minimum| json!({"manifest":{"min_app_version":minimum}});
+        for (current, minimum) in [
+            ("1.9.0", "2.0.0"),
+            ("2.0.0-beta.9", "2.0.0"),
+            ("2.0.0-beta.2", "2.0.0-beta.10"),
+        ] {
+            let error = validate_app_version(&json!({"appVersion":current}), &release(minimum))
+                .unwrap_err();
+            assert!(error.starts_with("APP_VERSION_UNSUPPORTED:"));
+            assert!(error.contains(minimum));
+            assert!(error.contains("请升级主程序"));
+        }
+        for (current, minimum) in [
+            ("2.0.0", "2.0.0"),
+            ("2.0.0+build.1", "2.0.0+build.9"),
+            ("2.0.0", "2.0.0-beta.10"),
+            ("2.1.0", "2.0.0"),
+        ] {
+            assert!(
+                validate_app_version(&json!({"appVersion":current}), &release(minimum)).is_ok()
+            );
+        }
+        assert!(validate_app_version(&json!({}), &json!({"manifest":{}})).is_ok());
+        for context in [
+            json!({}),
+            json!({"appVersion":null}),
+            json!({"appVersion":"unknown"}),
+        ] {
+            assert!(validate_app_version(&context, &release("2.0.0"))
+                .unwrap_err()
+                .starts_with("APP_VERSION_UNAVAILABLE:"));
+        }
+        for minimum in [
+            json!(null),
+            json!(2),
+            json!(""),
+            json!("2.0"),
+            json!("v2.0.0"),
+            json!("2.0.0-beta.01"),
+            json!("2.0.0-测试"),
+        ] {
+            assert!(validate_app_version(
+                &json!({"appVersion":"2.0.0"}),
+                &json!({"manifest":{"min_app_version":minimum}})
+            )
+            .unwrap_err()
+            .starts_with("PLUGIN_MANIFEST_INVALID:"));
+        }
+    }
     #[test]
     fn native_install_rejects_downgrades_but_allows_equal_precedence_repairs() {
         let current = |version| {

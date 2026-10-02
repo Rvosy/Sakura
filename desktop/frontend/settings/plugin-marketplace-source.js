@@ -1,5 +1,9 @@
 // Convert the published catalog to the market's display model.
-const versionParts = value => /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([\w.-]+))?(?:\+[\w.-]+)?$/.exec(value);
+const versionParts = value => {
+  if (typeof value !== "string") return null;
+  const parts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(value);
+  return parts && parts[0] === value && !parts[4]?.split(".").some(part => /^\d+$/.test(part) && part.length > 1 && part[0] === "0") ? parts : null;
+};
 export function compareVersions(a, b) {
   const left = versionParts(a), right = versionParts(b);
   if (!left || !right) throw new Error("版本号格式无效。");
@@ -25,16 +29,29 @@ export function catalogPlugins(catalog, context) {
     const versions = plugin.versions.map(release => {
       const manifest = release.manifest;
       const missing = (manifest?.requires || []).filter(key => !services.has(key));
-      const compatible = manifest?.api === context.api && !missing.length;
+      const minimum = manifest?.min_app_version;
+      let reason = "", reasonCode = "";
+      if (!manifest) reason = "该版本已撤回";
+      else if (minimum !== undefined && !versionParts(minimum)) {
+        reason = "插件的最低 Sakura 版本格式无效"; reasonCode = "PLUGIN_MANIFEST_INVALID";
+      } else if (minimum !== undefined && !versionParts(context.appVersion)) {
+        reason = "无法确认当前 Sakura 版本，暂不能安装此插件"; reasonCode = "APP_VERSION_UNAVAILABLE";
+      } else if (minimum !== undefined && compareVersions(context.appVersion, minimum) < 0) {
+        reason = `需要升级 Sakura 至 ${minimum} 或更高版本（当前 ${context.appVersion}）`; reasonCode = "APP_VERSION_UNSUPPORTED";
+      } else if (manifest.api !== context.api) reason = "插件 API 版本不匹配";
+      else if (missing.length) reason = `需要先启用：${missing.join("、")}`;
+      const compatible = Boolean(manifest && !reason);
       const bytes = release.package?.size;
       const unit = bytes >= 1024 * 1024 ? [1024 * 1024, "MB"] : bytes >= 1024 ? [1024, "KB"] : [1, "B"];
       return { number: release.version, commit: release.commit, api: manifest?.api, yanked: release.yanked ? release.yank_reason : "",
         prerelease: release.prerelease, compatible, package: release.package,
-        manifest, date: release.date || "", notes: release.notes || "",
+        manifest, minAppVersion: minimum, currentAppVersion: context.appVersion, reasonCode,
+        date: release.date || "", notes: release.notes || "",
         size: Number.isFinite(bytes) && bytes > 0 ? `${(bytes / unit[0]).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${unit[1]}` : "",
-        reason: !manifest ? "该版本已撤回" : manifest.api !== context.api ? "插件 API 版本不匹配" : missing.length ? `需要先启用：${missing.join("、")}` : "" };
+        reason };
     }).sort((a, b) => compareVersions(b.number, a.number));
     const next = versions.find(v => !v.yanked && !v.prerelease && v.compatible && v.package);
+    const latest = versions.find(v => !v.yanked && !v.prerelease && v.package);
     const display = next || versions.find(v => v.manifest);
     const manifest = display?.manifest || {};
     const presentation = manifest.presentation || {};
@@ -43,7 +60,9 @@ export function catalogPlugins(catalog, context) {
       category: ({ tool: "工具", tools: "工具", voice: "语音", memory: "记忆", connection: "连接", connectivity: "连接", model: "表现", visual: "表现" })[presentation.category] || "工具",
       kind: ({ provider: "服务", tool: "工具", extension: "扩展" })[presentation.kind] || "插件",
       icon: presentation.icon || "puzzle", versions, recommendedVersion: next?.number,
-      compatibilityReason: next ? "" : display?.reason || "暂无可安装版本" };
+      compatibilityReason: next ? latest?.reasonCode === "APP_VERSION_UNSUPPORTED"
+        ? `v${latest.number} ${latest.reason}；当前可安装 v${next.number}` : ""
+        : display?.reason || "暂无可安装版本" };
   });
 }
 

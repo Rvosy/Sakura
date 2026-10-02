@@ -19,6 +19,7 @@ import yaml
 
 from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
+from app.plugins.app_compatibility import app_version_reason, minimum_app_version
 from app.config.plugin_requirements import tts_resource_types
 from app.plugins.visuals import VisualCapability, visual_capabilities_from_manifest
 from app.storage.atomic import atomic_write_text
@@ -56,6 +57,7 @@ class RuntimePluginSpec:
     source: str
     directory_name: str
     visuals: tuple[VisualCapability, ...] = ()
+    min_app_version: str = ""
 
     def to_plugin_spec(self, roots: RuntimeRoots | Path) -> PluginSpec:
         resolved = coerce_runtime_roots(roots)
@@ -80,6 +82,7 @@ class RuntimePluginSpec:
             plugin_root=root,
             source=self.source,
             visuals=self.visuals,
+            min_app_version=self.min_app_version,
         )
 
 
@@ -109,6 +112,7 @@ class InstalledPluginRecord:
     tts_resources: tuple[str, ...] = ()
     capability_issues: tuple[dict[str, str], ...] = ()
     visuals: tuple[VisualCapability, ...] = ()
+    min_app_version: str = ""
 
     @property
     def can_uninstall(self) -> bool:
@@ -133,6 +137,7 @@ class InstalledPluginRecord:
             source=self.source,
             directory_name=self.directory_name,
             visuals=self.visuals,
+            min_app_version=self.min_app_version,
         )
 
 
@@ -361,7 +366,17 @@ class PluginInventory:
                     desired_enabled=enabled,
                 )
             services[key] = tuple(dict.fromkeys(value))
-        supported = api_version == PLUGIN_API_V4_VERSION
+        try:
+            min_app_version = minimum_app_version(raw)
+        except ValueError:
+            return replace(
+                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
+                desired_enabled=enabled,
+            )
+        reason = app_version_reason(min_app_version, self._roots.distribution_root)
+        if reason == "READY" and api_version != PLUGIN_API_V4_VERSION:
+            reason = "API_VERSION_UNSUPPORTED"
+        supported = reason == "READY"
         capability_issues: list[dict[str, str]] = []
         visuals = visual_capabilities_from_manifest(
             raw.get("visuals", []), services["provides"], plugin_root=directory,
@@ -388,7 +403,7 @@ class PluginInventory:
             required=required,
             provides=services["provides"],
             requires=services["requires"],
-            reason_code="READY" if supported else "API_VERSION_UNSUPPORTED",
+            reason_code=reason,
             supported=supported,
             runtime_eligible=supported,
             tts_resources=tts_resources,
@@ -397,6 +412,7 @@ class PluginInventory:
             presentation_category=category if category in ("model", "voice", "memory", "visual", "tools", "connectivity", "other") else "other",
             presentation_icon=icon if isinstance(icon, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", icon) else "",
             visuals=visuals,
+            min_app_version=min_app_version,
         )
 
     @staticmethod

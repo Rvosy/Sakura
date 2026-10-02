@@ -73,6 +73,12 @@ function result(label, message = "", reasonCode = "", unavailable = []) {
 }
 
 export function presentPluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
+  if (reasonCode === "APP_VERSION_UNSUPPORTED") {
+    return result("需要升级 Sakura", "请升级 Sakura 主程序后使用这个插件。", reasonCode);
+  }
+  if (reasonCode === "APP_VERSION_UNAVAILABLE") {
+    return result("无法确认兼容性", "无法读取 Sakura 主程序版本，请检查安装。", reasonCode);
+  }
   if (reasonCode === "MODEL_API_UPDATE_REQUIRED") {
     return result("需要更新", "模型接口已更新，请安装这个插件的兼容版本。", reasonCode);
   }

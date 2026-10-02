@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-27
+updated: 2026-10-03
 ---
 
 # 编写 Sakura 插件
@@ -60,6 +60,7 @@ name: Example Greeter
 author: Your Name
 description: 提供问候 Service、聊天工具和设置项。
 version: 1.0.0
+min_app_version: "1.3.0"
 entry: plugin:GreeterPlugin
 enabled: false
 priority: 100
@@ -74,6 +75,9 @@ requires:
   - sakura.host.settings
   - sakura.host.logging
 ```
+
+`min_app_version` 是可选的最低 Sakura 版本。使用新增宿主能力时，填入首次支持该能力的主程序版本；
+省略时沿用旧插件的兼容规则。版本格式、安装与启动门禁见[插件包合同](../specs/runtime-v2/sakura-plugin-runtime-v4.md#3-插件包python-与-dependency-root)。
 
 `config.json` 是随插件分发的默认配置：
 
@@ -602,6 +606,7 @@ Action ID、回调归属和用户提交的保存或动作参数仍须有效，�
 | `readonly` | 字符串 | `copyable`、`maxLength` |
 | `status` | 状态对象 | 只读，适合短状态说明 |
 | `resource` | 资源对象 | 只读，适合安装、下载、进度和重试 |
+| `image` | `null` 或 `{dataUrl, alt}` | 只读图片，适合二维码、预览图 |
 
 兼容别名有 `text/path → string`、`secret → password`、`toggle → boolean`、`slider → number`。新文档和新
 插件建议直接使用规范类型。
@@ -610,9 +615,15 @@ Action ID、回调归属和用户提交的保存或动作参数仍须有效，�
 
 - `description`：最多 240 个字符；
 - `placement`：`row`、`advanced` 或 `section_header`；`section_header` 只适用于 `status`；
-- `readonly`：普通字段可声明只读；`readonly/status/resource` 类型由宿主按只读处理，不进入普通保存值；
+- `readonly`：普通字段可声明只读；`readonly/status/resource/image` 类型由宿主按只读处理，不进入普通保存值；
 - `restartRequired`：给界面的重启提示，实际是否重启仍以保存回调返回值为准；
 - `enabledWhen`：形如 `{"field": "mode", "equals": "custom"}`，目前 `equals` 只接受字符串。
+
+`image` 使用 `data:image/png;base64,...`、`data:image/jpeg;base64,...` 或 `data:image/webp;base64,...`，
+`alt` 为替代文字。不接受远程 URL、本地路径或 SVG。返回 `null` 清除图片；`form` 同时隐藏该行。
+宿主只负责显示；二维码生成、有效期、扫码轮询和取消由插件实现。耗时动作应启动后台任务并立即返回，
+通过 `status.state="working"` 让设置页继续读取状态。登录结束后 `load()` 应清除二维码。
+图片与其他设置值一样受 RPC 帧预算约束，不进入普通保存参数。
 
 `status` 的值必须完整包含：
 
@@ -735,6 +746,8 @@ settings.place("schedule", page_id=context.plugin_id + ":schedule")
 |---|---|
 | `form` | 现有表单行、状态、资源、动作和 Collection。`collapsible` 折叠整个区块；同一页面区域内相同 `group` 的区块按放置顺序共用分组。`alignedUnits` 对齐带单位的数字框和下拉框。 |
 | `connection-editor` | 宿主的连接列表与详情、模型标签、手动添加、发现勾选弹窗、连接测试和凭据三态。绑定声明字段和 Action，不接收代码。 |
+| `connection-status` | 紧凑连接状态、二维码和当前可用操作。插件决定登录流程，宿主统一显示。 |
+| `record-table` | 可搜索的记录列表与所选记录详情。编辑和读取只针对选中项；适合外部设备等已有记录，不负责增删记录。 |
 
 字段可补充 `unit`、`placeholder`、`tooltip`、`displayDefault` 和 `optionalToggle`。`displayDefault` 只控制空值的显示，
 不会在读取时保存。数值字段的 `optionalToggle` 提供“自定义”开关，关闭写入 `null`。
@@ -750,6 +763,26 @@ Collection 继续使用下面的公开注册与列表详情组件。
 `profileId/modelId/base_url/credential/timeout_seconds`。结果含同一个 `requestId`、
 `state=running|completed|failed`、安全 `code` 和 `models: [{modelId: ...}]`。
 发现成功只打开勾选弹窗，用户选中后才进入窗口草稿；探测、取消均不调用 `save`。
+
+`connection-status` 绑定只读 `statusField`（`status`）、`imageField`（`image`）和 `actionsField`（`data`）。
+`actionsField` 的值是当前可用的已声明 Action ID 数组，其他操作不显示。扫码图片居中，清空后恢复紧凑状态行。
+区块可声明 `visibleField`，绑定同区块只读布尔字段；为 false 时隐藏整个区块，适用于尚未连接时的设备管理。
+
+`record-table` 声明 `itemsField`（只读 `data`）和 `valueField`（可编辑 `data`），以及非空 `columns`。
+列使用普通字段描述，支持 `readonly/string/boolean/select`；每列 `key` 唯一。
+只读列表为 `[{id, label, description, values: {列 key: 显示值}}]`，编辑值为 `{记录 id: {列 key: 值}}`。
+`id` 必须稳定、唯一，`description` 可省略。记录可带 `status: {state, label}`，例如明确标出离线状态；`state` 使用状态字段的语义值。
+选择记录后在详情区编辑，修改只进入设置草稿，保存时插件校验记录归属与业务约束。
+可选 `note` 仅用于必要后果说明。
+
+需要行内读取时，声明 `inspectAction/requestField/resultField`，后两者为可编辑、只读 `data` 字段。
+宿主只提交 `{requestField: {id, requestId}}`，不会附带或保存编辑草稿。
+动作在 `values[resultField]` 返回 `{id, requestId, state, title, rows: [{group, label, value}], message}`；
+`group` 和 `message` 可省略，显示值为文字。行可带 `secondary: true`，收进默认折叠的“其他状态”。
+`state` 为 `completed/failed` 时显示结果和消息。
+耗时读取先返回 `running`，同时声明 `statusAction`；宿主以相同请求身份轮询该动作，插件自行管理后台任务。
+窗口关闭、记录消失、插件重载或 Core 切换后，宿主停止轮询并忽略迟到结果，不重发读取。
+表格不决定查询或控制权限，用户操作与模型工具的授权边界由插件各自实现。
 
 未放置的区块留在插件设置窗口。插件详情单独提供功能页跳转，只有存在底层设置时才显示“插件设置”。
 “完成”接受编辑，外层“应用”“保存并关闭”统一提交；取消私有弹窗只恢复其中的编辑，不能恢复功能页草稿。

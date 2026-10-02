@@ -147,18 +147,18 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       : doc?.state === "failed" ? documentFailure : "";
     const description = p.description?.trim() || "";
     const body = p.body?.trim() || "";
-    const versionRow = v => `<div class="version-row"><div class="version-title"><strong>v${escape(v.number)}</strong>${v.yanked ? '<span class="version-label warning">已撤回</span>' : v.prerelease ? '<span class="version-label warning">预发布</span>' : v.compatible === false ? '<span class="version-label warning">不兼容</span>' : ""}${v.date ? `<time>${escape(v.date)}</time>` : ""}</div>${v.notes?.trim() ? `<p>${escape(v.notes)}</p>` : ""}${v.yanked || v.reason ? `<p>${escape(v.yanked || v.reason)}</p>` : ""}</div>`;
+    const versionRow = v => `<div class="version-row"><div class="version-title"><strong>v${escape(v.number)}</strong>${v.yanked ? '<span class="version-label warning">已撤回</span>' : v.prerelease ? '<span class="version-label warning">预发布</span>' : v.compatible === false ? '<span class="version-label warning">不兼容</span>' : ""}${v.date ? `<time>${escape(v.date)}</time>` : ""}</div>${v.notes?.trim() ? `<p>${escape(v.notes)}</p>` : ""}${v.yanked || v.reason ? `<p>${escape(v.yanked || v.reason)}</p>` : v.minAppVersion ? `<p>需要 Sakura ${escape(v.minAppVersion)} 或更高版本</p>` : ""}</div>`;
     const recent = next?.notes?.trim() ? next : null;
-    const history = p.versions.filter(v => v !== recent && (v.notes?.trim() || v.yanked || v.reason));
+    const history = p.versions.filter(v => v !== recent && (v.notes?.trim() || v.yanked || v.reason || v.minAppVersion));
     const apiVersion = next || p.versions.find(v => v.api != null);
     const status = p.installed ? `${p.enabled ? "已启用" : "已停用"} · v${p.installed}` : next ? `v${next.number}` : "未安装";
     const manage = '<button class="secondary-button" data-manage>管理插件</button>';
     let action;
     if (task?.state === "running") action = `<button class="secondary-button" data-cancel-task ${task.phase === "installing" || task.cancelling ? "disabled" : ""}>${task.cancelling && task.phase !== "installing" ? "正在取消" : "取消安装"}</button>`;
-    else if (task?.state === "failed") action = '<button data-retry>重试</button>';
+    else if (task?.state === "failed") action = `<button data-retry ${task.installed || canInstall(p, source) ? "" : "disabled"}>重试</button>`;
     else if (updating(p)) action = `${!canInstall(p, source) ? manage : ""}<button data-install ${canInstall(p, source) ? "" : "disabled"}>更新至 ${escape(next.number)}</button>`;
     else if (p.installed) action = `${manage}${canInstall(p, source) ? '<button data-install>重新安装</button>' : ""}`;
-    else action = `<button data-install ${canInstall(p, source) ? "" : "disabled"}>${next ? "安装插件" : "暂无兼容版本"}</button>`;
+    else action = `<button data-install ${canInstall(p, source) ? "" : "disabled"}>${next ? "安装插件" : p.versions.some(v => !v.yanked && !v.prerelease && v.reasonCode === "APP_VERSION_UNSUPPORTED") ? "需要升级 Sakura" : "暂无兼容版本"}</button>`;
     let compatibility = "";
     if (!next) compatibility = `<div class="compat-note warning">${escape(p.compatibilityReason || '暂无兼容版本')}</div>`;
     else if (p.updateBlocked) compatibility = `<div class="compat-note">${escape(p.updateBlocked)}</div>`;
@@ -176,7 +176,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       ${p.consequence?.trim() ? `<section class="detail-section"><h3>使用前需了解</h3><p>${escape(p.consequence)}</p></section>` : ""}
       ${recent ? `<section class="detail-section"><h3>最近更新</h3>${versionRow(recent)}</section>` : ""}
       ${history.length ? `<details class="detail-disclosure" data-disclosure="history"><summary data-history>历史版本</summary><div class="detail-section">${history.map(versionRow).join("")}</div></details>` : ""}
-      <details class="detail-disclosure" data-disclosure="technical"><summary data-technical>技术信息</summary><dl class="detail-technical"><div><dt>插件标识</dt><dd><code>${escape(p.id)}</code></dd></div>${apiVersion?.api != null ? `<div><dt>v${escape(apiVersion.number)} 接口</dt><dd>Plugin API ${escape(apiVersion.api)}</dd></div>` : ""}${next?.size ? `<div><dt>下载大小</dt><dd>${escape(next.size)}</dd></div>` : ""}</dl></details></div>
+      <details class="detail-disclosure" data-disclosure="technical"><summary data-technical>技术信息</summary><dl class="detail-technical"><div><dt>插件标识</dt><dd><code>${escape(p.id)}</code></dd></div>${apiVersion?.api != null ? `<div><dt>v${escape(apiVersion.number)} 接口</dt><dd>Plugin API ${escape(apiVersion.api)}</dd></div>` : ""}${apiVersion?.minAppVersion ? `<div><dt>最低 Sakura 版本</dt><dd>${escape(apiVersion.minAppVersion)}</dd></div>` : ""}${next?.size ? `<div><dt>下载大小</dt><dd>${escape(next.size)}</dd></div>` : ""}</dl></details></div>
       <div class="drawer-bottom">${compatibility}${taskMarkup}<div class="drawer-actions"><span class="detail-status">${escape(status)}</span><div class="detail-buttons">${action}</div></div></div>`;
   }
   function openDetail(id) {

@@ -1,0 +1,40 @@
+.plugin-setting-image { width: 232px; height: auto; max-width: 100%; object-fit: contain; }
+.plugin-settings-dialog:has(.plugin-contribution:not([hidden]) .record-table) { width: min(900px, calc(100vw - 36px)); }
+.plugin-contribution + .plugin-contribution { margin-top: 28px; }
+.plugin-contribution-title { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
+.connection-status { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; justify-content: space-between; }
+.connection-status-header { display: flex; align-items: center; gap: 14px; }
+.connection-status-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.connection-status .plugin-status-message { margin: 6px 0 0; }
+.connection-status.is-linking { justify-content: center; flex-direction: column; padding: 8px 0 16px; }
+.connection-status-visual { display: grid; justify-items: center; gap: 12px; }
+.connection-status-visual p { margin: 0; font-size: 13px; color: var(--sakura-secondary-text); }
+.record-table { display: grid; gap: 12px; min-width: 0; }
+.record-table > input { width: 100%; }
+.record-table-note { margin: 0; color: var(--sakura-secondary-text); font-size: 12px; }
+.record-workbench { display: grid; grid-template-columns: minmax(210px, .95fr) minmax(250px, 1.15fr); gap: 18px; min-height: 260px; }
+.record-list { max-height: 420px; overflow-y: auto; padding: 6px; background: var(--tint-faint); border-radius: var(--radius-sm); }
+.record-choice { display: block; width: 100%; padding: 12px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--sakura-text); text-align: left; cursor: pointer; font: inherit; }
+.record-choice:hover { background: var(--tint-faint); }
+.record-choice.is-selected { background: var(--tint-soft); border-color: var(--hairline); }
+.record-choice-heading { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+.record-choice-heading strong { font-size: 13px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.record-availability { flex: none; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; color: color-mix(in srgb, var(--sakura-accent) 65%, var(--sakura-text)); background: color-mix(in srgb, var(--sakura-accent) 9%, transparent); }
+.record-workbench:has(.record-editor[hidden]) { display: block; min-height: 0; border: 0; }
+.record-workbench:has(.record-editor[hidden]) .record-list { border: 0; padding: 0; }
+.record-cell-description { display: block; margin-top: 5px; font-size: 11px; line-height: 1.5; color: var(--sakura-secondary-text); }
+.record-editor { padding: 18px; min-width: 0; max-height: 420px; overflow-y: auto; }
+.record-editor-title { margin: 0; font-size: 15px; font-weight: 600; }
+.record-editor-subtitle { margin: 6px 0 18px; font-size: 12px; color: var(--sakura-secondary-text); }
+.record-field { display: grid; gap: 7px; margin: 16px 0; font-size: 12px; }
+.record-inspect { margin-top: 2px; }
+.record-details { margin-top: 24px; }
+.record-details-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.record-details h3, .record-details h4 { margin: 0; font-size: 13px; font-weight: 500; }
+.record-details h4 { margin-top: 14px; color: var(--sakura-secondary-text); }
+.record-state-values { display: grid; grid-template-columns: minmax(85px, 1fr) 1fr; gap: 8px 14px; margin-bottom: 0; font-size: 12px; }
+.record-state-values dt { color: var(--sakura-secondary-text); }
+.record-state-values dd { margin: 0; overflow-wrap: anywhere; }
+.record-secondary { margin-top: 16px; font-size: 12px; }
+.record-secondary summary { cursor: pointer; color: var(--sakura-secondary-text); }
+@media (max-width: 650px) { .record-workbench { grid-template-columns: 1fr; } .record-list { max-height: 180px; } }

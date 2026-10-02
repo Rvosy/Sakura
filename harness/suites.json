@@ -670,7 +670,7 @@
     {
       "id": "plugin-marketplace-update",
       "description": "验证运行中插件自动更新、依赖恢复和失败回滚",
-      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py"],
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py"],
       "timeout_seconds": 120
     },
     {

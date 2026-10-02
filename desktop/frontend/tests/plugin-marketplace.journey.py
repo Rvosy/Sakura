@@ -189,11 +189,11 @@ def run():
             assert page.evaluate('fixture.local[0].enabled') is True
 
             # An install failure opens full diagnostics without filling the details page.
-            page.evaluate("""fixture.source.install = async () => {
+            page.evaluate("""() => { fixture.source.install = async () => {
               throw Object.assign(Error('archive download failed'), {
                 code:'PLUGIN_DOWNLOAD_FAILED', diagnostic:'tcp connect error 10061'
               });
-            }""")
+            }; }""")
             reinstall.click()
             failure = page.locator('.sakura-error-dialog')
             expect(failure).to_be_visible()
@@ -207,6 +207,54 @@ def run():
             page.evaluate('fixture.source.install = async () => {}')
             dialog.locator('[data-retry]').click()
             expect(reinstall).to_be_enabled()
+
+            # Minimum Sakura versions disable installation; compatible older releases remain installable.
+            page.evaluate("""async () => {
+              fixture.savedPlugins = fixture.plugins; fixture.savedLocal = fixture.local;
+              fixture.savedInstall = fixture.source.install;
+              const {catalogPlugins} = await import('/desktop/frontend/settings/plugin-marketplace-source.js');
+              const release = (version, minimum) => ({version, manifest:{id:'sakura.visual.spine',
+                name:'Spine',api:4,min_app_version:minimum},package:{url:'https://example.test/plugin.zip'}});
+              fixture.versionCatalog = {schema_version:1,plugins:[{id:'sakura.visual.spine',
+                versions:[release('0.2.7','9.0.0')]}]};
+              fixture.plugins = catalogPlugins(fixture.versionCatalog,{api:4,services:[],appVersion:'1.0.0'});
+              fixture.local = [];
+              fixture.source.install = async plugin => {fixture.compatibleInstalledVersion=plugin.recommendedVersion;};
+              await fixture.market.refresh();
+            }""")
+            expect(dialog.get_by_role('button', name='需要升级 Sakura', exact=True)).to_be_disabled()
+            expect(dialog.locator('.compat-note')).to_contain_text('升级 Sakura')
+            expect(dialog.locator('.compat-note')).to_contain_text('9.0.0')
+            if not dialog.locator('[data-disclosure="history"]').evaluate('el => el.open'):
+                dialog.locator('[data-history]').click()
+            expect(dialog.locator('.version-row')).to_contain_text('9.0.0')
+            expect(dialog.locator('.version-row')).to_be_visible()
+            for width in [803, 360]:
+                page.set_viewport_size({"width": width, "height": 640})
+                assert dialog.evaluate('el => el.scrollWidth <= el.clientWidth')
+                button = dialog.locator('[data-install]').bounding_box()
+                assert 0 <= button['y'] and button['y'] + button['height'] <= 640
+                if output:
+                    dialog.screenshot(path=str(Path(output) / f"plugin-upgrade-required-{width}.png"))
+            dialog.locator('[data-install]').evaluate('el => el.click()')
+            assert page.evaluate('fixture.compatibleInstalledVersion === undefined')
+            page.evaluate("""async () => {
+              const {catalogPlugins} = await import('/desktop/frontend/settings/plugin-marketplace-source.js');
+              fixture.versionCatalog.plugins[0].versions.push({version:'0.2.6',
+                manifest:{id:'sakura.visual.spine',name:'Spine',api:4},package:{url:'https://example.test/old.zip'}});
+              fixture.plugins = catalogPlugins(fixture.versionCatalog,{api:4,services:[],appVersion:'1.0.0'});
+              await fixture.market.refresh();
+            }""")
+            expect(dialog.locator('[data-install]')).to_be_enabled()
+            expect(dialog.locator('.detail-status')).to_have_text('v0.2.6')
+            expect(dialog.locator('.compat-note')).to_contain_text('升级 Sakura')
+            dialog.locator('[data-install]').click()
+            page.wait_for_function("fixture.compatibleInstalledVersion === '0.2.6'")
+            expect(dialog.locator('[data-manage]')).to_be_enabled()
+            page.evaluate("""async () => {
+              fixture.plugins=fixture.savedPlugins;fixture.local=fixture.savedLocal;
+              fixture.source.install=fixture.savedInstall;await fixture.market.refresh();
+            }""")
 
             # Documentation errors and late responses never block management or replace a newer README.
             page.evaluate("""async () => {

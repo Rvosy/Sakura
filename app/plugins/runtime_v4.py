@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from app.plugin_sdk.sakura_process import terminate_process_tree
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
+from app.plugins.app_compatibility import app_version_reason
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.plugins.process_paths import process_path
@@ -143,6 +144,7 @@ class _RuntimeRecord:
     reason_code: str = "NOT_STARTED"
     process: "_PluginProcess | None" = None
     pid: int | None = None
+    compatibility_reason: str = "READY"
 
 
 @dataclass(frozen=True)
@@ -702,7 +704,13 @@ class PluginRuntimeManager:
             spec = value.to_plugin_spec(self._roots) if isinstance(value, RuntimePluginSpec) else value
             if spec.plugin_id in self._records:
                 raise PluginRuntimeError("PLUGIN_ID_CONFLICT", plugin_id=spec.plugin_id)
-            self._records[spec.plugin_id] = _RuntimeRecord(spec)
+            self._records[spec.plugin_id] = self._runtime_record(spec)
+
+    def _runtime_record(self, spec: PluginSpec) -> _RuntimeRecord:
+        reason = app_version_reason(spec.min_app_version, self._roots.distribution_root)
+        if reason == "READY" and spec.api_version != PLUGIN_API_V4_VERSION:
+            reason = "API_VERSION_UNSUPPORTED"
+        return _RuntimeRecord(spec, compatibility_reason=reason)
 
     def install_host_service(
         self,
@@ -943,6 +951,11 @@ class PluginRuntimeManager:
                     )
                 self._stop_process(plugin_id, reason="PLUGIN_DISABLED", failed=False)
                 return self.snapshot()
+            if record.compatibility_reason != "READY":
+                with self._lock:
+                    record.state = "failed"
+                    record.reason_code = record.compatibility_reason
+                return self.snapshot()
             if self._fail_service_conflicts(plugin_id):
                 return self.snapshot()
             with self._lock:
@@ -965,11 +978,11 @@ class PluginRuntimeManager:
             with self._lock:
                 if self._closed:
                     raise PluginRuntimeError("GENERATION_INVALIDATED", plugin_id=spec.plugin_id)
-                if spec.api_version != PLUGIN_API_V4_VERSION:
-                    raise PluginRuntimeError("API_VERSION_UNSUPPORTED", plugin_id=spec.plugin_id)
+                record = self._runtime_record(spec)
+                if record.compatibility_reason != "READY":
+                    raise PluginRuntimeError(record.compatibility_reason, plugin_id=spec.plugin_id)
                 if spec.plugin_id in self._records:
                     raise PluginRuntimeError("PLUGIN_ID_CONFLICT", plugin_id=spec.plugin_id)
-                record = _RuntimeRecord(spec)
                 self._records[spec.plugin_id] = record
                 if not spec.enabled:
                     record.state = "disabled"
@@ -1079,6 +1092,7 @@ class PluginRuntimeManager:
             plugins = [
                 {
                     "pluginId": record.spec.plugin_id,
+                    "minAppVersion": record.spec.min_app_version,
                     "enabled": record.spec.enabled,
                     "state": (
                         "starting" if record.spec.enabled and record.reason_code in {"NOT_STARTED", "PLUGIN_STARTING"}
@@ -1197,7 +1211,7 @@ class PluginRuntimeManager:
                 candidate_id
                 for candidate_id, candidate in self._records.items()
                 if candidate.spec.enabled
-                and candidate.spec.api_version == PLUGIN_API_V4_VERSION
+                and candidate.compatibility_reason == "READY"
                 and service_key in candidate.spec.provides
             }
             binding = self._services.get(service_key)
@@ -1251,13 +1265,13 @@ class PluginRuntimeManager:
                 if not record.spec.enabled:
                     record.state = "disabled"
                     record.reason_code = "PLUGIN_DISABLED"
-                elif record.spec.api_version != PLUGIN_API_V4_VERSION:
+                elif record.compatibility_reason != "READY":
                     record.state = "failed"
-                    record.reason_code = "API_VERSION_UNSUPPORTED"
+                    record.reason_code = record.compatibility_reason
             candidates = {
                 plugin_id
                 for plugin_id, record in enabled.items()
-                if record.spec.api_version == PLUGIN_API_V4_VERSION
+                if record.compatibility_reason == "READY"
             }
             providers: dict[str, list[str]] = {}
             for plugin_id in candidates:
@@ -1327,7 +1341,7 @@ class PluginRuntimeManager:
                 self._start_one(record, only_unstarted=True)
         for plugin_id in unstarted & enabled.keys():
             record = enabled[plugin_id]
-            if record.reason_code in {"API_VERSION_UNSUPPORTED", "SERVICE_CONFLICT", "DEPENDENCY_CYCLE", "MISSING_SERVICE"}:
+            if record.reason_code in {"APP_VERSION_UNSUPPORTED", "APP_VERSION_UNAVAILABLE", "API_VERSION_UNSUPPORTED", "SERVICE_CONFLICT", "DEPENDENCY_CYCLE", "MISSING_SERVICE"}:
                 self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
 
     def _log_lifecycle(self, record: _RuntimeRecord, event: str, message: str, *, failed: bool = False, diagnostics: Mapping[str, object] | None = None) -> None:
@@ -1358,6 +1372,10 @@ class PluginRuntimeManager:
             if self._closed:
                 record.state = "failed"
                 record.reason_code = "GENERATION_INVALIDATED"
+                return False
+            if record.compatibility_reason != "READY":
+                record.state = "failed"
+                record.reason_code = record.compatibility_reason
                 return False
             if spec.plugin_id in self._draining_processes:
                 # A failed stop retains its exact process until Core shutdown.

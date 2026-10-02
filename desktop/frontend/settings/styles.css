@@ -13,6 +13,7 @@
 @import url("./plugin-marketplace.css");
 @import url("../core/tooltip.css");
 @import url("../core/error-dialog.css");
+@import url("./record-table.css");
 
 :root {
   --sakura-primary: #4b9ac4;
@@ -619,22 +620,27 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   scrollbar-color: var(--sakura-border) transparent;
 }
 
+.plugin-dialog-body, .record-list, .record-editor {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sakura-border) transparent;
+}
+
 .page-scroll.is-admin-active {
   overflow: hidden;
 }
 
-.page-scroll::-webkit-scrollbar {
+:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar {
   width: 10px;
 }
 
-.page-scroll::-webkit-scrollbar-thumb {
+:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
   background-color: color-mix(in srgb, var(--sakura-border) 80%, transparent);
 }
 
-.page-scroll::-webkit-scrollbar-thumb:hover {
+:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar-thumb:hover {
   background-color: var(--sakura-primary);
 }
 
