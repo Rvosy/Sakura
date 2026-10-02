@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Validate the current version changelog
+        run: python -m tools.release.release_notes --check
       - name: Validate VERSION and release-wide updater credentials
         id: metadata
         shell: bash
@@ -404,6 +406,13 @@ jobs:
           pattern: release-${{ needs.metadata.outputs.tag }}-*
           path: release-assets
           merge-multiple: true
+      - name: Generate the release body and version notes
+        run: >-
+          python -m tools.release.release_notes
+          --repository "$GITHUB_REPOSITORY"
+          --assets-dir release-assets
+          --output release-body.md
+          --notes-output release-notes.md
       - name: Generate the signed static updater manifest
         shell: bash
         env:
@@ -414,6 +423,7 @@ jobs:
           set -euo pipefail
           python tools/release/updater_manifest.py \
             --version "$VERSION" \
+            --notes-file release-notes.md \
             --base-url "https://github.com/${RELEASE_REPOSITORY}/releases/download/${TAG}" \
             --output release-assets/latest.json \
             --release windows-x64 \
@@ -430,6 +440,7 @@ jobs:
         with:
           tag_name: ${{ needs.metadata.outputs.tag }}
           name: ${{ needs.metadata.outputs.tag }}
+          body_path: release-body.md
           generate_release_notes: true
           prerelease: ${{ needs.metadata.outputs.prerelease == 'true' }}
           token: ${{ github.token }}
@@ -456,6 +467,13 @@ jobs:
         with:
           name: portable-${{ needs.metadata.outputs.tag }}-windows-x64
           path: release-assets
+      - name: Regenerate the release body with the Portable download
+        run: >-
+          python -m tools.release.release_notes
+          --repository "$GITHUB_REPOSITORY"
+          --assets-dir release-assets
+          --output release-body.md
+          --notes-output release-notes.md
       - name: Regenerate the updater manifest with the Portable asset
         shell: bash
         env:
@@ -466,6 +484,7 @@ jobs:
           set -euo pipefail
           python tools/release/updater_manifest.py \
             --version "$VERSION" \
+            --notes-file release-notes.md \
             --base-url "https://github.com/${RELEASE_REPOSITORY}/releases/download/${TAG}" \
             --output release-assets/latest.json \
             --portable "release-assets/Sakura-${VERSION}-windows-x64-portable.zip" \
@@ -478,10 +497,12 @@ jobs:
             --release linux-x64 \
               "release-assets/Sakura-${VERSION}-linux-x64.AppImage.tar.gz" \
               "release-assets/Sakura-${VERSION}-linux-x64.AppImage.tar.gz.sig"
-      - name: Append the Portable ZIP to the GitHub release
+      - name: Append the Portable ZIP and refresh the release body
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.metadata.outputs.tag }}
+          body_path: release-body.md
+          generate_release_notes: true
           token: ${{ github.token }}
           files: release-assets/Sakura-${{ needs.metadata.outputs.version }}-windows-x64-portable.zip
       - name: Publish the final updater manifest
@@ -542,11 +563,9 @@ jobs:
           set -euo pipefail
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern latest.json --dir service-updater
-          jq --slurpfile release service-github.json \
-            '.notes = ($release[0].body // "")' service-updater/latest.json > service-updater/preview.json
           python services/sakura/releases.py build \
             --release service-releases.json \
-            --updater service-updater/preview.json \
+            --updater service-updater/latest.json \
             --output service-publication.json
 
       - name: Configure the restricted draft import identity
