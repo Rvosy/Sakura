@@ -1176,6 +1176,17 @@ class _SettingsHostService:
         descriptor_invalid |= len(valid_fields) != len(fields)
         fields = valid_fields
         field_keys = {field["key"] for field in fields}
+        if presentation:
+            bindings = {field["key"]: field for field in fields}
+            requirements = {}
+            if "visibleField" in presentation:
+                requirements["visibleField"] = "boolean"
+            if presentation["component"] == "connection-status":
+                requirements.update(statusField="status", imageField="image", actionsField="data")
+            for key, kind in requirements.items():
+                field = bindings.get(presentation.get(key))
+                if field is None or field["type"] != kind or not field["readonly"]:
+                    raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
         if presentation and presentation["component"] == "connection-editor":
             bindings = {field["key"]: field for field in fields}
             for key in ("valueField", "requestField", "resultField"):
@@ -1184,6 +1195,25 @@ class _SettingsHostService:
                     raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
             if any(presentation.get(key) not in declared_action_ids for key in ("probeAction", "statusAction", "cancelAction")):
                 raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
+        if presentation and presentation["component"] == "record-table":
+            bindings = {field["key"]: field for field in fields}
+            required = {"itemsField": True, "valueField": False}
+            if "inspectAction" in presentation:
+                required.update({"requestField": False, "resultField": True})
+                if presentation["inspectAction"] not in declared_action_ids:
+                    raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
+                if "statusAction" in presentation and presentation["statusAction"] not in declared_action_ids:
+                    raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
+            for key, readonly in required.items():
+                field = bindings.get(presentation.get(key))
+                if field is None or field["type"] != "data" or field["readonly"] != readonly:
+                    raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
+            columns = [_settings_field(column) for column in presentation["columns"]]
+            if len({column["key"] for column in columns}) != len(columns) or any(
+                column["type"] not in {"readonly", "string", "boolean", "select"} for column in columns
+            ):
+                raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
+            presentation["columns"] = columns
         for field in fields:
             condition = field["enabledWhen"]
             if condition is not None and (
@@ -2219,6 +2249,7 @@ def _settings_field(
         "readonly": "readonly",
         "status": "status",
         "resource": "resource",
+        "image": "image",
     }
     if (
         not isinstance(label, str)
@@ -2231,7 +2262,7 @@ def _settings_field(
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     public_kind = kind_map[kind]
-    if not allow_display_types and public_kind in {"status", "resource"}:
+    if not allow_display_types and public_kind in {"status", "resource", "image"}:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     options = _settings_options(raw.get("options", []))
     minimum = _optional_number(raw.get("minimum"))
@@ -2247,7 +2278,7 @@ def _settings_field(
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     if minimum is not None and maximum is not None and minimum > maximum:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-    if public_kind in {"status", "resource"} and (
+    if public_kind in {"status", "resource", "image"} and (
         options
         or minimum is not None
         or maximum is not None
@@ -2295,14 +2326,14 @@ def _settings_field(
         name: raw.get(name, default)
         for name, default in {
             "required": False,
-            "readonly": public_kind in {"readonly", "status", "resource"},
+            "readonly": public_kind in {"readonly", "status", "resource", "image"},
             "copyable": False,
             "restartRequired": False,
         }.items()
     }
     if any(not isinstance(flag, bool) for flag in flags.values()):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-    if public_kind in {"status", "resource"} and not flags["readonly"]:
+    if public_kind in {"status", "resource", "image"} and not flags["readonly"]:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     default = raw.get("default")
     field = {
@@ -2689,6 +2720,8 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
     kind = field.get("type")
     if kind == "data":
         return isinstance(value, (list, dict)) and _json_compatible(value)
+    if kind == "image":
+        return _settings_image_value_valid(value)
     if kind == "status":
         return _settings_status_value_valid(value)
     if kind == "resource":
@@ -2716,6 +2749,22 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
         isinstance(minimum, (int, float)) and value < minimum
         or isinstance(maximum, (int, float)) and value > maximum
     )
+
+
+def _settings_image_value_valid(value: object) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {"dataUrl", "alt"}:
+        return False
+    if not isinstance(value["alt"], str) or not isinstance(value["dataUrl"], str):
+        return False
+    match = re.fullmatch(r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)", value["dataUrl"])
+    if not match:
+        return False
+    try:
+        data = base64.b64decode(match[2], validate=True)
+    except ValueError:
+        return False
+    return {"png": data.startswith(b"\x89PNG\r\n\x1a\n"), "jpeg": data.startswith(b"\xff\xd8\xff"),
+            "webp": data.startswith(b"RIFF") and data[8:12] == b"WEBP"}[match[1]]
 
 
 def _settings_status_value_valid(value: object) -> bool:

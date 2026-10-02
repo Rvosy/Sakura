@@ -1,6 +1,8 @@
 import { createSettingsUI, sectionDestination } from "./settings-ui.js";
 import { createSettingsForm } from "./settings-form.js";
 import { createConnectionEditor } from "./connection-editor.js";
+import { createRecordTable } from "./record-table.js";
+import { createConnectionStatus } from "./connection-status.js";
 import { createIcon } from "../core/icons.js";
 import { animatedBrainMarkup } from "../core/animated-icons.js";
 import { createPluginController } from "./plugin-runtime.js";
@@ -84,6 +86,17 @@ export function createPluginSettingsFeature({
       element.append(pluginNode("p", "", label), errorDetailsButton(section.error || section.reason_code, label));
       return { element, dispose: () => element.remove() };
     }
+    if (presentation.component === "connection-status") {
+      return createConnectionStatus({ document, section, read, busy: () => pluginState.managementBusy || Boolean(pluginState.actionBusyKey),
+        renderDisplay: field => pluginSettingControl(plugin, section, field),
+        renderAction(action) {
+          const button = pluginNode("button", "secondary-button", action.label);
+          button.type = "button";
+          button.addEventListener("click", () => runPluginSettingsAction(plugin, section, action));
+          return button;
+        },
+      });
+    }
     if (presentation.component === "connection-editor") {
       let request = null;
       let cancelled = false;
@@ -125,6 +138,29 @@ export function createPluginSettingsFeature({
       const dispose = editor.dispose;
       editor.dispose = () => { probeCancels.delete(cancel); dispose(); };
       return editor;
+    }
+    if (presentation.component === "record-table") {
+      const inspectAction = section.actions.find(action => action.action_id === presentation.inspectAction);
+      return createRecordTable({ document, read, write, presentation, enhanceSelect, refreshSelect, closeSelects,
+        onError: setError, inspectLabel: inspectAction?.label,
+        inspect: inspectAction ? async (id, isCurrent) => {
+          const request = { id, requestId: window.crypto.randomUUID() };
+          const generation = runtimePluginController.snapshot()?.coreGenerationId;
+          const action = actionId => runtimePluginController.action({ pluginId: plugin.plugin_id, sectionId: section.section_id,
+            actionId, values: { [presentation.requestField]: request } });
+          let result = await action(presentation.inspectAction);
+          while (isCurrent() && generation === runtimePluginController.snapshot()?.coreGenerationId) {
+            const value = result.values?.[presentation.resultField];
+            if (value?.id !== id || value?.requestId !== request.requestId) throw new Error("SETTINGS_RECORD_RESULT_INVALID");
+            if (value.state !== "running") return value;
+            if (!presentation.statusAction) throw new Error("SETTINGS_RECORD_RESULT_INVALID");
+            await new Promise(resolve => window.setTimeout(resolve, 250));
+            if (!isCurrent() || generation !== runtimePluginController.snapshot()?.coreGenerationId) break;
+            result = await action(presentation.statusAction);
+          }
+          return null;
+        } : null,
+      });
     }
     const component = createSettingsForm({ document, plugin, section, read, write, enhanceSelect, refreshSelect,
       renderDisplay: field => pluginSettingControl(plugin, section, field),
@@ -793,6 +829,12 @@ export function createPluginSettingsFeature({
 
   function pluginSettingControl(plugin, section, field) {
     const value = pluginFieldValue(plugin, section, field);
+    if (field.type === "image") {
+      const image = document.createElement("img"); image.className = "plugin-setting-image";
+      image.alt = value?.alt || ""; image.hidden = !value;
+      if (value) image.src = value.dataUrl;
+      return image;
+    }
     if (field.type === "status") {
       const control = document.createElement("div");
       control.className = "plugin-status-control";
@@ -1364,8 +1406,15 @@ export function createPluginSettingsFeature({
     sections.forEach((section) => {
       if (section.presentation) {
         const component = createContributedSection(plugin, section); container.components.push(component);
-        const block = pluginNode(section.presentation.collapsible ? "details" : "fieldset", "settings-group");
-        block.append(pluginNode(section.presentation.collapsible ? "summary" : "legend", "", section.title), component.element);
+        const block = pluginNode(section.presentation.collapsible ? "details" : "section", "plugin-contribution");
+        if (section.presentation.component !== "connection-status") block.append(pluginNode(section.presentation.collapsible ? "summary" : "h3", "plugin-contribution-title", section.title));
+        block.append(component.element);
+        const update = component.update;
+        component.update = () => {
+          block.hidden = Boolean(section.presentation.visibleField) && !pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField];
+          update?.();
+        };
+        component.update();
         container.append(block); return;
       }
       const block = document.createElement("section");
@@ -2822,6 +2871,10 @@ export function createPluginSettingsFeature({
       return;
     }
     editor.general.components?.forEach(component => component.update?.());
+    const draftHint = editor.dialog.querySelector(".plugin-draft-hint");
+    if (draftHint) draftHint.hidden = !pluginSettingsSections(plugin).some(section =>
+      !sectionDestination(section) && (!section.presentation?.visibleField || pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField])
+      && section.fields.some(pluginFieldEditable));
     const focused = document.activeElement;
     const focusKey = focused?.dataset?.aboutActionKey;
     const focusedResourceKey = focused?.dataset?.aboutResourceKey;
@@ -2891,7 +2944,7 @@ export function createPluginSettingsFeature({
     const general = renderPluginSettings(plugin);
     body.append(general);
     const footer = pluginNode('footer', 'plugin-dialog-footer');
-    footer.append(pluginNode('span', '', '应用设置后生效'));
+    footer.append(pluginNode('span', 'plugin-draft-hint', '应用设置后生效'));
     const actions = pluginNode('div', '');
     const cancel = pluginNode('button', 'secondary-button', '取消'); cancel.type = 'button';
     const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);

@@ -3,7 +3,75 @@ import test from "node:test";
 import { executeSettingsClose } from "../settings/close-flow.js";
 import { field, snapshot, featureFixture, queryResult, settle } from "./fixtures/plugin-settings-fixture.js";
 
+test("native image refresh clears QR while record reads preserve permission drafts", async () => {
+  const data = snapshot();
+  const qr = { dataUrl: "data:image/png;base64,iVBORw0KGgo=", alt: "扫码" };
+  data.plugins[0].sections = [{ sectionId: "login", title: "账号", reasonCode: "READY", surface: null,
+    presentation: { component: "form" }, actions: [], collections: [],
+    fields: [field("qr", { type: "image", readonly: true, default: null })], values: { qr } },
+  { sectionId: "devices", title: "设备", reasonCode: "READY", surface: null, actions: [{ actionId: "read", label: "读取状态" }, { actionId: "read_status", label: "读取状态" }], collections: [],
+    presentation: { component: "record-table", itemsField: "items", valueField: "grants", requestField: "request", resultField: "result", inspectAction: "read", statusAction: "read_status",
+      columns: [field("name", { type: "readonly", readonly: true }), field("alias", { type: "string", default: "" })] },
+    fields: [field("items", { type: "data", readonly: true }), field("grants", { type: "data", default: {} }),
+      field("request", { type: "data", default: {} }), field("result", { type: "data", readonly: true })],
+    values: { items: [{ id: "lamp", label: "台灯", values: { name: "台灯" } }], grants: { lamp: { alias: "", mode: "hidden" } }, request: {}, result: {} } }];
+  const calls = [];
+  const ui = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_get") return structuredClone(data);
+    calls.push(args);
+    if (args.actionId === "read") return { values: { result: { ...args.values.request, state: "running" } } };
+    return { values: { result: { ...args.values.request, state: "completed", title: "台灯", rows: [{ label: "电源", value: "关" }] } } };
+  });
+  ui.window.crypto = { randomUUID: () => "read-1" };
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings();
+  assert.equal(ui.document.querySelector(".plugin-setting-image").src, qr.dataUrl);
+  const alias = ui.document.querySelector(".record-editor input");
+  alias.value = "床头灯"; await alias.fire("input");
+  const pendingRead = ui.document.querySelector(".record-inspect").fire("click");
+  await settle(); await ui.runTimers(250); await pendingRead;
+  assert.deepEqual(calls[0].values, { request: { id: "lamp", requestId: "read-1" } });
+  assert.equal(calls[1].actionId, "read_status");
+  assert.match(ui.document.querySelector(".record-details").textContent, /电源关/);
+  assert.equal(ui.feature.isDirty(), true);
+  data.plugins[0].sections[0].values.qr = null;
+  await ui.feature.refreshCurrent();
+  assert.equal(ui.document.querySelector(".plugin-setting-image").parentElement.hidden, true);
+  assert.equal(alias.value, "床头灯");
+  assert.deepEqual(ui.errors, []);
+  ui.feature.dispose();
+});
+
 const collectionSurfaces = ["memory", null, "custom_archive"];
+
+test("connection stages show only available actions and connected records", async () => {
+  const data = snapshot();
+  const connection = { sectionId: "connection", title: "账号", surface: null, reasonCode: "READY", collections: [],
+    presentation: { component: "connection-status", statusField: "status", imageField: "qr", actionsField: "available" },
+    fields: [field("status", { type: "status", readonly: true }), field("qr", { type: "image", readonly: true }), field("available", { type: "data", readonly: true })],
+    actions: ["login", "cancel", "refresh", "logout"].map(actionId => ({ actionId, label: actionId })),
+    values: { status: { state: "neutral", label: "未连接", message: "" }, qr: null, available: ["login"] } };
+  const records = { sectionId: "devices", title: "设备", surface: null, reasonCode: "READY", collections: [], actions: [],
+    presentation: { component: "record-table", itemsField: "items", valueField: "grants", visibleField: "visible", columns: [{ key: "name", label: "名称", readonly: true }] },
+    fields: [field("items", { type: "data", readonly: true }), field("grants", { type: "data" }), field("visible", { type: "boolean", readonly: true })],
+    values: { items: [], grants: {}, visible: false } };
+  data.plugins[0].sections = [connection, records];
+  const ui = featureFixture(async () => structuredClone(data));
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings();
+  const buttons = () => ui.document.querySelectorAll(".connection-status button").map(b => b.textContent);
+  assert.deepEqual(buttons(), ["login"]);
+  assert.equal(ui.document.querySelector(".record-table").parentElement.hidden, true);
+  connection.values = { status: { state: "working", label: "等待扫码", message: "" }, qr: { dataUrl: "data:image/png;base64,iVBORw0KGgo=", alt: "扫码" }, available: ["cancel"] };
+  await ui.feature.refreshCurrent();
+  assert.deepEqual(buttons(), ["cancel"]);
+  assert.ok(ui.document.querySelector(".connection-status img"));
+  connection.values = { status: { state: "ready", label: "已连接", message: "" }, qr: null, available: ["refresh", "logout"] };
+  records.values.visible = true;
+  await ui.feature.refreshCurrent();
+  assert.deepEqual(buttons(), ["refresh", "logout"]);
+  assert.equal(ui.document.querySelector(".connection-status img"), null);
+  assert.equal(ui.document.querySelector(".record-table").parentElement.hidden, false);
+  ui.feature.dispose();
+});
 
 for (const operation of ["query", "update"]) {
   test(`collection ${operation} failure forwards diagnostics and retains the editable draft`, async () => {

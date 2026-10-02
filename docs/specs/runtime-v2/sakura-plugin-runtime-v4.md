@@ -83,6 +83,16 @@ capability dependency；Python distribution dependency 单独通过 `pyproject.t
   `PIP_INDEX_URL`。不改写锁文件、直接下载 URL 或 uv 的索引选择策略，也不混用多个默认镜像。
   海外 GitHub Actions 打包任务显式使用官方 PyPI。镜像缺包或不可用时明确报错，用户可指定其他源后重试。
 
+Manifest 可声明 `min_app_version: "1.3.0"`，表示最低 Sakura 主程序版本，与 Plugin API 和 Service 依赖分别判断。
+字段是完整的 SemVer 版本号，不接受版本范围或 `v` 前缀；预发布按 SemVer 优先级比较，build metadata 不参与比较。
+未声明该字段的旧插件保持原有 API 与 Service 兼容规则，不补写清单，也不因字段缺失要求重新安装。
+当前版本读取 `distribution_root/VERSION`，不读取用户配置中记录的历史版本。
+
+字段类型或格式无效返回 `PLUGIN_MANIFEST_INVALID`；主程序低于最低版本返回 `APP_VERSION_UNSUPPORTED`；
+有最低要求但当前版本不可读取或解析时返回 `APP_VERSION_UNAVAILABLE`。本地安装在准备依赖和导入插件代码前
+拒绝不兼容包，普通启动同样阻止执行。已安装的不兼容插件仍在管理列表显示，可卸载，保留其配置、数据和启停选择。
+最低版本、旧插件安装和启动门禁由[兼容性回归](../../../tests/unit/test_plugin_app_compatibility.py)验证，纳入 Harness `journey-plugin-marketplace`。
+
 标准 venv 与 `uv pip --target` 都可以作为 dependency root 的内部实现候选。实现选择不得改变插件包、SDK、
 进程启动和故障 DTO；PoC 必须覆盖 console scripts、native wheels、卸载和三平台路径后再冻结一种。
 
@@ -636,6 +646,8 @@ README 由 Shell 根据已加载目录中的 GitHub 仓库和固定 commit 获�
 市场从 Sakura-Registry 最新 GitHub Release 的 `catalog.json` 读取目录，包含完整 manifest 和固定安装包地址。
 收录源 `plugins.json` 仅保存 ID、仓库和已批准版本到 commit 的映射；客户端不从它推测插件资料。
 推荐版本按 SemVer 选择最高的未撤回、非预发布版本，并匹配当前 Plugin API 和 Core 实际可用服务。
+声明 `min_app_version` 的版本还须满足主程序最低版本要求。版本过低时，详情安装区域显示所需 Sakura 版本和
+升级提示，禁用该版本的安装、更新和重新安装；存在较旧的兼容稳定版时仍可推荐它，不退回不兼容的新版本。
 这些检查不保证系统、Python 依赖及运行资源在所有设备上均可用；缺少声明的信息不伪造，完整安装检查由现有安装器完成。
 
 目录和 ZIP 共用下载源配置：`config/ui.json` 的 `settings.download_sources` 数组按排列顺序尝试。
@@ -646,7 +658,8 @@ README 由 Shell 根据已加载目录中的 GitHub 仓库和固定 commit 获�
 镜像属于第三方下载通道，不新增包摘要或内容认证承诺。网络请求沿用 Shell 的系统代理支持。
 
 下载阶段显示当前源并支持取消；进入安装后不能取消。Shell 仅按已加载目录选取安装包，不接收前端任意下载地址。
-Core 使用 `plugins.marketplace.context` 返回当前 API 与服务，用 `plugins.marketplace.install` 接收 revision、临时包路径、目标 ID 和版本。
+Core 使用 `plugins.marketplace.context` 返回当前 API、服务和 `appVersion`，用 `plugins.marketplace.install` 接收 revision、临时包路径、目标 ID 和版本。
+Shell 按已加载目录中的最低版本声明和当前 Core 上下文在下载前拦截；Core 安装器再以实际包清单校验，目录声明不能替代包校验。
 安装器解包后先核对 ID/版本，再创建依赖环境和发布代码。首次安装默认停用；迁移失败后的显式市场安装恢复已保存的启停选择。
 本地目录与 ZIP 安装不设插件数量、文件数量、单文件大小或包体积配额。复制或解包时检查路径越界、符号链接和路径冲突，
 之后信任隔离暂存目录，不再扫描整份内容重复校验；根清单确定插件身份，包内示例目录可以包含自己的 `plugin.yaml`。
@@ -720,6 +733,13 @@ Action 的展示值是局部更新，未返回的字段不补默认值。其他�
 宿主声明式组件提供普通表单、折叠高级参数、列表详情、模型选择与继承、状态和动作。连接编辑组件同时支持模型发现弹窗、
 勾选和手动添加，不允许插件提供任意 HTML、JavaScript、CSS。具体字段、绑定和示例见 [SDK](../../devdocs/SAKURA_PLUGIN_SDK.md#页面与区块贡献)。
 内置插件与第三方使用同一公开接口，不按插件名称装配页面。
+
+通用 `image` 只读字段显示插件提供的内嵌 PNG、JPEG 或 WebP；不加载远程地址或本地文件，
+清空值时撤下图片。宿主不实现特定厂商的登录协议，插件负责生成二维码、后台登录、取消和清除过期图片。
+`record-table` 绑定只读记录与可编辑草稿，支持搜索、选择记录后编辑及独立读取详情。读取只携带记录与请求身份，
+不保存权限等草稿；耗时读取使用开始动作与状态动作，窗口或实例失效后停止轮询并丢弃结果。
+连接展示使用通用 `connection-status` 组件，插件投影当前可用操作；未连接的管理区块可通过只读布尔字段控制显隐。
+插件仍负责数据校验、持久化和用户操作与模型工具各自的授权。公开格式见 [SDK](../../devdocs/SAKURA_PLUGIN_SDK.md#页面与区块贡献)。
 
 - 未放置且未注册 surface，或 `surface=plugin` 的区块放入插件设置窗口；普通字段、Action 和 Collection 保留原调用链。
 - `surface=voice` 仍由 Voice controller 管理，保留在语音页；插件设置不借用或恢复这些控件与草稿。

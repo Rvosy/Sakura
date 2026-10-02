@@ -22,6 +22,7 @@ from app.plugins.discovery import (
     plugin_spec_from_manifest,
 )
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
+from app.plugins.app_compatibility import app_version_reason
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.storage.atomic import atomic_write_text
@@ -453,6 +454,9 @@ class LocalPluginInstaller:
         spec = plugin_spec_from_manifest(raw, plugin_root, source="user")
         if spec is None:
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        reason = app_version_reason(spec.min_app_version, self._roots.distribution_root)
+        if reason != "READY":
+            raise PluginInstallError(reason)
         if spec.api_version != PLUGIN_API_V4_VERSION:
             raise PluginInstallError("API_VERSION_UNSUPPORTED")
         if (

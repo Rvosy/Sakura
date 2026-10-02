@@ -14,6 +14,7 @@ import yaml
 
 from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.models import PluginSpec
+from app.plugins.app_compatibility import minimum_app_version
 from app.plugins.visuals import visual_capabilities_from_manifest
 from app.plugins.inventory import PluginDesiredStateStore
 from app.core.runtime_log import diagnostic_attributes, log_event
@@ -116,6 +117,10 @@ def plugin_spec_from_manifest(
     entry = _string_value(raw.get("entry"))
     if not plugin_id or not entry:
         return None
+    try:
+        min_app_version = minimum_app_version(raw)
+    except ValueError:
+        return None
     provides = _service_keys_value(raw.get("provides"))
     visuals = visual_capabilities_from_manifest(
         raw.get("visuals", []), provides, plugin_root=plugin_root, issues=[],
@@ -137,6 +142,7 @@ def plugin_spec_from_manifest(
         plugin_root=plugin_root,
         source=source,
         visuals=visuals,
+        min_app_version=min_app_version,
     )
 
 

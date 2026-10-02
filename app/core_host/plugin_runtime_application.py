@@ -40,6 +40,7 @@ from app.plugins.host_services import (
     HOST_TOOLS_SERVICE,
 )
 from app.config.settings_service import AppSettingsService
+from app.config.app_version import read_app_version
 from app.config.model_references import (
     EMPTY_REFERENCE, ModelReferenceRepository, migrate_legacy_model_configuration, model_reference,
 )
@@ -345,7 +346,8 @@ class PluginRuntimeApplication:
         return self._inventory_snapshot
 
     def marketplace_context(self) -> dict[str, Any]:
-        return {"api": 4, "services": self._manager.available_service_keys()}
+        return {"api": 4, "appVersion": read_app_version(self._roots.distribution_root),
+                "services": self._manager.available_service_keys()}
 
     def settings_snapshot(self) -> dict[str, Any]:
         return self._host_services.decorate_settings_snapshot(self._manager.snapshot())

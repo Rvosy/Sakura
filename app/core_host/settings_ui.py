@@ -55,14 +55,19 @@ def placement(raw):
 def presentation(raw):
     if raw is None:
         return None
-    if not isinstance(raw, dict) or raw.get("component", "form") not in {"form", "connection-editor"}:
+    if not isinstance(raw, dict) or raw.get("component", "form") not in {"form", "connection-editor", "record-table", "connection-status"}:
         raise ValueError("SETTINGS_PRESENTATION_INVALID")
     result = {"component": raw.get("component", "form"), "collapsible": raw.get("collapsible", False)}
     if not isinstance(result["collapsible"], bool):
         raise ValueError("SETTINGS_PRESENTATION_INVALID")
     result["alignedUnits"] = raw.get("alignedUnits") is True
     # Bindings reference declared fields/actions, never executable markup.
-    for key in ("timeoutSection", "timeoutField", "serviceKey", "group", "statusAction", "valueField", "requestField", "resultField", "probeAction", "cancelAction"):
+    for key in ("timeoutSection", "timeoutField", "serviceKey", "group", "statusAction", "valueField", "requestField", "resultField", "probeAction", "cancelAction", "itemsField", "inspectAction", "visibleField", "statusField", "imageField", "actionsField"):
         if key in raw:
             result[key] = identifier(raw[key])
+    if result["component"] == "record-table":
+        if not isinstance(raw.get("columns"), list) or not raw["columns"] or not isinstance(raw.get("note", ""), str):
+            raise ValueError("SETTINGS_PRESENTATION_INVALID")
+        result["columns"] = raw["columns"]
+        result["note"] = raw.get("note", "")
     return result

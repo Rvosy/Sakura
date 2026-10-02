@@ -28,10 +28,14 @@ export function createSettingsForm({ document, plugin, section, read, write, enh
         help.textContent = "?"; help.dataset.tooltip = field.description; help.setAttribute("aria-label", `${field.label}说明`); labelBox.append(help);
       }
     }
-    if (["status", "resource", "readonly"].includes(field.type)) {
+    if (["status", "resource", "readonly", "image"].includes(field.type)) {
       let display = renderDisplay(field);
+      if (field.type === "image") row.hidden = !read(field.key);
       row.append(labelBox, display); appendRow(field, row);
-      inputs.set(field.key, { row, field, updateDisplay() { const next = renderDisplay(field); display.replaceWith(next); display = next; } });
+      inputs.set(field.key, { row, field, updateDisplay() {
+        const next = renderDisplay(field); display.replaceWith(next); display = next;
+        if (field.type === "image") row.hidden = !read(field.key);
+      } });
       continue;
     }
     const input = document.createElement(field.type === "select" ? "select" : "input"); input.id = id;
@@ -91,7 +95,12 @@ export function createSettingsForm({ document, plugin, section, read, write, enh
   const embedded = new Set(section.fields.flatMap(field => field.actionIds || []));
   const actions = (section.actions || []).filter(action => !embedded.has(action.action_id)).map(action => ({ action, node: renderAction(action) }));
   const collections = (section.collections || []).map(collection => ({ collection, node: renderCollection(collection) }));
-  for (const entry of [...actions, ...collections]) root.append(entry.node);
+  if (actions.length) {
+    const actionRow = document.createElement("div"); actionRow.className = "plugin-setting-actions";
+    for (const entry of actions) actionRow.append(entry.node);
+    root.append(actionRow);
+  }
+  for (const entry of collections) root.append(entry.node);
   return { element: root,
     update() {
       for (const { input, field, toggle, updateDisplay } of inputs.values()) {

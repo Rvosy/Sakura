@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-16
+updated: 2026-10-03
 ---
 
 # 用 AI 快速开发 Sakura 插件
@@ -56,6 +56,8 @@ updated: 2026-09-16
 1. 包根目录放 plugin.yaml 和入口代码；按需要附 config.json、依赖声明、README 和测试。
    Manifest 使用 api: 4、稳定 id、entry: Python模块:类名，第三方插件默认 enabled: false。
    使用 name/author/description/version，避免旧 plugin_id、api_version、optional 字段。
+   使用新增宿主能力时，声明 min_app_version 为首次支持该能力的 Sakura 完整 SemVer 版本号；
+   旧插件未声明时保持原有兼容规则。版本门禁以插件运行时 Spec 为准。
 2. 在 requires 中声明固定 Host 和插件 Service 依赖；provides 与 setup 中 context.provide() 完全一致。
    只提供 Contribution 的插件可以 provides: []，不必为了形式创建空 Service。
    exports 是唯一导出方法表；不要把插件 ID、priority 或展示分类当成 Service 选择机制。
