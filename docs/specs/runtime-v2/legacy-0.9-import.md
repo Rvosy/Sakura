@@ -68,7 +68,7 @@ stderr 持续排空；正常结束释放托管关系，协议错误、异常退�
 
 - `ready/degraded` 且角色投影可用：finalize并确认 journal 已清除，再写首次设置完成标记并进入桌宠；
 - `setup_required`：finalize并确认 journal 已清除，再进入缺失角色/Provider设置，不删除已迁移数据；
-- `failed`、超时或不可读取：停止 generation并 rollback；下次可重新迁移；
+- `failed`、generation 停止或不可读取：停止 generation并 rollback；下次可重新迁移。等待 Core 校验不设整体倒计时，协议请求与进程回收仍保留期限；
 - 进程异常退出后，下次启动在 Core 前依据 journal自动回滚。
 
 journal中的文件操作必须先持久化意图再执行 rename。Core校验成功后先持久化 `finalizing` 再删除 backup；一旦进入

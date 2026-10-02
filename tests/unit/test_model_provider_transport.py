@@ -30,10 +30,10 @@ def run(settings=SETTINGS, request=REQUEST, **kwargs):
 
 
 def test_async_model_worker_preserves_cause_before_releasing_credentials(monkeypatch):
-    from plugins.builtin.sakura_model_openai_compatible import plugin
+    from plugins.builtin.sakura_model_openai_compatible import plugin, transport
     def fail(*args, **kwargs):
         raise OSError('connection reset at C:\\runtime\\model opaque-secret')
-    monkeypatch.setattr(plugin, 'execute', fail)
+    monkeypatch.setattr(transport, 'execute', fail)
     worker = plugin.ModelPlugin()
     worker.changed = threading.Condition()
     worker._read_request = lambda job: REQUEST

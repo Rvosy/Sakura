@@ -26,7 +26,6 @@ use crate::{
 };
 
 pub const LEGACY_IMPORT_PROGRESS_EVENT: &str = "sakura://legacy-import-progress";
-const CORE_VALIDATION_DEADLINE: Duration = Duration::from_secs(60);
 const LEGACY_PIPE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const LEGACY_PROCESS_FINALIZE_DEADLINE: Duration = Duration::from_secs(10);
 const LEGACY_PROCESS_TERMINATE_REASON: u32 = 76;
@@ -836,8 +835,7 @@ pub async fn settings_legacy_data_import_apply(
 fn start_core_and_wait_usable(
     handle: &crate::shell_lifecycle::ShellLifecycleHandle,
 ) -> Result<(), String> {
-    handle.start_core_and_wait_available(CORE_VALIDATION_DEADLINE)?;
-    let deadline = Instant::now() + CORE_VALIDATION_DEADLINE;
+    handle.start_core_and_wait_available()?;
     loop {
         match handle.readiness()? {
             Some(readiness)
@@ -845,7 +843,7 @@ fn start_core_and_wait_usable(
             {
                 return Ok(())
             }
-            _ if Instant::now() >= deadline => return Err("CORE_START_TIMEOUT".to_string()),
+            Some(readiness) if readiness == "failed" => return Err("CORE_START_FAILED".to_string()),
             _ => thread::sleep(Duration::from_millis(20)),
         }
     }
@@ -1084,7 +1082,7 @@ fn validate_with_core(
         rollback_after_core_failure(app, state, request, import_id, "LEGACY_CORE_UNAVAILABLE");
         return;
     };
-    if let Err(error) = handle.start_core() {
+    if let Err(error) = handle.start_core_and_wait_available() {
         log_import_step(
             app,
             Severity::Error,
@@ -1116,7 +1114,6 @@ fn validate_with_core(
         import_id,
         json!({}),
     );
-    let deadline = Instant::now() + CORE_VALIDATION_DEADLINE;
     let completed_with_warnings = state
         .snapshot()
         .map(|snapshot| {
@@ -1129,7 +1126,7 @@ fn validate_with_core(
         })
         .unwrap_or(false);
     let mut previous_readiness: Option<String> = None;
-    while Instant::now() < deadline {
+    loop {
         match handle.readiness() {
             Ok(Some(readiness)) if matches!(readiness.as_str(), "ready" | "degraded") => {
                 log_import_step(
@@ -1310,13 +1307,6 @@ fn validate_with_core(
             }
         }
     }
-    rollback_after_core_failure(
-        app,
-        state,
-        request,
-        import_id,
-        "LEGACY_CORE_VALIDATION_TIMEOUT",
-    );
 }
 
 fn rollback_after_core_failure(

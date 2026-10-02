@@ -91,9 +91,9 @@ pub(crate) async fn dispatch_settings_request(
     })?
 }
 
-/// Explicit installs own their subprocess/rollback deadlines. Keep the caller
-/// (and its temporary package) alive until Core finishes or the generation ends.
-pub(crate) async fn dispatch_settings_install(
+/// Lifecycle transactions own their work and rollback deadlines. Keep the caller
+/// alive until Core finishes or the generation ends.
+pub(crate) async fn dispatch_settings_transaction(
     handle: ShellLifecycleHandle,
     name: &'static str,
     payload: Value,
@@ -133,7 +133,6 @@ pub(crate) fn load_current_character_presentation(
 const HELLO_DEADLINE: Duration = Duration::from_secs(10);
 const INITIALIZE_DEADLINE: Duration = Duration::from_secs(5);
 const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(3);
-const READINESS_DEADLINE: Duration = Duration::from_secs(30);
 const SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Serialize)]
@@ -174,13 +173,6 @@ pub struct PluginMigrationPublication {
 
 fn plugin_migration(snapshot: &Value) -> Option<PluginMigrationPublication> {
     serde_json::from_value(snapshot.get("pluginMigration")?.clone()).ok()
-}
-
-fn startup_expired(now: Instant, readiness_deadline: &mut Instant, migrating: bool) -> bool {
-    if migrating {
-        *readiness_deadline = now + READINESS_DEADLINE;
-    }
-    now >= *readiness_deadline
 }
 
 #[derive(Clone, Serialize)]
@@ -288,11 +280,14 @@ impl ShellLifecycleHandle {
         })
     }
 
-    pub fn start_core_and_wait_available(&self, timeout: Duration) -> Result<(), String> {
+    pub fn start_core_and_wait_available(&self) -> Result<(), String> {
+        let previous_generation = self.snapshot()?.supervisor.generation_number;
         self.start_core()?;
-        let deadline = Instant::now() + timeout;
         loop {
             let publication = self.snapshot()?;
+            if publication.supervisor.app_shutdown {
+                return Err("LIFECYCLE_COMMAND_UNAVAILABLE".to_string());
+            }
             if available_generation_id(&publication).is_some() {
                 return Ok(());
             }
@@ -307,11 +302,10 @@ impl ShellLifecycleHandle {
                         .unwrap_or("Core start failed"),
                 ));
             }
-            if publication.supervisor.app_shutdown {
-                return Err("LIFECYCLE_COMMAND_UNAVAILABLE".to_string());
-            }
-            if Instant::now() >= deadline {
-                return Err("CORE_START_TIMEOUT".to_string());
+            if publication.supervisor.state == "stopped"
+                && publication.supervisor.generation_number > previous_generation
+            {
+                return Err("CORE_START_CANCELLED".to_string());
             }
             thread::sleep(Duration::from_millis(20));
         }
@@ -339,17 +333,28 @@ impl ShellLifecycleHandle {
     }
 
     pub fn readiness(&self) -> Result<Option<String>, String> {
-        self.publication
-            .lock()
-            .map(|publication| {
+        let publication = self.snapshot()?;
+        if publication.supervisor.app_shutdown {
+            return Err("LIFECYCLE_COMMAND_UNAVAILABLE".to_string());
+        }
+        if publication.supervisor.state == "failed" {
+            return Err(crate::runtime_log::diagnostic_error(
+                "CORE_START_FAILED",
                 publication
-                    .snapshot
+                    .supervisor
+                    .failure
                     .as_ref()
-                    .map(|snapshot| snapshot.readiness.clone())
-            })
-            .map_err(|error| {
-                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
-            })
+                    .map(|failure| failure.message.as_str())
+                    .unwrap_or("Core start failed"),
+            ));
+        }
+        if publication.supervisor.state == "stopped" {
+            return Err("CORE_START_CANCELLED".to_string());
+        }
+        Ok(publication
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.readiness.clone()))
     }
 
     pub fn is_stopped(&self) -> Result<bool, String> {
@@ -1000,7 +1005,6 @@ fn spawn_and_initialize(
         json!({"outcome": "completed"}),
     );
 
-    let mut readiness_deadline = Instant::now() + READINESS_DEADLINE;
     state.chat_bridge = state
         .host
         .as_ref()
@@ -1083,14 +1087,6 @@ fn spawn_and_initialize(
                 actions.extend(submit_command(state, ShellCommand::Restart));
             }
             return Ok(());
-        }
-        let migrating = state
-            .snapshot
-            .as_ref()
-            .and_then(plugin_migration)
-            .is_some_and(|migration| migration.state == "running");
-        if startup_expired(Instant::now(), &mut readiness_deadline, migrating) {
-            return Err(FailureReason::InitializeTimeout);
         }
         thread::sleep(SNAPSHOT_POLL_INTERVAL);
     }
@@ -1423,25 +1419,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migration_progress_survives_publication_without_consuming_startup_deadline() {
+    fn migration_progress_survives_publication() {
         let status = json!({"pluginMigration": {"state": "running", "completed": 0,
             "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"}});
         let migration = plugin_migration(&status).expect("public migration progress");
         assert_eq!(migration.plugin_id.as_deref(), Some("sakura.memory.mem0"));
-        let start = Instant::now();
-        let mut readiness = start + READINESS_DEADLINE;
-        let downloading = start + Duration::from_secs(120);
-        assert!(!startup_expired(downloading, &mut readiness, true));
-        assert!(!startup_expired(
-            downloading + Duration::from_secs(1),
-            &mut readiness,
-            false
-        ));
-        assert!(startup_expired(
-            downloading + READINESS_DEADLINE,
-            &mut readiness,
-            false
-        ));
     }
 
     #[test]
@@ -1682,7 +1664,7 @@ mod tests {
 
         let started = Instant::now();
         handle
-            .start_core_and_wait_available(Duration::from_secs(1))
+            .start_core_and_wait_available()
             .expect("first-run navigation waits until settings can address Core");
         assert!(started.elapsed() >= Duration::from_millis(20));
         worker.join().unwrap();
@@ -1722,10 +1704,63 @@ mod tests {
         });
 
         assert_eq!(
-            handle.start_core_and_wait_available(Duration::from_secs(1)),
+            handle.start_core_and_wait_available(),
             Err("CORE_START_FAILED: Core start failed".to_string())
         );
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn startup_wait_reports_retired_generation_without_waiting_for_a_timeout() {
+        let (command, commands) = mpsc::channel();
+        let publication = Arc::new(Mutex::new(ShellLifecyclePublication {
+            supervisor: SupervisorPublication {
+                state: "stopped",
+                generation_id: None,
+                generation_number: 0,
+                app_shutdown: false,
+                failure: None,
+            },
+            snapshot: None,
+            character_presentation: None,
+            versions: VersionPublication {
+                desktop_version: "1.0.0",
+                core_version: "unavailable".into(),
+                protocol_version: "2.2".into(),
+                log_location: "Sakura application logs",
+            },
+        }));
+        let handle = ShellLifecycleHandle {
+            command,
+            publication: publication.clone(),
+            settings_transport: Arc::new(Mutex::new(None)),
+            settings_request_number: Arc::new(AtomicU64::new(0)),
+            chat_bridge: Arc::new(Mutex::new(None)),
+        };
+        let worker = thread::spawn(move || {
+            assert!(matches!(commands.recv().unwrap(), ShellCommand::Start));
+            // A new generation started and was explicitly stopped before readiness.
+            publication.lock().unwrap().supervisor.generation_number = 1;
+        });
+        assert_eq!(
+            handle.start_core_and_wait_available(),
+            Err("CORE_START_CANCELLED".into())
+        );
+        worker.join().unwrap();
+        assert_eq!(handle.readiness(), Err("CORE_START_CANCELLED".into()));
+        handle.publication.lock().unwrap().supervisor.app_shutdown = true;
+        assert_eq!(
+            handle.readiness(),
+            Err("LIFECYCLE_COMMAND_UNAVAILABLE".into())
+        );
+        let mut state = handle.publication.lock().unwrap();
+        state.supervisor.app_shutdown = false;
+        state.supervisor.state = "failed";
+        drop(state);
+        assert!(handle
+            .readiness()
+            .unwrap_err()
+            .starts_with("CORE_START_FAILED"));
     }
 
     fn wait_for_failed(

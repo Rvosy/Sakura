@@ -364,11 +364,20 @@ class RpcPeer:
         *,
         timeout: float = DEFAULT_CALL_TIMEOUT_SECONDS,
     ) -> object:
+        return self._request_with_timeout(name, payload, timeout)
+
+    def request_until_complete(self, name: str, payload: Mapping[str, Any]) -> object:
+        """Wait for owned initialization work, an actual error, or peer retirement."""
+        return self._request_with_timeout(name, payload, None)
+
+    def _request_with_timeout(
+        self, name: str, payload: Mapping[str, Any], timeout: float | None,
+    ) -> object:
         if self.closed:
             raise PluginApiError("PLUGIN_PROCESS_UNAVAILABLE")
         if not self._outgoing_slots.acquire(blocking=False):
             raise PluginApiError("PLUGIN_QUEUE_FULL")
-        deadline = time.monotonic() + max(0.01, float(timeout))
+        deadline = None if timeout is None else time.monotonic() + max(0.01, float(timeout))
         request_id = uuid.uuid4().hex
         pending = _Pending()
         try:
@@ -385,9 +394,9 @@ class RpcPeer:
                     "name": name,
                     "payload": dict(payload),
                 },
-                timeout=max(0.0, deadline - time.monotonic()),
+                timeout=DEFAULT_CALL_TIMEOUT_SECONDS if deadline is None else max(0.0, deadline - time.monotonic()),
             )
-            if not pending.done.wait(max(0.0, deadline - time.monotonic())):
+            if not pending.done.wait(None if deadline is None else max(0.0, deadline - time.monotonic())):
                 raise PluginApiError("PLUGIN_CALL_TIMEOUT")
             if pending.error is not None:
                 raise pending.error

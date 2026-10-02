@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,15 @@ from types import SimpleNamespace
 import pytest
 
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
+
+
+def test_entry_import_timeout_is_not_reported_as_a_broken_entry(tmp_path, monkeypatch):
+    def slow_import(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+    monkeypatch.setattr(subprocess, "run", slow_import)
+    with pytest.raises(PluginDependencyError, match="PLUGIN_ENTRY_IMPORT_TIMEOUT"):
+        PluginDependencyRoots(tmp_path / "user")._validate_entry(
+            "fixture", tmp_path, None, "plugin:Plugin")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows verbatim path semantics")

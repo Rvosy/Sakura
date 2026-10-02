@@ -27,7 +27,6 @@ from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
-INITIALIZE_TIMEOUT_SECONDS = 8.0
 CALL_TIMEOUT_SECONDS = 3.0
 CLOSE_TIMEOUT_SECONDS = 0.8
 TERMINATE_TIMEOUT_SECONDS = 2.0
@@ -342,10 +341,9 @@ class _PluginProcess:
             self._stderr_reader.start()
             watcher.start()
         try:
-            result = peer.request(
+            result = peer.request_until_complete(
                 "runtime.initialize",
                 {},
-                timeout=INITIALIZE_TIMEOUT_SECONDS,
             )
         except PluginApiError as error:
             details = self.startup_diagnostics()
@@ -359,8 +357,6 @@ class _PluginProcess:
                         details["startup_snapshot"] = "PLUGIN_RESPONSE_INVALID"
                 except PluginApiError as snapshot_error:
                     details["startup_snapshot"] = snapshot_error.code
-                if not error.diagnostics:
-                    details["timeout_ms"] = INITIALIZE_TIMEOUT_SECONDS * 1000
             details["elapsed_ms"] = round((time.monotonic() - self._startup_started) * 1000, 2)
             with self._state_lock:
                 self._startup_failure = details

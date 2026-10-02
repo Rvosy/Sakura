@@ -372,7 +372,9 @@ class PluginDependencyRoots:
                 timeout=INITIALIZE_IMPORT_TIMEOUT_SECONDS,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except subprocess.TimeoutExpired as error:
+            raise PluginDependencyError("PLUGIN_ENTRY_IMPORT_TIMEOUT") from error
+        except OSError as error:
             raise PluginDependencyError("PLUGIN_ENTRY_IMPORT_FAILED") from error
         if result.returncode != 0:
             raise PluginDependencyError(

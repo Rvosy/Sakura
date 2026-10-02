@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  CHARACTER_SWITCH_TIMEOUT_MS,
   applyCharacterCatalogChange,
   applyCharacterSwitch,
   commitCharacterSelection,
@@ -13,14 +12,40 @@ import {
   waitForCharacterSwitch,
 } from "../settings/character-switch-runtime.js";
 
-test("character switch timeout covers the full Core shutdown and readiness budget", () => {
-  assert.equal(CHARACTER_SWITCH_TIMEOUT_MS, 60_000);
-});
-
 const receipt = Object.freeze({
   restartState: "requested",
   previousCoreGenerationId: "generation-a",
   targetCharacterId: "character-b",
+});
+
+test("character switching accepts a healthy generation after more than sixty seconds", async t => {
+  let clock = 0, reads = 0;
+  t.mock.method(Date, "now", () => clock);
+  const result = await waitForCharacterSwitch({
+    receipt, previousGenerationNumber: 1,
+    readLifecycle: async () => lifecycle({ readiness: ++reads === 1 ? "initializing" : "ready" }),
+    delay: async () => { clock += 61_000; },
+  });
+  assert.equal(result.snapshot.readiness, "ready");
+  assert.equal(reads, 2);
+});
+
+test("generation failure ends switching before a Core snapshot is published", async () => {
+  await assert.rejects(waitForCharacterSwitch({
+    receipt, previousGenerationNumber: 1,
+    readLifecycle: async () => ({ supervisor: { state: "failed", generationId: "generation-b", generationNumber: 2 } }),
+    delay: async () => assert.fail("a retired generation must not keep polling"),
+  }), /CHARACTER_SWITCH_INITIALIZATION_FAILED/);
+});
+
+for (const supervisor of [
+  { state: "stopped", generationId: null, generationNumber: 2 },
+  { state: "stopping", appShutdown: true, generationNumber: 1 },
+]) test("generation retirement ends character switching", async () => {
+  await assert.rejects(waitForCharacterSwitch({
+    receipt, previousGenerationNumber: 1, readLifecycle: async () => ({ supervisor }),
+    delay: async () => assert.fail("a cancelled switch must not keep polling"),
+  }), /CHARACTER_SWITCH_CANCELLED/);
 });
 
 function lifecycle({
