@@ -25,8 +25,8 @@ Sakura 在桌面上显示你选择的角色，用角色卡决定对话风格，�
 
 <div align="center">
 
-![Sakura 预览](docs/userdocs/assets/sakura_01.webp)
-![N.A.V.I. 预览](docs/userdocs/assets/navi_01.webp)
+![Sakura 预览](docs/userdocs/assets/sakura_01.png)
+![N.A.V.I. 预览](docs/userdocs/assets/navi_01.png)
 
 </div>
 
