@@ -136,6 +136,23 @@ test("consecutive duplicate rows collapse and copied errors retain support detai
   assert.ok(copied.indexOf("错误码：") < copied.indexOf("关联编号："));
 });
 
+test("plugin synthesis duration is visible inline while stage metrics stay in details", () => {
+  const tts = record(1, { source: "plugin", pluginId: "sakura.tts.sakuratts", scopes: ["tts"],
+    eventCode: "runtime.message", message: "SakuraTTS 合成耗时", details: [
+      { label: "reference_ms", value: "1400" },
+      { label: "elapsed_ms", value: "1875" },
+      { label: "gpt_ms", value: "215" },
+    ] });
+  assert.equal(viewerInlineSummary(tts), "耗时=1.88 秒");
+  assert.equal(tts.details.length, 3);
+  for (const [value, expected] of [["469", "耗时=469 ms"], ["0", "耗时=0 ms"],
+    ["NaN", ""], ["Infinity", ""], ["-1", ""], [" ", ""]]) {
+    assert.equal(viewerInlineSummary({ ...tts, details: [{ label: "elapsed_ms", value }] }), expected);
+  }
+  assert.equal(viewerInlineSummary({ ...tts, details: [{ label: "duration_ms", value: "2000" }] }), "耗时=2 秒");
+  assert.equal(viewerInlineSummary(tts, 0), "");
+});
+
 test("inline summaries keep useful context and hide support-only diagnostics", () => {
   const summary = viewerInlineSummary(record(1, {
     details: [

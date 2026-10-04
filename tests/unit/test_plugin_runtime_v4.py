@@ -131,6 +131,10 @@ class Plugin:
     assert len(lifecycle) == 4
     assert {r["plugin_id"] for r in lifecycle} == {"fixture.one", "fixture.two"}
     assert all(r.get("plugin_name", "").startswith("示例插件") for r in lifecycle)
+    phases = [r for r in records if r.get("event") == "plugin.start.phase.completed"]
+    assert phases
+    assert all(r["severity"] == "debug" and r["verbosity"] == "debug" for r in phases)
+    assert all(r["severity"] == "info" for r in lifecycle if r.get("event") == "plugin.loaded")
     custom = [r for r in records if r.get("custom") and r.get("attributes", {}).get("stage") in {"setup", "run", "cleanup"}]
     assert len(custom) == 6, custom
     for name in ("one", "two"):

@@ -195,7 +195,17 @@ export function viewerInlineSummary(record, limit = 3) {
     const elapsed = record.details.find((detail) => detail.label === "耗时");
     return elapsed ? `${elapsed.label}=${elapsed.value}` : "";
   }
-  return record.details
+  const elapsed = ["elapsed_ms", "duration_ms"]
+    .map(label => record.details.find(detail => detail.label === label))
+    .find(detail => detail?.value.trim() && Number.isFinite(Number(detail.value)) && Number(detail.value) >= 0);
+  const details = record.details.slice();
+  if (elapsed && !details.some(detail => detail.label === "耗时")) {
+    const milliseconds = Number(elapsed.value);
+    details.unshift({ label: "耗时", value: milliseconds >= 1000
+      ? `${Number((milliseconds / 1000).toFixed(2))} 秒`
+      : `${Number(milliseconds.toFixed(1))} ms` });
+  }
+  return details
     .filter((detail) => (
       INLINE_DETAIL_LABELS.has(detail.label)
       && !(record.eventCode.startsWith("ipc.request.") && detail.label === "状态")

@@ -1373,6 +1373,14 @@ impl ConcurrentRequestHandle {
                     | "studio.visual.catalog"
                     | "screen.session"
                     | "screen_awareness.step"
+                    | "host.interaction.current"
+                    | "host.interaction.state"
+                    | "host.interaction.detach"
+                    | "host.visual.claim"
+                    | "host.visual.result"
+                    | "visual.control.parse"
+                    | "tts.status.get"
+                    | "tts.playback.observe"
             ) {
             Severity::Debug
         } else {
@@ -4541,6 +4549,14 @@ mod tests {
                 "studio.visual.catalog",
                 "screen.session",
                 "screen_awareness.step",
+                "host.interaction.current",
+                "host.interaction.state",
+                "host.interaction.detach",
+                "host.visual.claim",
+                "host.visual.result",
+                "visual.control.parse",
+                "tts.status.get",
+                "tts.playback.observe",
             ] {
                 handle.log_request(
                     Severity::Info,
@@ -4574,6 +4590,8 @@ mod tests {
                 "screen.session",
                 "screen_awareness.step",
                 "plugins.settings.get",
+                "host.interaction.state",
+                "visual.control.parse",
             ] {
                 handle.log_request_result(
                     "screen-log-rejected",
@@ -4599,14 +4617,14 @@ mod tests {
                 .collect();
             assert_eq!(
                 ipc.len(),
-                7,
+                9,
                 "successful polling must not consume viewer history"
             );
-            assert!(ipc[..5]
+            assert!(ipc[..7]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.failed"
                     && record.severity == "warning"));
-            assert!(ipc[5..]
+            assert!(ipc[7..]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.cancelled"
                     && record.severity == "info"));

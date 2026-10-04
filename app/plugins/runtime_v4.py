@@ -228,7 +228,7 @@ class _PluginProcess:
             self._startup_stage = payload["stage"]
         log_event("PluginManager", "插件启动阶段完成",
             {"stage": payload["completedStage"], "duration_ms": payload["durationMs"], "elapsed_ms": payload["elapsedMs"]},
-            event="plugin.start.phase.completed", severity="info", verbosity=1,
+            event="plugin.start.phase.completed", severity="debug",
             plugin_id=self._spec.plugin_id, plugin_name=self._spec.name)
 
     @property

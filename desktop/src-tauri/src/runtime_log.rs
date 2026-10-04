@@ -4024,17 +4024,24 @@ mod tests {
             "fixture failed: {}",
             String::from_utf8_lossy(&result.stderr)
         );
+        let bridge_output = String::from_utf8(result.stderr).unwrap();
+        let bridge_records: Vec<_> = bridge_output
+            .lines()
+            .filter_map(|line| line.strip_prefix(CORE_BRIDGE_PREFIX))
+            .collect();
         let path = root.join("logs/sakura-runtime.log");
-        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let mut config = test_config(path.clone());
+        // This projection fixture replays a complete startup burst synchronously.
+        // Queue saturation has separate tests; reserve space for this batch and two local events.
+        config.queue_capacity = bridge_records.len() + 2;
+        let log = RuntimeLogService::start_with_config(config);
         let context = CoreLogContext {
             generation_id: "generation-unified-test".into(),
             generation_number: 1,
             core_pid: 42,
         };
-        for line in String::from_utf8(result.stderr).unwrap().lines() {
-            if let Some(record) = line.strip_prefix(CORE_BRIDGE_PREFIX) {
-                assert!(log.submit_core_bridge(record, &context).unwrap());
-            }
+        for record in bridge_records {
+            assert!(log.submit_core_bridge(record, &context).unwrap());
         }
         log.submit(RuntimeLogEvent::message(
             Severity::Info,
@@ -4075,35 +4082,9 @@ mod tests {
                     .count(),
                 4
             );
-            let phases: Vec<_> = records
+            assert!(records
                 .iter()
-                .filter(|record| record.event_code == "plugin.start.phase.completed")
-                .map(|record| {
-                    assert!(record.details.iter().any(|detail| detail.label == "耗时"));
-                    assert!(record
-                        .details
-                        .iter()
-                        .any(|detail| detail.label == "阶段耗时"));
-                    record
-                        .details
-                        .iter()
-                        .find(|detail| detail.label == "阶段")
-                        .unwrap()
-                        .value
-                        .as_str()
-                })
-                .collect();
-            assert_eq!(
-                phases,
-                [
-                    "bootstrap",
-                    "context",
-                    "import",
-                    "construct",
-                    "setup",
-                    "commit"
-                ]
-            );
+                .all(|record| record.event_code != "plugin.start.phase.completed"));
             assert!(records.iter().any(|r| r.event_code == "plugin.loaded"));
             assert!(records
                 .iter()
