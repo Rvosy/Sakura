@@ -1414,7 +1414,6 @@ input[type="checkbox"]:hover:not(:disabled) {
 .voice-advanced-settings {
   display: grid;
   gap: 10px;
-  border-top: 1px solid var(--hairline);
   padding-top: 10px;
 }
 
@@ -3226,7 +3225,6 @@ button:active:not(:disabled) {
   display: grid;
   gap: 10px;
   padding-top: 2px;
-  border-top: 1px solid var(--sakura-border);
 }
 
 .plugin-settings-section h3 {
@@ -3251,6 +3249,17 @@ button:active:not(:disabled) {
   display: grid;
   gap: 5px;
   min-width: 0;
+}
+
+.plugin-dialog-body .plugin-status-row {
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: var(--surface-soft);
+  gap: 10px;
+}
+
+.plugin-dialog-body .plugin-status-row .semantic-status {
+  font-size: 16px;
 }
 
 .plugin-status-message {
@@ -4488,8 +4497,8 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 .plugin-dialog-eyebrow { margin: 0 0 4px; color: var(--sakura-muted-text); font-size: 10px; }
 .plugin-dialog-close { border: 0; background: transparent; color: var(--sakura-muted-text); padding: 0 6px; font-size: 23px; line-height: 1; }
 .plugin-dialog-body { min-height: 0; overflow-y: auto; padding: 24px 26px; scrollbar-gutter: stable; }
-.plugin-dialog-body .plugin-settings-section { padding: 0; border: 0; gap: 17px; margin-bottom: 24px; }
-.plugin-dialog-body .plugin-settings-section h3 { font-size: 12px; }
+.plugin-dialog-body .plugin-settings-section { padding: 0; border: 0; gap: 14px; margin-bottom: 14px; }
+.plugin-dialog-body .plugin-settings-section h3 { font-size: 15px; font-weight: var(--font-weight-semibold); color: var(--sakura-text); }
 .plugin-dialog-body .form-row { display: flex; flex-direction: column; align-items: stretch; gap: 7px; }
 .plugin-dialog-body .form-row > label { font-size: 12px; }
 .plugin-dialog-body .form-row .hint { margin: 0; font-size: 10px; line-height: 1.65; }
@@ -4503,7 +4512,7 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 .plugin-dialog-body input, .plugin-dialog-body select, .plugin-dialog-body .custom-select { width: 100%; max-width: none; }
 .plugin-dialog-body .setting-row > input, .plugin-dialog-body .setting-row > .custom-select { width: 100%; max-width: none; }
 .plugin-dialog-body input[type="checkbox"] { width: 16px; }
-.plugin-dialog-body .voice-advanced-settings { margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--hairline); }
+.plugin-dialog-body .voice-advanced-settings { margin-top: 12px; padding-top: 0; }
 .plugin-settings-advanced-body { display: grid; gap: 17px; padding-top: 18px; }
 .plugin-dialog-footer { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 16px 24px; border-top: 1px solid var(--hairline); background: var(--surface-soft); }
 .plugin-dialog-footer > span { color: var(--sakura-muted-text); font-size: 10px; }

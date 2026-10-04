@@ -3,6 +3,47 @@ import test from "node:test";
 import { executeSettingsClose } from "../settings/close-flow.js";
 import { field, snapshot, featureFixture, queryResult, settle } from "./fixtures/plugin-settings-fixture.js";
 
+test("open status panel observes standby transitions without replacing configuration drafts", async () => {
+  const data = snapshot();
+  const section = data.plugins[0].sections[0];
+  section.fields = [field("engine", { type: "status", readonly: true, placement: "row" }),
+    field("seconds", { type: "integer", default: 60 })];
+  section.values = { engine: { state: "ready", label: "待命", message: "收到请求后启动" }, seconds: 60 };
+  const ui = featureFixture(async () => structuredClone(data));
+  ui.document.getElementById('page-plugins').classList.add('is-active');
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings();
+  const input = ui.document.querySelector('.plugin-settings-dialog input');
+  input.value = '15'; await input.fire('input');
+  section.values.engine = { state: "working", label: "准备中", message: "" };
+  await ui.runTimers(1200);
+  assert.match(ui.document.querySelector('.plugin-status-control').textContent, /准备中/);
+  assert.equal(input.value, '15');
+  section.values.engine = { state: "ready", label: "已休眠", message: "下次自动唤醒" };
+  await ui.runTimers(1200);
+  assert.match(ui.document.querySelector('.plugin-status-control').textContent, /已休眠.*下次自动唤醒/);
+  assert.deepEqual(ui.errors, []);
+  ui.feature.dispose();
+});
+
+test("native file picker supplies action input without an editable path field", async () => {
+  const data = snapshot();
+  const section = data.plugins[0].sections[0];
+  section.fields = [field('bundlePath', { type: 'string', default: '' })];
+  section.values = { bundlePath: '' };
+  section.actions = [{ actionId: 'import', label: '导入', filePicker: { field: 'bundlePath', extensions: ['zip'] } }];
+  const calls = [];
+  const ui = featureFixture(async (command, args) => {
+    if (command === 'settings_plugins_action') { calls.push(args); return { cancelled: true }; }
+    return structuredClone(data);
+  });
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings();
+  assert.equal(ui.document.querySelector('.plugin-settings-dialog input'), null);
+  await ui.document.querySelector('[data-plugin-action-key]').fire('click');
+  assert.deepEqual(calls[0].filePicker, section.actions[0].filePicker);
+  assert.deepEqual(calls[0].values, { bundlePath: '' });
+  ui.feature.dispose();
+});
+
 test("native image refresh clears QR while record reads preserve permission drafts", async () => {
   const data = snapshot();
   const qr = { dataUrl: "data:image/png;base64,iVBORw0KGgo=", alt: "扫码" };
@@ -833,7 +874,7 @@ test("About component actions use the owning plugin section and refresh its rend
   await document.querySelector(".plugin-settings-dialog .resource-card button").fire("click");
   assert.deepEqual(actions, [{
     windowGeneration: 7, coreGenerationId: "generation-a", pluginId: "fixture_plugin",
-    sectionId: "components", actionId: "download", values: {},
+    sectionId: "components", actionId: "download", filePicker: null, values: {},
   }]);
   assert.equal(document.querySelector(".plugin-settings-dialog .resource-card button"), null);
   assert.match(document.getElementById("aboutComponentsSummary").textContent, /^1\/1/);

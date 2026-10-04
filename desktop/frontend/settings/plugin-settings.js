@@ -688,9 +688,9 @@ export function createPluginSettingsFeature({
     return button;
   }
 
-  function renderStatusMessage(element, value) {
+  function renderStatusMessage(element, value, showReady = false) {
     element.textContent = "";
-    element.hidden = !value?.message || ["ready", "neutral"].includes(value.state);
+    element.hidden = !value?.message || (!showReady && ["ready", "neutral"].includes(value.state));
     if (element.hidden) return;
     if (["warning", "error", "failed"].includes(value.state)) {
       element.append(errorDetailsButton(value, value.label || "插件状态异常"));
@@ -700,12 +700,12 @@ export function createPluginSettingsFeature({
   function pluginResourceStatus(value) {
     if (value.applicability === "not_required") return { state: "ready", label: "无需安装" };
     if (value.applicability === "unsupported") return { state: "warning", label: "不支持一键安装" };
-    if (value.taskState === "queued") return { state: "working", label: "等待下载" };
-    if (value.taskState === "running") return { state: "working", label: "下载中" };
+    if (value.taskState === "queued") return { state: "working", label: "等待处理" };
+    if (value.taskState === "running") return { state: "working", label: "处理中" };
     if (value.taskState === "failed") {
       return value.ready
         ? { state: "warning", label: "更新失败" }
-        : { state: "error", label: "下载失败" };
+        : { state: "error", label: "安装失败" };
     }
     if (value.taskState === "cancelled") return { state: "warning", label: "已取消" };
     if (value.ready) return { state: "ready", label: "已安装" };
@@ -770,7 +770,7 @@ export function createPluginSettingsFeature({
       detail,
       progressVisible,
       progress: value.progress,
-      progressLabel: `${field.label || field.key}下载进度`,
+      progressLabel: `${field.label || field.key}处理进度`,
       actions: actionModels,
     });
     return container;
@@ -839,10 +839,10 @@ export function createPluginSettingsFeature({
       const control = document.createElement("div");
       control.className = "plugin-status-control";
       control.append(renderSemanticStatus(value));
-      if (value?.message && value.state !== "ready" && value.state !== "neutral") {
+      if (value?.message) {
         const message = document.createElement("p");
         message.className = "plugin-status-message";
-        renderStatusMessage(message, value);
+        renderStatusMessage(message, value, true);
         control.append(message);
       }
       return control;
@@ -1464,9 +1464,11 @@ export function createPluginSettingsFeature({
       const advancedBody = pluginNode("div", "plugin-settings-advanced-body"); advanced.append(advancedBody);
       const inputs = new Map();
       const conditional = [];
-      (section.fields || []).filter((field) => field !== headerStatusField).forEach((field) => {
+      const pickerFields = new Set((section.actions || []).map(action => action.filePicker?.field).filter(Boolean));
+      (section.fields || []).filter((field) => field !== headerStatusField && !pickerFields.has(field.key)).forEach((field) => {
         const row = document.createElement("div");
         row.className = field.type === "resource" ? "plugin-resource-row" : "form-row";
+        if (field.type === "status") row.classList.add("plugin-status-row");
         if (field.type === "status" && field.placement === "row") {
           row.hidden = pluginFieldValue(plugin, section, field)?.state === "neutral";
         }
@@ -1603,6 +1605,8 @@ export function createPluginSettingsFeature({
   function selectedPluginHasTransientActivity() {
     const plugin = (pluginView?.items || []).find((item) => item.id === pluginState.selectedId);
     return Boolean(plugin && (projectPluginActivity(plugin).isTransient
+      || (pluginSettingsDialog && pluginSettingsSections(plugin).some(section =>
+        section.fields.some(field => field.type === "status")))
       || pluginSettingsSections(plugin).some((section) => (section.fields || []).some(
         (field) => field.type === "status" && pluginFieldValue(plugin, section, field)?.state === "working",
       ))));
@@ -2714,7 +2718,7 @@ export function createPluginSettingsFeature({
         if (!plugin || !pluginState.settingsValues[plugin.id]) return;
         Object.entries(sections || {}).forEach(([sectionId, values]) => {
           if (pluginState.settingsValues[plugin.id][sectionId]) {
-            pluginState.settingsValues[plugin.id][sectionId] = clonePlain(values);
+            Object.assign(pluginState.settingsValues[plugin.id][sectionId], clonePlain(values));
           }
         });
       });
@@ -2992,7 +2996,7 @@ export function createPluginSettingsFeature({
       }
       void editor.close(true);
     });
-    dialog.showModal(); syncPluginSettingsDialog();
+    dialog.showModal(); syncPluginSettingsDialog(); schedulePluginActivityRefresh();
     const target = sectionId && fieldKey ? body.querySelector(
       `[data-plugin-section="${CSS.escape(sectionId)}"] [data-plugin-live-field="${CSS.escape(fieldKey)}"], #${CSS.escape(`voice-field-${plugin.plugin_id}-${sectionId}-${fieldKey}`)}`,
     ) : null;
