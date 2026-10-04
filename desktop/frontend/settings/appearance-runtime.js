@@ -607,8 +607,11 @@ export function createRuntimeAppearanceController({
     onDirty();
   }
 
-  async function rebindGeneration(targetGeneration) {
-    if (disposed || !targetGeneration || targetGeneration === snapshot?.presentation?.generationId) return;
+  async function rebindIdentity(targetGeneration, targetCharacterId) {
+    if (disposed || !targetGeneration || (
+      targetGeneration === snapshot?.presentation?.generationId
+      && targetCharacterId === snapshot?.presentation?.characterId
+    )) return;
     if (rebindPromise) return rebindPromise;
     rebinding = true;
     let restorePreview = false;
@@ -630,7 +633,8 @@ export function createRuntimeAppearanceController({
       while (!disposed && Date.now() < deadline) {
         try {
           const next = validateAppearanceSnapshot(await invoke("settings_character_appearance_get"));
-          if (next.presentation.generationId === targetGeneration) {
+          if (next.presentation.generationId === targetGeneration
+              && next.presentation.characterId === targetCharacterId) {
             applySnapshot(next, { preserveDraft: true });
             restorePreview = Boolean(baseline && stable(draft) !== stable(baseline));
             return;
@@ -698,14 +702,15 @@ export function createRuntimeAppearanceController({
         const lifecycle = await invoke("runtime_lifecycle_snapshot");
         const targetGeneration = lifecycle?.supervisor?.generationId;
         if (typeof targetGeneration === "string" && targetGeneration) {
+          const presentation = lifecycle.characterPresentation;
+          if (presentation?.generationId !== targetGeneration) return;
           if (!snapshot) {
             // Startup migration may take minutes. Observe presentation readiness
             // instead of abandoning initialization after the first failed read.
-            if (lifecycle.characterPresentation?.generationId !== targetGeneration) return;
             const next = await invoke("settings_character_appearance_get");
             if (!disposed && next?.presentation?.generationId === targetGeneration) applySnapshot(next);
           } else {
-            await rebindGeneration(targetGeneration);
+            await rebindIdentity(targetGeneration, presentation.characterId);
           }
         }
       } catch {
@@ -718,7 +723,7 @@ export function createRuntimeAppearanceController({
 
   return Object.freeze({
     initialize,
-    rebindGeneration,
+    rebindIdentity,
     isDirty: () => Boolean(baseline && stable(draft) !== stable(baseline)),
     async save() {
       if (rebindPromise) await rebindPromise;

@@ -278,7 +278,7 @@ export function createCharacterSettingsFeature({
       throw new Error("CHARACTER_SWITCH_IDENTITY_INVALID");
     }
     resetCollectionsForCharacter(lifecycle.characterPresentation?.characterId);
-    await rebindSettings(generationId);
+    await rebindSettings(generationId, lifecycle.characterPresentation.characterId);
     if (disposed) return;
     const snapshot = await rootSettingsClient.charactersGet();
     if (disposed) return;

@@ -691,6 +691,40 @@ for (const firstFinished of ["catalog", "local"]) {
   });
 }
 
+test("same-Core switch forwards the committed character to the appearance controller before unlocking", async () => {
+  const rebinds = [];
+  const scope = {
+    runtimeProviderFeature: null, runtimeToolsController: null,
+    runtimePluginController: null, runtimeVoiceController: null,
+    runtimeAppearanceController: {
+      async rebindIdentity(generationId, characterId) { rebinds.push([generationId, characterId]); },
+    },
+  };
+  const rebindSource = settingsSource.slice(settingsSource.indexOf("async function rebindSettingsAfterCharacterSwitch("),
+    settingsSource.indexOf("\nfunction renderThemeControls("));
+  vm.runInNewContext(rebindSource, scope);
+  const fixture = await characterSettings({ feature: { rebindSettings: scope.rebindSettingsAfterCharacterSwitch } });
+  const { feature, state, handlers, fields, errors } = fixture;
+  try {
+    await select(fixture, "beta");
+    handlers.settings_character_select = () => {
+      state.catalog = catalog(["alpha", "beta"], "beta");
+      state.lifecycle = lifecycle("generation-a", 1, "beta");
+      return {
+        schemaVersion: 1, previousCoreGenerationId: "generation-a", characterChanged: true,
+        targetCharacterId: "beta", snapshot: state.catalog,
+      };
+    };
+    await feature.commit();
+    assert.deepEqual(rebinds, [["generation-a", "beta"]]);
+    assert.equal(feature.currentCharacterId(), "beta");
+    assert.equal(fields["page-appearance"].inert, false);
+    assert.deepEqual(errors, []);
+  } finally {
+    feature.dispose();
+  }
+});
+
 test("character drafts block changing roles and commit submits only the final unblocked selection", async () => {
   const fixture = await characterSettings();
   const { feature, fields, state, calls, handlers, transitions, errors } = fixture;

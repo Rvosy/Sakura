@@ -246,6 +246,99 @@ test("Studio publication merges only edited appearance fields and saves against 
   }
 });
 
+for (const trigger of ["switch-completion", "lifecycle-poll"]) {
+  test(`same-Core character switch refreshes colors and keeps released scale (${trigger})`, async () => {
+    class Control {
+      value = "";
+      listeners = {};
+      parentElement = { querySelector: () => ({ textContent: "" }) };
+      style = { setProperty() {} };
+      addEventListener(type, listener) { this.listeners[type] = listener; }
+      fire(type) { return this.listeners[type]?.({ type, currentTarget: this }); }
+    }
+    const controls = Object.fromEntries([
+      "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
+      "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
+      "themeColors", "visualEffectMode", "resetThemeButton",
+    ].map((id) => [id, new Control()]));
+    const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
+    const document = {
+      getElementById: (id) => controls[id],
+      querySelector: (selector) => themes[selector.match(/data-theme-field="([^"]+)"/)?.[1]],
+    };
+    const snapshots = Object.fromEntries(["Sakura", "Other"].map((characterId) => [characterId, {
+      schemaVersion: 1, windowGeneration: 4, limits,
+      presentation: { generationId: "generation-a", characterId, themeTokens },
+      appearance: { schemaVersion: 1, coreGenerationId: "generation-a", characterId,
+        values: { ...values, portraitScalePercent: 150,
+          themeTokens: { ...themeTokens, primary: characterId === "Other" ? "#abcdef" : themeTokens.primary } } },
+    }]));
+    let currentCharacter = "Sakura", sessionCharacter = "Sakura";
+    let intervalCallback, nextFrame, preview, saved;
+    let visibleScale = 150;
+    const errors = [];
+    const previousWindow = globalThis.window;
+    globalThis.window = {
+      setInterval(callback) { intervalCallback = callback; return 1; },
+      clearInterval() {},
+      requestAnimationFrame(callback) { nextFrame = callback; return 2; },
+      cancelAnimationFrame() { nextFrame = null; },
+    };
+    const controller = createRuntimeAppearanceController({
+      document,
+      invoke: async (command, args) => {
+        const snapshot = snapshots[currentCharacter];
+        if (command === "runtime_lifecycle_snapshot") return {
+          supervisor: { generationId: "generation-a" }, characterPresentation: snapshot.presentation,
+        };
+        if (command === "settings_character_appearance_get") {
+          sessionCharacter = currentCharacter;
+          return snapshot;
+        }
+        if (command === "settings_character_appearance_preview") {
+          preview = { schemaVersion: 1, coreGenerationId: "generation-a", characterId: sessionCharacter, values: args.values };
+        }
+        if (command === "settings_character_appearance_scale_frame") visibleScale = args.portraitScalePercent;
+        if (command === "settings_character_appearance_scale_gesture" && !args.active) {
+          visibleScale = preview?.characterId === currentCharacter
+            ? validatePetAppearancePublication(preview, snapshot.presentation).portraitScalePercent
+            : snapshot.appearance.values.portraitScalePercent;
+        }
+        if (command === "settings_character_appearance_save") {
+          if (sessionCharacter !== currentCharacter) throw new Error("APPEARANCE_SESSION_STALE");
+          saved = { ...snapshot.appearance, values: args.values };
+          return saved;
+        }
+        return {};
+      },
+      onDirty() {}, onError: (error) => errors.push(error), prepare() {},
+      fillTheme(theme) { for (const [id, value] of Object.entries(theme)) themes[id].value = value; },
+    });
+    try {
+      await controller.initialize(snapshots.Sakura);
+      currentCharacter = "Other";
+      if (trigger === "switch-completion") await controller.rebindIdentity("generation-a", "Other");
+      else await intervalCallback();
+      assert.equal(themes.primary_color.value, "#abcdef");
+      assert.equal(controller.isDirty(), false);
+      controls.portraitScale.fire("pointerdown");
+      controls.portraitScale.value = "80";
+      controls.portraitScale.fire("input");
+      nextFrame?.();
+      await controls.portraitScale.fire("pointerup");
+      assert.equal(visibleScale, 80, "the released scale belongs to the active character");
+      await controller.save();
+      assert.equal(saved.characterId, "Other");
+      assert.equal(saved.values.portraitScalePercent, 80);
+      assert.equal(saved.values.themeTokens.primary, "#abcdef");
+      assert.deepEqual(errors, []);
+    } finally {
+      controller.dispose();
+      globalThis.window = previousWindow;
+    }
+  });
+}
+
 test("legacy controls preview, save, retain dirty state on failure, cancel, and reset theme", async () => {
   class Control {
     constructor() {

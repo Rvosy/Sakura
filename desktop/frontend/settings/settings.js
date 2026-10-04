@@ -1002,9 +1002,9 @@ function currentCharacterHasDrafts() {
   });
 }
 
-async function rebindSettingsAfterCharacterSwitch(generationId) {
+async function rebindSettingsAfterCharacterSwitch(generationId, characterId) {
   runtimeProviderFeature?.rebindIdentity(generationId);
-  await runtimeAppearanceController?.rebindGeneration(generationId);
+  await runtimeAppearanceController?.rebindIdentity(generationId, characterId);
   await runtimeToolsController?.refreshCurrent();
   await runtimePluginController?.refreshCurrent();
   await runtimeVoiceController?.refreshCurrent({ preserveDraft: true });
