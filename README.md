@@ -49,6 +49,14 @@ Sakura 是一个可扩展的 AI 桌宠框架。你可以在角色工坊中加入
 
 最近推完水晶社的新作，~~推完自动变成学姐的狗~~，已经变成学姐的形状了，夜里辗转反侧怎么都睡不着。便以学姐的名字 **Sakura** 命名这个项目，开发了这个桌宠 Agent 框架。
 
+## 贡献者
+
+欢迎参与 Sakura 的开发与改进，提交代码前请阅读[贡献指南](.github/CONTRIBUTING.md)。
+
+<a href="https://github.com/Rvosy/Sakura/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Rvosy/Sakura" alt="Sakura 贡献者" />
+</a>
+
 ## 致谢与开源许可说明
 
 Sakura Desktop Pet 的桌宠交互和插件设计参考了多个开源项目。感谢 [Shinsekai](https://github.com/RachelForster/Shinsekai) 及其插件生态，为角色交互、插件扩展和兼容设计提供了参考。
