@@ -60,6 +60,7 @@ class Runtime:
         self.key = None
         self.url = ''
         self.backend = ''
+        self.profile = None
         self.selection_reason = ''
         self.auto_selection = None
         self.emit = log
@@ -94,24 +95,27 @@ class Runtime:
             backend = self.auto_selection[1]
         if backend not in release['backends']:
             raise ValueError('此整合包不支持所选推理后端。')
-        key = (root, backend, config['idleSeconds'], voice['gpt'], voice['sovits'])
+        profile = config['cudaProfile'] if config['backend'] == 'cuda' else None
+        key = (root, backend, profile, config['idleSeconds'], voice['gpt'], voice['sovits'])
         with self.lock:
             if cancel.is_set():
                 raise Cancelled()
             if self.key == key and self.process is not None and self.process.poll() is None:
                 return
             self.stop()
-            self.emit('info', 'SakuraTTS 正在启动服务', backend=backend,
+            self.emit('info', 'SakuraTTS 正在启动服务', backend=backend, profile=profile,
                       gpt_model=Path(voice['gpt']).name, sovits_model=Path(voice['sovits']).name)
             settings = self.directory / 'inference.json'
             settings.write_text(json.dumps({'custom': {'t2s_weights_path': voice['gpt'],
                 'vits_weights_path': voice['sovits'], 'is_half': False},
-                'sakuratts': {'backend': backend}}, ensure_ascii=False), encoding='utf-8')
+                'sakuratts': {'backend': backend, **({'profile': profile} if profile else {})}},
+                ensure_ascii=False), encoding='utf-8')
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', 0))
                 port = sock.getsockname()[1]
             self.url = f'http://127.0.0.1:{port}'
             self.backend = backend
+            self.profile = profile
             self.log = self.directory / 'server.log'
             with self.log.open('wb') as output:
                 self.process = subprocess.Popen(command(root, release, 'serve', '--runtime-mode', 'managed',
@@ -149,7 +153,8 @@ class Runtime:
             with urlopen_direct_for_loopback(request, timeout=timeout) as response:
                 body = response.read()
                 if path == '/tts':
-                    fields = {'backend': self.backend, 'elapsed_ms': round((time.monotonic() - started) * 1000, 1),
+                    fields = {'backend': self.backend, 'profile': self.profile,
+                              'elapsed_ms': round((time.monotonic() - started) * 1000, 1),
                               'bytes': len(body)}
                     for suffix, key in [('Total-Ms', 'engine_total_ms'), ('Request-Ms', 'inference_ms'),
                                         ('Reference-Ms', 'reference_ms'), ('Frontend-Ms', 'frontend_ms'),

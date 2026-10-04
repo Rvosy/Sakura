@@ -185,6 +185,11 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path):
         sections = host.settings_sections('plugin')
         assert [s['sectionId'] for s in sections] == ['overview', 'runtime', 'bundle'], sections
         assert all(s['reasonCode'] == 'READY' for s in sections), sections
+        runtime = next(s for s in sections if s['sectionId'] == 'runtime')
+        precision = next(f for f in runtime['fields'] if f['key'] == 'cudaProfile')
+        assert precision['enabledWhen'] == {'field': 'backend', 'equals': 'cuda', 'hide': True}
+        assert precision['default'] == 'fp16'
+        assert {o['value'] for o in precision['options']} == {'fp16', 'fp32', 'low-memory', 'minimum-memory'}
         section = next(s for s in sections if s['sectionId'] == 'bundle')
         assert section['actions'][0]['filePicker']['field'] == 'bundlePath'
         assert host.call_service('sakura.tts.provider.sakuratts', 'status')['available'] is False
@@ -246,6 +251,42 @@ def test_runtime_busy_is_visible_without_waking_model(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, 'request', request)
     assert runtime.status() == '正在合成'
     assert calls == ['/runtime']
+
+
+def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_path, monkeypatch):
+    from plugins.optional.sakura_sakuratts import _runtime
+    from plugins.optional.sakura_sakuratts.plugin import configuration
+    launches, stopped = [], []
+    def launch(*args, **kwargs):
+        process = SimpleNamespace(poll=lambda: None)
+        launches.append(process)
+        return process
+    monkeypatch.setattr(_runtime.subprocess, 'Popen', launch)
+    monkeypatch.setattr(_runtime, 'terminate_process_tree', lambda process, **kw: stopped.append(process))
+    runtime = _runtime.Runtime(tmp_path / 'data')
+    monkeypatch.setattr(runtime, 'request', lambda *args, **kwargs: {})
+    bundle = tmp_path, {'backends': ['cuda', 'cpu', 'directml', 'mlx']}
+    voice, cancel = {'gpt': 'voice.ckpt', 'sovits': 'voice.pth'}, threading.Event()
+    try:
+        for index, profile in enumerate(('fp16', 'fp32', 'low-memory', 'minimum-memory'), 1):
+            config = configuration({'backend': 'cuda', 'cudaProfile': profile})
+            runtime.start(bundle, config, voice, cancel)
+            runtime.start(bundle, config, voice, cancel)
+            assert len(launches) == index
+            settings = json.loads((runtime.directory / 'inference.json').read_text(encoding='utf-8'))
+            assert settings['sakuratts'] == {'backend': 'cuda', 'profile': profile}
+            assert settings['custom']['is_half'] is False
+            assert len(stopped) == index - 1
+        for backend in ('cpu', 'directml', 'mlx', 'auto'):
+            runtime.auto_selection = tmp_path, 'cuda'
+            runtime.start(bundle, configuration({'backend': backend, 'cudaProfile': 'minimum-memory'}), voice, cancel)
+            settings = json.loads((runtime.directory / 'inference.json').read_text(encoding='utf-8'))
+            assert 'profile' not in settings['sakuratts']
+        assert configuration({'backend': 'cuda'})['cudaProfile'] == 'fp16'
+        with pytest.raises(ValueError, match='档位'):
+            configuration({'cudaProfile': 'invalid'})
+    finally:
+        runtime.stop()
 
 
 def test_runtime_preserves_engine_http_error_details(tmp_path, monkeypatch):

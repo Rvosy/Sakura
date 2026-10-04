@@ -17,13 +17,17 @@ except ImportError:
 
 PROVIDER_ID = 'sakura.tts.sakuratts'
 SERVICE_KEY = 'sakura.tts.provider.sakuratts'
-DEFAULTS = {'backend': 'auto', 'idleSeconds': 60, 'prewake': True}
+DEFAULTS = {'backend': 'auto', 'cudaProfile': 'fp16', 'idleSeconds': 60, 'prewake': True}
+CUDA_PROFILES = [('fp16', 'FP16 标准'), ('fp32', 'FP32 全精度'),
+                 ('low-memory', 'FP16 低显存'), ('minimum-memory', 'FP16 极低显存')]
 
 
 def configuration(values):
     result = {key: values.get(key, value) for key, value in DEFAULTS.items()}
     if result['backend'] not in {'auto', 'cpu', 'cuda', 'directml', 'mlx'}:
         raise ValueError('不支持此推理后端。')
+    if result['cudaProfile'] not in dict(CUDA_PROFILES):
+        raise ValueError('不支持此 NVIDIA 推理档位。')
     if type(result['idleSeconds']) is not int or result['idleSeconds'] < 1:
         raise ValueError('空闲休眠时间必须是正整数。')
     if type(result['prewake']) is not bool:
@@ -290,10 +294,14 @@ class SakuraTTSPlugin:
         surface.register('overview', 'plugin')
         import platform
         options = [('auto', '自动'), ('mlx', 'Apple GPU（MLX）')] if platform.system() == 'Darwin' else [
-            ('auto', '自动'), ('cpu', 'CPU'), ('cuda', 'NVIDIA CUDA'), ('directml', 'AMD / Intel 显卡')]
+            ('auto', '自动'), ('cpu', 'CPU'), ('cuda', 'NVIDIA（英伟达）'), ('directml', 'AMD / Intel 显卡')]
         settings.register({'sectionId': 'runtime', 'title': '运行设置', 'order': 20, 'fields': [
             {'key': 'backend', 'label': '运行设备', 'type': 'select', 'default': 'auto',
              'options': [{'value': value, 'label': label} for value, label in options]},
+            {'key': 'cudaProfile', 'label': '推理精度', 'type': 'select', 'default': DEFAULTS['cudaProfile'],
+             'options': [{'value': value, 'label': label} for value, label in CUDA_PROFILES],
+             'enabledWhen': {'field': 'backend', 'equals': 'cuda', 'hide': True},
+             'description': '低显存档通过分阶段加载模型节省显存，可能增加耗时。首次使用 FP16 需要转换模型。'},
             {'key': 'idleSeconds', 'label': '空闲后休眠（秒）', 'type': 'integer', 'minimum': 1, 'default': 60},
             {'key': 'prewake', 'label': '对话开始时提前唤醒', 'type': 'boolean', 'default': True,
              'description': '利用等待大模型 API 返回的时间，提前加载语音模型。'},
