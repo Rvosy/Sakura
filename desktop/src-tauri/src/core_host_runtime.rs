@@ -1367,6 +1367,7 @@ impl ConcurrentRequestHandle {
             && matches!(
                 name,
                 "asr.input.availability"
+                    | "plugins.settings.get"
                     | "asr.input.poll"
                     | "asr.input.capture_status"
                     | "studio.visual.catalog"
@@ -4535,6 +4536,7 @@ mod tests {
             // Exercise the same producer and real writer without opening a microphone.
             for command in [
                 "asr.input.poll",
+                "plugins.settings.get",
                 "asr.input.capture_status",
                 "studio.visual.catalog",
                 "screen.session",
@@ -4568,7 +4570,11 @@ mod tests {
                 500,
                 Duration::from_millis(500),
             );
-            for command in ["screen.session", "screen_awareness.step"] {
+            for command in [
+                "screen.session",
+                "screen_awareness.step",
+                "plugins.settings.get",
+            ] {
                 handle.log_request_result(
                     "screen-log-rejected",
                     command,
@@ -4593,14 +4599,14 @@ mod tests {
                 .collect();
             assert_eq!(
                 ipc.len(),
-                6,
+                7,
                 "successful polling must not consume viewer history"
             );
-            assert!(ipc[..4]
+            assert!(ipc[..5]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.failed"
                     && record.severity == "warning"));
-            assert!(ipc[4..]
+            assert!(ipc[5..]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.cancelled"
                     && record.severity == "info"));
