@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-10-04
 ---
 
 # Runtime v2 Specs
@@ -28,6 +28,7 @@ updated: 2026-09-22
 
 - [便签记忆](fact-memory.md)
 - [ASR Hub 与点击式语音输入](asr-voice-input.md)
+- [SakuraTTS 插件与设置界面（草案）](sakuratts-plugin.md)
 - [Sakura Plugin API v3（已取代）](sakura-plugin-kernel-v3.md)
 - [Runtime v2 热应用规范](runtime-hot-application.md)
 - [Core 明确失败与手动恢复](WP-3-05-core-crash-ui-rehydration.md)

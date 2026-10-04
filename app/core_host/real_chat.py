@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import re
 import secrets
 import sys
@@ -431,6 +432,13 @@ class RealChatBoundary:
             execution.cancel.throw_if_cancelled()
             stage = "assistant"
             assistant_invoked = True
+            if plugin_application is not None and not is_update_event and source_plugin_id is None:
+                try:
+                    getattr(plugin_application, "emit_event")(
+                        "sakura.host.chat.request.started", {"characterId": str(character.id)},
+                    )
+                except Exception:
+                    logging.getLogger(__name__).warning("对话开始通知未发出", exc_info=True)
             result = assistant.run_turn({"operationId": operation_id, "session": session_descriptor,
                 "turnId": turn_id, "message": message, "event": dict(proactive_event) if proactive_event else None,
                 "historyCursor": history_cursor, "historyNow": history_now.isoformat(),

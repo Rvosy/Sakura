@@ -2333,6 +2333,7 @@ export function createPluginSettingsFeature({
         pluginId: plugin.plugin_id,
         sectionId: section.section_id,
         actionId: action.action_id,
+        filePicker: action.filePicker,
         values: clonePlain(editablePluginSectionValues(
           section,
           pluginSectionValues(plugin.id, section.section_id),
@@ -2651,6 +2652,7 @@ export function createPluginSettingsFeature({
           values: clonePlain(section.values),
           actions: (section.actions || []).map((action) => ({
             action_id: action.actionId,
+            filePicker: action.filePicker,
             label: action.label,
             description: action.description,
             danger: action.danger,

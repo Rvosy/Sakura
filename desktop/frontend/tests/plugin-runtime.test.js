@@ -563,3 +563,19 @@ test("conditional settings preserve hide behavior projected by the host", () => 
   value.plugins[0].sections[0].fields[0].enabledWhen = { field: "running", equals: "ready", hide: true };
   assert.equal(validatePluginSnapshot(value).plugins[0].sections[0].fields[0].enabledWhen.hide, true);
 });
+
+
+test("plugin import forwards native picker metadata and excludes readonly values", async () => {
+  const calls = [];
+  const controller = createPluginController({
+    invoke: async (command, args) => { calls.push([command, args]); return { cancelled: true }; },
+    applySnapshot: () => {}, readDraft: () => ({ enabledById: {}, settingsById: {} }), onDirty: () => {},
+  });
+  controller.initialize(snapshot());
+  const picker = { field: "label", extensions: ["zip", "7z"] };
+  const result = await controller.action({ pluginId: "fixture_plugin", sectionId: "general", actionId: "reset",
+    values: { label: "", running: "ready" }, filePicker: picker });
+  assert.equal(result.cancelled, true);
+  assert.deepEqual(calls[0][1].filePicker, picker);
+  assert.deepEqual(calls[0][1].values, { label: "" });
+});

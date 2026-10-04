@@ -196,3 +196,20 @@ def test_conditional_settings_project_hide_and_isolate_invalid_flags() -> None:
     assert [field["key"] for field in section["fields"]] == ["mode", "conditional"]
     assert section["fields"][1]["enabledWhen"] == {"field": "mode", "equals": "ready", "hide": True}
     assert section["reasonCode"] == "SETTINGS_DESCRIPTOR_INVALID"
+
+
+def test_file_picker_references_only_an_editable_string_field():
+    settings = _SettingsHostService(lambda *_: {})
+    handle = 'cb_' + 'a' * 32
+    settings.call('register', ['fixture', {
+        'sectionId': 'import', 'title': '导入',
+        'fields': [{'key': 'path', 'label': '路径', 'type': 'string', 'default': ''},
+                   {'key': 'status', 'label': '状态', 'type': 'readonly', 'default': ''}],
+        'actions': [
+            {'actionId': 'import', 'label': '导入', 'filePicker': {'field': 'path', 'extensions': ['zip', '7z', 'gz']}},
+            {'actionId': 'invalid', 'label': '无效', 'filePicker': {'field': 'status', 'extensions': ['zip']}},
+        ],
+    }, {'load': handle, 'save': handle, 'actions': {'import': handle, 'invalid': handle}}])
+    section = settings.sections_for_plugin('fixture')[0]
+    assert section['actions'] == [{'actionId': 'import', 'label': '导入', 'description': '', 'danger': False,
+                                  'filePicker': {'field': 'path', 'extensions': ['zip', '7z', 'gz']}}]

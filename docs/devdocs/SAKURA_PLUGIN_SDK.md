@@ -653,6 +653,18 @@ Action ID、回调归属和用户提交的保存或动作参数仍须有效，�
 资源字段通过 `actionIds` 声明它可能使用的 Action。`availableActionIds` 只能从这个集合里选择，用于根据当前
 状态显示“安装”“取消”或“重试”。状态读取不得偷偷联网；联网下载应由用户点击 Action 明确触发。
 
+### 本地文件导入动作
+
+Action 的 `filePicker` 可声明原生文件选择器，例如：
+
+```python
+{"actionId": "importBundle", "label": "导入整合包",
+ "filePicker": {"field": "bundlePath", "extensions": ["zip", "7z", "gz"]}}
+```
+
+`bundlePath` 须是同区块的可编辑 `string` 字段。选择后，所选路径只进入这一次 Action 的 `values`；
+取消不执行 Action，也不保存其他设置草稿。插件负责读取、解压、平台检查和取消后台任务。
+
 ### 提供资源下载与组件总览
 
 下面展示注册方式。`manager` 代表插件自己实现的资源管理器，不是 SDK 内置类；它需要提供快速状态读取、

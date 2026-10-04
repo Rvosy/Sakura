@@ -1165,6 +1165,10 @@ class _SettingsHostService:
         for item in raw_actions:
             try:
                 action = _settings_action(item)
+                if "filePicker" in action:
+                    picker_field = next((field for field in fields if field["key"] == action["filePicker"]["field"]), None)
+                    if picker_field is None or picker_field["type"] != "string" or picker_field["readonly"]:
+                        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
                 if action["actionId"] in declared_action_ids:
                     raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
             except HostServiceError:
@@ -2404,12 +2408,22 @@ def _settings_action(value: object) -> dict[str, Any]:
         or danger is not False
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-    return {
+    result = {
         "actionId": action_id,
         "label": label,
         "description": description,
         "danger": False,
     }
+    if "filePicker" in raw:
+        picker = _mapping(raw["filePicker"], "SETTINGS_DESCRIPTOR_INVALID")
+        field = _bounded_identifier(picker.get("field"), "SETTINGS_DESCRIPTOR_INVALID", 64)
+        extensions = picker.get("extensions")
+        if not isinstance(extensions, list) or not extensions or any(
+            not isinstance(ext, str) or not re.fullmatch(r"[a-z0-9]+", ext) for ext in extensions
+        ):
+            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+        result["filePicker"] = {"field": field, "extensions": extensions}
+    return result
 
 
 def _settings_collection(value: object) -> dict[str, Any]:

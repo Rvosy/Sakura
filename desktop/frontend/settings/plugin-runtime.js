@@ -244,11 +244,11 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         throw error;
       }
     },
-    async action({ pluginId, sectionId, actionId, values }) {
+    async action({ pluginId, sectionId, actionId, values, filePicker }) {
       if (!current) throw new Error("Plugin settings are not initialized");
       const result = await invoke("settings_plugins_action", {
         windowGeneration: current.windowGeneration, coreGenerationId: current.coreGenerationId,
-        pluginId, sectionId, actionId, values: editableValues(current, pluginId, sectionId, clone(values)),
+        pluginId, sectionId, actionId, filePicker: filePicker || null, values: editableValues(current, pluginId, sectionId, clone(values)),
       });
       if (actionId === "sakura.reload") {
         await bindCurrent({ preserveDraft: true });

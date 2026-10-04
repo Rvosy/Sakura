@@ -192,13 +192,42 @@ pub(crate) async fn settings_plugins_action(
     plugin_id: String,
     section_id: String,
     action_id: String,
-    values: Value,
+    mut values: Value,
+    file_picker: Option<Value>,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    if let Some(picker) = file_picker {
+        let field = picker
+            .get("field")
+            .and_then(Value::as_str)
+            .ok_or("SETTINGS_DESCRIPTOR_INVALID")?;
+        let extensions = picker
+            .get("extensions")
+            .and_then(Value::as_array)
+            .ok_or("SETTINGS_DESCRIPTOR_INVALID")?;
+        let extensions: Vec<&str> = extensions
+            .iter()
+            .map(|value| value.as_str().ok_or("SETTINGS_DESCRIPTOR_INVALID"))
+            .collect::<Result<_, _>>()?;
+        let selected = rfd::AsyncFileDialog::new()
+            .set_title("选择文件")
+            .add_filter("支持的文件", &extensions)
+            .pick_file()
+            .await;
+        let Some(selected) = selected else {
+            return Ok(json!({"cancelled": true}));
+        };
+        assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+        let path = selected.path().to_str().ok_or("SETTINGS_VALUES_INVALID")?;
+        values
+            .as_object_mut()
+            .ok_or("SETTINGS_VALUES_INVALID")?
+            .insert(field.to_string(), Value::String(path.to_string()));
+    }
     let response = dispatch_settings_request(
         handle.clone(),
         None,

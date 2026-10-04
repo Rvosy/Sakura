@@ -735,9 +735,11 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
     )
     assert [name for name, _payload in plugin_events] == [
         "message.user",
+        "sakura.host.chat.request.started",
         "message.ai",
         "sakura.host.chat.completed",
     ]
+    assert next(payload for name, payload in plugin_events if name == "sakura.host.chat.request.started") == {"characterId": "sakura"}
     boundary.close()
 
 
@@ -932,7 +934,7 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
     boundary.reserve_send(request)
     boundary.handle_send(request)
 
-    assert plugin_events == ["message.user", "message.ai"]
+    assert plugin_events == ["message.user", "sakura.host.chat.request.started", "message.ai"]
     boundary.close()
 
 
