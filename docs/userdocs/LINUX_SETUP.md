@@ -3,16 +3,23 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-10-03
 ---
 
 # 在 Linux 上使用 Sakura
 
-当前正式 Releases 仍以 Windows 和 macOS 安装包为主。Linux x64 可以从源码构建并运行：准备冻结的 Python Runtime、安装 WebKitGTK 开发包，再编译 Tauri Shell。最低环境是 glibc 2.39 以上的 x86_64，实际构建基线是 Ubuntu 24.04、GTK 3.24 与 WebKitGTK 4.1。
+1.3.1 正式 [Releases](https://github.com/Rvosy/Sakura/releases) 已提供 Linux x64 AppImage 和 DEB。普通使用优先下载完整包；只有开发或需要自行构建时，才准备冻结的 Python Runtime 和 Tauri 编译环境。最低环境是 glibc 2.39 以上的 x86_64，构建基线是 Ubuntu 24.04、GTK 3.24 与 WebKitGTK 4.1。
 
 X11 与 XWayland 支持桌宠绝对定位。纯 Wayland 会话里，Sakura 会优先切到 X11 后端；若桌面环境不允许绝对定位，窗口仍可缩放和点击穿透，但最终位置由合成器决定。
 
-## 系统依赖
+## 安装正式包
+
+- **AppImage**：下载文件后，在文件属性中允许作为程序执行，再打开。终端也可运行 `chmod +x Sakura-*.AppImage` 后执行对应文件。
+- **DEB**：Ubuntu/Debian 用户可通过系统软件安装器打开，也可在下载目录执行 `sudo apt install ./Sakura-*-linux-x64.deb`，由包管理器处理依赖。
+
+首次设置见[安装与首次配置](SETUP.md#第一次启动)。完整包包含 Python Runtime，不需要运行源码的安装脚本。
+
+## 源码构建依赖
 
 在 Ubuntu 24.04 上安装编译 Tauri Shell 所需的开发包：
 
@@ -62,9 +69,9 @@ Linux 使用 GTK 输入区域实现点击穿透：只有立绘和可见控件接
 1. 安装本地组件，或先启动已有语音服务；
 2. 打开“设置 → 语音”；
 3. 选择引擎；使用已有服务时填写地址；
-4. 点击“测试语音”，成功后保存。
+4. 确认服务和角色语音资源就绪后，开启“开口说话”并应用。
 
-GPT-SoVITS 本身不需要聊天用的 API Key。它通过 HTTP 调用本机或局域网里的合成服务（默认 `http://127.0.0.1:9880/tts`）。没有本地服务时，关掉“启用角色语音”即可，聊天不受影响。对话模型仍要在“模型服务”页配置 API Key。
+GPT-SoVITS 本身不需要聊天用的 API Key。它通过 HTTP 调用本机或局域网里的合成服务（默认 `http://127.0.0.1:9880/tts`）。没有本地服务时，关掉“开口说话”即可，聊天不受影响。对话模型的连接信息仍需在“模型服务”页配置，见 [API 配置](API_CONFIG.md)。
 
 本地引擎与 Sakura 可以使用不同的 Python 环境，只要通过 HTTP 通信。
 

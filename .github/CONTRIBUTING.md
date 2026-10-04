@@ -58,6 +58,12 @@ bash scripts/start.sh
 
 Windows 的 `scripts\start.bat` 与 macOS/Linux 的 `scripts/start.sh` 都会增量编译并启动 debug Shell。
 
+源码安装脚本和 Windows 本地打包默认使用阿里云 PyPI 镜像。可通过 `PIP_INDEX_URL` 指定其他源；插件依赖安装也支持 `UV_DEFAULT_INDEX`。这些设置只影响本次启动的安装进程，不写入系统 pip 配置。
+
+## 源码角色目录
+
+从源码运行时，也可以把现成的角色目录放到仓库根下的 `base_characters/`（历史拼写 `base_charaters/` 同样有效）。Core 会扫描其中直接含有 `.char` / `.card.char` 的文件夹，包括像 `角色包/` 这样的嵌套目录。0.9.5 之后立绘和语音是分开的：同一角色若同时存在旧的整包 `.char` 和 `.card.char` + `.voice`，只导入后一种。已有逻辑 ID 不会重复导入。在设置中删除的种子角色不会随重启恢复，需要时可手动重新导入。发行包仍然不附带默认角色。
+
 ## 本地打包
 
 准备好 `runtime/`、Rust 和 Node.js 后，在 Windows 仓库根目录运行 `scripts\package.bat`。产物位于

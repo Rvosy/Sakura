@@ -108,4 +108,4 @@ MCP 配置生成代码，但没有生产调用点。因此，不能将缺配置�
 - [ADR-0037：官方功能作为可替换默认插件](0037-replaceable-default-plugins-and-isolated-python-runtimes.md)
 - [Plugin API v4](../specs/runtime-v2/sakura-plugin-runtime-v4.md)
 - [当前 MCP 生命周期与工具调用规范](../specs/runtime-v2/WP-4-03-mcp-lifecycle-tool-parity.md)
-- [MCP 用户文档](../userdocs/RUNTIME_V2_MCP.md)
+- [MCP 用户文档](../userdocs/RUNTIME_V2_PLUGINS.md#mcp-基础组件)

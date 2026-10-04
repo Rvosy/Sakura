@@ -3,37 +3,20 @@ kind: index
 status: current
 audience: all
 source_of_truth: self
-updated: 2026-09-24
+updated: 2026-10-03
 ---
 
-# Sakura documentation
+# Sakura Desktop Pet
 
-The user guides are maintained in Chinese. Start with the installation guide, then open the guide for the feature you need.
+Sakura is an extensible AI desktop-pet framework. Create a pet from a character you like: add artwork, personality, expressions, and optional voice resources in the character studio, then export a character package to share.
 
-## Use Sakura
+When screen awareness is enabled, Sakura periodically captures the screen and lets your configured model decide whether to speak. It requires an image-capable model and screen-capture permission; screenshots are sent to that model service. Voice, memory, and other capabilities are available through plugins.
 
-- [Changelog](CHANGELOG.md)
-- [Installation and first-time setup](userdocs/SETUP.md)
-- [API providers and models](userdocs/API_CONFIG.md)
-- [Chat, screenshots, and screen awareness](userdocs/CHAT_SCREEN_AND_CONTEXT.md)
-- [Data and storage](userdocs/RUNTIME_V2_STORAGE.md)
-- [Web search and page reading](userdocs/WEB_SEARCH.md)
-- [Usage statistics and error reports](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
-- [macOS guide](userdocs/MACOS_SETUP.md)
-- [Linux guide](userdocs/LINUX_SETUP.md)
-- [Window interaction](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
-- [Appearance](userdocs/RUNTIME_V2_APPEARANCE.md)
-- [MCP component](userdocs/RUNTIME_V2_MCP.md)
-- [Python plugins](userdocs/RUNTIME_V2_PLUGINS.md)
-- [Logs and troubleshooting](userdocs/RUNTIME_LOG_TROUBLESHOOTING.md)
+The detailed guides are maintained in Chinese:
 
-## Develop and extend Sakura
+- [Installation and configuration](userdocs/SETUP.md), with screenshots
+- [User documentation](userdocs/README.md), for settings and troubleshooting
+- [Plugin API v4](devdocs/SAKURA_PLUGIN_SDK.md), for extension authors
+- [Developer documentation](devdocs/README.md), for the framework and its architecture
 
-- [Developer documentation](devdocs/README.md)
-- [Technical architecture](devdocs/TECHNICAL_README.md)
-- [Plugin API v4 guide](devdocs/SAKURA_PLUGIN_SDK.md)
-- [Contributing guide](../.github/CONTRIBUTING.en.md)
-
-The `specs`, `adr`, `plans`, `records`, and `archive` directories contain maintainer contracts and engineering records. They are not required for normal installation or use.
-
-[中文文档](README.md) · [Project README](../README.md)
+[Changelog](CHANGELOG.md) · [Contributing](../.github/CONTRIBUTING.en.md) · [中文](README.md)

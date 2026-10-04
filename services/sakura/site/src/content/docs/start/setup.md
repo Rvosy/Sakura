@@ -1,15 +1,10 @@
 ---
 title: 安装与配置
-description: 下载 Sakura 并完成角色、模型和可选插件设置。
+description: 下载 Sakura，导入角色并配置模型服务。
 ---
 
-从 [Releases](https://github.com/Rvosy/Sakura/releases) 下载对应平台的完整安装包。Windows Setup 直接安装，Portable ZIP 解压后运行 `sakura.exe`；macOS 的打开方式见 [macOS 指南](/platform/macos/)。
+[打开图文配置教程](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/SETUP.md)，按顺序选择安装包、导入角色、添加模型服务。语音、记忆和其他插件可以随后按需配置。
 
-首次启动时导入 `.char` 角色包，再添加模型服务并选择对话模型。发送一条普通消息确认能回复；需要截图时，再配置支持图片输入的视觉模型。
+教程中的配置截图来自 1.3.1 Linux 正式版，包含 Windows、macOS 和 Linux 的安装入口。
 
-语音、长期记忆、语音输入、Spine 形态和手机网页端通过可选插件安装。模型、服务组件和插件配置按对应指南准备。
-
-- [完整安装、源码运行与升级指南](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/SETUP.md)
-- [模型服务配置](/start/api-config/)
-- [插件安装与升级](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/RUNTIME_V2_PLUGINS.md)
-- [运行日志与故障排查](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/RUNTIME_LOG_TROUBLESHOOTING.md)
+已有安装需要更新或迁移时，查看[数据与存储](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/RUNTIME_V2_STORAGE.md)。其他设置和故障排查见[用户文档](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/README.md)。
