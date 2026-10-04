@@ -67,10 +67,10 @@ def assistant_dependencies():
             continue
         if spec.submodule_search_locations:
             source = Path(next(iter(spec.submodule_search_locations)))
-            shutil.copytree(source, root / source.name, copy_function=os.link, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(source, root / source.name, ignore=shutil.ignore_patterns("__pycache__"))
         else:
             source = Path(spec.origin)
-            os.link(source, root / source.name)
+            shutil.copy2(source, root / source.name)
     try:
         yield root
     finally:
