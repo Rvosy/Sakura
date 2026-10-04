@@ -9,11 +9,38 @@ import zipfile
 import pytest
 
 from plugins.optional.sakura_sakuratts._bundle import BundleStore, unpack
-from plugins.optional.sakura_sakuratts.plugin import Provider
+from plugins.optional.sakura_sakuratts.plugin import Provider, character_voice
 from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
+
+
+def test_voice_reads_studio_resources_without_private_extension_or_manifest_writes(tmp_path):
+    from app.core_host.plugin_character import PluginCharacterStore
+    package = tmp_path / 'physical-character-directory'
+    package.mkdir()
+    (package / 'refs.txt').write_text('neutral.wav|JA|neutral|中性\nhappy.wav|JA|happy|开心', encoding='utf-8')
+    for name in ('voice.ckpt', 'voice.pth', 'override.ckpt', 'neutral.wav', 'happy.wav'):
+        (package / name).write_bytes(b'fixture')
+    manifest = package / 'character.json'
+    manifest.write_text(json.dumps({'extensions': {'sakura.tts.gpt-sovits': {
+        'toneRefs': 'refs.txt', 'gptModel': 'voice.ckpt', 'sovitsModel': 'voice.pth', 'textLang': 'ja'}}}), encoding='utf-8')
+    store = PluginCharacterStore(tmp_path)
+    store._manifest_paths['logical-id'] = manifest
+    character = SimpleNamespace(get=lambda cid: store.get('sakura.tts.sakuratts', cid),
+                                resolve_resource=store.resolve_resource)
+    original = manifest.read_bytes()
+    voice = character_voice(character, 'logical-id', '开心')
+    assert voice['gpt'] == str(package / 'voice.ckpt')
+    assert voice['sovits'] == str(package / 'voice.pth')
+    assert voice['ref_audio_path'] == str(package / 'happy.wav')
+    assert voice['prompt_lang'] == 'ja'
+    assert voice['prompt_text'] == 'happy'
+    assert character_voice(character, 'logical-id', 'unknown')['ref_audio_path'] == str(package / 'neutral.wav')
+    assert manifest.read_bytes() == original
+    store.update('sakura.tts.sakuratts', 'logical-id', {'gptModel': 'override.ckpt'})
+    assert character_voice(character, 'logical-id')['gpt'] == str(package / 'override.ckpt')
 
 
 def bundle_archive(path, version='one', target='macos-arm64'):
@@ -66,8 +93,10 @@ def test_archive_paths_cannot_escape_installation(tmp_path):
 
 def provider(tmp_path, monkeypatch):
     released = []
+    logger = SimpleNamespace(**{level: lambda *_args, **_kwargs: True for level in ('debug', 'info', 'warning', 'error')})
     services = {'sakura.host.character': object(), 'sakura.tts': SimpleNamespace(status=lambda _: {
         'enabled': True, 'providerId': 'sakura.tts.sakuratts'}),
+        'sakura.host.logging': logger,
         'sakura.host.artifacts': SimpleNamespace(allocate=lambda _: {'artifactId': 'audio', 'path': str(tmp_path/'audio.wav')},
             release=released.append, commit=lambda _: {'artifactId': 'audio'})}
     context = SimpleNamespace(get=services.get, data_path=lambda _: str(tmp_path),
@@ -89,16 +118,17 @@ def test_prewake_only_for_selected_enabled_conversation(tmp_path, monkeypatch):
         assert calls == []
         p.on_chat({'characterId': 'character'})
         p.executor.submit(lambda: None).result(3)
-        assert calls == ['start', ('/runtime/wake', {'keep_alive_seconds': 0})]
+        assert calls == ['start', ('/runtime/wake', {'keep_alive_seconds': 0}),
+                         ('/set_refer_audio?refer_audio_path=a.wav',)]
         p.config['prewake'] = False
         p.on_chat({'characterId': 'character'})
         p.executor.submit(lambda: None).result(3)
-        assert len(calls) == 2
+        assert len(calls) == 3
         p.config['prewake'] = True
         p.hub.status = lambda _: {'enabled': False, 'providerId': 'sakura.tts.sakuratts'}
         p.on_chat({'characterId': 'character'})
         p.executor.submit(lambda: None).result(3)
-        assert len(calls) == 2
+        assert len(calls) == 3
     finally:
         p.close()
 
@@ -153,7 +183,7 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path):
         plugin = next(p for p in snapshot['plugins'] if p['pluginId'] == 'sakura.tts.sakuratts')
         assert plugin['state'] == 'active', plugin
         sections = host.settings_sections('plugin')
-        assert {s['sectionId'] for s in sections} == {'bundle', 'runtime'}, sections
+        assert [s['sectionId'] for s in sections] == ['overview', 'runtime', 'bundle'], sections
         assert all(s['reasonCode'] == 'READY' for s in sections), sections
         section = next(s for s in sections if s['sectionId'] == 'bundle')
         assert section['actions'][0]['filePicker']['field'] == 'bundlePath'
@@ -183,3 +213,84 @@ def test_closed_installer_cannot_start_another_import(tmp_path):
     with pytest.raises(RuntimeError, match='停止'):
         store.start({'bundlePath': str(archive)})
     assert store.thread is None
+
+
+def test_engine_state_distinguishes_on_demand_start_failure_and_sleep(tmp_path, monkeypatch):
+    p, _ = provider(tmp_path, monkeypatch)
+    try:
+        assert p.engine_state()['state'] == 'ready'
+        assert p.runtime.process is None
+        p.wake = threading.Event()
+        assert p.engine_state()['state'] == 'working'
+        p.wake = None
+        p.record_error(RuntimeError('runtime failed'))
+        assert p.engine_state()['state'] == 'error'
+        p.publish(lambda: None)
+        assert p.engine_state()['state'] == 'ready'
+        monkeypatch.setattr(p.runtime, 'status', lambda: '已休眠')
+        assert p.engine_state()['state'] == 'ready'
+        monkeypatch.setattr(p.bundle, 'current', lambda: None)
+        assert p.engine_state()['state'] == 'warning'
+    finally:
+        p.close()
+
+
+def test_runtime_busy_is_visible_without_waking_model(tmp_path, monkeypatch):
+    from plugins.optional.sakura_sakuratts._runtime import Runtime
+    runtime = Runtime(tmp_path)
+    runtime.process = SimpleNamespace(poll=lambda: None)
+    calls = []
+    def request(path, **kwargs):
+        calls.append(path)
+        return {'state': 'awake', 'busy': True}
+    monkeypatch.setattr(runtime, 'request', request)
+    assert runtime.status() == '正在合成'
+    assert calls == ['/runtime']
+
+
+def test_runtime_preserves_engine_http_error_details(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+    from plugins.optional.sakura_sakuratts._runtime import Runtime
+    response = io.BytesIO(json.dumps({'message': 'tts failed', 'Exception': 'DLL load failed: path too long'}).encode())
+    def fail(*args, **kwargs):
+        raise HTTPError('http://127.0.0.1/tts', 400, 'Bad Request', {}, response)
+    monkeypatch.setattr('plugins.optional.sakura_sakuratts._runtime.urlopen_direct_for_loopback', fail)
+    runtime = Runtime(tmp_path)
+    runtime.url = 'http://127.0.0.1'
+    with pytest.raises(RuntimeError, match='DLL load failed: path too long'):
+        runtime.request('/tts', {'text': 'test'})
+    assert response.closed
+
+
+def test_synthesis_metrics_use_host_tts_log_without_text_or_prompt(tmp_path, monkeypatch):
+    from plugins.optional.sakura_sakuratts._runtime import Runtime
+    from app.core_host.plugin_host_services import _LoggingHostService
+    from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
+    records = []
+    monkeypatch.setattr('app.core_host.plugin_host_services.log_message',
+        lambda severity, message, **fields: records.append((severity, message, fields)))
+    def emit(level, message, **fields):
+        caller = HOST_CALLER.set('sakura.tts.sakuratts')
+        metadata = HOST_CALLER_LOG_METADATA.set(('SakuraTTS', ('sakura.tts.provider.sakuratts',)))
+        try:
+            _LoggingHostService().call('emit', [[{'severity': level, 'message': message, 'fields': fields}], 0])
+        finally:
+            HOST_CALLER.reset(caller)
+            HOST_CALLER_LOG_METADATA.reset(metadata)
+    response = io.BytesIO(b'wav-fixture')
+    response.headers = {'X-SakuraTTS-Reference-Ms': '1400', 'X-SakuraTTS-Semantic-Ms': '700',
+        'X-SakuraTTS-Acoustic-Ms': '400', 'X-SakuraTTS-Audio-Seconds': '11.5',
+        'X-SakuraTTS-Reference-Cache': 'miss', 'X-SakuraTTS-Frontend-Ms': 'nan'}
+    monkeypatch.setattr('plugins.optional.sakura_sakuratts._runtime.urlopen_direct_for_loopback', lambda *_args, **_kw: response)
+    runtime = Runtime(tmp_path, emit)
+    runtime.url, runtime.backend = 'http://127.0.0.1', 'cuda'
+    assert runtime.request('/tts', {'text': 'private body', 'prompt_text': 'private reference'}) == b'wav-fixture'
+    record = records[-1][2]
+    assert record['component'] == 'tts'
+    assert record['plugin_id'] == 'sakura.tts.sakuratts'
+    assert record['fields']['reference_ms'] == 1400
+    assert record['fields']['gpt_ms'] == 700
+    assert record['fields']['sovits_ms'] == 400
+    assert record['fields']['reference_cache'] == 'miss'
+    assert 'frontend_ms' not in record['fields']
+    assert 'private' not in json.dumps(records)

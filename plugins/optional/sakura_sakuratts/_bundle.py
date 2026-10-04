@@ -179,7 +179,7 @@ class BundleStore:
             # publish serializes against synthesis and configuration changes.
             self.publish(lambda: self._activate(root))
             published = True
-            self.state, self.message = 'succeeded', '整合包已安装'
+            self.state, self.message = 'succeeded', ''
         except Cancelled:
             self.state, self.message = 'cancelled', '导入已取消'
         except Exception as error:

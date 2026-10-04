@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import socket
 import subprocess
 import threading
 import time
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from sakura_http import urlopen_direct_for_loopback
@@ -51,7 +52,7 @@ def probe(root, release, cancel, backend=None, cache=None):
 
 
 class Runtime:
-    def __init__(self, directory):
+    def __init__(self, directory, log=lambda *_args, **_fields: None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -61,6 +62,7 @@ class Runtime:
         self.backend = ''
         self.selection_reason = ''
         self.auto_selection = None
+        self.emit = log
 
     def stop(self):
         with self.lock:
@@ -70,6 +72,7 @@ class Runtime:
             self.key = None
 
     def start(self, bundle, config, voice, cancel):
+        started = time.monotonic()
         root, release = bundle
         backend = config['backend']
         if backend == 'auto':
@@ -85,6 +88,7 @@ class Runtime:
                     except Exception as error:
                         selected = 'cpu'
                         self.selection_reason = 'NVIDIA 检查未通过，使用 CPU。'
+                        self.emit('warning', self.selection_reason, stage='backend_check', diagnostic=str(error))
                         (self.directory / 'backend-check.log').write_text(str(error), encoding='utf-8')
                 self.auto_selection = root, selected
             backend = self.auto_selection[1]
@@ -97,6 +101,8 @@ class Runtime:
             if self.key == key and self.process is not None and self.process.poll() is None:
                 return
             self.stop()
+            self.emit('info', 'SakuraTTS 正在启动服务', backend=backend,
+                      gpt_model=Path(voice['gpt']).name, sovits_model=Path(voice['sovits']).name)
             settings = self.directory / 'inference.json'
             settings.write_text(json.dumps({'custom': {'t2s_weights_path': voice['gpt'],
                 'vits_weights_path': voice['sovits'], 'is_half': False},
@@ -124,6 +130,8 @@ class Runtime:
                     raise RuntimeError(self.log.read_text(encoding='utf-8', errors='replace')[-4000:])
                 try:
                     self.request('/health', timeout=1)
+                    self.emit('info', 'SakuraTTS 服务已就绪', backend=backend,
+                              elapsed_ms=round((time.monotonic() - started) * 1000, 1))
                     return
                 except (URLError, TimeoutError, ConnectionError):
                     if time.monotonic() >= deadline:
@@ -134,11 +142,44 @@ class Runtime:
             raise
 
     def request(self, path, data=None, timeout=300):
+        started = time.monotonic()
         request = Request(self.url + path, data=None if data is None else json.dumps(data).encode(),
                           headers={'Content-Type': 'application/json'})
-        with urlopen_direct_for_loopback(request, timeout=timeout) as response:
-            body = response.read()
-            return body if path == '/tts' else json.loads(body)
+        try:
+            with urlopen_direct_for_loopback(request, timeout=timeout) as response:
+                body = response.read()
+                if path == '/tts':
+                    fields = {'backend': self.backend, 'elapsed_ms': round((time.monotonic() - started) * 1000, 1),
+                              'bytes': len(body)}
+                    for suffix, key in [('Total-Ms', 'engine_total_ms'), ('Request-Ms', 'inference_ms'),
+                                        ('Reference-Ms', 'reference_ms'), ('Frontend-Ms', 'frontend_ms'),
+                                        ('Semantic-Ms', 'gpt_ms'), ('Acoustic-Ms', 'sovits_ms'),
+                                        ('Audio-Seconds', 'audio_seconds')]:
+                        value = response.headers.get('X-SakuraTTS-' + suffix)
+                        if value is not None:
+                            try:
+                                number = float(value)
+                            except ValueError:
+                                continue
+                            if math.isfinite(number) and number >= 0:
+                                fields[key] = round(number, 3)
+                    cache = response.headers.get('X-SakuraTTS-Reference-Cache')
+                    if cache in {'memory', 'disk', 'package', 'miss'}:
+                        fields['reference_cache'] = cache
+                    if fields.get('audio_seconds'):
+                        fields['rtf'] = round(fields['elapsed_ms'] / 1000 / fields['audio_seconds'], 3)
+                    self.emit('info', 'SakuraTTS 合成耗时', **fields)
+                return body if path == '/tts' else json.loads(body)
+        except HTTPError as error:
+            with error:
+                body = error.read().decode('utf-8', errors='replace')
+            try:
+                failure = json.loads(body)
+            except ValueError:
+                detail = body.strip()
+            else:
+                detail = '；'.join(str(failure[key]) for key in ('message', 'Exception') if failure.get(key)) if isinstance(failure, dict) else str(failure)
+            raise RuntimeError(f'SakuraTTS HTTP {error.code}：{detail or error.reason}') from error
 
     def status(self):
         with self.lock:
@@ -147,6 +188,8 @@ class Runtime:
             return '未启动'
         try:
             state = self.request('/runtime', timeout=1)
+            if state.get('busy'):
+                return '正在合成'
             return {'sleeping': '已休眠', 'awake': '就绪', 'failed': '启动失败', 'stopping': '正在休眠', 'ready': '就绪', 'waking': '正在唤醒',
                     'preparing': '正在准备', 'busy': '正在合成'}.get(state.get('state'), state.get('state', '运行中'))
         except (URLError, TimeoutError, ConnectionError):

@@ -10,6 +10,7 @@ priority: 110
 provides:
   - sakura.tts.provider.sakuratts
 requires:
+  - sakura.host.logging
   - sakura.tts
   - sakura.host.artifacts
   - sakura.host.character

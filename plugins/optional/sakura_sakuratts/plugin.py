@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 import threading
+import time
 import uuid
+from urllib.parse import urlencode
 
 try:
     from ._bundle import BundleStore, Cancelled
@@ -29,7 +32,13 @@ def configuration(values):
 
 
 def character_voice(character, character_id, tone='中性'):
-    extension = character.get(character_id)
+    manifest_path = character.resolve_resource(character_id, 'character.json')
+    manifest = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
+    extension = dict(manifest.get('extensions', {}).get('sakura.tts.gpt-sovits', {}))
+    extension.update(character.get(character_id))
+    for key, label in (('toneRefs', '参考音频表'), ('gptModel', 'GPT 模型'), ('sovitsModel', 'SoVITS 模型')):
+        if not extension.get(key):
+            raise ValueError(f'角色尚未配置{label}，请在角色工作室中添加。')
     resolve = lambda key: str(character.resolve_resource(character_id, extension[key]))
     references = []
     for line in Path(resolve('toneRefs')).read_text(encoding='utf-8-sig').splitlines():
@@ -55,8 +64,9 @@ class Provider:
         self.character = context.get('sakura.host.character')
         self.artifacts = context.get('sakura.host.artifacts')
         self.hub = context.get('sakura.tts')
+        self.logger = context.get('sakura.host.logging')
         self.directory = Path(context.data_path('.'))
-        self.runtime = Runtime(self.directory / 'runtime-data')
+        self.runtime = Runtime(self.directory / 'runtime-data', self.log)
         self.config = configuration(context.config.get())
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='sakuratts')
         self.lock = threading.RLock()
@@ -67,11 +77,33 @@ class Provider:
         self.error = ''
         self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish)
 
+    def log(self, level, message, **fields):
+        getattr(self.logger, level)(message, fields=fields)
+
     def publish(self, activate):
         def switch():
             self.runtime.stop()
             activate()
+            self.error = ''
         self.executor.submit(switch).result()
+
+    def engine_state(self):
+        if not self.bundle.current():
+            return {'state': 'warning', 'label': '未安装运行环境', 'message': '请先导入整合包。'}
+        if self.error:
+            return {'state': 'error', 'label': '语音运行失败', 'message': self.error[-240:]}
+        label = self.runtime.status()
+        if label == '未启动':
+            if self.active is not None or self.wake is not None:
+                return {'state': 'working', 'label': '正在加载', 'message': ''}
+            return {'state': 'ready', 'label': '未加载', 'message': '首次合成时自动加载模型。'}
+        working = label in {'连接中', '正在唤醒', '正在准备', '正在合成', '正在休眠'}
+        message = '模型资源已释放，下次合成自动加载。' if label == '已休眠' else self.runtime.selection_reason
+        label = {'已休眠': '已卸载', '就绪': '已加载', '正在唤醒': '正在加载', '正在休眠': '正在卸载'}.get(label, label)
+        backend_label = {'directml': 'AMD / Intel 显卡'}.get(self.runtime.backend, self.runtime.backend.upper())
+        return {'state': 'working' if working else 'error' if label == '启动失败' else 'ready',
+                'label': label + (f' · {backend_label}' if backend_label else ''),
+                'message': message}
 
     def status(self):
         available = self.bundle.current() is not None
@@ -95,11 +127,18 @@ class Provider:
             self.executor.submit(self._prewake, character_id, cancel)
 
     def _prewake(self, character_id, cancel):
+        started = time.monotonic()
         try:
+            self.error = ''
             voice = character_voice(self.character, character_id)
             self.runtime.start(self.bundle.current(), self.config, voice, cancel)
             if not cancel.is_set():
+                self.log('info', 'SakuraTTS 正在提前加载模型', backend=self.runtime.backend)
                 self.runtime.request('/runtime/wake', {'keep_alive_seconds': 0})
+                self.log('info', 'SakuraTTS 正在准备默认参考音频', reference_audio=Path(voice['ref_audio_path']).name)
+                self.runtime.request('/set_refer_audio?' + urlencode({'refer_audio_path': voice['ref_audio_path']}))
+                self.log('info', 'SakuraTTS 模型与默认参考音频已就绪', backend=self.runtime.backend,
+                         elapsed_ms=round((time.monotonic() - started) * 1000, 1))
         except Cancelled:
             pass
         except Exception as error:
@@ -111,6 +150,7 @@ class Provider:
 
     def record_error(self, error):
         self.error = str(error)
+        self.log('error', 'SakuraTTS 运行失败', diagnostic=self.error, error_type=type(error).__name__)
         (self.directory / 'last-error.log').write_text(self.error, encoding='utf-8')
 
     def begin(self, request):
@@ -118,13 +158,15 @@ class Provider:
             if self.closed or not self.bundle.current():
                 return {'errorCode': 'TTS_RUNTIME_NOT_INSTALLED'}
             try:
+                self.error = ''
                 voice = character_voice(self.character, request['characterId'], request.get('options', {}).get('tone', '中性'))
             except Exception as error:
                 self.record_error(error)
                 return {'errorCode': 'TTS_CHARACTER_CONFIG_INVALID'}
             allocation = self.artifacts.allocate({'mediaType': 'audio/wav', 'suffix': '.wav'})
             job_id = 'job_' + uuid.uuid4().hex
-            job = {'state': 'running', 'cancel': threading.Event(), 'allocation': allocation, 'released': False}
+            job = {'state': 'running', 'cancel': threading.Event(), 'allocation': allocation, 'released': False,
+                   'queued_at': time.monotonic()}
             self.jobs[job_id] = job
             self.executor.submit(self._synthesize, job, request, voice)
             return job_id
@@ -140,9 +182,12 @@ class Provider:
                 if job['cancel'].is_set():
                     raise Cancelled()
                 self.active = job
+            queue_ms = round((time.monotonic() - job['queued_at']) * 1000, 1)
             self.runtime.start(self.bundle.current(), self.config, voice, job['cancel'])
             payload = {key: voice[key] for key in ('text_lang', 'ref_audio_path', 'prompt_lang', 'prompt_text')}
             payload.update(text=request['text'], parallel_infer=False, streaming_mode=False, media_type='wav')
+            self.log('info', 'SakuraTTS 开始合成', backend=self.runtime.backend, text_chars=len(request['text']),
+                     reference_audio=Path(voice['ref_audio_path']).name, language=voice['text_lang'], queue_ms=queue_ms)
             audio = self.runtime.request('/tts', payload)
             with self.lock:
                 if job['cancel'].is_set():
@@ -150,12 +195,16 @@ class Provider:
                 Path(job['allocation']['path']).write_bytes(audio)
                 job['state'] = 'succeeded'
         except Cancelled:
+            self.log('info', 'SakuraTTS 合成已取消')
             with self.lock:
                 job['state'] = 'cancelled'
         except Exception as error:
-            self.record_error(error)
             with self.lock:
                 job['state'] = 'cancelled' if job['cancel'].is_set() else 'failed'
+            if job['state'] == 'cancelled':
+                self.log('info', 'SakuraTTS 合成已取消')
+            else:
+                self.record_error(error)
         finally:
             with self.lock:
                 if self.active is job:
@@ -234,28 +283,29 @@ class SakuraTTSPlugin:
         context.on('sakura.host.chat.request.started', provider.on_chat)
         settings = context.get('sakura.host.settings')
         surface = context.get('sakura.host.settings.surface-v0')
-        settings.register({'sectionId': 'bundle', 'title': '运行环境', 'fields': [
+        settings.register({'sectionId': 'overview', 'title': '运行状态', 'order': 10, 'fields': [
+            {'key': 'engineState', 'label': '语音引擎', 'type': 'status', 'placement': 'row',
+             'default': provider.engine_state()},
+        ]}, load=lambda: {'engineState': provider.engine_state()}, save=lambda values: None)
+        surface.register('overview', 'plugin')
+        import platform
+        options = [('auto', '自动'), ('mlx', 'Apple GPU（MLX）')] if platform.system() == 'Darwin' else [
+            ('auto', '自动'), ('cpu', 'CPU'), ('cuda', 'NVIDIA CUDA'), ('directml', 'AMD / Intel 显卡')]
+        settings.register({'sectionId': 'runtime', 'title': '运行设置', 'order': 20, 'fields': [
+            {'key': 'backend', 'label': '运行设备', 'type': 'select', 'default': 'auto',
+             'options': [{'value': value, 'label': label} for value, label in options]},
+            {'key': 'idleSeconds', 'label': '空闲后休眠（秒）', 'type': 'integer', 'minimum': 1, 'default': 60},
+            {'key': 'prewake', 'label': '对话开始时提前唤醒', 'type': 'boolean', 'default': True,
+             'description': '利用等待大模型 API 返回的时间，提前加载语音模型。'},
+        ]}, load=lambda: provider.config, save=lambda values: context.config.update(configuration(values)))
+        surface.register('runtime', 'plugin')
+        settings.register({'sectionId': 'bundle', 'title': '本地运行环境', 'order': 30, 'fields': [
             {'key': 'bundle', 'label': 'SakuraTTS 整合包', 'type': 'resource',
              'actionIds': ['importBundle', 'cancelImport'], 'default': provider.bundle.load()['bundle']},
-            {'key': 'bundlePath', 'label': '本地整合包路径', 'type': 'string', 'default': '', 'placement': 'advanced'},
+            {'key': 'bundlePath', 'label': '本地整合包路径', 'type': 'string', 'default': ''},
         ], 'actions': [
             {'actionId': 'importBundle', 'label': '导入整合包', 'filePicker': {'field': 'bundlePath', 'extensions': ['zip', '7z', 'gz']}},
             {'actionId': 'cancelImport', 'label': '取消导入'},
         ]}, load=provider.bundle.load, save=lambda values: None,
             actions={'importBundle': provider.bundle.start, 'cancelImport': provider.bundle.cancel})
         surface.register('bundle', 'plugin')
-        import platform
-        options = [('auto', '自动'), ('mlx', 'Apple GPU（MLX）')] if platform.system() == 'Darwin' else [
-            ('auto', '自动'), ('cpu', 'CPU'), ('cuda', 'NVIDIA CUDA'), ('directml', 'DirectML')]
-        settings.register({'sectionId': 'runtime', 'title': '推理与资源', 'fields': [
-            {'key': 'engineState', 'label': '引擎状态', 'type': 'readonly', 'default': '未启动'},
-            {'key': 'backend', 'label': '推理后端', 'type': 'select', 'default': 'auto',
-             'options': [{'value': value, 'label': label} for value, label in options]},
-            {'key': 'idleSeconds', 'label': '空闲休眠（秒）', 'type': 'integer', 'minimum': 1, 'default': 60},
-            {'key': 'prewake', 'label': '提前唤醒', 'type': 'boolean', 'default': True,
-             'description': '利用等待大模型 API 返回的时间，提前加载语音模型。'},
-        ]}, load=lambda: {**provider.config, 'engineState': provider.runtime.status() +
-            (f' · {provider.runtime.backend}' if provider.runtime.backend else '') +
-            (f' · {provider.runtime.selection_reason}' if provider.runtime.selection_reason else '')},
-            save=lambda values: context.config.update(configuration(values)))
-        surface.register('runtime', 'plugin')
