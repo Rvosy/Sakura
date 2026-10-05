@@ -5,7 +5,7 @@ author: Rvosy
 description: 离线合成角色语音，空闲时释放推理资源。
 version: 0.1.0
 entry: plugin:SakuraTTSPlugin
-enabled: false
+enabled: true
 priority: 110
 provides:
   - sakura.tts.provider.sakuratts

@@ -28,6 +28,7 @@ BUILTIN_PLUGINS = {
     "sakura_portrait",
     "sakura_web",
     "sakura_tts_hub",
+    "sakura_sakuratts",
     "sakura_asr_hub",
 }
 # Keep this payload while supporting direct upgrades from 1.1.2 and the second

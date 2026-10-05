@@ -548,13 +548,14 @@ def _minimal_stage(root: Path, target: str) -> Path:
         "sakura_web": "sakura.web",
         "sakura_mem0": "sakura.memory.mem0",
         "sakura_tts_hub": "sakura.tts",
+        "sakura_sakuratts": "sakura.tts.sakuratts",
         "sakura_asr_hub": "sakura.asr",
         "sakura_asr_sensevoice": "sakura.asr.sensevoice",
         "sakura_genie": "sakura.tts.genie",
         "sakura_gpt_sovits": "sakura.tts.gpt-sovits",
         "sakura_mobile": "sakura_mobile",
     }
-    dependency_plugins = {"sakura_model_openai_compatible", "sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice", "sakura_web", "sakura_mcp"}
+    dependency_plugins = {"sakura_model_openai_compatible", "sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice", "sakura_web", "sakura_mcp", "sakura_sakuratts"}
     for plugin, plugin_id in plugin_ids.items():
         payload = stage / MIGRATION_PAYLOAD if plugin in MIGRATIONS.values() else stage
         directory = payload / "plugins" / plugin if payload != stage else stage / "plugins/builtin" / plugin
@@ -639,11 +640,12 @@ def test_release_builds_private_dependencies_for_builtins_and_migration_payload(
 
     stage_distribution.stage_bundled_dependencies(stage, "macos-arm64")
 
-    assert len(commands) == 7
+    assert len(commands) == 8
     assert all(command[0] == str(stage / "python/tools/uv") for command in commands)
     assert {Path(command[command.index("--target") + 1]).name for command in commands} == {
         "sakura.mcp", "sakura.web", "sakura.model.openai_compatible",
         "sakura.asr.sensevoice", "sakura.memory.mem0", "sakura.tts.genie", "sakura.tts.gpt-sovits",
+        "sakura.tts.sakuratts",
     }
     validate_layout(stage, "macos-arm64", portable=False)
 

@@ -8,8 +8,8 @@ import zipfile
 
 import pytest
 
-from plugins.optional.sakura_sakuratts._bundle import BundleStore, unpack
-from plugins.optional.sakura_sakuratts.plugin import Provider, character_voice
+from plugins.builtin.sakura_sakuratts._bundle import BundleStore, unpack
+from plugins.builtin.sakura_sakuratts.plugin import Provider, character_voice
 from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.inventory import PluginInventory
@@ -56,8 +56,8 @@ def bundle_archive(path, version='one', target='macos-arm64', source_commit='fix
 
 def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, monkeypatch):
     logs = []
-    monkeypatch.setattr('plugins.optional.sakura_sakuratts._bundle.platform.system', lambda: 'Darwin')
-    monkeypatch.setattr('plugins.optional.sakura_sakuratts._bundle.platform.machine', lambda: 'arm64')
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._bundle.platform.system', lambda: 'Darwin')
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._bundle.platform.machine', lambda: 'arm64')
     (tmp_path / 'installed').mkdir()
     (tmp_path / 'installed/current.json').write_text('{broken')
     store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action(),
@@ -122,7 +122,7 @@ def provider(tmp_path, monkeypatch):
                               config=SimpleNamespace(get=lambda: {}))
     result = Provider(context)
     monkeypatch.setattr(result.bundle, 'current', lambda: (tmp_path, {}))
-    monkeypatch.setattr('plugins.optional.sakura_sakuratts.plugin.character_voice', lambda *_: {
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts.plugin.character_voice', lambda *_: {
         'gpt': 'gpt', 'sovits': 'sovits', 'text_lang': 'ja', 'ref_audio_path': 'a.wav', 'prompt_lang': 'ja', 'prompt_text': 'a'})
     return result, released
 
@@ -180,7 +180,7 @@ def test_cancel_stops_writer_before_releasing_artifact_without_poll(tmp_path, mo
 def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed):
     repo = Path(__file__).parents[2]
     shutil.copytree(repo / 'plugins/builtin/sakura_tts_hub', tmp_path / 'plugins/builtin/sakura_tts_hub')
-    shutil.copytree(repo / 'plugins/optional/sakura_sakuratts', tmp_path / 'plugins/user/sakura_sakuratts')
+    shutil.copytree(repo / 'plugins/builtin/sakura_sakuratts', tmp_path / 'plugins/builtin/sakura_sakuratts')
     config = tmp_path / 'data/plugins/sakura.tts.sakuratts/config.json'
     config.parent.mkdir(parents=True)
     config.write_text('{"enabled":true,"idleSeconds":90,"prewake":false,"cudaProfile":"fp32","autoCheckUpdates":false}')
@@ -200,13 +200,10 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
             with zipfile.ZipFile(archive) as z:
                 z.extractall(bundle_root)
             (bundle_root / 'runtime/main/bin/python3').unlink()
-    from app.plugins.inventory import PluginDesiredStateStore
     from app.plugins.dependencies import PluginDependencyRoots
-    from app.storage.paths import StoragePaths
     import sys
-    PluginDesiredStateStore(tmp_path).set('sakura.tts.sakuratts', True)
-    declaration = PluginDependencyRoots(tmp_path).declaration(tmp_path / 'plugins/user/sakura_sakuratts')
-    dependency_root = StoragePaths(tmp_path).plugin_dependency_root_for('sakura.tts.sakuratts')
+    declaration = PluginDependencyRoots(tmp_path).declaration(tmp_path / 'plugins/builtin/sakura_sakuratts')
+    dependency_root = tmp_path / 'plugins/dependencies/sakura.tts.sakuratts'
     dependency_root.mkdir(parents=True)
     (dependency_root / '.sakura-dependencies.json').write_text(json.dumps({
         'schemaVersion': 1, 'kind': declaration.kind, 'python': f'{sys.version_info.major}.{sys.version_info.minor}'}))
@@ -218,6 +215,9 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
         snapshot = host.public_snapshot()
         plugin = next(p for p in snapshot['plugins'] if p['pluginId'] == 'sakura.tts.sakuratts')
         assert plugin['state'] == 'active', plugin
+        status = host.call_service('sakura.tts', 'status', 'fixture')
+        assert any(p['providerId'] == 'sakura.tts.sakuratts' for p in status['providers'])
+        assert status['enabled'] is False
         sections = host.settings_sections('plugin')
         assert [s['sectionId'] for s in sections] == ['overview', 'runtime', 'bundle'], sections
         assert all(s['reasonCode'] == 'READY' for s in sections), sections
@@ -250,7 +250,7 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
 @pytest.mark.parametrize('native', [True, False])
 def test_7z_import_extracts_in_cancellable_child(tmp_path, monkeypatch, native):
     import py7zr
-    from plugins.optional.sakura_sakuratts import _bundle
+    from plugins.builtin.sakura_sakuratts import _bundle
     if native:
         if _bundle.seven_zip_executable() is None:
             pytest.skip('Native 7-Zip unavailable')
@@ -272,7 +272,7 @@ def test_7z_child_cancel_and_failure(tmp_path, monkeypatch, action):
     import py7zr
     import subprocess
     import sys
-    from plugins.optional.sakura_sakuratts import _bundle
+    from plugins.builtin.sakura_sakuratts import _bundle
     archive = tmp_path / 'bundle.7z'
     with py7zr.SevenZipFile(archive, 'w') as z:
         z.writestr('content', 'entry.txt')
@@ -298,7 +298,7 @@ def test_7z_child_cancel_and_failure(tmp_path, monkeypatch, action):
 
 def test_7z_unsafe_member_rejected_before_child_starts(tmp_path, monkeypatch):
     import py7zr
-    from plugins.optional.sakura_sakuratts import _bundle
+    from plugins.builtin.sakura_sakuratts import _bundle
     archive = tmp_path / 'bad.7z'
     with monkeypatch.context() as writer:
         writer.setattr('py7zr.py7zr.check_archive_path', lambda _: True)
@@ -365,8 +365,8 @@ def test_engine_state_reports_runtime_without_waking_model(tmp_path, monkeypatch
 
 
 def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_path, monkeypatch):
-    from plugins.optional.sakura_sakuratts import _runtime
-    from plugins.optional.sakura_sakuratts.plugin import configuration
+    from plugins.builtin.sakura_sakuratts import _runtime
+    from plugins.builtin.sakura_sakuratts.plugin import configuration
     launches, stopped = [], []
     def launch(*args, **kwargs):
         process = SimpleNamespace(poll=lambda: None)
@@ -403,8 +403,8 @@ def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_pat
 @pytest.mark.parametrize('failure', [RuntimeError('CUDA unavailable'), TimeoutError('check timed out'),
                                     OSError('cannot execute check')])
 def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, monkeypatch, failure):
-    from plugins.optional.sakura_sakuratts import _runtime
-    from plugins.optional.sakura_sakuratts.plugin import configuration
+    from plugins.builtin.sakura_sakuratts import _runtime
+    from plugins.builtin.sakura_sakuratts.plugin import configuration
     checks, launches, logs = [], [], []
     def probe(*args):
         checks.append('cuda')
@@ -447,11 +447,11 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
 
 def test_runtime_preserves_engine_http_error_details(tmp_path, monkeypatch):
     from urllib.error import HTTPError
-    from plugins.optional.sakura_sakuratts._runtime import Runtime
+    from plugins.builtin.sakura_sakuratts._runtime import Runtime
     response = io.BytesIO(json.dumps({'message': 'tts failed', 'Exception': 'DLL load failed: path too long'}).encode())
     def fail(*args, **kwargs):
         raise HTTPError('http://127.0.0.1/tts', 400, 'Bad Request', {}, response)
-    monkeypatch.setattr('plugins.optional.sakura_sakuratts._runtime.urlopen_direct_for_loopback', fail)
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.urlopen_direct_for_loopback', fail)
     runtime = Runtime(tmp_path)
     runtime.url = 'http://127.0.0.1'
     with pytest.raises(RuntimeError, match='DLL load failed: path too long'):
@@ -460,7 +460,7 @@ def test_runtime_preserves_engine_http_error_details(tmp_path, monkeypatch):
 
 
 def test_synthesis_metrics_use_host_tts_log_without_text_or_prompt(tmp_path, monkeypatch):
-    from plugins.optional.sakura_sakuratts._runtime import Runtime
+    from plugins.builtin.sakura_sakuratts._runtime import Runtime
     from app.core_host.plugin_host_services import _LoggingHostService
     from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
     records = []
@@ -478,7 +478,7 @@ def test_synthesis_metrics_use_host_tts_log_without_text_or_prompt(tmp_path, mon
     response.headers = {'X-SakuraTTS-Reference-Ms': '1400', 'X-SakuraTTS-Semantic-Ms': '700',
         'X-SakuraTTS-Acoustic-Ms': '400', 'X-SakuraTTS-Audio-Seconds': '11.5',
         'X-SakuraTTS-Reference-Cache': 'miss', 'X-SakuraTTS-Frontend-Ms': 'nan'}
-    monkeypatch.setattr('plugins.optional.sakura_sakuratts._runtime.urlopen_direct_for_loopback', lambda *_args, **_kw: response)
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.urlopen_direct_for_loopback', lambda *_args, **_kw: response)
     runtime = Runtime(tmp_path, emit)
     runtime.url, runtime.backend = 'http://127.0.0.1', 'cuda'
     assert runtime.request('/tts', {'text': 'private body', 'prompt_text': 'private reference'}) == b'wav-fixture'
@@ -497,7 +497,7 @@ def test_synthesis_metrics_use_host_tts_log_without_text_or_prompt(tmp_path, mon
 def online_repo(tmp_path, monkeypatch):
     from functools import partial
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-    from plugins.optional.sakura_sakuratts import _bundle
+    from plugins.builtin.sakura_sakuratts import _bundle
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -589,7 +589,7 @@ def test_online_failure_preserves_installed_bundle(tmp_path, online_repo, failur
 
 
 def test_cancel_download_waits_for_writer_and_keeps_old_bundle(tmp_path, online_repo, monkeypatch):
-    from plugins.optional.sakura_sakuratts import _bundle
+    from plugins.builtin.sakura_sakuratts import _bundle
     _, publish = online_repo
     publish('preview-1', 'new')
     store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
@@ -622,7 +622,7 @@ def test_cancel_download_waits_for_writer_and_keeps_old_bundle(tmp_path, online_
 
 
 def test_update_notice_uses_current_character_and_records_only_its_completion(tmp_path):
-    from plugins.optional.sakura_sakuratts._updates import UpdateAnnouncement
+    from plugins.builtin.sakura_sakuratts._updates import UpdateAnnouncement
     now = [0]
     facts = {'sessionId': 'session', 'idle': False, 'activityRevision': 0, 'interactionRevision': 0}
     submitted = []
@@ -656,7 +656,7 @@ def test_update_notice_uses_current_character_and_records_only_its_completion(tm
 
 @pytest.mark.parametrize('mutation', ['path', 'release', 'size', 'platform'])
 def test_online_index_rejects_invalid_package_before_download(online_repo, mutation):
-    from plugins.optional.sakura_sakuratts._bundle import online_package
+    from plugins.builtin.sakura_sakuratts._bundle import online_package
     root, publish = online_repo
     publish('preview-1', 'first')
     index_path = root / 'latest-preview.json'
@@ -710,7 +710,7 @@ def test_configuration_restarts_only_for_runtime_options(tmp_path, monkeypatch, 
 
 
 def test_update_notice_waits_after_activity_and_does_not_mark_failed_reply(tmp_path):
-    from plugins.optional.sakura_sakuratts._updates import UpdateAnnouncement
+    from plugins.builtin.sakura_sakuratts._updates import UpdateAnnouncement
     store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
     store._current = tmp_path, {'source_commit': 'old'}
     store.available = {'releaseId': 'new', 'sourceCommit': 'new', 'platform': 'macos-arm64'}
@@ -747,7 +747,7 @@ def test_update_notice_waits_after_activity_and_does_not_mark_failed_reply(tmp_p
 
 
 def test_plugin_start_checks_online_without_loading_models(tmp_path, monkeypatch):
-    from plugins.optional.sakura_sakuratts import plugin, _bundle
+    from plugins.builtin.sakura_sakuratts import plugin, _bundle
     p, _ = provider(tmp_path, monkeypatch)
     monkeypatch.setattr(p.bundle, 'current', lambda: None)
     checked, effects, callbacks = [], [], {}
@@ -798,7 +798,7 @@ def test_cancel_online_install_restores_status_and_reuses_download_after_restart
     store = BundleStore(store.directory, lambda *_: None, lambda action: action())
     def no_download(*args, **kwargs):
         raise AssertionError('完整下载不应再次访问网络')
-    monkeypatch.setattr('plugins.optional.sakura_sakuratts._bundle.urlopen', no_download)
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._bundle.urlopen', no_download)
     store.install_download()
     finish_bundle_task(store)
     assert store.state == 'succeeded', store.error

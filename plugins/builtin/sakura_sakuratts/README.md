@@ -1,8 +1,8 @@
 # SakuraTTS
 
-离线角色语音插件。空闲后由 SakuraTTS 释放推理进程；对话开始时可利用等待大模型回复的时间提前加载模型。
+内置离线角色语音插件，随 Sakura 安装并默认启用，可在插件页停用。空闲后由 SakuraTTS 释放推理进程；对话开始时可利用等待大模型回复的时间提前加载模型。
 
-安装插件后，在插件设置中点击“下载并安装”，从魔搭下载最新预览版并自动安装。也可从[魔搭](https://modelscope.cn/models/SuzushimaArisu/SakuraTTS)手动下载，在插件设置中选择“导入整合包”。Windows 使用 x64 统一包，macOS 使用 Apple silicon 包。角色的 GPT、SoVITS 权重和参考音频沿用角色资源，在语音页选择 SakuraTTS。
+在插件设置中点击“下载并安装”，从魔搭下载最新预览版并自动安装。也可从[魔搭](https://modelscope.cn/models/SuzushimaArisu/SakuraTTS)手动下载，在插件设置中选择“导入整合包”。Windows 使用 x64 统一包，macOS 使用 Apple silicon 包。角色的 GPT、SoVITS 权重和参考音频沿用角色资源，在语音页选择 SakuraTTS。
 
 “自动”在 Windows 每次启动服务时优先检查 NVIDIA CUDA，检查进程返回失败则使用 CPU；检查超时或无法执行时报告错误。连续合成复用服务，停止后再次启动会重新检查。macOS 使用 MLX。手动选择的后端失败时会报告错误。“AMD / Intel 显卡”使用 DirectML，需要手动选择且整合包须包含对应后端。设置页面和应用启动不会加载模型。
 
