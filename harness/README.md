@@ -33,7 +33,7 @@ macOS/Linux 将解释器路径替换为 `runtime/bin/python`。
 - `journey-visuals-browser`：正式角色设置、工坊形态与草稿、数值/立绘播放、Spine 导入与播放，以及桌面 CSP 和多图保存回归；五个入口使用隔离数据。保存回归使用真实有界 Core 路由。需要 Playwright，Windows 默认使用已安装 Edge；原生窗口及重启事件由测试桥代替。
 - `journey-tts`、`journey-character-studio`、`legacy-import`：TTS 播放链、角色工坊与 0.9.x 数据迁移安全边界。
 - `journey-asr`：语音输入回填、独立识别插件与临时音频生命周期；真实麦克风和模型样本另行显式验证。
-- `journey-observability`、`journey-agent-trace`：运行日志、跨层关联和私密 Trace。
+- `journey-observability`、`journey-agent-trace`：运行日志、跨层关联和私密 Trace；前者包含需要 Playwright 的错误弹窗检查，原生窗口传输采用测试桥。
 - `runtime-v2-windows-interaction`：需要真实 Windows 桌面的透明点击穿透验收。
 
 以 `python -m harness list` 的输出为当前 profile/case 真相源。

@@ -2,7 +2,12 @@ import { errorText } from "./error-display.js";
 
 let nextDialogId = 0;
 
-export function createErrorDialog({ document, onOpen = () => {}, onClose = () => {} }) {
+export function createErrorDialog({
+  document,
+  onOpen = () => {},
+  onClose = () => {},
+  copyText = text => document.defaultView.navigator.clipboard.writeText(text),
+}) {
   let elements = null;
   let disposed = false;
 
@@ -29,12 +34,32 @@ export function createErrorDialog({ document, onOpen = () => {}, onClose = () =>
     details.append(summary, diagnostic);
     const actions = document.createElement("div");
     actions.className = "sakura-error-actions";
+    const copyStatus = document.createElement("span");
+    copyStatus.className = "sakura-error-copy-status";
+    copyStatus.setAttribute("role", "status");
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "sakura-error-copy";
+    copy.textContent = "复制详情";
+    copy.addEventListener("click", async () => {
+      const text = diagnostic.textContent;
+      copy.disabled = true;
+      copyStatus.textContent = "";
+      try {
+        await copyText(text);
+        if (!disposed && diagnostic.textContent === text) copyStatus.textContent = "已复制";
+      } catch (error) {
+        if (!disposed && diagnostic.textContent === text) copyStatus.textContent = `复制失败：${errorText(error?.message ?? error)}`;
+      } finally {
+        copy.disabled = false;
+      }
+    });
     const close = document.createElement("button");
     close.type = "button";
     close.autofocus = true;
     close.textContent = "关闭";
     close.addEventListener("click", () => dialog.close());
-    actions.append(close);
+    actions.append(copyStatus, copy, close);
     dialog.append(title, message, details, actions);
     dialog.addEventListener("close", onClose);
     dialog.addEventListener("click", event => {
@@ -44,7 +69,7 @@ export function createErrorDialog({ document, onOpen = () => {}, onClose = () =>
           || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
     });
     document.body.append(dialog);
-    elements = { dialog, title, message, details, diagnostic };
+    elements = { dialog, title, message, details, diagnostic, copyStatus };
     return elements;
   }
 
@@ -53,8 +78,9 @@ export function createErrorDialog({ document, onOpen = () => {}, onClose = () =>
       if (disposed) return null;
       const ui = ensureDialog();
       const diagnostic = errorText(error ?? (message || title));
-      if (ui.title.textContent !== title || ui.diagnostic.textContent !== diagnostic) {
-        ui.details.open = !message;
+      if (!ui.dialog.open || ui.title.textContent !== title || ui.diagnostic.textContent !== diagnostic) {
+        ui.details.open = true;
+        ui.copyStatus.textContent = "";
       }
       ui.title.textContent = title;
       ui.message.textContent = message;

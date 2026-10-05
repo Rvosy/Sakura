@@ -3590,25 +3590,49 @@ pub(crate) fn panic_diagnostic(error: Box<dyn std::any::Any + Send>) -> String {
 
 pub(crate) fn error_details(error: &Value) -> String {
     let mut parts = Vec::new();
-    for value in [
-        error.get("message"),
-        error.get("diagnostic"),
-        error.pointer("/details/diagnostics/exception_chain"),
-        error.pointer("/details/diagnostics/diagnostic"),
-        error.get("exception_chain"),
-        error.pointer("/details/diagnostics/exception_stack"),
-        error.get("exception_stack"),
-    ] {
-        if let Some(text) = value
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-        {
-            if !parts.iter().any(|part: &&str| *part == text) {
+    for source in [error.pointer("/details/diagnostics"), Some(error)]
+        .into_iter()
+        .flatten()
+    {
+        for key in [
+            "diagnostic",
+            "message",
+            "exception_chain",
+            "exception_stack",
+            "recovery_diagnostic",
+            "error_type",
+            "cause_type",
+            "cause_code",
+            "exception_site",
+            "stage",
+            "validation_field",
+            "errno",
+            "winerror",
+            "plugin_id",
+            "section_id",
+            "result_type",
+            "has_application_state",
+            "application_state_type",
+            "reason_code",
+        ] {
+            let text = match source.get(key) {
+                Some(Value::String(text)) if !text.trim().is_empty() => text.clone(),
+                Some(value @ (Value::Number(_) | Value::Bool(_))) => value.to_string(),
+                _ => continue,
+            };
+            let text = if matches!(key, "message" | "diagnostic") {
+                text
+            } else {
+                format!("{}：{text}", viewer_detail_label(key))
+            };
+            if !parts.contains(&text) {
                 parts.push(text);
             }
         }
     }
-    sanitize_diagnostic(&parts.join("\n"), &[], 16384)
+    // Core bounds each diagnostic field. Preserve those fields in full when
+    // combining them for the dialog; log/telemetry writers own their budgets.
+    redact_diagnostic_credentials(&parts.join("\n\n"), &[])
 }
 
 pub(crate) fn redact_diagnostic_credentials(value: &str, secrets: &[String]) -> String {
@@ -3905,6 +3929,52 @@ mod tests {
         })).unwrap_err();
         assert!(settings_error.starts_with("SETTINGS_LOAD_FAILED|voice|provider|"));
         assert!(settings_error.contains("Permission denied (os error 5)"));
+    }
+
+    #[test]
+    fn settings_errors_preserve_log_diagnostics_without_truncating_combined_traces() {
+        let chain = format!(
+            "{}\nCHAIN_END",
+            "PluginApiError: remote failure\n".repeat(220)
+        );
+        let stack = format!("{}\nSTACK_END", "  at provider.py:42\n".repeat(400));
+        let recovery = format!("{}\nRECOVERY_END", "  at rollback.py:12\n".repeat(350));
+        let error = crate::shell_lifecycle::settings_response_payload(json!({
+            "ok": false,
+            "error": {"code": "SETTINGS_SAVE_FAILED", "message": "保存失败", "details": {
+                "feature": "plugins", "field": "connection",
+                "diagnostics": {
+                    "diagnostic": "Permission denied password=private-value",
+                    "exception_chain": chain, "exception_stack": stack, "recovery_diagnostic": recovery,
+                    "cause_type": "PermissionError", "exception_site": "config:save:42", "stage": "apply",
+                    "errno": 13, "winerror": 5, "plugin_id": "sakura.provider", "section_id": "connection",
+                    "has_application_state": false,
+                    "request_body": "must-not-display-private-request"
+                }
+            }}
+        })).unwrap_err();
+        assert!(error.starts_with("SETTINGS_SAVE_FAILED|plugins|connection|"));
+        for detail in [
+            chain.as_str(),
+            stack.as_str(),
+            recovery.as_str(),
+            "PermissionError",
+            "config:save:42",
+            "apply",
+            "13",
+            "5",
+            "sakura.provider",
+            "connection",
+            "false",
+        ] {
+            assert!(
+                error.contains(detail),
+                "missing diagnostic: {:.100}",
+                detail
+            );
+        }
+        assert!(!error.contains("private-value"));
+        assert!(!error.contains("must-not-display-private-request"));
     }
 
     fn paused_writer(path: PathBuf) -> (RuntimeLogService, mpsc::Sender<()>) {

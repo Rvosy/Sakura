@@ -30,7 +30,7 @@ class Element {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
     this.listeners.get(name).push(callback);
   }
-  emit(name) { for (const callback of this.listeners.get(name) || []) callback({ target: this }); }
+  async emit(name) { for (const callback of this.listeners.get(name) || []) await callback({ target: this }); }
   showModal() {
     assert.equal(this.open, false, "an open dialog must not be opened again");
     this.open = true;
@@ -49,12 +49,19 @@ class Element {
     }
     return null;
   }
+  querySelectorAll(tagName) {
+    return this.children.flatMap(child => [
+      ...(child.tagName === tagName ? [child] : []), ...child.querySelectorAll(tagName),
+    ]);
+  }
 }
 
 function fixture(options = {}) {
   const document = { body: new Element("body"), createElement: tag => new Element(tag) };
   return { document, controller: createErrorDialog({ document, ...options }) };
 }
+
+const button = (dialog, text) => dialog.querySelectorAll('button').find(element => element.textContent === text);
 
 test("error details preserve source diagnostics as text and redact credentials", () => {
   const { controller } = fixture();
@@ -94,11 +101,11 @@ test("successive failures update one open dialog and its accessible description"
   assert.equal(first.getAttribute("aria-describedby"), null);
 });
 
-test("closing the dialog allows reopening it without adding another window", () => {
+test("closing the dialog allows reopening it without adding another window", async () => {
   let opened = 0, closed = 0;
   const { document, controller } = fixture({ onOpen: () => opened++, onClose: () => closed++ });
   const dialog = controller.show({ error: "failure" });
-  dialog.querySelector("button").emit("click");
+  await button(dialog, "关闭").emit("click");
   assert.equal(controller.isOpen, false);
   assert.equal(closed, 1);
   controller.close();
@@ -107,6 +114,48 @@ test("closing the dialog allows reopening it without adding another window", () 
   assert.equal(controller.isOpen, true);
   assert.equal(opened, 2);
   assert.equal(document.body.children.length, 1);
+});
+
+test("diagnostics open with a brief message, preserve a manual collapse, and expand for a new failure", () => {
+  const { controller } = fixture();
+  const first = { title: '保存失败', message: '配置未保存', error: 'Permission denied' };
+  const dialog = controller.show(first);
+  const details = dialog.querySelector('details');
+  assert.equal(details.open, true);
+  details.open = false;
+  controller.show(first);
+  assert.equal(details.open, false);
+  controller.show({ ...first, error: 'Connection refused' });
+  assert.equal(details.open, true);
+  details.open = false;
+  controller.close();
+  controller.show(first);
+  assert.equal(details.open, true);
+});
+
+test("copy includes the complete sanitized traceback, including content beyond the viewport", async () => {
+  const copied = [];
+  const { controller } = fixture({ copyText: async text => copied.push(text) });
+  const trace = 'Traceback\n' + '  at config.py:42\n'.repeat(1100) + 'PermissionError: root cause';
+  const dialog = controller.show({ error: { code: 'SAVE_FAILED', diagnostic: 'password=private-value', exception_stack: trace } });
+  await button(dialog, '复制详情').emit('click');
+  assert.equal(copied[0], dialog.querySelector('pre').textContent);
+  assert.ok(copied[0].includes(trace));
+  assert.ok(!copied[0].includes('private-value'));
+  assert.ok(dialog.textContent.includes('已复制'));
+});
+
+test("clipboard failure preserves the original error and permits selecting or copying it again", async () => {
+  let fail = true;
+  const { controller } = fixture({ copyText: async () => { if (fail) throw new Error('clipboard denied'); } });
+  const dialog = controller.show({ error: 'Original failure' });
+  await button(dialog, '复制详情').emit('click');
+  assert.equal(dialog.querySelector('pre').textContent, 'Original failure');
+  assert.ok(dialog.textContent.includes('clipboard denied'));
+  assert.equal(button(dialog, '复制详情').disabled, false);
+  fail = false;
+  await button(dialog, '复制详情').emit('click');
+  assert.ok(dialog.textContent.includes('已复制'));
 });
 
 test("disposing prevents a late failure from recreating the dialog", () => {

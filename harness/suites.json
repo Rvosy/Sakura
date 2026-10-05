@@ -121,7 +121,8 @@
         "runtime-v2-observability-rust-journey",
         "runtime-v2-observability-frontend-journey",
         "runtime-v2-log-viewer-rust-journey",
-        "runtime-v2-log-viewer-frontend-journey"
+        "runtime-v2-log-viewer-frontend-journey",
+        "error-dialog-browser"
       ]
     },
     "journey-agent-trace": {
@@ -932,6 +933,13 @@
       "env": {
         "NO_COLOR": "1"
       }
+    },
+    {
+      "id": "error-dialog-browser",
+      "description": "验证错误弹窗的诊断展开、完整复制与独立窗口和页内窄窗口布局",
+      "argv": ["{python}", "desktop/frontend/tests/error-dialog.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"NO_COLOR": "1"}
     },
     {
       "id": "runtime-v2-agent-trace-python-journey",

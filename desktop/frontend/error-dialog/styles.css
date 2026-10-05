@@ -3,5 +3,10 @@
 @import url("../core/error-dialog.css");
 :root { font-family: "Sakura Noto Sans SC", "Microsoft YaHei UI", sans-serif; background: var(--page-background, #f8fcfe); }
 html, body { margin: 0; height: 100%; }
-.sakura-error-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 20px; box-shadow: none; }
+.sakura-error-dialog { display: flex; flex-direction: column; inset: 0; width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: 20px; border: 0; border-radius: 0; box-shadow: none; }
+.sakura-error-dialog:not([open]) { display: none; }
+.sakura-error-details[open] { flex: 1; min-height: 0; overflow: auto; }
+.sakura-error-details > pre { max-height: none; }
+.sakura-error-details > summary { position: sticky; top: 0; background: var(--error-background); }
+.sakura-error-dialog h2, .sakura-error-message, .sakura-error-details > summary, .sakura-error-actions { flex-shrink: 0; }
 .sakura-error-dialog::backdrop { background: transparent; backdrop-filter: none; }
