@@ -45,7 +45,7 @@ export function validateProductMenuManifest(value) {
     unavailableReason:
       typeof value.unavailableReason === "string" && value.unavailableReason.trim()
         ? value.unavailableReason
-        : "该功能尚未迁移到 Runtime v2",
+        : "此功能暂不可用",
   });
 }
 

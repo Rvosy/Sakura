@@ -69,7 +69,7 @@ export function createProviderSettingsFeature({ document, onDirty, onError, invo
         const inherited = !selection.serviceKey;
         const inherit = document.createElement("label"); inherit.className = "check-control slot-inherit";
         const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = inherited; checkbox.dataset.slotInherit = slot.identity;
-        const text = document.createElement("span"); text.textContent = "继承";
+        const text = document.createElement("span"); text.textContent = "使用对话模型";
         inherit.append(checkbox, text); controls.append(inherit);
         row.classList.toggle("is-inherited", inherited);
         provider.disabled = model.disabled = inherited;

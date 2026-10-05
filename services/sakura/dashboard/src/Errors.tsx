@@ -41,7 +41,7 @@ export const reportColumns: ColumnDef<Row, any>[] = [
   },
   textCol("app_version", "版本"),
   textCol("platform", "平台"),
-  textCol("received_at", "出现时间"),
+  textCol("received_at", "接收时间"),
   {
     accessorKey: "report_id",
     header: "Report ID",

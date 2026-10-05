@@ -835,7 +835,7 @@ class GPTSoVITSPlugin:
                         "type": "select",
                         "default": "managed",
                         "options": [
-                            {"label": "Sakura 内置", "value": "managed"},
+                            {"label": "插件管理的本地服务", "value": "managed"},
                             {"label": "连接已有服务", "value": "custom"},
                         ],
                     },

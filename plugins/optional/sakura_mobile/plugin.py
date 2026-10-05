@@ -81,7 +81,7 @@ class SakuraMobilePlugin:
         current = self.config()
         merged = _normalized_config({**current, **dict(values)})
         if merged["enabled"] and not str(values.get("token", current["token"])).strip():
-            raise ValueError("启用手机网页端时访问 token 不能为空。")
+            raise ValueError("启用手机网页端时访问令牌不能为空。")
         updates = {key: merged[key] for key in values if key in merged}
         return getattr(self._require_config(), "update")(updates)
 
@@ -212,7 +212,7 @@ def _settings_descriptor() -> dict[str, Any]:
             },
             {
                 "key": "token",
-                "label": "访问 token",
+                "label": "访问令牌",
                 "type": "password",
                 "default": "sakura",
                 "required": True,

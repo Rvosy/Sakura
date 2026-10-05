@@ -7,15 +7,15 @@
 
 清理范围（白名单制，逐项列出后才删）：
 1. TTS 音频缓存残留          data/cache/tts/*
-2. 过期迁移备份              data/migration_backup/*（默认 30 天前，--backup-days 可调）
-3. TTS 整合包安装半成品      data/tts_bundles/tmp/、.migrating/
+2. 旧版过期迁移备份          data/migration_backup/*（默认 30 天前，--backup-days 可调）
+3. TTS 整合包安装半成品      TTS 资源目录下的 tmp/，以及安装目录和 tts/ 下的 .migrating/
 4. Python 字节码缓存         app/ plugins/ 下的 __pycache__（可再生）
 
-附加报告（只报告、绝不删除）：
-- 孤儿字节码：存在 .pyc 但对应 .py 已不存在 —— 旧版本覆盖升级残留的直接证据
+缺少对应 .py 源码的 .pyc 文件会单独列出；执行清理时，
+它们会随所在的 __pycache__ 目录一并删除。
 
 绝不触碰：角色卡（characters/）、聊天记录、语音包、长期记忆、笔记、
-用户配置（data/config/）、插件源码。
+用户配置（config/、旧版 data/config/）、插件源码。
 """
 
 from __future__ import annotations
@@ -76,7 +76,8 @@ def collect_tts_cache(paths: StoragePaths) -> list[CleanupItem]:
 
 
 def collect_expired_backups(paths: StoragePaths, retention_days: int) -> list[CleanupItem]:
-    backup_dir = paths.migration_backup_dir
+    # 只处理旧版备份目录；当前迁移事务的备份由各自的恢复流程管理。
+    backup_dir = paths.user_root / "data" / "migration_backup"
     if not backup_dir.is_dir():
         return []
     cutoff = time.time() - retention_days * 86400
@@ -118,7 +119,7 @@ def collect_pycache(base_dir: Path) -> list[CleanupItem]:
 
 
 def find_orphan_bytecode(base_dir: Path) -> list[Path]:
-    """报告 .pyc 对应 .py 已消失的孤儿——旧版本覆盖升级残留的证据，只报告不删。"""
+    """列出缺少对应源码的 .pyc；执行清理时随所在 __pycache__ 目录删除。"""
     orphans: list[Path] = []
     for root_name in _PYCACHE_SCAN_ROOTS:
         root = base_dir / root_name
@@ -162,10 +163,9 @@ def run_cleanup(
     orphans = find_orphan_bytecode(base_dir)
     if orphans:
         out("")
-        out("检测到孤儿字节码（对应源码已不存在，疑似旧版本覆盖升级残留，仅报告）：")
+        out("检测到缺少对应源码的缓存文件；执行清理时会随所在缓存目录删除：")
         for pyc in orphans:
             out(f"  [orphan] {pyc}")
-        out("如确认升级完成且功能正常，可手动删除上述 __pycache__ 目录。")
 
     if not apply:
         return items
@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         "--backup-days",
         type=int,
         default=DEFAULT_BACKUP_RETENTION_DAYS,
-        help=f"迁移备份保留天数（默认 {DEFAULT_BACKUP_RETENTION_DAYS}）",
+        help=f"旧版迁移备份保留天数（默认 {DEFAULT_BACKUP_RETENTION_DAYS}）",
     )
     parser.add_argument("--base-dir", type=Path, default=REPO_ROOT, help="Sakura 安装目录")
     args = parser.parse_args(argv)

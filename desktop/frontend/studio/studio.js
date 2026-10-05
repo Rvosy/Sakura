@@ -263,7 +263,7 @@ function renderSelectOptionContent(container, option, { includeSource = false } 
     main.append(dot);
     const status = document.createElement("span");
     status.className = "visually-hidden";
-    status.textContent = "有未发布修改";
+    status.textContent = "有草稿修改";
     main.append(status);
   }
   const text = document.createElement("span");
@@ -285,7 +285,7 @@ function selectOptionAccessibleLabel(option) {
     parts.push(option.dataset.sourceLabel);
   }
   if (option.dataset.dirty === "true") {
-    parts.push("有未发布修改");
+    parts.push("有草稿修改");
   }
   return parts.filter(Boolean).join("，");
 }
@@ -860,7 +860,7 @@ const visualEditor = createVisualEditorHost({
     await runBusy(async () => {
       for (const path of paths) {
         if (signal.aborted) break;
-        const response = await invokeStudio("studio.asset.import", { workspaceId, resourceId, kind: options.folder ? "visualFolder" : "visual", path }, "正在导入表现资源…");
+        const response = await invokeStudio("studio.asset.import", { workspaceId, resourceId, kind: options.folder ? "visualFolder" : "visual", path }, "正在导入形态资源…");
         result.push(...(response.items || [response]));
       }
     });

@@ -203,7 +203,7 @@ def run():
                 assert page.evaluate('numericValues.decimal') == 0.375
                 page.screenshot(animations="disabled", path=str(output/'model.png'))
                 page.evaluate("showPage('interaction')")
-                expect(page.get_by_text('最短搭话间隔',exact=True)).to_be_visible()
+                expect(page.get_by_text('截图后搭话等待',exact=True)).to_be_visible()
                 page.screenshot(animations="disabled", path=str(output/'interaction.png'))
                 page.locator('[data-plugin-field="checkIntervalMinutes"]').fill('25')
                 enabled = page.locator('[data-plugin-field="enabled"]')

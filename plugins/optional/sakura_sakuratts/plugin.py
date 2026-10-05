@@ -47,7 +47,7 @@ def character_voice(character, character_id, tone='中性'):
     extension.update(character.get(character_id))
     for key, label in (('toneRefs', '参考音频表'), ('gptModel', 'GPT 模型'), ('sovitsModel', 'SoVITS 模型')):
         if not extension.get(key):
-            raise ValueError(f'角色尚未配置{label}，请在角色工作室中添加。')
+            raise ValueError(f'角色尚未配置{label}，请在角色工坊中添加。')
     resolve = lambda key: str(character.resolve_resource(character_id, extension[key]))
     references = []
     for line in Path(resolve('toneRefs')).read_text(encoding='utf-8-sig').splitlines():
@@ -109,10 +109,10 @@ class Provider:
                 return {'state': 'working', 'label': '正在加载', 'message': ''}
             return {'state': 'ready', 'label': '未加载', 'message': '首次合成时自动加载模型。'}
         state, label = {
-            'sleeping': ('ready', '已卸载'), 'awake': ('ready', '已加载'), 'ready': ('ready', '已加载'),
+            'sleeping': ('ready', '已休眠'), 'awake': ('ready', '已加载'), 'ready': ('ready', '已加载'),
             'connecting': ('working', '连接中'), 'waking': ('working', '正在加载'),
             'preparing': ('working', '正在准备'), 'busy': ('working', '正在合成'),
-            'stopping': ('working', '正在卸载'), 'failed': ('error', '启动失败'),
+            'stopping': ('working', '正在休眠'), 'failed': ('error', '启动失败'),
             'running': ('ready', '运行中'),
         }.get(status, ('ready', status))
         message = '模型资源已释放，下次合成自动加载。' if status == 'sleeping' else self.runtime.selection_reason
@@ -309,7 +309,7 @@ class SakuraTTSPlugin:
         settings.register({'sectionId': 'runtime', 'title': '运行设置', 'order': 20, 'fields': [
             {'key': 'backend', 'label': '运行设备', 'type': 'select', 'default': 'auto',
              'options': [{'value': value, 'label': label} for value, label in options]},
-            {'key': 'cudaProfile', 'label': '推理精度', 'type': 'select', 'default': DEFAULTS['cudaProfile'],
+            {'key': 'cudaProfile', 'label': '推理模式', 'type': 'select', 'default': DEFAULTS['cudaProfile'],
              'options': [{'value': value, 'label': label} for value, label in CUDA_PROFILES],
              'enabledWhen': {'field': 'backend', 'equals': 'cuda', 'hide': True},
              'description': '低显存档通过分阶段加载模型节省显存，可能增加耗时。首次使用 FP16 需要转换模型。'},

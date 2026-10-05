@@ -246,10 +246,9 @@ def _settings_descriptor() -> dict[str, Any]:
         "fields": [
             {
                 "key": "headless",
-                "label": "无头模式",
+                "label": "隐藏浏览器窗口",
                 "type": "boolean",
                 "default": False,
-                "description": "无头模式（Headless）",
                 "restartRequired": True,
             },
         ],

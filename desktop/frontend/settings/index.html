@@ -251,7 +251,7 @@
             </div>
           </div>
           <div class="admin-toolbar plugin-toolbar">
-            <div id="pluginRoleTabs" class="plugin-role-tabs" role="tablist" aria-label="插件角色"></div>
+            <div id="pluginRoleTabs" class="plugin-role-tabs" role="tablist" aria-label="插件类型"></div>
             <input id="pluginSearch" class="admin-search" type="search" aria-label="搜索插件" placeholder="搜索名称、作者、ID 或描述…" />
           </div>
           <div class="admin-workbench plugin-workbench">
@@ -358,7 +358,7 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="silentSegmentPause">
-                <span class="setting-title">无语音停留</span>
+                <span class="setting-title">无语音时的字幕停留</span>
                 <span class="setting-desc">语音未加载或合成失败时，这段字幕结束后再切下一段。</span>
               </label>
               <span class="field-unit"><input id="silentSegmentPause" type="number" step="1" data-settings-feature="chat.presentation_timing" /><span class="unit">ms</span></span>
@@ -400,7 +400,7 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">诊断 ID</span>
-                <span class="setting-desc">随机生成，与账号和设备无关；重置只影响后续数据。</span>
+                <span class="setting-desc">随机生成，不由账号或硬件信息计算。重新生成将清空待上传报告，后续数据使用新 ID。</span>
                 <code id="telemetryInstallationId" class="path-value">读取中…</code>
               </div>
               <div class="archive-controls">

@@ -392,7 +392,7 @@ export function Diagnostics({ route }: { route: Route }) {
             {(d) => (
               <>
                 <p>
-                  计数是缺失数。未收到记录不能视作零故障；旧样本只能按显式
+                  覆盖率按已收到的报告计算。未收到记录不能视作零故障；旧样本只能按显式
                   acceptance 标记排除。
                 </p>
                 <div className="diagnostic-table">

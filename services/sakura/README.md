@@ -100,7 +100,7 @@ python services/sakura/tests/verify_captured_wire.py /tmp/http-wire.json
 
 1. 在隔离数据库验证增量列、旧版入库、v3 入库/重复 reportId、详情查询和导出。
 2. 在现有遥测 Nginx vhost 添加精确的 `/v3/errors` POST 路由，body 上限 `128k`，沿用当前 Origin Secret 和 Host 隔离。不要只更新 Python 后端而遗漏源站/边缘路由。
-3. 验证遥测域名仍不能访问 Admin，管理 API 和下载仍需鉴权，再启用新客户端。此 PR 不执行生产部署。
+3. 验证遥测域名仍不能访问 Admin，管理 API 和下载仍需鉴权，再启用新客户端。
 
 本地跨层验收使用真实 Python 异常，经 Rust HTTP 发送器捕获后交给隔离 FastAPI/SQLite，最终比较详情和 ZIP：
 

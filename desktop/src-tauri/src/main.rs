@@ -82,7 +82,7 @@ const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duratio
 const CONTROL_CONTRACTION_REGION_GRACE_MS: u64 = 40;
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
-    "另一个 Sakura Runtime v2 实例正在运行。请先退出现有实例，再重试。";
+    "另一个 Sakura 实例正在运行。请先退出现有实例，再重试。";
 #[cfg(debug_assertions)]
 const WP_4_01_MANUAL_ROOT_ENV: &str = "SAKURA_WP_4_01_MANUAL_ROOT";
 #[cfg(debug_assertions)]

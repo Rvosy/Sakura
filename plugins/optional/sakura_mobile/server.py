@@ -360,7 +360,7 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                 or str((data or {}).get("token") or "")
             ).strip()
             if provided != token:
-                raise ValueError("配对码无效。")
+                raise ValueError("访问令牌无效。")
 
         def _require_rate_limit(self) -> None:
             if not self.server.allow_client_request(self.client_address):  # type: ignore[attr-defined]

@@ -2446,7 +2446,7 @@ export function createPluginSettingsFeature({
       fields.pluginDetail.append(section);
     }
     const meta = pluginNode('dl', 'detail-meta');
-    for (const [label, value] of [['版本', plugin.version], ['作者', plugin.author || '未知'], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置'], ['插件角色', pluginPresentation.pluginKinds[metadata.kind]]]) {
+    for (const [label, value] of [['版本', plugin.version], ['作者', plugin.author || '未知'], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置'], ['插件类型', pluginPresentation.pluginKinds[metadata.kind]]]) {
       meta.append(pluginNode('dt', '', label), pluginNode('dd', '', value));
     }
     fields.pluginDetail.append(meta);
@@ -2504,7 +2504,7 @@ export function createPluginSettingsFeature({
   async function uninstallLocalPlugin(plugin) {
     if (!runtimePluginController || pluginState.managementBusy || !plugin?.can_uninstall) return;
     if (affectedPluginsHaveCollectionDrafts(plugin)) {
-      setError("请先保存或还原受影响插件中正在编辑的集合记录，再卸载插件。");
+      setError("请先保存或取消受影响插件中正在编辑的集合记录，再卸载插件。");
       return;
     }
     const confirmed = await confirmAction(
@@ -2513,7 +2513,7 @@ export function createPluginSettingsFeature({
     );
     if (!confirmed) return;
     if (affectedPluginsHaveCollectionDrafts(plugin)) {
-      setError("请先保存或还原受影响插件中正在编辑的集合记录，再卸载插件。");
+      setError("请先保存或取消受影响插件中正在编辑的集合记录，再卸载插件。");
       return;
     }
     pluginState.managementBusy = true;
@@ -3027,13 +3027,13 @@ export function createPluginSettingsFeature({
     async save({ keepGlobalCollectionDrafts = false } = {}) {
       validateSettings();
       if (hasCollectionDrafts() && (!keepGlobalCollectionDrafts || collectionDraftCount("character") > 0)) {
-        throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
+        throw new Error("请先保存或取消正在编辑的集合记录，再保存设置。");
       }
       const disablingWithDrafts = pluginView.items.some((plugin) => !plugin.required
         && pluginState.initialEnabledById[plugin.id] && !pluginState.enabledById[plugin.id]
         && affectedPluginsHaveCollectionDrafts(plugin));
       if (disablingWithDrafts) {
-        throw new Error("请先保存或还原受影响插件中正在编辑的集合记录，再停用插件。");
+        throw new Error("请先保存或取消受影响插件中正在编辑的集合记录，再停用插件。");
       }
       return runtimePluginController.save({ keepGlobalCollectionDrafts });
     },

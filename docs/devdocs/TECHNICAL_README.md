@@ -99,7 +99,7 @@ Core 在持有服务绑定锁时提交结果，插件停用或重载后的旧回
 协议参数兼容在提供方处理，Assistant 负责回复格式修复和工具循环。会话固定提供方实例，保存配置不改写有效配置，
 显式应用后才发布新会话。具体字段见[模型服务合同](../specs/runtime-v2/model-services.md)。
 
-主动屏幕感知插件负责采样间隔、批次、冷却和提示词。`sakura.host.screen` 提供受控截图，`sakura.host.chat`
+主动屏幕感知插件负责采样间隔、批次、截图后的搭话等待和提示词。`sakura.host.screen` 提供受控截图，`sakura.host.chat`
 受理当前会话互动，之后仍经过 `RealChatBoundary`、`ChatBridge` 和原有分段播放链。字幕、立绘和语音的同步时机不变。
 普通插件还可通过 `sakura.host.visual` 提交表现控制或选择已有资源；宿主核对角色和绑定，并返回实际播放回执。
 

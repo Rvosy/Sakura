@@ -1422,7 +1422,7 @@ async function saveRuntimeSettings({ keepGlobalCollectionDrafts = false } = {}) 
   runtimePluginController?.validate();
   if (runtimePluginController?.hasCollectionDrafts()
       && (!keepGlobalCollectionDrafts || runtimePluginController.characterCollectionDraftCount() > 0)) {
-    throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
+    throw new Error("请先保存或取消正在编辑的集合记录，再保存设置。");
   }
   if (runtimeAsrController?.isDirty()) await runtimeAsrController.save();
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();

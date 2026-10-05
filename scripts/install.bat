@@ -60,7 +60,10 @@ echo.
 echo [3/3] 验证 Core 关键依赖...
 "%PYTHON_EXE%" -c "import mcp; import yaml; print('[OK] Core 依赖就绪')"
 if errorlevel 1 (
-    echo [警告] 部分依赖验证失败，但安装过程已完成，请检查上方输出
+    echo.
+    echo [错误] 关键依赖验证未通过，请查看上方错误信息。
+    pause
+    exit /b 1
 )
 
 echo.

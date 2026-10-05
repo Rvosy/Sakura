@@ -291,7 +291,7 @@ def test_engine_state_distinguishes_on_demand_start_and_failure(tmp_path, monkey
 @pytest.mark.parametrize(('runtime_state', 'state', 'label'), [
     ({'state': 'awake', 'busy': True}, 'working', '正在合成'),
     ({'state': 'awake'}, 'ready', '已加载'),
-    ({'state': 'sleeping'}, 'ready', '已卸载'),
+    ({'state': 'sleeping'}, 'ready', '已休眠'),
     ({'state': 'failed'}, 'error', '启动失败'),
 ])
 def test_engine_state_reports_runtime_without_waking_model(tmp_path, monkeypatch, runtime_state, state, label):

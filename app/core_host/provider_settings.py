@@ -119,7 +119,7 @@ class ProviderSettingsBoundary:
         choices = {(provider["serviceKey"], profile["profileId"], model["modelId"])
                    for provider in snapshot["providers"] for profile in provider.get("profiles", []) for model in profile.get("models", [])}
         if set(raw["model_slots"]) != set(current):
-            raise ModelSettingsError("MODEL_SLOTS_INVALID", "模型槽已变化，请刷新后重试。")
+            raise ModelSettingsError("MODEL_SLOTS_INVALID", "模型设置项已变化，请刷新后重试。")
         selections = {}
         for identity, value in raw["model_slots"].items():
             try:

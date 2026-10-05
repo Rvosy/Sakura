@@ -272,7 +272,7 @@ class CharacterSettingsBoundary:
                     error, reason_code="CHARACTER_VOICE_APPLY_FAILED", stage="character.voice.apply"), severity="error")
                 raise CharacterSettingsError(
                     "CHARACTER_VOICE_APPLY_FAILED",
-                    "语音包已导入，但运行态更新失败，请查看插件运行日志。",
+                    "语音包已导入，但未能应用到当前角色。请查看运行日志。",
                 ) from error
             result = self._change_result(
                 "character_refresh" if current == character_id else "unchanged"
