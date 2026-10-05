@@ -1,12 +1,8 @@
 ---
-title: API 配置
-description: 添加模型服务，为文字聊天和图片消息选择模型。
+title: 模型服务
+description: 连接模型服务与排查配置问题。
 ---
 
-在“设置 → 模型服务”添加连接，填写服务商提供的 API 地址、API Key 和模型名称；应用连接后，在“设置 → 模型”为各用途选择模型。
+首次配置从[图文教程的模型设置](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/SETUP.md#配置模型服务和模型)开始。
 
-普通聊天可以使用文字模型。截图和其他图片消息需要支持图片输入的视觉模型，工具调用需要所选模型支持工具。
-
-连接测试只检查指定模型。完成设置后，分别发送一条文字消息和一张图片，检查实际使用的能力。
-
-完整步骤、字段说明和错误排查见 [API 配置指南](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/API_CONFIG.md)。
+更换密钥、调整模型用途或排查连接错误时，查看[模型服务说明](https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/API_CONFIG.md)。API 地址、密钥和模型名称必须来自同一个服务商；网页聊天会员不一定包含 API 额度。

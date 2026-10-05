@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-24
+updated: 2026-10-03
 ---
 
 # 运行日志与故障排查
@@ -47,7 +47,7 @@ data/logs/sakura-plugins.log
 data/logs/sakura-agent-trace.log
 ```
 
-Agent Trace 默认开启，可以在“设置 → 系统”中关闭。它保存最终发送给模型的 Prompt、动态上下文、Memory、工具调用和回复，适合排查模型行为。
+当前默认 Assistant 固定记录 Agent Trace，没有关闭开关。它保存最终发送给模型的 Prompt、动态上下文、Memory、工具调用和回复，适合排查模型行为。
 
 这份文件包含私密正文。Sakura 会移除已知凭据、URL userinfo 和二进制数据，但不会替你隐藏普通聊天、记忆或工具结果。分享前必须自己检查并删去不愿公开的内容。
 
@@ -58,7 +58,7 @@ Trace 按完整操作写入。程序在写入途中退出时，下次启动会�
 1. 正常退出 Sakura，再重新启动一次。
 2. 在 `sakura-runtime.log` 中找到失败时间附近的事件；涉及插件时，同时查看“插件”页或 `sakura-plugins.log`。
 3. 按 `op` 收集同一轮日志，先看原因码，再查看对应的原始报错。
-4. 需要检查模型输入时，确认 Agent Trace 已开启并复现一次；平时不希望保存正文可以关闭它。
+4. 需要检查模型输入时，复现一次后查看 Agent Trace；其中含有私密正文，不要直接公开上传。
 
 常见情况：
 
