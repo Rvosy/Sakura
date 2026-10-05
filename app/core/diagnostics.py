@@ -224,7 +224,7 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
                 attributes["validation_field"] = remote_field
             if isinstance(remote.get("has_application_state"), bool):
                 attributes["has_application_state"] = remote["has_application_state"]
-            for key in ("diagnostic", "cause_type"):
+            for key in ("diagnostic", "cause_type", "exception_site"):
                 if isinstance(remote.get(key), str):
                     attributes[key] = safe_diagnostic_text(remote[key])
             for key in ("exception_chain", "exception_stack"):

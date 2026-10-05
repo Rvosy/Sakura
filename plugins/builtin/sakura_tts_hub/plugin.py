@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from sakura_provider_errors import provider_failure
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -160,12 +161,14 @@ class SakuraTTSHub:
         try:
             result = self._provider(descriptor).warmup(character_id)
         except Exception as error:
+            code = _stable_error_code(error, "TTS_WARMUP_FAILED")
             return {
                 "accepted": False,
                 "providerId": provider_id,
-                "reasonCode": _stable_error_code(error, "TTS_WARMUP_FAILED"),
+                "reasonCode": code,
                 "stage": "provider_warmup",
                 "errorType": type(error).__name__,
+                "diagnostics": provider_failure(code, error)["diagnostics"],
             }
         if isinstance(result, Mapping):
             accepted = result.get("accepted") is True
@@ -184,6 +187,8 @@ class SakuraTTSHub:
                 response["stage"] = stage
             if isinstance(error_type, str) and _IDENTIFIER.fullmatch(error_type):
                 response["errorType"] = error_type
+            if isinstance(result.get("diagnostics"), Mapping):
+                response["diagnostics"] = dict(result["diagnostics"])
             return response
         accepted = bool(result)
         return {
@@ -237,8 +242,8 @@ class SakuraTTSHub:
             return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
         try:
             provider = getattr(self._context, "bind")(descriptor.service_key)
-        except Exception:
-            return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
+        except Exception as error:
+            return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE", provider_failure("TTS_PROVIDER_UNAVAILABLE", error)["diagnostics"])
         try:
             job_id = provider.begin(
                 {
@@ -249,8 +254,10 @@ class SakuraTTSHub:
                 }
             )
         except Exception as error:
+            code = _stable_error_code(error, "TTS_SYNTHESIS_FAILED")
             return self._failed(
-                request_id, provider_id, _stable_error_code(error, "TTS_SYNTHESIS_FAILED")
+                request_id, provider_id, code,
+                provider_failure(code, error)["diagnostics"]
             )
         if isinstance(job_id, Mapping):
             error_code = job_id.get("errorCode")
@@ -260,6 +267,7 @@ class SakuraTTSHub:
                 error_code
                 if isinstance(error_code, str) and _ERROR_CODE.fullmatch(error_code)
                 else "TTS_SYNTHESIS_FAILED",
+                job_id.get("diagnostics"),
             )
         if not self._valid_identifier(job_id):
             return self._failed(request_id, provider_id, "TTS_JOB_INVALID")
@@ -292,10 +300,10 @@ class SakuraTTSHub:
         if terminal is None:
             try:
                 result = binding.provider.poll(binding.job_id)
-            except Exception:
+            except Exception as error:
                 self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code="TTS_PROVIDER_UNAVAILABLE")
                 failure_reported = True
-                result = {"state": "failed", "errorCode": "TTS_PROVIDER_UNAVAILABLE"}
+                result = {"state": "failed", **provider_failure("TTS_PROVIDER_UNAVAILABLE", error)}
         else:
             result = terminal
         normalized = self._normalize_poll(request_id, binding.provider_id, result)
@@ -333,11 +341,11 @@ class SakuraTTSHub:
         if not isinstance(result, Mapping):
             return cls._failed(request_id, provider_id, "TTS_JOB_RESULT_INVALID")
         state = result.get("state")
-        if state == "running" and set(result) == {"state"}:
+        if state == "running":
             return {"state": "running", "requestId": request_id, "providerId": provider_id}
-        if state == "cancelled" and set(result) == {"state"}:
+        if state == "cancelled":
             return {"state": "cancelled", "requestId": request_id, "providerId": provider_id}
-        if state == "failed" and set(result) == {"state", "errorCode"}:
+        if state == "failed":
             error_code = result.get("errorCode")
             return cls._failed(
                 request_id,
@@ -345,13 +353,12 @@ class SakuraTTSHub:
                 error_code
                 if isinstance(error_code, str) and _ERROR_CODE.fullmatch(error_code)
                 else "TTS_SYNTHESIS_FAILED",
+                result.get("diagnostics"),
             )
         artifact = result.get("artifact")
         if (
             state == "succeeded"
-            and set(result) == {"state", "artifact"}
             and isinstance(artifact, Mapping)
-            and set(artifact) == {"artifactId", "mediaType", "byteLength"}
         ):
             return {
                 "state": "succeeded",
@@ -362,12 +369,13 @@ class SakuraTTSHub:
         return cls._failed(request_id, provider_id, "TTS_JOB_RESULT_INVALID")
 
     @staticmethod
-    def _failed(request_id: str, provider_id: str | None, error_code: str) -> dict[str, Any]:
+    def _failed(request_id: str, provider_id: str | None, error_code: str, diagnostics: object = None) -> dict[str, Any]:
         return {
             "state": "failed",
             "requestId": request_id,
             "providerId": provider_id,
             "errorCode": error_code,
+            **({"diagnostics": dict(diagnostics)} if isinstance(diagnostics, Mapping) else {}),
         }
 
     def _selection(self, character_id: str) -> _Selection:

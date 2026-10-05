@@ -210,6 +210,40 @@ def test_hub_keeps_preparation_selection_and_rejects_restarted_scope():
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("raises", [False, True], ids=["returned-failure", "raised-failure"])
+def test_hub_begin_keeps_failure_without_rebuilding_traceback_and_revokes_audio(raises):
+    from sakura_provider_errors import provider_failure
+
+    try:
+        raise OSError("fixture model failed api_key=fixture-private-key")
+    except OSError as error:
+        source_error = error
+        failure = provider_failure("ASR_MODEL_INVALID", error)
+
+    def begin(_request):
+        if raises:
+            raise source_error
+        return failure
+
+    revoked = []
+    engine = SimpleNamespace(status=lambda: {"available": True, "configVersion": "v1"}, begin=begin)
+    audio = SimpleNamespace(verifyProvider=lambda *_: {"scopeId": "scope"},
+        authorize=lambda audio, _: audio, revoke=revoked.append)
+    hub = SakuraASRHub(SimpleNamespace(caller_id="engine", config=SimpleNamespace(get=lambda: {}),
+        get=lambda key: audio if key == "sakura.host.audio_input" else None, bind=lambda _key: engine))
+    hub.registerProvider({"providerId": "engine", "serviceKey": "engine", "label": "fixture", "processingLocation": "local"})
+    result = hub.begin({"requestId": "request", "providerId": "engine", "configVersion": "v1", "audio": {"resourceId": "audio"}})
+    assert result["state"] == "failed"
+    assert result["errorCode"] == ("ASR_PROVIDER_FAILED" if raises else "ASR_MODEL_INVALID")
+    assert result["diagnostics"]["cause_code"] == result["errorCode"]
+    assert "fixture model failed" in result["diagnostics"]["diagnostic"]
+    assert "fixture-private-key" not in str(result)
+    if not raises:
+        assert result["diagnostics"] == failure["diagnostics"]
+    assert revoked == ["audio"]
+    assert hub.poll("request") == result
+
+
 def test_models_status_and_warmup_do_not_download_and_failed_install_preserves_old_set(tmp_path, monkeypatch):
     content = b"model fixture"
     monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content)),))

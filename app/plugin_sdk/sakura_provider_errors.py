@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
-_PROVIDER_PUBLIC_FIELDS = ("message", "code", "type", "status")
+_PROVIDER_PUBLIC_FIELDS = ("message", "detail", "Exception", "code", "type", "status")
 _PROVIDER_DIAGNOSTIC_LIMIT = 4096
 _PROVIDER_HTTP_PREFIX = re.compile(r"(?:^|\n)API HTTP (?P<status>[1-5][0-9]{2}):")
 _PROVIDER_SENSITIVE_PATTERNS = (
@@ -15,7 +15,7 @@ _PROVIDER_SENSITIVE_PATTERNS = (
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{6,}", re.IGNORECASE),
     re.compile(
         r"\b(?:api[_ -]?key|authorization|token|secret|password|credential)\b"
-        r"\s*[:=]\s*[^\s,;]+",
+        r'''["']?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)''',
         re.IGNORECASE,
     ),
 )
@@ -123,8 +123,10 @@ def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[st
     """Capture a provider failure before its asynchronous worker releases it."""
     secrets = (*secrets, *getattr(error, "diagnostic_secrets", ()))
     chain, stacks, seen, current = [], [], set(), error
+    root = error
     while current is not None and id(current) not in seen and len(chain) < 16:
         seen.add(id(current))
+        root = current
         status = getattr(current, "status_code", None)
         body = getattr(current, "body", None)
         if isinstance(status, int) and isinstance(body, Mapping):
@@ -140,16 +142,40 @@ def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[st
         chain.append(summary)
         stacks.append(summary + "\n" + "".join(traceback.format_tb(current.__traceback__, limit=-32)))
         current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
-    return {
-        "diagnostic": sanitize_provider_diagnostic(str(error), secrets=secrets),
+    diagnostics = {
+        "diagnostic": message,
+        "error_type": type(error).__name__,
+        "cause_type": type(root).__name__,
         "exception_chain": sanitize_provider_diagnostic("\nCaused by: ".join(chain), secrets=secrets),
         "exception_stack": sanitize_provider_diagnostic("\nCaused by:\n".join(stacks), secrets=secrets),
     }
+    frames = traceback.extract_tb(root.__traceback__)
+    if frames:
+        frame = frames[-1]
+        diagnostics["exception_site"] = sanitize_provider_diagnostic(f"{frame.filename}:{frame.name}:{frame.lineno}", secrets=secrets)
+    remote = getattr(root, "diagnostics", None)
+    if isinstance(remote, Mapping):
+        for key in ("diagnostic", "error_type", "cause_type", "cause_code", "exception_site"):
+            if isinstance(remote.get(key), str):
+                diagnostics[key] = sanitize_provider_diagnostic(remote[key], secrets=secrets)
+        for key in ("exception_chain", "exception_stack"):
+            if isinstance(remote.get(key), str):
+                diagnostics[key] = sanitize_provider_diagnostic(diagnostics[key] + "\nRemote:\n" + remote[key], secrets=secrets)
+    return diagnostics
+
+
+def provider_failure(error_code: str, error: object) -> dict[str, Any]:
+    """Keep the failure captured at the worker boundary alongside its stable code."""
+    diagnostics = (provider_exception_diagnostics(error) if isinstance(error, BaseException)
+                   else {"diagnostic": sanitize_provider_diagnostic(str(error))})
+    diagnostics.setdefault("cause_code", error_code)
+    return {"errorCode": error_code, "diagnostics": diagnostics}
 
 
 
 __all__ = [
     "provider_exception_diagnostics",
+    "provider_failure",
     "provider_http_status",
     "public_provider_http_message",
     "sanitize_provider_diagnostic",

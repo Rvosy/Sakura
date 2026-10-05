@@ -1,4 +1,5 @@
 from __future__ import annotations
+from sakura_provider_errors import provider_failure
 
 import re
 import threading
@@ -95,9 +96,9 @@ class SakuraASRHub:
                 raise ValueError("ASR_PROVIDER_RESULT_INVALID")
             # Only public readiness fields may cross back into the input UI.
             return {**{k: v for k, v in descriptor.items() if k != "scopeId"},
-                    **{k: value[k] for k in ("state", "available", "ready", "errorCode", "reasonCode", "configVersion", "language") if k in value}}
-        except Exception:
-            return {**{k: v for k, v in descriptor.items() if k != "scopeId"}, "available": False, "state": "unavailable", "errorCode": "ASR_PROVIDER_UNAVAILABLE", "configVersion": None}
+                    **{k: value[k] for k in ("state", "available", "ready", "errorCode", "reasonCode", "configVersion", "language", "diagnostics") if k in value}}
+        except Exception as error:
+            return {**{k: v for k, v in descriptor.items() if k != "scopeId"}, "available": False, "state": "unavailable", **provider_failure("ASR_PROVIDER_UNAVAILABLE", error), "configVersion": None}
 
     def listProviders(self):
         with self.lock:
@@ -132,10 +133,7 @@ class SakuraASRHub:
         with self.lock:
             descriptor = self.providers.get(selected)
         if descriptor:
-            try:
-                self._proxy(descriptor).warmup()
-            except Exception:
-                pass
+            self._proxy(descriptor).warmup()
         return self.status(selected)
 
     def begin(self, request):
@@ -167,25 +165,26 @@ class SakuraASRHub:
                 proxy = self._proxy(descriptor)
                 status = proxy.status()
                 if not status.get("available"):
-                    return self._failed(status.get("errorCode", "ASR_PROVIDER_UNAVAILABLE"))
+                    return self._failed(status.get("errorCode", "ASR_PROVIDER_UNAVAILABLE"), status.get("diagnostics"))
                 if status.get("configVersion") != request.get("configVersion"):
                     return self._failed("ASR_CONFIGURATION_CHANGED")
                 audio = self.audio.authorize(dict(request["audio"]), descriptor["serviceKey"])
                 binding = Binding(dict(descriptor), audio["resourceId"], proxy)
                 self.jobs[request_id] = binding
                 job_id = proxy.begin({"requestId": request_id, "audio": audio, "language": request.get("language", "auto"), "configVersion": request.get("configVersion")})
-                if not isinstance(job_id, str) or not _ID.fullmatch(job_id):
-                    raise ValueError(job_id.get("errorCode", "ASR_JOB_INVALID") if isinstance(job_id, Mapping) else "ASR_JOB_INVALID")
-                binding.job_id = job_id
+                if isinstance(job_id, str) and _ID.fullmatch(job_id):
+                    binding.job_id = job_id
+                    return {"state": "running", "requestId": request_id, "providerId": provider_id}
+                failure = self._failed(job_id.get("errorCode", "ASR_JOB_INVALID"), job_id.get("diagnostics")) if isinstance(job_id, Mapping) else self._failed("ASR_JOB_INVALID")
             except Exception as error:
-                self._log("asr.recognition.failed", "语音识别启动失败", "error", request_id=request_id, provider_id=provider_id)
-                code = str(getattr(error, "code", error))
-                if request_id in self.jobs:
-                    self.jobs[request_id].terminal = self._failed(code)
-                    self.jobs[request_id].consumed = True
-                    self.audio.revoke(self.jobs[request_id].resource_id)
-                return {**self._failed(code), "requestId": request_id, "providerId": provider_id}
-        return {"state": "running", "requestId": request_id, "providerId": provider_id}
+                failure = self._failed(str(getattr(error, "code", error)))
+                failure.update(provider_failure(failure["errorCode"], error))
+            binding = self.jobs.get(request_id)
+            if binding is not None:
+                binding.terminal = failure
+                binding.consumed = True
+                self.audio.revoke(binding.resource_id)
+            return {**failure, "requestId": request_id, "providerId": provider_id}
 
     def poll(self, request_id):
         with self.lock:
@@ -202,11 +201,11 @@ class SakuraASRHub:
                     elif state in ("running", "cancelled"):
                         result = {"state": state}
                     else:
-                        result = self._failed(value.get("errorCode", "ASR_JOB_RESULT_INVALID") if isinstance(value, Mapping) else "ASR_JOB_RESULT_INVALID")
-                except Exception:
+                        result = self._failed(value.get("errorCode", "ASR_JOB_RESULT_INVALID") if isinstance(value, Mapping) else "ASR_JOB_RESULT_INVALID", value.get("diagnostics") if isinstance(value, Mapping) else None)
+                except Exception as error:
                     self._log("asr.request.failed", "语音识别请求失败", "error", request_id=request_id, provider_id=binding.descriptor["providerId"], error_code="ASR_PROVIDER_UNAVAILABLE")
                     failure_reported = True
-                    result = self._failed("ASR_PROVIDER_UNAVAILABLE")
+                    result = self._failed("ASR_PROVIDER_UNAVAILABLE", provider_failure("ASR_PROVIDER_UNAVAILABLE", error)["diagnostics"])
                 if result["state"] != "running":
                     binding.terminal = result
                     self.audio.revoke(binding.resource_id)
@@ -242,8 +241,8 @@ class SakuraASRHub:
                         break
 
     @staticmethod
-    def _failed(code):
-        return {"state": "failed", "errorCode": code if isinstance(code, str) and _CODE.fullmatch(code) else "ASR_PROVIDER_FAILED"}
+    def _failed(code, diagnostics=None):
+        return {"state": "failed", "errorCode": code if isinstance(code, str) and _CODE.fullmatch(code) else "ASR_PROVIDER_FAILED", **({"diagnostics": dict(diagnostics)} if isinstance(diagnostics, Mapping) else {})}
 
     def close(self):
         if self.closed:

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { errorText } from "../core/error-display.js";
 import { createProviderModelController, findProviderModelSelectionIssue, validateProviderModelSnapshot } from "../settings/provider-model-runtime.js";
 const ref = { serviceKey: "model.remote", profileId: "p", modelId: "m" };
 const snapshot = () => ({ schema_version: 2, window_generation: 4, core_generation_id: "a",
@@ -56,3 +57,27 @@ test("an earlier refresh cannot replace a newer snapshot or a rebound generation
   pending[2]({ ...snapshot(), core_generation_id: "stale" }); await third;
   assert.deepEqual(applied, ["new"]);
 });
+
+for (const refreshFails of [false, true]) {
+  test(`partial model save preserves source diagnostics and draft with refresh failure=${refreshFails}`, async () => {
+    const draft = { model_slots: { "core:chat": ref } };
+    const controller = createProviderModelController({
+      invoke: async command => {
+        if (command.endsWith("_save")) return { change_plan: "applied", save_state: "partial", saved_slots: [],
+          failed_slot: { identity: "core:chat", diagnostics: { diagnostic: "fixture config write denied", exception_stack: "save_slot:42" } } };
+        if (refreshFails) throw new Error("fixture catalog refresh failed");
+        return snapshot();
+      },
+      readDraft: () => draft, applySnapshot() {}, onDirty() {},
+    });
+    await controller.initialize(snapshot());
+    await assert.rejects(controller.save(), error => {
+      const text = errorText(error);
+      assert.match(text, /fixture config write denied/);
+      assert.match(text, /save_slot:42/);
+      assert.equal(text.includes("fixture catalog refresh failed"), refreshFails);
+      return true;
+    });
+    assert.deepEqual(draft.model_slots["core:chat"], ref);
+  });
+}

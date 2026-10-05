@@ -1,5 +1,6 @@
 """Generation-scoped public model selection; provider settings remain plugin-owned."""
 from __future__ import annotations
+from app.core.diagnostics import exception_diagnostics
 
 import hmac
 import threading
@@ -150,7 +151,7 @@ class ProviderSettingsBoundary:
                 reload_required |= state == "restart_required"
                 saved.append(identity)
             except Exception as error:
-                failed = {"identity": identity, "ownerType": "plugin", "ownerId": identity.split(":", 2)[1], "reasonCode": getattr(error, "code", "MODEL_SLOT_SAVE_FAILED")}
+                failed = {"identity": identity, "ownerType": "plugin", "ownerId": identity.split(":", 2)[1], "reasonCode": getattr(error, "code", "MODEL_SLOT_SAVE_FAILED"), "diagnostics": exception_diagnostics(error, reason_code="MODEL_SLOT_SAVE_FAILED", stage="model.settings.save")}
                 break
         return {"saved": True, "change_plan": "applied", "save_state": "partial" if failed else "complete",
                 "saved_slots": saved, "failed_slot": failed, "plugin_reload_required": reload_required,

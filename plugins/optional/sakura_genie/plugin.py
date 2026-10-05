@@ -1,4 +1,5 @@
 from __future__ import annotations
+from sakura_provider_errors import provider_failure
 
 import json
 import os
@@ -105,6 +106,7 @@ class _Job:
         self._request: _TTSRequest | None = None
         self._state = "running"
         self._error_code = "TTS_SYNTHESIS_FAILED"
+        self._diagnostics = {}
         self._disposer = context.effect(self.close)
 
     @property
@@ -137,6 +139,7 @@ class _Job:
     def fail(self, error_code: object) -> None:
         with self._lock:
             self._error_code = _stable_error_code(error_code)
+            self._diagnostics = provider_failure(self._error_code, error_code)["diagnostics"]
             self._state = "cancelled" if self._cancelled.is_set() else "failed"
             self._done.set()
         self._disposer()
@@ -173,12 +176,12 @@ class _Job:
             if state == "succeeded":
                 try:
                     artifact = self._artifacts.commit(self._allocation["artifactId"])
-                except Exception:
-                    return {"state": "failed", "errorCode": "TTS_ARTIFACT_INVALID"}
+                except Exception as error:
+                    return {"state": "failed", **provider_failure("TTS_ARTIFACT_INVALID", error)}
                 return {"state": "succeeded", "artifact": artifact}
             if state == "cancelled":
                 return {"state": "cancelled"}
-            return {"state": "failed", "errorCode": error_code}
+            return {"state": "failed", "errorCode": error_code, "diagnostics": self._diagnostics}
         finally:
             self._disposer()
 
@@ -350,7 +353,7 @@ class _Coordinator:
             job.fail("TTS_SYNTHESIS_CANCELLED")
         except Exception as error:
             self._report("tts.synthesis.failed", "error", {"reason_code": _stable_error_code(error), "error_type": type(error).__name__})
-            job.fail(getattr(error, "code", str(error)))
+            job.fail(error)
         finally:
             if source is not None:
                 source.unlink(missing_ok=True)
@@ -819,13 +822,13 @@ class GenieProvider:
         try:
             voice = self._voice(character_id)
         except Exception as error:
-            return {"errorCode": _stable_error_code(error)}
+            return provider_failure(_stable_error_code(error), error)
         job = _Job(self._context, self._artifacts, request, voice)
         try:
             self._coordinator.submit(job)
         except Exception as error:
             job._disposer()
-            return {"errorCode": _stable_error_code(error)}
+            return provider_failure(_stable_error_code(error), error)
         job_id = f"job_{uuid.uuid4().hex}"
         with self._jobs_lock:
             self._jobs[job_id] = job

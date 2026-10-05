@@ -17,9 +17,10 @@ HOST_AUDIO_INPUT_SERVICE = "sakura.host.audio_input"
 
 
 class AudioInputError(RuntimeError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, diagnostics: object = None) -> None:
         super().__init__(code)
         self.code = code
+        self.diagnostics = dict(diagnostics) if isinstance(diagnostics, Mapping) else {}
 
 
 @dataclass

@@ -37,3 +37,64 @@ def test_provider_text_preserves_paths_and_url_but_removes_url_credentials():
     assert 'C:\\runtime\\model.json\n' in result
     assert 'example.test/v1 failed' in result
     assert 'user:password' not in result
+
+
+import pytest
+
+@pytest.mark.parametrize('text', ['{"api_key": "fixture credential"}', "password='fixture credential'", 'token=fixture-credential'])
+def test_provider_diagnostics_remove_quoted_credentials(text):
+    assert 'fixture' not in sanitize_provider_diagnostic(text)
+
+@pytest.mark.parametrize('stage', ['begin', 'poll', 'rpc'])
+def test_tts_worker_error_reaches_core_response_with_original_diagnostics(stage):
+    from types import SimpleNamespace
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+    from app.core_host.tts_boundary import _PluginSynthesisHandle, TTSBoundaryError
+    from sakura_provider_errors import provider_failure
+    from app.plugins.sakura_plugin_sdk import PluginApiError
+
+    def fail_at_source():
+        raise ValueError('角色尚未配置GPT 模型 /tmp/voice/model.ckpt api_key=private-key')
+    try:
+        fail_at_source()
+    except ValueError as error:
+        failure = provider_failure('TTS_CHARACTER_CONFIG_INVALID', error)
+    if stage == 'rpc':
+        remote = PluginApiError('PLUGIN_CALL_FAILED', diagnostics=failure['diagnostics'])
+        failure = provider_failure('TTS_CHARACTER_CONFIG_INVALID', remote)
+    if stage == 'poll':
+        result = SakuraTTSHub._normalize_poll('request', 'provider', {'state': 'failed', 'elapsedMs': 100, **failure})
+    else:
+        class Config:
+            def get(self):
+                return {'selections': {'character': {'enabled': True, 'provider': 'provider'}}}
+        hub = SakuraTTSHub(SimpleNamespace(bind=lambda _: SimpleNamespace(begin=lambda _: failure)), Config())
+        hub.registerProvider({'providerId': 'provider', 'serviceKey': 'provider.service', 'label': 'Provider'})
+        result = hub.begin({'requestId': 'request', 'characterId': 'character', 'text': 'test', 'options': {}})
+    try:
+        _PluginSynthesisHandle._raise_failed(result['errorCode'], result.get('diagnostics'))
+    except TTSBoundaryError as error:
+        details = exception_diagnostics(error, reason_code=error.code, stage='tts.history.prepare')
+    assert '角色尚未配置GPT 模型' in details['diagnostic']
+    assert '/tmp/voice/model.ckpt' in details['diagnostic']
+    assert 'fail_at_source' in details['exception_stack']
+    assert details['cause_type'] == 'ValueError'
+    assert details['cause_code'] == 'TTS_CHARACTER_CONFIG_INVALID'
+    assert 'fail_at_source' in details['exception_site']
+    assert 'private-key' not in str(details)
+
+
+def test_asr_hub_and_core_keep_worker_diagnostics():
+    from plugins.builtin.sakura_asr_hub.plugin import SakuraASRHub
+    from app.core_host.audio_input import AudioInputError
+    from sakura_provider_errors import provider_failure
+    try:
+        raise OSError('model.onnx: incompatible tensor shape')
+    except OSError as error:
+        failure = provider_failure('ASR_RECOGNITION_FAILED', error)
+    result = SakuraASRHub._failed(failure['errorCode'], failure['diagnostics'])
+    error = AudioInputError(result['errorCode'], result['diagnostics'])
+    details = exception_diagnostics(error, reason_code=error.code, stage='asr.input.poll')
+    assert details['diagnostic'] == 'model.onnx: incompatible tensor shape'
+    assert details['cause_type'] == 'OSError'
+    assert 'test_asr_hub_and_core_keep_worker_diagnostics' in details['exception_stack']

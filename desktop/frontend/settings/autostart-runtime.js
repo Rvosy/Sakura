@@ -57,7 +57,7 @@ export function createAutostartSettingsController({ document, invoke, onDirty })
           launchAtLogin: draft,
         });
       } catch (error) {
-        throw new Error(autostartErrorMessage(error));
+        throw new Error(autostartErrorMessage(error), { cause: error });
       }
       const result = validateAutostartSnapshot(response);
       snapshot = result;

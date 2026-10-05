@@ -1075,6 +1075,7 @@ def test_authorized_plugin_artifact_is_committed_by_core_before_playback(
         "com.example.tts-provider",
         allocated["artifactId"],
     )
+    committed["durationMs"] = 100
 
     class Worker:
         def resolve_committed_artifact(self, artifact_id: str):
@@ -1991,7 +1992,10 @@ def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
         raise RuntimeError("TTS_ONNX_CONVERSION_UNAVAILABLE")
 
     provider.warmup = fail
-    assert hub.warmup("sakura")["reasonCode"] == "TTS_ONNX_CONVERSION_UNAVAILABLE"
+    failure = hub.warmup("sakura")
+    assert failure["reasonCode"] == "TTS_ONNX_CONVERSION_UNAVAILABLE"
+    assert failure["diagnostics"]["cause_code"] == failure["reasonCode"]
+    assert "fail" in failure["diagnostics"]["exception_site"]
 
     config.enabled = False
     assert hub.warmup("sakura")["reasonCode"] == "TTS_DISABLED"
@@ -2072,6 +2076,7 @@ def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch
                 "reasonCode": "TTS_RUNTIME_PYTHON_MISSING",
                 "stage": "python",
                 "errorType": "RuntimeConfigurationError",
+                "diagnostics": {"diagnostic": "fixture missing runtime", "exception_stack": "provider.py:prepare:10"},
             }
 
     boundary = TTSBoundary(
@@ -2093,6 +2098,8 @@ def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch
         "reason_code": "TTS_RUNTIME_PYTHON_MISSING",
         "stage": "python",
         "error_type": "RuntimeConfigurationError",
+        "diagnostic": "fixture missing runtime",
+        "exception_stack": "provider.py:prepare:10",
     }
 
 
@@ -2202,5 +2209,43 @@ def test_idle_fill_caches_a_missing_line_without_playback_and_pauses_at_peak(tmp
         assert boundary.fill_once() is True
         assert boundary._recordings.for_segment("sakura", "saved-reply", 1) is not None
         assert worker.calls.count("begin") == 3
+    finally:
+        boundary.close()
+
+
+@pytest.mark.parametrize("history", [True, False], ids=["history", "live"])
+def test_tts_failure_preserves_diagnostics_in_response_log_and_event(tmp_path, monkeypatch, history):
+    from app.core import runtime_log
+    from sakura_provider_errors import provider_failure
+    try:
+        raise ValueError('角色尚未配置GPT 模型 api_key=private-key')
+    except ValueError as error:
+        failure = provider_failure('TTS_CHARACTER_CONFIG_INVALID', error)
+    _history_entry(tmp_path)
+    events, logs = [], []
+    monkeypatch.setattr(runtime_log, "_EXTERNAL_SINK", logs.append)
+    boundary = _boundary(tmp_path, events)
+    class Worker:
+        def call_service(self, service, method, payload):
+            return {'state': 'failed', 'requestId': payload['requestId'], 'providerId': 'sakura.tts.sakuratts', **failure}
+    boundary._plugin_application_provider = lambda: Worker()
+    try:
+        request = _history_request()
+        if not history:
+            boundary.authorize_segment(operation_id="live-failure", segment_index=0, text="fixture", tone="happy",
+                portrait="smile", character_id="sakura", history_entry_id="saved-reply")
+            request = _request("tts.synthesis.start", {"operationId": "live-failure", "segmentIndex": 0})
+        result = boundary.handle(request)
+        assert result['ok'] is False
+        details = [result['error']['details']['diagnostics']]
+        details.append(next(record.attributes for record in logs if record.event == 'tts.synthesis.failed'))
+        if not history:
+            details.append(events[-1]['payload']['error']['details']['diagnostics'])
+        for diagnostic in details:
+            assert '角色尚未配置GPT 模型' in diagnostic['diagnostic']
+            assert diagnostic['cause_type'] == 'ValueError'
+            assert 'test_tts_failure_preserves_diagnostics' in diagnostic['exception_stack']
+            assert diagnostic['cause_code'] == 'TTS_CHARACTER_CONFIG_INVALID'
+            assert 'private-key' not in str(diagnostic)
     finally:
         boundary.close()

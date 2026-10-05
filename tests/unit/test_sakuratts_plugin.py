@@ -88,7 +88,8 @@ def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, mo
     store.cancel()
     release.set()
     store.close()
-    assert store.state == 'cancelled' and store.current()[0] == original
+    assert store.state == 'idle' and store.current()[0] == original
+    assert store.load()['bundle']['message'] == ''
     assert len(list((store.directory / 'versions').iterdir())) == 1
     assert [fields['event'] for _, _, fields in logs] == [
         'tts.bundle.extracting', 'tts.bundle.checking', 'tts.bundle.succeeded',
@@ -226,11 +227,13 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
         assert precision['default'] == 'fp16'
         assert {o['value'] for o in precision['options']} == {'fp16', 'fp32', 'low-memory', 'minimum-memory'}
         section = next(s for s in sections if s['sectionId'] == 'bundle')
-        assert section['actions'][0]['filePicker']['field'] == 'bundlePath'
+        assert section['actions'][0]['actionId'] == 'downloadBundle'
+        import_action = next(action for action in section['actions'] if action['actionId'] == 'importBundle')
+        assert import_action['filePicker']['field'] == 'bundlePath'
         if installed != 'none':
             assert section['values']['bundle']['taskState'] == 'failed'
             assert section['values']['bundle']['detail']
-            assert section['values']['bundle']['availableActionIds'] == ['importBundle', 'checkUpdate']
+            assert section['values']['bundle']['availableActionIds'] == ['downloadBundle', 'checkUpdate', 'importBundle']
             overview = next(s for s in sections if s['sectionId'] == 'overview')
             assert overview['values']['engineState']['state'] == 'error'
         assert host.call_service('sakura.tts.provider.sakuratts', 'status')['available'] is False
@@ -484,19 +487,10 @@ def test_online_download_install_and_new_published_index(tmp_path, online_repo):
     publish('preview-1', 'first')
     probes = []
     store = BundleStore(tmp_path / 'installed', lambda *args: probes.append(args), lambda action: action())
-    store.check_update()
-    finish_bundle_task(store)
-    assert store.available['releaseId'] == 'preview-1'
-    assert not probes and store.current() is None
+    assert store.load()['bundle']['availableActionIds'][0] == 'downloadBundle'
     store.download()
     finish_bundle_task(store)
     assert store.state == 'succeeded', store.error
-    assert store.current() is None and not probes
-    store.close()
-    store = BundleStore(store.directory, lambda *args: probes.append(args), lambda action: action())
-    assert 'installDownload' in store.load()['bundle']['availableActionIds']
-    store.install_download()
-    finish_bundle_task(store)
     assert store.current()[1]['source_commit'] == 'first'
     assert len(probes) == 1 and store.downloaded is None
     store.close()
@@ -511,9 +505,6 @@ def test_online_download_install_and_new_published_index(tmp_path, online_repo):
     assert 'downloadBundle' in store.load()['bundle']['availableActionIds']
     old = store.current()
     store.download()
-    finish_bundle_task(store)
-    assert store.current() == old
-    store.install_download()
     finish_bundle_task(store)
     assert store.current()[1]['source_commit'] == 'second'
     assert old[0].is_dir()
@@ -538,11 +529,7 @@ def test_online_failure_preserves_installed_bundle(tmp_path, online_repo, failur
         store.available['sourceCommit'] = 'other'
     store.download()
     finish_bundle_task(store)
-    if failure == 'wrong-commit':
-        assert store.state == 'succeeded'
-        store.install_download()
-        finish_bundle_task(store)
-    else:
+    if failure != 'wrong-commit':
         assert store.downloaded is None
         assert not list((store.directory / 'downloads').glob('*.zip'))
     assert store.state == 'failed' and store.error
@@ -577,7 +564,9 @@ def test_cancel_download_waits_for_writer_and_keeps_old_bundle(tmp_path, online_
     store.cancel()
     resume.set()
     store.close()
-    assert store.state == 'cancelled'
+    assert store.state == 'idle'
+    assert store.load()['bundle']['message'] == ''
+    assert store.load()['bundle']['availableActionIds'][0] == 'downloadBundle'
     assert store.downloaded is None
     assert not list((store.directory / 'downloads').iterdir())
 
@@ -735,3 +724,52 @@ def test_plugin_start_checks_online_without_loading_models(tmp_path, monkeypatch
     finally:
         for effect in reversed(effects):
             effect()
+
+
+def test_cancel_online_install_restores_status_and_reuses_download_after_restart(tmp_path, online_repo, monkeypatch):
+    _, publish = online_repo
+    publish('preview-1', 'first')
+    checking, resume = threading.Event(), threading.Event()
+    def probe(*_):
+        checking.set()
+        assert resume.wait(3)
+    store = BundleStore(tmp_path / 'installed', probe, lambda action: action())
+    store.download()
+    assert checking.wait(3)
+    assert store.load()['bundle']['taskState'] == 'running'
+    assert store.load()['bundle']['progress'] is None
+    store.cancel()
+    resume.set()
+    finish_bundle_task(store)
+    assert store.state == 'idle' and store.current() is None
+    assert store.load()['bundle']['availableActionIds'][0] == 'installDownload'
+    assert store.downloaded is not None
+    store.close()
+    store = BundleStore(store.directory, lambda *_: None, lambda action: action())
+    def no_download(*args, **kwargs):
+        raise AssertionError('完整下载不应再次访问网络')
+    monkeypatch.setattr('plugins.optional.sakura_sakuratts._bundle.urlopen', no_download)
+    store.install_download()
+    finish_bundle_task(store)
+    assert store.state == 'succeeded', store.error
+    assert store.current()[1]['source_commit'] == 'first'
+    assert store.downloaded is None
+    store.close()
+
+
+def test_missing_character_model_returns_diagnostic_with_source_location(tmp_path):
+    from types import SimpleNamespace
+    import threading
+    root = tmp_path / 'character'
+    root.mkdir()
+    (root / 'character.json').write_text(json.dumps({'extensions': {'sakura.tts.gpt-sovits': {'toneRefs': 'refs.txt'}}}))
+    provider = object.__new__(Provider)
+    provider.lock = threading.RLock()
+    provider.closed = False
+    provider.bundle = SimpleNamespace(current=lambda: True)
+    provider.character = SimpleNamespace(resolve_resource=lambda *_: root / 'character.json', get=lambda _: {})
+    provider.log = lambda *_args, **_kwargs: None
+    result = provider.begin({'characterId': 'test', 'text': 'hello'})
+    assert result['errorCode'] == 'TTS_CHARACTER_CONFIG_INVALID'
+    assert '角色尚未配置GPT 模型' in result['diagnostics']['diagnostic']
+    assert 'character_voice' in result['diagnostics']['exception_stack']

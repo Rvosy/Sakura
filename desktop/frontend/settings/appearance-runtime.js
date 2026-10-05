@@ -644,7 +644,7 @@ export function createRuntimeAppearanceController({
         }
         await wait(100);
       }
-      throw new Error(`APPEARANCE_CORE_REBIND_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
+      throw new Error(`APPEARANCE_CORE_REBIND_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`, { cause: lastError });
     })().catch((error) => {
       onError(error, "正在恢复外观设置，请稍后重试。");
       throw error;

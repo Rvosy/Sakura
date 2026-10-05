@@ -204,12 +204,12 @@ class BundleStore:
 
     def load(self):
         current = self.current()
-        actions = ['importBundle', 'checkUpdate']
-        if (self.available and not self._is_current(self.available)
-                and (not self.downloaded or self.downloaded[1] != self.available)):
-            actions.append('downloadBundle')
-        if self.downloaded:
+        actions = []
+        if self.downloaded and (not self.available or self.downloaded[1] == self.available):
             actions.append('installDownload')
+        elif not self.available or not self._is_current(self.available):
+            actions.append('downloadBundle')
+        actions.extend(['checkUpdate', 'importBundle'])
         if self.state == 'running':
             actions = ['cancelImport']
         message = self.message
@@ -257,6 +257,8 @@ class BundleStore:
             self.state, self.message, self.error = 'failed', '整合包操作失败', str(error)
             self.log('error', self.message, event='tts.bundle.failed', diagnostic=self.error)
         finally:
+            if self.state == 'cancelled':
+                self.state, self.message, self.error = 'idle', '', ''
             self.progress = None
 
     def check_update(self, values=None):
@@ -277,9 +279,21 @@ class BundleStore:
 
     def download(self, values=None):
         with self.lock:
-            if self.available is None:
-                raise ValueError('请先检查更新。')
-            return self._start_task(self._download, '正在下载整合包', self.available)
+            return self._start_task(self._download_and_install, '正在准备安装')
+
+    def _download_and_install(self):
+        package = self.available or online_package()
+        if self.cancel_event.is_set():
+            raise Cancelled()
+        self.available = package
+        if self._is_current(package):
+            self.state, self.message = 'succeeded', '已安装当前线上版本'
+            return
+        if not self.downloaded or self.downloaded[1] != package:
+            self._download(package)
+        if self.cancel_event.is_set():
+            raise Cancelled()
+        self._install(*self.downloaded)
 
     def _download(self, package):
         downloads = self.directory / 'downloads'
@@ -317,7 +331,8 @@ class BundleStore:
             (downloads / 'ready.json').write_text(json.dumps(package), encoding='utf-8')
             self.downloaded = archive, package
             completed = True
-            self.state, self.message = 'succeeded', f"{package['releaseId']} 已下载，尚未安装"
+            self.message = '正在解压整合包'
+            self.progress = None
         finally:
             if not completed:
                 archive.unlink(missing_ok=True)
@@ -337,6 +352,8 @@ class BundleStore:
 
     def _install(self, archive, package=None):
         started_at = time.monotonic()
+        self.message = '正在解压整合包'
+        self.progress = None
         candidate = self.directory / ('versions/' + uuid.uuid4().hex)
         published = False
         try:

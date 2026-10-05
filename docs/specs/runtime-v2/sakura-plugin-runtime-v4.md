@@ -266,6 +266,11 @@ ASR Hub 和语音输入 Provider 的记录归入“插件”页，按各自插�
 Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接入宿主日志。
 插件进程 stderr（包括 runner 重定向的 stdout）由 Core 持续、有界读取并清洗后记录，按 info 显示为“插件诊断输出”，不因输出通道而计入问题数。下载进度和第三方提示保留原文；明确的警告、调用失败与异常退出由 SDK 或宿主对应事件报告。不拦截标准 `logging` 配置。Agent Trace 的实现保持独立。
 SDK 的 warning/error 和兼容诊断入口在异常处理期间自动附加原文及调用栈。Service RPC error 通过可选 `diagnostics` 保留跨插件异常链，宿主再次清洗。Mem0 事件直接保留在插件日志中，不额外生成一条宿主业务记录。
+
+异步 Provider 的失败结果同样保留可选 `diagnostics`，包含原始诊断、异常类型、原因链和调用栈；稳定 `errorCode` 只用于控制流，不能替代这些信息。TTS/ASR Hub 转发失败结果时保留该字段，Core 将它接入已有异常诊断链。旧 Provider 仅返回错误码时，仍接受该结果，但不虚构异常原文。SDK 的 `sakura_provider_errors.provider_failure` 在工作线程捕获异常时构造失败数据并清洗凭据；转发已捕获的诊断不从当前线程重新制造调用栈。设置部分保存、模型连接测试与前端刷新失败也保留原因，界面展示和复制使用同一份诊断。
+
+TTS 失败的响应、事件和运行日志均保留异常诊断；HTTP 失败保留脱敏后的服务端错误正文。ASR 预热调用抛出的异常沿 RPC 返回，不转换为旧的准备状态。设置部分保存后若刷新也失败，界面同时展示保存与刷新错误。
+
 插件启动失败在转换为状态码前提取原始异常，启动失败日志保留依赖检查或初始化阶段的异常链与调用栈。事件回调、清理回调和宿主资源回收失败也记录诊断，后续回调及资源回收继续执行。关闭期间允许插件注销自己已登记的宿主资源，随后由宿主完成剩余资源回收。
 
 同一 Effect 的显式 disposer 和 context 关闭共用一次性清理，不重复释放资源。多个清理失败以原生异常组保留；
@@ -434,6 +439,8 @@ Hub 保存 descriptor，在创建任务前通过 `context.bind(serviceKey)` 取�
 Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`。Provider 崩溃后，即使没有执行 unregister、
 用户又重载同 ID Provider，旧任务仍因绑定失效而失败，不能查询或取消新进程中的同名 `jobId`。
 新的任务可以重新显式绑定；Runtime 不自动重启 Provider、不重绑或重放旧任务。
+
+Hub 按 `state` 读取任务结果，保留失败诊断并忽略未消费的附加字段，不因 Provider 增加进度或耗时字段而拒绝结果。音频描述中的附加字段同样不影响接收；Core 在消费音频时核对必要字段、已提交资源及实际文件，Hub 不重复检查描述字段集合。
 
 Hub 持有具名服务的 ServiceProxy；不跨进程交换 Provider 内部 Python 对象、Job 对象、callable、callback handle
 或任意 Python 对象的远端引用。任务身份继续使用有界 JSON 的 `jobId`。

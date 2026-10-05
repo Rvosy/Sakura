@@ -127,7 +127,7 @@ export function createPluginSettingsFeature({
               const value = result.values?.[presentation.resultField];
               if (value?.requestId === currentRequest.requestId && value.state === "completed") return { models: (value.models || []).map(m => m.modelId) };
               if (value?.requestId === currentRequest.requestId && value.state === "failed") {
-                throw new Error([value.code || "MODEL_PROBE_FAILED", value.message].filter(Boolean).join("|"));
+                throw new Error([value.code || "MODEL_PROBE_FAILED", value.message].filter(Boolean).join("|"), { cause: value });
               }
               await new Promise(resolve => window.setTimeout(resolve, 200));
               result = await action(presentation.statusAction);

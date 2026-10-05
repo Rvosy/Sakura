@@ -70,14 +70,19 @@ export function createProviderModelController({ invoke, readDraft, applySnapshot
     });
     if (disposed || snapshot.core_generation_id !== identity) throw new Error("模型设置会话已变化，请重新保存。");
     if (result?.change_plan !== "applied") throw new Error("PROVIDER_SETTINGS_CHANGE_PLAN_INVALID");
-    await refreshCurrent();
+    let refreshError = null;
+    try { await refreshCurrent(); } catch (error) { refreshError = error; }
     if (result.save_state === "partial") {
-      const saved = new Set(result.saved_slots || []);
-      const pending = { model_slots: Object.fromEntries(snapshot.model_slots.map(slot => [slot.identity,
-        saved.has(slot.identity) ? slot.selection : draft.model_slots[slot.identity] || slot.selection])) };
-      applySnapshot(snapshot, { draft: pending }); onDirty();
-      throw new Error(`部分模型设置已保存；${result.failed_slot?.identity || "未知槽位"} 保存失败，未完成的修改已保留。`);
+      if (!refreshError) {
+        const saved = new Set(result.saved_slots || []);
+        const pending = { model_slots: Object.fromEntries(snapshot.model_slots.map(slot => [slot.identity,
+          saved.has(slot.identity) ? slot.selection : draft.model_slots[slot.identity] || slot.selection])) };
+        applySnapshot(snapshot, { draft: pending }); onDirty();
+      }
+      const message = `部分模型设置已保存；${result.failed_slot?.identity || "未知槽位"} 保存失败，未完成的修改已保留。${refreshError ? "当前状态刷新失败，请重新打开设置后确认。" : ""}`;
+      throw new AggregateError([result.failed_slot, ...(refreshError ? [refreshError] : [])], message);
     }
+    if (refreshError) throw refreshError;
     return result;
   }
 

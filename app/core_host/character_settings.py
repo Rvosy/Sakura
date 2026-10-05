@@ -430,7 +430,7 @@ class CharacterSettingsBoundary:
         except CharacterSettingsError as error:
             if error.code != "VISUAL_SELECTION_APPLY_FAILED":
                 raise
-            return {"accepted": False, "saved": True, "reasonCode": error.code}
+            return {"accepted": False, "saved": True, "reasonCode": error.code, "diagnostics": exception_diagnostics(error, reason_code=error.code, stage="visual.select")}
         return {"accepted": True, "changePlan": result["changePlan"]}
 
     def select(self, raw_character_id: object, visual_selections: object = None,

@@ -221,7 +221,7 @@ class ASRBoundary:
             status = (call("status", task.requested_provider_id) if task.requested_provider_id
                       else call("status"))
             if not isinstance(status, Mapping) or not status.get("providerId") or not status.get("serviceKey"):
-                raise AudioInputError(status.get("reasonCode", status.get("errorCode", "ASR_PROVIDER_NOT_SELECTED")) if isinstance(status, Mapping) else "ASR_PROVIDER_UNAVAILABLE")
+                raise AudioInputError(status.get("reasonCode", status.get("errorCode", "ASR_PROVIDER_NOT_SELECTED")) if isinstance(status, Mapping) else "ASR_PROVIDER_UNAVAILABLE", status.get("diagnostics") if isinstance(status, Mapping) else None)
             if task.requested_provider_id and status["providerId"] != task.requested_provider_id:
                 raise AudioInputError("ASR_PROVIDER_IDENTITY_INVALID")
             with self._lock:
@@ -245,7 +245,7 @@ class ASRBoundary:
                 if status.get("state") == "ready" and status.get("available"):
                     break
                 if status.get("state") not in {"preparing", "loading", "warming"}:
-                    raise AudioInputError(status.get("reasonCode", status.get("errorCode", "ASR_PROVIDER_UNAVAILABLE")))
+                    raise AudioInputError(status.get("reasonCode", status.get("errorCode", "ASR_PROVIDER_UNAVAILABLE")), status.get("diagnostics"))
                 if monotonic() >= deadline:
                     raise AudioInputError("ASR_PREPARE_TIMEOUT")
                 task.cancelled.wait(0.1)
@@ -269,7 +269,7 @@ class ASRBoundary:
                                                    "configVersion": task.config_version, "language": task.language,
                                                    "audio": audio})
             if started.get("state") != "running":
-                raise AudioInputError(started.get("errorCode", "ASR_PROVIDER_UNAVAILABLE"))
+                raise AudioInputError(started.get("errorCode", "ASR_PROVIDER_UNAVAILABLE"), started.get("diagnostics"))
             deadline = monotonic() + 180
             while True:
                 self._require_context(task)
@@ -287,7 +287,7 @@ class ASRBoundary:
                         self._log_state(task, "succeeded")
                     break
                 if state != "running":
-                    raise AudioInputError(result.get("errorCode", "ASR_CANCELLED" if state == "cancelled" else "ASR_RESULT_INVALID"))
+                    raise AudioInputError(result.get("errorCode", "ASR_CANCELLED" if state == "cancelled" else "ASR_RESULT_INVALID"), result.get("diagnostics"))
                 if monotonic() >= deadline:
                     raise AudioInputError("ASR_RECOGNITION_TIMEOUT")
                 task.cancelled.wait(0.1)

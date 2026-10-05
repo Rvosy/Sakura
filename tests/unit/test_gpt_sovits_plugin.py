@@ -1038,6 +1038,61 @@ class _LocalArtifacts:
         return True
 
 
+@pytest.mark.parametrize("failure_kind,expected_code,detail", [
+    ("timeout", "TTS_RUNTIME_UNAVAILABLE", "fixture connection timed out"),
+    ("http", "TTS_SYNTHESIS_FAILED", "fixture tensor dimension mismatch"),
+    ("weights", "TTS_WEIGHTS_UNAVAILABLE", "fixture weights unreadable"),
+    ("start", "TTS_RUNTIME_START_FAILED", "fixture process creation denied"),
+])
+def test_coordinator_keeps_stable_code_and_source_failure(tmp_path, monkeypatch, failure_kind, expected_code, detail):
+    from urllib.error import HTTPError
+    from plugins.optional.sakura_gpt_sovits import plugin as provider
+
+    settings = provider.GPTSoVITSTTSSettings(
+        enabled=True, api_url="http://fixture.invalid/tts", ref_audio_path=tmp_path / "ref.wav",
+        ref_text_path=tmp_path / "ref.txt", ref_text="fixture", gpt_model_path=tmp_path / "model.ckpt",
+        work_dir=tmp_path, python_path=tmp_path / "python")
+    runtime = provider._support._ManagedRuntime(settings, base_dir=tmp_path, is_closed=lambda: False)
+    supervisor = SimpleNamespace(settings=settings,
+        _ensure_service_available=runtime.ensure_available if failure_kind == "start" else lambda fail: True,
+        _ensure_character_weights=runtime.ensure_weights if failure_kind == "weights" else lambda fail, **kw: True,
+        _restart_local_service_after_http_failure=lambda *a: False, _restart_owned_runtime=lambda: False)
+    coordinator = object.__new__(provider._Coordinator)
+    coordinator._configure = lambda voice: (settings, supervisor)
+    coordinator._diagnostic = None
+    artifacts = _LocalArtifacts(tmp_path / "artifacts")
+    job = provider._Job(_EffectContext(), artifacts, {"text": "fixture", "requestId": "failure"}, None)
+    assert job.mark_started()
+
+    def failed_read(*args, **kwargs):
+        if failure_kind == "http":
+            body = json.dumps({"message": "tts failed", "Exception": detail,
+                               "api_key": "fixture-private-key", "input": "fixture private transcript"}).encode()
+            raise HTTPError(settings.api_url, 400, "Bad Request", {}, io.BytesIO(body))
+        if failure_kind == "start":
+            raise PermissionError(detail)
+        raise TimeoutError(detail)
+
+    monkeypatch.setattr(provider._support, "_read_url", failed_read)
+    monkeypatch.setattr(provider._support, "_reference_path", lambda *a: str(settings.ref_audio_path))
+    if failure_kind == "start":
+        settings.python_path.touch()
+        (tmp_path / "api_v2.py").touch()
+        monkeypatch.setattr(provider._support, "_probe_tcp", lambda *a: False)
+        monkeypatch.setattr(provider._support, "prepare_managed_profile", lambda *a, **kw: None)
+        monkeypatch.setattr(provider._support.subprocess, "Popen", failed_read)
+    coordinator._execute(job)
+    result = job.poll()
+    assert result["state"] == "failed"
+    assert result["errorCode"] == expected_code
+    assert result["diagnostics"]["cause_code"] == expected_code
+    assert detail in result["diagnostics"]["diagnostic"]
+    assert "failed_read" in result["diagnostics"]["exception_stack"]
+    assert "fixture-private-key" not in str(result)
+    assert "fixture private transcript" not in str(result)
+    assert not artifacts.values
+
+
 def test_managed_coordinator_serializes_weight_switch_and_synthesis(
     tmp_path: Path,
     monkeypatch,

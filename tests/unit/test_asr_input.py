@@ -68,9 +68,14 @@ class Provider:
         self.jobs = {}
         self.reading = False
         self.version = uuid.uuid4().hex
+        self.warmup_error = False
     def status(self):
         return {"state":"ready", "available":True, "configVersion":self.version, "language":self.language}
-    def warmup(self): return self.status()
+    def warmup(self):
+        if self.warmup_error:
+            raise OSError('fixture model preparation failed api_key=private-key')
+        return self.status()
+    def fail_warmup(self): self.warmup_error = True
     def begin(self, request):
         job_id = uuid.uuid4().hex
         self.jobs[job_id] = {"state":"running"}
@@ -96,7 +101,7 @@ class Plugin:
     def setup(self, context):
         provider = Provider(context)
         service = "test.asr.NAME.service"
-        context.provide(service, provider, exports=("status","warmup","begin","poll","cancel","probe","impersonate"))
+        context.provide(service, provider, exports=("status","warmup","begin","poll","cancel","probe","impersonate","fail_warmup"))
         context.get("sakura.asr").registerProvider({"providerId":"test.asr.NAME", "serviceKey":service, "label":"NAME", "processingLocation":"local"})
 '''.replace("NAME", name), encoding="utf-8")
     roots = RuntimeRoots(distribution, tmp_path / "user")
@@ -128,6 +133,20 @@ def ready(request, recording_id="record-1", purpose="draft"):
     path = Path(target["payload"]["path"])
     assert request("asr.input.capture_ready", recordingId=recording_id)["payload"]["state"] == "recording"
     return path
+
+
+def test_warmup_rpc_failure_reaches_input_poll_with_source_diagnostics(runtime):
+    application, boundary, request, _ = runtime
+    application.call_service("test.asr.one.service", "fail_warmup")
+    assert request("asr.input.prepare", recordingId="failed-warmup", contextId="draft")["ok"]
+    result = until(lambda: request("asr.input.poll", recordingId="failed-warmup"),
+                   lambda r: r.get("payload", {}).get("state") != "preparing")
+    assert result["payload"]["state"] == "failed"
+    details = result["payload"]["diagnostics"]
+    assert "fixture model preparation failed" in details["diagnostic"]
+    assert "warmup" in details["exception_stack"]
+    assert details["cause_type"] == "OSError"
+    assert "private-key" not in str(result)
 
 
 def test_real_process_route_selection_and_exactly_one_draft_result(runtime):

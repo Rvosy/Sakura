@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sakura_provider_errors import public_provider_http_message
+
 import ipaddress
 import json
 import os
@@ -277,9 +279,14 @@ class _ManagedRuntime:
             if _probe_tcp(host, port, min(self.settings.timeout_seconds, 3)):
                 self._fail_service(fail, "TTS_PORT_OCCUPIED", started_at, "PortOccupiedError")
                 return False
-            start_errors: list[str] = []
+            def start_failed(code: str) -> None:
+                error = sys.exception()
+                self._fail_service(fail, code, started_at,
+                                   type(error).__name__ if error is not None else "RuntimeConfigurationError")
+
             try:
-                started = self._start(start_errors.append)
+                if not self._start(start_failed):
+                    return False
             except OSError as error:
                 self._fail_service(
                     fail,
@@ -287,17 +294,6 @@ class _ManagedRuntime:
                     started_at,
                     type(error).__name__,
                 )
-                return False
-            if not started:
-                reason_code = start_errors[-1] if start_errors else "TTS_RUNTIME_START_FAILED"
-                error_type = (
-                    "RuntimeConfigurationError"
-                    if reason_code == "TTS_RUNTIME_INVALID"
-                    else "RuntimeProfileError"
-                    if reason_code != "TTS_RUNTIME_START_FAILED"
-                    else "RuntimeStartError"
-                )
-                self._fail_service(fail, reason_code, started_at, error_type)
                 return False
             process = self._server_process
         assert process is not None
@@ -738,6 +734,9 @@ class GPTSoVITSSynthesisEngine:
                 break
             except urllib.error.HTTPError as error:
                 body = error.read().decode("utf-8", errors="replace")
+                error.diagnostics = {"diagnostic": public_provider_http_message(
+                    RuntimeError(f"API HTTP {error.code}: {body or error.reason}"), error.code,
+                )}
                 if (
                     not restart_attempted
                     and supervisor._restart_local_service_after_http_failure(

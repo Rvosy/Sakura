@@ -1,3 +1,4 @@
+import { errorText } from '../core/error-display.js';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
@@ -596,6 +597,7 @@ test("voice partial save refreshes actual state and remains an explicit failure"
           }],
           selectionSaved: false,
           reasonCode: "TTS_SELECTION_SAVE_FAILED",
+          diagnostics: { diagnostic: "voice/config.json: Permission denied", exception_stack: "save_selection:42" },
           snapshot: {},
         };
       }
@@ -623,7 +625,11 @@ test("voice partial save refreshes actual state and remains an explicit failure"
 
   await assert.rejects(
     controller.save(),
-    /语音引擎配置已保存，但角色语音选择未保存/,
+    error => {
+      assert.match(errorText(error), /voice\/config.json: Permission denied/);
+      assert.match(errorText(error), /save_selection:42/);
+      return /语音引擎配置已保存，但角色语音选择未保存/.test(error.message);
+    },
   );
 
   assert.equal(calls[0][0], "settings_voice_save");

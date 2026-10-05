@@ -143,7 +143,7 @@ export function createToolsController({
         }
         await wait(100);
       }
-      throw new Error(`TOOLS_CORE_RESTART_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
+      throw new Error(`TOOLS_CORE_RESTART_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`, { cause: lastError });
     })().finally(() => { rebindPromise = null; });
     return rebindPromise;
   }

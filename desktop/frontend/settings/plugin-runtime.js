@@ -141,7 +141,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         } catch (error) { lastError = error; }
         await wait(100);
       }
-      throw new Error(`PLUGIN_SETTINGS_REFRESH_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
+      throw new Error(`PLUGIN_SETTINGS_REFRESH_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`, { cause: lastError });
     })().finally(() => { rebindPromise = null; });
     return rebindPromise;
   }
@@ -240,7 +240,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           // The desired state may already be saved even when the reply is lost.
           try { await bindCurrent({ preserveDraft: true }); } catch { /* keep the original save error */ }
         }
-        if (savedSections.length) throw new Error(`已保存 ${savedSections.length} 个设置区块；${savingSection} 未完成，修改已保留。${String(error.message || error)}`);
+        if (savedSections.length) throw new Error(`已保存 ${savedSections.length} 个设置区块；${savingSection} 未完成，修改已保留。${String(error.message || error)}`, { cause: error });
         throw error;
       }
     },

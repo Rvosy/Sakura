@@ -9,7 +9,7 @@ import uuid
 from urllib.parse import urlparse
 
 from sakura_model_client import decode_model_result
-from sakura_provider_errors import sanitize_provider_diagnostic
+from sakura_provider_errors import sanitize_provider_diagnostic, provider_failure
 
 
 SERVICE_KEY = "sakura.model.openai_compatible"
@@ -162,6 +162,7 @@ class ProviderProfiles:
         def run():
             failure_code = ""
             failure_message = ""
+            diagnostics = {}
             try:
                 sequence = 0
                 while True:
@@ -183,15 +184,22 @@ class ProviderProfiles:
                 result = {}
                 code = getattr(error, "code", "MODEL_PROBE_FAILED")
                 failure_code = code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,80}", code) else "MODEL_PROBE_FAILED"
-                failure_message = sanitize_provider_diagnostic(str(error), secrets=secrets)
+                diagnostics = provider_failure(failure_code, error)["diagnostics"]
+                diagnostics = {key: sanitize_provider_diagnostic(value, secrets=secrets) for key, value in diagnostics.items()}
+                failure_message = diagnostics["diagnostic"]
                 state = {"state": "error", "label": "模型测试失败", "message": failure_message}
             finally:
                 try:
                     bound.invoke("release", operation_id, timeout_seconds=1)
-                except Exception:
+                except Exception as error:
+                    cleanup = provider_failure("MODEL_PROBE_CLEANUP_FAILED", error)["diagnostics"]
+                    cleanup = {key: sanitize_provider_diagnostic(value, secrets=secrets) for key, value in cleanup.items()}
+                    if failure_code:
+                        diagnostics["recovery_diagnostic"] = cleanup.get("exception_stack", cleanup["diagnostic"])
                     if not failure_code:
                         failure_code = "MODEL_PROBE_CLEANUP_FAILED"
-                        failure_message = "模型测试结束后未能释放请求。"
+                        diagnostics = cleanup
+                        failure_message = cleanup["diagnostic"]
                         state = {"state": "error", "label": "模型测试失败", "message": failure_message}
                 finally:
                     with self._lock:
@@ -200,6 +208,7 @@ class ProviderProfiles:
                                               "state": "completed" if state["state"] == "ready" else "failed",
                                               "code": failure_code,
                                               "message": failure_message,
+                                              "diagnostics": diagnostics,
                                               "models": result.get("models", []) if state["state"] == "ready" else []}
 
         worker = threading.Thread(target=run, name="model-settings-probe", daemon=True)

@@ -1357,41 +1357,50 @@ impl FileWriter {
             return Err(());
         }
         let line = encode_record(record, self.max_record_bytes).ok_or(())?;
-        if self.ensure_open().is_err()
-            || (self.max_file_bytes > 0
+        let result = (|| -> std::io::Result<()> {
+            self.ensure_open()?;
+            if self.max_file_bytes > 0
                 && self.current_bytes.saturating_add(line.len() as u64) > self.max_file_bytes
-                && self.rotate().is_err())
-            || self.handle.as_mut().ok_or(())?.write_all(&line).is_err()
-        {
-            self.fail_once();
+            {
+                self.rotate()?;
+            }
+            self.handle
+                .as_mut()
+                .ok_or_else(|| std::io::Error::other("log file is not open"))?
+                .write_all(&line)
+        })();
+        if let Err(error) = result {
+            self.fail_once(&error);
             return Err(());
         }
         self.current_bytes = self.current_bytes.saturating_add(line.len() as u64);
         Ok(())
     }
 
-    fn ensure_open(&mut self) -> Result<(), ()> {
+    fn ensure_open(&mut self) -> std::io::Result<()> {
         if self.handle.is_some() {
             return Ok(());
         }
-        let parent = self.path.parent().ok_or(())?;
-        fs::create_dir_all(parent).map_err(|_| ())?;
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("log path has no parent"))?;
+        fs::create_dir_all(parent)?;
         let file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)
-            .map_err(|_| ())?;
+            .open(&self.path)?;
         self.current_bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         self.handle = Some(BufWriter::new(file));
         Ok(())
     }
 
-    fn rotate(&mut self) -> Result<(), ()> {
+    fn rotate(&mut self) -> std::io::Result<()> {
         if let Some(mut handle) = self.handle.take() {
-            handle.flush().map_err(|_| ())?;
+            handle.flush()?;
         }
         if self.backup_count == 0 {
-            File::create(&self.path).map_err(|_| ())?;
+            File::create(&self.path)?;
         } else {
             for index in (1..self.backup_count).rev() {
                 let source = backup_path(&self.path, index);
@@ -1400,16 +1409,16 @@ impl FileWriter {
                 }
                 let target = backup_path(&self.path, index + 1);
                 if target.exists() {
-                    fs::remove_file(&target).map_err(|_| ())?;
+                    fs::remove_file(&target)?;
                 }
-                fs::rename(source, target).map_err(|_| ())?;
+                fs::rename(source, target)?;
             }
             let first = backup_path(&self.path, 1);
             if first.exists() {
-                fs::remove_file(&first).map_err(|_| ())?;
+                fs::remove_file(&first)?;
             }
             if self.path.exists() {
-                fs::rename(&self.path, first).map_err(|_| ())?;
+                fs::rename(&self.path, first)?;
             }
         }
         self.current_bytes = 0;
@@ -1421,20 +1430,23 @@ impl FileWriter {
             return Err(());
         }
         if let Some(handle) = self.handle.as_mut() {
-            if handle.flush().is_err() {
-                self.fail_once();
+            if let Err(error) = handle.flush() {
+                self.fail_once(&error);
                 return Err(());
             }
         }
         Ok(())
     }
 
-    fn fail_once(&mut self) {
+    fn fail_once(&mut self, error: &std::io::Error) {
         self.failed = true;
         self.handle = None;
         if !self.warned {
             self.warned = true;
-            eprintln!("SAKURA_RUNTIME_LOG_WRITE_FAILED");
+            eprintln!(
+                "SAKURA_RUNTIME_LOG_WRITE_FAILED: {}: {error}",
+                self.path.display()
+            );
         }
     }
 }

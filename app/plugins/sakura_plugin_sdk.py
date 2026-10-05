@@ -143,7 +143,7 @@ class PluginApiError(RuntimeError):
         self.diagnostics = {
             key: _diagnostic_text(value)
             for key, value in (diagnostics or {}).items()
-            if key in {"diagnostic", "cause_type", "exception_chain", "exception_stack"} and isinstance(value, str)
+            if key in {"diagnostic", "cause_type", "exception_site", "exception_chain", "exception_stack"} and isinstance(value, str)
         }
         for key in ("error_type", "cause_code"):
             value = _diagnostic_token((diagnostics or {}).get(key))
@@ -196,6 +196,8 @@ def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | N
         cause_code = None
     if cause_code is not None:
         result["cause_code"] = cause_code
+    if frames:
+        result["exception_site"] = frames[-1].strip().removeprefix("at ")
     if validation_field is not None:
         result["validation_field"] = validation_field
     remote = getattr(current, "diagnostics", None)
@@ -209,7 +211,7 @@ def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | N
         remote_field = _diagnostic_field(remote.get("validation_field"))
         if "validation_field" not in result and remote_field is not None:
             result["validation_field"] = remote_field
-        for key in ("diagnostic", "cause_type"):
+        for key in ("diagnostic", "cause_type", "exception_site"):
             if isinstance(remote.get(key), str):
                 result[key] = _diagnostic_text(remote[key])
         for key in ("exception_chain", "exception_stack"):

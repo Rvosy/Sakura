@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 
 from app.core_host.protocol import error_payload, event, response
 from app.core.runtime_log import log_event
+from app.core.diagnostics import exception_diagnostics
 from app.storage.tts_storage import TtsStorage, TtsStorageUnavailable
 from app.storage.paths import StoragePaths
 from app.storage.timeline import TimelineDataError, TimelineKind, TimelineStore
@@ -56,12 +57,14 @@ class TTSBoundaryError(RuntimeError):
         *,
         retryable: bool = False,
         provider_error_code: str | None = None,
+        diagnostics: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
         self.provider_error_code = provider_error_code
+        self.diagnostics = dict(diagnostics or {})
 
     def public_error(self) -> dict[str, Any]:
         payload = error_payload(self.code, self.message)
@@ -115,7 +118,7 @@ class _PluginSynthesisHandle:
             if result.get("requestId") != self.request_id:
                 raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Hub job identity changed")
             if state == "failed":
-                self._raise_failed(result.get("errorCode"))
+                self._raise_failed(result.get("errorCode"), result.get("diagnostics"))
             if result.get("providerId") != self.provider_id:
                 raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider identity changed")
             if state == "running":
@@ -142,8 +145,9 @@ class _PluginSynthesisHandle:
         return bool(isinstance(result, Mapping) and result.get("accepted"))
 
     @staticmethod
-    def _raise_failed(error_code: object) -> None:
+    def _raise_failed(error_code: object, diagnostics: object = None) -> None:
         code = error_code if isinstance(error_code, str) else "TTS_SYNTHESIS_FAILED"
+        diagnostics = diagnostics if isinstance(diagnostics, Mapping) else {}
         if code == "TTS_DISABLED":
             raise TTSBoundaryError("TTS_DISABLED", "角色语音已关闭")
         if code in {
@@ -156,17 +160,20 @@ class _PluginSynthesisHandle:
                 "configured TTS Provider is unavailable",
                 retryable=True,
                 provider_error_code=code,
+                diagnostics=diagnostics,
             )
         if code in {"TTS_ARTIFACT_INVALID", "TTS_JOB_RESULT_INVALID"}:
             raise TTSBoundaryError(
                 "AUDIO_RECORDING_INVALID",
                 "TTS audio artifact is invalid",
                 provider_error_code=code,
+                diagnostics=diagnostics,
             )
         raise TTSBoundaryError(
             "TTS_SYNTHESIS_FAILED",
-            "TTS Provider synthesis failed",
+            str(diagnostics.get("diagnostic") or code),
             provider_error_code=code,
+            diagnostics=diagnostics,
         )
 
 
@@ -269,6 +276,8 @@ class TTSBoundary:
             "reason_code": reason_code,
         }
         if isinstance(result, Mapping):
+            if isinstance(result.get("diagnostics"), Mapping):
+                attributes = {**result["diagnostics"], **attributes}
             if isinstance(result.get("stage"), str):
                 attributes["stage"] = result["stage"]
             if isinstance(result.get("errorType"), str):
@@ -860,7 +869,7 @@ class TTSBoundary:
         if not isinstance(result, Mapping) or result.get("requestId") != request_id:
             raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Hub job result is invalid")
         if result.get("state") == "failed":
-            _PluginSynthesisHandle._raise_failed(result.get("errorCode"))
+            _PluginSynthesisHandle._raise_failed(result.get("errorCode"), result.get("diagnostics"))
         provider_id = result.get("providerId")
         if (
             result.get("state") != "running"
@@ -912,8 +921,8 @@ class TTSBoundary:
             else:
                 closed = False
                 cancelled = True
-        artifact = result.get("artifact")
-        artifact_id = artifact.get("artifactId") if isinstance(artifact, Mapping) else None
+        artifact = result["artifact"]
+        artifact_id = artifact.get("artifactId")
         if closed:
             if isinstance(artifact_id, str):
                 self._release_plugin_artifact(application, artifact_id)
@@ -929,7 +938,7 @@ class TTSBoundary:
                 "TTS synthesis was cancelled",
             )
         descriptor, recording = self._consume_plugin_audio_artifact(
-            artifact if isinstance(artifact, Mapping) else {},
+            artifact,
             authorization,
             provider=provider_id,
             recording_only=recording_only,
@@ -946,12 +955,6 @@ class TTSBoundary:
     ) -> tuple[dict[str, Any], object]:
         """Commit an authorized plugin result without delegating recording/playback ownership."""
 
-        if not isinstance(descriptor, Mapping) or set(descriptor) != {
-            "artifactId",
-            "mediaType",
-            "byteLength",
-        }:
-            raise TTSBoundaryError("AUDIO_RECORDING_INVALID", "invalid plugin audio artifact")
         artifact_id = descriptor.get("artifactId")
         media_type = descriptor.get("mediaType")
         byte_length = descriptor.get("byteLength")
@@ -1104,6 +1107,7 @@ class TTSBoundary:
                     saved_sections,
                     application_states,
                     reason_code="TTS_PROVIDER_SETTINGS_SAVE_FAILED",
+                    error=exc,
                 )
             raise TTSBoundaryError(
                 "INVALID_TTS_SETTINGS", "TTS Provider settings could not be saved"
@@ -1125,6 +1129,7 @@ class TTSBoundary:
                         saved_sections,
                         application_states,
                         reason_code="TTS_SELECTION_SAVE_FAILED",
+                        error=exc,
                     )
                 raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS settings could not be saved") from exc
             selection_saved = True
@@ -1154,6 +1159,7 @@ class TTSBoundary:
         application_states: list[str],
         *,
         reason_code: str,
+        error: BaseException,
     ) -> dict[str, Any]:
         try:
             snapshot: dict[str, Any] | None = self._voice_settings_snapshot()
@@ -1170,6 +1176,7 @@ class TTSBoundary:
             "snapshot": snapshot,
             "applicationState": _combined_application_state(application_states),
             "saveState": "partial",
+            "diagnostics": exception_diagnostics(error, reason_code=reason_code, stage="tts.settings.save"),
             "savedSections": saved_sections,
             "selectionSaved": False,
             "reasonCode": reason_code,
@@ -1480,10 +1487,14 @@ class TTSBoundary:
     def _publish_failure(
         self, request: Mapping[str, Any], authorization: _Authorization, error: TTSBoundaryError
     ) -> None:
+        failure = error.public_error()
+        failure["details"]["diagnostics"] = exception_diagnostics(
+            error, reason_code=error.code, stage=str(request["name"]),
+        )
         self._publish(
             request,
             "tts.synthesis.failed",
-            {**self._segment_payload(authorization), "error": error.public_error()},
+            {**self._segment_payload(authorization), "error": failure},
         )
 
     @staticmethod

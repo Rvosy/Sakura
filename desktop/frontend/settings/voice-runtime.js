@@ -494,20 +494,20 @@ export function createVoiceController({
         coreGenerationId: snapshot.coreGenerationId,
         draft,
       }));
-      let refreshFailed = false;
-      try { await refresh(); } catch { refreshFailed = true; }
+      let refreshError = null;
+      try { await refresh(); } catch (error) { refreshError = error; }
       if (result.saveState === "partial") {
         const providerSaveFailed = result.reasonCode === "TTS_PROVIDER_SETTINGS_SAVE_FAILED";
         const savedWhat = providerSaveFailed
           ? "部分语音引擎配置已保存，但后续引擎配置和角色语音选择未保存"
           : "语音引擎配置已保存，但角色语音选择未保存";
-        const message = refreshFailed
+        const message = refreshError
           ? `${savedWhat}，且当前状态刷新失败。请重新打开设置后确认。`
           : `${savedWhat}。页面已刷新为实际状态，请确认后重试。`;
         onStatus(message, "error");
-        throw new Error(message);
+        throw new AggregateError([result, ...(refreshError ? [refreshError] : [])], message);
       }
-      if (refreshFailed) throw new Error("TTS_SETTINGS_REFRESH_FAILED");
+      if (refreshError) throw new Error("TTS_SETTINGS_REFRESH_FAILED", { cause: refreshError });
       if (result.applicationState === "restart_required") {
         onStatus("已保存，请重新加载语音插件。", "info");
       } else if (result.applicationState === "error") {

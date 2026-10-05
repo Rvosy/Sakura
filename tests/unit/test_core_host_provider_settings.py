@@ -109,6 +109,8 @@ def test_plugin_slot_failure_reports_partial_save_and_skips_runtime_apply(tmp_pa
     assert result["save_state"] == "partial"
     assert result["saved_slots"] == ["core:chat", "core:vision_chat"]
     assert result["failed_slot"]["identity"] == slot["identity"]
+    assert result["failed_slot"]["diagnostics"]["diagnostic"] == "failed"
+    assert "save" in result["failed_slot"]["diagnostics"]["exception_stack"]
     assert not calls
 
 

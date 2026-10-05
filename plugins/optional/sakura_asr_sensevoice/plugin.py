@@ -1,4 +1,5 @@
 from __future__ import annotations
+from sakura_provider_errors import provider_failure
 
 import importlib
 import re
@@ -53,6 +54,7 @@ class SenseVoiceProvider:
         self.sherpa = None
         self.state = "unloaded"
         self.error = ""
+        self.diagnostics = {}
         # Language is captured per input; model identity changes with each process.
         self.config_version = VERSION + "-" + uuid.uuid4().hex
 
@@ -69,7 +71,7 @@ class SenseVoiceProvider:
             else:
                 state, error = self.state, self.error
             ready = state == "ready"
-            return {"state": state, "available": ready, "ready": ready, "configVersion": self.config_version, "language": self.language, "errorCode": error or ("READY" if ready else "ASR_PREPARING"), "reasonCode": error or ("READY" if ready else "ASR_PREPARING")}
+            return {"state": state, "available": ready, "ready": ready, "configVersion": self.config_version, "language": self.language, "errorCode": error or ("READY" if ready else "ASR_PREPARING"), "reasonCode": error or ("READY" if ready else "ASR_PREPARING"), **({"diagnostics": self.diagnostics} if error and self.diagnostics else {})}
 
     def load_settings(self):
         with self.lock:
@@ -92,6 +94,7 @@ class SenseVoiceProvider:
             if self.state in ("loading", "ready"):
                 return self.status()
             self.state, self.error = "loading", ""
+            self.diagnostics = {}
             log_event(self.logger, "info", "asr.model.load.started", "正在加载语音模型")
             self.thread = threading.Thread(target=self._load, name="sensevoice-load", daemon=True)
             self.thread.start()
@@ -115,6 +118,7 @@ class SenseVoiceProvider:
             with self.lock:
                 self.state = "failed"
                 self.error = "ASR_DEPENDENCY_UNAVAILABLE" if isinstance(error, (ImportError, OSError)) else "ASR_MODEL_INVALID"
+                self.diagnostics = provider_failure(self.error, error)["diagnostics"]
                 if self.error == "ASR_MODEL_INVALID" and not self.closed:
                     self.resources.mark_invalid()
         finally:
@@ -143,7 +147,7 @@ class SenseVoiceProvider:
             return {"state": "failed", "errorCode": "ASR_LANGUAGE_UNSUPPORTED"}
         with self.lock:
             if not self.status()["available"]:
-                return {"state": "failed", "errorCode": self.status()["errorCode"]}
+                return {"state": "failed", "errorCode": self.status()["errorCode"], "diagnostics": self.diagnostics}
             if request.get("configVersion") != self.config_version:
                 return {"state": "failed", "errorCode": "ASR_CONFIGURATION_CHANGED"}
             if any(job.result is None for job in self.jobs.values()):
@@ -178,7 +182,7 @@ class SenseVoiceProvider:
             result = {"state": "cancelled"}
         except Exception as error:
             code = str(getattr(error, "code", error))
-            result = {"state": "failed", "errorCode": code if re.fullmatch(r"ASR_[A-Z_]{1,70}", code) else "ASR_RECOGNITION_FAILED"}
+            result = {"state": "failed", **provider_failure(code if re.fullmatch(r"ASR_[A-Z_]{1,70}", code) else "ASR_RECOGNITION_FAILED", error)}
             log_event(self.logger, "error", "asr.recognition.failed", "语音识别失败", request_id=job.request.get("requestId"), duration_ms=round((time.monotonic() - job.started_at) * 1000), error_code=result["errorCode"])
         finally:
             # Always release before making a terminal result visible, including

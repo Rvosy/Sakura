@@ -1,4 +1,5 @@
 from __future__ import annotations
+from sakura_provider_errors import provider_failure
 
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -177,7 +178,7 @@ class Provider:
                 voice = character_voice(self.character, request['characterId'], request.get('options', {}).get('tone', '中性'))
             except Exception as error:
                 self.record_error(error)
-                return {'errorCode': 'TTS_CHARACTER_CONFIG_INVALID'}
+                return provider_failure('TTS_CHARACTER_CONFIG_INVALID', error)
             allocation = self.artifacts.allocate({'mediaType': 'audio/wav', 'suffix': '.wav'})
             job_id = 'job_' + uuid.uuid4().hex
             job = {'state': 'running', 'cancel': threading.Event(), 'allocation': allocation, 'released': False,
@@ -215,6 +216,7 @@ class Provider:
                 job['state'] = 'cancelled'
         except Exception as error:
             with self.lock:
+                job['failure'] = provider_failure('TTS_SYNTHESIS_FAILED', error)
                 job['state'] = 'cancelled' if job['cancel'].is_set() else 'failed'
             if job['state'] == 'cancelled':
                 self.log('info', 'SakuraTTS 合成已取消')
@@ -241,8 +243,8 @@ class Provider:
                         return {'state': state, 'artifact': self.artifacts.commit(job['allocation']['artifactId'])}
                     except Exception as error:
                         self.record_error(error)
-                        return {'state': 'failed', 'errorCode': 'TTS_ARTIFACT_INVALID'}
-                return {'state': state, **({'errorCode': 'TTS_SYNTHESIS_FAILED'} if state == 'failed' else {})}
+                        return {'state': 'failed', **provider_failure('TTS_ARTIFACT_INVALID', error)}
+                return {'state': state, **(job['failure'] if state == 'failed' else {})}
             finally:
                 self._release(job)
                 del self.jobs[job_id]
@@ -321,14 +323,14 @@ class SakuraTTSPlugin:
         surface.register('runtime', 'plugin')
         settings.register({'sectionId': 'bundle', 'title': '本地运行环境', 'order': 30, 'fields': [
             {'key': 'bundle', 'label': 'SakuraTTS 整合包', 'type': 'resource',
-             'actionIds': ['importBundle', 'checkUpdate', 'downloadBundle', 'installDownload', 'cancelImport'],
+             'actionIds': ['downloadBundle', 'installDownload', 'checkUpdate', 'importBundle', 'cancelImport'],
              'default': provider.bundle.load()['bundle']},
             {'key': 'bundlePath', 'label': '本地整合包路径', 'type': 'string', 'default': ''},
         ], 'actions': [
-            {'actionId': 'importBundle', 'label': '导入整合包', 'filePicker': {'field': 'bundlePath', 'extensions': ['zip', '7z', 'gz']}},
-            {'actionId': 'checkUpdate', 'label': '检查更新'},
-            {'actionId': 'downloadBundle', 'label': '下载最新整合包'},
+            {'actionId': 'downloadBundle', 'label': '下载并安装'},
             {'actionId': 'installDownload', 'label': '安装已下载整合包'},
+            {'actionId': 'checkUpdate', 'label': '检查更新'},
+            {'actionId': 'importBundle', 'label': '导入整合包', 'filePicker': {'field': 'bundlePath', 'extensions': ['zip', '7z', 'gz']}},
             {'actionId': 'cancelImport', 'label': '取消'},
         ]}, load=provider.bundle.load, save=lambda values: None,
             actions={'importBundle': provider.bundle.start, 'cancelImport': provider.bundle.cancel,
