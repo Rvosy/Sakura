@@ -43,10 +43,11 @@ def test_voice_reads_studio_resources_without_private_extension_or_manifest_writ
     assert character_voice(character, 'logical-id')['gpt'] == str(package / 'override.ckpt')
 
 
-def bundle_archive(path, version='one', target='macos-arm64'):
+def bundle_archive(path, version='one', target='macos-arm64', source_commit='fixture'):
     with zipfile.ZipFile(path, 'w') as z:
         z.writestr('runtime/portable.json', json.dumps({'format': 'sakuratts-portable-v1', 'has_preparation': True,
             'release': {'target': target, 'version': version, 'backends': ['mlx'], 'backend': 'mlx',
+                        'source_commit': source_commit, 'source_dirty': False,
                         'python_executable': 'runtime/main/bin/python3'}}))
         z.writestr('launcher.py', '')
         z.writestr('runtime/main/bin/python3', '')
@@ -180,7 +181,7 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
     shutil.copytree(repo / 'plugins/optional/sakura_sakuratts', tmp_path / 'plugins/user/sakura_sakuratts')
     config = tmp_path / 'data/plugins/sakura.tts.sakuratts/config.json'
     config.parent.mkdir(parents=True)
-    config.write_text('{"enabled":true,"idleSeconds":90,"prewake":false,"cudaProfile":"fp32"}')
+    config.write_text('{"enabled":true,"idleSeconds":90,"prewake":false,"cudaProfile":"fp32","autoCheckUpdates":false}')
     if installed != 'none':
         import platform
         bundles = config.parent / 'bundles'
@@ -228,7 +229,7 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
         if installed != 'none':
             assert section['values']['bundle']['taskState'] == 'failed'
             assert section['values']['bundle']['detail']
-            assert section['values']['bundle']['availableActionIds'] == ['importBundle']
+            assert section['values']['bundle']['availableActionIds'] == ['importBundle', 'checkUpdate']
             overview = next(s for s in sections if s['sectionId'] == 'overview')
             assert overview['values']['engineState']['state'] == 'error'
         assert host.call_service('sakura.tts.provider.sakuratts', 'status')['available'] is False
@@ -423,3 +424,277 @@ def test_synthesis_metrics_use_host_tts_log_without_text_or_prompt(tmp_path, mon
     assert record['fields']['reference_cache'] == 'miss'
     assert 'frontend_ms' not in record['fields']
     assert 'private' not in json.dumps(records)
+
+
+@pytest.fixture
+def online_repo(tmp_path, monkeypatch):
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from plugins.optional.sakura_sakuratts import _bundle
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+    root = tmp_path / 'remote'
+    root.mkdir()
+    server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Handler, directory=str(root)))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    monkeypatch.setattr(_bundle, 'REPOSITORY_URL', f'http://127.0.0.1:{server.server_port}/')
+    monkeypatch.setattr(_bundle.platform, 'system', lambda: 'Darwin')
+    monkeypatch.setattr(_bundle.platform, 'machine', lambda: 'arm64')
+    def publish(version, commit):
+        folder = root / 'previews' / version
+        folder.mkdir(parents=True)
+        archive = bundle_archive(folder / 'bundle.zip', source_commit=commit)
+        package = {'platform': 'macos-arm64', 'releaseId': version, 'sourceCommit': commit,
+                   'bytes': archive.stat().st_size, 'unpackedBytes': 1000,
+                   'path': archive.relative_to(root).as_posix(), 'url': 'https://untrusted.invalid/package'}
+        (root / 'latest-preview.json').write_text(json.dumps({
+            'channel': 'preview', 'releaseId': version, 'sourceCommit': commit, 'packages': [package]}))
+        return archive, package
+    try:
+        yield root, publish
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def finish_bundle_task(store):
+    store.thread.join(5)
+    assert not store.thread.is_alive()
+
+
+def test_online_download_install_and_new_published_index(tmp_path, online_repo):
+    _, publish = online_repo
+    publish('preview-1', 'first')
+    probes = []
+    store = BundleStore(tmp_path / 'installed', lambda *args: probes.append(args), lambda action: action())
+    store.check_update()
+    finish_bundle_task(store)
+    assert store.available['releaseId'] == 'preview-1'
+    assert not probes and store.current() is None
+    store.download()
+    finish_bundle_task(store)
+    assert store.state == 'succeeded', store.error
+    assert store.current() is None and not probes
+    store.close()
+    store = BundleStore(store.directory, lambda *args: probes.append(args), lambda action: action())
+    assert 'installDownload' in store.load()['bundle']['availableActionIds']
+    store.install_download()
+    finish_bundle_task(store)
+    assert store.current()[1]['source_commit'] == 'first'
+    assert len(probes) == 1 and store.downloaded is None
+    store.close()
+    store = BundleStore(store.directory, lambda *_: None, lambda action: action())
+    store.check_update()
+    finish_bundle_task(store)
+    assert 'downloadBundle' not in store.load()['bundle']['availableActionIds']
+    publish('preview-2', 'second')
+    store.check_update()
+    finish_bundle_task(store)
+    assert store.available['releaseId'] == 'preview-2'
+    assert 'downloadBundle' in store.load()['bundle']['availableActionIds']
+    old = store.current()
+    store.download()
+    finish_bundle_task(store)
+    assert store.current() == old
+    store.install_download()
+    finish_bundle_task(store)
+    assert store.current()[1]['source_commit'] == 'second'
+    assert old[0].is_dir()
+    store.close()
+
+
+@pytest.mark.parametrize('failure', ['truncated', 'wrong-commit', 'http-error'])
+def test_online_failure_preserves_installed_bundle(tmp_path, online_repo, failure):
+    root, publish = online_repo
+    archive, package = publish('preview-2', 'second')
+    store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
+    store.start({'bundlePath': str(bundle_archive(tmp_path / 'old.zip'))})
+    finish_bundle_task(store)
+    old = store.current()
+    store.check_update()
+    finish_bundle_task(store)
+    if failure == 'truncated':
+        archive.write_bytes(b'incomplete')
+    elif failure == 'http-error':
+        archive.unlink()
+    else:
+        store.available['sourceCommit'] = 'other'
+    store.download()
+    finish_bundle_task(store)
+    if failure == 'wrong-commit':
+        assert store.state == 'succeeded'
+        store.install_download()
+        finish_bundle_task(store)
+    else:
+        assert store.downloaded is None
+        assert not list((store.directory / 'downloads').glob('*.zip'))
+    assert store.state == 'failed' and store.error
+    assert store.current() == old
+    assert len(list((store.directory / 'versions').iterdir())) == 1
+    store.close()
+
+
+def test_cancel_download_waits_for_writer_and_keeps_old_bundle(tmp_path, online_repo, monkeypatch):
+    from plugins.optional.sakura_sakuratts import _bundle
+    _, publish = online_repo
+    publish('preview-1', 'new')
+    store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
+    store.check_update()
+    finish_bundle_task(store)
+    reading, resume = threading.Event(), threading.Event()
+    class Download(io.BytesIO):
+        reads = 0
+        def read(self, _):
+            self.reads += 1
+            if self.reads == 2:
+                reading.set()
+                assert resume.wait(3)
+            return b'chunk'
+    monkeypatch.setattr(_bundle, 'urlopen', lambda *args, **kwargs: Download())
+    store.download()
+    assert reading.wait(3)
+    from app.core_host.plugin_host_services import _settings_resource_value_valid
+    assert _settings_resource_value_valid({'actionIds': ['cancelImport']}, store.load()['bundle'])
+    with pytest.raises(ValueError, match='正在处理'):
+        store.check_update()
+    store.cancel()
+    resume.set()
+    store.close()
+    assert store.state == 'cancelled'
+    assert store.downloaded is None
+    assert not list((store.directory / 'downloads').iterdir())
+
+
+def test_update_notice_uses_current_character_and_records_only_its_completion(tmp_path):
+    from plugins.optional.sakura_sakuratts._updates import UpdateAnnouncement
+    now = [0]
+    facts = {'sessionId': 'session', 'idle': False, 'activityRevision': 0, 'interactionRevision': 0}
+    submitted = []
+    store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
+    store._current = tmp_path, {'source_commit': 'old'}
+    store.available = {'releaseId': 'preview-2', 'sourceCommit': 'new', 'platform': 'macos-arm64'}
+    chat = SimpleNamespace(current=lambda: facts, cancel=lambda _: None,
+        submit=lambda request: submitted.append(request) or {'accepted': True, 'operationId': 'notice'})
+    notice = UpdateAnnouncement(chat, store, lambda: True, lambda *_args, **_kwargs: None, clock=lambda: now[0])
+    notice.tick()
+    now[0] = 10
+    facts['idle'] = True
+    notice.tick()
+    now[0] = 13
+    notice.tick()
+    assert len(submitted) == 1
+    assert submitted[0]['sessionId'] == 'session' and submitted[0]['resources'] == []
+    assert 'preview-2' in submitted[0]['message'] and 'SakuraTTS' in submitted[0]['message']
+    assert not notice.marker.exists()
+    notice.completed({'operationId': 'unrelated'})
+    assert not notice.marker.exists()
+    notice.completed({'operationId': 'notice'})
+    assert json.loads(notice.marker.read_text())['releaseId'] == 'preview-2'
+    notice.close()
+    restarted = UpdateAnnouncement(chat, store, lambda: True, lambda *_args, **_kwargs: None)
+    restarted.tick()
+    assert len(submitted) == 1
+    restarted.close()
+    store.close()
+
+
+@pytest.mark.parametrize('mutation', ['path', 'release', 'size', 'platform'])
+def test_online_index_rejects_invalid_package_before_download(online_repo, mutation):
+    from plugins.optional.sakura_sakuratts._bundle import online_package
+    root, publish = online_repo
+    publish('preview-1', 'first')
+    index_path = root / 'latest-preview.json'
+    index = json.loads(index_path.read_text())
+    package = index['packages'][0]
+    if mutation == 'path':
+        package['path'] = '../outside.zip'
+    elif mutation == 'release':
+        package['releaseId'] = 'different'
+    elif mutation == 'size':
+        package['bytes'] = -1
+    else:
+        package['platform'] = 'windows-x64'
+    index_path.write_text(json.dumps(index))
+    with pytest.raises(ValueError):
+        online_package()
+
+
+def test_auto_update_preference_does_not_stop_synthesis(tmp_path, monkeypatch):
+    p, _ = provider(tmp_path, monkeypatch)
+    stopped = []
+    monkeypatch.setattr(p.runtime, 'stop', lambda: stopped.append(True))
+    try:
+        assert p.reconfigure({**p.config, 'autoCheckUpdates': False}) == 'applied'
+        assert not stopped
+    finally:
+        p.close()
+
+
+def test_update_notice_waits_after_activity_and_does_not_mark_failed_reply(tmp_path):
+    from plugins.optional.sakura_sakuratts._updates import UpdateAnnouncement
+    store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
+    store._current = tmp_path, {'source_commit': 'old'}
+    store.available = {'releaseId': 'new', 'sourceCommit': 'new', 'platform': 'macos-arm64'}
+    facts = {'sessionId': 's', 'idle': True, 'activityRevision': 0, 'interactionRevision': 0}
+    calls, cancelled = [], []
+    now = [0]
+    enabled = [True]
+    def submit(request):
+        calls.append(request)
+        return {'accepted': True, 'operationId': 'op'}
+    notice = UpdateAnnouncement(SimpleNamespace(current=lambda: facts, submit=submit, cancel=cancelled.append),
+        store, lambda: enabled[0], lambda *_args, **_kwargs: None, clock=lambda: now[0])
+    notice.tick()
+    now[0] = 3
+    facts['activityRevision'] = 1
+    notice.tick()
+    assert not calls
+    now[0] = 6
+    enabled[0] = False
+    notice.tick()
+    assert not calls
+    enabled[0] = True
+    notice.tick()
+    now[0] = 9
+    notice.tick()
+    assert len(calls) == 1
+    # No completion arrives for a failed reply; repeated ticks must not retry the model call.
+    now[0] = 100
+    notice.tick()
+    assert len(calls) == 1 and not notice.marker.exists()
+    notice.close()
+    assert cancelled == ['op']
+    store.close()
+
+
+def test_plugin_start_checks_online_without_loading_models(tmp_path, monkeypatch):
+    from plugins.optional.sakura_sakuratts import plugin, _bundle
+    p, _ = provider(tmp_path, monkeypatch)
+    monkeypatch.setattr(p.bundle, 'current', lambda: None)
+    checked, effects, callbacks = [], [], {}
+    package = {'releaseId': 'preview-1', 'sourceCommit': 'first', 'platform': 'macos-arm64',
+               'bytes': 1000, 'unpackedBytes': 2000}
+    monkeypatch.setattr(_bundle, 'online_package', lambda: checked.append(True) or package)
+    monkeypatch.setattr(plugin, 'Provider', lambda _: p)
+    monkeypatch.setattr(p.runtime, 'start', lambda *_: pytest.fail('update check loaded models'))
+    p.hub.registerProvider = lambda *_: None
+    p.hub.unregisterProvider = lambda *_: None
+    services = {'sakura.host.settings': SimpleNamespace(register=lambda *_args, **_kwargs: None),
+                'sakura.host.settings.surface-v0': SimpleNamespace(register=lambda *_: None),
+                'sakura.host.chat': SimpleNamespace(current=lambda: {'sessionId': None, 'idle': False,
+                    'activityRevision': 0, 'interactionRevision': 0}, cancel=lambda _: None)}
+    context = SimpleNamespace(effect=effects.append, provide=lambda *_args, **_kwargs: None,
+        config=SimpleNamespace(on_change=lambda _: None, update=lambda _: None),
+        on=lambda name, callback: callbacks.update({name: callback}), get=services.get)
+    try:
+        plugin.SakuraTTSPlugin().setup(context)
+        finish_bundle_task(p.bundle)
+        assert checked == [True]
+        assert p.bundle.available == package
+        assert 'sakura.host.chat.completed' in callbacks
+    finally:
+        for effect in reversed(effects):
+            effect()

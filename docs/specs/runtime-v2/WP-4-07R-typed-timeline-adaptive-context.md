@@ -170,13 +170,14 @@ Shell 的历史窗口通过内部请求 `ui.history.page` 读取同一 Timeline�
 
 ```text
 sakura.host.chat.completed {
+  operationId,
   characterId,
   turnId,
   cursor
 }
 ```
 
-事件必须在 assistant entry 事务提交后发送，仍为 best-effort，且不携带聊天正文。Memory 保存成功消费的
+`operationId` 关联发起该次聊天的操作，供请求方确认自己的回复完成。事件必须在 assistant entry 事务提交后发送，仍为 best-effort，且不携带聊天正文。Memory 保存成功消费的
   当前角色作用域的 cursor；插件 setup 和每次后续完成事件都从该 cursor 补读，因此一次事件投递失败不会永久缺失。重复读取由
 `entry_id` 幂等，不建设 outbox、ack、lease、自动重试线程或第二份原始事件表。
 

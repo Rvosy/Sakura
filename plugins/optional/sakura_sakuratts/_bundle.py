@@ -1,4 +1,4 @@
-"""离线安装到独立目录，通过运行检查后原子发布当前版本。"""
+"""从魔搭下载或本地导入整合包，通过运行检查后原子切换当前版本。"""
 from __future__ import annotations
 
 import json
@@ -16,6 +16,42 @@ import threading
 import time
 import uuid
 import zipfile
+from urllib.parse import quote
+from urllib.request import Request
+
+from sakura_http import urlopen_direct_for_loopback as urlopen
+
+
+REPOSITORY_URL = 'https://modelscope.cn/models/SuzushimaArisu/SakuraTTS/resolve/master/'
+
+
+def local_target():
+    return {('Windows', 'amd64'): 'windows-x64', ('Windows', 'x86_64'): 'windows-x64',
+            ('Darwin', 'arm64'): 'macos-arm64'}.get((platform.system(), platform.machine().lower()))
+
+
+def online_package():
+    target = local_target()
+    if target is None:
+        raise ValueError('此平台暂无 SakuraTTS 整合包。')
+    request = Request(REPOSITORY_URL + 'latest-preview.json', headers={'Cache-Control': 'no-cache'})
+    with urlopen(request, timeout=20) as response:
+        index = json.load(response)
+    packages = [p for p in index['packages'] if p['platform'] == target]
+    if index['channel'] != 'preview' or len(packages) != 1:
+        raise ValueError('版本索引未提供唯一的本机预览版整合包。')
+    package = packages[0]
+    for key in ('releaseId', 'sourceCommit'):
+        if not isinstance(index[key], str) or not index[key] or package[key] != index[key]:
+            raise ValueError('版本索引中的发布信息不一致。')
+    path = safe_name(package['path'])
+    if path.parts[:2] != ('previews', index['releaseId']) or len(path.parts) != 3:
+        raise ValueError('整合包不在指定发布目录中。')
+    for key in ('bytes', 'unpackedBytes'):
+        if type(package[key]) is not int or package[key] <= 0:
+            raise ValueError('版本索引中的整合包大小无效。')
+    # 下载地址由固定仓库和已校验的路径组成，不执行索引中的任意 URL。
+    return {**package, 'url': REPOSITORY_URL + quote(package['path'], safe='/')}
 
 
 class Cancelled(Exception):
@@ -108,8 +144,7 @@ def inspect_bundle(root):
     if value.get('format') != 'sakuratts-portable-v1':
         raise ValueError('不支持此整合包格式。')
     release = value['release']
-    expected = {('Windows', 'amd64'): 'windows-x64', ('Windows', 'x86_64'): 'windows-x64',
-                ('Darwin', 'arm64'): 'macos-arm64'}.get((platform.system(), platform.machine().lower()))
+    expected = local_target()
     if release['target'] != expected:
         raise ValueError(f"整合包平台 {release['target']} 与本机不匹配。")
     interpreter = root / release.get('python_executable', 'runtime/main/python.exe')
@@ -132,10 +167,25 @@ class BundleStore:
         self.closed = False
         self.state, self.message, self.error = 'idle', '', ''
         self._current = None
+        self.release_id = None
+        self.available = None
+        self.downloaded = None
+        self.progress = None
+        self.installation_error = ''
         try:
             self._current = self._read_current()
         except Exception as error:
+            self.installation_error = str(error)
             self.state, self.message, self.error = 'failed', '运行环境不可用，请重新导入整合包', str(error)
+        try:
+            downloaded = self.directory / 'downloads/ready.json'
+            if downloaded.exists():
+                package = json.loads(downloaded.read_text(encoding='utf-8'))
+                archive = downloaded.parent / safe_name(package['path']).name
+                if archive.is_file() and archive.stat().st_size == package['bytes']:
+                    self.downloaded = archive, package
+        except Exception as error:
+            self.state, self.message, self.error = 'failed', '已下载整合包不可用，请重新下载', str(error)
 
     def current(self):
         return self._current
@@ -148,51 +198,172 @@ class BundleStore:
         root = (self.directory / value['directory']).resolve()
         if not root.is_relative_to(self.directory.resolve()):
             raise ValueError('运行环境目录无效。')
-        return inspect_bundle(root)
+        current = inspect_bundle(root)
+        self.release_id = value.get('releaseId')
+        return current
 
     def load(self):
         current = self.current()
+        actions = ['importBundle', 'checkUpdate']
+        if (self.available and not self._is_current(self.available)
+                and (not self.downloaded or self.downloaded[1] != self.available)):
+            actions.append('downloadBundle')
+        if self.downloaded:
+            actions.append('installDownload')
+        if self.state == 'running':
+            actions = ['cancelImport']
+        message = self.message
+        if self.downloaded and self.state not in {'running', 'failed'}:
+            downloaded_message = f"{self.downloaded[1]['releaseId']} 已下载，尚未安装"
+            if downloaded_message != message:
+                message = '；'.join(filter(None, (message, downloaded_message)))
         return {'bundlePath': '', 'bundle': {
             'applicability': 'required', 'ready': current is not None,
             'subtitle': f"{current[1]['version']} · {current[1]['target']}" if current else '未安装',
-            'taskState': self.state, 'message': self.message,
-            'detail': self.error[-240:], 'progress': None,
-            'availableActionIds': ['cancelImport'] if self.state == 'running' else ['importBundle'],
+            'taskState': self.state, 'message': message[:240],
+            'detail': self.error[-240:], 'progress': self.progress,
+            'availableActionIds': actions,
         }}
+
+    def _is_current(self, package):
+        current = self.current()
+        if not current:
+            return False
+        if self.release_id:
+            return self.release_id == package['releaseId']
+        release = current[1]
+        return not release.get('source_dirty', True) and release.get('source_commit') == package['sourceCommit']
+
+    def _start_task(self, operation, message, *args):
+        with self.lock:
+            if self.closed:
+                raise RuntimeError('插件已停止。')
+            if self.thread and self.thread.is_alive():
+                raise ValueError('正在处理整合包。')
+            self.cancel_event.clear()
+            self.state, self.message, self.error = 'running', message, ''
+            self.progress = None
+            self.thread = threading.Thread(target=self._run_task, args=(operation, args),
+                                           name='sakuratts-bundle', daemon=True)
+            self.thread.start()
+        return {}
+
+    def _run_task(self, operation, args):
+        try:
+            operation(*args)
+        except Cancelled:
+            self.state, self.message = 'cancelled', '操作已取消'
+        except Exception as error:
+            self.state, self.message, self.error = 'failed', '整合包操作失败', str(error)
+            self.log('error', self.message, event='tts.bundle.failed', diagnostic=self.error)
+        finally:
+            self.progress = None
+
+    def check_update(self, values=None):
+        return self._start_task(self._check_update, '正在检查更新')
+
+    def _check_update(self):
+        self.available = None
+        package = online_package()
+        if self.cancel_event.is_set():
+            raise Cancelled()
+        self.available = package
+        if self._is_current(package):
+            self.message = '已安装当前线上版本'
+        else:
+            self.message = (f"可下载预览版 {package['releaseId']} · {package['platform']} · 魔搭 · "
+                            f"下载 {package['bytes'] / 1e9:.2f} GB · 解压 {package['unpackedBytes'] / 1e9:.2f} GB")
+        self.state = 'succeeded'
+
+    def download(self, values=None):
+        with self.lock:
+            if self.available is None:
+                raise ValueError('请先检查更新。')
+            return self._start_task(self._download, '正在下载整合包', self.available)
+
+    def _download(self, package):
+        downloads = self.directory / 'downloads'
+        downloads.mkdir(exist_ok=True)
+        archive = downloads / PurePosixPath(package['path']).name
+        # 同一时间只保留一个待安装下载，避免数 GB 的废弃包长期占用空间。
+        self.downloaded = None
+        for old in downloads.iterdir():
+            old.unlink()
+        if shutil.disk_usage(self.directory).free < package['bytes'] + package['unpackedBytes']:
+            raise ValueError('磁盘空间不足以下载和解压整合包。')
+        completed = False
+        received = 0
+        started = time.monotonic()
+        try:
+            with urlopen(Request(package['url']), timeout=20) as response, archive.open('wb') as output:
+                while True:
+                    if self.cancel_event.is_set():
+                        raise Cancelled()
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > package['bytes']:
+                        raise ValueError('下载大小超过版本索引记录。')
+                    output.write(chunk)
+                    self.progress = received * 100 // package['bytes']
+                    speed = received / max(time.monotonic() - started, .001)
+                    self.message = (f"正在下载 · {received / 1e6:.1f} / {package['bytes'] / 1e6:.1f} MB · "
+                                    f"{speed / 1e6:.1f} MB/s · 剩余约 {int((package['bytes'] - received) / speed)} 秒")
+            if self.cancel_event.is_set():
+                raise Cancelled()
+            if received != package['bytes']:
+                raise ValueError(f"下载不完整：收到 {received} 字节，预期 {package['bytes']} 字节。")
+            (downloads / 'ready.json').write_text(json.dumps(package), encoding='utf-8')
+            self.downloaded = archive, package
+            completed = True
+            self.state, self.message = 'succeeded', f"{package['releaseId']} 已下载，尚未安装"
+        finally:
+            if not completed:
+                archive.unlink(missing_ok=True)
+
+    def install_download(self, values=None):
+        with self.lock:
+            if self.downloaded is None:
+                raise ValueError('请先下载整合包。')
+            archive, package = self.downloaded
+            return self._start_task(self._install, '正在解压整合包', archive, package)
 
     def start(self, values):
         archive = Path(values.get('bundlePath', ''))
         if not archive.is_absolute() or not archive.is_file():
             raise ValueError('请选择本地整合包。')
-        with self.lock:
-            if self.closed:
-                raise RuntimeError('插件已停止。')
-            if self.thread and self.thread.is_alive():
-                raise ValueError('正在导入整合包。')
-            self.cancel_event.clear()
-            self.state, self.message, self.error = 'running', '正在解压整合包', ''
-            self.thread = threading.Thread(target=self._install, args=(archive,), name='sakuratts-import', daemon=True)
-            self.thread.start()
-        return {}
+        return self._start_task(self._install, '正在解压整合包', archive)
 
-    def _install(self, archive):
+    def _install(self, archive, package=None):
         started_at = time.monotonic()
         candidate = self.directory / ('versions/' + uuid.uuid4().hex)
         published = False
         try:
+            if package and shutil.disk_usage(self.directory).free < package['unpackedBytes']:
+                raise ValueError('磁盘空间不足以解压整合包。')
             self.log('info', '正在解压 SakuraTTS 整合包', event='tts.bundle.extracting')
             candidate.mkdir(parents=True)
             unpack(archive, candidate, self.cancel_event)
             root, release = inspect_bundle(candidate)
+            if package and (release.get('source_commit') != package['sourceCommit'] or release.get('source_dirty', True)):
+                raise ValueError('整合包源码版本与下载索引不一致。')
             self.message = '正在检查运行环境'
             self.log('info', '正在检查 SakuraTTS 运行环境', event='tts.bundle.checking')
             self.probe(root, release, self.cancel_event)
             if self.cancel_event.is_set():
                 raise Cancelled()
             # publish serializes against synthesis and configuration changes.
-            self.publish(lambda: self._activate(root, release))
+            self.publish(lambda: self._activate(root, release, package))
             published = True
             self.state, self.message, self.error = 'succeeded', '', ''
+            if package:
+                self.downloaded = None
+                try:
+                    (archive.parent / 'ready.json').unlink(missing_ok=True)
+                    archive.unlink(missing_ok=True)
+                except OSError as error:
+                    self.log('warning', '整合包已安装，下载文件清理失败', diagnostic=str(error))
         except Cancelled:
             self.state, self.message = 'cancelled', '导入已取消'
         except Exception as error:
@@ -214,13 +385,17 @@ class BundleStore:
                      **({'diagnostic': self.error} if self.state == 'failed' else {}))
 
 
-    def _activate(self, root, release):
+    def _activate(self, root, release, package=None):
         if self.cancel_event.is_set():
             raise Cancelled()
         temporary = self.directory / 'current.json.tmp'
-        temporary.write_text(json.dumps({'directory': root.relative_to(self.directory).as_posix()}), encoding='utf-8')
+        release_id = package['releaseId'] if package else None
+        temporary.write_text(json.dumps({'directory': root.relative_to(self.directory).as_posix(),
+                                         'releaseId': release_id}), encoding='utf-8')
         os.replace(temporary, self.directory / 'current.json')
         self._current = root, release
+        self.release_id = release_id
+        self.installation_error = ''
 
     def cancel(self, values=None):
         self.cancel_event.set()

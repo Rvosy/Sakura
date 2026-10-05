@@ -14,6 +14,7 @@ requires:
   - sakura.tts
   - sakura.host.artifacts
   - sakura.host.character
+  - sakura.host.chat
   - sakura.host.settings
   - sakura.host.settings.surface-v0
 presentation:

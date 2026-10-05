@@ -728,6 +728,7 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
     assert plugin_events[-1] == (
         "sakura.host.chat.completed",
         {
+            "operationId": "completed-fact",
             "characterId": "sakura",
             "turnId": stored[1].turn_id,
             "cursor": timeline.latest_cursor("sakura"),

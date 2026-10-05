@@ -582,6 +582,7 @@ class RealChatBoundary:
             if assistant_committed:
                 try:
                     completed_fact = {
+                        "operationId": operation_id,
                         "characterId": str(character.id),
                         "turnId": turn_id,
                         "cursor": timeline.latest_cursor(str(character.id)),

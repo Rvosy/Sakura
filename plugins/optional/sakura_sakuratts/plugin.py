@@ -11,13 +11,16 @@ from urllib.parse import urlencode
 try:
     from ._bundle import BundleStore, Cancelled
     from ._runtime import Runtime, probe
+    from ._updates import UpdateAnnouncement
 except ImportError:
     from _bundle import BundleStore, Cancelled
     from _runtime import Runtime, probe
+    from _updates import UpdateAnnouncement
 
 PROVIDER_ID = 'sakura.tts.sakuratts'
 SERVICE_KEY = 'sakura.tts.provider.sakuratts'
-DEFAULTS = {'backend': 'auto', 'cudaProfile': 'fp16', 'idleSeconds': 60, 'prewake': True}
+DEFAULTS = {'backend': 'auto', 'cudaProfile': 'fp16', 'idleSeconds': 60, 'prewake': True,
+            'autoCheckUpdates': True}
 CUDA_PROFILES = [('fp16', 'FP16 标准'), ('fp32', 'FP32 全精度'),
                  ('low-memory', 'FP16 低显存'), ('minimum-memory', 'FP16 极低显存')]
 
@@ -32,6 +35,8 @@ def configuration(values):
         raise ValueError('空闲休眠时间必须是正整数。')
     if type(result['prewake']) is not bool:
         raise ValueError('提前唤醒设置无效。')
+    if type(result['autoCheckUpdates']) is not bool:
+        raise ValueError('自动检查更新设置无效。')
     return result
 
 
@@ -93,8 +98,8 @@ class Provider:
 
     def engine_state(self):
         if not self.bundle.current():
-            if self.bundle.error:
-                return {'state': 'error', 'label': '运行环境不可用', 'message': self.bundle.error[-240:]}
+            if self.bundle.installation_error:
+                return {'state': 'error', 'label': '运行环境不可用', 'message': self.bundle.installation_error[-240:]}
             return {'state': 'warning', 'label': '未安装运行环境', 'message': '请先导入整合包。'}
         if self.error:
             return {'state': 'error', 'label': '语音运行失败', 'message': self.error[-240:]}
@@ -253,6 +258,9 @@ class Provider:
         with self.lock:
             if config == self.config:
                 return 'applied'
+            if all(config[key] == self.config[key] for key in DEFAULTS if key != 'autoCheckUpdates'):
+                self.config = config
+                return 'applied'
             self.cancel_work()
             self.runtime.stop()
             self.config = config
@@ -307,15 +315,29 @@ class SakuraTTSPlugin:
             {'key': 'idleSeconds', 'label': '空闲后休眠（秒）', 'type': 'integer', 'minimum': 1, 'default': 60},
             {'key': 'prewake', 'label': '对话开始时提前唤醒', 'type': 'boolean', 'default': True,
              'description': '利用等待大模型 API 返回的时间，提前加载语音模型。'},
+            {'key': 'autoCheckUpdates', 'label': '启动时检查整合包更新', 'type': 'boolean', 'default': True},
         ]}, load=lambda: provider.config, save=context.config.update)
         surface.register('runtime', 'plugin')
         settings.register({'sectionId': 'bundle', 'title': '本地运行环境', 'order': 30, 'fields': [
             {'key': 'bundle', 'label': 'SakuraTTS 整合包', 'type': 'resource',
-             'actionIds': ['importBundle', 'cancelImport'], 'default': provider.bundle.load()['bundle']},
+             'actionIds': ['importBundle', 'checkUpdate', 'downloadBundle', 'installDownload', 'cancelImport'],
+             'default': provider.bundle.load()['bundle']},
             {'key': 'bundlePath', 'label': '本地整合包路径', 'type': 'string', 'default': ''},
         ], 'actions': [
             {'actionId': 'importBundle', 'label': '导入整合包', 'filePicker': {'field': 'bundlePath', 'extensions': ['zip', '7z', 'gz']}},
-            {'actionId': 'cancelImport', 'label': '取消导入'},
+            {'actionId': 'checkUpdate', 'label': '检查更新'},
+            {'actionId': 'downloadBundle', 'label': '下载最新整合包'},
+            {'actionId': 'installDownload', 'label': '安装已下载整合包'},
+            {'actionId': 'cancelImport', 'label': '取消'},
         ]}, load=provider.bundle.load, save=lambda values: None,
-            actions={'importBundle': provider.bundle.start, 'cancelImport': provider.bundle.cancel})
+            actions={'importBundle': provider.bundle.start, 'cancelImport': provider.bundle.cancel,
+                     'checkUpdate': provider.bundle.check_update, 'downloadBundle': provider.bundle.download,
+                     'installDownload': provider.bundle.install_download})
         surface.register('bundle', 'plugin')
+        announcement = UpdateAnnouncement(context.get('sakura.host.chat'), provider.bundle,
+                                          lambda: provider.config['autoCheckUpdates'], provider.log)
+        context.on('sakura.host.chat.completed', announcement.completed)
+        context.effect(announcement.close)
+        announcement.start()
+        if provider.config['autoCheckUpdates']:
+            provider.bundle.check_update()
