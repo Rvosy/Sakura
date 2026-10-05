@@ -651,13 +651,6 @@ impl CharacterPresentationState {
             content_type: "text/javascript; charset=utf-8",
         })
     }
-    pub fn active_portrait_alpha_mask(
-        &self,
-        key: &str,
-        generation: &str,
-    ) -> Result<PortraitAlphaMask, String> {
-        self.portrait_alpha_mask(key, None, generation)
-    }
     pub fn portrait_alpha_mask(
         &self,
         key: &str,
@@ -1261,11 +1254,11 @@ mod tests {
             .assets
             .insert("surface".into(), "assets/image.png".into());
         state.activate(input, "g").unwrap();
-        let mask = state.active_portrait_alpha_mask("surface", "g").unwrap();
+        let mask = state.portrait_alpha_mask("surface", None, "g").unwrap();
         assert_eq!(mask.alpha, vec![0, 255]);
         assert_eq!(mask.visible_bounds(), Some([1, 0, 1, 1]));
         assert_eq!(
-            state.active_portrait_alpha_mask("surface", "g").unwrap(),
+            state.portrait_alpha_mask("surface", None, "g").unwrap(),
             mask
         );
     }

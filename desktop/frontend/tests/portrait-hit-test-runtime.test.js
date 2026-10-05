@@ -8,6 +8,46 @@ const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
 const callback = source.slice(source.indexOf("function activatePortraitHitTest("),
   source.indexOf("\nasync function drainPortraitScaleHitFrames("));
 
+for (const superseded of [false, true]) {
+  test(`form surface holds the native envelope until paint, superseded: ${superseded}`, async () => {
+    const calls = [];
+    let painted;
+    const paint = new Promise(resolve => { painted = resolve; });
+    const context = vm.createContext({
+      portraitHitRevision: 0, visualScalePercent: 100, currentSurface: {}, renderedPortrait: "",
+      visualContainer: {}, characterPresentation: {}, portraitFallback: { hidden: false },
+      createRendererHost: options => options, visualUnavailable() {}, reportVisualError() {},
+      runPortraitSurfaceMutation: action => action(),
+      waitForPortraitPaint: () => paint,
+      commitSurfaceApplication: surface => calls.push(["layout", surface]),
+      syncPortraitAppearance() {},
+      invoke: async (name, args) => { calls.push([name, args]); return { revision: args.revision }; },
+      activatePortraitHitTest: async (key, revision, trace, options) => {
+        calls.push(["activate", options]); return { revision };
+      },
+    });
+    const finish = source.slice(source.indexOf("async function finishPortraitSurfaceTransition("),
+      source.indexOf("\nfunction activatePortraitHitTest("));
+    const renderer = source.slice(source.indexOf("const rendererHost = createRendererHost({"),
+      source.indexOf("\nlet presentation = createChatPresentationReducer("));
+    const services = vm.runInContext(`${finish}\n${renderer}\nrendererHost.services`, context);
+    const signal = new AbortController().signal;
+    assert.equal(await services.setSurface({ width: 320, height: 420 },
+      { signal, visual: { assets: {} }, replacing: true }), true);
+    assert.equal(calls[0][0], "prepare_portrait_transition");
+    assert.equal(calls[0][1].deferNativeCommit, true);
+    assert.deepEqual(Array.from(calls[0][1].surfaceSize), [320, 420]);
+    assert.equal(calls[2][0], "activate");
+    assert.equal(calls[2][1].retainTransitionLayout, true);
+    const finishing = services.finishSurface();
+    assert.equal(calls.some(([name]) => name === "commit_portrait_transition"), false);
+    if (superseded) context.portraitHitRevision++;
+    painted();
+    assert.equal(await finishing, !superseded);
+    assert.equal(calls.some(([name]) => name === "commit_portrait_transition"), !superseded);
+  });
+}
+
 function fixture() {
   const pending = [], commits = [], errors = [];
   const context = vm.createContext({

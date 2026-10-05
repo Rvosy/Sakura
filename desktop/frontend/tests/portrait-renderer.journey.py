@@ -162,9 +162,97 @@ def run():
                     "key": "C" if replaced else "A",
                     "clean": True,
                 }, observed
+            form_transitions = page.evaluate("""async () => {
+              const {createRendererHost} = await import('/desktop/frontend/pet/renderer-host.js');
+              const css=document.createElement('link'); css.rel='stylesheet'; css.href='/desktop/frontend/styles.css';
+              const loaded=new Promise(resolve=>{css.onload=resolve}); document.head.append(css); await loaded;
+              const target=document.createElement('div');
+              target.style.cssText='position:relative;width:320px;height:480px;--portrait-render-scale:1';
+              document.body.append(target);
+              const canvas=document.createElement('canvas'); canvas.width=64; canvas.height=128;
+              const ctx=canvas.getContext('2d'); ctx.fillStyle='red'; ctx.fillRect(0,0,64,128);
+              const portrait={bindingId:'portrait-a',resourceId:'portrait',
+                renderer:'/plugins/builtin/sakura_portrait/frontend/renderer.js',assets:{A:canvas.toDataURL()},
+                data:{defaultKey:'A',metadata:{A:{width:64,height:128}}}};
+              const numeric={bindingId:'numeric-b',resourceId:'numeric',
+                renderer:'/tests/fixtures/visual_numeric/frontend/renderer.js',assets:{},data:{maxAngle:30}};
+              const destroyed=[],settled=[],surfaces=[];
+              let animations=[],started;
+              const animate=Element.prototype.animate;
+              // Control the browser's actual Animation clock, without sleeping.
+              Element.prototype.animate=function(...args) {
+                const animation=animate.apply(this,args);
+                if (this.parentElement===target) {
+                  animation.pause(); animations.push(animation);
+                  if (animations.length===2) started();
+                }
+                return animation;
+              };
+              const renderer=createRendererHost({container:target,
+                loadModule:async url=>{
+                  const module=await import(url);
+                  return {mount:options=>{
+                    const instance=module.mount(options);
+                    return {...instance,destroy(){destroyed.push(options.resource.bindingId);instance.destroy();}};
+                  }};
+                },
+                services:{
+                  setSurface:({width,height},{replacing})=>{
+                    surfaces.push(replacing);
+                    target.style.setProperty('--visual-surface-width',`${width}px`);
+                    target.style.setProperty('--visual-surface-height',`${height}px`);
+                    return true;
+                  },
+                  finishSurface:()=>{settled.push(true);return true;},
+                  cancelSurface:()=>{},
+                },
+              });
+              async function transition(visual) {
+                animations=[];
+                const begun=new Promise(resolve=>{started=resolve});
+                const pending=renderer.bind({visual});
+                await begun;
+                for(const animation of animations) animation.currentTime=150;
+                return {pending};
+              }
+              try {
+                await renderer.bind({visual:portrait});
+                const old=target.firstElementChild;
+                const before=old.getBoundingClientRect();
+                const first=await transition(numeric);
+                const during=old.getBoundingClientRect();
+                const opacity=[...target.children].map(node=>Number(getComputedStyle(node).opacity));
+                const intermediate={count:target.children.length,alive:old.shadowRoot.querySelector('img').complete,
+                  frozen:before.width===during.width && before.height===during.height,opacity,destroyed:[...destroyed]};
+                for(const animation of animations) animation.finish();
+                const completed=await first.pending;
+                const second=await transition({...portrait,bindingId:'portrait-c'});
+                const third=await transition({...numeric,bindingId:'numeric-d'});
+                const cancelled=await second.pending;
+                for(const animation of animations) animation.finish();
+                const last=await third.pending;
+                const result={intermediate,completed,cancelled,last,count:target.children.length,
+                  current:renderer.current().bindingId,destroyed:[...destroyed],settled:settled.length,surfaces};
+                renderer.destroy();
+                result.destroyedAfterClose=[...destroyed];
+                return result;
+              } finally {Element.prototype.animate=animate;renderer.destroy();target.remove();}
+            }""")
+            assert form_transitions["intermediate"]["count"] == 2
+            assert form_transitions["intermediate"]["alive"]
+            assert form_transitions["intermediate"]["frozen"]
+            assert form_transitions["intermediate"]["destroyed"] == []
+            assert all(0.45 < value < 0.55 for value in form_transitions["intermediate"]["opacity"])
+            assert form_transitions["completed"] and form_transitions["last"]
+            assert not form_transitions["cancelled"]
+            assert form_transitions["count"] == 1 and form_transitions["current"] == "numeric-d"
+            assert form_transitions["destroyed"] == ["portrait-a", "numeric-b", "portrait-c"]
+            assert form_transitions["destroyedAfterClose"] == ["portrait-a", "numeric-b", "portrait-c", "numeric-d"]
+            assert form_transitions["settled"] == 3
+            assert form_transitions["surfaces"] == [False, True, True, True]
             assert not errors, errors
             browser.close()
-            print("PASS: portrait playback and history review retain the decoded image across transition handoff")
+            print("PASS: portrait handoff, cross-type form fades, layout retention and interrupted transition cleanup")
     finally:
         server.shutdown()
         server.server_close()

@@ -212,14 +212,31 @@ class PluginRuntimeApplication:
             session_provider=lambda: self._chat_boundary.current_host_state()["sessionId"] if self._chat_boundary else None,
             emit_callback=self._emit_desktop_event)
         self.chat = ChatHost(boundary_provider=lambda: self._chat_boundary,
-            screen_host=self.screen, emit_callback=self._emit_desktop_event, commit_scope=commit_scope)
+            screen_host=self.screen, emit_callback=self._emit_desktop_event, commit_scope=commit_scope,
+            notify_callback=self.emit_event)
         self._manager.install_host_service(HOST_SCREEN_SERVICE, self.screen, exports=("capture", "release", "release_capture"))
         self._manager.install_host_service(HOST_CHAT_SERVICE, self.chat, exports=("current", "submit", "cancel"))
         self.visual_controls = HostVisualService(binding_provider=self._current_visual_binding,
             emit_callback=self._emit_desktop_event, is_idle=lambda: self.chat.current()["idle"],
-            select_callback=self._select_visual_resource, commit_scope=commit_scope)
+            select_callback=self._select_visual_resource, list_callback=self._list_visual_resources,
+            commit_scope=commit_scope)
         self._manager.install_host_service(HOST_VISUAL_SERVICE, self.visual_controls,
-            exports=("current", "apply", "status", "release", "select"))
+            exports=("list", "current", "apply", "status", "release", "select"))
+
+    def _list_visual_resources(self, character_id=None):
+        from app.config.character_loader import CharacterConfigError, CharacterRegistry
+        from app.core_host.visual_host import VisualHostError
+        if character_id is None:
+            with self._visual_state_lock:
+                character_id = self._visual_character.id if self._visual_character else None
+        if character_id is None:
+            raise VisualHostError("CHARACTER_NOT_FOUND")
+        try:
+            profile = CharacterRegistry(self._roots.user_root).get(character_id)
+        except CharacterConfigError as error:
+            raise VisualHostError("CHARACTER_NOT_FOUND") from error
+        preference = AppSettingsService(self._roots.user_root).load_visual_selections().get(character_id)
+        return self.visuals.resource_catalog(profile, preference)
 
     def _current_visual_binding(self):
         with self._visual_state_lock:
@@ -489,6 +506,9 @@ class PluginRuntimeApplication:
             raise PluginRuntimeError("GENERATION_INVALIDATED")
         self.visuals.publish(candidate.revision, candidate.binding)
         with self._visual_state_lock:
+            previous_character = self._visual_character.id if self._visual_character else None
+            previous_binding = self._visual_binding
+            previous_reason = self._visual_reason
             self._visual_character = candidate.character
             self._visual_binding = candidate.binding
             self._visual_reason = candidate.reason
@@ -496,6 +516,11 @@ class PluginRuntimeApplication:
         self._character_store.set_current(candidate.character.id)
         if self._session is not None:
             self._session.visual_binding = self._visual_binding
+        if previous_character != candidate.character.id:
+            self.emit_event("sakura.host.character.changed", {"characterId": candidate.character.id})
+        if (previous_binding is not candidate.binding or previous_character != candidate.character.id
+                or previous_reason != candidate.reason):
+            self.emit_event("sakura.host.visual.changed", self.visual_controls.current())
 
     def visual_presentation(self):
         from app.core_host.character_presentation import project_character_presentation
@@ -582,7 +607,7 @@ class PluginRuntimeApplication:
         self.visuals.clear()
         with self._visual_state_lock:
             self._visual_binding = None
-            self._visual_character = None
+            self._visual_character = None if self._closed else character
         self.visual_controls.invalidate_target()
         self.retire_session()
 
@@ -610,6 +635,7 @@ class PluginRuntimeApplication:
 
     def bind_chat_boundary(self, boundary: object) -> None:
         self._chat_boundary = boundary
+        boundary.set_host_state_listener(self.chat.notify_state)
 
     def bind_tts_boundary(self, boundary: object) -> None:
         self._tts_boundary = boundary

@@ -29,10 +29,13 @@ class ChatHost:
     shutdown_methods = frozenset({"cancel"})
 
     def __init__(self, *, boundary_provider: Callable, screen_host: ScreenHost,
-                 emit_callback: Callable, commit_scope: Callable | None = None) -> None:
+                 emit_callback: Callable, commit_scope: Callable | None = None,
+                 notify_callback: Callable = lambda name, payload: None) -> None:
         self._boundary_provider = boundary_provider
         self._screen = screen_host
         self._emit = emit_callback
+        self._notify = notify_callback
+        self._last_state = None
         self._commit_scope = commit_scope or (lambda owner, commit: commit())
         self._lock = threading.RLock()
         self._ui: dict = {"sessionId": None, "idle": False, "activityRevision": 0}
@@ -57,7 +60,18 @@ class ChatHost:
                     and self._ui["activityRevision"] > facts["activityRevision"]):
                 return {"accepted": False}
             self._ui = dict(facts)
-            return {"accepted": True}
+        self.notify_state()
+        return {"accepted": True}
+
+    def notify_state(self) -> None:
+        # Notifications are hints to reread current(); revision-only updates do
+        # not constitute a user-visible state change.
+        state = self.current()
+        facts = {key: state[key] for key in ("sessionId", "characterId", "characterName", "idle")}
+        with self._lock:
+            if facts != self._last_state:
+                self._last_state = facts
+                self._notify("sakura.host.chat.state.changed", facts)
 
     def current(self) -> dict:
         boundary = self._boundary_provider()
@@ -201,6 +215,8 @@ class ChatHost:
             self._ui = {"sessionId": None, "idle": False, "activityRevision": 0}
             active = tuple(self._active.items())
         self._revoke(active)
+
+        self.notify_state()
 
     def close(self) -> None:
         with self._lock:

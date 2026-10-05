@@ -10,7 +10,8 @@ test("startup waits for plugin binding, while real unavailability is reported im
   const base = { schemaVersion: 2, generationId: "g", characterId: "sample", displayName: "角色", initialMessage: "你好", themeTokens: {}, visual: null, visualReasonCode: "VISUAL_NOT_BOUND" };
   const readyVisual = { bindingId: "a".repeat(32), resourceId: "sample-model", renderer: `http://sakura-character.localhost/module/67/${"a".repeat(32)}/renderer.js`, data: {}, assets: {} };
   const unavailable = [];
-  const root = { replaceChildren() {}, append() {}, ownerDocument: { createElement: () => ({ remove() {} }) } };
+  const root = { replaceChildren() {}, append() {}, ownerDocument: {
+    defaultView: { getComputedStyle: () => ({}) }, createElement: () => ({ style: {}, remove() {} }) } };
   const host = createRendererHost({ container: root, onUnavailable: code => unavailable.push(code), loadModule: async () => ({ mount: () => ({ applyState() {}, destroy() {} }) }) });
   // Before first-run setup completes, the app has only a pending placeholder.
   assert.equal(await host.bind(base), false);

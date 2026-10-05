@@ -5615,6 +5615,9 @@ fn end_control_surface_preview(
 fn prepare_portrait_transition(
     window: WebviewWindow,
     portrait_key: String,
+    portrait_resource_id: Option<String>,
+    surface_size: Option<[u32; 2]>,
+    defer_native_commit: Option<bool>,
     revision: u64,
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
@@ -5631,7 +5634,13 @@ fn prepare_portrait_transition(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-    let next_mask = resources.active_portrait_alpha_mask(&portrait_key, &generation_id)?;
+    let next_mask = visual_surface_alpha_mask(
+        &resources,
+        &portrait_key,
+        portrait_resource_id.as_deref(),
+        surface_size,
+        &generation_id,
+    )?;
     let mut geometry = geometry_state.lock().map_err(|source_error| {
         crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
     })?;
@@ -5705,7 +5714,10 @@ fn prepare_portrait_transition(
                 geometry.applied_revision,
                 &monitor,
                 geometry.portrait_anchor,
-                window_interaction::union_surface_bounds(old_bounds, new_bounds),
+                window_interaction::union_surface_bounds(
+                    current_application.active_bounds,
+                    window_interaction::union_surface_bounds(old_bounds, new_bounds),
+                ),
             )?
         }
     };
@@ -5794,7 +5806,7 @@ fn prepare_portrait_transition(
             glass.update_control_surface(&window, surface, &application, None, None)?;
         }
     }
-    geometry.portrait_transition_active = cfg!(target_os = "macos");
+    geometry.portrait_transition_active = cfg!(target_os = "macos") || defer_native_commit == Some(true);
     geometry.portrait_transition_drag = next_transition_drag;
     geometry.portrait_transition_pending = None;
     geometry.portrait_hit_generation = Some(generation_id);
@@ -6047,6 +6059,28 @@ fn begin_portrait_scale_preview(
     })
 }
 
+fn visual_surface_alpha_mask(
+    resources: &character_presentation::CharacterPresentationState,
+    portrait_key: &str,
+    portrait_resource_id: Option<&str>,
+    surface_size: Option<[u32; 2]>,
+    generation_id: &str,
+) -> Result<character_presentation::PortraitAlphaMask, String> {
+    if let Some([width, height]) = surface_size {
+        let pixels = u64::from(width) * u64::from(height);
+        if pixels == 0 || pixels > 192 * 1024 * 1024 {
+            return Err("SURFACE_SIZE_INVALID".into());
+        }
+        Ok(character_presentation::PortraitAlphaMask::new(
+            width,
+            height,
+            vec![255; pixels as usize],
+        ))
+    } else {
+        resources.portrait_alpha_mask(portrait_key, portrait_resource_id, generation_id)
+    }
+}
+
 #[tauri::command]
 fn activate_portrait_hit_test(
     window: WebviewWindow,
@@ -6055,6 +6089,7 @@ fn activate_portrait_hit_test(
     surface_size: Option<[u32; 2]>,
     revision: u64,
     portrait_scale_percent: u16,
+    retain_transition_layout: Option<bool>,
     trace: Option<interaction_latency::InteractionTraceContext>,
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
@@ -6091,7 +6126,7 @@ fn activate_portrait_hit_test(
             return Ok(None);
         }
         geometry.require_context_menu_closed()?;
-        let transition_pending = cfg!(target_os = "macos") && geometry.portrait_transition_active;
+        let transition_pending = geometry.portrait_transition_active;
         let cache_matches = surface_size.is_none()
             && same_generation
             && geometry.portrait_hit_key.as_deref() == Some(portrait_key.as_str())
@@ -6105,23 +6140,13 @@ fn activate_portrait_hit_test(
         if !cache_matches {
             drop(geometry);
             let mask_started = std::time::Instant::now();
-            let alpha_mask = if let Some([width, height]) = surface_size {
-                let pixels = u64::from(width) * u64::from(height);
-                if pixels == 0 || pixels > 192 * 1024 * 1024 {
-                    return Err("SURFACE_SIZE_INVALID".into());
-                }
-                character_presentation::PortraitAlphaMask::new(
-                    width,
-                    height,
-                    vec![255; pixels as usize],
-                )
-            } else {
-                resources.portrait_alpha_mask(
-                    &portrait_key,
-                    portrait_resource_id.as_deref(),
-                    &generation_id,
-                )?
-            };
+            let alpha_mask = visual_surface_alpha_mask(
+                &resources,
+                &portrait_key,
+                portrait_resource_id.as_deref(),
+                surface_size,
+                &generation_id,
+            )?;
             interaction_latency::stage_elapsed("portrait-mask-loaded", mask_started);
             geometry = interaction_latency::lock(
                 geometry_state.inner(),
@@ -6139,7 +6164,7 @@ fn activate_portrait_hit_test(
                 return Ok(None);
             }
             geometry.require_context_menu_closed()?;
-            if transition_pending && cfg!(target_os = "macos") {
+            if transition_pending {
                 // Keep the currently committed alpha mask authoritative until the
                 // WebView has painted the new portrait and commit_portrait_transition
                 // applies its final native frame. This also lets a scale gesture that
@@ -6165,8 +6190,7 @@ fn activate_portrait_hit_test(
         );
         let defer_portrait_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
         let defer_precise_hit_regions = geometry.defers_precise_surface_hit_regions();
-        let defer_portrait_transition_native =
-            cfg!(target_os = "macos") && geometry.portrait_transition_active;
+        let defer_portrait_transition_native = geometry.portrait_transition_active;
         let portrait_alpha_mask = resolved_alpha_mask
             .as_ref()
             .or(geometry.portrait_alpha_mask.as_ref());
@@ -6276,7 +6300,11 @@ fn activate_portrait_hit_test(
             });
             geometry.portrait_hit_revision = revision;
             geometry.portrait_scale_preview_active = false;
-            return Ok(Some(application));
+            return Ok(if retain_transition_layout == Some(true) {
+                geometry.application.clone()
+            } else {
+                Some(application)
+            });
         }
         geometry.portrait_hit_generation = Some(generation_id);
         geometry.portrait_hit_key = Some(portrait_key);
@@ -8323,6 +8351,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_surface_regression_dynamic_form_mask_uses_declared_size() {
+        let resources =
+            character_presentation::CharacterPresentationState::new(std::path::PathBuf::new());
+        let mask = visual_surface_alpha_mask(&resources, "", None, Some([32, 48]), "g").unwrap();
+        assert_eq!(mask.source_size(), [32, 48]);
+        assert_eq!(mask.visible_bounds(), Some([0, 0, 32, 48]));
+        assert_eq!(
+            visual_surface_alpha_mask(&resources, "", None, Some([0, 48]), "g"),
+            Err("SURFACE_SIZE_INVALID".into())
+        );
+    }
 
     #[test]
     fn character_visuals_snapshot_binds_requested_character() {

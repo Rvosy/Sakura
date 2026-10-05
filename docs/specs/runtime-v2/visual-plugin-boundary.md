@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-28
+updated: 2026-10-06
 ---
 
 # 表现插件：资源、编辑、控制与渲染
@@ -214,7 +214,12 @@ export function mount({ container, resource, host, signal }) {
 它不包含一次动作、计时器或 GPU 对象。未实现此方法的插件仍能播放新回复，回看只更新文字；
 快照失败不阻止本段动作执行。回看和返回实时状态的 context 使用独立 operation signal，`segmentIndex` 为 -1。
 RendererHost 限制模块加载、mount 和 ready 等待各为 10 秒，销毁迟到实例，并隔离旧回调及宿主服务调用。
-切换 generation 或形态时先撤销旧控制，保留旧实例的静态画面；新实例完成资源加载和 ready 后再替换并销毁旧实例。
+切换 generation 或形态时先撤销旧控制，保留旧实例的静态画面；新实例完成资源加载和 ready 后，
+由 RendererHost 对两个容器交叉淡入淡出。静态立绘与动态形态使用同一路径，持续时间由
+`desktop/frontend/pet/renderer-host.js` 的 `transitionMs` 定义，默认 300 毫秒；系统要求减少动画时直接切换。
+过渡期间固定旧容器的尺寸和变换，原生窗口沿用立绘过渡的合并范围，结束后再提交新形态的精确范围。
+动画使用 Web Animations API 的 `finished` 完成通知；完成、连续切换或销毁时释放旧实例和动画。
+新实例未就绪前不淡出旧画面，迟到的加载结果仍按原有绑定隔离规则丢弃。
 插件负责停止自己的动画、计时器、监听和资源；长异步工作在 await 后复核 signal。
 
 宿主提供以下技术服务，不承担图片选择：
@@ -412,13 +417,47 @@ ZIP 穿越、重复路径、符号链接与超限归档被拒绝；中途取消�
 claim 等待期间收到取消也不得开始播放。取消只作用于匹配的 RendererHost 操作 ID，不能打断后来开始的聊天。
 已显示的姿态保留取消归属，但不持续占据忙碌状态。旧目标、旧 scope 和旧 generation 不能发布新画面。
 
+`list(characterId=None)` 返回指定角色的形态目录，省略参数时使用当前显示角色。
+结果包含 `schemaVersion: 1`、`characterId`、`defaultResourceId`、`preferenceResourceId` 和 `resources`。
+每项包含 `id`、`name`、`type`、`providerId`、`installId`、`reasonCode`；`READY` 表示提供者可用，
+资源内容仍在实际选择时验证。目录与设置页共用 `VisualHost.resource_catalog`，未安装或停用的形态仍列出原因。
+失效的个人选择按设置契约忽略，`preferenceResourceId` 为 null；不改写角色包或原配置。
+
 `select({target, resourceId})` 经现有角色设置流程校验兼容资源、保存选择并重建当前表现绑定。
+`resourceId` 为 null 时清除个人选择，恢复跟随角色包默认形态；与普通选择使用相同的忙闲和绑定校验。
 受理与保存都校验调用实例和原目标；该接口不允许重写角色包或设置任意路径。形态替换使旧控制目标立即失效。
 从资源校验到绑定完成，宿主保留空闲更新名额，拒绝并发聊天受理；等待插件回复时不持有聊天锁。
 保存前还要核对桌面会话与活动版本，期间有新活动则拒绝保存。
-保存后重建绑定失败时返回 `{accepted: false, saved: true, reasonCode: VISUAL_SELECTION_APPLY_FAILED}`，
+保存后重建绑定失败时返回 `{accepted: false, saved: true, reasonCode: VISUAL_SELECTION_APPLY_FAILED, diagnostics}`，
 明确区分尚未保存的拒绝与已保存但未应用。再次选择同一资源会重试应用，不能因偏好已保存而跳过。
 接口对内置和第三方插件一致，不要求插件导入 Core、伪造 Assistant 回复或直接触碰 WebView。
+
+发布新的表现绑定或可用状态时发送 `sakura.host.visual.changed`，内容与 `current()` 相同。
+手动选择、插件选择、提供者重载共用此事件；保存未变化的选择不重复发送。
+该事件说明 Core 绑定已发布，不代表桌面动画已结束。订阅与补读约定见
+[运行时状态事件](sakura-plugin-runtime-v4.md#运行时状态事件)。
+
+插件只需在 manifest 的 `requires` 中声明 `sakura.host.visual`，通过已有 SDK ServiceProxy 调用：
+
+```python
+class Plugin:
+    def setup(self, context):
+        self.visual = context.get("sakura.host.visual")
+        context.on("sakura.host.visual.changed", lambda _: self.refresh())
+        self.refresh()
+
+    def refresh(self):
+        self.catalog = self.visual.list()
+        self.current = self.visual.current()
+
+    def select(self, resource_id):
+        # 每次操作使用最新目标；传 None 恢复角色默认形态。
+        target = self.visual.current()["target"]
+        return self.visual.select({"target": target, "resourceId": resource_id})
+```
+
+订阅随插件 scope 回收；插件启动时读取当前状态，事件到来时重新读取。
+`select` 的返回值仍须检查 `accepted`、`saved` 与 `reasonCode`，忙碌或目标过期不自动重试。
 
 ## 失败诊断
 
@@ -440,7 +479,9 @@ claim 等待期间收到取消也不得开始播放。取消只作用于匹配�
 
 - `runtime/python.exe -m harness run journey-visuals`：资源、插件进程、回复、历史、归档和前端生命周期回归。
 - `runtime/python.exe -m harness run journey-visuals-browser`：实际工坊与真实数值插件编辑器、普通/主动回复、浏览器状态/动作、取消和旧目标拒绝；使用生产样式验证非图片缩放与命中几何，并覆盖立绘异步取消、解码和提交失败后的画面保持。Windows 默认使用已安装 Edge，其他平台使用 Playwright Chromium，可用 `SAKURA_BROWSER_CHANNEL` 指定通道。
-- `runtime/python.exe desktop/frontend/tests/portrait-renderer.journey.py`：独立验证立绘播放与上下段翻阅保留已显示的图片节点，以及解码、提交期间的取消、替换和失败恢复；原生表面服务使用可控测试桥。
+- `runtime/python.exe desktop/frontend/tests/portrait-renderer.journey.py`：验证立绘播放与上下段翻阅的图片交接、异步取消和失败恢复；使用真实浏览器动画验证跨类型渐变、旧形态尺寸保持及连续切换回收。原生表面服务使用可控测试桥。
+- `tests/integration/test_host_interaction_protocol.py`：通过真实 Core 子进程及插件 SDK 验证形态列表、切换、恢复默认和调用归属。
+- `tests/unit/test_host_state_events.py`：验证 Core、桌面播放和会话变化共同决定的忙闲事件。
 - `runtime/python.exe -m harness run docs`：文档检查。
 
 浏览器 journey 使用隔离临时角色与真实 Core Boundary；替换了 Tauri invoke 传输和窗口表面服务。

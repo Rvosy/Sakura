@@ -737,6 +737,15 @@ function waitForPortraitPaint() {
   ));
 }
 
+async function finishPortraitSurfaceTransition() {
+  const revision = portraitHitRevision;
+  await waitForPortraitPaint();
+  if (revision !== portraitHitRevision) return false;
+  const surface = await runPortraitSurfaceMutation(() => invoke("commit_portrait_transition", { revision }));
+  if (surface && revision === portraitHitRevision) commitSurfaceApplication(surface);
+  return true;
+}
+
 function activatePortraitHitTest(
   key,
   revision = ++portraitHitRevision,
@@ -748,6 +757,7 @@ function activatePortraitHitTest(
     surface = currentSurface,
     signal = null,
     operationSignal = null,
+    retainTransitionLayout = false,
   } = {},
 ) {
   const isCurrent = () => !disposed && revision === portraitHitRevision
@@ -758,6 +768,7 @@ function activatePortraitHitTest(
       portraitKey: key,
       revision,
       portraitScalePercent,
+      retainTransitionLayout,
       ...(portraitResourceId || surface.assetId ? { portraitResourceId: portraitResourceId || surface.assetId } : { surfaceSize: [surface.width, surface.height] }),
     },
     traceContext,
@@ -827,7 +838,10 @@ function visualUnavailable(code, error, stage) {
   portraitFallback.hidden = false;
   currentSurface = { width: 320, height: 480, assetKey: null, assetId: null };
   renderedPortrait = "";
-  void activatePortraitHitTest("").then(() => syncPortraitAppearance("")).catch(() => {});
+  void activatePortraitHitTest("").then(async () => {
+    syncPortraitAppearance("");
+    await finishPortraitSurfaceTransition();
+  }).catch(error => reportVisualError("VISUAL_SURFACE_FINISH_FAILED", error, "visual.fallback"));
   showRecoverableError("角色表现暂不可用，你仍可以继续聊天。");
   // Core already recorded failed binds. Here only the renderer owns an exception.
   if (error) runtimeDiagnostics.reportError(error, { command: "visual_renderer", code,
@@ -857,16 +871,25 @@ const rendererHost = createRendererHost({
       if (surface) commitSurfaceApplication(surface);
       return true;
     },
-    async setSurface({ assetKey = null, width, height }, { signal, operationSignal, visual }) {
+    async setSurface({ assetKey = null, width, height }, { signal, operationSignal, visual, replacing }) {
       if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) throw new Error("SURFACE_SIZE_INVALID");
       const url = assetKey ? visual.assets[assetKey] : null;
       if (assetKey && !url) throw new Error("VISUAL_ASSET_UNKNOWN");
       const surface = { width, height, assetKey, assetId: url ? url.split("/").at(-1) : null };
       const revision = ++portraitHitRevision;
-      const applied = await runPortraitSurfaceMutation(() => {
+      const applied = await runPortraitSurfaceMutation(async () => {
         if (signal.aborted || operationSignal?.aborted || revision !== portraitHitRevision) return false;
+        if (replacing) {
+          const prepared = await invoke("prepare_portrait_transition", {
+            portraitKey: assetKey || "", revision, deferNativeCommit: true,
+            ...(surface.assetId ? { portraitResourceId: surface.assetId } : { surfaceSize: [width, height] }),
+          });
+          if (signal.aborted || revision !== portraitHitRevision || !prepared) return false;
+          commitSurfaceApplication(prepared);
+        }
         return activatePortraitHitTest(assetKey || "", revision, null, {
           surface, portraitScalePercent: visualScalePercent, signal, operationSignal,
+          retainTransitionLayout: replacing,
         });
       });
       if (signal.aborted || operationSignal?.aborted || revision !== portraitHitRevision || !applied) return false;
@@ -876,13 +899,7 @@ const rendererHost = createRendererHost({
       portraitFallback.hidden = true;
       return true;
     },
-    async finishSurface(_context) {
-      const revision = portraitHitRevision;
-      await waitForPortraitPaint();
-      if (revision !== portraitHitRevision || _context.signal.aborted) return false;
-      await runPortraitSurfaceMutation(() => invoke("commit_portrait_transition", { revision }));
-      return true;
-    },
+    finishSurface: finishPortraitSurfaceTransition,
   },
 });
 

@@ -332,10 +332,18 @@ def test_settings_visual_selection_is_personal_and_rebinds_control(visual_applic
     old_binding = application._visual_binding
     service_identity = application.service_identity(old_binding.capability.service)
     assert settings.visual_snapshot("character")["preferenceResourceId"] is None
+    assert application.visual_controls.list() == settings.visual_snapshot("character")
+    events = []
+    original_emit = application.emit_event
+    application.emit_event = lambda name, payload: (events.append((name, payload)), original_emit(name, payload))[-1]
     receipt = settings.select("character", {"character": "numeric-2"})
     assert receipt["changePlan"] == "visual_rebind"
     assert application.service_identity(old_binding.capability.service) == service_identity
     assert application.visual_presentation()["visual"]["resourceId"] == "numeric-2"
+    assert [name for name, _ in events] == ["sakura.host.visual.changed"]
+    assert events[0][1]["target"]["resourceId"] == "numeric-2"
+    settings.select("character", {"character": "numeric-2"})
+    assert len(events) == 1, "saving the same form does not emit a change"
     assert old_binding.parse_control(_control(resource, {"angle": 1})).control is None
     reopened = CharacterSettingsBoundary("g", "c", package.parents[1], plugin_application_provider=lambda: application)
     assert reopened.visual_snapshot("character")["preferenceResourceId"] == "numeric-2"
@@ -343,6 +351,7 @@ def test_settings_visual_selection_is_personal_and_rebinds_control(visual_applic
     install_id = settings.visual_snapshot("character")["resources"][0]["installId"]
     application.set_enabled(install_id, False)
     assert all(item["reasonCode"] == "PLUGIN_DISABLED" for item in settings.visual_snapshot("character")["resources"])
+    assert application.visual_controls.list("character") == settings.visual_snapshot("character")
     with pytest.raises(CharacterSettingsError, match="所选形态无法使用"):
         settings.select("character", {"character": "numeric-1"})
     assert AppSettingsService(package.parents[1]).load_visual_selections() == {"character": "numeric-2"}
@@ -350,6 +359,27 @@ def test_settings_visual_selection_is_personal_and_rebinds_control(visual_applic
     settings.select("character", {"character": None})
     assert application.visual_presentation()["visual"]["resourceId"] == "numeric-1"
     assert path.read_bytes() == before
+
+
+def test_character_notifications_follow_the_published_character_and_skip_same_character_rebinds(visual_application):
+    import shutil
+
+    application, package, _ = visual_application
+    other = package.parent / "other"
+    shutil.copytree(package, other)
+    manifest = json.loads((other / "character.json").read_text(encoding="utf-8"))
+    manifest["id"] = "other"
+    (other / "character.json").write_text(json.dumps(manifest), encoding="utf-8")
+    events = []
+    application.emit_event = lambda name, payload: events.append((name, payload))
+    application.bind_character_presentation("character")
+    application.bind_character_presentation("character")
+    application.bind_character_presentation("other")
+    assert [payload for name, payload in events if name == "sakura.host.character.changed"] == [
+        {"characterId": "character"}, {"characterId": "other"}]
+    assert application._character_store.current("observer")["id"] == "other"
+    assert events[-1][0] == "sakura.host.visual.changed"
+    assert events[-1][1]["target"]["characterId"] == "other"
 
 
 def test_visual_folder_import_preserves_model_references_and_cleans_cancelled_batch(visual_application, tmp_path, monkeypatch):

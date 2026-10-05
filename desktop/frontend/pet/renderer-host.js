@@ -1,6 +1,7 @@
 import { normalizeVisualControl } from "./visual-control.js";
 
-export function createRendererHost({ container, loadModule = (url) => import(url), resolveControl, services = {}, onUnavailable = () => {}, onError = () => {}, timeoutMs = 10000 }) {
+export function createRendererHost({ container, loadModule = (url) => import(url), resolveControl, services = {}, onUnavailable = () => {}, onError = () => {}, timeoutMs = 10000,
+  transitionMs = 300, reducedMotion = () => container.ownerDocument.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches }) {
   let binding = null;
   let instance = null;
   let lifetime = null;
@@ -8,6 +9,8 @@ export function createRendererHost({ container, loadModule = (url) => import(url
   let ready = Promise.resolve(false);
   let epoch = 0;
   let staged = null;
+  let activeSurface = null;
+  let finishTransition = null;
   let history = new WeakMap();
   let latestState = null;
   let reviewing = false;
@@ -34,6 +37,13 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     return true;
   }
   function freeze(reason = "unbound") {
+    finishTransition?.();
+    if (activeSurface) {
+      // A new renderer can change the shared layout during mount. Preserve the
+      // outgoing form's dimensions until its own surface has faded away.
+      const style = container.ownerDocument.defaultView.getComputedStyle(activeSurface);
+      for (const property of ["width", "height", "transform"]) activeSurface.style[property] = style[property];
+    }
     epoch += 1;
     history = new WeakMap();
     latestState = null;
@@ -54,6 +64,7 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     freeze(reason);
     cleanup(instance, "destroy");
     instance = null;
+    activeSurface = null;
     binding = null;
     container.replaceChildren();
   }
@@ -76,7 +87,8 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     container.append(surface);
     const guarded = Object.fromEntries(Object.entries(services).map(([name, method]) => [name, (...args) => {
       if (signal.aborted || epoch !== current) return Promise.resolve(false);
-      return method(...args, { signal, operationSignal: operation?.abort.signal, visual: target, container: surface });
+      return method(...args, { signal, operationSignal: operation?.abort.signal, visual: target, container: surface,
+        replacing: activeSurface !== null && activeSurface !== surface });
     }]));
     ready = (async () => {
       let candidate;
@@ -102,12 +114,42 @@ export function createRendererHost({ container, loadModule = (url) => import(url
         await bounded(candidate.ready);
         if (signal.aborted) return false;
         signal.removeEventListener("abort", retire);
-        cleanup(instance, "destroy");
+        const previous = instance;
+        const previousSurface = activeSurface;
         instance = candidate;
+        activeSurface = surface;
         surface.className = "visual-renderer-surface";
-        container.replaceChildren(surface);
         staged = null;
-        return true;
+        if (!previousSurface || transitionMs === 0 || reducedMotion()) {
+          cleanup(previous, "destroy");
+          container.replaceChildren(surface);
+          if (previousSurface) await guarded.finishSurface?.();
+          return !signal.aborted;
+        }
+        previousSurface.style.pointerEvents = "none";
+        const options = { duration: transitionMs, easing: "ease-in-out", fill: "both" };
+        const animations = [
+          previousSurface.animate([{ opacity: 1 }, { opacity: 0 }], options),
+          surface.animate([{ opacity: 0 }, { opacity: 1 }], options),
+        ];
+        let finished = false;
+        let settled;
+        const finish = () => {
+          if (finished) return settled;
+          finished = true;
+          for (const animation of animations) animation.cancel();
+          cleanup(previous, "destroy");
+          previousSurface.remove();
+          if (finishTransition === finish) finishTransition = null;
+          // Complete the native envelope even when a subsequent bind retires
+          // this renderer. The desktop revision prevents stale settlement.
+          settled = Promise.resolve(services.finishSurface?.({ signal, visual: target, container: surface }))
+            .catch(error => onError("VISUAL_SURFACE_FINISH_FAILED", error, "visual.renderer.transition"));
+          return settled;
+        };
+        finishTransition = finish;
+        await Promise.all(animations.map(animation => animation.finished)).then(finish, finish);
+        return !signal.aborted;
       } catch (error) {
         if (epoch === current) { clear("renderer_failed"); report("VISUAL_RENDERER_FAILED", error, stage); }
         return false;

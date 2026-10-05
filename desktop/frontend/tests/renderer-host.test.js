@@ -5,12 +5,56 @@ import { createChatPresentationReducer } from "../chat/chat-presentation.js";
 
 const binding = (id = "a") => ({ schemaVersion: 2, visual: { bindingId: id.repeat(32), resourceId: "numeric-1", renderer: "fixture:renderer", data: { maxAngle: 30 }, assets: {} } });
 const control = (id = "a") => ({ version: 1, bindingId: id.repeat(32), resourceId: "numeric-1", state: { angle: 12 }, actions: [{ wave: true }] });
-const container = () => {
+const container = ({ animate = () => ({ finished: Promise.resolve(), cancel() {} }), reducedMotion = false } = {}) => {
   const root = { children: [], append(child) { this.children.push(child); }, replaceChildren(...children) { this.children = children; } };
-  root.ownerDocument = { createElement: () => ({ remove() { root.children = root.children.filter(child => child !== this); } }) };
+  root.ownerDocument = {
+    defaultView: { matchMedia: () => ({ matches: reducedMotion }),
+      getComputedStyle: () => ({ width: "200px", height: "300px", transform: "matrix(1,0,0,1,0,0)" }) },
+    createElement: () => ({ style: {}, animate,
+      remove() { root.children = root.children.filter(child => child !== this); } }),
+  };
   return root;
 };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+
+test("form transitions retain both renderers until animation completion and cancel on rapid replacement", async () => {
+  const animations = [], destroyed = [], started = deferred();
+  const root = container({ animate() {
+    const done = deferred();
+    const animation = { finished: done.promise, cancel: done.resolve, finish: done.resolve };
+    animations.push(animation);
+    started.resolve();
+    return animation;
+  } });
+  const host = createRendererHost({ container: root, loadModule: async () => ({
+    mount: ({ resource }) => ({ applyState() {}, destroy() { destroyed.push(resource.bindingId); } }),
+  }) });
+  await host.bind(binding("a"));
+  const next = host.bind({ ...binding("b"), visual: { ...binding("b").visual, type: "dynamic" } });
+  await started.promise;
+  assert.equal(root.children.length, 2);
+  assert.deepEqual(destroyed, []);
+  assert.equal(root.children[0].style.width, "200px", "outgoing layout is frozen before the new renderer mounts");
+  host.freeze();
+  assert.equal(await next, false);
+  assert.deepEqual(destroyed, ["a".repeat(32)]);
+  assert.equal(root.children.length, 1);
+  host.destroy();
+  assert.deepEqual(destroyed, ["a".repeat(32), "b".repeat(32)]);
+});
+
+test("reduced motion switches directly without retaining the retired renderer", async () => {
+  const root = container({ reducedMotion: true, animate() { assert.fail("reduced motion must not animate"); } });
+  let destroyed = 0;
+  const host = createRendererHost({ container: root,
+    loadModule: async () => ({ mount: () => ({ applyState() {}, destroy() { destroyed++; } }) }),
+  });
+  await host.bind(binding());
+  await host.bind(binding("b"));
+  assert.equal(destroyed, 1);
+  assert.equal(root.children.length, 1);
+  host.destroy();
+});
 
 test("cancelling a retired plugin operation does not interrupt the next chat renderer", async () => {
   const cancelled = [];

@@ -30,7 +30,7 @@ class Plugin:
         self.image = None
         def action(method):
             return lambda values: {"values": {"output": json.dumps(method(values))}}
-        actions = {name: action(getattr(self, name)) for name in ("inspect", "apply", "status", "capture", "release")}
+        actions = {name: action(getattr(self, name)) for name in ("inspect", "select", "reset", "apply", "status", "capture", "release")}
         context.get("sakura.host.settings").register({
             "sectionId": "host", "title": "Host fixture",
             "fields": [{"key": "output", "type": "string", "label": "Output", "default": "", "readonly": True, "maxLength": 16000}],
@@ -38,7 +38,13 @@ class Plugin:
         }, load=lambda: {"output": ""}, save=lambda values: {}, actions=actions)
 
     def inspect(self, values):
-        return {"chat": self.chat.current(), "visual": self.visual.current()}
+        return {"chat": self.chat.current(), "visual": self.visual.current(), "catalog": self.visual.list()}
+
+    def select(self, values):
+        return self.visual.select({"target": self.visual.current()["target"], "resourceId": "numeric-2"})
+
+    def reset(self, values):
+        return self.visual.select({"target": self.visual.current()["target"], "resourceId": None})
 
     def apply(self, values):
         target = self.visual.current()["target"]
@@ -81,7 +87,9 @@ def test_real_core_routes_scoped_screen_visual_and_detach_protocol(tmp_path):
     package = app_root / "characters/sakura"
     manifest = json.loads((package / "character.json").read_text(encoding="utf-8"))
     manifest.pop("portrait", None)
-    manifest["visuals"] = {"resources": [{"id": "numeric", "type": "fixture.numeric@1", "root": "numeric", "entry": "resource.json"}], "default": "numeric"}
+    manifest["visuals"] = {"resources": [
+        {"id": identity, "type": "fixture.numeric@1", "root": "numeric", "entry": "resource.json"}
+        for identity in ("numeric", "numeric-2")], "default": "numeric"}
     (package / "character.json").write_text(json.dumps(manifest), encoding="utf-8")
     (package / "numeric").mkdir()
     (package / "numeric/resource.json").write_text('{"maxAngle": 30}', encoding="utf-8")
@@ -130,6 +138,19 @@ def test_real_core_routes_scoped_screen_visual_and_detach_protocol(tmp_path):
         assert desktop("host.interaction.state", ready)["payload"]["accepted"]
         inspected = action("inspect")
         assert inspected["chat"]["idle"]
+        catalog = inspected["catalog"]
+        assert catalog["characterId"] == "sakura"
+        assert catalog["defaultResourceId"] == "numeric"
+        assert catalog["preferenceResourceId"] is None
+        assert [item["id"] for item in catalog["resources"]] == ["numeric", "numeric-2"]
+        assert all(item["type"] == "fixture.numeric@1" and item["reasonCode"] == "READY" for item in catalog["resources"])
+        assert action("select")["accepted"]
+        selected = action("inspect")
+        assert selected["catalog"]["preferenceResourceId"] == "numeric-2"
+        assert selected["visual"]["target"]["resourceId"] == "numeric-2"
+        assert action("reset")["accepted"]
+        inspected = action("inspect")
+        assert inspected["catalog"]["preferenceResourceId"] is None
         target = inspected["visual"]["target"]
         assert target["resourceId"] == "numeric"
         assert "rendererData" not in inspected["visual"]
@@ -227,7 +248,10 @@ def test_visual_selection_reports_saved_preference_when_runtime_rebind_fails(tmp
         finally:
             HOST_CALLER_SCOPE.reset(scope)
             HOST_CALLER.reset(owner)
-        assert result == {"accepted": False, "saved": True, "reasonCode": "VISUAL_SELECTION_APPLY_FAILED"}
+        assert result["accepted"] is False and result["saved"] is True
+        assert result["reasonCode"] == "VISUAL_SELECTION_APPLY_FAILED"
+        assert result["diagnostics"]["cause_type"] == "RuntimeError"
+        assert "fixture render preparation failed" in result["diagnostics"]["diagnostic"]
         assert settings._settings.load_visual_selections()["character"] == "numeric-2"
         assert application.visual_controls.current()["target"] == target
         monkeypatch.setattr(application, "bind_character_presentation", original_rebind)

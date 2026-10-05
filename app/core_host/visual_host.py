@@ -358,6 +358,14 @@ class VisualHost:
             candidates = [item for item in candidates if item[0].plugin_id == provider_id]
         return candidates
 
+    def resource_catalog(self, profile, preference):
+        if preference not in {resource.id for resource in profile.visual_resources}:
+            preference = None
+        return {"schemaVersion": 1, "characterId": profile.id,
+            "defaultResourceId": profile.default_visual_id, "preferenceResourceId": preference,
+            "resources": [{**self.resource_choice(resource, profile.visual_providers.get(resource.id)),
+                           "type": resource.type} for resource in profile.visual_resources]}
+
     def resource_choice(self, resource, provider_id=None):
         candidates = self._matching_candidates(resource.type, provider_id)
         record, capability = candidates[0] if len(candidates) == 1 else (None, None)

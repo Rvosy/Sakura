@@ -149,8 +149,12 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
         def __init__(self):
             self.accepted = {}
 
+        def set_host_state_listener(self, listener):
+            listener()
+
         def current_host_state(self):
-            return {"sessionId": "session", "characterId": "sakura"}
+            return {"sessionId": "session", "characterId": "sakura", "characterName": "Sakura",
+                    "idle": True, "interactionRevision": 0}
 
         def reserve_host_message(
             self,

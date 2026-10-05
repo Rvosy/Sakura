@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-10-04
+updated: 2026-10-06
 ---
 
 # Sakura Plugin Runtime v4
@@ -335,6 +335,23 @@ Host 贡献在 setup 提交前暂存，提交后新增贡献立即生效，均�
 通知绑定当前插件进程，不会转交同名新实例。每个插件使用独立观察线程和最多 32 条的队列，保持接收顺序，
 不占用 Service 请求线程。队满或发送失败记录 `plugin.notification.dropped`；关闭时丢弃尚未开始的通知。
 消费者启动或重载后从事实源及已有 cursor 补读，通知仅作唤醒，不能承载唯一一份结果。
+
+### 运行时状态事件
+
+普通插件通过 `context.on(name, handler)` 订阅，返回的函数可提前注销，scope 结束时 SDK 自动清理。
+以下事件复用上述观察通知队列，不等待订阅者执行，也不替代操作时的状态校验。
+
+| 事件 | 内容 | 查询入口 |
+|---|---|---|
+| `sakura.host.character.changed` | `{characterId}`，当前显示角色变化时发送 | `sakura.host.character.current()` |
+| `sakura.host.visual.changed` | 当前表现绑定或不可用原因 | `sakura.host.visual.current()` |
+| `sakura.host.chat.state.changed` | `{sessionId, characterId, characterName, idle}` | `sakura.host.chat.current()` |
+
+忙闲状态同时考虑 Core 的对话受理、运行时更新和桌面的字幕、播放等活动事实。
+Core 结束处理但桌面仍忙碌时，`idle` 保持 false；会话失效后须由桌面提交新会话状态才能恢复空闲。
+只有上述字段实际变化才通知，活动版本单独递增不重复发送。事件可能在消费前过时，插件应重新查询事实源。
+新插件启动时先订阅再查询；Core 重启后通过新实例的初始查询恢复状态，不依赖退出时收到事件。
+形态目录、默认选择和示例见[普通插件发起表现控制](visual-plugin-boundary.md#普通插件发起表现控制)。
 
 收到跨进程 Service 调用时，`context.caller_id` 是 Core 根据调用进程注入的插件 ID，Core 消费者为
 `sakura.core`；调用结束恢复为空。它是当前调用的上下文，不从业务参数读取，也不自动传播到新线程。领域

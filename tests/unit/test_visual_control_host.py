@@ -30,7 +30,8 @@ def fixture(parse=None):
     current, idle, events, selected = [binding], [True], [], []
     host = HostVisualService(binding_provider=lambda: ("character", current[0]),
         emit_callback=lambda name, payload: events.append((name, payload)), is_idle=lambda: idle[0],
-        select_callback=lambda target, resource: selected.append((target, resource)) or {"accepted": True})
+        select_callback=lambda target, resource: selected.append((target, resource)) or {"accepted": True},
+        list_callback=lambda character: {"characterId": character or "character", "resources": []})
     return host, current, idle, events, selected
 
 
@@ -78,6 +79,18 @@ def test_busy_and_replaced_target_cannot_execute_or_switch_resources():
         assert host.select({"target": target, "resourceId": "other"})["accepted"] is False
         assert selected == []
         assert events[-1][0] == "host.visual.cancel"
+
+
+def test_default_selection_uses_the_same_target_and_busy_boundary():
+    host, _, idle, _, selected = fixture()
+    with caller():
+        target = host.current()["target"]
+        idle[0] = False
+        assert host.select({"target": target, "resourceId": None})["reasonCode"] == "VISUAL_BUSY"
+        assert selected == []
+        idle[0] = True
+        assert host.select({"target": target, "resourceId": None})["accepted"]
+        assert selected == [(target, None)]
 
 
 def test_scope_revocation_during_provider_parse_does_not_publish_late_control():

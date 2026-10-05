@@ -79,7 +79,7 @@ test('history navigation preserves the running Spine loop while restoring expres
   const { skeleton, controller, envelope } = fixture();
   const container = {
     append() {}, replaceChildren() {},
-    ownerDocument: { createElement: () => ({ remove() {} }) },
+    ownerDocument: { defaultView: { getComputedStyle: () => ({}) }, createElement: () => ({ style: {}, remove() {} }) },
   };
   let sequence = 0;
   const host = createRendererHost({ container, loadModule: async () => ({ mount: () => ({

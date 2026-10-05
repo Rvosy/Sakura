@@ -28,11 +28,13 @@ class _Receipt:
 
 class HostVisualService:
     def __init__(self, *, binding_provider: Callable, emit_callback: Callable,
-                 is_idle: Callable, select_callback: Callable, commit_scope: Callable | None = None) -> None:
+                 is_idle: Callable, select_callback: Callable, list_callback: Callable,
+                 commit_scope: Callable | None = None) -> None:
         self._binding_provider = binding_provider
         self._emit = emit_callback
         self._is_idle = is_idle
         self._select = select_callback
+        self._list = list_callback
         self._commit_scope = commit_scope or (lambda owner, commit: commit())
         self._lock = threading.RLock()
         self._receipts: dict[str, _Receipt] = {}
@@ -55,6 +57,11 @@ class HostVisualService:
             return self._binding()[0] == target
         except VisualHostError:
             return False
+
+    def list(self, character_id: str | None = None) -> dict:
+        if character_id is not None and (not isinstance(character_id, str) or not character_id.strip()):
+            raise VisualHostError("CHARACTER_ID_INVALID")
+        return self._list(character_id)
 
     def current(self) -> dict:
         self.invalidate_target()
@@ -177,7 +184,8 @@ class HostVisualService:
     def select(self, request: Mapping) -> dict:
         caller_identity()
         if (not isinstance(request, Mapping) or set(request) != {"target", "resourceId"}
-                or not isinstance(request["resourceId"], str) or not request["resourceId"]):
+                or (request["resourceId"] is not None
+                    and (not isinstance(request["resourceId"], str) or not request["resourceId"]))):
             raise VisualHostError("VISUAL_RESOURCE_INVALID")
         if not self._matches(request["target"]):
             return {"accepted": False, "reasonCode": "VISUAL_BINDING_EXPIRED"}

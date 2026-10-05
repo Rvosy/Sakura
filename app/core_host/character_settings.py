@@ -413,8 +413,10 @@ class CharacterSettingsBoundary:
             raise CharacterSettingsError("CHARACTER_NOT_FOUND", "选择的角色不存在。") from error
         application = self._plugin_application_provider()
         host = application.visuals if application is not None else None
-        choices = [host.resource_choice(resource, profile.visual_providers.get(resource.id)) if host else {
-            "id": resource.id, "name": resource.name or "未命名形态", "providerId": None,
+        if host is not None:
+            return host.resource_catalog(profile, self._settings.load_visual_selections().get(character_id))
+        choices = [{
+            "id": resource.id, "name": resource.name or "未命名形态", "type": resource.type, "providerId": None,
             "installId": None, "reasonCode": "VISUAL_SERVICE_UNAVAILABLE"
         } for resource in profile.visual_resources]
         preference = self._settings.load_visual_selections().get(character_id)
@@ -423,7 +425,7 @@ class CharacterSettingsBoundary:
         return {"schemaVersion": 1, "characterId": character_id, "defaultResourceId": profile.default_visual_id,
             "preferenceResourceId": preference, "resources": choices}
 
-    def select_visual_resource(self, target: dict, resource_id: str, *, expected_visual_activity=None) -> dict:
+    def select_visual_resource(self, target: dict, resource_id: str | None, *, expected_visual_activity=None) -> dict:
         try:
             result = self.select(target.get("characterId"), {target.get("characterId"): resource_id},
                                  expected_visual_target=target, expected_visual_activity=expected_visual_activity)

@@ -130,6 +130,11 @@ class RealChatBoundary:
         self._closed = False
         self._switching_character = False
         self._runtime_update_pending = False
+        self._host_state_listener = lambda: None
+
+    def set_host_state_listener(self, listener: Callable[[], None]) -> None:
+        self._host_state_listener = listener
+        listener()
 
     def set_event_publisher(self, publisher: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:
@@ -206,6 +211,7 @@ class RealChatBoundary:
             self._interaction_revision += 1
             self._revision += 1
             self._changed.notify_all()
+        self._host_state_listener()
 
     def apply_runtime_update(self, update: Callable[[], None]) -> None:
         """Apply at the settings operation; a later chat never repairs a save."""
@@ -228,12 +234,14 @@ class RealChatBoundary:
             if self._executions or self._switching_character or self._runtime_update_pending:
                 raise RealChatRejection("RUNTIME_UPDATE_BUSY", "当前互动尚未结束。", retryable=True)
             self._runtime_update_pending = True
+        self._host_state_listener()
         try:
             yield
         finally:
             with self._changed:
                 self._runtime_update_pending = False
                 self._changed.notify_all()
+            self._host_state_listener()
 
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))
@@ -248,6 +256,7 @@ class RealChatBoundary:
                     self._pending_screen_attachment = execution.screen_attachment
                 self._revision += 1
                 self._changed.notify_all()
+        self._host_state_listener()
 
     def start_send(self, request: dict[str, Any]) -> dict[str, Any]:
         """Acknowledge an accepted chat without waiting for Provider completion."""
@@ -1053,10 +1062,12 @@ class RealChatBoundary:
                 self._switching_character = False
                 raise
         try:
+            self._host_state_listener()
             yield
         finally:
             with self._changed:
                 self._switching_character = False
+            self._host_state_listener()
 
     def cancel_all(self) -> None:
         with self._lock:
@@ -1081,6 +1092,7 @@ class RealChatBoundary:
                 self._changed.wait(timeout=max(0.0, deadline - monotonic()))
             if self._executions:
                 raise RuntimeError("CHAT_CLOSE_TIMEOUT")
+        self._host_state_listener()
 
     def _finish(self, operation_id: str, terminal: str) -> str | None:
         with self._changed:
@@ -1117,6 +1129,7 @@ class RealChatBoundary:
             if self._executions.pop(operation_id, None) is not None:
                 self._revision += 1
                 self._changed.notify_all()
+        self._host_state_listener()
 
     def _publish(self, request: Mapping[str, Any], name: str, payload: Mapping[str, Any]) -> None:
         publisher = self._event_publisher
