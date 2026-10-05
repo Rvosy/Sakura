@@ -1227,9 +1227,9 @@ class PluginRuntimeManager:
             self._stop_process(
                 consumer_id,
                 reason="DEPENDENCY_RELOADING",
-                failed=True,
+                failed=False,
             )
-        self._stop_process(plugin_id, reason="PLUGIN_RELOADING", failed=True)
+        self._stop_process(plugin_id, reason="PLUGIN_RELOADING", failed=False)
         with self._lock:
             enabled = record.spec.enabled
         if enabled and not self._start_one(record):
@@ -1414,7 +1414,9 @@ class PluginRuntimeManager:
                 diagnostics = self._failure_diagnostics_locked(record)
         log_message("error" if failed else "info", message, component="plugin",
             plugin_id=record.spec.plugin_id, plugin_name=record.spec.name,
-            fields={**(diagnostics or {}), "event": event, "state": record.state, "reason_code": record.reason_code})
+            fields={**(diagnostics or {}),
+                **({"stage": "plugin.stop"} if event == "plugin.stopped" else {}),
+                "event": event, "state": record.state, "reason_code": record.reason_code})
 
     def _start_one(self, record: _RuntimeRecord, *, only_unstarted: bool = False) -> bool:
         diagnostics: dict[str, object] = {}

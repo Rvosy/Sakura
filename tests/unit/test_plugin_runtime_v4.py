@@ -264,6 +264,68 @@ class Plugin:
     assert not [r for r in records if r.get("attributes", {}).get("event") == "plugin.cleanup.failed"]
 
 
+@pytest.mark.parametrize("operation", ["reload", "pause", "disable", "uninstall", "reload_failure"])
+def test_plugin_planned_stops_are_not_errors_but_real_failures_remain_visible(tmp_path, operation):
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+
+    roots = _roots(tmp_path)
+    parent = roots.distribution_root / "plugins/builtin"
+    provider = _plugin_source(parent, "fixture.provider", "fixture.provider", body='''
+class Plugin:
+    def ping(self): return True
+    def setup(self, context): context.provide("fixture.provider", self, exports=("ping",))
+''')
+    _plugin_source(parent, "fixture.consumer", "fixture.consumer", requires=("fixture.provider",), body='''
+class Plugin:
+    def ping(self): return True
+    def setup(self, context): context.provide("fixture.consumer", self, exports=("ping",))
+''')
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "planned-stops", ToolRegistry())
+    try:
+        host.start()
+        assert host.wait_until_loaded(timeout=3)
+        manager = host._manager
+        if operation == "reload_failure":
+            (provider / "plugin.py").write_text(
+                "class Plugin:\n    def setup(self, context): raise ValueError('replacement setup failed')\n", encoding="utf-8")
+            with pytest.raises(PluginRuntimeError):
+                manager.reload_plugin("fixture.provider")
+        elif operation == "reload":
+            manager.reload_plugin("fixture.provider")
+        elif operation == "pause":
+            with manager.pause_plugins(["fixture.provider"]):
+                assert all(item["state"] != "failed" for item in manager.snapshot()["plugins"])
+        elif operation == "disable":
+            manager.set_enabled("fixture.provider", False)
+        else:
+            manager.uninstall_plugin("fixture.provider")
+        if operation in {"reload", "pause"}:
+            assert host.call_service("fixture.consumer", "ping") is True
+            assert all(item["state"] == "active" for item in manager.snapshot()["plugins"])
+    finally:
+        host.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines()
+        if line.startswith(CORE_BRIDGE_PREFIX)]
+    stopped = [row for row in records if row.get("attributes", {}).get("event") == "plugin.stopped"]
+    assert stopped
+    planned = [row for row in stopped if row["attributes"]["reason_code"] in {
+        "PLUGIN_RELOADING", "DEPENDENCY_RELOADING", "PLUGIN_DISABLED", "PLUGIN_UNINSTALLED", "PLUGIN_STOPPED"}]
+    assert planned
+    assert all(row["severity"] == "info" and row["attributes"]["state"] != "failed" for row in planned)
+    assert all("diagnostic" not in row["attributes"] for row in planned)
+    assert all(row["attributes"]["stage"] == "plugin.stop" for row in stopped)
+    errors = [row for row in records if row["severity"] == "error"]
+    if operation in {"disable", "uninstall", "reload_failure"}:
+        assert any(row.get("attributes", {}).get("reason_code") == "DEPENDENCY_FAILED" for row in errors)
+    else:
+        assert not errors
+    if operation == "reload_failure":
+        assert any("replacement setup failed" in row.get("attributes", {}).get("diagnostic", "") for row in errors)
+
+
 def test_plugin_start_failures_reach_log_bridge_with_identity(tmp_path: Path):
     from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
     roots = _roots(tmp_path)
