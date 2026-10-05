@@ -620,7 +620,7 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   scrollbar-color: var(--sakura-border) transparent;
 }
 
-.plugin-dialog-body, .record-list, .record-editor {
+.plugin-dialog-body, .record-list, .record-editor, .custom-select__menu {
   scrollbar-width: thin;
   scrollbar-color: var(--sakura-border) transparent;
 }
@@ -629,18 +629,18 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   overflow: hidden;
 }
 
-:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar {
+:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor, .custom-select__menu)::-webkit-scrollbar {
   width: 10px;
 }
 
-:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar-thumb {
+:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor, .custom-select__menu)::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
   background-color: color-mix(in srgb, var(--sakura-border) 80%, transparent);
 }
 
-:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar-thumb:hover {
+:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor, .custom-select__menu)::-webkit-scrollbar-thumb:hover {
   background-color: var(--sakura-primary);
 }
 

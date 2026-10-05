@@ -429,6 +429,10 @@ function enhanceSelect(select) {
     }
   }
 
+  function onScroll(event) {
+    if (!menu.contains(event.target)) closeMenu();
+  }
+
   function onKeydown(event) {
     if (event.key === "Escape") {
       closeMenu();
@@ -437,7 +441,7 @@ function enhanceSelect(select) {
 
   menu.addEventListener("focusout", (event) => {
     const next = event.relatedTarget;
-    if (!menu.contains(next) && next !== trigger) {
+    if (next && !menu.contains(next) && next !== trigger) {
       closeMenu();
     }
   });
@@ -454,7 +458,7 @@ function enhanceSelect(select) {
     trigger.setAttribute("aria-expanded", "true");
     document.addEventListener("pointerdown", onDocumentPointer, true);
     document.addEventListener("keydown", onKeydown, true);
-    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", closeMenu, true);
     const selected = menu.querySelector(".custom-select__option.is-selected:not(.is-disabled)");
     (selected || menu.querySelector(".custom-select__option:not(.is-disabled)"))?.focus();
@@ -470,7 +474,7 @@ function enhanceSelect(select) {
     menu.remove();
     document.removeEventListener("pointerdown", onDocumentPointer, true);
     document.removeEventListener("keydown", onKeydown, true);
-    window.removeEventListener("scroll", closeMenu, true);
+    window.removeEventListener("scroll", onScroll, true);
     window.removeEventListener("resize", closeMenu, true);
   }
 

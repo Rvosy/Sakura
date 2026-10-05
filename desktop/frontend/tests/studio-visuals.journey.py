@@ -109,6 +109,45 @@ def run():
                 """)
                 page.goto(origin + "/desktop/frontend/studio/")
                 expect(page.locator("#displayName")).to_have_value("示例角色")
+                # A long character list must remain open while its own viewport scrolls.
+                page.locator("#studioCharacterSelect").evaluate("""select => {
+                    for (let i = 0; i < 30; i++) {
+                        const option = new Option(`滚动测试 ${i}`, `scroll-test-${i}`);
+                        option.dataset.scrollTest = "true";
+                        select.append(option);
+                    }
+                }""")
+                trigger = page.locator(".studio-character-controls .custom-select__trigger")
+                menu = page.locator("#studio-character-menu")
+                trigger.click()
+                menu.hover()
+                page.mouse.wheel(0, 350)
+                page.wait_for_function("document.querySelector('#studio-character-menu')?.scrollTop > 0")
+                expect(menu).to_be_visible()
+                # Scrollbar interaction can clear focus without focusing another element.
+                menu.evaluate("menu => menu.querySelector('[role=option]').dispatchEvent(new FocusEvent('focusout', {bubbles:true, relatedTarget:null}))")
+                expect(menu).to_be_visible()
+                box = menu.bounding_box()
+                page.mouse.move(box["x"] + box["width"] - 4, box["y"] + 90)
+                page.mouse.down()
+                page.mouse.move(box["x"] + box["width"] - 4, box["y"] + 180, steps=8)
+                page.mouse.up()
+                expect(menu).to_be_visible()
+                menu.get_by_role("option").last.focus()
+                page.wait_for_function("""() => {
+                    const menu = document.querySelector('#studio-character-menu');
+                    return menu && menu.scrollTop + menu.clientHeight >= menu.scrollHeight - 2;
+                }""")
+                expect(menu).to_be_visible()
+                page.keyboard.press("Escape")
+                expect(menu).to_have_count(0)
+                trigger.click()
+                page.locator("#displayName").click()
+                expect(menu).to_have_count(0)
+                trigger.click()
+                page.locator(".page-scroll").evaluate("el => el.dispatchEvent(new Event('scroll'))")
+                expect(menu).to_have_count(0)
+                page.locator('#studioCharacterSelect option[data-scroll-test]').evaluate_all("options => options.forEach(option => option.remove())")
                 output = ROOT / "temp/visual-ui"
                 output.mkdir(parents=True, exist_ok=True)
                 # The host may not implement window.confirm. Cancellation and
