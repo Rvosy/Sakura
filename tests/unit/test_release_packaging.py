@@ -284,6 +284,32 @@ def test_development_dependency_build_replaces_all_roots_after_validation(
     assert not list((repo / "plugins").glob(".dependencies-*"))
 
 
+def test_development_dependency_build_uses_optional_plugin_after_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, python = _development_dependency_repo(tmp_path)
+    directory_name = "sakura_genie"
+    builtin = repo / "plugins/builtin" / directory_name
+    optional = repo / "plugins/optional" / directory_name
+    optional.parent.mkdir(parents=True)
+    builtin.rename(optional)
+    (builtin / "__pycache__").mkdir(parents=True)
+    commands = []
+
+    def install(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        commands.append(command)
+        return _fake_dependency_install(command, **kwargs)
+
+    monkeypatch.setattr(development_plugin_dependencies.subprocess, "run", install)
+    development_plugin_dependencies.prepare(repo, python)
+
+    assert any(str(optional / "requirements.txt") in command for command in commands)
+    assert any(str(optional) in command and "--validate-entry" in command for command in commands)
+    dependency = repo / "plugins/dependencies" / f"com.example.{directory_name}"
+    assert (dependency / "fixture.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
 def test_development_dependency_publish_failure_restores_previous_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

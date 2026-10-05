@@ -51,7 +51,7 @@ def prepare(repo: Path, python: Path) -> None:
         uv = _uv_executable(python)
         for directory_name in PLUGIN_DIRECTORIES:
             plugin_root = plugins / "builtin" / directory_name
-            if not plugin_root.is_dir():
+            if not (plugin_root / "plugin.yaml").is_file():
                 plugin_root = plugins / "optional" / directory_name
             requirements = plugin_root / "requirements.txt"
             manifest = yaml.safe_load((plugin_root / "plugin.yaml").read_text(encoding="utf-8"))
