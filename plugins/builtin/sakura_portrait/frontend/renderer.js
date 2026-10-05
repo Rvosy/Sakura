@@ -83,6 +83,10 @@ export function createPortraitController({
         return Object.freeze({ applied: true, key, unchanged: true, recoveredUnknownKey: !known });
       }
       const requestToken = ++token;
+      const isCurrent = () => requestToken === token && generation === generationId;
+      const onFrameCommitted = () => {
+        if (isCurrent()) currentKey = key;
+      };
       clearTransition();
       let failureCode = "PORTRAIT_DECODE_FAILED";
       try {
@@ -92,7 +96,7 @@ export function createPortraitController({
         }
         if (immediate || currentKey === null) {
           failureCode = "PORTRAIT_COMMIT_FAILED";
-          const commitResult = await commit({ key, source, image });
+          const commitResult = await commit({ key, source, image, isCurrent, onFrameCommitted });
           if (requestToken !== token || generation !== generationId) {
             return Object.freeze({ applied: false, key, staleGeneration: true });
           }
@@ -102,7 +106,7 @@ export function createPortraitController({
           return Object.freeze({ applied: true, key, recoveredUnknownKey: !known });
         }
         failureCode = "PORTRAIT_PREPARE_FAILED";
-        let prepared = preview({ key, source, image });
+        let prepared = preview({ key, source, image, isCurrent });
         if (prepared && typeof prepared.then === "function") prepared = await prepared;
         if (requestToken !== token || generation !== generationId) {
           return Object.freeze({ applied: false, key, staleGeneration: true });
@@ -136,7 +140,7 @@ export function createPortraitController({
               resolve(Object.freeze({ applied: false, key, failed: true }));
             };
             try {
-              const commitResult = commit({ key, source, image });
+              const commitResult = commit({ key, source, image, isCurrent, onFrameCommitted });
               if (commitResult && typeof commitResult.then === "function") {
                 commitResult.then(complete).catch(failed);
               } else {
@@ -191,7 +195,7 @@ export function createPortraitController({
   });
 }
 
-const STYLES = ".portrait-frame {\n  position: relative;\n  width: 100%;\n  height: 100%;\n  overflow: visible;\n  background: transparent;\n}\n\n.portrait-image {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  object-fit: contain;\n  object-position: center bottom;\n  background: transparent;\n  border: 0;\n  outline: 0;\n  -webkit-user-drag: none;\n  -webkit-user-select: none;\n  user-select: none;\n}\n\n/*\n * An image element without a source is still laid out at the full portrait\n * size by WebView2.  When it has alt text, WebView2 paints the native broken\n * image frame (a bright rectangle) even though the element itself is meant to\n * be transparent.  This is visible during core startup and for the spare\n * cross-fade layer after its source is cleared.  Keep empty layers out of the\n * paint tree until a decoded source has been committed.\n */\n.portrait-image:not([src]) { visibility: hidden; }\n\n.portrait-image--current {\n  opacity: 1;\n}\n\n.portrait-image--next {\n  opacity: 0;\n}\n\n.is-transitioning .portrait-image--current {\n  animation: portrait-current-fade-out 250ms ease forwards;\n}\n\n.is-transitioning .portrait-image--next {\n  animation: portrait-next-fade-in 250ms ease 50ms forwards;\n}\n\n@keyframes portrait-current-fade-out {\n  from { opacity: 1; }\n  to { opacity: 0; }\n}\n\n@keyframes portrait-next-fade-in {\n  from { opacity: 0; }\n  to { opacity: 1; }\n}\n\n";
+const STYLES = ".portrait-frame {\n  position: relative;\n  width: 100%;\n  height: 100%;\n  overflow: visible;\n  background: transparent;\n}\n\n.portrait-image {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  object-fit: contain;\n  object-position: center bottom;\n  background: transparent;\n  border: 0;\n  outline: 0;\n  -webkit-user-drag: none;\n  -webkit-user-select: none;\n  user-select: none;\n}\n\n/*\n * An image element without a source is still laid out at the full portrait\n * size by WebView2.  When it has alt text, WebView2 paints the native broken\n * image frame (a bright rectangle) even though the element itself is meant to\n * be transparent.  This is visible during core startup and for the spare\n * cross-fade layer after its source is cleared.  Keep empty layers out of the\n * paint tree until a decoded source has been committed.\n */\n.portrait-image:not([src]) { visibility: hidden; }\n\n.portrait-image--current {\n  opacity: 1;\n  z-index: 0;\n}\n\n.portrait-image--next {\n  opacity: 0;\n  z-index: 1;\n}\n\n.is-transitioning .portrait-image--current {\n  animation: portrait-current-fade-out 250ms ease forwards;\n}\n\n.is-transitioning .portrait-image--next {\n  animation: portrait-next-fade-in 250ms ease 50ms forwards;\n}\n\n@keyframes portrait-current-fade-out {\n  from { opacity: 1; }\n  to { opacity: 0; }\n}\n\n@keyframes portrait-next-fade-in {\n  from { opacity: 0; }\n  to { opacity: 1; }\n}\n\n";
 
 export function mount({ container, resource, host, signal }) {
   const root = container.attachShadow({ mode: "open" });
@@ -200,8 +204,8 @@ export function mount({ container, resource, host, signal }) {
   root.adoptedStyleSheets = [sheet];
   const frame = document.createElement("div");
   frame.className = "portrait-frame";
-  const current = document.createElement("img");
-  const next = document.createElement("img");
+  let current = document.createElement("img");
+  let next = document.createElement("img");
   current.className = "portrait-image portrait-image--current";
   next.className = "portrait-image portrait-image--next";
   for (const image of [current, next]) { image.draggable = false; image.alt = ""; }
@@ -230,28 +234,39 @@ export function mount({ container, resource, host, signal }) {
       image.onerror = () => reject(new Error("PORTRAIT_LOAD_FAILED"));
       image.src = source;
     }),
-    preview: async ({ key, source }) => {
-      const previewGeneration = generation;
+    preview: async ({ key, source, isCurrent }) => {
       const prepared = await host.prepareSurface({ assetKey: key });
-      if (signal.aborted || previewGeneration !== generation || prepared === false) return false;
-      transition = true;
+      if (signal.aborted || !isCurrent() || prepared === false) return false;
       next.src = source;
+      await next.decode();
+      if (signal.aborted || !isCurrent()) return false;
+      transition = true;
       frame.classList.remove("is-transitioning");
       void frame.offsetWidth;
       frame.classList.add("is-transitioning");
       return true;
     },
     cancelPreview: () => { resetPreview(); host.cancelSurface?.(); },
-    commit: async ({ key, source, image }) => {
-      const commitGeneration = generation;
-      if (signal.aborted) return false;
+    commit: async ({ key, source, image, isCurrent, onFrameCommitted }) => {
+      if (signal.aborted || !isCurrent()) return false;
+      if (!transition) {
+        next.src = source;
+        await next.decode();
+        if (signal.aborted || !isCurrent()) return false;
+      }
       const applied = await host.setSurface({ assetKey: key, width: image.width, height: image.height });
-      if (signal.aborted || commitGeneration !== generation || applied === false) return false;
-      current.src = source;
-      frame.classList.remove("is-transitioning");
-      next.removeAttribute("src");
-      if (transition) {
-        transition = false;
+      if (signal.aborted || !isCurrent() || applied === false) return false;
+      // Keep the decoded, painted node. Reassigning the old node's src while
+      // revealing it can expose its previous compositor frame during handoff.
+      const finishingTransition = transition;
+      [current, next] = [next, current];
+      current.className = "portrait-image portrait-image--current";
+      next.className = "portrait-image portrait-image--next";
+      resetPreview();
+      // History may change while the native surface waits for its paint barrier.
+      // The selected key must already describe the image that is now visible.
+      onFrameCommitted();
+      if (finishingTransition) {
         try { await host.finishSurface(); }
         catch (error) { host.reportError("PORTRAIT_SURFACE_FINISH_FAILED", error); }
       }

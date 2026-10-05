@@ -242,6 +242,9 @@ Windows 上的动态表现可在 `setSurface` 成功后调用可选的 `setHitTe
 宿主将挂载容器按声明的表面比例放入角色区域，底部居中，并在容器上统一应用个人缩放；插件不重复应用该缩放。
 宿主保留 DPI、拖拽、窗口裁剪与透明穿透，视觉容器与命中区域采用相同尺寸和缩放。取消时恢复最后已提交的表面；
 晚到的准备或提交不能更换画面。内置立绘插件自行创建图片 DOM、解码、缓存和交叉淡入，并在取消或提交失败时清理过渡层。
+实际显示的图片节点完成解码后才开始淡入；过渡结束后继续显示该节点，旧图节点清空后作为下一次过渡的备用层。
+历史翻阅与自动播放共用此交接方式，解码和原生提交返回后均复核当前切换请求，过期请求不得改写图片节点。
+图片节点交接时同步更新当前状态；原生表面的绘制等待和收尾不得延迟状态更新，期间再次翻阅仍以已显示的图片判断是否需要切换。
 
 `reportError` 记录局部失败，保留已提交的画面与命中区域。RendererHost 同样将控制执行异常作为局部失败处理，
 后续片段仍可执行。`unavailable` 用于无法继续显示的情况，显示宿主占位；初始挂载失败也进入该路径。
@@ -437,6 +440,7 @@ claim 等待期间收到取消也不得开始播放。取消只作用于匹配�
 
 - `runtime/python.exe -m harness run journey-visuals`：资源、插件进程、回复、历史、归档和前端生命周期回归。
 - `runtime/python.exe -m harness run journey-visuals-browser`：实际工坊与真实数值插件编辑器、普通/主动回复、浏览器状态/动作、取消和旧目标拒绝；使用生产样式验证非图片缩放与命中几何，并覆盖立绘异步取消、解码和提交失败后的画面保持。Windows 默认使用已安装 Edge，其他平台使用 Playwright Chromium，可用 `SAKURA_BROWSER_CHANNEL` 指定通道。
+- `runtime/python.exe desktop/frontend/tests/portrait-renderer.journey.py`：独立验证立绘播放与上下段翻阅保留已显示的图片节点，以及解码、提交期间的取消、替换和失败恢复；原生表面服务使用可控测试桥。
 - `runtime/python.exe -m harness run docs`：文档检查。
 
 浏览器 journey 使用隔离临时角色与真实 Core Boundary；替换了 Tauri invoke 传输和窗口表面服务。
