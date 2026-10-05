@@ -255,6 +255,7 @@ class AgentRuntime:
             "PromptInspector",
             "Prompt 构建完成",
             inspection.to_dict(include_content=log_body_enabled()),
+            severity="debug",
         )
 
     def _build_single_context_snapshot(
@@ -637,6 +638,7 @@ class AgentRuntime:
                 "autonomous_screen_observation_enabled": self.autonomous_screen_observation_enabled,
                 "messages": summarize_messages(messages),
             },
+            severity="debug",
         )
         return self._run_tool_loop(
             _annotate_initial_trace_messages(messages),
@@ -833,6 +835,7 @@ class AgentRuntime:
                         "tool_result_count": len(execution_results),
                         "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
                     },
+                    severity="debug",
                 )
                 reply, visual_observation = self._parse_reply_and_visual_observation(
                     prompt_build.system_prompt,
@@ -852,7 +855,7 @@ class AgentRuntime:
                 )
                 log_event(
                     "AgentRuntime",
-                    "回复处理完成",
+                    "回复已生成",
                     {
                         **trace_attributes,
                         "segment_count": len(reply.segments),
@@ -897,10 +900,10 @@ class AgentRuntime:
                 check_cancelled(cancel_checker)
                 total_tool_calls += 1
                 call_data = _native_tool_call_to_policy_call(call, call.arguments)
-                log_event("AgentRuntime", "准备工具调用", {"step_index": step_index, **call_data})
                 if tool_routing._should_block_background_web_tool_for_visible_browser(call_data, visible_browser_guard_active):
                     blocked_result = tool_routing._build_visible_browser_web_tool_block_result(call_data)
-                    log_event("AgentRuntime", "可见浏览器模式拦截后台网页工具", blocked_result.to_dict())
+                    log_event("AgentRuntime", f"正在使用可见浏览器，已跳过后台工具：{call.name}",
+                              {"tool_name": call.name}, event="tool.execution.skipped")
                     step_results.append(blocked_result)
                     execution_results.append(blocked_result)
                     tool_messages.extend(
@@ -930,8 +933,9 @@ class AgentRuntime:
                     )
                     log_event(
                         "AgentRuntime",
-                        "阻止执行未提供给模型的工具",
+                        f"当前无法使用这个工具：{call.name}",
                         {"step_index": step_index, "tool_name": call.name},
+                        event="tool.execution.failed", severity="warning",
                     )
                     step_results.append(blocked_result)
                     execution_results.append(blocked_result)
@@ -950,6 +954,9 @@ class AgentRuntime:
                     )
                     continue
                 if call.arguments_error:
+                    log_event("AgentRuntime", f"工具参数有误：{call.name}",
+                              {"tool_name": call.name, "diagnostic": call.arguments_error},
+                              event="tool.execution.failed", severity="warning")
                     invalid_result = ToolExecutionResult(
                         tool_name=call.name,
                         success=False,
@@ -970,8 +977,18 @@ class AgentRuntime:
                     )
                     continue
                 execution_arguments = _tool_arguments_for_execution(call, self.tools)
-                prepared = self.tools.execute(call.name, execution_arguments)
-                check_cancelled(cancel_checker)
+                tool_started_at = time.perf_counter()
+                log_event("AgentRuntime", f"正在使用工具：{call.name}",
+                          {"tool_name": call.name, "step_index": step_index},
+                          event="tool.execution.started")
+                try:
+                    prepared = self.tools.execute(call.name, execution_arguments)
+                    check_cancelled(cancel_checker)
+                except OperationCancelled:
+                    log_event("AgentRuntime", f"工具调用已取消：{call.name}",
+                              {"tool_name": call.name, "outcome": "cancelled"},
+                              event="tool.execution.cancelled")
+                    raise
 
                 if _is_screen_observation_request(prepared):
                     if allow_screen_observation:
@@ -1001,7 +1018,7 @@ class AgentRuntime:
                         )
                         log_event(
                             "AgentRuntime",
-                            "请求屏幕观察 follow-up",
+                            "已请求查看屏幕",
                             {
                                 "step_index": step_index,
                                 "reason_code": "MODEL_REQUESTED_SCREEN_OBSERVATION",
@@ -1019,7 +1036,15 @@ class AgentRuntime:
                         error=SCREEN_OBSERVATION_DISABLED_ERROR,
                     )
 
-                log_event("AgentRuntime", "工具调用完成", _redact_tool_result_for_model(prepared))
+                log_event(
+                    "AgentRuntime",
+                    f"工具执行完成：{call.name}" if prepared.success else f"工具执行失败：{call.name}",
+                    {"tool_name": call.name, "success": prepared.success,
+                     "elapsed_ms": int((time.perf_counter() - tool_started_at) * 1000),
+                     **({"reason_code": prepared.reason_code, "diagnostic": prepared.error} if not prepared.success else {})},
+                    event="tool.execution.finished" if prepared.success else "tool.execution.failed",
+                    severity="info" if prepared.success else "warning",
+                )
                 step_results.append(prepared)
                 execution_results.append(prepared)
                 tool_messages.extend(

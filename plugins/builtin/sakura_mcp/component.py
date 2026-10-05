@@ -96,7 +96,8 @@ class Component:
 
     def _log(self, level, message, conn, **fields):
         if self.logger is not None:
-            getattr(self.logger, level)(message, fields={
+            name = conn.get("serverInfo", {}).get("name") or conn["label"] or conn["owner"][0]
+            getattr(self.logger, level)(f"{message}：{name}", fields={
                 "consumerPluginId": conn["owner"][0], "connectionId": conn["handle"],
                 "transport": conn["config"]["transport"], **fields})
 
@@ -108,7 +109,8 @@ class Component:
         def drain():
             with reader:
                 while chunk := reader.readline(4096):
-                    self._log("info", "MCP 服务端诊断输出", conn, output=chunk.rstrip())
+                    self._log("info", "MCP 服务端诊断输出", conn,
+                              event="mcp.server.stderr", diagnostic=chunk.rstrip())
         worker = threading.Thread(target=drain, name="mcp-stderr", daemon=True)
         worker.start()
         try:
@@ -190,7 +192,7 @@ class Component:
 
     async def _connection(self, conn, credential_key, previous):
         config = conn["config"]
-        self._log("info", "MCP 服务连接中", conn)
+        self._log("info", "正在连接 MCP 服务", conn)
         try:
             import httpx2
             from mcp import Client, StdioServerParameters, types
@@ -208,6 +210,8 @@ class Component:
                     errlog = stack.enter_context(self._stderr(conn))
                     transport = stdio_client(params, errlog=errlog)
                 else:
+                    from sakura_http import is_loopback_url
+
                     auth = None
                     if config.get("oauth") is not None and config.get("oauth") is not False:
                         try:
@@ -219,6 +223,7 @@ class Component:
                             lambda url: self._authorization(conn, url),
                         ))
                     options = {"headers": config.get("headers", {}), "auth": auth,
+                               "trust_env": not is_loopback_url(config["url"]),
                                "timeout": httpx2.Timeout(config["connectTimeout"], read=config["requestTimeout"])}
                     if "proxy" in config:
                         options["proxy"] = config["proxy"]
@@ -253,7 +258,8 @@ class Component:
                 async def logging(params):
                     level = {"debug": "debug", "warning": "warning", "error": "error",
                              "critical": "error", "alert": "error", "emergency": "error"}.get(params.level, "info")
-                    self._log(level, "MCP 服务端日志", conn, output=wire(params.data))
+                    self._log(level, "MCP 服务端日志", conn,
+                              event="mcp.server.log", diagnostic=json.dumps(wire(params.data), ensure_ascii=False))
 
                 kwargs = {"message_handler": message, "mode": config.get("mode", "auto"),
                           "logging_callback": logging, "log_level": "info"}
@@ -287,9 +293,10 @@ class Component:
             if conn["state"] == "connecting":
                 conn["error"] = "MCP_CONNECT_TIMEOUT"
                 self._log("error", "MCP 服务连接超时", conn, reason_code=conn["error"])
-        except Exception:
+        except Exception as error:
             conn["error"] = "MCP_CONNECTION_FAILED"
-            self._log("error", "MCP 服务连接失败", conn, reason_code=conn["error"])
+            self._log("error", "MCP 服务连接失败", conn, reason_code=conn["error"],
+                      diagnostic=str(error), error_type=type(error).__name__)
         finally:
             conn["state"] = "error" if "error" in conn else "closing"
             conn["ready"].set()
@@ -396,7 +403,8 @@ class Component:
             self._log("error", "MCP 请求超时", conn, operationId=op["operationId"], reason_code=op["error"])
         except Exception as error:
             op.update(state="error", error=getattr(error, "code", "MCP_REQUEST_FAILED"))
-            self._log("error", "MCP 请求失败", conn, operationId=op["operationId"], reason_code=op["error"])
+            self._log("error", "MCP 请求失败", conn, operationId=op["operationId"], reason_code=op["error"],
+                      diagnostic=str(error), error_type=type(error).__name__)
 
     @staticmethod
     def _params(params):

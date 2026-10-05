@@ -1159,6 +1159,13 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
                 "screen_captured_at" => "截图时间",
                 "screen_cleared_count" => "清空数量",
                 "screen_note" => "说明",
+                "tool_name" => "工具名称",
+                "selected" => "相关记忆数",
+                "candidates" => "候选记忆数",
+                "created" => "新增数量",
+                "updated" => "更新数量",
+                "archived" => "归档数量",
+                "model" => "模型",
                 "diagnostic"
                 | "exception_chain"
                 | "exception_stack"
@@ -1481,6 +1488,20 @@ fn project_viewer_record(
     record: &RuntimeLogRecord,
     severity: Severity,
 ) -> Option<RuntimeLogViewerRecord> {
+    // 原始进程输出仍写入文件，普通诊断不占用 GUI 的状态列表。
+    if record.custom
+        && severity == Severity::Info
+        && matches!(
+            record
+                .attributes
+                .as_ref()
+                .and_then(|fields| fields.get("event"))
+                .and_then(Value::as_str),
+            Some("plugin.process.stderr" | "mcp.server.stderr" | "mcp.server.log")
+        )
+    {
+        return None;
+    }
     if !record.custom && !viewer_event_is_visible(&record.event, severity) {
         return None;
     }
@@ -1564,7 +1585,29 @@ fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> Strin
     if let Some(message) = viewer_ipc_request_message(record) {
         return message;
     }
-    viewer_record_default_message(record, severity).to_string()
+    let message = viewer_record_default_message(record, severity);
+    if record.event.starts_with("tts.synthesis.")
+        || record.event.starts_with("tts.recording.")
+        || record.event.starts_with("tts.playback.")
+    {
+        if let Some(fields) = record.attributes.as_ref() {
+            if let Some(number) = fields
+                .get("segment_index")
+                .and_then(Value::as_u64)
+                .and_then(|index| index.checked_add(1))
+            {
+                return match fields
+                    .get("segment_count")
+                    .and_then(Value::as_u64)
+                    .filter(|count| *count >= number)
+                {
+                    Some(count) => format!("{message}（{number}/{count}）"),
+                    None => format!("{message}（第 {number} 段）"),
+                };
+            }
+        }
+    }
+    message.to_string()
 }
 
 fn viewer_record_default_message(record: &RuntimeLogRecord, severity: Severity) -> &'static str {
@@ -5039,6 +5082,55 @@ mod tests {
                 .any(|detail| detail.label == label && detail.value == value));
         }
         log.drain_and_shutdown_for_test();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_voice_progress_and_diagnostic_visibility_follow_actual_events() {
+        let root = temp_root("voice-progress-viewer");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        for event in [
+            "tts.synthesis.started",
+            "tts.synthesis.ready",
+            "tts.playback.started",
+            "tts.playback.stopped",
+        ] {
+            assert!(log.submit(
+                RuntimeLogEvent::rust(Severity::Info, "tts", event, "ignored")
+                    .attributes(json!({"segment_index": 1, "segment_count": 3}))
+            ));
+        }
+        assert!(log.submit(
+            RuntimeLogEvent::rust(Severity::Info, "tts", "tts.synthesis.started", "ignored")
+                .attributes(json!({"segment_index": 0}))
+        ));
+        for event in [
+            "plugin.process.stderr",
+            "mcp.server.stderr",
+            "mcp.server.log",
+        ] {
+            for severity in [Severity::Info, Severity::Warning] {
+                assert!(log.submit(RuntimeLogEvent::message(
+                    severity,
+                    "plugin",
+                    "诊断输出",
+                    json!({"event": event, "diagnostic": "original diagnostic"})
+                )));
+            }
+        }
+        let records = log.viewer_snapshot(None).unwrap().records;
+        assert!(records[..4]
+            .iter()
+            .all(|record| record.message.ends_with("（2/3）")));
+        assert!(records[4].message.ends_with("（第 1 段）"));
+        assert_eq!(records.len(), 8);
+        assert!(records[5..]
+            .iter()
+            .all(|record| record.severity == "warning"));
+        log.drain_and_shutdown_for_test();
+        let persisted = fs::read_to_string(path).unwrap();
+        assert_eq!(persisted.matches("original diagnostic").count(), 6);
         let _ = fs::remove_dir_all(root);
     }
 

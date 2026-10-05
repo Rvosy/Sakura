@@ -67,6 +67,8 @@ def test_saved_segments_survive_restart_without_provider_or_tts_resources(tmp_pa
             assert replayed["ok"] is True
             assert replayed["payload"]["recordingId"] == descriptors[index]["recordingId"]
             assert replayed["payload"]["opaqueId"] != descriptors[index]["opaqueId"]
+            assert replayed["payload"]["segmentIndex"] == index
+            assert replayed["payload"]["segmentCount"] == 3
         assert second._recordings.get(legacy.recording_id).segment_index is None
         assert len(second._recordings.scan_and_prune()) == 3
     finally:
@@ -879,6 +881,7 @@ def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) ->
     boundary.authorize_segment(
         operation_id="operation-1",
         segment_index=0,
+        segment_count=3,
         text="こんにちは",
         tone="happy",
         portrait="smile",
@@ -901,7 +904,11 @@ def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) ->
         "mediaType",
         "byteLength",
         "expiresAt",
+        "segmentIndex",
+        "segmentCount",
     }
+    assert descriptor["segmentIndex"] == 0
+    assert descriptor["segmentCount"] == 3
     assert "path" not in descriptor
     recording_dir = (
         tmp_path / "data" / "voice" / "recordings" / "sakura" / descriptor["recordingId"]

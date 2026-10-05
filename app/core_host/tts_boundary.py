@@ -79,6 +79,7 @@ class _Authorization:
     character_id: str
     history_entry_id: str
     expires_at: float
+    segment_count: int | None = None
     state: str = "authorized"
     request_id: str = ""
 
@@ -300,6 +301,7 @@ class TTSBoundary:
         portrait: str,
         character_id: str,
         history_entry_id: str,
+        segment_count: int | None = None,
     ) -> bool:
         if not text.strip() or segment_index < 0:
             return False
@@ -316,6 +318,7 @@ class TTSBoundary:
                 portrait=portrait,
                 character_id=character_id,
                 history_entry_id=history_entry_id,
+                segment_count=segment_count,
                 expires_at=monotonic() + AUTHORIZATION_TTL_SECONDS,
             )
             while len(self._authorizations) > MAX_AUTHORIZATIONS:
@@ -563,6 +566,7 @@ class TTSBoundary:
                 operation_id=operation_id, segment_index=index,
                 text=segment["text"], tone=segment.get("tone", ""), portrait=segment.get("portrait", ""),
                 character_id=identity[0], history_entry_id=entry_id,
+                segment_count=len(segments),
             )
             return identity[0]
 
@@ -647,6 +651,7 @@ class TTSBoundary:
                         raise TTSBoundaryError("TTS_SERVICE_UNAVAILABLE", "TTS synthesis capacity is full", retryable=True)
                 log_event("TTS", "TTS synthesis started", {
                     "operation_id": operation_id, "segment_index": segment_index, "request_id": request_id,
+                    "segment_count": authorization.segment_count,
                 }, event="tts.synthesis.started")
                 self._require_storage_root()
                 descriptor, recording, provider_id = self._synthesize_with_plugin(
@@ -660,6 +665,7 @@ class TTSBoundary:
                     "provider": provider_id,
                     "operation_id": operation_id,
                     "segment_index": segment_index,
+                    "segment_count": authorization.segment_count,
                     "request_id": request_id,
                     "recording_id": recording.recording_id,
                     "bytes": recording.byte_length,
@@ -676,6 +682,7 @@ class TTSBoundary:
                     "provider": provider_id,
                     "operation_id": operation_id,
                     "segment_index": segment_index,
+                    "segment_count": authorization.segment_count,
                     "request_id": request_id,
                     "recording_id": recording.recording_id,
                     "bytes": recording.byte_length,
@@ -687,6 +694,9 @@ class TTSBoundary:
                 if authorization.state == "cancelling":
                     raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "角色语音任务已失效")
                 if not recording_only:
+                    descriptor["segmentIndex"] = segment_index
+                    if authorization.segment_count is not None:
+                        descriptor["segmentCount"] = authorization.segment_count
                     self._publish(request, "tts.synthesis.ready", {**descriptor, "operationId": operation_id, "segmentIndex": segment_index})
             return recording if recording_only else descriptor
         except TTSBoundaryError as error:
@@ -1439,6 +1449,7 @@ class TTSBoundary:
         attributes: dict[str, object] = {
             "operation_id": authorization.operation_id,
             "segment_index": authorization.segment_index,
+            "segment_count": authorization.segment_count,
             "request_id": authorization.request_id,
             "code": code,
             "elapsed_ms": round((monotonic() - started_at) * 1000),

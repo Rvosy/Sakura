@@ -21,6 +21,30 @@ REPO = Path(__file__).parents[2]
 DEPENDENCIES = REPO / "plugins/dependencies/sakura.mcp"
 
 
+def test_server_diagnostics_keep_origin_level_and_raw_text():
+    from types import SimpleNamespace
+    from plugins.builtin.sakura_mcp.component import Component
+
+    logs = []
+    component = Component.__new__(Component)
+    component.logger = SimpleNamespace(**{
+        level: lambda message, *, fields, level=level: logs.append((level, message, fields))
+        for level in ("info", "warning", "error")
+    })
+    connection = {"owner": ("fixture.consumer", "scope"), "handle": "connection",
+                  "label": "", "config": {"transport": "stdio"}}
+    with component._stderr(connection) as stream:
+        stream.write("server startup diagnostic\n")
+    assert logs[0][2]["event"] == "mcp.server.stderr"
+    assert logs[0][2]["diagnostic"] == "server startup diagnostic"
+    assert "fixture.consumer" in logs[0][1]
+    connection["serverInfo"] = {"name": "Fixture server"}
+    component._log("error", "连接失败", connection, diagnostic="original failure")
+    assert logs[-1][0] == "error"
+    assert "Fixture server" in logs[-1][1]
+    assert logs[-1][2]["diagnostic"] == "original failure"
+
+
 def until(check):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:

@@ -714,7 +714,8 @@ class MemoryBoundary:
                         )
                         log_event(
                             "Memory",
-                            "后台记忆整理完成",
+                            f"记忆已更新：新增 {result.created} 条，更新 {result.updated} 条，归档 {result.archived} 条"
+                            if result.created or result.updated or result.archived else "这次整理没有需要更新的记忆",
                             {
                                 "history_messages": len(entries),
                                 "created": result.created,

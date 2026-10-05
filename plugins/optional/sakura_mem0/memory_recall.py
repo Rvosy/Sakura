@@ -66,10 +66,11 @@ class MemoryRecallService:
         except Exception as exc:  # noqa: BLE001 - 记忆故障不得阻断普通聊天
             log_event(
                 "Memory",
-                "记忆召回失败",
+                "查找相关记忆时出错了",
                 {
                     "elapsed_ms": int((monotonic() - started_at) * 1000),
                     "error_type": type(exc).__name__,
+                    "diagnostic": str(exc),
                 },
                 event="memory.recall.failed",
                 severity="warning",
@@ -81,7 +82,7 @@ class MemoryRecallService:
         if status != "ready" and not memories:
             log_event(
                 "Memory",
-                "记忆未就绪，本轮未执行召回",
+                "记忆服务还未就绪，这次未查找记忆",
                 {
                     "status": status,
                     "candidates": 0,
@@ -148,7 +149,7 @@ def _log_recall_finished(
 ) -> None:
     log_event(
         "Memory",
-        "记忆召回完成",
+        "这次未查找记忆" if status == "skipped" else f"找到 {selected} 条相关记忆" if selected else "没有找到相关记忆",
         {
             "status": status,
             "candidates": candidates,
@@ -156,6 +157,7 @@ def _log_recall_finished(
             "elapsed_ms": int((monotonic() - started_at) * 1000),
         },
         event="memory.recall.finished",
+        severity="debug" if status == "skipped" else "info",
         verbosity=1,
     )
 

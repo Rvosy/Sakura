@@ -54,11 +54,13 @@ def bundle_archive(path, version='one', target='macos-arm64'):
 
 
 def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, monkeypatch):
+    logs = []
     monkeypatch.setattr('plugins.optional.sakura_sakuratts._bundle.platform.system', lambda: 'Darwin')
     monkeypatch.setattr('plugins.optional.sakura_sakuratts._bundle.platform.machine', lambda: 'arm64')
     (tmp_path / 'installed').mkdir()
     (tmp_path / 'installed/current.json').write_text('{broken')
-    store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
+    store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action(),
+                        lambda level, message, **fields: logs.append((level, message, fields)))
     assert store.current() is None
     assert store.load()['bundle']['taskState'] == 'failed'
     assert store.load()['bundle']['detail']
@@ -86,6 +88,14 @@ def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, mo
     store.close()
     assert store.state == 'cancelled' and store.current()[0] == original
     assert len(list((store.directory / 'versions').iterdir())) == 1
+    assert [fields['event'] for _, _, fields in logs] == [
+        'tts.bundle.extracting', 'tts.bundle.checking', 'tts.bundle.succeeded',
+        'tts.bundle.extracting', 'tts.bundle.checking', 'tts.bundle.failed',
+        'tts.bundle.extracting', 'tts.bundle.checking', 'tts.bundle.cancelled',
+    ]
+    assert logs[5][0] == 'error'
+    assert 'broken runtime' in logs[5][2]['diagnostic']
+    assert logs[-1][0] == 'info'
 
 
 def test_archive_paths_cannot_escape_installation(tmp_path):

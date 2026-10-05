@@ -71,6 +71,47 @@ def _dummy_api_client() -> MagicMock:
     return client
 
 
+@pytest.mark.parametrize("outcome", ["success", "failed", "cancelled"])
+def test_tool_logs_report_actual_outcome_without_exposing_result(monkeypatch, outcome):
+    from sakura_assistant import diagnostics
+
+    logs = []
+    logger = SimpleNamespace(**{
+        level: lambda message, *, fields, level=level: logs.append((level, message, fields))
+        for level in ("debug", "info", "warning", "error")
+    })
+    monkeypatch.setattr(diagnostics, "_logger", logger)
+    registry = ToolRegistry([_dummy_tool("my_tool")])
+
+    def execute(*_args, **_kwargs):
+        if outcome == "cancelled":
+            raise OperationCancelled()
+        return ToolExecutionResult("my_tool", outcome == "success", "private-tool-result",
+                                   "fixture failure" if outcome == "failed" else "")
+
+    monkeypatch.setattr(registry, "execute", execute)
+    client = _dummy_api_client()
+    final = client.complete_with_tools.return_value
+    client.complete_with_tools.side_effect = [ChatCompletionTurn(
+        content="", tool_calls=[NativeToolCall(id="call-1", name="my_tool", arguments={})],
+        message={"role": "assistant", "content": "", "tool_calls": [{"id": "call-1", "type": "function",
+            "function": {"name": "my_tool", "arguments": "{}"}}]},
+    ), final]
+    runtime = AgentRuntime(client, _dummy_system_prompt(), tools=registry)
+    if outcome == "cancelled":
+        with pytest.raises(OperationCancelled):
+            runtime.handle_user_message([ChatMessage(role="user", content="do it")])
+    else:
+        runtime.handle_user_message([ChatMessage(role="user", content="do it")])
+    tools = [item for item in logs if item[2].get("event", "").startswith("tool.execution.")]
+    terminal = "finished" if outcome == "success" else outcome
+    assert [item[2]["event"] for item in tools] == ["tool.execution.started", f"tool.execution.{terminal}"]
+    assert tools[-1][0] == ("warning" if outcome == "failed" else "info")
+    assert all("my_tool" in item[1] for item in tools)
+    assert "private-tool-result" not in str(tools)
+    assert not any(level == "info" and "多步循环" in message for level, message, _ in logs)
+
+
 def test_continuation_context_trimming_keeps_complete_tool_transactions() -> None:
     messages: list[ChatMessage] = [
         {"role": "user", "content": f"old-{index}"}

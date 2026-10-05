@@ -239,7 +239,7 @@ class AssistantModelClient:
             )
         log_event(
             "API",
-            "聊天回复解析完成",
+            "回复已生成",
             {
                 **_model_call_log_attributes(self.last_trace_call),
                 "segments": len(reply.segments),
@@ -375,6 +375,7 @@ class AssistantModelClient:
                 **usage,
             },
             event="api.response.received",
+            severity="debug",
             verbosity=1,
         )
         return result
@@ -527,6 +528,7 @@ class AssistantModelClient:
                 **usage,
             },
             event="api.response.received",
+            severity="debug",
             verbosity=1,
         )
         return ChatCompletionTurn(
@@ -561,9 +563,9 @@ class AssistantModelClient:
         self._trace_local.last_call = trace_call
         attributes = _model_call_log_attributes(trace_call, metadata=trace_metadata, model=self.settings.model)
         estimate = _safe_prompt_runtime_summary(payload, prompt_provenance)
-        log_event("Context", "模型上下文已构建", {**attributes, **estimate}, event="context.prompt.prepared", verbosity=1)
+        log_event("Context", "模型上下文已构建", {**attributes, **estimate}, event="context.prompt.prepared", severity="debug")
         started = time.perf_counter()
-        log_event("API", "发送模型请求", attributes, event="api.request.started", verbosity=1)
+        log_event("API", "正在等待模型回复", attributes, event="api.request.started", verbosity=1)
         try:
             response = self._post_chat_completions(payload, cancel_checker=cancel_checker)
         except BaseException as error:

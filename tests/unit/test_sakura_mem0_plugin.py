@@ -22,6 +22,28 @@ from plugins.optional.sakura_mem0.plugin import (
     _context_request,
     _tool_registrations,
 )
+
+
+def test_recall_logs_distinguish_matches_empty_and_skipped(monkeypatch):
+    from plugins.optional.sakura_mem0 import memory_recall
+
+    logs = []
+    monkeypatch.setattr(memory_recall, "log_event",
+                        lambda channel, message, fields, **options: logs.append((message, fields, options)))
+    boundary = FakeBoundary()
+    service = memory_recall.MemoryRecallService(boundary)
+    result = service.recall(_context_request({"current_input": "你记得什么"}))
+    assert len(result.fragments) == 1
+    assert "1" in logs[-1][0] and logs[-1][1]["selected"] == 1
+    boundary.search_memory = lambda *_args, **_kwargs: {"status": "ready", "memories": []}
+    service.recall(_context_request({"current_input": "你记得什么"}))
+    assert logs[-1][1]["selected"] == 0
+    assert logs[-1][0] != logs[-2][0]
+    service.recall(_context_request({}))
+    assert logs[-1][1]["status"] == "skipped"
+    assert logs[-1][2]["severity"] == "debug"
+
+
 def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
     request = _context_request(
         {

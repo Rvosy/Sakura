@@ -379,6 +379,7 @@ class MemoryCurator:
                 "operation_count": len(operations),
                 "raw_chars": len(raw or ""),
             },
+            severity="debug",
         )
         return operations
 

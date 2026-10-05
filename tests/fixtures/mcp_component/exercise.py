@@ -4,11 +4,12 @@ from pathlib import Path
 
 repo = Path(sys.argv[1])
 dependency = repo / "plugins/dependencies/sakura.mcp"
-sys.path[:0] = [str(repo), str(dependency), str(dependency / "win32"), str(dependency / "win32/lib"), str(dependency / "pywin32_system32")]
+sys.path[:0] = [str(repo), str(repo / "app/plugin_sdk"), str(dependency), str(dependency / "win32"), str(dependency / "win32/lib"), str(dependency / "pywin32_system32")]
 
 import asyncio
 import importlib.util
 import json
+import os
 import socket
 import threading
 import time
@@ -98,6 +99,10 @@ def exercise(config):
 
 exercise({"command": sys.executable, "args": ["-I", "-S", str(repo / "tests/fixtures/mcp_component/server.py"), str(dependency)]})
 exercise({"command": sys.executable, "args": ["-I", "-S", str(repo / "tests/fixtures/mcp_component/server.py"), str(dependency)], "mode": "legacy"})
+# Local HTTP, SSE and OAuth must reach the fixture even with a broken proxy.
+for key in ("http_proxy", "https_proxy", "all_proxy"):
+    os.environ[key] = os.environ[key.upper()] = "http://127.0.0.1:1"
+os.environ["no_proxy"] = os.environ["NO_PROXY"] = ""
 for transport in ("streamable-http", "sse"):
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))

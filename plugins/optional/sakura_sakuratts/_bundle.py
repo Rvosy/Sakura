@@ -13,6 +13,7 @@ import sys
 from sakura_process import terminate_process_tree
 import tarfile
 import threading
+import time
 import uuid
 import zipfile
 
@@ -120,10 +121,11 @@ def inspect_bundle(root):
 
 
 class BundleStore:
-    def __init__(self, directory, probe, publish):
+    def __init__(self, directory, probe, publish, log=lambda *_args, **_fields: None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.probe, self.publish = probe, publish
+        self.log = log
         self.lock = threading.RLock()
         self.cancel_event = threading.Event()
         self.thread = None
@@ -174,13 +176,16 @@ class BundleStore:
         return {}
 
     def _install(self, archive):
+        started_at = time.monotonic()
         candidate = self.directory / ('versions/' + uuid.uuid4().hex)
         published = False
         try:
+            self.log('info', '正在解压 SakuraTTS 整合包', event='tts.bundle.extracting')
             candidate.mkdir(parents=True)
             unpack(archive, candidate, self.cancel_event)
             root, release = inspect_bundle(candidate)
             self.message = '正在检查运行环境'
+            self.log('info', '正在检查 SakuraTTS 运行环境', event='tts.bundle.checking')
             self.probe(root, release, self.cancel_event)
             if self.cancel_event.is_set():
                 raise Cancelled()
@@ -201,6 +206,12 @@ class BundleStore:
                     self.error += f'；临时目录清理失败：{error}'
                     self.state = 'failed'
                     self.message = '导入未完成，临时目录清理失败'
+            self.log('error' if self.state == 'failed' else 'info',
+                     {'succeeded': 'SakuraTTS 整合包已导入', 'cancelled': 'SakuraTTS 整合包导入已取消',
+                      'failed': self.message}[self.state],
+                     event='tts.bundle.' + self.state,
+                     elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                     **({'diagnostic': self.error} if self.state == 'failed' else {}))
 
 
     def _activate(self, root, release):

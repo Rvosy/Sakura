@@ -18,6 +18,8 @@ updated: 2026-10-03
 - `assistant.tts-v1` 为已完成聊天中的 `operationId + segmentIndex` 准备自动语音，也接受已保存的
   `historyEntryId + segmentIndex` 手动朗读。Core 只读取当前角色 Timeline 的 assistant 段落，正文、语气和
   立绘取自原记录；`suppressTts` 和语言守卫必须 fail closed。WebView 不得提交文本、路径、generation 或音频描述符。
+  Core 返回的播放描述符可附带原回复的 `segmentIndex` 和 `segmentCount`，Rust 播放器沿用这些信息记录段落进度；
+  缺少总段数时只显示段落编号，不根据队列长度猜测总数。展示含义见[运行日志查看器](WP-5-06-runtime-log-viewer.md)。
 - 手动按段朗读和停止入口仅位于聊天记录页，桌宠主气泡继续按回复顺序自动播放语音。
   优先播放同一角色、同一 entry、同一原始 segmentIndex 的保留 WAV；
   命中时不查询或启动 Hub/Provider，不要求语音引擎或模型目录可用。录音缺失、损坏或已被留存规则淘汰时，

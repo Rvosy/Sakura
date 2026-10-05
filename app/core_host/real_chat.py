@@ -514,6 +514,7 @@ class RealChatBoundary:
                     tts_authorized = self._segment_authorizer(
                         operation_id=operation_id,
                         segment_index=segment_index,
+                        segment_count=len(segments),
                         text=segment["text"],
                         tone=segment["tone"],
                         portrait=segment["portrait"],

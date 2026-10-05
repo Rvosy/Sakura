@@ -35,6 +35,10 @@ const MAX_DESCRIPTOR_FUTURE_SECONDS: i64 = 10 * 60;
 pub struct AudioDescriptor {
     pub opaque_id: String,
     pub recording_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_count: Option<u64>,
     pub media_type: String,
     pub byte_length: u64,
     pub expires_at: String,
@@ -60,6 +64,10 @@ pub struct AudioPlaybackEvent {
     pub playback_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording_id: Option<String>,
+    #[serde(skip)]
+    pub segment_index: Option<u64>,
+    #[serde(skip)]
+    pub segment_count: Option<u64>,
     pub state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AudioPlaybackError>,
@@ -70,6 +78,8 @@ struct RegisteredAudio {
     path: PathBuf,
     expires_at: OffsetDateTime,
     recording_id: Option<String>,
+    segment_index: Option<u64>,
+    segment_count: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -128,6 +138,8 @@ impl AudioRegistry {
                 path,
                 expires_at,
                 recording_id: descriptor.recording_id.clone(),
+                segment_index: descriptor.segment_index,
+                segment_count: descriptor.segment_count,
             },
         );
         Ok(())
@@ -190,6 +202,8 @@ enum AudioCommand {
     Play {
         playback_id: String,
         recording_id: Option<String>,
+        segment_index: Option<u64>,
+        segment_count: Option<u64>,
         path: PathBuf,
     },
     Stop,
@@ -199,6 +213,8 @@ enum AudioCommand {
 struct ActivePlayback {
     playback_id: String,
     recording_id: Option<String>,
+    segment_index: Option<u64>,
+    segment_count: Option<u64>,
     path: PathBuf,
     player: Player,
     // Rodio's Player only owns its queue.  The OS stream lives in the
@@ -274,6 +290,8 @@ impl AudioManager {
         self.send(AudioCommand::Play {
             playback_id: request.playback_id,
             recording_id: audio.recording_id,
+            segment_index: audio.segment_index,
+            segment_count: audio.segment_count,
             path: audio.path,
         })
     }
@@ -573,6 +591,8 @@ fn playback_loop(receiver: mpsc::Receiver<AudioCommand>, callback: AudioEventCal
             Ok(AudioCommand::Play {
                 playback_id,
                 recording_id,
+                segment_index,
+                segment_count,
                 path,
             }) => {
                 finish_active(&mut active, "stopped", &callback);
@@ -584,6 +604,8 @@ fn playback_loop(receiver: mpsc::Receiver<AudioCommand>, callback: AudioEventCal
                             AudioPlaybackEvent {
                                 playback_id: playback_id.clone(),
                                 recording_id: recording_id.clone(),
+                                segment_index,
+                                segment_count,
                                 state: "started",
                                 error: None,
                             },
@@ -591,6 +613,8 @@ fn playback_loop(receiver: mpsc::Receiver<AudioCommand>, callback: AudioEventCal
                         active = Some(ActivePlayback {
                             playback_id,
                             recording_id,
+                            segment_index,
+                            segment_count,
                             path,
                             player,
                             _device_sink: device_sink,
@@ -603,6 +627,8 @@ fn playback_loop(receiver: mpsc::Receiver<AudioCommand>, callback: AudioEventCal
                             AudioPlaybackEvent {
                                 playback_id,
                                 recording_id,
+                                segment_index,
+                                segment_count,
                                 state: "failed",
                                 error: Some(error),
                             },
@@ -659,6 +685,8 @@ fn finish_active(
         AudioPlaybackEvent {
             playback_id: current.playback_id,
             recording_id: current.recording_id,
+            segment_index: current.segment_index,
+            segment_count: current.segment_count,
             state,
             error: None,
         },
@@ -1270,6 +1298,8 @@ fn record_tts_playback(
             .attributes(json!({
                 "playbackId": event.playback_id,
                 "recordingId": event.recording_id,
+                "segment_index": event.segment_index,
+                "segment_count": event.segment_count,
                 "status": event.state,
                 "code": code,
             })),
@@ -1427,6 +1457,8 @@ mod tests {
                 .send(AudioPlaybackEvent {
                     playback_id: playback_id.clone(),
                     recording_id: Some("recording".to_string()),
+                    segment_index: None,
+                    segment_count: None,
                     state,
                     error: None,
                 })
@@ -1593,6 +1625,8 @@ mod tests {
         AudioDescriptor {
             opaque_id: id.to_string(),
             recording_id: Some("recording-1".to_string()),
+            segment_index: Some(1),
+            segment_count: Some(3),
             media_type: "audio/wav".to_string(),
             byte_length: len,
             expires_at: (OffsetDateTime::now_utc() + time::Duration::minutes(5))
@@ -1635,6 +1669,8 @@ mod tests {
             &AudioPlaybackEvent {
                 playback_id: "playback-1".to_string(),
                 recording_id: Some("recording-1".to_string()),
+                segment_index: Some(1),
+                segment_count: Some(3),
                 state: "failed",
                 error: Some(AudioPlaybackError {
                     code: "AUDIO_DEVICE_UNAVAILABLE",
@@ -1642,6 +1678,8 @@ mod tests {
                 }),
             },
         );
+        let records = runtime_log.viewer_snapshot(None).unwrap().records;
+        assert!(records.last().unwrap().message.ends_with("（2/3）"));
         runtime_log.drain_and_shutdown_for_test();
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("[TTS]"));
@@ -1660,8 +1698,11 @@ mod tests {
         registry
             .register(&descriptor(id, bytes.len() as u64))
             .unwrap();
+        let audio = registry.take(id).unwrap();
+        assert_eq!(audio.segment_index, Some(1));
+        assert_eq!(audio.segment_count, Some(3));
         assert_eq!(
-            registry.take(id).unwrap().path,
+            audio.path,
             root.join(format!("{id}.wav")).canonicalize().unwrap()
         );
         assert_eq!(registry.take(id).unwrap_err(), "AUDIO_RECORDING_INVALID");

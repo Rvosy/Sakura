@@ -79,7 +79,7 @@ class Provider:
         self.active = None
         self.wake = None
         self.error = ''
-        self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish)
+        self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish, self.log)
 
     def log(self, level, message, **fields):
         getattr(self.logger, level)(message, fields=fields)
