@@ -1,6 +1,7 @@
 """Single bounded export worker. No public static files or durable job queue."""
 
 import os
+import logging
 from pathlib import Path
 import shutil
 import threading
@@ -14,6 +15,8 @@ from pydantic import ValidationError
 from admin import _require_admin_host
 from export_bundle import export_bundle, ExportLimitError
 from queries import Filters
+
+LOGGER = logging.getLogger("sakura_console.exports")
 
 router = APIRouter(include_in_schema=False)
 ROOT = Path(
@@ -73,7 +76,10 @@ def generate(key, filters):
         code = str(e)
     except RuntimeError as error:
         code = "EXPORT_BUSY" if str(error) == "EXPORT_BUSY" else "EXPORT_FAILED"
+        if code == "EXPORT_FAILED":
+            LOGGER.exception("诊断分析包导出失败")
     except Exception:
+        LOGGER.exception("诊断分析包导出失败")
         code = "EXPORT_FAILED"
     with LOCK:
         JOBS[key].update(

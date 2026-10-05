@@ -131,3 +131,19 @@ def test_ingestion_failure_keeps_database_exception_in_server_log(client, monkey
     assert isinstance(failures[0].exc_info[1], sqlite3.OperationalError)
     assert "fixture_error_reports" in str(failures[0].exc_info[1])
     assert "fixture_error_reports" not in result.text
+
+
+def test_export_failure_keeps_original_exception_in_server_log(client, monkeypatch, caplog):
+    import exports
+
+    def fail(*args, **kwargs):
+        raise OSError(28, "fixture export disk full")
+
+    monkeypatch.setattr(exports, "export_bundle", fail)
+    key = "fixture-export-failure"
+    exports.JOBS[key] = {"status": "running"}
+    exports.generate(key, Filters())
+    assert exports.JOBS[key]["status"] == "failed"
+    failures = [record for record in caplog.records if record.exc_info]
+    assert len(failures) == 1
+    assert "fixture export disk full" in str(failures[0].exc_info[1])
