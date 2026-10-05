@@ -247,8 +247,15 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
         host.close()
 
 
-def test_7z_import_extracts_in_cancellable_child(tmp_path):
+@pytest.mark.parametrize('native', [True, False])
+def test_7z_import_extracts_in_cancellable_child(tmp_path, monkeypatch, native):
     import py7zr
+    from plugins.optional.sakura_sakuratts import _bundle
+    if native:
+        if _bundle.seven_zip_executable() is None:
+            pytest.skip('Native 7-Zip unavailable')
+    else:
+        monkeypatch.setattr(_bundle, 'seven_zip_executable', lambda: None)
     source = tmp_path / 'entry.txt'
     source.write_text('离线运行环境')
     archive = tmp_path / 'bundle.7z'
@@ -258,6 +265,49 @@ def test_7z_import_extracts_in_cancellable_child(tmp_path):
     destination.mkdir()
     unpack(archive, destination, threading.Event())
     assert (destination / 'entry.txt').read_text() == '离线运行环境'
+
+
+@pytest.mark.parametrize('action', ['cancel', 'fail'])
+def test_7z_child_cancel_and_failure(tmp_path, monkeypatch, action):
+    import py7zr
+    import subprocess
+    import sys
+    from plugins.optional.sakura_sakuratts import _bundle
+    archive = tmp_path / 'bundle.7z'
+    with py7zr.SevenZipFile(archive, 'w') as z:
+        z.writestr('content', 'entry.txt')
+    destination = tmp_path / 'installed'
+    destination.mkdir()
+    cancel = threading.Event()
+    children = []
+    popen = subprocess.Popen
+    def start(_command, **kwargs):
+        code = 'import time; time.sleep(60)' if action == 'cancel' else 'import sys; sys.exit("extract failed")'
+        child = popen([sys.executable, '-c', code], **kwargs)
+        children.append(child)
+        if action == 'cancel':
+            cancel.set()
+        return child
+    monkeypatch.setattr(_bundle.subprocess, 'Popen', start)
+    with pytest.raises(_bundle.Cancelled if action == 'cancel' else ValueError,
+                       match=None if action == 'cancel' else 'extract failed'):
+        unpack(archive, destination, cancel)
+    assert len(children) == 1
+    assert children[0].poll() is not None
+
+
+def test_7z_unsafe_member_rejected_before_child_starts(tmp_path, monkeypatch):
+    import py7zr
+    from plugins.optional.sakura_sakuratts import _bundle
+    archive = tmp_path / 'bad.7z'
+    with monkeypatch.context() as writer:
+        writer.setattr('py7zr.py7zr.check_archive_path', lambda _: True)
+        with py7zr.SevenZipFile(archive, 'w') as z:
+            z.writestr('content', '../outside.txt')
+    monkeypatch.setattr(_bundle.subprocess, 'Popen', lambda *a, **kw: pytest.fail('Unsafe extraction started'))
+    with pytest.raises(ValueError, match='路径'):
+        unpack(archive, tmp_path / 'installed', threading.Event())
+    assert not (tmp_path / 'outside.txt').exists()
 
 
 def test_closed_installer_cannot_start_another_import(tmp_path):

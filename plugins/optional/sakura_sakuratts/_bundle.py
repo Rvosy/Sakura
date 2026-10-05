@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 from pathlib import Path, PurePosixPath
 import platform
@@ -69,6 +70,7 @@ def unpack(archive, destination, cancel):
     def check():
         if cancel.is_set():
             raise Cancelled()
+    check()
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as z:
             for item in z.infolist():
@@ -107,15 +109,21 @@ def unpack(archive, destination, cancel):
         import py7zr
         with py7zr.SevenZipFile(archive, mode='r') as z:
             for item in z.files:
+                check()
                 safe_name(item.filename)
                 if item.is_symlink or item.is_junction:
                     raise ValueError('整合包不能包含链接。')
         # 单独的解压进程允许取消大型 7z，也会在插件退出时回收。
         code = "import json,sys; sys.path=json.loads(sys.argv[1]); import py7zr; z=py7zr.SevenZipFile(sys.argv[2]); z.extractall(sys.argv[3]); z.close()"
+        executable = seven_zip_executable()
+        command = ([str(executable), 'x', '-y', '-bd', '-bb0',
+                    f'-o{destination.resolve()}', '--', str(archive.resolve())] if executable else
+                   [sys.executable, '-c', code, json.dumps(sys.path), str(archive), str(destination)])
         log = destination / 'extract.log'
         with log.open('wb') as output:
-            process = subprocess.Popen([sys.executable, '-c', code, json.dumps(sys.path), str(archive), str(destination)],
+            process = subprocess.Popen(command,
                                        stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
                                        start_new_session=os.name != 'nt')
             try:
                 while process.poll() is None:
@@ -129,6 +137,26 @@ def unpack(archive, destination, cancel):
         log.unlink()
     else:
         raise ValueError('请选择 .zip、.7z 或 .tar.gz 整合包。')
+
+
+def seven_zip_executable():
+    # 直接读取 wheel 自带程序，不调用可能联网下载的查找接口。
+    spec = importlib.util.find_spec('py7zz')
+    if spec and spec.origin:
+        bundled = Path(spec.origin).parent / 'bin' / ('7zz.exe' if os.name == 'nt' else '7zz')
+        if bundled.is_file():
+            return bundled
+    for name in ('7zz', '7z', '7za'):
+        executable = shutil.which(name)
+        if executable:
+            return Path(executable)
+    if os.name == 'nt':
+        for variable in ('ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)'):
+            if directory := os.environ.get(variable):
+                executable = Path(directory) / '7-Zip/7z.exe'
+                if executable.is_file():
+                    return executable
+    return None
 
 
 def inspect_bundle(root):
