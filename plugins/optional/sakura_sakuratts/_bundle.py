@@ -368,7 +368,6 @@ class BundleStore:
             self.state, self.message = 'cancelled', '导入已取消'
         except Exception as error:
             self.state, self.message, self.error = 'failed', '导入失败，原有环境保持不变', str(error)
-            (self.directory / 'import-error.log').write_text(self.error, encoding='utf-8')
         finally:
             if not published and candidate.exists():
                 try:

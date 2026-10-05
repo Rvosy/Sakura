@@ -94,7 +94,6 @@ class Runtime:
                     backend = 'cpu'
                     self.selection_reason = 'NVIDIA 检查未通过，使用 CPU。'
                     self.emit('warning', self.selection_reason, stage='backend_check', diagnostic=str(error))
-                    (self.directory / 'backend-check.log').write_text(str(error), encoding='utf-8')
         if backend not in release['backends']:
             raise ValueError('此整合包不支持所选推理后端。')
         with self.lock:
@@ -187,12 +186,9 @@ class Runtime:
         with self.lock:
             alive = self.process is not None and self.process.poll() is None
         if not alive:
-            return '未启动'
+            return 'stopped'
         try:
             state = self.request('/runtime', timeout=1)
-            if state.get('busy'):
-                return '正在合成'
-            return {'sleeping': '已休眠', 'awake': '就绪', 'failed': '启动失败', 'stopping': '正在休眠', 'ready': '就绪', 'waking': '正在唤醒',
-                    'preparing': '正在准备', 'busy': '正在合成'}.get(state.get('state'), state.get('state', '运行中'))
+            return 'busy' if state.get('busy') else state.get('state', 'running')
         except (URLError, TimeoutError, ConnectionError):
-            return '连接中'
+            return 'connecting'

@@ -73,6 +73,7 @@ def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, mo
     def fail(*_):
         raise ValueError('broken runtime')
     store.probe = fail
+    (store.directory / 'import-error.log').mkdir()
     store.start({'bundlePath': str(bundle_archive(tmp_path / 'two.zip', 'two'))})
     store.thread.join(3)
     assert store.state == 'failed' and 'broken runtime' in store.error
@@ -265,19 +266,21 @@ def test_closed_installer_cannot_start_another_import(tmp_path):
     assert store.thread is None
 
 
-def test_engine_state_distinguishes_on_demand_start_failure_and_sleep(tmp_path, monkeypatch):
+def test_engine_state_distinguishes_on_demand_start_and_failure(tmp_path, monkeypatch):
     p, _ = provider(tmp_path, monkeypatch)
+    logs = []
+    monkeypatch.setattr(p, 'log', lambda level, message, **fields: logs.append(fields))
     try:
         assert p.engine_state()['state'] == 'ready'
         assert p.runtime.process is None
         p.wake = threading.Event()
         assert p.engine_state()['state'] == 'working'
         p.wake = None
+        (tmp_path / 'last-error.log').mkdir()
         p.record_error(RuntimeError('runtime failed'))
         assert p.engine_state()['state'] == 'error'
+        assert logs[-1]['diagnostic'] == 'runtime failed'
         p.publish(lambda: None)
-        assert p.engine_state()['state'] == 'ready'
-        monkeypatch.setattr(p.runtime, 'status', lambda: '已休眠')
         assert p.engine_state()['state'] == 'ready'
         monkeypatch.setattr(p.bundle, 'current', lambda: None)
         assert p.engine_state()['state'] == 'warning'
@@ -285,17 +288,27 @@ def test_engine_state_distinguishes_on_demand_start_failure_and_sleep(tmp_path, 
         p.close()
 
 
-def test_runtime_busy_is_visible_without_waking_model(tmp_path, monkeypatch):
-    from plugins.optional.sakura_sakuratts._runtime import Runtime
-    runtime = Runtime(tmp_path)
-    runtime.process = SimpleNamespace(poll=lambda: None)
+@pytest.mark.parametrize(('runtime_state', 'state', 'label'), [
+    ({'state': 'awake', 'busy': True}, 'working', '正在合成'),
+    ({'state': 'awake'}, 'ready', '已加载'),
+    ({'state': 'sleeping'}, 'ready', '已卸载'),
+    ({'state': 'failed'}, 'error', '启动失败'),
+])
+def test_engine_state_reports_runtime_without_waking_model(tmp_path, monkeypatch, runtime_state, state, label):
+    p, _ = provider(tmp_path, monkeypatch)
+    p.runtime.process = SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(p.runtime, 'stop', lambda: None)
     calls = []
     def request(path, **kwargs):
         calls.append(path)
-        return {'state': 'awake', 'busy': True}
-    monkeypatch.setattr(runtime, 'request', request)
-    assert runtime.status() == '正在合成'
-    assert calls == ['/runtime']
+        return runtime_state
+    monkeypatch.setattr(p.runtime, 'request', request)
+    try:
+        result = p.engine_state()
+        assert (result['state'], result['label']) == (state, label)
+        assert calls == ['/runtime']
+    finally:
+        p.close()
 
 
 def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_path, monkeypatch):
@@ -339,7 +352,7 @@ def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_pat
 def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, monkeypatch, failure):
     from plugins.optional.sakura_sakuratts import _runtime
     from plugins.optional.sakura_sakuratts.plugin import configuration
-    checks, launches = [], []
+    checks, launches, logs = [], [], []
     def probe(*args):
         checks.append('cuda')
         if len(checks) == 1:
@@ -351,7 +364,8 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
     monkeypatch.setattr(_runtime, 'probe', probe)
     monkeypatch.setattr(_runtime.subprocess, 'Popen', launch)
     monkeypatch.setattr(_runtime, 'terminate_process_tree', lambda *args, **kwargs: None)
-    runtime = _runtime.Runtime(tmp_path)
+    runtime = _runtime.Runtime(tmp_path, lambda level, message, **fields: logs.append(fields))
+    (tmp_path / 'backend-check.log').mkdir()
     monkeypatch.setattr(runtime, 'request', lambda *args, **kwargs: {})
     bundle = tmp_path, {'backend': 'cpu', 'backends': ['cpu', 'cuda']}
     voice, cancel = {'gpt': 'voice.ckpt', 'sovits': 'voice.pth'}, threading.Event()
@@ -360,7 +374,7 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
         if isinstance(failure, RuntimeError):
             runtime.start(bundle, config, voice, cancel)
             assert runtime.backend == 'cpu'
-            assert (tmp_path / 'backend-check.log').read_text() == str(failure)
+            assert logs[0]['diagnostic'] == str(failure)
             runtime.start(bundle, config, voice, cancel)
             assert len(checks) == len(launches) == 1
             runtime.stop()
@@ -622,14 +636,37 @@ def test_online_index_rejects_invalid_package_before_download(online_repo, mutat
         online_package()
 
 
-def test_auto_update_preference_does_not_stop_synthesis(tmp_path, monkeypatch):
+@pytest.mark.parametrize(('initial', 'changes', 'interrupted'), [
+    ({}, {'autoCheckUpdates': False}, False),
+    ({}, {'prewake': False}, False),
+    ({}, {'cudaProfile': 'fp32'}, False),
+    ({}, {'backend': 'cpu'}, True),
+    ({}, {'idleSeconds': 30}, True),
+    ({'backend': 'cuda'}, {'cudaProfile': 'fp32'}, True),
+])
+def test_configuration_restarts_only_for_runtime_options(tmp_path, monkeypatch, initial, changes, interrupted):
     p, _ = provider(tmp_path, monkeypatch)
+    p.reconfigure({**p.config, **initial})
     stopped = []
+    started, finish = threading.Event(), threading.Event()
+    monkeypatch.setattr(p.runtime, 'start', lambda *_: None)
     monkeypatch.setattr(p.runtime, 'stop', lambda: stopped.append(True))
+    def synthesize(*_):
+        started.set()
+        assert finish.wait(3)
+        return b'audio'
+    monkeypatch.setattr(p.runtime, 'request', synthesize)
     try:
-        assert p.reconfigure({**p.config, 'autoCheckUpdates': False}) == 'applied'
-        assert not stopped
+        job = p.begin({'characterId': 'character', 'text': 'test'})
+        assert started.wait(3)
+        assert p.reconfigure({**p.config, **changes}) == 'applied'
+        assert bool(stopped) is interrupted
+        finish.set()
+        p.executor.submit(lambda: None).result(timeout=3)
+        assert p.poll(job)['state'] == ('cancelled' if interrupted else 'succeeded')
+        assert all(p.config[key] == value for key, value in changes.items())
     finally:
+        finish.set()
         p.close()
 
 

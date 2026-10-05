@@ -103,16 +103,21 @@ class Provider:
             return {'state': 'warning', 'label': '未安装运行环境', 'message': '请先导入整合包。'}
         if self.error:
             return {'state': 'error', 'label': '语音运行失败', 'message': self.error[-240:]}
-        label = self.runtime.status()
-        if label == '未启动':
+        status = self.runtime.status()
+        if status == 'stopped':
             if self.active is not None or self.wake is not None:
                 return {'state': 'working', 'label': '正在加载', 'message': ''}
             return {'state': 'ready', 'label': '未加载', 'message': '首次合成时自动加载模型。'}
-        working = label in {'连接中', '正在唤醒', '正在准备', '正在合成', '正在休眠'}
-        message = '模型资源已释放，下次合成自动加载。' if label == '已休眠' else self.runtime.selection_reason
-        label = {'已休眠': '已卸载', '就绪': '已加载', '正在唤醒': '正在加载', '正在休眠': '正在卸载'}.get(label, label)
+        state, label = {
+            'sleeping': ('ready', '已卸载'), 'awake': ('ready', '已加载'), 'ready': ('ready', '已加载'),
+            'connecting': ('working', '连接中'), 'waking': ('working', '正在加载'),
+            'preparing': ('working', '正在准备'), 'busy': ('working', '正在合成'),
+            'stopping': ('working', '正在卸载'), 'failed': ('error', '启动失败'),
+            'running': ('ready', '运行中'),
+        }.get(status, ('ready', status))
+        message = '模型资源已释放，下次合成自动加载。' if status == 'sleeping' else self.runtime.selection_reason
         backend_label = {'directml': 'AMD / Intel 显卡'}.get(self.runtime.backend, self.runtime.backend.upper())
-        return {'state': 'working' if working else 'error' if label == '启动失败' else 'ready',
+        return {'state': state,
                 'label': label + (f' · {backend_label}' if backend_label else ''),
                 'message': message}
 
@@ -162,7 +167,6 @@ class Provider:
     def record_error(self, error):
         self.error = str(error)
         self.log('error', 'SakuraTTS 运行失败', diagnostic=self.error, error_type=type(error).__name__)
-        (self.directory / 'last-error.log').write_text(self.error, encoding='utf-8')
 
     def begin(self, request):
         with self.lock:
@@ -256,13 +260,10 @@ class Provider:
     def reconfigure(self, values):
         config = configuration(values)
         with self.lock:
-            if config == self.config:
-                return 'applied'
-            if all(config[key] == self.config[key] for key in DEFAULTS if key != 'autoCheckUpdates'):
-                self.config = config
-                return 'applied'
-            self.cancel_work()
-            self.runtime.stop()
+            if (config['backend'] != self.config['backend'] or config['idleSeconds'] != self.config['idleSeconds']
+                    or (config['backend'] == 'cuda' and config['cudaProfile'] != self.config['cudaProfile'])):
+                self.cancel_work()
+                self.runtime.stop()
             self.config = config
         return 'applied'
 
