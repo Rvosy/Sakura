@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core_host.chat_host import ChatHost
+from app.core.runtime_log import log_message, register_external_sink, unregister_external_sink
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
 from app.core_host.screen_host import ScreenHost, ScreenHostError
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
@@ -113,7 +114,7 @@ class Assistant:
 
 def test_plugin_turn_uses_real_chat_admission_timeline_and_output(tmp_path):
     assistant = Assistant()
-    session = Session(character=SimpleNamespace(id="character"), assistant=assistant)
+    session = Session(character=SimpleNamespace(id="character", display_name="测试角色"), assistant=assistant)
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
     boundary = RealChatBoundary("generation", "credential", tmp_path, session_provider=lambda: session, timeline_store=timeline)
@@ -196,7 +197,7 @@ def test_plugin_disabling_settings_cancels_accepted_and_inflight_submission(disa
         assert finish.wait(3)
         return {"accepted": True, "operationId": "plugin-operation"}
     runtime = ScreenAwarenessRuntime(
-        SimpleNamespace(capture=lambda _: {"resourceId": "image"}, release=lambda _: None),
+        SimpleNamespace(capture=lambda _: {"resourceId": "image", "capturedAt": "2026-10-05T00:00:00Z"}, release=lambda _: None),
         SimpleNamespace(current=lambda: {"sessionId": "session", "idle": True, "activityRevision": 0},
                         submit=submit, cancel=lambda operation: cancelled.append(operation)),
         SimpleNamespace(get=lambda: {"checkIntervalMinutes": 1, "cooldownMinutes": 1}), clock=lambda: now[0])
@@ -219,11 +220,11 @@ def test_plugin_disabling_settings_cancels_accepted_and_inflight_submission(disa
 
 
 def test_manual_interaction_clears_plugin_batch_even_when_cancelled_without_history(tmp_path):
-    session = Session(character=SimpleNamespace(id="character"), assistant=Assistant())
+    session = Session(character=SimpleNamespace(id="character", display_name="测试角色"), assistant=Assistant())
     boundary = RealChatBoundary("generation", "credential", tmp_path, session_provider=lambda: session)
     now, released, sent = [0.0], [], []
     runtime = ScreenAwarenessRuntime(
-        SimpleNamespace(capture=lambda _: {"resourceId": "old-image"}, release=released.append),
+        SimpleNamespace(capture=lambda _: {"resourceId": "old-image", "capturedAt": "2026-10-05T00:00:00Z"}, release=released.append),
         SimpleNamespace(current=lambda: {**boundary.current_host_state(), "activityRevision": 0}, submit=sent.append),
         SimpleNamespace(get=lambda: {"checkIntervalMinutes": 1, "cooldownMinutes": 1}), clock=lambda: now[0])
     runtime.tick()
@@ -267,7 +268,7 @@ def test_idle_preference_commit_checks_local_activity_without_reentering_boundar
 
 def test_scope_revocation_cancels_active_plugin_turn_without_late_output(tmp_path):
     assistant = Assistant()
-    session = Session(character=SimpleNamespace(id="character"), assistant=assistant)
+    session = Session(character=SimpleNamespace(id="character", display_name="测试角色"), assistant=assistant)
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
     boundary = RealChatBoundary("generation", "credential", tmp_path, session_provider=lambda: session, timeline_store=timeline)
@@ -320,7 +321,7 @@ def test_capture_session_invalidation_does_not_wait_for_boundary_reader():
 
 def test_scope_revocation_during_admission_abandons_reservation(tmp_path):
     entered, finish = threading.Event(), threading.Event()
-    session = Session(character=SimpleNamespace(id="character"), assistant=Assistant())
+    session = Session(character=SimpleNamespace(id="character", display_name="测试角色"), assistant=Assistant())
     boundary = RealChatBoundary("generation", "credential", tmp_path, session_provider=lambda: session, timeline_store=object())
     original = boundary.reserve_plugin_message
     def reserve(*args):
@@ -345,3 +346,166 @@ def test_scope_revocation_during_admission_abandons_reservation(tmp_path):
     assert not worker.is_alive()
     assert results == [{"accepted": False, "reasonCode": "CHAT_ADMISSION_EXPIRED"}]
     assert boundary.current_host_state()["idle"]
+
+
+@pytest.fixture
+def awareness_logs():
+    now, records, captured, released, submitted = [0.0], [], [], [], []
+    facts = {"sessionId": "session-a", "characterId": "role-a", "characterName": "角色甲",
+             "idle": True, "activityRevision": 0, "interactionRevision": 0}
+
+    def capture(_request):
+        resource = {"resourceId": f"private-image-{len(captured) + 1}",
+                    "capturedAt": f"2026-10-05T00:{int(now[0] // 60):02}:00Z"}
+        captured.append(resource)
+        return resource
+
+    def submit(request):
+        submitted.append(request)
+        return {"accepted": True, "operationId": "observation-operation"}
+
+    def sink(record):
+        records.append(record)
+        return True
+
+    logger = SimpleNamespace(
+        info=lambda message, fields=None: log_message("info", message, fields=fields,
+                                                     component="plugin", plugin_id="sakura.screen_awareness"),
+        warning=lambda message, fields=None: log_message("warning", message, fields=fields,
+                                                        component="plugin", plugin_id="sakura.screen_awareness"),
+    )
+    screen = SimpleNamespace(capture=capture, release=released.append)
+    chat = SimpleNamespace(current=lambda: dict(facts), submit=submit, cancel=lambda _: {"accepted": False})
+    runtime = ScreenAwarenessRuntime(screen, chat,
+        SimpleNamespace(get=lambda: {"checkIntervalMinutes": 1, "cooldownMinutes": 2, "batchLimit": 3}),
+        clock=lambda: now[0], logger=logger)
+    register_external_sink(sink)
+    try:
+        runtime.tick()
+        yield SimpleNamespace(runtime=runtime, now=now, facts=facts, records=records, screen=screen, chat=chat,
+                              captured=captured, released=released, submitted=submitted)
+    finally:
+        runtime.close()
+        unregister_external_sink(sink)
+
+
+def test_screen_awareness_logs_retained_count_without_polling_noise(awareness_logs):
+    run = awareness_logs
+    for timestamp in (10, 60, 70, 120, 130, 180):
+        run.now[0] = timestamp
+        run.runtime.tick()
+    assert [record.attributes["event"] for record in run.records] == ["screen.awareness.captured"] * 3
+    assert [record.attributes["screen_count"] for record in run.records] == [1, 2, 3]
+    assert all(record.attributes["screen_limit"] == 3 for record in run.records)
+    for count, record in enumerate(run.records, 1):
+        assert "角色甲" in record.message and f"{count}/3" in record.message
+    assert run.submitted[0]["resources"] == [item["resourceId"] for item in run.captured]
+    assert "private-image" not in str(run.records)
+
+
+def test_screen_awareness_logs_replacement_and_can_send_before_full(awareness_logs):
+    run = awareness_logs
+    run.runtime.apply_settings({"checkIntervalMinutes": 1, "cooldownMinutes": 4, "batchLimit": 3})
+    run.runtime.tick()
+    for timestamp in (60, 120, 180, 240, 300):
+        run.now[0] = timestamp
+        run.runtime.tick()
+    assert [record.attributes["screen_count"] for record in run.records] == [1, 2, 3, 3, 3]
+    assert all(record.attributes.get("screen_note") for record in run.records[3:])
+    assert run.records[-2].attributes["screen_captured_at"] != run.records[-1].attributes["screen_captured_at"]
+    assert run.submitted[0]["resources"] == [item["resourceId"] for item in run.captured[-3:]]
+
+    run.runtime.apply_settings({"checkIntervalMinutes": 2, "cooldownMinutes": 1, "batchLimit": 3})
+    run.runtime.tick()
+    run.now[0] = 420
+    run.runtime.tick()
+    run.now[0] = 480
+    run.runtime.tick()
+    assert len(run.submitted[-1]["resources"]) == 1
+    assert run.records[-1].attributes["screen_count"] == 1
+
+
+@pytest.mark.parametrize("reason", ["CHAT_BUSY", "CHAT_SESSION_STALE", "CHAT_ADMISSION_EXPIRED"])
+def test_screen_awareness_logs_rejected_submission_and_clears_batch(awareness_logs, reason):
+    run = awareness_logs
+    run.chat.submit = lambda _: {"accepted": False, "reasonCode": reason}
+    for timestamp in (60, 120, 180):
+        run.now[0] = timestamp
+        run.runtime.tick()
+    rejected = run.records[-1]
+    assert rejected.attributes["event"] == "screen.awareness.skipped"
+    assert rejected.attributes["reason_code"] == reason and rejected.severity == "info"
+    assert rejected.attributes["screen_count"] == 3
+    assert len(run.released) == 3
+    run.runtime.tick()
+    assert run.records[-1] is rejected
+
+
+@pytest.mark.parametrize("change", ["session", "interaction", "settings", "disabled"])
+def test_screen_awareness_logs_why_a_collected_batch_is_cleared(awareness_logs, change):
+    run = awareness_logs
+    run.now[0] = 60
+    run.runtime.tick()
+    if change == "session":
+        run.facts.update(sessionId="session-b", characterId="role-b", characterName="角色乙")
+    elif change == "interaction":
+        run.facts["interactionRevision"] += 1
+    else:
+        run.runtime.apply_settings({"enabled": change != "disabled", "checkIntervalMinutes": 1})
+    run.runtime.tick()
+    assert len(run.records) == 2
+    assert run.records[-1].attributes["screen_cleared_count"] == 1
+    assert run.records[-1].attributes["event"] == ("screen.awareness.disabled" if change == "disabled" else "screen.awareness.cleared")
+    assert run.released == [run.captured[0]["resourceId"]]
+    if change == "session":
+        run.now[0] = 120
+        run.runtime.tick()
+        assert "角色乙" in run.records[-1].message and "1/3" in run.records[-1].message
+
+
+def test_screen_awareness_late_capture_never_logs_success(awareness_logs):
+    run = awareness_logs
+    entered, resume = threading.Event(), threading.Event()
+    capture = run.screen.capture
+
+    def delayed_capture(request):
+        entered.set()
+        assert resume.wait(3)
+        return capture(request)
+
+    run.screen.capture = delayed_capture
+    run.now[0] = 60
+    worker = threading.Thread(target=run.runtime.tick)
+    worker.start()
+    try:
+        assert entered.wait(3)
+        run.runtime.apply_settings({"enabled": False})
+    finally:
+        resume.set()
+        worker.join(3)
+    assert not worker.is_alive()
+    assert [record.attributes["event"] for record in run.records] == ["screen.awareness.disabled"]
+    assert run.released == [run.captured[0]["resourceId"]]
+
+
+@pytest.mark.parametrize("stage", ["capture", "submit"])
+def test_screen_awareness_failure_preserves_diagnostic_without_success(awareness_logs, stage):
+    run = awareness_logs
+
+    def fail(_request):
+        raise OSError("permission denied api_key=private-screen-secret")
+
+    if stage == "capture":
+        run.screen.capture = fail
+    else:
+        run.chat.submit = fail
+    for timestamp in (60,) if stage == "capture" else (60, 120, 180):
+        run.now[0] = timestamp
+        run.runtime.tick()
+    failure = run.records[-1]
+    assert failure.attributes["event"] == f"screen.awareness.{stage}_failed"
+    assert failure.severity == "warning"
+    assert "permission denied" in failure.attributes["diagnostic"]
+    assert "private-screen-secret" not in str(run.records)
+    assert "角色甲" in failure.message
+    assert run.released == [item["resourceId"] for item in run.captured]

@@ -11,7 +11,7 @@ from app.plugins.runtime_v4 import PluginRuntimeError
 
 
 def _application(tmp_path):
-    session = SimpleNamespace(character=SimpleNamespace(id="character"))
+    session = SimpleNamespace(character=SimpleNamespace(id="character", display_name="测试角色"))
     boundary = RealChatBoundary("generation", "credential", tmp_path,
         session_provider=lambda: session, timeline_store=object())
     application = object.__new__(PluginRuntimeApplication)

@@ -39,7 +39,7 @@ def setup_host(tmp_path, *, gate_at=None, reply=None):
             entered.set()
             assert resume.wait(3)
 
-    session = SimpleNamespace(character=SimpleNamespace(id="sakura"), visual_binding=None,
+    session = SimpleNamespace(character=SimpleNamespace(id="sakura", display_name="Sakura"), visual_binding=None,
         descriptor=lambda: {"character": {"id": "sakura"}},
         assistant=SimpleNamespace(run_turn=run_turn, commit_result=lambda commit: commit(), release=release))
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")

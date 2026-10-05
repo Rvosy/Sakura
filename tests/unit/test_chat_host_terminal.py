@@ -1,5 +1,6 @@
 """Source scope revocation must preserve RealChat's committed terminal."""
 
+import io
 import json
 import threading
 from contextlib import contextmanager
@@ -9,8 +10,9 @@ import pytest
 
 from app.core_host.chat_host import ChatHost
 from app.core_host.real_chat import RealChatBoundary
+from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
 from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
-from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE, HOST_CALLER_LOG_METADATA
 from app.storage.timeline import TimelineKind, TimelineStore
 from sakura_assistant.agent.trace import AgentTraceRecorder
 
@@ -19,9 +21,11 @@ from sakura_assistant.agent.trace import AgentTraceRecorder
 def caller():
     owner = HOST_CALLER.set("source.plugin")
     scope = HOST_CALLER_SCOPE.set("source.scope")
+    metadata = HOST_CALLER_LOG_METADATA.set(("屏幕观察来源", ()))
     try:
         yield
     finally:
+        HOST_CALLER_LOG_METADATA.reset(metadata)
         HOST_CALLER_SCOPE.reset(scope)
         HOST_CALLER.reset(owner)
 
@@ -44,6 +48,8 @@ class Assistant:
         self.resume = threading.Event()
         self.release_statuses = []
         self.requests = []
+        self.reply_text = "reply"
+        self.failure = None
 
     def run_turn(self, request, cancel_checker):
         self.requests.append(request)
@@ -54,8 +60,10 @@ class Assistant:
                 self.entered.set()
                 assert self.resume.wait(3)
             cancel_checker()
+            if self.failure is not None:
+                raise self.failure
             self.trace.record_model_reply(call, raw_message={"role": "assistant", "content": "reply"})
-            return SimpleNamespace(reply=ChatReply([ChatSegment(text="reply")]), actions=[])
+            return SimpleNamespace(reply=ChatReply([ChatSegment(text=self.reply_text)]), actions=[])
 
     def commit_result(self, commit):
         return commit()
@@ -68,10 +76,10 @@ class Assistant:
         assert self.trace.finish_operation(operation_id, status=status)
 
 
-def setup_turn(tmp_path, monkeypatch, gate_at, *, started_gate=None):
+def setup_turn(tmp_path, monkeypatch, gate_at, *, started_gate=None, with_screen=False):
     trace = RecordingTrace(tmp_path / "trace")
     assistant = Assistant(trace, gate_at)
-    session = SimpleNamespace(character=SimpleNamespace(id="character"), assistant=assistant,
+    session = SimpleNamespace(character=SimpleNamespace(id="character", display_name="测试角色"), assistant=assistant,
                               visual_binding=None, descriptor=lambda: {"character": {"id": "character"}})
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
@@ -100,7 +108,9 @@ def setup_turn(tmp_path, monkeypatch, gate_at, *, started_gate=None):
 
     monkeypatch.setattr(boundary, "run_reserved_plugin_message", run)
     monkeypatch.setattr(boundary, "cancel_host_message", cancel)
-    screen = SimpleNamespace(take_resources=lambda *_args: ())
+    observations = (SimpleNamespace(data_url="data:image/jpeg;base64,PRIVATE_SCREEN_PIXELS", width=1, height=1,
+                                   captured_at="2026-10-05T00:00:00Z", screen_name="private-screen"),) if with_screen else ()
+    screen = SimpleNamespace(take_resources=lambda *_args: observations)
 
     def emit(name, payload):
         events.append((name, payload))
@@ -113,7 +123,7 @@ def setup_turn(tmp_path, monkeypatch, gate_at, *, started_gate=None):
     session_id = host.current()["sessionId"]
     host.set_ui_state({"sessionId": session_id, "idle": True, "activityRevision": 0})
     with caller():
-        accepted = host.submit({"sessionId": session_id, "message": "proactive request", "resources": []})
+        accepted = host.submit({"sessionId": session_id, "message": "proactive request", "resources": ["private-image"] if with_screen else []})
     assert accepted["accepted"]
     return SimpleNamespace(host=host, boundary=boundary, assistant=assistant, timeline=timeline, trace=trace,
         events=events, cancellations=cancellations, outcomes=outcomes, errors=errors, finished=finished,
@@ -208,3 +218,47 @@ def test_scope_revocation_during_started_publication_keeps_the_boundary_terminal
             revoker.join(3)
         turn.boundary.close()
     assert not revoker.is_alive()
+
+
+@pytest.mark.parametrize("outcome", ["reply", "empty", "failed", "cancelled", "text_only"])
+def test_screen_observation_logs_follow_real_terminal_and_keep_plugin_identity(tmp_path, monkeypatch, outcome):
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    turn = None
+    try:
+        turn = setup_turn(tmp_path, monkeypatch, "inference", with_screen=outcome != "text_only")
+        assert turn.assistant.entered.wait(3)
+        if outcome == "empty":
+            turn.assistant.reply_text = ""
+        elif outcome == "failed":
+            turn.assistant.failure = OSError("model connection lost api_key=private-model-secret")
+        elif outcome == "cancelled":
+            turn.host.revoke_scope("source.plugin")
+        assert [name for name, _ in turn.events] == ["host.chat.started"]
+        turn.assistant.resume.set()
+        assert turn.finished.wait(3)
+        assert turn.errors == []
+    finally:
+        if turn is not None:
+            turn.assistant.resume.set()
+            turn.boundary.close()
+        bridge.close()
+
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines()
+               if line.startswith(CORE_BRIDGE_PREFIX)]
+    records = [record for record in records if record.get("plugin_id") == "source.plugin"]
+    if outcome == "text_only":
+        assert records == []
+        return
+    terminal = {"failed": "failed", "cancelled": "cancelled"}.get(outcome, "completed")
+    assert [record["attributes"]["event"] for record in records] == ["screen.observation.started", f"screen.observation.{terminal}"]
+    assert all(record["plugin_name"] == "屏幕观察来源" and record["operation_id"] == turn.operation_id for record in records)
+    assert all(record["attributes"]["screen_count"] == 1 and "测试角色" in record["message"] for record in records)
+    assert records[-1]["severity"] == ("warning" if outcome == "failed" else "info")
+    if outcome == "failed":
+        assert "model connection lost" in records[-1]["attributes"]["diagnostic"]
+        assert records[-1]["attributes"]["exception_chain"]
+    if outcome in {"reply", "empty"}:
+        assert ("没有回复" in records[-1]["message"]) == (outcome == "empty")
+    serialized = json.dumps(records)
+    assert all(private not in serialized for private in ("PRIVATE_SCREEN_PIXELS", "private-screen", "private-image", "private-model-secret", "proactive request"))

@@ -38,9 +38,15 @@ class ScreenAwarenessRuntime:
                 self.tick()
             except Exception as error:
                 self._clear()
-                if self._logger is not None:
-                    self._logger.warning("主动屏幕感知未完成", fields={"reasonCode": getattr(error, "code", "SCREEN_AWARENESS_FAILED")})
+                self._log("warning", "查看屏幕内容时出错了",
+                          fields={"event": "screen.awareness.failed", "reason_code": getattr(error, "code", "SCREEN_AWARENESS_FAILED")})
             self._stop.wait(10)
+
+    def _log(self, severity, message, *, facts=None, fields=None):
+        if self._logger is not None:
+            if facts is not None:
+                message = f"[{facts['characterName']}] {message}"
+            getattr(self._logger, severity)(message, fields=fields)
 
     def load_settings(self):
         return ScreenAwarenessSettings.parse(self._config.get()).values()
@@ -52,8 +58,16 @@ class ScreenAwarenessRuntime:
     def apply_settings(self, values):
         settings = ScreenAwarenessSettings.parse(values)
         with self._lock:
+            was_enabled = self._settings.enabled
             self._settings = settings
-        self._clear(cancel=True)
+        count = self._clear(cancel=True)
+        if was_enabled != settings.enabled:
+            self._log("info", "已恢复主动看屏幕" if settings.enabled else "已停止主动看屏幕",
+                      fields={"event": "screen.awareness.enabled" if settings.enabled else "screen.awareness.disabled",
+                              "screen_cleared_count": count})
+        elif count:
+            self._log("info", "设置已更新，之前的截图已清空",
+                      fields={"event": "screen.awareness.cleared", "screen_cleared_count": count, "screen_note": "设置变化"})
         return "applied"
 
     def _release(self, resources):
@@ -75,6 +89,7 @@ class ScreenAwarenessRuntime:
         self._release(resources)
         if operation is not None:
             self._chat.cancel(operation)
+        return len(resources)
 
     def tick(self):
         if self._stop.is_set():
@@ -96,6 +111,12 @@ class ScreenAwarenessRuntime:
         if plan["action"] == "clear":
             with self._lock:
                 resources, self._resources = self._resources, []
+                if resources:
+                    if plan["sessionChanged"]:
+                        message = "已切换角色，之前的截图已清空" if facts["sessionId"] else "当前角色不可用，之前的截图已清空"
+                    else:
+                        message = "已开始新的聊天，之前的截图已清空"
+                    self._log("info", message, fields={"event": "screen.awareness.cleared", "screen_cleared_count": len(resources)})
             self._release(resources)
             return
         if plan["action"] == "capture":
@@ -104,7 +125,13 @@ class ScreenAwarenessRuntime:
                 dropped = self._resources[:max(0, len(self._resources) - plan["batchLimit"] + 1)]
                 self._resources = self._resources[len(dropped):]
             self._release(dropped)
-            resource = self._screen.capture({"sessionId": facts["sessionId"], "resolution": plan["resolution"]})
+            try:
+                resource = self._screen.capture({"sessionId": facts["sessionId"], "resolution": plan["resolution"]})
+            except Exception as error:
+                self._log("warning", "这次没能看到屏幕", facts=facts,
+                          fields={"event": "screen.awareness.capture_failed", "reason_code": getattr(error, "code", "SCREEN_CAPTURE_FAILED")})
+                self._clear()
+                return
             latest = self._chat.current()
             with self._lock:
                 stale = (self._stop.is_set() or epoch != self._epoch or latest["sessionId"] != facts["sessionId"]
@@ -112,6 +139,12 @@ class ScreenAwarenessRuntime:
                 stale = stale or latest.get("interactionRevision", 0) != facts.get("interactionRevision", 0)
                 if not stale:
                     self._resources.append(resource["resourceId"])
+                    fields = {"event": "screen.awareness.captured", "screen_count": len(self._resources),
+                              "screen_limit": plan["batchLimit"], "screen_captured_at": resource["capturedAt"]}
+                    if dropped:
+                        fields["screen_note"] = "已替换最早的一张截图"
+                    self._log("info", f"看了一眼屏幕（{len(self._resources)}/{plan['batchLimit']}）",
+                              facts=facts, fields=fields)
                     plan = self._policy.step({**current, "count": len(self._resources), "revision": plan["revision"]})
             if stale:
                 self._release([resource["resourceId"]])
@@ -130,6 +163,16 @@ class ScreenAwarenessRuntime:
                             self._operation = result["operationId"]
                     if stale:
                         self._chat.cancel(result["operationId"])
+                else:
+                    reason = result["reasonCode"]
+                    message = {"CHAT_BUSY": "正在聊天，这次先跳过",
+                               "CHAT_SESSION_STALE": "已切换角色，这次先跳过",
+                               "CHAT_ADMISSION_EXPIRED": "当前互动已变化，这次先跳过"}.get(reason)
+                    self._log("info" if message else "warning", message or "这次没能查看屏幕内容", facts=facts,
+                              fields={"event": "screen.awareness.skipped", "reason_code": reason, "screen_count": len(resources)})
+            except Exception as error:
+                self._log("warning", "查看屏幕内容时出错了", facts=facts,
+                          fields={"event": "screen.awareness.submit_failed", "reason_code": getattr(error, "code", "SCREEN_AWARENESS_FAILED")})
             finally:
                 self._clear()
 

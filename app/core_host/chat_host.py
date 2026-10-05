@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 
 from app.core_host.real_chat import RealChatRejection
 from app.core_host.screen_host import ScreenHost, ScreenHostError, caller_identity
+from app.core.runtime_log import log_message
+from app.plugins.host_services import HOST_CALLER_LOG_METADATA
 
 HOST_CHAT_SERVICE = "sakura.host.chat"
 
@@ -60,7 +62,7 @@ class ChatHost:
     def current(self) -> dict:
         boundary = self._boundary_provider()
         state = boundary.current_host_state() if boundary is not None else {
-            "sessionId": None, "characterId": None, "idle": False, "interactionRevision": 0}
+            "sessionId": None, "characterId": None, "characterName": None, "idle": False, "interactionRevision": 0}
         with self._lock:
             return {**state, "idle": bool(not self._closed and state["idle"] and self._ui["idle"]
                                          and state["sessionId"] == self._ui["sessionId"]),
@@ -102,6 +104,9 @@ class ChatHost:
         metadata = {"operationId": operation_id, "sessionId": request["sessionId"],
                     "characterId": state["characterId"], "sourcePluginId": owner[0], "presentation": "silent"}
         active = _ActiveTurn(owner, boundary, metadata)
+        plugin_name, _ = HOST_CALLER_LOG_METADATA.get()
+        character_name = state["characterName"]
+        image_count = len(observations)
         try:
             with self._lock:
                 stale = (self._closed or epoch != self._session_epoch
@@ -126,6 +131,24 @@ class ChatHost:
                     return
                 active.started = True
                 active.terminal = name != "chat.started"
+                if image_count:
+                    fields = {"event": name.replace("chat.", "screen.observation."),
+                              "operation_id": operation_id, "screen_count": image_count}
+                    severity = "info"
+                    if name == "chat.started":
+                        message = "正在查看屏幕内容"
+                    elif name == "chat.completed":
+                        has_reply = any(segment["text"].strip() for segment in payload["reply"]["segments"])
+                        message = "准备好回复了" if has_reply else "看过屏幕，这次没有回复"
+                    elif name == "chat.cancelled":
+                        message = "已取消这次屏幕观察"
+                    else:
+                        message, severity = "查看屏幕内容时出错了", "warning"
+                        error = payload["error"]
+                        fields.update(error["details"]["diagnostics"])
+                        fields["reason_code"] = error["code"]
+                    log_message(severity, f"[{character_name}] {message}", fields=fields,
+                                component="plugin", plugin_id=owner[0], plugin_name=plugin_name or None)
                 self._emit("host." + name, {**dict(payload), **metadata})
 
         def run() -> None:

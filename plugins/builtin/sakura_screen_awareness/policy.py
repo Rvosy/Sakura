@@ -36,12 +36,13 @@ class ScreenAwarenessPolicy:
 
     def step(self, facts: Mapping[str, object]) -> dict[str, object]:
         timestamp = self._clock()
-        if facts["sessionId"] != self._session or facts.get("reset"):
+        session_changed = facts["sessionId"] != self._session
+        if session_changed or facts.get("reset"):
             self._session = str(facts["sessionId"])
             self.reset()
         if self._clear_pending:
             self._clear_pending = False
-            return {"action": "clear", "revision": self._revision}
+            return {"action": "clear", "revision": self._revision, "sessionChanged": session_changed}
         if facts["activity"]:
             self._last_activity = timestamp
         settings = self._settings

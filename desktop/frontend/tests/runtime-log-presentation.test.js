@@ -189,6 +189,26 @@ test("collapsed rows have distinct instance keys even when identical records are
 });
 
 
+test("screen captures at the same batch limit remain distinct and copy their progress", () => {
+  const captures = [1, 2].map(sequence => record(sequence, {
+    source: "plugin", pluginId: "sakura.screen_awareness", pluginName: "主动屏幕感知", scopes: ["plugins"],
+    message: "[测试角色] 看了一眼屏幕（3/3）",
+    details: [
+      { label: "截图数量", value: "3" },
+      { label: "截图上限", value: "3" },
+      { label: "截图时间", value: `2026-10-05T00:0${sequence}:00Z` },
+      { label: "说明", value: "已替换最早的一张截图" },
+    ],
+  }));
+  const state = applyViewerSnapshot(null, snapshot(captures));
+  const visible = filterViewerRecords(state.records, "plugins", "all", "sakura.screen_awareness");
+  const rows = collapseViewerRecords(visible, "plugins");
+  assert.equal(rows.length, 2);
+  assert.match(viewerCopyText(rows[1]), /3\/3/);
+  assert.match(viewerCopyText(rows[1]), /2026-10-05T00:02:00Z/);
+  assert.equal(viewerProblemCount(state.records, "plugins"), 0);
+});
+
 test("plugin names drive display while TTS records stay exclusively in their own tab", () => {
   const memory = record(1, { source: "plugin", pluginId: "memory.internal", pluginName: "长期记忆", scopes: ["plugins"] });
   const voice = record(2, { source: "plugin", pluginId: "voice.internal", pluginName: "角色语音", scopes: ["tts"] });

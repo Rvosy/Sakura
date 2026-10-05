@@ -1153,24 +1153,26 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
         .into_iter()
         .flat_map(|fields| fields.iter())
         .map(|(key, value)| RuntimeLogViewerDetail {
-            label: if matches!(
-                key.as_str(),
+            label: match key.as_str() {
+                "screen_count" => "截图数量",
+                "screen_limit" => "截图上限",
+                "screen_captured_at" => "截图时间",
+                "screen_cleared_count" => "清空数量",
+                "screen_note" => "说明",
                 "diagnostic"
-                    | "exception_chain"
-                    | "exception_stack"
-                    | "recovery_diagnostic"
-                    | "cause_type"
-                    | "cause_code"
-                    | "validation_field"
-                    | "error_type"
-                    | "exception_site"
-                    | "errno"
-                    | "winerror"
-            ) {
-                viewer_detail_label(key).to_string()
-            } else {
-                key.clone()
-            },
+                | "exception_chain"
+                | "exception_stack"
+                | "recovery_diagnostic"
+                | "cause_type"
+                | "cause_code"
+                | "validation_field"
+                | "error_type"
+                | "exception_site"
+                | "errno"
+                | "winerror" => viewer_detail_label(key),
+                key => key,
+            }
+            .to_string(),
             value: value
                 .as_str()
                 .filter(|text| !text.is_empty())
@@ -4925,6 +4927,49 @@ mod tests {
             assert!(failed.message.contains("失败"));
             assert!(failed.details.iter().any(|detail| detail.value == command));
         }
+    }
+
+    #[test]
+    fn wp_5_06_screen_observation_keeps_progress_and_localizes_plugin_details() {
+        let root = temp_root("screen-observation-viewer");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let context = CoreLogContext {
+            generation_id: "screen-observation-generation".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        let message = "[测试角色] 看了一眼屏幕（3/3）";
+        let wire = json!({
+            "severity": "info", "verbosity": "info", "channel": "plugin", "event": "runtime.message",
+            "custom": true, "plugin_id": "sakura.screen_awareness", "plugin_name": "主动屏幕感知",
+            "message": message,
+            "attributes": {
+                "event": "screen.awareness.captured", "screen_count": 3, "screen_limit": 3,
+                "screen_captured_at": "2026-10-05T00:04:00Z", "screen_cleared_count": 0,
+                "screen_note": "已替换最早的一张截图"
+            }
+        });
+        assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        let record = snapshot.records.last().unwrap();
+        assert_eq!(record.source, "plugin");
+        assert_eq!(record.scopes, ["plugins"]);
+        assert_eq!(record.plugin_name.as_deref(), Some("主动屏幕感知"));
+        assert_eq!(record.message, message);
+        for (label, value) in [
+            ("截图数量", "3"),
+            ("截图上限", "3"),
+            ("截图时间", "2026-10-05T00:04:00Z"),
+            ("清空数量", "0"),
+            ("说明", "已替换最早的一张截图"),
+        ] {
+            assert!(record
+                .details
+                .iter()
+                .any(|detail| detail.label == label && detail.value == value));
+        }
+        log.drain_and_shutdown_for_test();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

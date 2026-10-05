@@ -26,7 +26,7 @@ def host(tmp_path: Path, *, current="sakura"):
     timeline.initialize()
     boundary = RealChatBoundary(
         "generation-mobile", "credential-mobile", tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id=current)),
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id=current, display_name=current)),
         timeline_store=timeline,
     )
     conversation = ConversationHostService(

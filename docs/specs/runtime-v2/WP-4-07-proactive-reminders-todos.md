@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-22
+updated: 2026-10-05
 ---
 
 # WP-4-07 定时截图与主动请求规范
@@ -28,6 +28,23 @@ updated: 2026-09-22
   尚未完成的主动请求。截图或发送失败结束本轮，从当前时刻重新开始普通周期，不重试当前请求。
 - 主动屏幕感知设置由插件贡献到“交互”页，保存经过通用 Plugin Settings。关闭或卸载本插件不影响手动截图。
   关闭功能开关时，检查间隔、最短搭话间隔、截图数量和分辨率控件一并禁用，保留原值；重新打开后恢复可编辑。
+
+## 运行日志
+
+主动屏幕感知的记录显示在运行日志的“插件”页，归属“主动屏幕感知”。截图成功且仍属于当前会话时，
+显示 `[角色名] 看了一眼屏幕（当前张数/上限）`。每次截图使用同一句话；数字表示本轮保留的截图数量，
+不代表分析步骤或发送门槛。达到上限后仍显示上限张数，详情注明“已替换最早的一张截图”，并保留每次截图时间。
+
+截图、批次清空、开关变化和提交被拒绝的记录由
+[`ScreenAwarenessRuntime`](../../../plugins/builtin/sakura_screen_awareness/plugin.py) 产生。
+不记录截图前的“准备”提示，也不在每次定时检查时重复记录等待状态。已丢弃的迟到截图不记录成功；
+设置变化、新聊天或角色切换清空已有截图时，记录实际原因和清空数量。
+
+携带截图的主动聊天由 [`ChatHost.submit`](../../../app/core_host/chat_host.py) 按真实聊天事件记录
+`[角色名] 正在查看屏幕内容`、`[角色名] 准备好回复了` 或 `[角色名] 看过屏幕，这次没有回复`。
+取消显示“已取消这次屏幕观察”；查看失败显示“查看屏幕内容时出错了”，获取截图失败显示“这次没能看到屏幕”。
+宿主使用受理时的角色名、可信来源插件和操作编号，完成状态只跟随 RealChat 的唯一终态；提交被拒绝不记录查看开始。
+普通文本主动聊天沿用原有日志。失败记录保留凭据清洗后的原始诊断；日志不包含截图内容、资源句柄或业务提示词。
 
 ## 配置兼容
 
@@ -67,7 +84,8 @@ Core 消费原生文件后保存内存句柄；迟到结果、取消和传输失
 
 ## 通用主动聊天接口
 
-`sakura.host.chat.current()` 返回 `{sessionId, characterId, idle, activityRevision, interactionRevision}`。
+`sakura.host.chat.current()` 返回 `{sessionId, characterId, characterName, idle, activityRevision, interactionRevision}`。
+`characterName` 是当前会话的角色显示名，不可用时为 `null`。
 其中 `interactionRevision` 在受理任意来源的新聊天时递增，即使随后取消且没有写入历史也保持递增。
 插件以此清理过时截图，不依赖前端区分功能名。
 `submit({sessionId, message, resources})` 接受插件组织的文本和图片句柄，返回

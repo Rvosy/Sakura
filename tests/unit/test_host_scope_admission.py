@@ -101,7 +101,7 @@ def test_late_capture_cannot_create_resources_after_scope_clear(tmp_path, monkey
 @pytest.mark.parametrize("replacement", [False, True], ids=["disabled", "reloaded"])
 def test_late_chat_releases_real_admission_without_starting_a_turn(tmp_path, monkeypatch, replacement):
     manager, process = _manager(tmp_path)
-    session = SimpleNamespace(character=SimpleNamespace(id="character"))
+    session = SimpleNamespace(character=SimpleNamespace(id="character", display_name="测试角色"))
     boundary = RealChatBoundary("generation", "credential", tmp_path,
         session_provider=lambda: session, timeline_store=object())
     session_id = boundary.current_host_state()["sessionId"]
@@ -168,7 +168,7 @@ def test_late_conversation_releases_reservation_after_scope_clear(tmp_path, monk
 
     manager, process = _manager(tmp_path)
     boundary = RealChatBoundary("generation", "credential", tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="character")), timeline_store=object())
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="character", display_name="测试角色")), timeline_store=object())
     host = ConversationHostService(chat_boundary_provider=lambda: boundary,
         artifact_resolver=lambda _id: pytest.fail("no image expected"), artifact_releaser=lambda _id: True,
         emit_callback=lambda *_args: pytest.fail("revoked caller cannot publish"),

@@ -675,6 +675,7 @@ class RealChatBoundary:
             available = session is not None and not self._closed and not self._switching_character
             return {"sessionId": self._screen_session_id if available else None,
                     "characterId": str(session.character.id) if available else None,
+                    "characterName": session.character.display_name if available else None,
                     "idle": available and not self._executions and not self._runtime_update_pending,
                     "interactionRevision": self._interaction_revision}
 
