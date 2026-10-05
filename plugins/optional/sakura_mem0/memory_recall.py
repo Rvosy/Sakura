@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from time import monotonic
 from typing import Any, Protocol
 
@@ -77,9 +76,9 @@ class MemoryRecallService:
                 verbosity=0,
             )
             return MemoryRecallResult(status="failed", query=query)
-        status = str(response.get("status", "ready"))
-        memories = response.get("memories", [])
-        if status != "ready" and not memories:
+        status = response["status"]
+        memories = response["memories"]
+        if status != "ready":
             log_event(
                 "Memory",
                 "记忆服务还未就绪，这次未查找记忆",
@@ -95,49 +94,38 @@ class MemoryRecallService:
                 verbosity=0,
             )
             return MemoryRecallResult(status=status, query=query)
-        if not isinstance(memories, list):
-            log_event(
-                "Memory",
-                "记忆召回结果无效",
-                {"elapsed_ms": int((monotonic() - started_at) * 1000), "code": "INVALID_RESULT"},
-                event="memory.recall.failed",
-                severity="warning",
-                verbosity=0,
-            )
-            return MemoryRecallResult(status="failed", query=query)
-
         selected = _select_memories(
             memories,
             self.threshold,
             self.limit,
             excluded_created_in_turn_id=request.current_turn_id,
         )
-        fragments = tuple(
-            ContextFragment(
-                fragment_id=f"memory.{memory['id'] or index}",
+        fragments: list[ContextFragment] = []
+        for memory in selected:
+            source = memory["source"].lower()
+            fragments.append(ContextFragment(
+                fragment_id=f"memory.{memory['id']}",
                 source="memory",
                 content=f"与本轮相关的长期记忆：{memory['content']}",
-                trust="trusted" if memory["source"] == "explicit" else "untrusted",
-                priority=80 if memory["source"] == "explicit" else 70,
-                freshness=memory["updated_at"],
+                trust="trusted" if source == "explicit" else "untrusted",
+                priority=80 if source == "explicit" else 70,
+                freshness=memory["updatedAt"],
                 token_budget=512,
                 sensitivity="private",
                 cache_scope="turn",
                 metadata={
                     "memory_id": memory["id"],
                     "score": memory["score"],
-                    "source": memory["source"],
+                    "source": source,
                 },
-            )
-            for index, memory in enumerate(selected)
-        )
+            ))
         _log_recall_finished(
             started_at,
             status="ready",
             candidates=len(memories),
             selected=len(fragments),
         )
-        return MemoryRecallResult(fragments=fragments, status="ready", query=query)
+        return MemoryRecallResult(fragments=tuple(fragments), status="ready", query=query)
 
 
 def _log_recall_finished(
@@ -179,72 +167,31 @@ def _build_memory_query(request: ContextRequest) -> str:
 
 
 def _select_memories(
-    memories: list[Any],
+    memories: list[dict[str, Any]],
     threshold: float,
     limit: int,
     *,
     excluded_created_in_turn_id: str = "",
 ) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
+    selected: list[dict[str, Any]] = []
     seen: set[str] = set()
-    now = datetime.now().astimezone()
-    for raw in memories:
-        if not isinstance(raw, dict):
+    for memory in memories:
+        dedupe_key = " ".join(memory["content"].lower().split())
+        if dedupe_key in seen:
             continue
-        content = str(raw.get("content") or raw.get("memory") or "").strip()
-        if not content:
-            continue
-        dedupe_key = " ".join(content.lower().split())
-        if dedupe_key in seen or _is_expired(raw.get("expires_at"), now):
-            continue
-        score = _optional_score(raw.get("score"))
+        score = memory["score"]
         if score is not None and score < threshold:
             continue
-        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-        created_in_turn_id = str(
-            raw.get("created_in_turn_id") or metadata.get("created_in_turn_id") or ""
-        ).strip()
-        if excluded_created_in_turn_id and created_in_turn_id == excluded_created_in_turn_id:
+        if excluded_created_in_turn_id and memory.get("createdInTurnId") == excluded_created_in_turn_id:
             continue
-        source = str(raw.get("source") or metadata.get("source") or "inferred").strip().lower()
-        updated_at = str(raw.get("updated_at") or metadata.get("updated_at") or "").strip()
-        normalized.append(
-            {
-                "id": str(raw.get("id") or raw.get("memory_id") or "").strip(),
-                "content": content,
-                "score": score,
-                "source": source,
-                "updated_at": updated_at,
-            }
-        )
+        selected.append(memory)
         seen.add(dedupe_key)
-    normalized.sort(
+    selected.sort(
         key=lambda item: (
             item["score"] is None,
             -(item["score"] if item["score"] is not None else -1.0),
-            item["source"] != "explicit",
-            item["updated_at"],
+            item["source"].lower() != "explicit",
+            item["updatedAt"],
         )
     )
-    return normalized[:limit]
-
-
-def _optional_score(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _is_expired(value: Any, now: datetime) -> bool:
-    if not isinstance(value, str) or not value.strip():
-        return False
-    try:
-        expires_at = datetime.fromisoformat(value.strip())
-    except ValueError:
-        return False
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=now.tzinfo)
-    return expires_at <= now
+    return selected[:limit]

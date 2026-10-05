@@ -117,7 +117,7 @@ class FakeBoundary:
                     "content": "喜欢樱花",
                     "source": "explicit",
                     "score": 0.9,
-                    "updated_at": "2026-08-20T10:00:00+08:00",
+                    "updatedAt": "2026-08-20T10:00:00+08:00",
                 }
             ],
         }

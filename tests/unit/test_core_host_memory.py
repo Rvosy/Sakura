@@ -471,31 +471,81 @@ def test_upsert_rejects_authoritative_metadata_mismatch(tmp_path: Path) -> None:
         boundary.close()
 
 
-def test_recall_filters_memory_created_in_current_turn() -> None:
-    class Memory:
-        def search_memory(self, arguments, *, wait=False):
-            return {
-                "status": "ready",
-                "memories": [
-                    {
-                        "id": "same-turn",
-                        "content": "周末和同事聚餐",
-                        "score": 0.95,
-                        "metadata": {"created_in_turn_id": "turn-now"},
-                    },
-                    {
-                        "id": "older",
-                        "content": "用户喜欢樱花",
-                        "score": 0.9,
-                        "metadata": {"created_in_turn_id": "turn-before"},
-                    },
-                ],
-            }
+@pytest.mark.parametrize(
+    ("current_turn_id", "expected_ids"),
+    [("turn-now", ["older"]), ("", ["same-turn", "older"])],
+)
+def test_recall_uses_boundary_turn_identity_and_freshness(
+    tmp_path: Path, current_turn_id: str, expected_ids: list[str],
+) -> None:
+    store = FakeMemoryStore()
+    store.memories = {
+        "same-turn": {
+            "id": "same-turn",
+            "content": "周末和同事聚餐",
+            "score": 0.95,
+            "metadata": {
+                "scope": "sakura",
+                "created_in_turn_id": "turn-now",
+                "updated_at": "2026-08-30T12:00:00+08:00",
+            },
+        },
+        "older": {
+            "id": "older",
+            "content": "用户喜欢樱花",
+            "score": 0.9,
+            "scope": "sakura",
+            "created_in_turn_id": "turn-before",
+            "updated_at": "2026-08-20T10:00:00+08:00",
+        },
+    }
+    boundary = _boundary(_root(tmp_path), store)
+    try:
+        result = MemoryRecallService(boundary).recall(
+            ContextRequest(current_input="周末安排", current_turn_id=current_turn_id)
+        )
+        assert [fragment.metadata["memory_id"] for fragment in result.fragments] == expected_ids
+        expected_freshness = {
+            "same-turn": "2026-08-30T12:00:00+08:00",
+            "older": "2026-08-20T10:00:00+08:00",
+        }
+        assert [fragment.freshness for fragment in result.fragments] == [
+            expected_freshness[memory_id] for memory_id in expected_ids
+        ]
+    finally:
+        boundary.close()
 
-    result = MemoryRecallService(Memory()).recall(
-        ContextRequest(current_input="周末安排", current_turn_id="turn-now")
-    )
-    assert [fragment.metadata["memory_id"] for fragment in result.fragments] == ["older"]
+
+@pytest.mark.parametrize("source", ["Explicit", "EXPLICIT"])
+def test_recall_preserves_explicit_source_case_compatibility(tmp_path: Path, source: str) -> None:
+    store = FakeMemoryStore()
+    store.memories = {
+        "inferred": {
+            "id": "inferred",
+            "content": "周末可能喜欢散步",
+            "score": 0.9,
+            "source": "inferred",
+            "updated_at": "2026-08-20T10:00:00+08:00",
+        },
+        "explicit": {
+            "id": "explicit",
+            "content": "记住我喜欢樱花",
+            "score": 0.9,
+            "source": source,
+            "updated_at": "2026-08-30T12:00:00+08:00",
+        },
+    }
+    boundary = _boundary(_root(tmp_path), store)
+    try:
+        result = MemoryRecallService(boundary).recall(ContextRequest(current_input="我的喜好"))
+        assert [fragment.metadata["memory_id"] for fragment in result.fragments] == ["explicit", "inferred"]
+        explicit, inferred = result.fragments
+        assert explicit.trust == "trusted" and explicit.priority == 80
+        assert explicit.metadata["source"] == "explicit"
+        assert inferred.trust == "untrusted" and inferred.priority == 70
+        assert boundary.search({"query": "喜好", "limit": 5})["memories"][1]["source"] == source
+    finally:
+        boundary.close()
 
 
 def test_memory_curation_requests_at_most_one_provider_repair_for_invalid_json() -> None:

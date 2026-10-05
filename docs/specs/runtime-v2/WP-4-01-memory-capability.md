@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-09-20
+updated: 2026-10-05
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -128,8 +128,12 @@ Memory/Plugin 固定配额；一个 Contributor 失败时继续选择其他 Cont
 
 ## 5. 聊天召回与整理语义
 
-每个 Mem0 Contributor 每轮最多执行一次相关检索。query 由当前输入和受界近期消息构造；去重、过期过滤、
-相关性阈值和最多五条命中沿用 `MemoryRecallService`。命中作为 private context，不回显内部 ID，不进入
+每个 Mem0 Contributor 每轮最多执行一次相关检索。query 由当前输入和受界近期消息构造；去重、相关性阈值和
+命中数量上限由 [`MemoryRecallService`](../../../plugins/optional/sakura_mem0/memory_recall.py) 管理。
+`MemoryBoundary` 通过 [`_project_memory`](../../../plugins/optional/sakura_mem0/boundary.py) 统一投影存储结果；召回直接读取
+规范记录中的 `createdInTurnId` 排除本轮新建的记忆，并把 `updatedAt` 传入 fragment 的 `freshness`。
+显式来源 `explicit` 的识别不区分大小写，分数相同时排在其他来源之前；存储中的来源文本保持原样。
+当前持久记忆没有自动过期字段。命中作为 private context，不回显内部 ID，不进入
 日志。初始化中、模型缺失、锁冲突、超时、损坏或任意存储错误均返回空 fragment，Provider 请求与唯一聊天
 terminal 继续。
 
