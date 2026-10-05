@@ -56,11 +56,17 @@ def bundle_archive(path, version='one', target='macos-arm64'):
 def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, monkeypatch):
     monkeypatch.setattr('plugins.optional.sakura_sakuratts._bundle.platform.system', lambda: 'Darwin')
     monkeypatch.setattr('plugins.optional.sakura_sakuratts._bundle.platform.machine', lambda: 'arm64')
+    (tmp_path / 'installed').mkdir()
+    (tmp_path / 'installed/current.json').write_text('{broken')
     store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
+    assert store.current() is None
+    assert store.load()['bundle']['taskState'] == 'failed'
+    assert store.load()['bundle']['detail']
     store.start({'bundlePath': str(bundle_archive(tmp_path / 'one.zip'))})
     store.thread.join(3)
     original = store.current()[0]
     assert store.state == 'succeeded'
+    assert store.load()['bundle']['detail'] == ''
     def fail(*_):
         raise ValueError('broken runtime')
     store.probe = fail
@@ -157,13 +163,30 @@ def test_cancel_stops_writer_before_releasing_artifact_without_poll(tmp_path, mo
         p.close()
 
 
-def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path):
+@pytest.mark.parametrize('installed', ['none', 'missing-interpreter', 'invalid-marker'])
+def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed):
     repo = Path(__file__).parents[2]
     shutil.copytree(repo / 'plugins/builtin/sakura_tts_hub', tmp_path / 'plugins/builtin/sakura_tts_hub')
     shutil.copytree(repo / 'plugins/optional/sakura_sakuratts', tmp_path / 'plugins/user/sakura_sakuratts')
     config = tmp_path / 'data/plugins/sakura.tts.sakuratts/config.json'
     config.parent.mkdir(parents=True)
-    config.write_text('{"enabled":true}')
+    config.write_text('{"enabled":true,"idleSeconds":90,"prewake":false,"cudaProfile":"fp32"}')
+    if installed != 'none':
+        import platform
+        bundles = config.parent / 'bundles'
+        bundle_root = bundles / 'versions/old'
+        bundle_root.mkdir(parents=True)
+        marker = bundles / 'current.json'
+        marker.write_text(json.dumps({'directory': 'versions/old'}))
+        if installed == 'invalid-marker':
+            marker.write_text('{broken')
+        else:
+            target = {('Windows', 'amd64'): 'windows-x64', ('Windows', 'x86_64'): 'windows-x64',
+                      ('Darwin', 'arm64'): 'macos-arm64'}.get((platform.system(), platform.machine().lower()))
+            archive = bundle_archive(tmp_path / 'old.zip', target=target)
+            with zipfile.ZipFile(archive) as z:
+                z.extractall(bundle_root)
+            (bundle_root / 'runtime/main/bin/python3').unlink()
     from app.plugins.inventory import PluginDesiredStateStore
     from app.plugins.dependencies import PluginDependencyRoots
     from app.storage.paths import StoragePaths
@@ -192,7 +215,18 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path):
         assert {o['value'] for o in precision['options']} == {'fp16', 'fp32', 'low-memory', 'minimum-memory'}
         section = next(s for s in sections if s['sectionId'] == 'bundle')
         assert section['actions'][0]['filePicker']['field'] == 'bundlePath'
+        if installed != 'none':
+            assert section['values']['bundle']['taskState'] == 'failed'
+            assert section['values']['bundle']['detail']
+            assert section['values']['bundle']['availableActionIds'] == ['importBundle']
+            overview = next(s for s in sections if s['sectionId'] == 'overview')
+            assert overview['values']['engineState']['state'] == 'error'
         assert host.call_service('sakura.tts.provider.sakuratts', 'status')['available'] is False
+        host.settings_save('sakura.tts.sakuratts', 'runtime', {'idleSeconds': 120})
+        saved = next(s for s in host.settings_sections('plugin') if s['sectionId'] == 'runtime')['values']
+        assert saved['idleSeconds'] == 120
+        assert saved['prewake'] is False
+        assert saved['cudaProfile'] == 'fp32'
         host.emit_event('sakura.host.chat.request.started', {'characterId': 'fixture'})
     finally:
         host.close()
@@ -265,7 +299,8 @@ def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_pat
     monkeypatch.setattr(_runtime, 'terminate_process_tree', lambda process, **kw: stopped.append(process))
     runtime = _runtime.Runtime(tmp_path / 'data')
     monkeypatch.setattr(runtime, 'request', lambda *args, **kwargs: {})
-    bundle = tmp_path, {'backends': ['cuda', 'cpu', 'directml', 'mlx']}
+    bundle = tmp_path, {'backend': 'cpu', 'backends': ['cuda', 'cpu', 'directml', 'mlx']}
+    monkeypatch.setattr(_runtime, 'probe', lambda *args: None)
     voice, cancel = {'gpt': 'voice.ckpt', 'sovits': 'voice.pth'}, threading.Event()
     try:
         for index, profile in enumerate(('fp16', 'fp32', 'low-memory', 'minimum-memory'), 1):
@@ -278,13 +313,56 @@ def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_pat
             assert settings['custom']['is_half'] is False
             assert len(stopped) == index - 1
         for backend in ('cpu', 'directml', 'mlx', 'auto'):
-            runtime.auto_selection = tmp_path, 'cuda'
             runtime.start(bundle, configuration({'backend': backend, 'cudaProfile': 'minimum-memory'}), voice, cancel)
             settings = json.loads((runtime.directory / 'inference.json').read_text(encoding='utf-8'))
             assert 'profile' not in settings['sakuratts']
         assert configuration({'backend': 'cuda'})['cudaProfile'] == 'fp16'
         with pytest.raises(ValueError, match='档位'):
             configuration({'cudaProfile': 'invalid'})
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize('failure', [RuntimeError('CUDA unavailable'), TimeoutError('check timed out'),
+                                    OSError('cannot execute check')])
+def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, monkeypatch, failure):
+    from plugins.optional.sakura_sakuratts import _runtime
+    from plugins.optional.sakura_sakuratts.plugin import configuration
+    checks, launches = [], []
+    def probe(*args):
+        checks.append('cuda')
+        if len(checks) == 1:
+            raise failure
+    def launch(*args, **kwargs):
+        process = SimpleNamespace(poll=lambda: None)
+        launches.append(process)
+        return process
+    monkeypatch.setattr(_runtime, 'probe', probe)
+    monkeypatch.setattr(_runtime.subprocess, 'Popen', launch)
+    monkeypatch.setattr(_runtime, 'terminate_process_tree', lambda *args, **kwargs: None)
+    runtime = _runtime.Runtime(tmp_path)
+    monkeypatch.setattr(runtime, 'request', lambda *args, **kwargs: {})
+    bundle = tmp_path, {'backend': 'cpu', 'backends': ['cpu', 'cuda']}
+    voice, cancel = {'gpt': 'voice.ckpt', 'sovits': 'voice.pth'}, threading.Event()
+    config = configuration({})
+    try:
+        if isinstance(failure, RuntimeError):
+            runtime.start(bundle, config, voice, cancel)
+            assert runtime.backend == 'cpu'
+            assert (tmp_path / 'backend-check.log').read_text() == str(failure)
+            runtime.start(bundle, config, voice, cancel)
+            assert len(checks) == len(launches) == 1
+            runtime.stop()
+        else:
+            with pytest.raises(type(failure), match=str(failure)):
+                runtime.start(bundle, config, voice, cancel)
+            assert launches == []
+        runtime.start(bundle, config, voice, cancel)
+        assert runtime.backend == 'cuda'
+        assert runtime.selection_reason == ''
+        runtime.start(bundle, config, voice, cancel)
+        assert len(checks) == 2
+        assert len(launches) == (2 if isinstance(failure, RuntimeError) else 1)
     finally:
         runtime.stop()
 

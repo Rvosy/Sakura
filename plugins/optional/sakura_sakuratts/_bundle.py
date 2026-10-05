@@ -129,8 +129,16 @@ class BundleStore:
         self.thread = None
         self.closed = False
         self.state, self.message, self.error = 'idle', '', ''
+        self._current = None
+        try:
+            self._current = self._read_current()
+        except Exception as error:
+            self.state, self.message, self.error = 'failed', '运行环境不可用，请重新导入整合包', str(error)
 
     def current(self):
+        return self._current
+
+    def _read_current(self):
         marker = self.directory / 'current.json'
         if not marker.exists():
             return None
@@ -177,9 +185,9 @@ class BundleStore:
             if self.cancel_event.is_set():
                 raise Cancelled()
             # publish serializes against synthesis and configuration changes.
-            self.publish(lambda: self._activate(root))
+            self.publish(lambda: self._activate(root, release))
             published = True
-            self.state, self.message = 'succeeded', ''
+            self.state, self.message, self.error = 'succeeded', '', ''
         except Cancelled:
             self.state, self.message = 'cancelled', '导入已取消'
         except Exception as error:
@@ -195,12 +203,13 @@ class BundleStore:
                     self.message = '导入未完成，临时目录清理失败'
 
 
-    def _activate(self, root):
+    def _activate(self, root, release):
         if self.cancel_event.is_set():
             raise Cancelled()
         temporary = self.directory / 'current.json.tmp'
         temporary.write_text(json.dumps({'directory': root.relative_to(self.directory).as_posix()}), encoding='utf-8')
         os.replace(temporary, self.directory / 'current.json')
+        self._current = root, release
 
     def cancel(self, values=None):
         self.cancel_event.set()

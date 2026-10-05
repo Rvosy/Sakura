@@ -93,6 +93,8 @@ class Provider:
 
     def engine_state(self):
         if not self.bundle.current():
+            if self.bundle.error:
+                return {'state': 'error', 'label': '运行环境不可用', 'message': self.bundle.error[-240:]}
             return {'state': 'warning', 'label': '未安装运行环境', 'message': '请先导入整合包。'}
         if self.error:
             return {'state': 'error', 'label': '语音运行失败', 'message': self.error[-240:]}
@@ -305,7 +307,7 @@ class SakuraTTSPlugin:
             {'key': 'idleSeconds', 'label': '空闲后休眠（秒）', 'type': 'integer', 'minimum': 1, 'default': 60},
             {'key': 'prewake', 'label': '对话开始时提前唤醒', 'type': 'boolean', 'default': True,
              'description': '利用等待大模型 API 返回的时间，提前加载语音模型。'},
-        ]}, load=lambda: provider.config, save=lambda values: context.config.update(configuration(values)))
+        ]}, load=lambda: provider.config, save=context.config.update)
         surface.register('runtime', 'plugin')
         settings.register({'sectionId': 'bundle', 'title': '本地运行环境', 'order': 30, 'fields': [
             {'key': 'bundle', 'label': 'SakuraTTS 整合包', 'type': 'resource',

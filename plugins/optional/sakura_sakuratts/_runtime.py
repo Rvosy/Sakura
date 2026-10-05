@@ -62,7 +62,6 @@ class Runtime:
         self.backend = ''
         self.profile = None
         self.selection_reason = ''
-        self.auto_selection = None
         self.emit = log
 
     def stop(self):
@@ -76,26 +75,7 @@ class Runtime:
         started = time.monotonic()
         root, release = bundle
         backend = config['backend']
-        if backend == 'auto':
-            if not self.auto_selection or self.auto_selection[0] != root:
-                selected = release['backend']
-                self.selection_reason = ''
-                if 'cuda' in release['backends']:
-                    try:
-                        probe(root, release, cancel, 'cuda', self.directory / 'cache')
-                        selected = 'cuda'
-                    except Cancelled:
-                        raise
-                    except Exception as error:
-                        selected = 'cpu'
-                        self.selection_reason = 'NVIDIA 检查未通过，使用 CPU。'
-                        self.emit('warning', self.selection_reason, stage='backend_check', diagnostic=str(error))
-                        (self.directory / 'backend-check.log').write_text(str(error), encoding='utf-8')
-                self.auto_selection = root, selected
-            backend = self.auto_selection[1]
-        if backend not in release['backends']:
-            raise ValueError('此整合包不支持所选推理后端。')
-        profile = config['cudaProfile'] if config['backend'] == 'cuda' else None
+        profile = config['cudaProfile'] if backend == 'cuda' else None
         key = (root, backend, profile, config['idleSeconds'], voice['gpt'], voice['sovits'])
         with self.lock:
             if cancel.is_set():
@@ -103,6 +83,23 @@ class Runtime:
             if self.key == key and self.process is not None and self.process.poll() is None:
                 return
             self.stop()
+        self.selection_reason = ''
+        if backend == 'auto':
+            backend = release['backend']
+            if 'cuda' in release['backends']:
+                try:
+                    probe(root, release, cancel, 'cuda', self.directory / 'cache')
+                    backend = 'cuda'
+                except RuntimeError as error:
+                    backend = 'cpu'
+                    self.selection_reason = 'NVIDIA 检查未通过，使用 CPU。'
+                    self.emit('warning', self.selection_reason, stage='backend_check', diagnostic=str(error))
+                    (self.directory / 'backend-check.log').write_text(str(error), encoding='utf-8')
+        if backend not in release['backends']:
+            raise ValueError('此整合包不支持所选推理后端。')
+        with self.lock:
+            if cancel.is_set():
+                raise Cancelled()
             self.emit('info', 'SakuraTTS 正在启动服务', backend=backend, profile=profile,
                       gpt_model=Path(voice['gpt']).name, sovits_model=Path(voice['sovits']).name)
             settings = self.directory / 'inference.json'
