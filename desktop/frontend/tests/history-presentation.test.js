@@ -167,8 +167,8 @@ test("plugin screen observations retain the character perspective and fold only 
     assert.equal(projected[0].content, "刚才留意了一下屏幕状态。");
     assert.equal(projected[0].detailsContent, "画面摘要：用户正在检查界面。");
     assert.equal(projected[1].detailsContent, "另一次观察");
-    assert.equal(projected[2].content, "想和你聊聊。");
-    assert.equal(projected[2].roleName, "主动互动");
+    assert.equal(projected[2].content, `由「${sourcePluginId}」发起`);
+    assert.equal(projected[2].roleName, "插件消息");
     assert.equal(projected[3].content, "你分享了 1 张屏幕截图。");
     assert.equal(projected[4].content, trigger);
     assert.deepEqual(entries, saved);
@@ -202,4 +202,22 @@ test("prepending earlier messages preserves the visible reading anchor", () => {
     440,
   );
   assert.equal(preservePrependScroll(null, 100), 100);
+});
+
+
+test("plugin notifications use explicit purpose while legacy messages remain generic", () => {
+  const payloads = [
+    { text: "SakuraTTS 有可用更新", sourcePluginId: "tts", sourcePluginName: "SakuraTTS", notificationKind: "update" },
+    { text: "想和你聊聊。", sourcePluginId: "tts" },
+    { text: "插件消息", sourcePluginId: "other", sourcePluginName: "示例插件" },
+  ];
+  const entries = payloads.map((payload, index) => entry("observation", payload, { origin: "host", entryId: String(index) }));
+  const before = JSON.stringify(entries);
+  const projected = projectHistoryEntries(entries);
+  assert.equal(projected[0].roleName, "更新提醒");
+  assert.equal(projected[0].content, payloads[0].text);
+  assert.equal(projected[1].roleName, "插件消息");
+  assert.equal(projected[1].content, "由「tts」发起");
+  assert.equal(projected[2].content, "由「示例插件」发起");
+  assert.equal(JSON.stringify(entries), before);
 });

@@ -112,7 +112,8 @@ class Assistant:
         pass
 
 
-def test_plugin_turn_uses_real_chat_admission_timeline_and_output(tmp_path):
+@pytest.mark.parametrize("notification", [None, {"kind": "update", "text": "测试更新"}])
+def test_plugin_turn_uses_real_chat_admission_timeline_and_output(tmp_path, notification):
     assistant = Assistant()
     session = Session(character=SimpleNamespace(id="character", display_name="测试角色"), assistant=assistant)
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
@@ -128,7 +129,8 @@ def test_plugin_turn_uses_real_chat_admission_timeline_and_output(tmp_path):
     session_id = host.current()["sessionId"]
     host.set_ui_state({"sessionId": session_id, "idle": True, "activityRevision": 1})
     with caller():
-        accepted = host.submit({"sessionId": session_id, "message": "plugin input", "resources": []})
+        accepted = host.submit({"sessionId": session_id, "message": "plugin input", "resources": [],
+                                **({"notification": notification} if notification else {})})
         assert accepted["accepted"]
         assert assistant.entered.wait(3)
         assert host.submit({"sessionId": session_id, "message": "second", "resources": []}) == {"accepted": False, "reasonCode": "CHAT_BUSY"}
@@ -144,6 +146,12 @@ def test_plugin_turn_uses_real_chat_admission_timeline_and_output(tmp_path):
     assert [entry.kind for entry in entries] == [TimelineKind.OBSERVATION, TimelineKind.ASSISTANT]
     assert entries[0].origin == "host"
     assert entries[0].payload["sourcePluginId"] == "plugin-a"
+    assert entries[0].payload["sourcePluginName"] == "plugin-a"
+    if notification:
+        assert entries[0].payload["notificationKind"] == "update"
+        assert entries[0].payload["text"] == notification["text"]
+    else:
+        assert "notificationKind" not in entries[0].payload
     assert "plugin input" not in str(entries[0].payload)
     assert assistant.requests[0]["message"] == "plugin input"
     assert assistant.requests[0]["event"] is None
@@ -245,7 +253,7 @@ def test_manual_interaction_clears_plugin_batch_even_when_cancelled_without_hist
 
 
 def test_idle_preference_commit_checks_local_activity_without_reentering_boundary():
-    state = {"sessionId": "session", "characterId": "character", "idle": True, "interactionRevision": 0}
+    state = {"sessionId": "session", "characterId": "character", "characterName": "测试角色", "idle": True, "interactionRevision": 0}
     read = [lambda: dict(state)]
     host = ChatHost(boundary_provider=lambda: SimpleNamespace(current_host_state=lambda: read[0]()),
                     screen_host=None, emit_callback=lambda *_: None)
@@ -260,6 +268,8 @@ def test_idle_preference_commit_checks_local_activity_without_reentering_boundar
     # RealChat has reserved an idle update and its reader must not be reentered.
     read[0] = lambda: pytest.fail("idle commit cannot read or acquire the chat boundary")
     host.commit_idle(expected, lambda: writes.append("current"))
+    # Session invalidation publishes state after the guarded commit has finished.
+    read[0] = lambda: dict(state)
     host.invalidate_session()
     with pytest.raises(RealChatRejection, match="CHAT_BUSY"):
         host.commit_idle(expected, lambda: writes.append("detached"))
@@ -324,10 +334,10 @@ def test_scope_revocation_during_admission_abandons_reservation(tmp_path):
     session = Session(character=SimpleNamespace(id="character", display_name="测试角色"), assistant=Assistant())
     boundary = RealChatBoundary("generation", "credential", tmp_path, session_provider=lambda: session, timeline_store=object())
     original = boundary.reserve_plugin_message
-    def reserve(*args):
+    def reserve(*args, **kwargs):
         entered.set()
         assert finish.wait(3)
-        return original(*args)
+        return original(*args, **kwargs)
     boundary.reserve_plugin_message = reserve
     screen = captured_screen(lambda: boundary.current_host_state()["sessionId"])
     host = ChatHost(boundary_provider=lambda: boundary, screen_host=screen, emit_callback=lambda *args: None)
@@ -509,3 +519,13 @@ def test_screen_awareness_failure_preserves_diagnostic_without_success(awareness
     assert "private-screen-secret" not in str(run.records)
     assert "角色甲" in failure.message
     assert run.released == [item["resourceId"] for item in run.captured]
+
+
+@pytest.mark.parametrize("notification", [None, {}, {"kind": "unknown", "text": "notice"},
+                                          {"kind": "update", "text": " "},
+                                          {"kind": "update", "text": "x" * (64 * 1024 + 1)}])
+def test_invalid_notification_is_rejected_before_admission(notification):
+    host = ChatHost(boundary_provider=lambda: pytest.fail("invalid input reached admission"),
+                    screen_host=None, emit_callback=lambda *_: None)
+    with caller(), pytest.raises(RealChatRejection, match="INVALID_CHAT_PAYLOAD"):
+        host.submit({"sessionId": "session", "message": "input", "resources": [], "notification": notification})

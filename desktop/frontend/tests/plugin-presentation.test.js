@@ -179,7 +179,7 @@ test("plugin activity keeps warning and failure stable", () => {
   }), {
     state: "working",
     label: "正在启动",
-    message: "插件正在启动，请稍等。",
+    message: "",
     hasRunningResource: false,
     isTransient: true,
   });

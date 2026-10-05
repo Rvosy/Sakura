@@ -54,6 +54,7 @@ class ChatTurnInput:
     message: str = ""
     event: Mapping[str, Any] | None = None
     source_plugin_id: str | None = None
+    history_metadata: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -430,7 +431,8 @@ class RealChatBoundary:
                     input_entries.append(NewTimelineEntry(entry_id=uuid.uuid4().hex, turn_id=turn_id,
                         character_id=str(character.id), kind=TimelineKind.OBSERVATION,
                         origin="host", created_at=created_at,
-                        payload={"text": "想和你聊聊。", "sourcePluginId": source_plugin_id}))
+                        payload={"text": "插件消息", **(execution.turn.history_metadata or {}),
+                                 "sourcePluginId": source_plugin_id}))
                 stage = "timeline_write"
                 try:
                     execution.cancel.throw_if_cancelled()
@@ -691,7 +693,7 @@ class RealChatBoundary:
                     "interactionRevision": self._interaction_revision}
 
     def reserve_plugin_message(self, source_plugin_id: str, session_id: str, message: str,
-                               observations: Sequence[Any] = ()) -> str:
+                               observations: Sequence[Any] = (), *, history_metadata: Mapping[str, Any] | None = None) -> str:
         if (not isinstance(source_plugin_id, str) or not source_plugin_id
                 or not isinstance(message, str) or not message.strip() or len(message) > 32768):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "主动互动输入无效")
@@ -700,7 +702,8 @@ class RealChatBoundary:
             attachment_id="screen-" + secrets.token_hex(16), observations=tuple(observations),
             item_ids=(), source="plugin",
         ) if observations else None)
-        self._reserve_turn(ChatTurnInput(operation_id, message.strip(), source_plugin_id=source_plugin_id),
+        self._reserve_turn(ChatTurnInput(operation_id, message.strip(), source_plugin_id=source_plugin_id,
+                                         history_metadata=dict(history_metadata or {})),
                            screen_attachment=attachment, expected_session_id=session_id)
         return operation_id
 

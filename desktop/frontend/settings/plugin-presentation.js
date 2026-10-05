@@ -96,7 +96,7 @@ function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
     return result("已停用");
   }
   if (reasonCode === "PLUGIN_APPLICATION_NOT_READY") {
-    return result("正在启动", "插件正在启动，请稍等。");
+    return result("正在启动");
   }
   if (reasonCode === "PLUGIN_APPLICATION_FAILED") {
     return result("启动失败", "请查看运行日志中的启动错误，处理后重新启动 Sakura。", reasonCode);
@@ -297,7 +297,7 @@ export function projectPluginActivity(plugin = {}) {
     return Object.freeze({
       state: "working",
       label: "正在启动",
-      message: "插件正在启动，请稍等。",
+      message: "",
       hasRunningResource: false,
       isTransient: true,
     });

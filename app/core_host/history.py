@@ -190,6 +190,9 @@ def _entry_mapping(entry: object) -> dict[str, Any]:
         if kind_text == "observation":
             if "sourcePluginId" in payload:
                 public_payload["sourcePluginId"] = payload["sourcePluginId"]
+            for field in ("sourcePluginName", "notificationKind"):
+                if field in payload:
+                    public_payload[field] = payload[field]
             visual = payload.get("visual")
             if visual and "imageCount" in visual:
                 public_payload["visual"] = {"imageCount": visual["imageCount"]}

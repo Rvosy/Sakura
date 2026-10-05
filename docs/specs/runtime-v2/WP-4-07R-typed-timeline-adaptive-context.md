@@ -86,7 +86,7 @@ payload 只允许以下形状：
 |---|---|---|
 | `human` | `{ "text": string }` | 仅用户实际提交的文字；Host 引导语不得混入 |
 | `assistant` | `{ "segments": Segment[1..N] }` | 一个 generation 一条；Segment 保留 text/translation/tone/portrait/suppressTts，可选 control 见表现插件合同 |
-| `observation` | `{ "text": string, "visual": object?, "sourcePluginId": string? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata；插件来源由宿主绑定，最多 64 字符 |
+| `observation` | `{ "text": string, "visual": object?, "sourcePluginId": string?, "sourcePluginName": string?, "notificationKind": "update"? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata；插件来源由宿主绑定，最多 64 字符 |
 | `system` | `{ "text": string, "eventType": string? }` | 仅需要进入未来关系连续性的 Host 已确认事实，不是普通日志 |
 
 所有字符串和数组必须有界。`payload_json` 不得含图片/音频字节、data URL、base64、绝对路径、临时资源 token、
@@ -124,8 +124,9 @@ API key 或 Provider 原始异常。
 - 历史窗口只展示当前绑定角色。human 在右侧、assistant 在左侧，observation 和 system 作为居中系统记录；
   同一 Turn 的定时观察触发记录与语义摘要合并为“刚才留意了一下屏幕状态。”，详细摘要默认折叠。
   插件通过宿主截图资源提交的 `origin=host` 观察沿用这一展示，按 `sourcePluginId` 和 `visual` 元数据识别；
-  已保存的“插件分享了 N 张图片。”也在展示时折叠，不改写历史数据。无图片的插件互动以“主动互动”展示，
-  触发文案为“想和你聊聊。”，旧“插件发起了一次互动。”在展示时转换，不归入屏幕观察。UI 投影不得
+  已保存的“插件分享了 N 张图片。”也在展示时折叠，不改写历史数据。无图片的插件互动以“插件消息”展示，正文为“由「插件名称」发起”，名称缺失时使用来源 ID。
+  带 `notificationKind=update` 的记录以“更新提醒”展示插件提供的通知正文。旧“想和你聊聊。”及
+  “插件发起了一次互动。”按通用插件消息展示，不推断通知用途、不改写历史数据，不归入屏幕观察。UI 投影不得
   携带 visual ID、图片元数据、tone、portrait 或其他不参与显示的内部字段。
 - 历史窗口是只读界面，不提供清空、删除、编辑、搜索或跨角色读取。首次读取最近 50 条，更早记录使用绑定
   当前角色和数据库 lineage 的 opaque cursor 向前分页。

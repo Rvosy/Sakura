@@ -818,10 +818,14 @@ def _validate_payload(kind: TimelineKind, payload: dict[str, Any]) -> None:
                 raise TimelineDataError("TIMELINE_SEGMENT_INVALID")
         return
     if kind is TimelineKind.OBSERVATION:
-        allowed = {"text", "visual", "sourcePluginId"}
+        allowed = {"text", "visual", "sourcePluginId", "sourcePluginName", "notificationKind"}
         if not set(payload) <= allowed or "text" not in payload:
             raise TimelineDataError("TIMELINE_PAYLOAD_SHAPE_INVALID")
         _bounded_text("text", payload.get("text"), MAX_TEXT_CHARS, allow_empty=True)
+        if "sourcePluginName" in payload:
+            _bounded_text("sourcePluginName", payload["sourcePluginName"], MAX_TEXT_CHARS)
+        if "notificationKind" in payload and payload["notificationKind"] != "update":
+            raise TimelineDataError("TIMELINE_PAYLOAD_SHAPE_INVALID")
         if "sourcePluginId" in payload:
             _bounded_text("sourcePluginId", payload["sourcePluginId"], 64)
         visual = payload.get("visual")

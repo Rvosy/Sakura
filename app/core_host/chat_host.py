@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from app.core_host.real_chat import RealChatRejection
+from app.storage.timeline import MAX_TEXT_CHARS
 from app.core_host.screen_host import ScreenHost, ScreenHostError, caller_identity
 from app.core.runtime_log import log_message
 from app.plugins.host_services import HOST_CALLER_LOG_METADATA
@@ -97,10 +98,22 @@ class ChatHost:
 
     def submit(self, request: Mapping) -> dict:
         owner = caller_identity()
-        if (not isinstance(request, Mapping) or set(request) != {"sessionId", "message", "resources"}
+        if (not isinstance(request, Mapping) or not {"sessionId", "message", "resources"} <= set(request)
+                or set(request) - {"sessionId", "message", "resources", "notification"}
                 or not isinstance(request["message"], str) or not request["message"].strip()
                 or len(request["message"]) > 32768 or not isinstance(request["resources"], list)):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "主动互动输入无效")
+        notification = request.get("notification")
+        if "notification" in request and (not isinstance(notification, Mapping)
+                or set(notification) != {"kind", "text"} or notification["kind"] != "update"
+                or not isinstance(notification["text"], str) or not notification["text"].strip()
+                or len(notification["text"]) > MAX_TEXT_CHARS):
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "通知信息无效")
+        plugin_name, _ = HOST_CALLER_LOG_METADATA.get()
+        history_metadata = {"sourcePluginName": plugin_name or owner[0]}
+        if notification is not None:
+            history_metadata["notificationKind"] = notification["kind"]
+            history_metadata["text"] = notification["text"].strip()
         with self._lock:
             epoch = self._session_epoch
             owner_revision = self._owner_revisions.get(owner[0], 0)
@@ -112,7 +125,8 @@ class ChatHost:
         boundary = self._boundary_provider()
         try:
             observations = self._screen.take_resources(owner, request["sessionId"], request["resources"])
-            operation_id = boundary.reserve_plugin_message(owner[0], request["sessionId"], request["message"], observations)
+            operation_id = boundary.reserve_plugin_message(owner[0], request["sessionId"], request["message"], observations,
+                                                           history_metadata=history_metadata)
         except (RealChatRejection, ScreenHostError) as error:
             return {"accepted": False, "reasonCode": error.code}
         metadata = {"operationId": operation_id, "sessionId": request["sessionId"],

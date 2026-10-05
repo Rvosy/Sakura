@@ -107,3 +107,6 @@ plugins/optional/**/*.py[cod]
 
 # 备份文件
 *.bak
+
+# 本地独立插件仓库
+/github-plugins/

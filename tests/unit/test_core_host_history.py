@@ -165,6 +165,8 @@ def test_history_preserves_observation_and_system_presentation_fields_without_vi
                 payload={
                     "text": "原始观察内容",
                     "sourcePluginId": "sakura.screen_awareness",
+                    "sourcePluginName": "屏幕观察",
+                    "notificationKind": "update",
                     "visual": {"imageCount": 3, "visualId": "vis-private", "capturedAt": NOW},
                 },
             ),
@@ -188,6 +190,8 @@ def test_history_preserves_observation_and_system_presentation_fields_without_vi
         {
             "text": "原始观察内容",
             "sourcePluginId": "sakura.screen_awareness",
+            "sourcePluginName": "屏幕观察",
+            "notificationKind": "update",
             "visual": {"imageCount": 3},
         },
         {"text": "原始启动事件内容", "eventType": "app.started"},

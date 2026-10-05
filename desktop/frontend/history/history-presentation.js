@@ -19,7 +19,10 @@ function entryDisplayText(entry) {
     if (entry.payload.eventType === "app.closed") return "桌宠正在退出";
   }
   if (entry.kind === "observation" && entry.origin === "host" && entry.payload.sourcePluginId
-      && !entry.payload.visual && content === "插件发起了一次互动。") return "想和你聊聊。";
+      && !entry.payload.visual) {
+    if (entry.payload.notificationKind === "update") return content;
+    return `由「${text(entry.payload.sourcePluginName) || entry.payload.sourcePluginId}」发起`;
+  }
   if (entry.kind !== "observation" || entry.origin !== "manual_screen") return content;
   const legacy = LEGACY_MANUAL_SCREEN_TEXT.exec(content);
   return legacy ? `你分享了 ${legacy[1]} 张屏幕截图。` : content;
@@ -47,7 +50,9 @@ function systemRoleName(entry) {
   if (entry.kind === "system") return "系统记录";
   if (entry.origin === "manual_screen") return "屏幕记录";
   if (entry.origin === "scheduled_screen") return "屏幕观察";
-  if (entry.origin === "host" && entry.payload.sourcePluginId && !entry.payload.visual) return "主动互动";
+  if (entry.origin === "host" && entry.payload.sourcePluginId && !entry.payload.visual) {
+    return entry.payload.notificationKind === "update" ? "更新提醒" : "插件消息";
+  }
   return "观察记录";
 }
 

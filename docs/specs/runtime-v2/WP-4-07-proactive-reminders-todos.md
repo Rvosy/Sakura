@@ -90,7 +90,9 @@ Core 消费原生文件后保存内存句柄；迟到结果、取消和传输失
 `characterName` 是当前会话的角色显示名，不可用时为 `null`。
 其中 `interactionRevision` 在受理任意来源的新聊天时递增，即使随后取消且没有写入历史也保持递增。
 插件以此清理过时截图，不依赖前端区分功能名。
-`submit({sessionId, message, resources})` 接受插件组织的文本和图片句柄，返回
+`submit({sessionId, message, resources, notification?})` 接受插件组织的文本和图片句柄。
+可选 `notification` 为 `{kind: "update", text: 非空字符串}`，用于更新提醒的历史展示，不作为模型输入；
+来源 ID 和名称由宿主绑定。未提供用途的消息显示为通用插件消息，截图展示保持不变。返回
 `{accepted: true, operationId}`，或 `{accepted: false, reasonCode}`。`cancel(operationId)` 只能取消
 当前实例自己的操作。会话、资源所有权和 UI 活动均在受理时重新校验；忙碌时直接拒绝，不增加排队系统。
 

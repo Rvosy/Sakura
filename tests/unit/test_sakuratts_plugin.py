@@ -640,7 +640,11 @@ def test_update_notice_uses_current_character_and_records_only_its_completion(tm
     notice.tick()
     assert len(submitted) == 1
     assert submitted[0]['sessionId'] == 'session' and submitted[0]['resources'] == []
-    assert 'preview-2' in submitted[0]['message'] and 'SakuraTTS' in submitted[0]['message']
+    assert submitted[0]['notification']['kind'] == 'update'
+    assert 'SakuraTTS' in submitted[0]['notification']['text']
+    assert 'SakuraTTS' in submitted[0]['message']
+    assert store.available['releaseId'] not in submitted[0]['message']
+    assert store.available['platform'] not in submitted[0]['message']
     assert not notice.marker.exists()
     notice.completed({'operationId': 'unrelated'})
     assert not notice.marker.exists()
