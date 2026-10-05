@@ -108,7 +108,6 @@ export function validateViewerBootstrap(value) {
 }
 
 export function applyViewerSnapshot(state, snapshot) {
-  validateViewerSnapshot(snapshot);
   const replace = !state || snapshot.resetRequired || state.runId !== snapshot.runId;
   const records = replace
     ? snapshot.records.slice()

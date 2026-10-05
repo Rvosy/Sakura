@@ -76,6 +76,39 @@ test("continuous poll failures open once, recovery allows a later failure to be 
   assert.equal(f.errors.length, 2);
 });
 
+test("invalid polling snapshots preserve displayed records and the recovery cursor", async () => {
+  const first = {
+    source: "rust", sequence: 1, timestamp: "12:34:56", scopes: ["software"],
+    severity: "info", category: "APP", eventCode: "shell.started", message: "已显示的记录", details: [],
+  };
+  const second = { ...first, sequence: 2, message: "恢复后的记录" };
+  let next = {
+    ...snapshot(), runId: "invalid-run", latestSequence: 2, resetRequired: true,
+    records: [{ ...second, content: "uncontrolled" }],
+  };
+  const cursors = [];
+  const f = fixture(async (command, args) => {
+    if (command === "runtime_log_viewer_bootstrap") return {
+      schemaVersion: 3, themeTokens: {}, snapshot: { ...snapshot(), latestSequence: 1, records: [first] },
+    };
+    if (command === "runtime_log_viewer_snapshot") {
+      cursors.push(args.afterSequence);
+      return next;
+    }
+  });
+  await f.context.bootstrap();
+  await f.context.poll();
+  assert.deepEqual(vm.runInContext("viewerState.records", f.context), [first]);
+  assert.equal(f.errors.length, 1);
+  assert.match(f.errors[0].error.message, /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/);
+
+  next = { ...snapshot(), latestSequence: 2, records: [second] };
+  await f.context.poll();
+  assert.deepEqual(cursors, [1, 1]);
+  assert.deepEqual(vm.runInContext("viewerState.records", f.context), [first, second]);
+  assert.equal(f.errors.length, 1);
+});
+
 test("copy failures show the dialog without replacing the selected log contents", async () => {
   const error = new Error("Clipboard permission denied");
   const f = fixture(async () => {}, async () => { throw error; });

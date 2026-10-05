@@ -297,7 +297,7 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
 }
 
 function applySnapshot(snapshot, { animateAfter = Number.MAX_SAFE_INTEGER } = {}) {
-  viewerState = applyViewerSnapshot(viewerState, validateViewerSnapshot(snapshot));
+  viewerState = applyViewerSnapshot(viewerState, snapshot);
   pruneViewState();
   render(animateAfter);
 }
@@ -352,7 +352,7 @@ async function poll() {
   try {
     const snapshot = await invoke("runtime_log_viewer_snapshot", { afterSequence: previousLatest });
     if (generation !== requestGeneration) return;
-    applySnapshot(snapshot, { animateAfter: previousLatest });
+    applySnapshot(validateViewerSnapshot(snapshot), { animateAfter: previousLatest });
     if (pollFailed) status.textContent = "日志连接已恢复。";
     pollFailed = false;
     if (viewerState.latestSequence > previousLatest) {
