@@ -135,6 +135,9 @@ class Plugin:
             "model.slot.load.failed", "model.catalog.failed", "plugin.settings.load.failed"}]
         assert len(reported) == 3
         assert all("/fixture/config.json" in item["diagnostics"]["diagnostic"] for item in reported)
+        by_event = {item["event"]: item["diagnostics"] for item in reported}
+        assert by_event["model.slot.load.failed"]["slot_id"] == "summary"
+        assert by_event["model.catalog.failed"]["service_key"] == "fixture.models"
     finally:
         host.close()
 

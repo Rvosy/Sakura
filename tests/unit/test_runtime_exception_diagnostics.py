@@ -60,7 +60,7 @@ def test_fixed_and_custom_logs_preserve_multiline_diagnostics(custom):
             raise RuntimeError("weights have incompatible sizes\nexpected [400, 192], got [322, 192]")
         except RuntimeError:
             if custom:
-                log_message("warning", "weight loading failed")
+                log_message("warning", "weight loading failed", fields={"reason_code": "TTS_WEIGHTS_FAILED", "stage": "weights"})
             else:
                 log_event("TTS", "weight loading failed", event="tts.weights.failed", severity="warning")
     finally:
@@ -69,6 +69,9 @@ def test_fixed_and_custom_logs_preserve_multiline_diagnostics(custom):
     assert "expected [400, 192]" in record["attributes"]["diagnostic"]
     assert "\n" in record["attributes"]["diagnostic"]
     assert "exception_stack" in record["attributes"]
+    if custom:
+        assert record["attributes"]["reason_code"] == "TTS_WEIGHTS_FAILED"
+        assert record["attributes"]["stage"] == "weights"
 
 
 def test_worker_diagnostic_survives_host_exception_wrapping():
@@ -84,6 +87,24 @@ def test_worker_diagnostic_survives_host_exception_wrapping():
     assert fields["cause_type"] == "ImportError"
     assert "demo_dependency" in fields["diagnostic"]
     assert "Remote:" in fields["exception_stack"]
+
+
+def test_worker_process_facts_survive_multiple_rpc_hops():
+    remote = {
+        "diagnostic": "worker terminated", "error_type": "OSError", "cause_type": "OSError",
+        "path": "C:/测试 用户/worker.py", "stderr": "native failure\ntoken=private-value",
+        "errno": 13, "winerror": 5, "exit_code": -1, "http_status": 503,
+        "slot_id": "summary", "provider_id": "fixture.provider", "service_key": "fixture.service",
+        "payload": "private request body",
+    }
+    first = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=remote)
+    second = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=_exception_diagnostics(first))
+    fields = exception_diagnostics(second, reason_code="PLUGIN_CALL_FAILED", stage="request")
+    for key in ("path", "errno", "winerror", "exit_code", "http_status", "slot_id", "provider_id", "service_key"):
+        assert fields[key] == remote[key]
+    assert "native failure" in fields["stderr"]
+    assert "private-value" not in json.dumps(fields)
+    assert "private request body" not in json.dumps(fields)
 
 
 def test_worker_removes_known_credentials_before_bounding_remote_diagnostics():
@@ -155,6 +176,7 @@ def test_worker_active_error_type_survives_rpc_and_core_log_bridge(cleanup_faile
 
 def test_local_cleanup_type_is_not_overwritten_by_remote_cancellation():
     from app.plugin_sdk.sakura_cancellation import OperationCancelled
+    from app.plugin_sdk.sakura_provider_errors import provider_exception_diagnostics
 
     received = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=_exception_diagnostics(OperationCancelled()))
     try:
@@ -165,7 +187,8 @@ def test_local_cleanup_type_is_not_overwritten_by_remote_cancellation():
     except PermissionError as error:
         local = exception_diagnostics(error, reason_code="RUNTIME_ERROR", stage="cleanup")
         worker = _exception_diagnostics(error)
-    for fields in (local, worker):
+        provider = provider_exception_diagnostics(error)
+    for fields in (local, worker, provider):
         assert fields["error_type"] == "PermissionError"
         assert fields["cause_type"] == "OperationCancelled"
         assert "local cleanup denied" in fields["exception_chain"]
@@ -240,6 +263,54 @@ def test_exception_group_preserves_independent_failures():
     assert "No space left on device" in fields["exception_chain"]
 
 
+def test_worker_and_provider_keep_nested_group_and_system_error_evidence():
+    from app.plugin_sdk.sakura_provider_errors import provider_exception_diagnostics
+
+    group = ExceptionGroup("parallel providers failed", [TimeoutError("connection timed out"), OSError(28, "disk full")])
+    outer = RuntimeError("initialization failed")
+    outer.__cause__ = group
+    for capture in (_exception_diagnostics, provider_exception_diagnostics):
+        fields = capture(outer)
+        assert "connection timed out" in fields["exception_chain"]
+        assert "disk full" in fields["exception_chain"]
+        received = PluginApiError("PLUGIN_CALL_FAILED", diagnostics=capture(OSError(28, "disk full")))
+        fields = exception_diagnostics(received, reason_code="PLUGIN_CALL_FAILED", stage="initialize")
+        assert fields["errno"] == 28
+
+
+def test_long_worker_diagnostic_preserves_the_final_cause():
+    from app.plugins.sakura_plugin_sdk import _diagnostic_text
+
+    raw = "load model\n" + "frame details\n" * 1000 + "ROOT CAUSE: incompatible weights"
+    text = _diagnostic_text(raw, 1024)
+    assert len(text) <= 1024
+    assert text.startswith("load model")
+    assert text.endswith("ROOT CAUSE: incompatible weights")
+    assert "[truncated" in text
+
+
+@pytest.mark.parametrize("event,context", [
+    ("plugin.settings.failed", {}),
+    ("plugin.settings.load.failed", {"section_id": "profiles"}),
+    ("model.slot.load.failed", {"slot_id": "chat"}),
+    ("model.catalog.failed", {"service_key": "sakura.model.provider"}),
+    ("fixture.new.failure", {}),
+])
+def test_snapshot_failure_keeps_event_and_context_through_core_bridge(event, context):
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        log_event("Plugin", "读取失败", {"diagnostic": "invalid configuration", **context},
+                  event=event, severity="error", plugin_id="fixture.plugin")
+    finally:
+        bridge.close()
+    record = json.loads(stream.getvalue().splitlines()[0][len(CORE_BRIDGE_PREFIX):])
+    assert record["event"] == event
+    assert record["plugin_id"] == "fixture.plugin"
+    for key, value in context.items():
+        assert record["attributes"][key] == value
+
+
 def test_provider_diagnostics_keep_error_fields_without_response_content():
     from app.plugin_sdk.sakura_model import ApiRequestError
     error = ApiRequestError('API HTTP 401: {"error":{"message":"invalid credential","code":"invalid_api_key","param":"model","request_id":"req-42"},"choices":[{"message":{"content":"unrelated private output"}}]}')
@@ -251,7 +322,8 @@ def test_provider_diagnostics_keep_error_fields_without_response_content():
     assert "unrelated private output" not in json.dumps(fields)
 
 
-def test_plugin_logging_and_fixed_diagnostics_cross_host_with_original_error(tmp_path):
+@pytest.mark.parametrize("explicit", [False, True])
+def test_plugin_logging_and_fixed_diagnostics_cross_host_with_original_error(tmp_path, explicit):
     from app.plugins.sakura_plugin_sdk import PluginContext
     from app.core_host.plugin_host_services import _LoggingHostService, _DiagnosticsHostService
     from app.plugins.host_services import HOST_CALLER
@@ -273,8 +345,9 @@ def test_plugin_logging_and_fixed_diagnostics_cross_host_with_original_error(tmp
         try:
             raise RuntimeError("tensor sizes differ\nexpected 192, got 256 token=private-fixture-secret")
         except RuntimeError:
-            context.get("sakura.host.logging").error("合成失败")
-            assert context.get("sakura.host.diagnostics").emit({"event": "tts.synthesis.failed", "severity": "error", "attributes": {"stage": "synthesis"}})
+            fields = {"diagnostic": "explicit worker root cause"} if explicit else {}
+            context.get("sakura.host.logging").error("合成失败", fields=fields)
+            assert context.get("sakura.host.diagnostics").emit({"event": "tts.synthesis.failed", "severity": "error", "attributes": {"stage": "synthesis", **fields}})
         assert delivered.wait(2)
     finally:
         context.close()
@@ -283,7 +356,7 @@ def test_plugin_logging_and_fixed_diagnostics_cross_host_with_original_error(tmp
     assert len(records) == 2
     for record in records:
         fields = record["attributes"]
-        assert "expected 192, got 256" in fields["diagnostic"]
+        assert ("explicit worker root cause" if explicit else "expected 192, got 256") in fields["diagnostic"]
         assert "\n" in fields["exception_stack"]
         assert "private-fixture-secret" not in json.dumps(record)
 
@@ -335,6 +408,7 @@ def test_process_failure_excerpt_excludes_previous_launch_and_normal_output(tmp_
 def test_plugin_stderr_drains_large_output_and_preserves_late_errors():
     import subprocess
     import sys
+    import threading
     from types import SimpleNamespace
     from app.plugins.runtime_v4 import _PluginProcess
 
@@ -343,6 +417,8 @@ def test_plugin_stderr_drains_large_output_and_preserves_late_errors():
     process = subprocess.Popen([sys.executable, "-c", "import sys; sys.stderr.write('progress\\n' * 20000); sys.stderr.write('RuntimeError: late native failure token=hidden-credential\\n')"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     worker = _PluginProcess.__new__(_PluginProcess)
     worker._spec = SimpleNamespace(plugin_id="fixture.stderr", name="Fixture")
+    worker._state_lock = threading.RLock()
+    worker._stderr_tail = ""
     try:
         worker._drain_stderr(process)
         assert process.wait(timeout=5) == 0

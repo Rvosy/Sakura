@@ -4,7 +4,30 @@ import test from "node:test";
 import {
   createRuntimeDiagnostics,
   RUNTIME_DIAGNOSTICS_COMMAND,
+  safeErrorText,
 } from "../core/runtime-diagnostics.js";
+
+test("diagnostic bounding retains both operation and root cause and removes Basic credentials", () => {
+  const text = safeErrorText("model load\nAuthorization: Basic private-credential\n" + "frame\n".repeat(2000) + "ROOT CAUSE: disk full", 1024);
+  assert.ok(text.length <= 1024);
+  assert.ok(text.startsWith("model load"));
+  assert.ok(text.endsWith("ROOT CAUSE: disk full"));
+  assert.ok(text.includes("[truncated"));
+  assert.ok(!text.includes("private-credential"));
+});
+
+test("status diagnostics and AggregateError members survive frontend reporting", async () => {
+  const env = harness();
+  const group = new AggregateError([new Error("first provider failed"), new Error("second provider failed")], "providers failed");
+  env.listeners.get("unhandledrejection")({ reason: group });
+  env.diagnostics.reportError({ code: "PLUGIN_CALL_FAILED", diagnostics: { diagnostic: "worker root cause", exception_stack: "worker.py:42" } });
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.ok(entries[0].exceptionChain.includes("first provider failed"));
+  assert.ok(entries[0].exceptionChain.includes("second provider failed"));
+  assert.ok(entries[1].diagnostic.includes("worker root cause"));
+  assert.ok(entries[1].exceptionStack.includes("worker.py:42"));
+});
 
 function harness(handler = async () => ({ ok: true })) {
   const calls = [];

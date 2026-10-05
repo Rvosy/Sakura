@@ -118,14 +118,21 @@ def sanitize_provider_diagnostic(value: str, *, secrets: Iterable[str] = ()) -> 
     return value
 
 
-def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = ()) -> dict[str, str]:
+def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = ()) -> dict[str, object]:
     """Capture a provider failure before its asynchronous worker releases it."""
     secrets = (*secrets, *getattr(error, "diagnostic_secrets", ()))
-    chain, stacks, seen, current = [], [], set(), error
+    chain, stacks, seen = [], [], set()
     root = error
-    while current is not None and id(current) not in seen and len(chain) < 16:
+    pending = [error]
+    rpc_wrappers_only = True
+    has_group = False
+    while pending and len(chain) < 16:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
         seen.add(id(current))
         root = current
+        rpc_wrappers_only &= type(current).__name__ in {"PluginApiError", "PluginRuntimeError"}
         status = getattr(current, "status_code", None)
         body = getattr(current, "body", None)
         if isinstance(status, int) and isinstance(body, Mapping):
@@ -140,23 +147,38 @@ def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[st
         summary = f"{type(current).__name__}: {message}"
         chain.append(summary)
         stacks.append(summary + "\n" + "".join(traceback.format_tb(current.__traceback__, limit=-32)))
-        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+        if isinstance(current, BaseExceptionGroup):
+            has_group = True
+            pending.extend(reversed(current.exceptions))
+        cause = current.__cause__ if current.__cause__ is not None else (None if current.__suppress_context__ else current.__context__)
+        if cause is not None:
+            pending.append(cause)
     diagnostics = {
         "diagnostic": message,
         "error_type": type(error).__name__,
         "cause_type": type(root).__name__,
-        "exception_chain": sanitize_provider_diagnostic("\nCaused by: ".join(chain), secrets=secrets),
-        "exception_stack": sanitize_provider_diagnostic("\nCaused by:\n".join(stacks), secrets=secrets),
+        "exception_chain": sanitize_provider_diagnostic(("\nException: " if has_group else "\nCaused by: ").join(chain), secrets=secrets),
+        "exception_stack": sanitize_provider_diagnostic(("\nException:\n" if has_group else "\nCaused by:\n").join(stacks), secrets=secrets),
     }
     frames = traceback.extract_tb(root.__traceback__)
     if frames:
         frame = frames[-1]
         diagnostics["exception_site"] = sanitize_provider_diagnostic(f"{frame.filename}:{frame.name}:{frame.lineno}", secrets=secrets)
     remote = getattr(root, "diagnostics", None)
+    for key in ("errno", "winerror"):
+        value = getattr(root, key, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            diagnostics[key] = value
     if isinstance(remote, Mapping):
-        for key in ("diagnostic", "error_type", "cause_type", "cause_code", "exception_site"):
+        if rpc_wrappers_only and isinstance(remote.get("error_type"), str):
+            diagnostics["error_type"] = sanitize_provider_diagnostic(remote["error_type"], secrets=secrets)
+        for key in ("diagnostic", "cause_type", "cause_code", "exception_site", "path", "stderr", "recovery_diagnostic"):
             if isinstance(remote.get(key), str):
                 diagnostics[key] = sanitize_provider_diagnostic(remote[key], secrets=secrets)
+        for key in ("errno", "winerror", "exit_code", "http_status"):
+            value = remote.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                diagnostics[key] = value
         for key in ("exception_chain", "exception_stack"):
             if isinstance(remote.get(key), str):
                 diagnostics[key] = sanitize_provider_diagnostic(diagnostics[key] + "\nRemote:\n" + remote[key], secrets=secrets)

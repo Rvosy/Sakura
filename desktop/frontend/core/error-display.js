@@ -38,7 +38,10 @@ export function errorText(error, fallback = '未提供错误详情') {
       ['cause_type', '根因类型'], ['cause_code', '底层原因码'],
       ['exception_site', '代码位置'], ['stage', '阶段'], ['validation_field', '校验字段'],
       ['errno', '系统错误码'], ['winerror', 'Windows 错误码'],
+      ['exit_code', '退出码'], ['http_status', 'HTTP 状态码'],
       ['plugin_id', '插件 ID'], ['section_id', '设置分区'],
+      ['slot_id', '模型槽位'], ['provider_id', '提供方 ID'], ['service_key', '服务'],
+      ['path', '路径'], ['stderr', '标准错误输出'],
       ['result_type', '返回类型'], ['has_application_state', '包含应用状态'],
       ['application_state_type', '应用状态类型'],
     ]) add(value[key], label);

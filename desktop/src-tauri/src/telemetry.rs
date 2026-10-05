@@ -685,6 +685,8 @@ impl TelemetryService {
                     (
                         source,
                         stable_attribute(attributes, "code")
+                            .or_else(|| stable_attribute(attributes, "reason_code"))
+                            .or_else(|| stable_attribute(attributes, "provider_error_code"))
                             .unwrap_or_else(|| "RUNTIME_ERROR".into()),
                     )
                 })
@@ -967,7 +969,7 @@ impl TelemetryService {
         drop(breadcrumb_state);
         // Compare the actual failure, not a lossy code or a home-grown digest.
         let generation = self.diagnostic_context().generation;
-        let failure_context = [
+        let mut failure_context = vec![
             "plugin_id",
             "section_id",
             "validation_field",
@@ -978,7 +980,16 @@ impl TelemetryService {
             "cause_type",
             "cause_code",
         ]
-        .map(|field| candidate.evidence.get(field));
+        .into_iter()
+        .map(|field| candidate.evidence.get(field))
+        .collect::<Vec<_>>();
+        if ["slot_id", "provider_id"]
+            .iter()
+            .any(|field| candidate.evidence.contains_key(*field))
+        {
+            failure_context
+                .extend(["slot_id", "provider_id"].map(|field| candidate.evidence.get(field)));
+        }
         let key = serde_json::to_string(&json!([
             generation,
             candidate.component,
@@ -3931,6 +3942,8 @@ mod tests {
             generation_number: 1,
             core_pid: 42,
         };
+        let logs = crate::runtime_log::RuntimeLogService::start(root.join("runtime.log"));
+        logs.attach_telemetry(service.clone());
         let payloads=std::env::var("SAKURA_ACCEPTANCE_CORE_WIRE").ok().map(|p|fs::read_to_string(p).unwrap())
             .unwrap_or_else(|| r#"{"kind":"error","error":{"schema":2,"component":"core","event":"core.error.unhandled","code":"CORE_HOST_TRANSPORT_ERROR","operationId":"op-acceptance","exceptionType":"WriterError","stack":[{"file":"app/core_host/server.py","function":"send","line":737}],"details":{"severity":"error","impact":"unavailable","stage":"process_boundary","reasonCode":"TRANSPORT_WRITE_FAILED"}}}"#.into());
         let mut captured = Vec::new();
@@ -3943,7 +3956,13 @@ mod tests {
             {
                 operation = id.into();
             }
-            assert!(service.submit_core_bridge(payload, &context, None).unwrap());
+            if parsed["kind"] == "runtimeLog" {
+                assert!(logs
+                    .submit_core_bridge(&parsed["record"].to_string(), &context)
+                    .unwrap());
+            } else {
+                assert!(service.submit_core_bridge(payload, &context, None).unwrap());
+            }
             let (endpoint, body) = server.next_request(&service);
             captured.push(
                 json!({"endpoint":endpoint,"body":serde_json::from_slice::<Value>(&body).unwrap()}),
@@ -3964,6 +3983,8 @@ mod tests {
         if let Ok(path) = std::env::var("SAKURA_ACCEPTANCE_WIRE_OUTPUT") {
             fs::write(path, serde_json::to_vec_pretty(&captured).unwrap()).unwrap();
         }
+        logs.drain_and_shutdown_for_test();
+        drop(logs);
         service.shutdown();
         assert!(wait_for_sender_exit(&service));
         let _ = fs::remove_dir_all(root);
@@ -3984,6 +4005,10 @@ mod tests {
             json!({"plugin_id":"sakura.second"}),
             json!({"validation_field":"/profiles/1/model"}),
             json!({"detail_stage":"load"}),
+            json!({"slot_id":"chat"}),
+            json!({"slot_id":"summary"}),
+            json!({"provider_id":"sakura.tts.first"}),
+            json!({"provider_id":"sakura.tts.second"}),
         ] {
             let mut attributes = base.clone();
             attributes
@@ -3999,7 +4024,7 @@ mod tests {
                 Some(&attributes),
             );
         }
-        assert_eq!(service.inner.reports.lock().unwrap().len(), 4);
+        assert_eq!(service.inner.reports.lock().unwrap().len(), 8);
         let mut repeated = base;
         repeated["request_id"] = json!("another-request");
         repeated["elapsed_ms"] = json!(932);
@@ -4012,8 +4037,8 @@ mod tests {
             Some(&repeated),
         );
         let reports = service.inner.reports.lock().unwrap();
-        assert_eq!(reports.len(), 4);
-        assert_eq!(reports.values().map(|report| report.count).sum::<u64>(), 5);
+        assert_eq!(reports.len(), 8);
+        assert_eq!(reports.values().map(|report| report.count).sum::<u64>(), 9);
         drop(reports);
         service.shutdown();
         assert!(wait_for_sender_exit(&service));

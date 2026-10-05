@@ -3207,6 +3207,7 @@ fn sanitize_attribute_string(
             | "exception_stack"
             | "recovery_diagnostic"
             | "validation_field"
+            | "exception_site"
     ) {
         let maximum = if normalized_key == "validation_field" {
             1024
@@ -3311,6 +3312,8 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "startup_snapshot"
             | "plugin_id"
             | "section_id"
+            | "slot_id"
+            | "provider_id"
             | "result_type"
             | "has_application_state"
             | "application_state_type"

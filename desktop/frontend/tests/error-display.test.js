@@ -37,10 +37,13 @@ test('dialog details retain the same exception context as runtime logs and the t
     recovery_diagnostic: 'Rollback failed: original.json is locked password=private-value',
     cause_type: 'PermissionError', exception_site: 'config:save:42', stage: 'apply',
     errno: 13, winerror: 5, plugin_id: 'sakura.provider', section_id: 'connection',
+    slot_id: 'summary', provider_id: 'fixture.provider', service_key: 'fixture.service',
+    exit_code: -1, path: 'C:/测试/worker.py', stderr: 'worker stderr: access denied',
     has_application_state: false,
   } } });
   for (const value of [trace, 'PermissionError', 'config:save:42', 'apply', '13', '5',
-    'Rollback failed', 'sakura.provider', 'connection', 'false']) assert.ok(result.includes(value), value.slice(0, 100));
+    'Rollback failed', 'sakura.provider', 'connection', 'false', 'summary', 'fixture.provider',
+    'fixture.service', '-1', 'C:/测试/worker.py', 'worker stderr: access denied']) assert.ok(result.includes(value), value.slice(0, 100));
   assert.ok(!result.includes('private-value'));
 });
 

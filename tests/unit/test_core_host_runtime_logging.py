@@ -587,8 +587,8 @@ def test_forwarded_worker_record_uses_only_active_sink_and_reapplies_safety(
         "attempt": 1,
     }
     persisted = stream.getvalue().decode("utf-8")
-    assert records[1]["event"] == "core.runtime.event"
-    assert records[1]["severity"] in {"debug", "trace"}
+    assert records[1]["event"] == "tts.private.unknown"
+    assert records[1]["severity"] == "error"
     assert "127.0.0.1" not in persisted
     assert "voice.pth" not in persisted
     assert PRIVATE_CHAT not in persisted

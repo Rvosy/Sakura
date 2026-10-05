@@ -100,6 +100,7 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "service_key",
         "startup_snapshot",
         "section_id",
+        "slot_id",
         "result_type",
         "has_application_state",
         "application_state_type",
@@ -361,6 +362,10 @@ _FIXED_MESSAGES = {
     "tts.conversion.failed": "Genie ONNX conversion failed",
     "tts.conversion.cancelled": "Genie ONNX conversion cancelled",
     "plugin.loaded": "Plugin loaded",
+    "plugin.settings.failed": "插件设置读取失败",
+    "plugin.settings.load.failed": "插件设置分区读取失败",
+    "model.slot.load.failed": "模型选择读取失败",
+    "model.catalog.failed": "模型目录读取失败",
     "plugin.start.phase.completed": "Plugin startup phase completed",
     "plugin.migration.started": "开始检查插件迁移",
     "plugin.migration.plugin_started": "开始迁移插件",
@@ -761,16 +766,17 @@ def forward_runtime_log_record(value: Mapping[str, object]) -> bool:
         return False
 
     known_event = event in _FIXED_MESSAGES
+    diagnostic_event = severity_value in {"warning", "error"}
     record = LogEvent(
         timestamp="",
-        severity=str(severity_value) if known_event else "trace",
-        verbosity=_FORWARDED_VERBOSITY[verbosity_value] if known_event else 5,
+        severity=str(severity_value) if known_event or diagnostic_event else "trace",
+        verbosity=_FORWARDED_VERBOSITY[verbosity_value] if known_event or diagnostic_event else 5,
         channel=channel,
         event=event,
         message=_fixed_message(event),
         trace_id=trace_id or "",
         attributes=attributes or None,
-        event_is_fixed=known_event,
+        event_is_fixed=known_event or diagnostic_event,
     )
     return submit_external_log_event(record)
 
@@ -824,7 +830,7 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
             severity = "debug"
     event = (
         _safe_token(record.event, 96)
-        if record.event_is_fixed and known_event
+        if record.event_is_fixed and (known_event or severity in {"warning", "error"})
         else "core.runtime.event"
     )
     wire: dict[str, object] = {
@@ -904,7 +910,7 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
                     and len(value) <= 240
                 ):
                     safe[key] = value
-            elif key in DIAGNOSTIC_TEXT_KEYS or key in {"endpoint", "url", "path", "stderr", "model", "provider"}:
+            elif key in DIAGNOSTIC_TEXT_KEYS or key in {"endpoint", "url", "path", "stderr", "model", "provider", "exception_site"}:
                 diagnostic = safe_diagnostic_text(value, TRACE_LIMIT if key != "diagnostic" else 4096)
                 if diagnostic is not None:
                     safe[key] = diagnostic

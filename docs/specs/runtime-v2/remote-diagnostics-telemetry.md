@@ -44,11 +44,12 @@ Rust 是唯一 HTTP 出站 owner。Core 和插件通过现有日志/遥测 bridg
 - `exception_chain/exception_stack`：异常链和逐层栈，包括依赖帧、插件进程传回的诊断；`recovery_diagnostic` 单独保存恢复失败，不覆盖原始失败。
 - `exception_site/source_file/source_line`：可获取的失败位置。
 - `errno/winerror/exit_code/status/http_status/timeout_ms`：系统、子进程与请求事实。更新请求另保留 `is_timeout/is_connect/endpoint_alias/io_error_kind`；类型和状态来自实际异常，不能按 URL 中的 `.json` 判断解析失败。上游已经丢弃状态的 `ReleaseNotFound` 记为 `RELEASE_RESPONSE`，不推断 HTTP 状态。
-- `plugin_id/plugin_name/provider/model/endpoint/url/path`：发生故障的实际组件、模型、请求目标和路径，不上传完整插件清单。
+- `plugin_id/plugin_name/provider/provider_id/model/endpoint/url/path`：发生故障的实际组件、模型、请求目标和路径，不上传完整插件清单。
 - `code_source/dependency_source/version`：插件迁移当时使用的代码与依赖来源类别、插件版本；不扫描上传目录清单。
 - `stderr/stage/command/request_id/window_label/provider_error_code/provider_error_type/repair_reason/repair_outcome`：有关现场字段。
 - 插件启动失败另保留 `detail_stage/elapsed_ms/duration_ms/child_pid/process_alive/service_key/startup_snapshot`，分别说明最后阶段、总耗时、阶段耗时、进程状态、等待的宿主服务和现场采集结果。初始化期限与现场采集见[插件运行时](sakura-plugin-runtime-v4.md)。
 - 插件设置返回格式无效时保留 `plugin_id/section_id/result_type/has_application_state/application_state_type`，说明哪个设置分区返回了何种类型、是否包含应用状态字段。不记录设置值或非法返回值原文，不因返回格式错误放宽保存契约。
+- 模型选择读取失败保留 `slot_id`，模型目录读取失败保留 `service_key`。快照携带失败状态时，由捕获异常的位置记录事件；不能只把诊断放进成功的 IPC 响应而漏掉日志和遥测。
 
 诊断从错误产生处保留。Python 转换异常时保留 cause，后台任务转为结果前先提取异常；Rust 的文件、设备、
 平台和 IPC 操作不能把底层错误替换成空值或固定码。错误码只用于分类，不能据未知截图失败推断权限拒绝。
@@ -56,6 +57,8 @@ Rust 是唯一 HTTP 出站 owner。Core 和插件通过现有日志/遥测 bridg
 日志和遥测，包含路径及系统错误；不能再次写入失效文件形成递归。
 
 Core 的进程边界复用 `exception_diagnostics` 的结果，不再为遥测另造一个只有类型和安全栈的摘要。Rust 在本地日志显示属性过滤之前取得诊断；本地日志等级不会阻断遥测。WebView 保留 message、原始 stack 和 cause 链；Rust panic 保留 panic 原文、位置和 backtrace。
+
+显式记录的 warning/error 事件通过 Core 桥接时保留合法事件名和等级，不因显示文案表缺少条目而变成通用事件或 trace。自动提取的异常不能覆盖生产者已提供的诊断、原因码和阶段。通用遥测采集按 `code`、`reason_code`、`provider_error_code` 选择已有错误码，三者均缺失时才用 `RUNTIME_ERROR`。插件 RPC 保留远端的系统错误码、退出码、路径与 stderr；Python 异常组和 WebView AggregateError 保留各个成员的原因。
 
 Core 请求被拒绝时，Rust 的 `ipc.request.failed` 保存原始原因和 `request_id`。`settings_response_payload` 返回的 `code|feature|field|diagnostic` 表示这一已记录的拒绝；WebView 只记录 info 级调用结果，页面的 `reportError` 不再重复上传同一拒绝。没有这一响应格式的原生调用失败、前端异常和未处理异常仍按原规则采集，不能只凭相同错误码或相近时间合并。
 
@@ -73,7 +76,7 @@ Python、插件 SDK、WebView、Rust 遵循相同的定向处理原则。服务�
 
 ## 大小、分组和发送
 
-异常链/栈按字段有界，超限文字带 `[truncated: ...]` 标记；整个报告还按 UTF-8 序列化字节数控制。超限时缩减具体大字段，不把整份错误变回一个代码。Breadcrumb 优先保留失败、阶段变化和诊断，普通成功 IPC 往返不占用现场。
+异常链/栈按字段有界，超限文字保留首尾并带 `[truncated: ...]` 标记；整个报告还按 UTF-8 序列化字节数控制。超限时缩减具体大字段，不把整份错误变回一个代码。Breadcrumb 优先保留失败、阶段变化和诊断，普通成功 IPC 往返不占用现场。
 
 事件轨迹的 `diagnostic` 在原文前带上可获取的 operation、插件、阶段、命令、等待服务和请求编号，整体最多 512 字符；没有发生的操作不生成编号。`elapsedMs` 优先使用该阶段的 `duration_ms`，没有阶段耗时才使用事件自身的 `elapsed_ms`。这些信息沿用 v3 已有字段，旧接收端无需变更。插件的 `plugin.start.phase.completed` 用 info 记录阶段完成，超时报告据此区分导入、构造、setup 和服务登记，不以增加初始化期限代替定位。
 
@@ -81,7 +84,7 @@ Python、插件 SDK、WebView、Rust 遵循相同的定向处理原则。服务�
 
 错误码用于程序分类，具体原因由原始诊断、异常链、位置和现场字段说明。边界包装保留原异常原因，不能仅因错误没有字段路径而替换成通用提示。设置返回结构错误须说明缺失字段、类型错误或无效状态等实际原因，不为每条说明新增错误码。
 
-客户端在同 generation 内比较组件、事件、代码、原因、阶段、原始 message/chain/stack 和旧位置帧，并比较 `plugin_id/section_id/validation_field/detail_stage/command/service_key/error_type/cause_type/cause_code`。不同插件、字段或失败步骤保留独立样本；请求编号、操作编号和耗时不参与分组，重复故障仍累计次数。`fingerprintVersion=3` 中 fingerprint 是随机样本组 ID，沿用旧字段名供累计次数关联，不计算自制内容摘要。服务端按相同现场字段分组新接收的跨 run 报告，已有报告及旧 v1/v2 fingerprint 保持可读，不重写历史分组。
+客户端在同 generation 内比较组件、事件、代码、原因、阶段、原始 message/chain/stack 和旧位置帧，并比较 `plugin_id/section_id/validation_field/detail_stage/command/service_key/error_type/cause_type/cause_code`，以及可获取的 `slot_id/provider_id`。不同插件、槽位、提供方、字段或失败步骤保留独立样本；请求编号、操作编号和耗时不参与分组，重复故障仍累计次数。`fingerprintVersion=3` 中 fingerprint 是随机样本组 ID，沿用旧字段名供累计次数关联，不计算自制内容摘要。服务端按相同现场字段分组新接收的跨 run 报告；没有槽位或提供方 ID 的报告沿用原 v3 分组键。已有报告及旧 v1/v2 fingerprint 保持可读，不重写历史分组。
 
 原生悬停探测正常时每 50 ms 读取一次，失败时每秒读取一次。连续失败只记录首次原始异常，成功后恢复正常频率；不生成周期摘要、累计计数或恢复事件。DOM 悬停仍可用，停止探测后忽略尚未完成的读取结果。
 

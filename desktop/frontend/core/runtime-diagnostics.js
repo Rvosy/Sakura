@@ -41,12 +41,16 @@ function coreResponseError(error) {
 export function safeErrorText(value, maximum = 4096) {
   let text = String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   text = text
-    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)/gi, "$1=[REDACTED]")
+    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)["']?\s*[:=]\s*(?:(?:bearer|basic)\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)/gi, "$1=[REDACTED]")
     .replace(/\bbearer\s+[^\s,;}&]+/gi, "Bearer [REDACTED]")
     .replace(/\bsk-[A-Za-z0-9._-]{6,}/gi, "[REDACTED]");
   text = text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1[REDACTED]@")
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-  return text.length <= maximum ? text : text.slice(0, maximum - 48) + `\n[truncated: ${text.length} characters]`;
+  if (text.length <= maximum) return text;
+  const marker = `\n[truncated: ${text.length} characters]\n`;
+  if (maximum <= marker.length) return marker.slice(0, Math.max(0, maximum));
+  const kept = maximum - marker.length, head = Math.floor(kept / 2);
+  return text.slice(0, head) + marker + text.slice(-(kept - head));
 }
 
 function safeDiagnostic(error) {
@@ -54,19 +58,22 @@ function safeDiagnostic(error) {
   const publicError = source.match(/^([A-Z][A-Z0-9_]{0,63})\|[^|\r\n]*\|[^|\r\n]*\|([\s\S]*)$/);
   const coded = source.match(/^([A-Z][A-Z0-9_]{0,63})(?::\s*([\s\S]*))?$/);
   const code = stableCode(error?.code) ? error.code : publicError?.[1] || coded?.[1] || "INVOKE_FAILED";
-  const details = error?.details?.diagnostics || error;
+  const details = error?.details?.diagnostics || error?.diagnostics || error;
   const raw = details?.diagnostic || publicError?.[2] || coded?.[2] || source;
   const prefix = !publicError && !coded && typeof error?.name === "string" ? `${error.name}: ` : "";
   const diagnostic = safeErrorText(prefix + raw) || "未记录底层原因";
   const chain = [], stacks = [], seen = new Set();
   if (details?.exception_chain) chain.push(details.exception_chain);
   if (details?.exception_stack) stacks.push(details.exception_stack);
-  let cause = error;
-  while (cause && !seen.has(cause) && chain.length < 16) {
+  const pending = [error];
+  while (pending.length && seen.size < 16) {
+    const cause = pending.pop();
+    if (!cause || seen.has(cause)) continue;
     seen.add(cause);
     chain.push(safeErrorText(typeof cause === "string" ? cause : `${cause.name || "Error"}: ${cause.message || ""}`));
     if (typeof cause.stack === "string") stacks.push(cause.stack.split("\n").slice(0, 33).join("\n"));
-    cause = cause.cause;
+    if (Array.isArray(cause.errors)) pending.push(...cause.errors.slice(0, 16).reverse());
+    if (cause.cause) pending.push(cause.cause);
   }
   const stack = safeErrorText(stacks.join("\nCaused by:\n"), 8192);
   const exceptionChain = chain.length > 1 ? safeErrorText(chain.join("\nCaused by: "), 8192) : "";

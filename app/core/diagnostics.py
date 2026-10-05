@@ -215,7 +215,7 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
             if (remote_error_type is not None
                     and all(type(item).__name__ in {"PluginApiError", "PluginRuntimeError"} for item in chain)):
                 attributes["error_type"] = remote_error_type
-            for key in ("cause_code", "plugin_id", "section_id", "result_type", "application_state_type"):
+            for key in ("cause_code", "plugin_id", "section_id", "slot_id", "provider_id", "service_key", "result_type", "application_state_type"):
                 value = diagnostic_token(remote.get(key))
                 if value is not None:
                     attributes[key] = value
@@ -224,9 +224,13 @@ def _exception_diagnostics(error: BaseException | object, *, reason_code: str, s
                 attributes["validation_field"] = remote_field
             if isinstance(remote.get("has_application_state"), bool):
                 attributes["has_application_state"] = remote["has_application_state"]
-            for key in ("diagnostic", "cause_type", "exception_site"):
+            for key in ("diagnostic", "cause_type", "exception_site", "path", "stderr", "recovery_diagnostic"):
                 if isinstance(remote.get(key), str):
                     attributes[key] = safe_diagnostic_text(remote[key])
+            for key in ("errno", "winerror", "exit_code", "http_status"):
+                value = remote.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    attributes[key] = value
             for key in ("exception_chain", "exception_stack"):
                 if isinstance(remote.get(key), str):
                     attributes[key] = bounded_text(str(attributes.get(key, "")) + "\nRemote:\n" + safe_diagnostic_text(remote[key], TRACE_LIMIT), TRACE_LIMIT)

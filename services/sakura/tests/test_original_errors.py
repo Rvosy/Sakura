@@ -65,6 +65,8 @@ def test_same_code_groups_by_plugin_and_failure_context(client):
     for index, changed in enumerate((
         {}, {"plugin_id": "sakura.second"},
         {"validation_field": "/profiles/1/model"}, {"detail_stage": "load"},
+        {"slot_id": "chat"}, {"slot_id": "summary"},
+        {"provider_id": "sakura.tts.first"}, {"provider_id": "sakura.tts.second"},
         {"request_id": "another-request", "elapsed_ms": 932},
     )):
         payload = original_report("invalid configuration", runId=f"run-{index}")
@@ -76,8 +78,8 @@ def test_same_code_groups_by_plugin_and_failure_context(client):
         payload["error"]["fingerprint"] = f"context-{index}"
         assert client.post("/v3/errors", json=payload).status_code == 202
     groups = client.get("/admin/api/v2/groups").json()
-    assert groups["total"] == 4
-    assert sorted(row["reports"] for row in groups["items"]) == [1, 1, 1, 2]
+    assert groups["total"] == 8
+    assert sorted(row["reports"] for row in groups["items"]) == [1] * 7 + [2]
 
 
 def test_actual_rust_wire_when_provided(client, tmp_path):
@@ -87,7 +89,7 @@ def test_actual_rust_wire_when_provided(client, tmp_path):
         import pytest
         pytest.skip("requires the Python -> Rust wire capture")
     reports = []
-    for item in json.loads(Path(capture).read_text()):
+    for item in json.loads(Path(capture).read_text(encoding="utf-8")):
         payload = item["body"]
         assert client.post(item["endpoint"], json=payload).status_code == 202
         if payload.get("schema") == 3:
@@ -96,6 +98,17 @@ def test_actual_rust_wire_when_provided(client, tmp_path):
             assert details["evidence"] == payload["evidence"]
     assert len(reports) >= 2
     assert len({r["evidence"]["diagnostic"] for r in reports}) >= 2
+    slots = [r for r in reports if r["error"]["event"] == "model.slot.load.failed"]
+    assert {r["evidence"]["slot_id"] for r in slots} == {"chat", "summary"}
+    assert len({r["error"]["fingerprint"] for r in slots}) == 2
+    assert all(r["error"]["code"] == "MODEL_SLOT_LOAD_FAILED" and r["evidence"]["errno"] == 13 for r in slots)
+    catalog = next(r for r in reports if r["error"]["event"] == "model.catalog.failed")
+    assert catalog["evidence"]["service_key"] == "fixture.model.service"
+    dependency = next(r for r in reports if r["error"]["code"] == "PLUGIN_DEPENDENCIES_MISSING")
+    assert dependency["evidence"]["cause_type"] == "FileNotFoundError"
+    assert ".sakura-dependencies.json" in dependency["evidence"]["diagnostic"]
+    groups = client.get("/admin/api/v2/groups", params={"includeTest": True}).json()
+    assert groups["total"] == len(reports)
     bundle = tmp_path / "actual-wire.zip"
     export_bundle(bundle, Filters(includeTest=True))
     with zipfile.ZipFile(bundle) as archive:

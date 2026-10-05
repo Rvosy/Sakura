@@ -1091,7 +1091,7 @@ class _ModelSlotsHostService:
                 result.append({"serviceKey": service_key, "pluginId": plugin_id, "label": label, "profiles": public, "reasonCode": "READY"})
             except Exception as error:
                 diagnostics = exception_diagnostics(error, reason_code="MODEL_CATALOG_UNAVAILABLE", stage="model_slots.catalog")
-                log_event("Plugin", "模型目录读取失败", diagnostics,
+                log_event("Plugin", "模型目录读取失败", {**diagnostics, "service_key": service_key},
                           event="model.catalog.failed", severity="error", plugin_id=plugin_id)
                 result.append({"serviceKey": service_key, "pluginId": plugin_id, "label": label, "profiles": [], "reasonCode": "MODEL_CATALOG_UNAVAILABLE",
                                "diagnostics": diagnostics})

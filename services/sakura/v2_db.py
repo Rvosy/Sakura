@@ -123,16 +123,21 @@ def insert_v2(kind, payload):
         )
         if r.schema_version == 3:
             row["report_json"] = encoded(r)
+            failure_context = [r.evidence.get(field) for field in (
+                "plugin_id", "section_id", "validation_field", "detail_stage", "command", "service_key",
+                "error_type", "cause_type", "cause_code",
+            )]
+            # Reports without the new identity fields must still join the
+            # existing v3 groups; persisted historical keys are not rewritten.
+            if any(r.evidence.get(field) is not None for field in ("slot_id", "provider_id")):
+                failure_context.extend(r.evidence.get(field) for field in ("slot_id", "provider_id"))
             row["group_key"] = json.dumps([
                 r.error.component, r.error.event, r.error.code,
                 r.details.reason_code, r.details.stage,
                 r.evidence.get("diagnostic"), r.evidence.get("exception_stack"),
                 r.evidence.get("exception_chain"),
                 [frame.model_dump(exclude_none=True) for frame in r.stack],
-                [r.evidence.get(field) for field in (
-                    "plugin_id", "section_id", "validation_field", "detail_stage", "command", "service_key",
-                    "error_type", "cause_type", "cause_code",
-                )],
+                failure_context,
             ], ensure_ascii=False, separators=(",", ":"))
         rows.append(row)
         table = "error_events"

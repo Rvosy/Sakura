@@ -35,8 +35,17 @@ _DIAGNOSTIC_KEYS = frozenset({"diagnostic", "exception_chain", "exception_stack"
 
 
 def _diagnostic_text(value: str, maximum: int = 8192) -> str:
-    text = "\n".join(safe_text(line, maximum) for line in value.splitlines())
-    return text if len(text) <= maximum else text[:maximum - 14] + "\n[truncated]"
+    text = _ANSI.sub("", value)
+    text = _SECRET.sub(lambda m: (m[1] or m[2] or "") + "[REDACTED]", text)
+    text = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@", r"\1[REDACTED]@", text)
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text).replace("\r\n", "\n").strip()
+    if len(text) <= maximum:
+        return text
+    marker = f"\n[truncated: {len(text)} characters]\n"
+    if maximum <= len(marker):
+        return marker[:max(0, maximum)]
+    kept = maximum - len(marker)
+    return text[:kept // 2] + marker + text[-(kept - kept // 2):]
 
 
 def safe_text(value: str, maximum: int = 1024) -> str:
@@ -143,11 +152,15 @@ class PluginApiError(RuntimeError):
         self.diagnostics = {
             key: _diagnostic_text(value)
             for key, value in (diagnostics or {}).items()
-            if key in {"diagnostic", "cause_type", "exception_site", "exception_chain", "exception_stack"} and isinstance(value, str)
+            if key in {"diagnostic", "cause_type", "exception_site", "exception_chain", "exception_stack", "recovery_diagnostic", "path", "stderr"} and isinstance(value, str)
         }
-        for key in ("error_type", "cause_code"):
+        for key in ("error_type", "cause_code", "stage", "plugin_id", "section_id", "slot_id", "provider_id", "service_key"):
             value = _diagnostic_token((diagnostics or {}).get(key))
             if value is not None:
+                self.diagnostics[key] = value
+        for key in ("errno", "winerror", "exit_code", "http_status"):
+            value = (diagnostics or {}).get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
                 self.diagnostics[key] = value
         field = _diagnostic_field((diagnostics or {}).get("validation_field"))
         if field is not None:
@@ -185,14 +198,17 @@ def _safe_exception_message(error: BaseException, secrets: Iterable[str] = ()) -
         return f"{type(error).__name__}: exception message could not be formatted"
 
 
-def _exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = (), _group_budget: list[int] | None = None) -> dict[str, str]:
+def _exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = (), _group_budget: list[int] | None = None) -> dict[str, object]:
     """Stdlib-only worker diagnostics; never serialize exception objects/locals."""
     chain, stacks, seen = [], [], set()
     current = error
     rpc_wrappers_only = True
     validation_field = None
+    groups = []
     while id(current) not in seen and len(chain) < 16:
         seen.add(id(current))
+        if isinstance(current, BaseExceptionGroup):
+            groups.append(current)
         if validation_field is None:
             try:
                 validation_field = _diagnostic_field(getattr(current, "field", None))
@@ -224,6 +240,10 @@ def _exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = (),
         result["exception_site"] = frames[-1].strip().removeprefix("at ")
     if validation_field is not None:
         result["validation_field"] = validation_field
+    for key in ("errno", "winerror"):
+        value = getattr(current, key, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            result[key] = value
     remote = getattr(current, "diagnostics", None)
     if isinstance(remote, Mapping):
         remote_error_type = _diagnostic_token(remote.get("error_type"))
@@ -235,17 +255,25 @@ def _exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = (),
         remote_field = _diagnostic_field(remote.get("validation_field"))
         if "validation_field" not in result and remote_field is not None:
             result["validation_field"] = remote_field
-        for key in ("diagnostic", "cause_type", "exception_site"):
+        for key in ("diagnostic", "cause_type", "exception_site", "recovery_diagnostic", "path", "stderr"):
             if isinstance(remote.get(key), str):
                 result[key] = _diagnostic_text(_redact_known_secrets(remote[key], secrets))
+        for key in ("stage", "plugin_id", "section_id", "slot_id", "provider_id", "service_key"):
+            value = _diagnostic_token(remote.get(key))
+            if value is not None:
+                result[key] = value
+        for key in ("errno", "winerror", "exit_code", "http_status"):
+            value = remote.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                result[key] = value
         for key in ("exception_chain", "exception_stack"):
             if isinstance(remote.get(key), str):
                 result[key] = _diagnostic_text(result[key] + "\nRemote:\n" + _redact_known_secrets(remote[key], secrets))
-    if isinstance(error, BaseExceptionGroup):
+    budget = [16] if _group_budget is None else _group_budget
+    for group in groups:
         # A failed initialization and its cleanup are distinct evidence. Keep
         # every bounded group member's traceback without serializing locals.
-        budget = [16] if _group_budget is None else _group_budget
-        for index, child in enumerate(error.exceptions, 1):
+        for index, child in enumerate(group.exceptions, 1):
             if budget[0] <= 0:
                 break
             budget[0] -= 1
@@ -257,13 +285,14 @@ def _exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = (),
     return result
 
 
-def exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = ()) -> dict[str, str]:
+def exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = ()) -> dict[str, object]:
     """Capture an exception before a background job turns it into a result."""
     secrets = tuple(secrets)
     result = _exception_diagnostics(error, secrets=secrets)
     # Remote diagnostics may have been created in a different credential scope.
     for key, value in result.items():
-        result[key] = _redact_known_secrets(value, secrets)
+        if isinstance(value, str):
+            result[key] = _redact_known_secrets(value, secrets)
     return result
 
 
@@ -1105,7 +1134,7 @@ class _LoggingProxy:
         try:
             current_error = sys.exception()
             if severity in {"warning", "error"} and current_error is not None:
-                fields = {**(fields or {}), **_exception_diagnostics(current_error)}
+                fields = {**_exception_diagnostics(current_error), **(fields or {})}
             message, fields = prepare_log_payload(message, fields)
             return self._enqueue(severity, message, fields)
         except Exception:
@@ -1168,7 +1197,7 @@ class _DiagnosticsProxy:
             )
         current_error = sys.exception()
         if descriptor.get("severity") in {"warning", "error"} and current_error is not None:
-            descriptor = {**descriptor, "attributes": {**descriptor.get("attributes", {}), **_exception_diagnostics(current_error)}}
+            descriptor = {**descriptor, "attributes": {**_exception_diagnostics(current_error), **descriptor.get("attributes", {})}}
         result = self._context._remote_call(
             "sakura.host.diagnostics",
             "emit",

@@ -650,7 +650,10 @@ def log_message(
         diagnostics = {}
         current_error = sys.exception()
         if current_error is not None and severity in {"warning", "warn", "error"}:
-            diagnostics = diagnostic_attributes(current_error, reason_code="RUNTIME_ERROR", stage=component)
+            context = fields if isinstance(fields, dict) else {}
+            diagnostics = diagnostic_attributes(current_error,
+                reason_code=str(context.get("reason_code", context.get("code", "RUNTIME_ERROR"))),
+                stage=str(context.get("stage", component)))
         if isinstance(fields, dict):
             diagnostics.update({key: value for key, value in fields.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "cause_code", "validation_field", "error_type", "exception_site", "errno", "winerror"}})
         attributes.update({key: safe_diagnostic_text(value, TRACE_LIMIT) if isinstance(value, str) else value for key, value in diagnostics.items()})

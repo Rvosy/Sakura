@@ -1,6 +1,7 @@
 """Offline Python -> Rust HTTP -> FastAPI -> SQLite -> ZIP acceptance check."""
 
 import io
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -13,7 +14,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def capture(destination):
     sys.path.insert(0, str(ROOT))
-    from app.core_host.runtime_logging import install_runtime_logging, TELEMETRY_BRIDGE_PREFIX
+    from app.core_host.runtime_logging import install_runtime_logging, TELEMETRY_BRIDGE_PREFIX, CORE_BRIDGE_PREFIX
+    from app.core_host.plugin_host_services import _ModelSlotsHostService
+    from app.core.runtime_log import log_message
+    from app.core.diagnostics import exception_diagnostics
+    from app.plugins.dependencies import PluginDependencyRoots, PluginDependencyError
 
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
@@ -29,11 +34,38 @@ def capture(destination):
                     raise RuntimeError("legacy import failed") from cause
             except RuntimeError as error:
                 bridge.emit_unhandled("CORE_UNHANDLED_ERROR", error)
+        # Snapshot failures are successful IPC responses with error states, not
+        # process-boundary exceptions. Exercise their separate logging path.
+        def failed_callback(*_):
+            raise OSError(13, "模型配置读取失败", "C:/测试 用户/config.json")
+
+        slots = _ModelSlotsHostService(failed_callback)
+        for slot in ("chat", "summary"):
+            slots.call("register", ["fixture.models", {
+                "slotId": slot, "label": slot, "description": "", "modelKind": "chat_completion", "required": False, "order": 0,
+            }, {"load": "cb_" + "a" * 32, "save": "cb_" + "b" * 32}])
+        slots.snapshot()
+        slots.call("register_provider", ["fixture.models", {"serviceKey": "fixture.model.service", "label": "Fixture"}, "cb_" + "c" * 32])
+        slots.catalog()
+        with tempfile.TemporaryDirectory(prefix="sakura-dependency-evidence-") as work:
+            root = Path(work)
+            (root / "requirements.txt").write_text("fixture-dependency==1.0\n", encoding="utf-8")
+            try:
+                PluginDependencyRoots(root).verified_root("fixture.dependencies", root)
+            except PluginDependencyError as error:
+                log_message("error", "插件启动失败", component="plugin", plugin_id="fixture.dependencies",
+                            fields=exception_diagnostics(error, reason_code=error.code, stage="dependencies"))
     finally:
         bridge.close()
-    lines = [line[len(TELEMETRY_BRIDGE_PREFIX):] for line in stream.getvalue().splitlines()
-             if line.startswith(TELEMETRY_BRIDGE_PREFIX)]
-    assert len(lines) == 2
+    lines = []
+    for line in stream.getvalue().splitlines():
+        if line.startswith(TELEMETRY_BRIDGE_PREFIX):
+            lines.append(line[len(TELEMETRY_BRIDGE_PREFIX):])
+        elif line.startswith(CORE_BRIDGE_PREFIX):
+            record = json.loads(line[len(CORE_BRIDGE_PREFIX):])
+            if record["event"] != "core.error.unhandled":
+                lines.append(json.dumps({"kind": "runtimeLog", "record": record}, ensure_ascii=False).encode("utf-8"))
+    assert len(lines) == 6
     Path(destination).write_bytes(b"\n".join(lines) + b"\n")
 
 
