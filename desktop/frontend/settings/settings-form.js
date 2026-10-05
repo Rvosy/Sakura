@@ -20,7 +20,7 @@ export function createSettingsForm({ document, plugin, section, read, write, enh
     const id = `setting-${plugin.id}-${section.section_id}-${field.key}`; label.htmlFor = id;
     labelBox.append(label);
     if (field.description) {
-      if (field.type === "boolean") {
+      if (field.type === "boolean" || section.presentation?.inlineDescriptions) {
         const desc = document.createElement("span"); desc.className = "setting-desc"; desc.textContent = field.description; labelBox.append(desc);
       } else {
         labelBox.classList.add("setting-row-help");

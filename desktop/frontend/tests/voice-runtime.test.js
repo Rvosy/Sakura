@@ -366,6 +366,37 @@ test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled"
   assert.equal(controller.isDirty(), false);
 });
 
+test("entering voice refreshes prepared providers without applying or losing edits", async () => {
+  const { controls, document, created } = fixture();
+  const initial = snapshot();
+  const next = snapshot();
+  next.providers[1].available = true;
+  let plugins = [hub({ state: "starting" })];
+  const calls = [];
+  const controller = createVoiceController({
+    document,
+    getPlugins: () => plugins,
+    refreshAvailability: async () => { calls.push("plugins"); plugins = [hub()]; },
+    invoke: async (command) => { calls.push(command); return next; },
+  });
+  controller.initialize(initial);
+  controls.ttsProvider.value = initial.providers[1].providerId;
+  controls.ttsEnabled.checked = false;
+  created.find(item => item.id?.endsWith("-timeoutSeconds")).value = "75";
+  await controller.onPageChanged("plugins");
+  assert.deepEqual(calls, []);
+  await controller.onPageChanged("voice");
+  assert.deepEqual(calls, ["plugins", "settings_voice_get"]);
+  assert.equal(controls.ttsProvider.children[1].textContent, next.providers[1].label);
+  assert.equal(controls.ttsProvider.value, initial.providers[1].providerId);
+  assert.equal(controls.ttsEnabled.checked, false);
+  assert.equal(controller.pluginDraft(initial.providers[0].providerId).sections[0].values.timeoutSeconds, 75);
+  assert.equal(controller.isDirty(), true);
+  controller.dispose();
+  await controller.onPageChanged("voice");
+  assert.equal(calls.length, 2);
+});
+
 test("settings startup connects the voice controller to the installed plugin snapshot", async () => {
   const source = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
   const start = source.indexOf("runtimeVoiceController = createVoiceController({");

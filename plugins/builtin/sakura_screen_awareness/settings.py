@@ -36,15 +36,18 @@ class ScreenAwarenessSettings:
 
 
 def settings_descriptor():
-    return {"sectionId": "screen_awareness", "title": "主动屏幕感知", "order": 50, "presentation": {"component": "form", "alignedUnits": True},
+    return {"sectionId": "screen_awareness", "title": "主动屏幕感知", "order": 50, "presentation": {"component": "form", "alignedUnits": True, "inlineDescriptions": True},
             "fields": [
                 {"key": "enabled", "label": "启用主动屏幕感知", "type": "boolean", "default": True,
                  "description": "定时截屏，判断是否主动搭话。"},
                 {"key": "checkIntervalMinutes", "label": "截图检查间隔", "unit": "分钟", "type": "integer", "default": 20, "minimum": 1, "maximum": 120,
+                 "description": "空闲时候的截图等待时间，也是两次截图的最短间隔。",
                  "enabledWhen": {"field": "enabled", "equals": "true"}},
                 {"key": "cooldownMinutes", "label": "最短搭话间隔", "unit": "分钟", "type": "integer", "default": 10, "minimum": 1, "maximum": 120,
+                 "description": "从首张截图开始计时，等待结束后触发主动对话。",
                  "enabledWhen": {"field": "enabled", "equals": "true"}},
                 {"key": "batchLimit", "label": "单次最多发送截图", "unit": "张", "type": "integer", "default": 6, "minimum": 1, "maximum": 20,
+                 "description": "角色单次查看的截图数量上限。超出时保留最新截图，无需攒满。",
                  "enabledWhen": {"field": "enabled", "equals": "true"}},
                 {"key": "resolution", "label": "截图分辨率", "tooltip": "发送前按比例缩小，不放大截图", "type": "select", "default": "fullscreen",
                  "enabledWhen": {"field": "enabled", "equals": "true"},

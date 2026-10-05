@@ -770,6 +770,7 @@ function showPage(page) {
   runtimePluginController?.onPageChanged(page);
   runtimePluginMarketplace?.onPageChanged(page);
   runtimeAsrController?.onPageChanged(page);
+  void runtimeVoiceController?.onPageChanged(page);
   runtimeCharacterFeature?.onPageChanged(page);
 }
 

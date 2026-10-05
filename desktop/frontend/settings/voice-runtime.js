@@ -462,6 +462,15 @@ export function createVoiceController({
     initialize,
     refreshStatus: refresh,
     refreshCurrent,
+    async onPageChanged(page) {
+      if (page !== "voice" || disposed) return;
+      try {
+        await refreshAvailability();
+        if (!disposed) await refreshCurrent({ preserveDraft: true });
+      } catch (error) {
+        if (!disposed) onStatus(error, "error");
+      }
+    },
     hasPluginSections: (pluginId) => Boolean(snapshot?.sections.some((section) => section.pluginId === pluginId)),
     pluginDraft,
     restorePluginDraft,

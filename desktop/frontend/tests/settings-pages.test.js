@@ -40,6 +40,19 @@ test("namespaced pages share exported regions, append navigation and keep one pr
   ui.feature.dispose();
 });
 
+test("contributed forms can show descriptions directly below labels", () => {
+  const state = contributed();
+  const section = state.plugins[0].sections[0];
+  section.presentation.inlineDescriptions = true;
+  section.fields[0].description = "参数的补充说明";
+  const ui = featureFixture(async () => state);
+  ui.feature.initialize(state);
+  const form = ui.document.getElementById("page-fixture_plugin:schedule").querySelector("[data-plugin-section]");
+  assert.equal(form.querySelector(".setting-desc").textContent, section.fields[0].description);
+  assert.equal(form.querySelector(".setting-help"), null);
+  ui.feature.dispose();
+});
+
 test("page drafts survive reload and load failures; disable withdraws contributions", async () => {
   let state = contributed(); const ui = featureFixture(async () => state);
   ui.feature.initialize(state);

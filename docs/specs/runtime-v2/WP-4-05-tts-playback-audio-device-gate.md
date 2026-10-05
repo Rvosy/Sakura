@@ -127,7 +127,8 @@ Settings sections，并以 `availability={state,reasonCode}` 表达 Hub 状态�
 必须返回逐步结果并刷新真实快照。旧固定 Provider 字段、bundle 轮询和测试命令不得在 Runtime v2 暗中继续
 可调用。`sakura.tts` Hub 未安装、未启用，或当前没有已启用的 Voice Provider 时，Voice 页面不得保留禁用的
 角色语音表单；页面统一显示“语音管理暂不可用”、重新检查和前往插件页入口。重新检查必须先刷新通用插件
-Snapshot，再决定是否读取 Voice Snapshot。页面从该快照中按 `provides` 查找 `sakura.tts`，仅在 Hub 已启用且
+Snapshot，再决定是否读取 Voice Snapshot。每次进入语音页也执行这一刷新，并保留尚未应用的编辑；插件安装或
+资源准备完成后的引擎可用状态无需点击“应用”即可更新。页面从该快照中按 `provides` 查找 `sakura.tts`，仅在 Hub 已启用且
 `state=active` 时读取 Voice Snapshot；未安装、已停用、正在启动和启动失败分别显示对应状态。Voice Snapshot
 读取异常须显示读取失败，不能误报为未安装插件。没有当前角色时仍须展示 Hub 返回的 Provider 列表和 Provider 全局
 Settings section；角色级启用必须禁用，引擎选择仅用于切换全局配置区块且不得保存为角色选择，并明确提示先

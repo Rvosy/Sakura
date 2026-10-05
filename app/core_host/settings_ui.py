@@ -61,6 +61,7 @@ def presentation(raw):
     if not isinstance(result["collapsible"], bool):
         raise ValueError("SETTINGS_PRESENTATION_INVALID")
     result["alignedUnits"] = raw.get("alignedUnits") is True
+    result["inlineDescriptions"] = raw.get("inlineDescriptions") is True
     # Bindings reference declared fields/actions, never executable markup.
     for key in ("timeoutSection", "timeoutField", "serviceKey", "group", "statusAction", "valueField", "requestField", "resultField", "probeAction", "cancelAction", "itemsField", "inspectAction", "visibleField", "statusField", "imageField", "actionsField"):
         if key in raw:
