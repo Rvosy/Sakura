@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -11,6 +12,7 @@ import pytest
 from plugins.builtin.sakura_model_openai_compatible.transport import execute
 from sakura_cancellation import OperationCancelled
 from sakura_model import ModelError
+from app.plugins.sakura_plugin_sdk import PluginContext
 
 
 SETTINGS = {"base_url": "https://fixture.invalid/v1", "api_key": "opaque-secret", "model": "fixture", "timeout_seconds": 5}
@@ -45,11 +47,13 @@ def test_keyless_network_endpoint_uses_the_server_authentication_policy(monkeypa
 
 
 def test_async_model_worker_preserves_cause_before_releasing_credentials(monkeypatch):
+    from types import SimpleNamespace
     from plugins.builtin.sakura_model_openai_compatible import plugin, transport
     def fail(*args, **kwargs):
         raise OSError('connection reset at C:\\runtime\\model opaque-secret')
     monkeypatch.setattr(transport, 'execute', fail)
     worker = plugin.ModelPlugin()
+    worker.context = SimpleNamespace(exception_diagnostics=PluginContext.exception_diagnostics)
     worker.changed = threading.Condition()
     worker._read_request = lambda job: REQUEST
     job = plugin.Job('failure', ('owner', 'scope'), dict(SETTINGS), {})
@@ -95,6 +99,72 @@ def test_http_failure_is_not_replayed_and_credentials_stay_private(monkeypatch, 
     details = provider_exception_diagnostics(caught.value)
     assert "opaque-secret" not in json.dumps(details)
     assert type(caught.value.__cause__).__name__ in details["exception_chain"]
+    evidence = PluginContext.exception_diagnostics(caught.value, secrets=(SETTINGS["api_key"],))
+    assert message in evidence["diagnostic"]
+    assert "opaque-secret" not in json.dumps(evidence)
+    assert "openai" in evidence["exception_stack"]
+
+
+@pytest.mark.parametrize("operation", ["generate", "test_connection", "list_models"])
+@pytest.mark.parametrize("error", [
+    {"message": "quota exhausted opaque-secret", "code": "insufficient_quota", "param": "model", "request_id": "req-quota", "request": "private-request"},
+    "quota exhausted opaque-secret",
+])
+def test_success_status_with_provider_error_preserves_safe_reason(monkeypatch, operation, error):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"error": error, "messages": ["private-conversation"]})
+    mock_http(monkeypatch, handler)
+    with pytest.raises(ModelError) as caught:
+        run(operation=operation)
+    failure = caught.value
+    assert failure.code == "MODEL_REQUEST_FAILED"
+    assert "quota exhausted" in str(failure)
+    if isinstance(error, dict):
+        assert "insufficient_quota" in str(failure)
+        assert "param: model" in str(failure)
+        assert "request_id: req-quota" in str(failure)
+    assert failure.diagnostics == {"attemptCount": 1, "httpStatus": 200, "faultDomain": "provider", "stage": "response"}
+    observed = "".join(traceback.format_exception(failure)) + repr(failure.diagnostics)
+    assert all(value not in observed for value in ("opaque-secret", "private-request", "private-conversation"))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("data,field,detail", [
+    ({"output": "private-conversation"}, "choices", "缺少"),
+    ({"choices": []}, "choices", "空数组"),
+    ({"choices": None}, "choices", "NoneType"),
+    ({"choices": [{"message": "private-conversation"}]}, "choices[0].message", "str"),
+    ({"choices": [{"message": {"tool_calls": [None]}}]}, "choices[0].message.tool_calls[0]", "NoneType"),
+    ({"choices": [{"message": {"tool_calls": [{"id": "call", "function": {"name": "lookup"}}]}}]},
+     "choices[0].message.tool_calls[0].function.arguments", "缺少"),
+    ([], "$", "list"),
+])
+def test_malformed_completion_identifies_field_without_echoing_values(monkeypatch, data, field, detail):
+    mock_http(monkeypatch, lambda _request: httpx.Response(200, json=data))
+    with pytest.raises(ModelError) as caught:
+        run()
+    failure = caught.value
+    assert failure.code == "MODEL_RESPONSE_INVALID"
+    assert field in str(failure) and detail in str(failure)
+    assert failure.diagnostics == {"attemptCount": 1, "httpStatus": 200, "faultDomain": "protocol", "stage": "decode", "validation_field": field}
+    assert "private-conversation" not in "".join(traceback.format_exception(failure))
+
+
+@pytest.mark.parametrize("operation", ["generate", "list_models"])
+def test_non_json_response_keeps_decode_location_and_content_type_without_body(monkeypatch, operation):
+    mock_http(monkeypatch, lambda _request: httpx.Response(200, text="<html>opaque-secret private-conversation</html>", headers={"Content-Type": "text/html"}))
+    with pytest.raises(ModelError) as caught:
+        run(operation=operation)
+    failure = caught.value
+    assert failure.code == "MODEL_RESPONSE_INVALID"
+    assert "JSON" in str(failure) and "line 1 column 1" in str(failure)
+    assert "text/html" in str(failure)
+    assert failure.diagnostics["httpStatus"] == 200
+    assert failure.diagnostics["stage"] == "decode"
+    observed = "".join(traceback.format_exception(failure))
+    assert "opaque-secret" not in observed and "private-conversation" not in observed
 
 
 @pytest.mark.parametrize("path", ["", "/v1", "/v1beta", "/v1/openai", "/v1beta/openai/"])
@@ -146,9 +216,9 @@ def test_cancel_reclaims_the_pending_http_task(monkeypatch):
 
 @pytest.mark.parametrize("error_type,code,stage", [(httpx.ConnectTimeout, "MODEL_CONNECTION_TIMEOUT", "connect"),
                                                  (httpx.ReadTimeout, "MODEL_READ_TIMEOUT", "read")])
-def test_provider_timeout_keeps_the_failure_stage_and_redacted_sdk_cause(monkeypatch, error_type, code, stage):
+def test_provider_timeout_keeps_the_failure_stage_and_original_cause(monkeypatch, error_type, code, stage):
     def handler(request):
-        raise error_type("opaque-secret", request=request)
+        raise error_type("upstream socket timed out opaque-secret", request=request)
     mock_http(monkeypatch, handler)
     with pytest.raises(ModelError) as caught:
         run()
@@ -160,6 +230,11 @@ def test_provider_timeout_keeps_the_failure_stage_and_redacted_sdk_cause(monkeyp
     details = provider_exception_diagnostics(caught.value)
     assert "opaque-secret" not in json.dumps(details)
     assert type(caught.value.__cause__).__name__ in details["exception_chain"]
+    assert isinstance(caught.value.__cause__.__cause__, error_type)
+    evidence = PluginContext.exception_diagnostics(caught.value, secrets=(SETTINGS["api_key"],))
+    assert "upstream socket timed out" in evidence["diagnostic"]
+    assert error_type.__name__ in evidence["exception_chain"]
+    assert "opaque-secret" not in json.dumps(evidence)
 
 
 def test_native_tool_arguments_and_opaque_continuation_metadata_roundtrip(monkeypatch):
@@ -214,3 +289,52 @@ def test_poll_drains_retained_progress_in_bounded_batches_before_terminal_state(
             break
     assert received == list(range(max(1, count - 127), count + 1))
     assert truncated == (count > 128)
+
+
+@pytest.mark.parametrize("kind", ["filesystem", "connection", "http"])
+def test_background_failure_retains_original_reason_frames_and_redacts_credentials(monkeypatch, kind):
+    from types import SimpleNamespace
+    from plugins.builtin.sakura_model_openai_compatible import plugin as provider
+    from plugins.builtin.sakura_model_openai_compatible import transport
+    from sakura_model_client import decode_model_result
+
+    plugin = provider.ModelPlugin()
+    plugin.context = SimpleNamespace(exception_diagnostics=PluginContext.exception_diagnostics)
+    plugin.changed = threading.Condition()
+    job = provider.Job("job", ("consumer", "scope"), dict(SETTINGS), {"request": REQUEST})
+    if kind == "filesystem":
+        def execute(*args, **kwargs):
+            raise PermissionError(13, "fixture disk is locked opaque-secret", "C:/model/cache/data.json")
+        monkeypatch.setattr(transport, "execute", execute)
+        expected = "fixture disk is locked"
+    elif kind == "connection":
+        def handler(request):
+            raise httpx.ConnectError("TLS certificate verification failed opaque-secret", request=request)
+        mock_http(monkeypatch, handler)
+        expected = "TLS certificate verification failed"
+    else:
+        mock_http(monkeypatch, lambda request: httpx.Response(403, json={"error": {"message": "project access denied opaque-secret", "param": "project", "request_id": "req-42"}, "choices": [{"message": {"content": "private-conversation"}}]}))
+        expected = "project access denied"
+    plugin._run(job)
+    assert job.state == "failed" and job.settings == {} and job.descriptor == {}
+    with pytest.raises(ModelError) as caught:
+        decode_model_result({"failure": job.failure}, None, {}, job.operation_id)
+    evidence = caught.value.diagnostics
+    assert expected in str(caught.value) and expected in evidence["diagnostic"]
+    assert "sakura_model_openai_compatible.plugin:_run:" in evidence["exception_stack"]
+    assert ("openai._base_client:request:" if kind == "http" else "test_model_provider_transport:") in evidence["exception_stack"]
+    assert "opaque-secret" not in json.dumps(job.failure)
+    assert "private-conversation" not in json.dumps(job.failure)
+    if kind == "http":
+        assert "req-42" in evidence["diagnostic"]
+
+
+def test_provider_diagnostic_keeps_urls_paths_newlines_and_long_error_tail():
+    from sakura_provider_errors import sanitize_provider_diagnostic, public_provider_http_message
+    text = "TLS failed at https://user:password@api.example/v1?token=private-token\nC:/models/voice; /opt/models/voice\n" + "x" * 600 + "\nupstream request req-42"
+    result = sanitize_provider_diagnostic(text)
+    assert "api.example/v1?token=[REDACTED]" in result
+    assert "C:/models/voice" in result and "/opt/models/voice" in result
+    assert "\nupstream request req-42" in result
+    assert "user:password" not in result and "private-token" not in result
+    assert "private-conversation" not in public_provider_http_message(RuntimeError('API HTTP 502: {"choices":[{"content":"private-conversation"}]}'), 502)

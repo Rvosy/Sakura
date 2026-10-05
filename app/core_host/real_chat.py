@@ -1299,15 +1299,18 @@ def _project_reply(reply: object) -> list[dict[str, object]]:
 
 
 def _classify_error(error: BaseException) -> tuple[str, str, bool]:
+    from app.core.diagnostics import exception_diagnostics
+
+    message = str(exception_diagnostics(error, reason_code="CHAT_EXECUTION_FAILED", stage="chat")["diagnostic"])
     if isinstance(error, _BoundaryFailure):
-        return error.code, error.public_message, error.retryable
+        return error.code, message, error.retryable
     from app.core_host.assistant_adapter import AssistantFailure
     if isinstance(error, AssistantFailure):
-        return error.code, error.public_message, error.retryable
+        return error.code, message, error.retryable
     from app.plugin_sdk.sakura_model import ApiConfigError, ApiRequestError
 
     if isinstance(error, ApiConfigError):
-        return "PROVIDER_CONFIGURATION_INVALID", "Provider configuration is invalid", False
+        return "PROVIDER_CONFIGURATION_INVALID", message, False
     if isinstance(error, ApiRequestError):
         text = str(error).lower()
         status = provider_http_status(error)
@@ -1329,14 +1332,9 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
             )
         )
         if response_invalid:
-            message = (
-                "模型服务响应格式无效：返回内容不是有效 JSON。"
-                if "格式无法解析" in text or "invalid json" in text
-                else "模型服务响应格式无效：回复结构不符合协议。"
-            )
             return "PROVIDER_RESPONSE_INVALID", message, False
-        return "PROVIDER_REQUEST_FAILED", "Provider request failed", True
-    return "CHAT_EXECUTION_FAILED", "Chat execution failed", False
+        return "PROVIDER_REQUEST_FAILED", message, True
+    return "CHAT_EXECUTION_FAILED", message, False
 
 
 def _safe_diagnostic(error: BaseException, *, code: str, stage: str, operation_id: str) -> None:

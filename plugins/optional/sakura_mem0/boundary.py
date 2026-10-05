@@ -352,6 +352,7 @@ class MemoryBoundary:
         try:
             result = self._store.search_memory(arguments, wait=False)
         except Exception:
+            log_event("memory", "记忆检索失败", event="memory.search.failed", severity="error")
             with self._lock:
                 self._store_failed = True
             self._set_status("degraded", "记忆检索暂时不可用；聊天不受影响。")

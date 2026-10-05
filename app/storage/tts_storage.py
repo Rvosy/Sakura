@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -61,6 +62,7 @@ class TtsStorage:
             try:
                 root.mkdir(parents=True, exist_ok=True)
             except OSError:
+                logging.getLogger(__name__).exception("语音存储目录创建失败: %s", root)
                 return TtsStorageSnapshot(
                     self.user_root, root, source, False, TTS_ROOT_NOT_WRITABLE
                 )
@@ -132,6 +134,7 @@ def _availability_reason(root: Path, *, probe_write: bool = False) -> str | None
             os.close(descriptor)
             Path(probe).unlink()
         except OSError:
+            logging.getLogger(__name__).exception("语音存储目录写入失败: %s", root)
             return TTS_ROOT_NOT_WRITABLE
     return None
 

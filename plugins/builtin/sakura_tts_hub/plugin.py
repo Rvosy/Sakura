@@ -161,6 +161,7 @@ class SakuraTTSHub:
         try:
             result = self._provider(descriptor).warmup(character_id)
         except Exception as error:
+            self._log("error", "语音引擎预热失败", provider=provider_id)
             code = _stable_error_code(error, "TTS_WARMUP_FAILED")
             return {
                 "accepted": False,
@@ -243,6 +244,7 @@ class SakuraTTSHub:
         try:
             provider = getattr(self._context, "bind")(descriptor.service_key)
         except Exception as error:
+            self._log("error", "语音引擎绑定失败", request_id=request_id, provider=provider_id)
             return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE", provider_failure("TTS_PROVIDER_UNAVAILABLE", error)["diagnostics"])
         try:
             job_id = provider.begin(
@@ -254,6 +256,7 @@ class SakuraTTSHub:
                 }
             )
         except Exception as error:
+            self._log("error", "语音合成启动失败", request_id=request_id, provider=provider_id)
             code = _stable_error_code(error, "TTS_SYNTHESIS_FAILED")
             return self._failed(
                 request_id, provider_id, code,
@@ -403,6 +406,7 @@ class SakuraTTSHub:
         try:
             result = self._provider(descriptor).status()
         except Exception:
+            self._log("error", "语音引擎状态读取失败", provider=descriptor.provider_id)
             return False, "TTS_PROVIDER_UNAVAILABLE", "provider_status"
         if not isinstance(result, Mapping):
             return bool(result), "READY" if result else "TTS_PROVIDER_UNAVAILABLE", "provider_status"

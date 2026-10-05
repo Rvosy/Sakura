@@ -14,7 +14,7 @@ from openai.resources.chat import AsyncChat  # Resolve lazy imports before servi
 from sakura_cancellation import check_cancelled
 from sakura_http import proxy_for_url
 from sakura_model import ModelError
-from sakura_provider_errors import public_provider_http_message
+from sakura_provider_errors import public_provider_http_message, sanitize_provider_diagnostic
 
 
 def normalize_base_url(value):
@@ -53,26 +53,51 @@ def _message(value):
     return message
 
 
+def _invalid_response(message, field):
+    return ModelError("MODEL_RESPONSE_INVALID", message,
+                      diagnostics={"faultDomain": "protocol", "stage": "decode", "validation_field": field})
+
+
+def _response_value(value, expected, path):
+    if not isinstance(value, expected):
+        raise _invalid_response(f"模型响应的 {path} 应为 {expected.__name__}，实际为 {type(value).__name__}。", path)
+    return value
+
+
+def _response_field(value, name, expected, path):
+    if name not in value:
+        raise _invalid_response(f"模型响应缺少 {path} 字段。", path)
+    return _response_value(value[name], expected, path)
+
+
 def _response(data):
-    try:
-        choice = data["choices"][0]
-        message = choice["message"]
-        if not isinstance(message, dict):
-            raise TypeError()
-        calls = [{"id": item["id"], "name": item["function"]["name"], "arguments": item["function"]["arguments"],
-                  "providerData": {key: value for key, value in item.items() if key not in {"id", "type", "function"}}}
-                 for item in message.get("tool_calls") or []]
-    except (KeyError, IndexError, TypeError) as error:
-        raise ModelError("MODEL_RESPONSE_INVALID", "模型返回的消息结构无效。") from error
+    _response_value(data, dict, "$")
+    choices = _response_field(data, "choices", list, "choices")
+    if not choices:
+        raise _invalid_response("模型响应的 choices 是空数组。", "choices")
+    choice = _response_value(choices[0], dict, "choices[0]")
+    message = _response_field(choice, "message", dict, "choices[0].message")
+    calls = []
+    raw_calls = message.get("tool_calls")
+    if raw_calls is not None:
+        _response_value(raw_calls, list, "choices[0].message.tool_calls")
+        for index, item in enumerate(raw_calls):
+            path = f"choices[0].message.tool_calls[{index}]"
+            _response_value(item, dict, path)
+            function = _response_field(item, "function", dict, path + ".function")
+            calls.append({"id": _response_field(item, "id", str, path + ".id"),
+                          "name": _response_field(function, "name", str, path + ".function.name"),
+                          "arguments": _response_field(function, "arguments", str, path + ".function.arguments"),
+                          "providerData": {key: value for key, value in item.items() if key not in {"id", "type", "function"}}})
     return {"message": {"role": "assistant", "content": message.get("content"), "toolCalls": calls,
                         "providerData": {key: value for key, value in message.items() if key not in {"role", "content", "tool_calls"}}},
             "usage": data.get("usage") or {}, "finishReason": choice.get("finish_reason")}
 
 
 def _model_ids(data):
-    if not isinstance(data, dict) or not isinstance(data.get("data"), list):
-        raise ModelError("MODEL_RESPONSE_INVALID", "模型列表格式无法解析。")
-    return sorted({item["id"].strip() for item in data["data"]
+    _response_value(data, dict, "$")
+    entries = _response_field(data, "data", list, "data")
+    return sorted({item["id"].strip() for item in entries
                    if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip()}, key=str.casefold)
 
 
@@ -98,6 +123,33 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
         payload = {"model": settings["model"], "messages": [{"role": "user", "content": "Reply with only OK."}]}
     diagnostics = {}
 
+    def decode_response(response):
+        diagnostics["httpStatus"] = response.status_code
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            content_type = sanitize_provider_diagnostic(response.headers.get("content-type", "未提供"), secrets=(key,))
+            detail = sanitize_provider_diagnostic(str(error), secrets=(key,))
+            raise ModelError("MODEL_RESPONSE_INVALID", f"模型响应无法解码为 JSON（Content-Type: {content_type}）：{detail}",
+                             diagnostics={"faultDomain": "protocol", "stage": "decode"}) from error
+        if isinstance(data, dict) and data.get("error") is not None:
+            upstream = data["error"]
+            # Only error fields may leave the Provider; never include echoed
+            # requests, conversation content or arbitrary response metadata.
+            if isinstance(upstream, dict):
+                public = {field: upstream[field] for field in ("message", "code", "type", "status", "param", "request_id")
+                          if isinstance(upstream.get(field), (str, int, float)) and not isinstance(upstream[field], bool)}
+            elif isinstance(upstream, str):
+                public = {"message": upstream}
+            else:
+                public = {}
+            if not public:
+                public = {"message": "模型服务返回 error 字段，但未提供错误说明。"}
+            status = response.status_code
+            message = public_provider_http_message(RuntimeError(f"API HTTP {status}: " + json.dumps({"error": public})), status, secrets=(key,))
+            raise ModelError("MODEL_REQUEST_FAILED", message, diagnostics={"faultDomain": "provider", "stage": "response"})
+        return data
+
     async def run():
         async with httpx.AsyncClient(proxy=proxy_for_url(base_url), verify=ssl.create_default_context(), trust_env=False,
                                      timeout=settings["timeout_seconds"], follow_redirects=False) as http:
@@ -107,11 +159,12 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                 async def send():
                     if operation == "list_models":
                         response = await sdk.models.with_raw_response.list(extra_headers=headers)
-                        return response.http_response.json()
+                        return decode_response(response.http_response)
                     # Streaming is optional. The complete reply remains authoritative;
                     # batched deltas never enter the Assistant's segmented reply policy.
                     if request.get("stream"):
                         stream = await sdk.chat.completions.create(**payload, stream=True, stream_options={"include_usage": True}, extra_headers=headers)
+                        diagnostics["httpStatus"] = stream.response.status_code
                         content, calls, usage, finish = [], {}, {}, None
                         metadata = {}
                         pending, last_emit = "", asyncio.get_running_loop().time()
@@ -155,7 +208,7 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                             progress({"type": "text_delta", "text": pending})
                         return {"choices": [{"message": {**metadata, "content": "".join(content), "tool_calls": [calls[index] for index in sorted(calls)]}, "finish_reason": finish}], "usage": usage}
                     response = await sdk.chat.completions.with_raw_response.create(**payload, extra_headers=headers)
-                    return response.http_response.json()
+                    return decode_response(response.http_response)
 
                 async def guarded():
                     task = asyncio.create_task(send())
@@ -177,7 +230,7 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                         if operation == "list_models":
                             return {"models": _model_ids(data)}
                         result = _response(data)
-                        result["diagnostics"] = {"attemptCount": attempt, "compatibilityFallbacks": fallbacks, "httpStatus": 200}
+                        result["diagnostics"] = {**diagnostics, "compatibilityFallbacks": fallbacks}
                         return result
                     except APIStatusError as error:
                         parameter = next((name for name in ("response_format", "temperature") if name in payload and _unsupported(error, name)), None)
@@ -189,6 +242,10 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
     try:
         with asyncio.Runner() as runner:
             return runner.run(run())
+    except ModelError as error:
+        error.diagnostics = {**diagnostics, **error.diagnostics}
+        error.status_code = error.diagnostics.get("httpStatus")
+        raise
     except APIStatusError as error:
         status = error.status_code
         body = error.response.text
@@ -205,12 +262,12 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
     except APITimeoutError as error:
         stage = "read" if isinstance(error.__cause__, httpx.ReadTimeout) else "connect" if isinstance(error.__cause__, httpx.ConnectTimeout) else "request"
         code = {"read": "MODEL_READ_TIMEOUT", "connect": "MODEL_CONNECTION_TIMEOUT", "request": "MODEL_REQUEST_TIMEOUT"}[stage]
-        failure = ModelError(code, "模型请求超时。", diagnostics={**diagnostics, "faultDomain": "transport", "stage": stage})
+        detail = sanitize_provider_diagnostic(str(error.__cause__ or error) or type(error.__cause__ or error).__name__, secrets=(key,))
+        failure = ModelError(code, detail, diagnostics={**diagnostics, "faultDomain": "transport", "stage": stage})
         failure.diagnostic_secrets = (key,)
         raise failure from error
     except APIConnectionError as error:
-        failure = ModelError("MODEL_CONNECTION_FAILED", "模型服务连接失败。", diagnostics={**diagnostics, "faultDomain": "transport", "stage": "connect"})
+        detail = sanitize_provider_diagnostic(str(error.__cause__ or error) or type(error.__cause__ or error).__name__, secrets=(key,))
+        failure = ModelError("MODEL_CONNECTION_FAILED", detail, diagnostics={**diagnostics, "faultDomain": "transport", "stage": "connect"})
         failure.diagnostic_secrets = (key,)
         raise failure from error
-    except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError) as error:
-        raise ModelError("MODEL_RESPONSE_INVALID", "模型返回格式无法解析。") from error

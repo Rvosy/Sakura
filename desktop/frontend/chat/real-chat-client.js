@@ -22,7 +22,7 @@ function validateChatEvent(value) {
     || value.generationNumber < 1
     || typeof value.operationId !== "string"
     || !value.operationId
-  ) throw new Error("CHAT_EVENT_INVALID");
+  ) throw new Error("CHAT_EVENT_INVALID: expected type, generationId, generationNumber and operationId");
   return Object.freeze(value);
 }
 
@@ -44,6 +44,7 @@ export function createRealChatClient({
   invoke,
   createChannel,
   onCancelError = () => {},
+  onDiagnostic = (error) => console.error(error),
   onEvent,
   prepareGeneration = async () => true,
   initialPreparedGenerationId = null,
@@ -237,7 +238,8 @@ export function createRealChatClient({
     let event;
     try {
       event = validateChatEvent(value);
-    } catch {
+    } catch (error) {
+      onDiagnostic(error);
       return;
     }
     if (
@@ -260,7 +262,7 @@ export function createRealChatClient({
 
   function receiveHost(value) {
     let event;
-    try { event = validateChatEvent(value); } catch { return; }
+    try { event = validateChatEvent(value); } catch (error) { onDiagnostic(error); return; }
     if (disposed || !isChatReadyLifecycle(lifecycleStatus)
         || !sameIdentity(event.generationId, event.generationNumber)
         || (event.characterId && preparedCharacterId && event.characterId !== preparedCharacterId)) return;

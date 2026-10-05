@@ -134,6 +134,11 @@ Manifest 可通过 `visuals` 声明资源类型、领域合同版本、Service �
 
 ## 4. Plugin SDK 边界
 
+后台任务将异常转换为普通结果前，调用 `context.exception_diagnostics(error, secrets=...)` 保存原始消息、
+异常链和栈；`secrets` 传入本次操作已知的凭据。该方法只提取异常和帧位置，不读取请求正文或局部变量。
+在异常处理块中使用日志或 diagnostics 服务时，SDK 自动附加当前异常。捕获后降级、返回空结果或仅返回
+错误码的分支也必须在捕获点保留诊断；任务结束后无法重建原始栈。
+
 插件进程的 import path 只包含：
 
 ```text

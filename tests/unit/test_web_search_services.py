@@ -1,12 +1,27 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from plugins.builtin.sakura_web import search, web
 from plugins.builtin.sakura_web.plugin import WebPlugin, _execute_handler
+from app.plugins.sakura_plugin_sdk import PluginContext
+
+
+@pytest.fixture
+def draft_plugin():
+    plugin = WebPlugin()
+    plugin.log_records = []
+    logger = SimpleNamespace(warning=lambda message, fields: plugin.log_records.append(fields))
+    def get(service):
+        assert service == "sakura.host.logging"
+        return logger
+    # No config capability is supplied: draft tests must not load or save it.
+    plugin.context = SimpleNamespace(get=get, exception_diagnostics=PluginContext.exception_diagnostics)
+    return plugin
 
 
 @pytest.mark.parametrize('provider,markup,title,url', [
@@ -71,8 +86,8 @@ def test_missing_tavily_key_does_not_send_request(monkeypatch):
     assert result['reasonCode'] == 'WEB_API_KEY_MISSING'
 
 
-def test_draft_test_does_not_save_configuration(monkeypatch):
-    plugin = WebPlugin()
+def test_draft_test_does_not_save_configuration(monkeypatch, draft_plugin):
+    plugin = draft_plugin
     seen = []
     def run(query, count, config):
         seen.append(config)
@@ -84,10 +99,9 @@ def test_draft_test_does_not_save_configuration(monkeypatch):
     assert not plugin.test_thread.is_alive()
     assert result == {}
     assert 'Result' in plugin.test_result
-    # No context exists: a draft test must not access or update persistent config.
 
 
-def test_background_search_returns_before_network_and_ignores_closed_worker(monkeypatch):
+def test_background_search_returns_before_network_and_ignores_closed_worker(monkeypatch, draft_plugin):
     import threading
     entered, release = threading.Event(), threading.Event()
     calls = []
@@ -97,7 +111,7 @@ def test_background_search_returns_before_network_and_ignores_closed_worker(monk
         assert release.wait(2)
         return {'results': [{'title': 'Late result', 'url': 'https://example.com'}]}
     monkeypatch.setattr(search, 'search', run)
-    plugin = WebPlugin()
+    plugin = draft_plugin
     try:
         assert plugin.test_search({'provider': 'bing', 'test_query': 'first'}) == {}
         assert entered.wait(1)
@@ -167,3 +181,23 @@ def test_search_metadata_and_fuller_content_reach_model_tool_message(monkeypatch
     assert message['role'] == 'tool' and message['tool_call_id'] == 'search-1'
     assert content in message['content']
     assert result['retrieved_at'] in message['content']
+
+
+def test_web_network_failure_preserves_chain_without_known_credential(monkeypatch, draft_plugin):
+    def fail(*args):
+        try:
+            raise OSError("TLS verification failed opaque-web-key")
+        except OSError as cause:
+            raise web.WebError("WEB_NETWORK_ERROR", "connection failed") from cause
+    monkeypatch.setattr(search, "search", fail)
+    draft_plugin.test_search({"provider": "tavily", "tavily_api_key": "opaque-web-key", "test_query": "private-query"})
+    draft_plugin.test_thread.join(2)
+    assert not draft_plugin.test_thread.is_alive()
+    records = draft_plugin.log_records
+    assert records[0]["reason_code"] == "WEB_NETWORK_ERROR"
+    assert "TLS verification failed" in draft_plugin.test_result
+    assert "opaque-web-key" not in draft_plugin.test_result
+    assert "TLS verification failed" in records[0]["diagnostic"]
+    assert "OSError" in records[0]["exception_chain"]
+    assert "opaque-web-key" not in json.dumps(records)
+    assert "private-query" not in json.dumps(records)

@@ -1771,12 +1771,14 @@ def test_invalid_provider_json_fails_once_without_poisoning_core(tmp_path: Path)
             "operationId": "chat-invalid-json",
             "error": {
                 "code": "PROVIDER_RESPONSE_INVALID",
-                "message": "模型服务响应格式无效：回复结构不符合协议。",
+                "message": failure["error"]["message"],
                 "retryable": False,
                 "details": failure["error"]["details"],
             },
             "historyStatus": "saved",
         }
+        assert "line 1 column 1" in failure["error"]["message"]
+        assert "Expecting value" in failure["error"]["message"]
         health = _exchange(process, _request("health", "system.health", {}))
         assert health["payload"]["status"] == "healthy"
         snapshot = _exchange(process, _request("snapshot-after-failure", "core.snapshot", {}))
@@ -1879,10 +1881,11 @@ def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) 
         assert diagnostics["exception_stack"]
         assert failure["error"] == {
             "code": "PROVIDER_RESPONSE_INVALID",
-            "message": "模型服务响应格式无效：回复结构不符合协议。",
+            "message": failure["error"]["message"],
             "retryable": False,
             "details": failure["error"]["details"],
         }
+        assert "remained invalid after repair" in failure["error"]["message"]
         assert len(_ProviderHandler.requests) == 2
         _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert process.wait(timeout=5) == 0
@@ -1921,15 +1924,16 @@ def test_provider_http_status_is_sanitized_and_scoped_to_one_operation(
         assert terminal["name"] == "chat.failed"
         assert terminal["payload"]["error"] == {
             "code": "PROVIDER_REQUEST_FAILED",
-            "message": (
-                f"API HTTP {status}: Rate limit exceeded for requested model "
-                "(code: rate_limit; type: requests)"
-            ),
+            "message": terminal["payload"]["error"]["message"],
             "retryable": retryable,
             "details": terminal["payload"]["error"]["details"],
         }
         assert "PRIVATE_PROVIDER_FAILURE" not in json.dumps(terminal)
         assert "sk-private-fixture" not in json.dumps(terminal)
+        message = terminal["payload"]["error"]["message"]
+        assert f"API HTTP {status}" in message
+        assert "Rate limit exceeded for requested model" in message
+        assert "rate_limit" in message and "requests" in message
         assert len(_ProviderHandler.requests) == request_count
         assert _exchange(process, _request("health", "system.health", {}))["ok"] is True
         _exchange(process, _request("shutdown", "system.shutdown", {}))
@@ -1986,10 +1990,11 @@ def test_connection_refused_is_retryable_and_does_not_change_readiness(tmp_path:
         assert terminal["payload"]["error"]["details"]["diagnostics"]["exception_stack"]
         assert terminal["payload"]["error"] == {
             "code": "PROVIDER_REQUEST_FAILED",
-            "message": "模型请求失败。",
+            "message": terminal["payload"]["error"]["message"],
             "retryable": True,
             "details": terminal["payload"]["error"]["details"],
         }
+        assert "connection" in terminal["payload"]["error"]["message"].lower()
         snapshot = _exchange(process, _request("snapshot", "core.snapshot", {}))
         assert snapshot["payload"]["readiness"] == "ready"
         _exchange(process, _request("shutdown", "system.shutdown", {}))

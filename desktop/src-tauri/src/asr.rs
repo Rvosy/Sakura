@@ -722,10 +722,8 @@ pub(crate) async fn asr_capture_start(
             })? = Some(worker);
         }
         Err(error) => {
-            session.finish(Err(crate::runtime_log::diagnostic_error(
-                "ASR_CAPTURE_FAILED",
-                error,
-            )));
+            let error = crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", error);
+            session.finish(Err(error.clone()));
             let _ = proxy(
                 &lifecycle,
                 "asr.input.cancel",
@@ -738,7 +736,7 @@ pub(crate) async fn asr_capture_start(
                 json!({"recordingId": session.id}),
             )
             .await;
-            return Err("ASR_CAPTURE_FAILED".into());
+            return Err(error);
         }
     }
     opened.await.map_err(|source_error| {
@@ -879,7 +877,7 @@ fn input_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     samples: Arc<Mutex<Samples>>,
-    failed: Arc<AtomicBool>,
+    failed: Arc<Mutex<Option<String>>>,
 ) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample,
@@ -902,8 +900,13 @@ where
                     }
                 }
             },
-            move |_| {
-                failed.store(true, Ordering::SeqCst);
+            move |error| {
+                if let Ok(mut failure) = failed.lock() {
+                    *failure = Some(crate::runtime_log::diagnostic_error(
+                        "ASR_MICROPHONE_DISCONNECTED",
+                        error,
+                    ));
+                }
             },
             None,
         )
@@ -915,7 +918,7 @@ where
 struct OpenInput {
     stream: cpal::Stream,
     samples: Arc<Mutex<Samples>>,
-    failed: Arc<AtomicBool>,
+    failed: Arc<Mutex<Option<String>>>,
     rate: usize,
 }
 
@@ -970,7 +973,7 @@ fn open_input(input_device_id: &str) -> Result<OpenInput, String> {
         return Err("ASR_AUDIO_FORMAT_UNSUPPORTED".into());
     }
     let samples = Arc::new(Mutex::new(Samples::new(rate)));
-    let failed = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(Mutex::new(None));
     macro_rules! build {
         ($kind:ty) => {
             input_stream::<$kind>(&device, &config, samples.clone(), failed.clone())
@@ -1093,8 +1096,8 @@ fn capture(
         if !input_visible {
             break Err("ASR_CANCELLED".into());
         }
-        if failed.load(Ordering::SeqCst) {
-            break Err("ASR_MICROPHONE_DISCONNECTED".into());
+        if let Some(error) = failed.lock().map_err(|_| "ASR_CAPTURE_FAILED")?.take() {
+            break Err(error);
         }
         let (sequence, level, full, stalled) = {
             let buffer = samples.lock().map_err(|source_error| {
@@ -1340,7 +1343,7 @@ mod tests {
         stream.play().unwrap();
         thread::sleep(Duration::from_millis(600));
         drop(stream);
-        assert!(!failed.load(Ordering::SeqCst));
+        assert!(failed.lock().unwrap().is_none());
         let buffer = samples.lock().unwrap();
         assert!(
             buffer.mono.len() > rate / 10,

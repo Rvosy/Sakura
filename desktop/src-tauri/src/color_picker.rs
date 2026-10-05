@@ -274,8 +274,8 @@ pub fn capture_color(monitor_id: u32, x: u32, y: u32) -> Result<String, String> 
     if x >= width || y >= height {
         return Err("STUDIO_COLOR_POINT_INVALID".to_string());
     }
-    let image = monitor.capture_region(x, y, 1, 1).map_err(|source_error| {
-        crate::runtime_log::diagnostic_error("STUDIO_COLOR_PLATFORM_DENIED", source_error)
+    let image = monitor.capture_region(x, y, 1, 1).map_err(|error| {
+        crate::runtime_log::diagnostic_error("STUDIO_COLOR_PLATFORM_UNAVAILABLE", error)
     })?;
     let pixel = image.get_pixel(0, 0).0;
     Ok(format!("#{:02X}{:02X}{:02X}", pixel[0], pixel[1], pixel[2]))

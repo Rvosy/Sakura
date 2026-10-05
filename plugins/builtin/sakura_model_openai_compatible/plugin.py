@@ -217,8 +217,7 @@ class ModelPlugin:
         except OperationCancelled:
             job.failure = {"code": "OPERATION_CANCELLED", "message": "模型请求已取消。"}
         except Exception as error:
-            from sakura_provider_errors import provider_exception_diagnostics
-            details = provider_exception_diagnostics(error, secrets=(job.settings.get("api_key", ""),))
+            details = self.context.exception_diagnostics(error, secrets=(job.settings.get("api_key", ""),))
             job.failure = {"code": getattr(error, "code", "MODEL_REQUEST_FAILED"),
                            "message": details["diagnostic"],
                            "diagnostics": {**getattr(error, "diagnostics", {}), **details}}

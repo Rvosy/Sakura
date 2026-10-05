@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from copy import deepcopy
 import json
 import threading
@@ -80,6 +82,7 @@ class PluginCharacterStore:
             registry = CharacterRegistry(self._app_root)
             return AppSettingsService(self._app_root).load_current_character_id(registry)
         except (CharacterConfigError, OSError, ValueError):
+            logging.getLogger(__name__).exception("当前角色配置读取失败")
             return None
 
     def update(

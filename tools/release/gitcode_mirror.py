@@ -183,7 +183,7 @@ def verify_download(repository: str, tag: str, path: Path) -> None:
             if local.read(1):
                 raise MirrorError(f"GITCODE_DOWNLOAD_TRUNCATED: {path.name}")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise MirrorError(f"GITCODE_DOWNLOAD_FAILED: {path.name}; {type(exc).__name__}") from None
+        raise MirrorError(f"GITCODE_DOWNLOAD_FAILED: {path.name}; {type(exc).__name__}: {exc}") from exc
     print(f"Public download verified: {path.name} ({path.stat().st_size} bytes)", flush=True)
 
 

@@ -655,15 +655,23 @@ fn open_default_playback(path: &Path) -> Result<(MixerDeviceSink, Player), Audio
     // recover on the next segment without restarting the application.
     let sink = DeviceSinkBuilder::open_default_sink().map_err(|error| AudioPlaybackError {
         code: "AUDIO_DEVICE_UNAVAILABLE",
-        message: crate::runtime_log::diagnostic_error("AUDIO_DEVICE_UNAVAILABLE", error),
+        message: crate::runtime_log::sanitize_diagnostic(&error.to_string(), &[], 4096),
     })?;
     let file = File::open(path).map_err(|error| AudioPlaybackError {
         code: "AUDIO_RECORDING_INVALID",
-        message: crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", error),
+        message: crate::runtime_log::sanitize_diagnostic(
+            &format!("{}: {error}", path.display()),
+            &[],
+            4096,
+        ),
     })?;
     let decoder = Decoder::try_from(file).map_err(|error| AudioPlaybackError {
         code: "AUDIO_FORMAT_UNSUPPORTED",
-        message: crate::runtime_log::diagnostic_error("AUDIO_FORMAT_UNSUPPORTED", error),
+        message: crate::runtime_log::sanitize_diagnostic(
+            &format!("{}: {error}", path.display()),
+            &[],
+            4096,
+        ),
     })?;
     let player = Player::connect_new(sink.mixer());
     player.append(decoder);

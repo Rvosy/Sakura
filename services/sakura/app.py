@@ -35,7 +35,7 @@ async def lifespan(_: FastAPI):
         await run_in_threadpool(initialize_database)
         await run_in_threadpool(initialize_v2)
     except sqlite3.Error:
-        LOGGER.error("SQLite initialization failed")
+        LOGGER.exception("SQLite initialization failed")
     yield
 
 
@@ -60,6 +60,7 @@ async def health() -> JSONResponse:
     try:
         healthy = await run_in_threadpool(database_is_healthy)
     except sqlite3.Error:
+        LOGGER.exception("SQLite health check failed")
         healthy = False
     if not healthy:
         return JSONResponse(
@@ -75,6 +76,7 @@ async def post_error(request: Request) -> dict[str, bool | str]:
     try:
         received_at = await run_in_threadpool(insert_error, report)
     except sqlite3.Error:
+        LOGGER.exception("SQLite ingestion failed")
         _reject(503, "STORAGE_UNAVAILABLE")
     return {"ok": True, "receivedAt": received_at}
 
@@ -85,6 +87,7 @@ async def post_events(request: Request) -> dict[str, int | bool | str]:
     try:
         accepted, received_at = await run_in_threadpool(insert_events, batch)
     except sqlite3.Error:
+        LOGGER.exception("SQLite ingestion failed")
         _reject(503, "STORAGE_UNAVAILABLE")
     return {"ok": True, "accepted": accepted, "receivedAt": received_at}
 
@@ -95,6 +98,7 @@ async def post_model_calls(request: Request) -> dict[str, int | bool | str]:
     try:
         accepted, received_at = await run_in_threadpool(insert_model_calls, batch)
     except sqlite3.Error:
+        LOGGER.exception("SQLite ingestion failed")
         _reject(503, "STORAGE_UNAVAILABLE")
     return {"ok": True, "accepted": accepted, "receivedAt": received_at}
 
@@ -104,6 +108,7 @@ async def _ingest_v2(request, kind, model, limit):
     try:
         return await run_in_threadpool(insert_v2, kind, payload)
     except sqlite3.Error:
+        LOGGER.exception("SQLite ingestion failed")
         _reject(503, "STORAGE_UNAVAILABLE")
 
 

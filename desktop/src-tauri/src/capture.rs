@@ -313,8 +313,8 @@ impl CaptureManager {
             .ok_or_else(|| "SCREEN_CAPTURE_SELECTION_INVALID".to_string())?;
         let image = monitor
             .capture_region(rect.x as u32, rect.y as u32, rect.width, rect.height)
-            .map_err(|source_error| {
-                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_DENIED", source_error)
+            .map_err(|error| {
+                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_UNAVAILABLE", error)
             })?;
         let image = resize_capture(image);
         let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
@@ -430,11 +430,11 @@ impl CaptureManager {
         if session_id.is_empty() || !valid_capture_resolution(resolution) {
             return Err("SCREEN_CAPTURE_REQUEST_INVALID".to_string());
         }
-        let monitor = Monitor::from_point(cursor_x, cursor_y).map_err(|source_error| {
-            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_MONITOR_GONE", source_error)
+        let monitor = Monitor::from_point(cursor_x, cursor_y).map_err(|error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_MONITOR_GONE", error)
         })?;
-        let image = monitor.capture_image().map_err(|source_error| {
-            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_DENIED", source_error)
+        let image = monitor.capture_image().map_err(|error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_UNAVAILABLE", error)
         })?;
         let screen_name = monitor
             .name()

@@ -414,6 +414,19 @@ def classify_failure(error):
     if isinstance(error, ApiConfigError):
         return {"code": "PROVIDER_CONFIGURATION_INVALID", "message": "模型服务配置无效。", "retryable": False}
     if isinstance(error, (ApiRequestError, ModelError)):
+        cause, seen = error, set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause, ModelError):
+                # The Provider owns protocol decoding and credential removal.
+                # A successful HTTP status does not make a malformed reply valid.
+                status = cause.status_code
+                invalid = cause.code == "MODEL_RESPONSE_INVALID"
+                return {"code": "PROVIDER_RESPONSE_INVALID" if invalid else "PROVIDER_REQUEST_FAILED",
+                        "message": str(cause),
+                        "retryable": not invalid and (status is None or status == 429 or status >= 500),
+                        "attributes": {"http_status": status} if status is not None else {}}
+            cause = cause.__cause__
         status = provider_http_status(error)
         if status is not None:
             return {"code": "PROVIDER_REQUEST_FAILED", "message": public_provider_http_message(error, status),

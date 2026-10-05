@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from sakura_provider_errors import public_provider_http_message, sanitize_provider_diagnostic
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urlencode, urljoin, urlparse
@@ -129,27 +130,26 @@ def _tavily_request(endpoint, parameters, config):
     try:
         with httpx.Client(proxy=web.proxy_for_url(url), trust_env=False, timeout=web.DEFAULT_TIMEOUT_SECONDS) as client:
             with client.stream("POST", url, headers={"Authorization": "Bearer " + key}, json=parameters) as response:
-                if response.status_code in {401, 403}:
-                    raise web.WebError("WEB_AUTH_ERROR", "Tavily 认证失败，请检查 API Key。")
-                if response.status_code in {429, 432, 433}:
-                    raise web.WebError("WEB_RATE_LIMIT", "Tavily 请求受限，请检查额度或稍后再试。")
-                if response.status_code != 200:
-                    raise web.WebError("WEB_HTTP_ERROR", f"Tavily 返回 HTTP {response.status_code}。")
                 body = bytearray()
                 for chunk in response.iter_bytes():
                     if len(body) + len(chunk) > 2_000_000:
                         raise web.WebError("WEB_SEARCH_RESPONSE_INVALID", "Tavily 响应过大。")
                     body.extend(chunk)
+                if response.status_code != 200:
+                    status = response.status_code
+                    code = "WEB_AUTH_ERROR" if status in {401, 403} else "WEB_RATE_LIMIT" if status in {429, 432, 433} else "WEB_HTTP_ERROR"
+                    message = public_provider_http_message(RuntimeError(f"API HTTP {status}: " + body.decode("utf-8", errors="replace")), status, secrets=(key,))
+                    raise web.WebError(code, message)
                 payload = json.loads(body)
                 if not isinstance(payload, dict):
-                    raise ValueError()
+                    raise ValueError("Tavily response has an invalid object or field type")
                 return payload
     except httpx.TimeoutException as error:
-        raise web.WebError("WEB_TIMEOUT", "Tavily 请求超时。") from error
+        raise web.WebError("WEB_TIMEOUT", sanitize_provider_diagnostic(str(error) or type(error).__name__, secrets=(key,))) from error
     except httpx.HTTPError as error:
-        raise web.WebError("WEB_NETWORK_ERROR", "无法连接 Tavily。") from error
+        raise web.WebError("WEB_NETWORK_ERROR", sanitize_provider_diagnostic(str(error) or type(error).__name__, secrets=(key,))) from error
     except ValueError as error:
-        raise web.WebError("WEB_SEARCH_RESPONSE_INVALID", "Tavily 返回了无效的响应。") from error
+        raise web.WebError("WEB_SEARCH_RESPONSE_INVALID", sanitize_provider_diagnostic(str(error) or type(error).__name__, secrets=(key,))) from error
 
 
 def _tavily(query, max_results, config):
@@ -160,11 +160,11 @@ def _tavily(query, max_results, config):
     try:
         items = payload["results"]
         if not isinstance(items, list):
-            raise TypeError()
+            raise TypeError("Tavily results must contain title, url and content strings")
         results = []
         for item in items[:max_results]:
             if not all(isinstance(item.get(k), str) for k in ("title", "url", "content")):
-                raise TypeError()
+                raise TypeError("Tavily results must contain title, url and content strings")
             web._validate_public_http_url(item["url"])
             result = {"title": item["title"][:500], "url": item["url"][:8192], "snippet": item["content"][:6000]}
             if len(item["content"]) > 6000:
@@ -192,15 +192,15 @@ def fetch(url, max_chars, values):
             raise web.WebError("WEB_EXTRACT_FAILED", "Tavily 未能读取该网页。")
         try:
             if not isinstance(items, list) or len(items) != 1:
-                raise ValueError()
+                raise ValueError("Tavily response has an invalid object or field type")
             item = items[0]
             final_url = web._validate_public_http_url(item["url"])
             text = item["raw_content"]
             if not isinstance(text, str) or not text.strip():
-                raise ValueError()
+                raise ValueError("Tavily response has an invalid object or field type")
             title = item.get("title") or ""
             if not isinstance(title, str):
-                raise ValueError()
+                raise ValueError("Tavily response has an invalid object or field type")
             result = {"url": final_url, "content_type": "text/plain", "title": title[:500],
                       "text": text[:max_chars], "truncated": len(text) > max_chars, "links": [], "source": "Tavily"}
         except (ValueError, KeyError, TypeError, AttributeError) as error:

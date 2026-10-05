@@ -101,3 +101,20 @@ def test_actual_rust_wire_when_provided(client, tmp_path):
     with zipfile.ZipFile(bundle) as archive:
         rows = [json.loads(line) for line in archive.read("error_events.jsonl").splitlines()]
     assert {r["reportId"]: r["evidence"] for r in reports} == {r["report_id"]: r["evidence"] for r in rows}
+
+
+def test_ingestion_failure_keeps_database_exception_in_server_log(client, monkeypatch, caplog):
+    import app as ingestion
+    import sqlite3
+
+    def fail(*args):
+        raise sqlite3.OperationalError("no such table: fixture_error_reports")
+
+    monkeypatch.setattr(ingestion, "insert_v2", fail)
+    result = client.post("/v3/errors", json=original_report("fixture"))
+    assert result.status_code == 503
+    failures = [record for record in caplog.records if record.exc_info]
+    assert len(failures) == 1
+    assert isinstance(failures[0].exc_info[1], sqlite3.OperationalError)
+    assert "fixture_error_reports" in str(failures[0].exc_info[1])
+    assert "fixture_error_reports" not in result.text

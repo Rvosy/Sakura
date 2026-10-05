@@ -87,8 +87,8 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], namespace: &str) -> Result
     let parent = path
         .parent()
         .ok_or_else(|| code(namespace, "PATH_INVALID"))?;
-    fs::create_dir_all(parent).map_err(|source_error| {
-        crate::runtime_log::diagnostic_error(&code(namespace, "PERMISSION_DENIED"), source_error)
+    fs::create_dir_all(parent).map_err(|error| {
+        crate::runtime_log::diagnostic_error(&code(namespace, "DIRECTORY_CREATE_FAILED"), error)
     })?;
     let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(".ui.json.{}.{}.tmp", std::process::id(), sequence));
@@ -205,4 +205,28 @@ fn sync_parent(parent: &Path, namespace: &str) -> Result<(), String> {
 #[cfg(not(unix))]
 fn sync_parent(_parent: &Path, _namespace: &str) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_document_keeps_parser_location_and_write_keeps_os_error() {
+        let root = std::env::temp_dir().join(format!("sakura-ui-error-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("ui.json");
+        fs::write(&path, b"{\n  invalid}").unwrap();
+        let error = UiConfigRepository::new(path.clone())
+            .load("FIXTURE")
+            .unwrap_err();
+        assert!(error.starts_with("FIXTURE_DOCUMENT_INVALID:"));
+        assert!(error.contains("line 2 column"));
+        let target = path.join("blocked.json");
+        let original = fs::create_dir_all(&path).unwrap_err();
+        let error = atomic_write(&target, b"{}", "FIXTURE").unwrap_err();
+        assert!(error.starts_with("FIXTURE_DIRECTORY_CREATE_FAILED:"));
+        assert!(error.contains(&original.to_string()));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

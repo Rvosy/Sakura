@@ -30,6 +30,25 @@ def mock_http(monkeypatch, handler):
     monkeypatch.setattr("httpx.AsyncClient", MockClient)
 
 
+@pytest.mark.parametrize("body,code,detail", [
+    ({"error": {"message": "quota exhausted", "code": "insufficient_quota"}}, "PROVIDER_REQUEST_FAILED", "insufficient_quota"),
+    ({"output": "private-conversation"}, "PROVIDER_RESPONSE_INVALID", "choices"),
+])
+def test_provider_response_failure_reaches_chat_with_specific_reason(monkeypatch, body, code, detail):
+    from sakura_assistant.service import classify_failure
+
+    mock_http(monkeypatch, lambda _request: httpx.Response(200, json=body))
+    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
+    with pytest.raises(ApiRequestError) as caught:
+        client.complete_raw("system", [{"role": "user", "content": "hello"}])
+    failure = classify_failure(caught.value)
+    assert failure["code"] == code
+    assert detail in failure["message"]
+    assert failure["attributes"]["http_status"] == 200
+    assert failure["retryable"] is False
+    assert "private-conversation" not in repr(failure)
+
+
 def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
     allowed = ["中性", "不满", "害羞", "请求", "惊讶"]
     reply = ChatReply(

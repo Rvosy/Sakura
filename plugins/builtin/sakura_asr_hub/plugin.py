@@ -98,6 +98,7 @@ class SakuraASRHub:
             return {**{k: v for k, v in descriptor.items() if k != "scopeId"},
                     **{k: value[k] for k in ("state", "available", "ready", "errorCode", "reasonCode", "configVersion", "language", "diagnostics") if k in value}}
         except Exception as error:
+            self._log("asr.provider.status.failed", "语音识别引擎状态读取失败", "error", provider_id=descriptor["providerId"])
             return {**{k: v for k, v in descriptor.items() if k != "scopeId"}, "available": False, "state": "unavailable", **provider_failure("ASR_PROVIDER_UNAVAILABLE", error), "configVersion": None}
 
     def listProviders(self):

@@ -684,3 +684,22 @@ test("native host events delivered before listen registration resolves retain st
   await starting;
   client.dispose();
 });
+
+
+test("invalid host chat events are diagnosed without logging their payload or blocking later events", async () => {
+  const env = harness();
+  const errors = [], events = [];
+  let host;
+  const client = env.create(event => events.push(event), {
+    listenHost: async channel => { host = channel; },
+    onDiagnostic: error => errors.push(error),
+  });
+  await client.start();
+  host.onmessage({ type: "chat.started", message: "private-chat-content" });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /CHAT_EVENT_INVALID.*generationId/);
+  assert.ok(!errors[0].stack.includes("private-chat-content"));
+  host.onmessage({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "host-operation", cancelHandle: "cancel" });
+  assert.ok(events.some(event => event.operationId === "host-operation"));
+  client.dispose();
+});

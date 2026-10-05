@@ -162,9 +162,9 @@ pub fn encode_frame(message: &Value) -> Result<Vec<u8>, IpcError> {
 
 fn decode_payload(payload: &[u8]) -> Result<Value, IpcError> {
     std::str::from_utf8(payload)
-        .map_err(|error| IpcError::new("INVALID_UTF8", &error.to_string()))?;
+        .map_err(|error| IpcError::new("INVALID_UTF8", error.to_string()))?;
     let message: Value = serde_json::from_slice(payload)
-        .map_err(|error| IpcError::new("INVALID_JSON", &error.to_string()))?;
+        .map_err(|error| IpcError::new("INVALID_JSON", error.to_string()))?;
     validate_envelope(&message)?;
     Ok(message)
 }
@@ -336,6 +336,16 @@ mod tests {
             "deadlineMs": 3000,
             "priority": "control"
         })
+    }
+
+    #[test]
+    fn malformed_frames_keep_decode_position() {
+        let utf8 = super::decode_payload(&[b'{', 0xff]).unwrap_err();
+        assert_eq!(utf8.code, "INVALID_UTF8");
+        assert!(utf8.message.contains("index 1"));
+        let json = super::decode_payload(b"{\n invalid}").unwrap_err();
+        assert_eq!(json.code, "INVALID_JSON");
+        assert!(json.message.contains("line 2 column"));
     }
 
     #[test]

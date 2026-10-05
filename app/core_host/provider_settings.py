@@ -2,6 +2,8 @@
 from __future__ import annotations
 from app.core.diagnostics import exception_diagnostics
 
+import logging
+
 import hmac
 import threading
 from collections.abc import Callable, Mapping
@@ -92,6 +94,7 @@ class ProviderSettingsBoundary:
         try:
             selections = self._repository.load()
         except (OSError, ValueError):
+            logging.getLogger(__name__).exception("模型选择配置读取失败")
             issue = "CONFIG_DATA_INVALID"
             selections = {name: dict(EMPTY_REFERENCE) for name in ("chat", "vision_chat")}
         slots = [{"identity": f"core:{name}", "ownerType": "core", "ownerId": "sakura.core", "slotId": name,

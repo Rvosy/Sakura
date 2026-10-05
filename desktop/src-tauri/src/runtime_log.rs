@@ -431,7 +431,7 @@ impl RuntimeLogService {
 
     fn start_with_writer(
         mut config: RuntimeLogConfig,
-        write: impl FnOnce(&RuntimeLogInner) + Send + 'static,
+        write: impl FnOnce(&Arc<RuntimeLogInner>) + Send + 'static,
     ) -> Self {
         config.queue_capacity = config.queue_capacity.max(1);
         config.max_record_bytes = config.max_record_bytes.max(512);
@@ -470,11 +470,11 @@ impl RuntimeLogService {
                     *target = Some(worker);
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 if let Ok(mut state) = inner.state.lock() {
                     state.stopping = true;
                 }
-                eprintln!("SAKURA_RUNTIME_LOG_WRITE_FAILED");
+                eprintln!("{}", diagnostic_error("RUNTIME_LOG_WRITE_FAILED", error));
             }
         }
         Self { inner }
@@ -1062,7 +1062,7 @@ fn note_dropped(state: &mut QueueState, source: &str, severity: Severity) {
         .saturating_add(1);
 }
 
-fn run_writer(inner: &RuntimeLogInner) {
+fn run_writer(inner: &Arc<RuntimeLogInner>) {
     let mut writers = [FileWriter::new(&inner.config), {
         let mut config = inner.config.clone();
         config.path.set_file_name("sakura-plugins.log");
@@ -1134,14 +1134,47 @@ fn run_writer(inner: &RuntimeLogInner) {
     publish_writer_status(inner, &writers);
 }
 
-fn publish_writer_status(inner: &RuntimeLogInner, writers: &[FileWriter; 2]) {
+fn publish_writer_status(inner: &Arc<RuntimeLogInner>, writers: &[FileWriter; 2]) {
+    let mut failures = Vec::new();
     if let Ok(mut state) = inner.state.lock() {
-        state.failed_files = writers
-            .iter()
-            .zip(["runtime", "plugins"])
-            .filter(|(writer, _)| writer.failed)
-            .map(|(_, name)| name.to_string())
-            .collect();
+        for (writer, name) in writers.iter().zip(["runtime", "plugins"]) {
+            if writer.failed && !state.failed_files.iter().any(|old| old == name) {
+                state.failed_files.push(name.to_string());
+                if let Some(error) = &writer.failure {
+                    failures.push((name, sanitize_diagnostic(error, &inner.secrets, 4096)));
+                }
+            }
+        }
+    }
+    // A broken log file cannot report its own failure through the file queue.
+    // Publish once to memory and telemetry, including while draining at exit.
+    let log = RuntimeLogService {
+        inner: Arc::clone(inner),
+    };
+    for (name, diagnostic) in failures {
+        let fields = json!({"reason_code": "RUNTIME_LOG_WRITE_FAILED", "log_file": name, "diagnostic": diagnostic});
+        let record = log.normalize_event(RuntimeLogEvent::message(
+            Severity::Error,
+            "runtime.log",
+            "日志文件保存失败",
+            fields.clone(),
+        ));
+        if let Ok(telemetry) = inner.telemetry.lock() {
+            if let Some(telemetry) = telemetry.as_ref() {
+                telemetry.observe_runtime_event(
+                    "rust",
+                    "error",
+                    "runtime.log",
+                    "runtime.message",
+                    None,
+                    Some(&fields),
+                );
+            }
+        }
+        if let Ok(mut state) = inner.state.lock() {
+            let record = with_sequence(&mut state, record);
+            append_viewer_record(&mut state, &record);
+        }
     }
 }
 
@@ -1336,6 +1369,7 @@ struct FileWriter {
     backup_count: usize,
     failed: bool,
     warned: bool,
+    failure: Option<String>,
 }
 
 impl FileWriter {
@@ -1349,15 +1383,17 @@ impl FileWriter {
             backup_count: config.backup_count,
             failed: false,
             warned: false,
+            failure: None,
         }
     }
 
-    fn write_record(&mut self, record: &RuntimeLogRecord) -> Result<(), ()> {
-        if self.failed {
-            return Err(());
+    fn write_record(&mut self, record: &RuntimeLogRecord) -> Result<(), String> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
         }
-        let line = encode_record(record, self.max_record_bytes).ok_or(())?;
         let result = (|| -> std::io::Result<()> {
+            let line = encode_record(record, self.max_record_bytes)
+                .ok_or_else(|| std::io::Error::other("log record encoding failed"))?;
             self.ensure_open()?;
             if self.max_file_bytes > 0
                 && self.current_bytes.saturating_add(line.len() as u64) > self.max_file_bytes
@@ -1367,14 +1403,11 @@ impl FileWriter {
             self.handle
                 .as_mut()
                 .ok_or_else(|| std::io::Error::other("log file is not open"))?
-                .write_all(&line)
+                .write_all(&line)?;
+            self.current_bytes = self.current_bytes.saturating_add(line.len() as u64);
+            Ok(())
         })();
-        if let Err(error) = result {
-            self.fail_once(&error);
-            return Err(());
-        }
-        self.current_bytes = self.current_bytes.saturating_add(line.len() as u64);
-        Ok(())
+        result.map_err(|error| self.fail_once(error))
     }
 
     fn ensure_open(&mut self) -> std::io::Result<()> {
@@ -1390,7 +1423,7 @@ impl FileWriter {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        self.current_bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        self.current_bytes = file.metadata()?.len();
         self.handle = Some(BufWriter::new(file));
         Ok(())
     }
@@ -1425,29 +1458,31 @@ impl FileWriter {
         self.ensure_open()
     }
 
-    fn flush(&mut self) -> Result<(), ()> {
-        if self.failed {
-            return Err(());
+    fn flush(&mut self) -> Result<(), String> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
         }
         if let Some(handle) = self.handle.as_mut() {
             if let Err(error) = handle.flush() {
-                self.fail_once(&error);
-                return Err(());
+                return Err(self.fail_once(error));
             }
         }
         Ok(())
     }
 
-    fn fail_once(&mut self, error: &std::io::Error) {
+    fn fail_once(&mut self, error: std::io::Error) -> String {
         self.failed = true;
         self.handle = None;
+        let detail = diagnostic_error(
+            "RUNTIME_LOG_WRITE_FAILED",
+            format!("{}: {error}", self.path.display()),
+        );
+        self.failure = Some(detail.clone());
         if !self.warned {
             self.warned = true;
-            eprintln!(
-                "SAKURA_RUNTIME_LOG_WRITE_FAILED: {}: {error}",
-                self.path.display()
-            );
+            eprintln!("{detail}");
         }
+        detail
     }
 }
 
@@ -3625,10 +3660,12 @@ fn sanitize_fixed_message(value: &str) -> String {
 /// Preserve the failure text while redacting only credential values.
 /// Multiline diagnostics stay multiline in the viewer; the text writer escapes them.
 pub(crate) fn diagnostic_error(code: &str, error: impl std::fmt::Display) -> String {
-    format!(
-        "{code}: {}",
-        sanitize_diagnostic(&error.to_string(), &[], 4096)
-    )
+    let detail = sanitize_diagnostic(&error.to_string(), &[], 4096);
+    if detail == code {
+        detail
+    } else {
+        format!("{code}: {detail}")
+    }
 }
 
 pub(crate) fn diagnostic_code(error: &str) -> &str {
@@ -4341,7 +4378,11 @@ mod tests {
         log.drain_and_shutdown_for_test();
         let snapshot = log.viewer_snapshot(None).unwrap();
         assert_eq!(snapshot.failed_files, ["plugins"]);
-        assert_eq!(snapshot.records.len(), 2);
+        assert_eq!(snapshot.records.len(), 3);
+        assert!(snapshot.records.iter().any(|record| record
+            .details
+            .iter()
+            .any(|detail| detail.value.contains("os error"))));
         let serialized = serde_json::to_string(&snapshot).unwrap();
         for private in ["private-secret", "PRIVATE PASSWORD", "C:/private/model"] {
             assert!(!serialized.contains(private));
@@ -4821,6 +4862,22 @@ mod tests {
         )));
         log.drain_and_shutdown_for_test();
         assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        let failures: Vec<_> = snapshot
+            .records
+            .iter()
+            .filter(|record| {
+                record
+                    .details
+                    .iter()
+                    .any(|detail| detail.value.contains("RUNTIME_LOG_WRITE_FAILED"))
+            })
+            .collect();
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0]
+            .details
+            .iter()
+            .any(|detail| detail.value.contains("blocked") && detail.value.contains("os error")));
         let _ = fs::remove_dir_all(root);
     }
 

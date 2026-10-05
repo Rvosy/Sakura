@@ -1378,6 +1378,7 @@ const chatClient = createRealChatClient({
   invoke,
   createChannel: () => new window.__TAURI__.core.Channel(),
   onCancelError: () => showRecoverableError("取消失败，请重试。"),
+  onDiagnostic: (error) => runtimeDiagnostics.reportError(error, { code: "CHAT_EVENT_INVALID", stage: "chat.event" }),
   onEvent: handleCoreEvent,
   listenHost: onEvent => invoke("host_chat_listen", { onEvent }),
   initialPreparedGenerationId: characterPresentation.generationId,

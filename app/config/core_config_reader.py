@@ -1,6 +1,9 @@
 """Read only Core-owned system and character selection settings."""
 from __future__ import annotations
 
+import logging
+from app.core.diagnostics import safe_diagnostic_text
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,5 +53,6 @@ class CoreConfigReader:
             if current is not None and not isinstance(current, str):
                 raise ValueError("CONFIG_DATA_INVALID")
             return CoreConfigReadResult(current.strip() or None if current is not None else None)
-        except (OSError, UnicodeError, ValueError, yaml.YAMLError):
-            return CoreConfigReadResult(None, StableReadinessError("failed", "CONFIG_DATA_INVALID", "配置数据不可用。"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as error:
+            logging.getLogger(__name__).exception("Core 配置读取失败")
+            return CoreConfigReadResult(None, StableReadinessError("failed", "CONFIG_DATA_INVALID", safe_diagnostic_text(error)))

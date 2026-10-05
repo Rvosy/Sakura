@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-10-06
 ---
 
 # 模型 Service 与调用方边界
@@ -61,9 +61,20 @@ content 支持字符串，或由 `{type: "text", text}` 与 `{type: "image", dat
 其他不透明元数据保留最近的非 null 值；最终随 `providerData` 返回，供下一次工具结果请求原样回传。
 
 `failure` 包含 `code/message` 和可选 `diagnostics`。HTTP 状态通过 `diagnostics.httpStatus`
-传递，不将含凭据的网络异常链发送给消费者。普通 HTTP 错误、网络错误和未知响应不会触发重试。
+传递。后台任务在转为 `failure` 前提取原始消息、异常类型、原因链和逐层调用栈，清除已知 API Key 及其 JSON 转义形式后发送给消费者。
+HTTP、超时、连接和文件系统错误保留原始 cause；不得用 `from None` 或通用文案切断诊断。普通 HTTP 错误、网络错误和未知响应不会触发重试。
 明确拒绝 `response_format` 或自定义 `temperature` 的 400/422 响应可删去对应参数再请求，
 单次任务最多三次尝试；参数越界、认证失败、限流及服务端错误不能通过剥参掩盖。
+
+非流式 JSON 响应即使使用 HTTP 成功状态，其中的非 null `error` 字段也按上游失败处理，
+返回 `MODEL_REQUEST_FAILED`，保留实际 HTTP 状态和脱敏后的 `message/code/type/status/param/request_id`，
+不据此剥参或重试。响应结构缺失、字段类型不符或
+JSON 解码失败返回 `MODEL_RESPONSE_INVALID`；详情指出具体字段、预期与实际类型，或解码位置及
+Content-Type。诊断保留 `attemptCount/faultDomain/stage`，字段错误附带 `validation_field`。
+这些校验由 Provider 承担，生成、连接测试和模型列表使用同一解析入口；错误详情不包含完整响应、
+聊天正文或上游回显的请求，凭据在离开 Provider 前清洗。
+Assistant 沿用 Provider 的具体错误说明，将 `MODEL_RESPONSE_INVALID` 映射为聊天失败码
+`PROVIDER_RESPONSE_INVALID`；不能因 HTTP 状态是 200 而覆盖协议错误或改成通用文案。
 
 未知能力用 `null` 表示，不能当成明确不支持。未设置上下文窗口时返回 32768，来源为 `fallback`；
 它是预算默认值，不是供应商能力证明。用户配置的窗口及能力元数据优先于默认值。

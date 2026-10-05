@@ -354,14 +354,24 @@ impl TelemetryService {
             Ok((true, installation_id)) => {
                 match ensure_installation_id(&repository, installation_id) {
                     Ok(id) => (true, Some(id), None),
-                    Err(_) => (
+                    Err(error) => (
                         false,
                         None,
-                        Some("TELEMETRY_SETTINGS_SAVE_FAILED".to_string()),
+                        Some(crate::runtime_log::diagnostic_error(
+                            "TELEMETRY_SETTINGS_SAVE_FAILED",
+                            error,
+                        )),
                     ),
                 }
             }
-            Err(_) => (false, None, Some("TELEMETRY_SETTINGS_INVALID".to_string())),
+            Err(error) => (
+                false,
+                None,
+                Some(crate::runtime_log::diagnostic_error(
+                    "TELEMETRY_SETTINGS_INVALID",
+                    error,
+                )),
+            ),
         };
         let outbox = outbox::Outbox::new(repository.path());
         if !enabled {
@@ -465,10 +475,13 @@ impl TelemetryService {
             outbox.clear();
         }
         let new_id = Uuid::new_v4().hyphenated().to_string();
-        if persist_telemetry(&self.inner.repository, was_enabled, Some(&new_id)).is_err() {
+        if let Err(error) = persist_telemetry(&self.inner.repository, was_enabled, Some(&new_id)) {
             self.inner.enabled.store(was_enabled, Ordering::Release);
             self.bump_epoch();
-            return Err("TELEMETRY_SETTINGS_SAVE_FAILED".to_string());
+            return Err(crate::runtime_log::diagnostic_error(
+                "TELEMETRY_SETTINGS_SAVE_FAILED",
+                error,
+            ));
         }
         let mut runtime = self.inner.runtime.lock().map_err(|source_error| {
             crate::runtime_log::diagnostic_error(
@@ -2732,10 +2745,9 @@ mod tests {
         fs::write(&root, b"not-a-directory").unwrap();
         let repository = UiConfigRepository::new(root.join("ui.json"));
         let service = TelemetryService::initialize(repository, "r-test".to_string());
-        assert_eq!(
-            service.snapshot(),
-            Err("TELEMETRY_SETTINGS_SAVE_FAILED".to_string())
-        );
+        let error = service.snapshot().unwrap_err();
+        assert!(error.starts_with("TELEMETRY_SETTINGS_SAVE_FAILED:"));
+        assert!(error.contains("os error"));
         assert!(!service.inner.enabled.load(Ordering::Acquire));
         service.shutdown();
         let _ = fs::remove_file(root);
@@ -2768,19 +2780,13 @@ mod tests {
         fs::rename(&root, &backup).unwrap();
         fs::write(&root, b"not-a-directory").unwrap();
 
-        assert_eq!(
-            service
-                .regenerate_installation_id()
-                .map_err(|error| crate::runtime_log::diagnostic_code(&error).to_string()),
-            Err("TELEMETRY_SETTINGS_SAVE_FAILED".to_string())
-        );
+        let error = service.regenerate_installation_id().unwrap_err();
+        assert!(error.starts_with("TELEMETRY_SETTINGS_SAVE_FAILED:"));
+        assert!(error.contains("os error"));
         assert_eq!(service.snapshot().unwrap(), original);
-        assert_eq!(
-            service
-                .set_enabled(false)
-                .map_err(|error| crate::runtime_log::diagnostic_code(&error).to_string()),
-            Err("TELEMETRY_SETTINGS_SAVE_FAILED".to_string())
-        );
+        let error = service.set_enabled(false).unwrap_err();
+        assert!(error.starts_with("TELEMETRY_SETTINGS_SAVE_FAILED:"));
+        assert!(error.contains("os error"));
         let runtime = service.snapshot().unwrap();
         assert!(!runtime.enabled);
         assert_eq!(runtime.installation_id, original.installation_id);

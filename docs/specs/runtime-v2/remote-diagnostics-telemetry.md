@@ -50,6 +50,11 @@ Rust 是唯一 HTTP 出站 owner。Core 和插件通过现有日志/遥测 bridg
 - 插件启动失败另保留 `detail_stage/elapsed_ms/duration_ms/child_pid/process_alive/service_key/startup_snapshot`，分别说明最后阶段、总耗时、阶段耗时、进程状态、等待的宿主服务和现场采集结果。初始化期限与现场采集见[插件运行时](sakura-plugin-runtime-v4.md)。
 - 插件设置返回格式无效时保留 `plugin_id/section_id/result_type/has_application_state/application_state_type`，说明哪个设置分区返回了何种类型、是否包含应用状态字段。不记录设置值或非法返回值原文，不因返回格式错误放宽保存契约。
 
+诊断从错误产生处保留。Python 转换异常时保留 cause，后台任务转为结果前先提取异常；Rust 的文件、设备、
+平台和 IPC 操作不能把底层错误替换成空值或固定码。错误码只用于分类，不能据未知截图失败推断权限拒绝。
+设置错误优先显示已清洗的底层原因。日志文件创建、刷新或轮转失败时，每个文件只发布一次原始诊断到内存
+日志和遥测，包含路径及系统错误；不能再次写入失效文件形成递归。
+
 Core 的进程边界复用 `exception_diagnostics` 的结果，不再为遥测另造一个只有类型和安全栈的摘要。Rust 在本地日志显示属性过滤之前取得诊断；本地日志等级不会阻断遥测。WebView 保留 message、原始 stack 和 cause 链；Rust panic 保留 panic 原文、位置和 backtrace。
 
 Core 请求被拒绝时，Rust 的 `ipc.request.failed` 保存原始原因和 `request_id`。`settings_response_payload` 返回的 `code|feature|field|diagnostic` 表示这一已记录的拒绝；WebView 只记录 info 级调用结果，页面的 `reportError` 不再重复上传同一拒绝。没有这一响应格式的原生调用失败、前端异常和未处理异常仍按原规则采集，不能只凭相同错误码或相近时间合并。
@@ -64,7 +69,7 @@ Core 请求被拒绝时，Rust 的 `ipc.request.failed` 保存原始原因和 `r
 
 Python、插件 SDK、WebView、Rust 遵循相同的定向处理原则。服务端持久化、管理页面和导出器不追加全文正则清洗。页面按纯文本渲染诊断，不把报错当作 HTML。
 
-不默认采集完整聊天、Prompt、Memory、工具输入输出、请求正文、局部变量或磁盘日志文件。Provider 错误保留服务端 error.message/code/type；非 JSON 错误和解析失败保留有长度上限的原始错误。原始异常本身可能包含失败片段和本地路径，不能再承诺“错误文本绝不含用户内容”。
+不默认采集完整聊天、Prompt、Memory、工具输入输出、请求正文、局部变量或磁盘日志文件。Provider 错误保留服务端 error.message/code/type/status/param/request_id；非 JSON 错误和解析失败保留有长度上限的原始错误。原始异常本身可能包含失败片段和本地路径，不能再承诺“错误文本绝不含用户内容”。
 
 ## 大小、分组和发送
 

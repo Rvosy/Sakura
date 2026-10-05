@@ -96,6 +96,7 @@ class _Job:
     ) -> None:
         self.request = dict(request)
         self.voice = voice
+        self._context = context
         self._artifacts = artifacts
         self._allocation = artifacts.allocate({"mediaType": "audio/wav", "suffix": ".wav"})
         self.output_path = Path(self._allocation["path"])
@@ -177,6 +178,7 @@ class _Job:
                 try:
                     artifact = self._artifacts.commit(self._allocation["artifactId"])
                 except Exception as error:
+                    self._context.get("sakura.host.logging").error("语音产物提交失败", fields={"reason_code": "TTS_ARTIFACT_INVALID"})
                     return {"state": "failed", **provider_failure("TTS_ARTIFACT_INVALID", error)}
                 return {"state": "succeeded", "artifact": artifact}
             if state == "cancelled":
@@ -822,11 +824,13 @@ class GenieProvider:
         try:
             voice = self._voice(character_id)
         except Exception as error:
+            self._context.get("sakura.host.logging").error("语音声音配置读取失败", fields={"reason_code": _stable_error_code(error)})
             return provider_failure(_stable_error_code(error), error)
         job = _Job(self._context, self._artifacts, request, voice)
         try:
             self._coordinator.submit(job)
         except Exception as error:
+            self._context.get("sakura.host.logging").error("语音任务提交失败", fields={"reason_code": _stable_error_code(error)})
             job._disposer()
             return provider_failure(_stable_error_code(error), error)
         job_id = f"job_{uuid.uuid4().hex}"

@@ -86,6 +86,30 @@ def test_worker_diagnostic_survives_host_exception_wrapping():
     assert "Remote:" in fields["exception_stack"]
 
 
+def test_worker_removes_known_credentials_before_bounding_remote_diagnostics():
+    from app.plugins.sakura_plugin_sdk import PluginContext
+
+    secret = "opaque-sensitive-value-" + "z" * 600
+    error = RuntimeError("remote operation failed")
+    error.diagnostics = {"diagnostic": "x" * 7800 + secret + " final cause"}
+    fields = PluginContext.exception_diagnostics(error, secrets=(secret,))
+    assert "opaque-sensitive-value" not in json.dumps(fields)
+    assert "[REDACTED] final cause" in fields["diagnostic"]
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_worker_http_diagnostic_does_not_stringify_unrecognized_response_fields(encoded):
+    from app.plugins.sakura_plugin_sdk import PluginContext
+
+    error = RuntimeError("raw response contains private-conversation")
+    error.status_code = 502
+    body = {"error": ["private-conversation"], "messages": ["private-conversation"]}
+    error.body = json.dumps(body) if encoded else body
+    fields = PluginContext.exception_diagnostics(error)
+    assert "private-conversation" not in json.dumps(fields)
+    assert "API HTTP 502" in fields["diagnostic"]
+
+
 @pytest.mark.parametrize("cleanup_failed", [False, True])
 def test_worker_active_error_type_survives_rpc_and_core_log_bridge(cleanup_failed):
     from app.plugin_sdk.sakura_cancellation import OperationCancelled
@@ -218,10 +242,12 @@ def test_exception_group_preserves_independent_failures():
 
 def test_provider_diagnostics_keep_error_fields_without_response_content():
     from app.plugin_sdk.sakura_model import ApiRequestError
-    error = ApiRequestError('API HTTP 401: {"error":{"message":"invalid credential","code":"invalid_api_key"},"choices":[{"message":{"content":"unrelated private output"}}]}')
+    error = ApiRequestError('API HTTP 401: {"error":{"message":"invalid credential","code":"invalid_api_key","param":"model","request_id":"req-42"},"choices":[{"message":{"content":"unrelated private output"}}]}')
     fields = exception_diagnostics(error, reason_code="API_FAILED", stage="request")
     assert "invalid credential" in fields["diagnostic"]
     assert "invalid_api_key" in fields["exception_chain"]
+    assert "param: model" in fields["diagnostic"]
+    assert "request_id: req-42" in fields["diagnostic"]
     assert "unrelated private output" not in json.dumps(fields)
 
 

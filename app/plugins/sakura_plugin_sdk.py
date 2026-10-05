@@ -154,14 +154,38 @@ class PluginApiError(RuntimeError):
             self.diagnostics["validation_field"] = field
 
 
-def _safe_exception_message(error: BaseException) -> str:
+def _redact_known_secrets(value: str, secrets: Iterable[str]) -> str:
+    for secret in secrets:
+        if secret:
+            for encoded in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1], repr(secret)[1:-1], ascii(secret)[1:-1]):
+                value = value.replace(encoded, "[REDACTED]")
+    return value
+
+
+def _safe_exception_message(error: BaseException, secrets: Iterable[str] = ()) -> str:
     try:
-        return _diagnostic_text(str(error), 4096)
+        status = getattr(error, "status_code", None)
+        body = getattr(error, "body", None)
+        text = str(error)
+        if isinstance(status, int) and isinstance(body, (dict, str)):
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except json.JSONDecodeError:
+                    pass
+            source = body.get("error", body) if isinstance(body, dict) else body
+            if isinstance(source, dict):
+                source = "; ".join(f"{key}: {source[key]}" for key in ("message", "detail", "Exception", "code", "type", "status", "param", "request_id")
+                                   if isinstance(source.get(key), (str, int, float)))
+            elif not isinstance(source, str):
+                source = ""
+            text = f"API HTTP {status}: {source}"
+        return _diagnostic_text(_redact_known_secrets(text, secrets), 4096)
     except Exception:
         return f"{type(error).__name__}: exception message could not be formatted"
 
 
-def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | None = None) -> dict[str, str]:
+def _exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = (), _group_budget: list[int] | None = None) -> dict[str, str]:
     """Stdlib-only worker diagnostics; never serialize exception objects/locals."""
     chain, stacks, seen = [], [], set()
     current = error
@@ -175,20 +199,20 @@ def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | N
             except Exception:
                 pass
         rpc_wrappers_only &= type(current).__name__ in {"PluginApiError", "PluginRuntimeError"}
-        text = _safe_exception_message(current)
+        text = _safe_exception_message(current, secrets)
         chain.append(f"{type(current).__name__}: {text}")
         frames = []
         tb = current.__traceback__
         while tb is not None:
             module = str(tb.tb_frame.f_globals.get("__name__", "unknown"))
-            frames.append(safe_text(f"  at {module}:{tb.tb_frame.f_code.co_name}:{tb.tb_lineno} ({tb.tb_frame.f_code.co_filename})", 256))
+            frames.append(safe_text(_redact_known_secrets(f"  at {module}:{tb.tb_frame.f_code.co_name}:{tb.tb_lineno} ({tb.tb_frame.f_code.co_filename})", secrets), 256))
             tb = tb.tb_next
         stacks.append(chain[-1] + "\n" + "\n".join(frames[-32:]))
         cause = current.__cause__ if current.__cause__ is not None else (None if current.__suppress_context__ else current.__context__)
         if cause is None:
             break
         current = cause
-    result = {"diagnostic": _safe_exception_message(current), "error_type": type(error).__name__, "cause_type": type(current).__name__,
+    result = {"diagnostic": _safe_exception_message(current, secrets), "error_type": type(error).__name__, "cause_type": type(current).__name__,
               "exception_chain": _diagnostic_text("\nCaused by: ".join(chain)), "exception_stack": _diagnostic_text("\n\n".join(stacks))}
     try:
         cause_code = _diagnostic_token(getattr(current, "code", None))
@@ -213,10 +237,10 @@ def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | N
             result["validation_field"] = remote_field
         for key in ("diagnostic", "cause_type", "exception_site"):
             if isinstance(remote.get(key), str):
-                result[key] = _diagnostic_text(remote[key])
+                result[key] = _diagnostic_text(_redact_known_secrets(remote[key], secrets))
         for key in ("exception_chain", "exception_stack"):
             if isinstance(remote.get(key), str):
-                result[key] = _diagnostic_text(result[key] + "\nRemote:\n" + remote[key])
+                result[key] = _diagnostic_text(result[key] + "\nRemote:\n" + _redact_known_secrets(remote[key], secrets))
     if isinstance(error, BaseExceptionGroup):
         # A failed initialization and its cleanup are distinct evidence. Keep
         # every bounded group member's traceback without serializing locals.
@@ -225,11 +249,21 @@ def _exception_diagnostics(error: BaseException, *, _group_budget: list[int] | N
             if budget[0] <= 0:
                 break
             budget[0] -= 1
-            child_diagnostics = _exception_diagnostics(child, _group_budget=budget)
+            child_diagnostics = _exception_diagnostics(child, secrets=secrets, _group_budget=budget)
             for key in ("exception_chain", "exception_stack"):
                 result[key] = _diagnostic_text(
                     result[key] + f"\nGroup member {index}:\n" + child_diagnostics[key]
                 )
+    return result
+
+
+def exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = ()) -> dict[str, str]:
+    """Capture an exception before a background job turns it into a result."""
+    secrets = tuple(secrets)
+    result = _exception_diagnostics(error, secrets=secrets)
+    # Remote diagnostics may have been created in a different credential scope.
+    for key, value in result.items():
+        result[key] = _redact_known_secrets(value, secrets)
     return result
 
 
@@ -1466,6 +1500,8 @@ class _ModelSlotsProxy:
 
 class PluginContext:
     """The complete public object passed to one Plugin API v4 entry."""
+
+    exception_diagnostics = staticmethod(exception_diagnostics)
 
     def __init__(
         self,

@@ -1419,6 +1419,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn settings_failure_surfaces_original_diagnostic_with_stable_code() {
+        let error = settings_response_payload(json!({"ok":false,"error":{
+            "code":"SAVE_FAILED", "message":"保存失败", "details":{
+                "feature":"fixture", "field":"path", "diagnostics":{
+                    "diagnostic":"PermissionError: directory is locked",
+                    "exception_chain":"SaveError caused by PermissionError",
+                    "exception_stack":"at save_settings:42 (C:/config/ui.json)"
+                }
+            }
+        }}))
+        .unwrap_err();
+        assert!(error.starts_with("SAVE_FAILED|fixture|path|PermissionError: directory is locked"));
+        assert!(error.contains("SaveError caused by PermissionError"));
+        assert!(error.contains("at save_settings:42 (C:/config/ui.json)"));
+        assert!(error.ends_with("保存失败"));
+    }
+
+    #[test]
     fn migration_progress_survives_publication() {
         let status = json!({"pluginMigration": {"state": "running", "completed": 0,
             "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"}});

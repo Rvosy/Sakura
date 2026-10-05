@@ -43,7 +43,7 @@ class WebPlugin:
                 "parameters": tool["inputSchema"],
                 "risk": risks.get(name, "low"),
                 "timeoutSeconds": timeout,
-            }, _handler(name, logger, context.config.get))
+            }, _handler(name, logger, context.config.get, context.exception_diagnostics))
 
 
     def load(self):
@@ -70,7 +70,9 @@ class WebPlugin:
         return {}
 
     def _run_test(self, query, config):
-        result = _execute_handler("web_search", lambda: config)({"query": query, "max_results": 5})
+        result = _execute_handler("web_search", lambda: config,
+                                  self.context.get("sakura.host.logging"),
+                                  self.context.exception_diagnostics)({"query": query, "max_results": 5})
         if result.get("isError"):
             text = result["error"]
             status = {"state": "error", "label": "搜索失败", "message": ""}
@@ -117,36 +119,36 @@ def _settings_descriptor():
     }
 
 
-def _handler(name: str, logger=None, config_get=None):
-    execute = _execute_handler(name, config_get)
-    def logged(arguments):
-        result = execute(arguments)
-        if result.get("isError") and logger is not None:
-            logger.warning("网页工具执行失败", fields={"tool": name, "reason_code": result["reasonCode"]})
-        return result
-    return logged
+def _handler(name: str, logger=None, config_get=None, diagnose=None):
+    return _execute_handler(name, config_get, logger, diagnose)
 
 
-def _execute_handler(name: str, config_get=None):
+def _execute_handler(name: str, config_get=None, logger=None, diagnose=None):
     def execute(arguments: dict[str, Any]) -> dict[str, Any]:
+        config = {}
         try:
+            config = config_get() if config_get else {"provider": "bing"}
             if name == "web_search":
                 return search.search(
                     web._required_string(arguments, "query"),
                     web._clamp_int(arguments.get("max_results"), 5, 1, 10),
-                    config_get() if config_get else {"provider": "bing"},
+                    config,
                 )
             return search.fetch(
                 web._required_string(arguments, "url"),
                 web._clamp_int(arguments.get("max_chars"), 6000, 500, 20000),
-                config_get() if config_get else {"provider": "bing"},
+                config,
             )
-        except web.WebError as error:
-            return {"isError": True, "reasonCode": error.code, "error": str(error)}
-        except TimeoutError:
-            return {"isError": True, "reasonCode": "WEB_TIMEOUT", "error": "网页请求超时。"}
-        except ValueError as error:
-            return {"isError": True, "reasonCode": "WEB_INVALID_REQUEST", "error": str(error)}
-        except OSError:
-            return {"isError": True, "reasonCode": "WEB_NETWORK_ERROR", "error": "无法连接目标网站。"}
+        except (web.WebError, TimeoutError, ValueError, OSError) as error:
+            from sakura_provider_errors import sanitize_provider_diagnostic
+            code = error.code if isinstance(error, web.WebError) else "WEB_TIMEOUT" if isinstance(error, TimeoutError) else "WEB_INVALID_REQUEST" if isinstance(error, ValueError) else "WEB_NETWORK_ERROR"
+            secrets = (config.get("tavily_api_key", ""),)
+            evidence = diagnose(error, secrets=secrets) if diagnose else {}
+            result = {"isError": True, "reasonCode": code,
+                      "error": sanitize_provider_diagnostic(evidence.get("diagnostic") or str(error) or type(error).__name__, secrets=secrets)}
+        # The exception was captured with this request's credentials. Logging
+        # after the handler prevents automatic capture from replacing that copy.
+        if logger is not None:
+            logger.warning("网页工具执行失败", fields={"tool": name, "reason_code": code, **evidence})
+        return result
     return execute

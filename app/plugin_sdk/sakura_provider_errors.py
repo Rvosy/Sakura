@@ -7,18 +7,14 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
-_PROVIDER_PUBLIC_FIELDS = ("message", "detail", "Exception", "code", "type", "status")
+_PROVIDER_PUBLIC_FIELDS = ("message", "detail", "Exception", "code", "type", "status", "param", "request_id")
 _PROVIDER_DIAGNOSTIC_LIMIT = 4096
 _PROVIDER_HTTP_PREFIX = re.compile(r"(?:^|\n)API HTTP (?P<status>[1-5][0-9]{2}):")
-_PROVIDER_SENSITIVE_PATTERNS = (
-    re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{6,}\b", re.IGNORECASE),
-    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{6,}", re.IGNORECASE),
-    re.compile(
-        r"\b(?:api[_ -]?key|authorization|token|secret|password|credential)\b"
-        r'''["']?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)''',
-        re.IGNORECASE,
-    ),
-)
+_SECRET = re.compile(r'''(?ix)
+    (\b(?:api[_ -]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
+    ["']?\s*[:=]\s*(?:(?:bearer|basic)\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
+    |(\bbearer\s+)[^\s,;}&]+|\b(?:sk|pk)-[\w.-]{6,}
+''')
 
 
 def provider_http_status(error: BaseException) -> int | None:
@@ -41,7 +37,7 @@ def public_provider_http_message(
     *,
     secrets: Iterable[str] = (),
 ) -> str:
-    """Keep useful Provider HTTP details while removing credentials."""
+    """Keep Provider error fields, including paths and URLs, without response content."""
 
     resolved_status = status_code if status_code is not None else provider_http_status(error)
     if resolved_status is None:
@@ -79,7 +75,8 @@ def public_provider_http_message(
         if metadata:
             return f"API HTTP {resolved_status}: {metadata}"
 
-    diagnostic = sanitize_provider_diagnostic(body, secrets=secrets)
+    # A JSON response without error fields may contain conversation content.
+    diagnostic = sanitize_provider_diagnostic(body, secrets=secrets) if payload is None else ""
     if diagnostic:
         return f"API HTTP {resolved_status}: {diagnostic}"
     return f"API HTTP {resolved_status}: 供应商请求失败。"
@@ -104,19 +101,21 @@ def _provider_error_payload(body: str) -> Mapping[str, Any] | None:
 
 
 def sanitize_provider_diagnostic(value: str, *, secrets: Iterable[str] = ()) -> str:
-    # Decode error fields before this step, then remove known credentials before
-    # whitespace normalization or truncation could split the original value.
+    # Remove known credentials before bounding the text. Preserve newlines and
+    # diagnostic paths/URLs; the SDK handles credentials embedded in URLs.
     for secret in secrets:
         if secret:
             for encoded in (secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1], repr(secret)[1:-1], ascii(secret)[1:-1]):
                 value = value.replace(encoded, "[REDACTED]")
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    value = _SECRET.sub(lambda m: (m[1] or m[2] or "") + "[REDACTED]", value)
     value = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@", r"\1[REDACTED]@", value)
-    sanitized = value.strip()
-    for pattern in _PROVIDER_SENSITIVE_PATTERNS:
-        sanitized = pattern.sub("[REDACTED]", sanitized)
-    if len(sanitized) > _PROVIDER_DIAGNOSTIC_LIMIT:
-        sanitized = sanitized[: _PROVIDER_DIAGNOSTIC_LIMIT - 14].rstrip() + "\n[truncated]"
-    return sanitized
+    value = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", value).strip()
+    if len(value) > _PROVIDER_DIAGNOSTIC_LIMIT:
+        marker = f"\n[truncated: {len(value)} characters]\n"
+        kept = _PROVIDER_DIAGNOSTIC_LIMIT - len(marker)
+        value = value[:kept // 2] + marker + value[-(kept - kept // 2):]
+    return value
 
 
 def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[str] = ()) -> dict[str, str]:

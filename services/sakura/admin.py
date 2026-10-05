@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -243,6 +244,7 @@ def overview(
                 """
             ).fetchone()[0]
     except sqlite3.Error:
+        logging.getLogger("sakura_telemetry").exception("SQLite admin request failed")
         raise HTTPException(status_code=503, detail="STORAGE_UNAVAILABLE")
     return {
         "rangeDays": days,
@@ -329,6 +331,7 @@ def errors(
                 )
             )
     except sqlite3.Error:
+        logging.getLogger("sakura_telemetry").exception("SQLite admin request failed")
         raise HTTPException(status_code=503, detail="STORAGE_UNAVAILABLE")
     return {
         "rangeDays": days,
@@ -361,6 +364,7 @@ def report(request: Request, report_id: str) -> dict[str, Any]:
                 (report_id,),
             ).fetchone()
     except sqlite3.Error:
+        logging.getLogger("sakura_telemetry").exception("SQLite admin request failed")
         raise HTTPException(status_code=503, detail="STORAGE_UNAVAILABLE")
     if row is None:
         _not_found()
@@ -457,6 +461,7 @@ def installation(
                 )
             )
     except sqlite3.Error:
+        logging.getLogger("sakura_telemetry").exception("SQLite admin request failed")
         raise HTTPException(status_code=503, detail="STORAGE_UNAVAILABLE")
     return {
         "installationId": installation_id,
@@ -583,6 +588,7 @@ def model_metrics(
                 )
             )
     except sqlite3.Error:
+        logging.getLogger("sakura_telemetry").exception("SQLite admin request failed")
         raise HTTPException(status_code=503, detail="STORAGE_UNAVAILABLE")
 
     summary["contextWindowUsagePercent"] = _percent(
@@ -654,6 +660,7 @@ def model_calls(
                 )
             )
     except sqlite3.Error:
+        logging.getLogger("sakura_telemetry").exception("SQLite admin request failed")
         raise HTTPException(status_code=503, detail="STORAGE_UNAVAILABLE")
 
     if not rows:

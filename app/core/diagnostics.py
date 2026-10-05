@@ -123,7 +123,7 @@ def _exception_message(error: object) -> str:
             if isinstance(source, str):
                 return safe_diagnostic_text(prefix + " " + source)
             if isinstance(source, dict):
-                fields = [f"{key}: {source[key]}" for key in ("message", "code", "type", "status") if isinstance(source.get(key), (str, int, float))]
+                fields = [f"{key}: {source[key]}" for key in ("message", "code", "type", "status", "param", "request_id") if isinstance(source.get(key), (str, int, float))]
                 return safe_diagnostic_text(prefix + " " + "; ".join(fields))
     return safe_diagnostic_text(text)
 

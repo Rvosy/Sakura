@@ -105,8 +105,8 @@ class Consumer:
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
         return True
-    def wait(self):
-        if not self.done.wait(3):
+    def wait(self, until_done=False):
+        if not self.done.wait(None if until_done else 3):
             return {"state": "running"}
         return self.result
     def cancel(self):
@@ -192,8 +192,8 @@ class FixtureModelPlugin(ModelPlugin):
             response = "r" * 1_100_000 if isinstance(text, str) and text.startswith("large") else "OK"
             status = 200
             data = {"choices": [{"message": {"content": response}}]}
-            if text == "reject-secret":
-                status = 401
+            if text in {"reject-secret-401", "reject-secret-200"}:
+                status = int(text.rsplit("-", 1)[1])
                 data = {"error": {"message": "credential rejected: " + self.headers.get("Authorization", "").removeprefix("Bearer "),
                                   "code": "invalid_api_key"},
                         "choices": [{"message": {"content": "UNRELATED_PRIVATE_RESPONSE_BODY"}}]}
@@ -237,9 +237,11 @@ def test_large_input_and_output_use_artifacts_and_both_are_reclaimed(model_proce
     app, requests, _gate, _config = model_process
     text = "large" + "x" * 1_100_000
     app.call_service("fixture.model.a", "start", REF, request("large"))
-    assert requests.get(timeout=3)["messages"][0]["content"] == text
-    result = app.call_service("fixture.model.a", "wait")
+    # Artifact transfer is a completion contract, not a cold SDK startup budget.
+    # The completion event follows client cleanup; RPC/test deadlines bound it.
+    result = app.call_service("fixture.model.a", "wait", True)
     assert result["state"] == "completed" and result["length"] == 1_100_000, result
+    assert requests.get_nowait()["messages"][0]["content"] == text
     assert app._host_services.artifact_count == 0
 
 
@@ -290,7 +292,8 @@ def test_operations_are_authenticated_by_consumer_scope(model_process):
     gate.set()
 
 
-def test_json_escaped_credentials_are_removed_before_model_failure_crosses_processes(model_process):
+@pytest.mark.parametrize("status", [401, 200])
+def test_json_escaped_credentials_are_removed_before_model_failure_crosses_processes(model_process, status):
     from app.core.diagnostics import exception_diagnostics
     from app.plugins.runtime_v4 import PluginRuntimeError
 
@@ -303,8 +306,8 @@ def test_json_escaped_credentials_are_removed_before_model_failure_crosses_proce
     config.write_text(json.dumps(saved), encoding="utf-8")
     app.reload_plugin(SERVICE)
     with pytest.raises(PluginRuntimeError) as caught:
-        app.call_service("fixture.model.a", "complete", REF, request("reject-secret"))
-    assert requests.get(timeout=3)["messages"][0]["content"] == "reject-secret"
+        app.call_service("fixture.model.a", "complete", REF, request(f"reject-secret-{status}"))
+    assert requests.get(timeout=3)["messages"][0]["content"] == f"reject-secret-{status}"
     diagnostic = exception_diagnostics(caught.value, reason_code="MODEL_FAILED", stage="model")
     observed = repr((caught.value, caught.value.__cause__.diagnostics, diagnostic))
     assert secret not in observed
@@ -313,6 +316,7 @@ def test_json_escaped_credentials_are_removed_before_model_failure_crosses_proce
     assert "UNRELATED_PRIVATE_RESPONSE_BODY" not in observed
     assert "credential rejected" in diagnostic["diagnostic"]
     assert "invalid_api_key" in diagnostic["diagnostic"]
+    assert f"API HTTP {status}" in diagnostic["diagnostic"]
     assert "[REDACTED]" in diagnostic["exception_stack"]
 
 
