@@ -137,7 +137,7 @@ def test_slow_existing_import_does_not_repair_or_replace_a_completed_plugin(tmp_
     monkeypatch.setattr(PluginDependencyRoots, "_validate_entry", slow_import)
     monkeypatch.setattr(migration, "ensure_external_plugin", no_repair)
     assert migration.migrate_bundled_plugins(roots) == {}
-    assert json.loads(state_path(roots).read_text())[MOBILE] == "completed"
+    assert json.loads(state_path(roots).read_text(encoding="utf-8"))[MOBILE] == "completed"
     assert (target / "plugin.py").read_bytes() == original
     assert PluginDesiredStateStore(roots.user_root).read()[MOBILE] is False
 
@@ -161,8 +161,8 @@ def test_failed_revalidation_retries_only_the_unfinished_plugin(tmp_path, monkey
                 return needs_repair(roots, plugin_id, details)
 
             first_pass.setattr(migration, "_needs_repair", unreadable_directory)
-        assert migration.migrate_bundled_plugins(roots) == {SPINE: "PLUGIN_MIGRATION_FAILED"}
-    state = json.loads(state_path(roots).read_text())
+        assert {key: value["reasonCode"] for key, value in migration.migrate_bundled_plugins(roots).items()} == {SPINE: "PLUGIN_MIGRATION_FAILED"}
+    state = json.loads(state_path(roots).read_text(encoding="utf-8"))
     assert state[MOBILE] == "completed"
     assert state[SPINE] == "repairing"
 
@@ -182,7 +182,7 @@ def test_failed_revalidation_retries_only_the_unfinished_plugin(tmp_path, monkey
     assert migration.migrate_bundled_plugins(roots, progress=events.append) == {}
     assert imports == [SPINE]
     assert [event["pluginId"] for event in events if event["state"] == "running"] == [SPINE]
-    assert json.loads(state_path(roots).read_text())[SPINE] == "completed"
+    assert json.loads(state_path(roots).read_text(encoding="utf-8"))[SPINE] == "completed"
     forbidden = forbid_completed_work(monkeypatch)
     assert migration.migrate_bundled_plugins(roots, progress=forbidden) == {}
 
@@ -200,11 +200,11 @@ def test_112_spine_preserves_local_version_or_uses_replacement_payload(tmp_path,
 
     assert migration.migrate_bundled_plugins(roots) == {}
     target = roots.user_root / "plugins/user" / SPINE
-    manifest = yaml.safe_load((target / "plugin.yaml").read_text())
+    manifest = yaml.safe_load((target / "plugin.yaml").read_text(encoding="utf-8"))
     assert manifest["version"] == ("0.2.5" if overlay else "0.2.7")
     if overlay:
-        assert (target / "plugin.yaml").read_text() == SPINE_112_MANIFEST
-        assert (target / "local-notes.txt").read_text() == "retained 1.1.2 installation"
+        assert (target / "plugin.yaml").read_text(encoding="utf-8") == SPINE_112_MANIFEST
+        assert (target / "local-notes.txt").read_text(encoding="utf-8") == "retained 1.1.2 installation"
     assert (roots.user_root / "config/plugins.yaml").read_bytes() == before_desired
     forbidden = forbid_completed_work(monkeypatch)
     assert migration.migrate_bundled_plugins(roots, progress=forbidden) == {}
@@ -221,7 +221,7 @@ def test_120_completed_historical_spine_is_repaired_despite_payload_version_diff
 
     assert migration.migrate_bundled_plugins(roots) == {}
     assert (target / "plugin.py").read_bytes() == (old / "plugin.py").read_bytes()
-    assert (target / "plugin.yaml").read_text() == SPINE_112_MANIFEST
+    assert (target / "plugin.yaml").read_text(encoding="utf-8") == SPINE_112_MANIFEST
     forbidden = forbid_completed_work(monkeypatch)
     assert migration.migrate_bundled_plugins(roots, progress=forbidden) == {}
 

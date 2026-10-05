@@ -274,6 +274,10 @@ SDK 的 warning/error 和兼容诊断入口在异常处理期间自动附加原�
 
 异步 Provider 的失败结果同样保留可选 `diagnostics`，包含原始诊断、异常类型、原因链和调用栈；稳定 `errorCode` 只用于控制流，不能替代这些信息。TTS/ASR Hub 转发失败结果时保留该字段，Core 将它接入已有异常诊断链。旧 Provider 仅返回错误码时，仍接受该结果，但不虚构异常原文。SDK 的 `sakura_provider_errors.provider_failure` 在工作线程捕获异常时构造失败数据并清洗凭据；转发已捕获的诊断不从当前线程重新制造调用栈。设置部分保存、模型连接测试与前端刷新失败也保留原因，界面展示和复制使用同一份诊断。
 
+失败状态与异常响应遵循同一规则。Inventory 的清单和迁移失败、Runtime 的启动和进程清理失败、设置分区及模型目录的读取失败，都在对应状态中保留 `diagnostics`。合并清单、投影设置快照和渲染界面时继续传递该字段；空列表、默认值和 `reasonCode` 不能替代已捕获的错误。插件详情直接显示原始原因，错误详情保留异常链与调用栈。重试成功后清除旧诊断。
+
+Provider 在注册到语音 Hub 前启动失败时，Hub 只能报告“未注册”。Core 根据结果中的 `providerId` 补充该插件的启动诊断；依赖未激活服务的插件和 `SERVICE_MISSING` 同样携带提供方的失败原因。TTS/ASR 的状态、预热、任务及设置投影保留这些信息。没有捕获到异常时只报告已知事实，不根据通用错误码推测原因。
+
 TTS 失败的响应、事件和运行日志均保留异常诊断；HTTP 失败保留脱敏后的服务端错误正文。ASR 预热调用抛出的异常沿 RPC 返回，不转换为旧的准备状态。设置部分保存后若刷新也失败，界面同时展示保存与刷新错误。
 
 插件启动失败在转换为状态码前提取原始异常，启动失败日志保留依赖检查或初始化阶段的异常链与调用栈。事件回调、清理回调和宿主资源回收失败也记录诊断，后续回调及资源回收继续执行。关闭期间允许插件注销自己已登记的宿主资源，随后由宿主完成剩余资源回收。
@@ -645,7 +649,8 @@ Runner 接收的仍只是当前插件自己的 dependency root。
 
 `.sakura-dependencies.json` 保持 `schemaVersion: 1`，新标记只写入 schema 版本和 Python
 主次版本 `python`。启动检查标记可读、schema 及 Python ABI；不匹配返回
-`PLUGIN_DEPENDENCIES_STALE`，标记缺失或不可读返回 `PLUGIN_DEPENDENCIES_MISSING`。
+`PLUGIN_DEPENDENCIES_STALE`，并列出预期与实际版本；标记缺失返回 `PLUGIN_DEPENDENCIES_MISSING`，
+读取权限、编码或 JSON 解析失败返回 `PLUGIN_DEPENDENCIES_INVALID`。诊断保留标记路径、系统或解析器原文与异常链，界面不将这些失败统一解释为“依赖未安装”。
 旧标记的 `kind` 和 `fingerprint` 直接忽略，不重算或改写。依赖声明文件格式、内容或换行变化不使已安装环境失效；
 需要更新依赖时执行显式安装或更新，入口导入与运行错误仍按原有路径报告。
 

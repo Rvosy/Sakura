@@ -210,7 +210,7 @@ class PluginDependencyRoots:
             return None
         if source == "bundled":
             if self._distribution is None:
-                raise PluginDependencyError("PLUGIN_DEPENDENCIES_MISSING")
+                raise PluginDependencyError("PLUGIN_DEPENDENCIES_MISSING", f"插件 {plugin_id} 未配置发行包依赖目录")
             root = self._distribution.plugin_dependency_root_for(plugin_id)
         elif source == "user":
             root = self._paths.plugin_dependency_root_for(plugin_id)
@@ -226,15 +226,19 @@ class PluginDependencyRoots:
         marker_path = root / _MARKER
         try:
             marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            raise PluginDependencyError("PLUGIN_DEPENDENCIES_MISSING")
+        except FileNotFoundError as error:
+            raise PluginDependencyError("PLUGIN_DEPENDENCIES_MISSING", str(error)) from error
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise PluginDependencyError("PLUGIN_DEPENDENCIES_INVALID", f"{marker_path}: {error}") from error
         expected_python = f"{sys.version_info.major}.{sys.version_info.minor}"
         if (
             not isinstance(marker, dict)
             or marker.get("schemaVersion") != 1
             or marker.get("python") != expected_python
         ):
-            raise PluginDependencyError("PLUGIN_DEPENDENCIES_STALE")
+            actual = {key: marker.get(key) for key in ("schemaVersion", "python")} if isinstance(marker, dict) else type(marker).__name__
+            raise PluginDependencyError("PLUGIN_DEPENDENCIES_STALE",
+                                        f"{marker_path}: expected schemaVersion=1, python={expected_python}; actual={actual}")
         return root
 
     def remove(self, plugin_id: str) -> None:

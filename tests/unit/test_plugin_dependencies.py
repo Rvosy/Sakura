@@ -12,6 +12,33 @@ import pytest
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 
 
+@pytest.mark.parametrize("failure,code,cause", [
+    ("missing", "PLUGIN_DEPENDENCIES_MISSING", FileNotFoundError),
+    ("json", "PLUGIN_DEPENDENCIES_INVALID", json.JSONDecodeError),
+    ("denied", "PLUGIN_DEPENDENCIES_INVALID", PermissionError),
+])
+def test_dependency_check_preserves_actual_filesystem_or_parse_failure(tmp_path, monkeypatch, failure, code, cause):
+    root = tmp_path / "dependencies"
+    root.mkdir()
+    (tmp_path / "requirements.txt").write_text("fixture\n", encoding="utf-8")
+    marker = root / ".sakura-dependencies.json"
+    if failure == "json":
+        marker.write_text("{broken", encoding="utf-8")
+    elif failure == "denied":
+        original = Path.read_text
+        def denied(path, *args, **kwargs):
+            if path == marker:
+                raise PermissionError(13, "permission denied", str(path))
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(PluginDependencyError) as caught:
+        PluginDependencyRoots(tmp_path).verified_path(tmp_path, root)
+    assert caught.value.code == code
+    assert marker.name in str(caught.value)
+    assert isinstance(caught.value.__cause__, cause)
+    assert str(caught.value.__cause__) in str(caught.value)
+
+
 def test_entry_import_timeout_is_not_reported_as_a_broken_entry(tmp_path, monkeypatch):
     def slow_import(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])

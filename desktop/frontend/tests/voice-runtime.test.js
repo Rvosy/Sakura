@@ -443,6 +443,17 @@ test("enabled TTS Hub without an enabled voice engine shows the page-level unava
   assert.equal(controller.isDirty(), false);
 });
 
+test("voice settings retain startup diagnostics when the selected provider never registered", async () => {
+  const { document, created } = fixture();
+  const controller = createVoiceController({ document, invoke: async () => snapshot({ providers: [],
+    selection: { enabled: true, providerId: "fixture.tts", diagnostics: {
+      diagnostic: "fixture-tts.dll not found", exception_stack: "at initialize:42",
+    } }, sections: [],
+  }) });
+  await controller.refreshCurrent();
+  assert.ok(created.some(item => item.textContent.includes("fixture-tts.dll not found") && item.textContent.includes("initialize:42")));
+});
+
 for (const state of ["missing", "starting", "failed"]) {
   test(`${state} Hub does not issue a voice read and retains its state`, async () => {
     const { controls, document } = fixture();

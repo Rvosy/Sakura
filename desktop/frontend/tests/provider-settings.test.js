@@ -159,6 +159,18 @@ test("slot edits send only neutral references and retain injected identity", asy
   assert.equal(ui.feature.isDirty(), false);
 });
 
+test("failed catalog and slot loads show source diagnostics instead of an unexplained empty choice", async () => {
+  const initial = snapshot();
+  initial.providers[0].profiles = [];
+  initial.providers[0].diagnostics = { diagnostic: "catalog.json access denied api_key=private-key", exception_stack: "at catalog:12" };
+  initial.model_slots[0].diagnostics = { diagnostic: "slot.json invalid JSON", exception_stack: "at load:23" };
+  const ui = fixture(initial); await ui.feature.initialize();
+  assert.match(ui.document.body.textContent, /catalog.json access denied/);
+  assert.match(ui.document.body.textContent, /slot.json invalid JSON/);
+  assert.match(ui.document.body.textContent, /catalog:12/);
+  assert.doesNotMatch(ui.document.body.textContent, /private-key/);
+});
+
 test("inheritance shows the current chat model and restores a manual draft", async () => {
   const initial = snapshot(); initial.model_slots[1].selection = ref("manual-model");
   const ui = fixture(initial); await ui.feature.initialize();

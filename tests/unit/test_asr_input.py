@@ -233,7 +233,9 @@ def test_hub_availability_does_not_depend_on_provider_readiness(runtime):
     assert not request("asr.settings.get")["payload"]["available"]
     assert request("asr.input.availability")["payload"] == {"enabled": True}
     app.set_plugin_enabled("sakura.asr", False)
-    assert request("asr.input.availability")["payload"] == {"enabled": False}
+    unavailable = request("asr.input.availability")["payload"]
+    assert not unavailable["enabled"]
+    assert "sakura.asr" in unavailable["diagnostics"]["diagnostic"]
     result = request("asr.settings.save", inputDeviceId="mic-without-hub")
     assert result["ok"] and result["payload"]["inputDeviceId"] == "mic-without-hub"
     app.set_plugin_enabled("sakura.asr", True)

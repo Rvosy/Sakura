@@ -1096,7 +1096,11 @@ fn capture(
         if !input_visible {
             break Err("ASR_CANCELLED".into());
         }
-        if let Some(error) = failed.lock().map_err(|_| "ASR_CAPTURE_FAILED")?.take() {
+        if let Some(error) = failed
+            .lock()
+            .map_err(|error| crate::runtime_log::diagnostic_error("ASR_CAPTURE_FAILED", error))?
+            .take()
+        {
             break Err(error);
         }
         let (sequence, level, full, stalled) = {

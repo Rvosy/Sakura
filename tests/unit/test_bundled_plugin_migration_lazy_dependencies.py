@@ -75,7 +75,7 @@ def test_mem0_partial_lazy_dependencies_are_repaired_or_left_pending(
         backups = roots.user_root / "plugins/migration-backups"
         assert list(backups.glob(f"*/dependencies/{PLUGIN}/retained_package.py"))
     else:
-        assert failures == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+        assert {key: value["reasonCode"] for key, value in failures.items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
         assert state[PLUGIN] == "repairing"
         assert (dependency / "retained_package.py").exists()
     assert private_data.read_text() == '{"keep": true}'
@@ -106,7 +106,7 @@ def test_spine_missing_renderer_is_repaired_or_left_pending(
         assert state[plugin_id] == "completed"
         assert (code / "renderer.mjs").read_bytes() == (source / "renderer.mjs").read_bytes()
     else:
-        assert failures == {plugin_id: "PLUGIN_MIGRATION_FAILED"}
+        assert {key: value["reasonCode"] for key, value in failures.items()} == {plugin_id: "PLUGIN_MIGRATION_FAILED"}
         assert state[plugin_id] == "repairing"
         assert not (code / "renderer.mjs").exists()
     assert PluginDesiredStateStore(roots.user_root).read()[plugin_id] is False

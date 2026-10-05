@@ -43,7 +43,9 @@ def _record(roots: RuntimeRoots, root: Path, plugin_id: str):
     record = PluginInventory(roots)._record("user", root, {})
     if (record.plugin_id != plugin_id or not record.runtime_eligible
             or "sakura.host.model_slots" in record.requires):
-        raise ValueError("PLUGIN_MIGRATION_SOURCE_INVALID")
+        error = ValueError(f"{root}: 迁移来源不符合插件 {plugin_id} 的要求（{record.reason_code}）")
+        error.diagnostics = record.diagnostics
+        raise error
     if record.capability_issues:
         raise ValueError(f"PLUGIN_MIGRATION_SOURCE_INVALID: {record.capability_issues}")
     return record
@@ -72,7 +74,7 @@ def _dependency_root(dependencies, code: Path, root: Path) -> Path | None:
         for line in declaration.path.read_text(encoding="utf-8").splitlines()
     )
     if requires_packages:
-        raise PluginDependencyError("PLUGIN_DEPENDENCIES_MISSING")
+        raise PluginDependencyError("PLUGIN_DEPENDENCIES_MISSING", f"{verified}: 只有安装标记，没有依赖文件；声明位于 {declaration.path}")
     return verified
 
 
@@ -147,7 +149,7 @@ def _prepare(roots: RuntimeRoots, plugin_id: str, staging: Path, original: Path 
         *(("backup", path) for path in sorted(backups.glob(f"*/dependencies/{plugin_id}"), reverse=True)),
         ("payload", payload / "dependencies" / plugin_id),
     ]
-    last_error = ValueError("PLUGIN_MIGRATION_SOURCE_MISSING")
+    last_error = ValueError(f"PLUGIN_MIGRATION_SOURCE_MISSING: {plugin_id}; checked: " + ", ".join(str(path) for _, path in sources))
     last_details = {"stage": "select_source"}
     for code_source, source in sources:
         if not (source / "plugin.yaml").is_file():
@@ -273,21 +275,23 @@ def ensure_external_plugin(roots: RuntimeRoots, plugin_id: str, *, enabled: bool
     details["outcome"] = "repaired" if repair else "migrated"
 
 
-def _failure(error: Exception, code: str, plugin_id: str | None = None, details: dict | None = None) -> None:
+def _failure(error: Exception, code: str, plugin_id: str | None = None, details: dict | None = None) -> dict[str, object]:
     details = details or {}
+    diagnostics = diagnostic_attributes(error, reason_code=code, stage=details.get("stage", "builtin_extraction"))
     log_event("Plugin", "插件迁移未完成", {
         **details, "code": code, "outcome": "failed",
-        **diagnostic_attributes(error, reason_code=code, stage=details.get("stage", "builtin_extraction")),
+        **diagnostics,
     },
         event="plugin.migration.failed", severity="error", plugin_id=plugin_id)
+    return {"reasonCode": code, "diagnostics": diagnostics}
 
 
-def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], None] | None = None) -> dict[str, str]:
+def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], None] | None = None) -> dict[str, dict[str, object]]:
     from app.plugins.inventory import PluginDesiredStateStore
 
     config = roots.user_root / "config"
     state_path = config / STATE_NAME
-    failures: dict[str, str] = {}
+    failures: dict[str, dict[str, object]] = {}
     started = time.monotonic()
 
     def summary(count, total, ignored=0):
@@ -309,10 +313,10 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
         if not isinstance(completed, dict):
             raise ValueError("PLUGIN_MIGRATION_STATE_INVALID")
     except (OSError, UnicodeError, ValueError) as error:
-        _failure(error, "PLUGIN_MIGRATION_STATE_INVALID", details={"stage": "read_state", "elapsed_ms": round((time.monotonic() - started) * 1000)})
+        failure = _failure(error, "PLUGIN_MIGRATION_STATE_INVALID", details={"stage": "read_state", "elapsed_ms": round((time.monotonic() - started) * 1000)})
         report("failed", 0, len(MIGRATIONS))
         # Preserve damaged metadata and every user plugin; the Core can still run.
-        failures = {key: "PLUGIN_MIGRATION_STATE_INVALID" for key in (*MIGRATIONS, "__migration__")}
+        failures = {key: failure for key in (*MIGRATIONS, "__migration__")}
         summary(0, len(MIGRATIONS))
         return failures
 
@@ -339,8 +343,7 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
         details = {"stage": "read_state", "status": state or "pending"}
         _event("plugin_started", "开始迁移插件", details, plugin_id)
         if state not in (None, "completed", "repairing"):
-            failures[plugin_id] = "PLUGIN_MIGRATION_STATE_INVALID"
-            _failure(ValueError("PLUGIN_MIGRATION_STATE_INVALID"), failures[plugin_id], plugin_id, {
+            failures[plugin_id] = _failure(ValueError(f"{state_path}: {plugin_id} 的迁移状态无效：{state!r}"), "PLUGIN_MIGRATION_STATE_INVALID", plugin_id, {
                 **details, "elapsed_ms": round((time.monotonic() - plugin_started) * 1000),
             })
             continue
@@ -371,9 +374,8 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
             # Also retain failures raised while inspecting an old completed copy.
             # Successful items must not be rechecked when this item is retried.
             completed[plugin_id] = "repairing"
-            code = "PLUGIN_MIGRATION_SOURCE_MISSING" if str(error) == "PLUGIN_MIGRATION_SOURCE_MISSING" else "PLUGIN_MIGRATION_FAILED"
-            failures[plugin_id] = code
-            _failure(error, code, plugin_id, {
+            code = "PLUGIN_MIGRATION_SOURCE_MISSING" if str(error).startswith("PLUGIN_MIGRATION_SOURCE_MISSING:") else "PLUGIN_MIGRATION_FAILED"
+            failures[plugin_id] = _failure(error, code, plugin_id, {
                 **details, "elapsed_ms": round((time.monotonic() - plugin_started) * 1000),
             })
     if handled and not revalidated:
@@ -383,8 +385,7 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
         try:
             save()
         except OSError as error:
-            failures["__migration__"] = "PLUGIN_MIGRATION_STATE_WRITE_FAILED"
-            _failure(error, failures["__migration__"], details={"stage": "save_state", "elapsed_ms": round((time.monotonic() - started) * 1000)})
+            failures["__migration__"] = _failure(error, "PLUGIN_MIGRATION_STATE_WRITE_FAILED", details={"stage": "save_state", "elapsed_ms": round((time.monotonic() - started) * 1000)})
     if pending or failures:
         report("failed" if failures else "completed", count, len(pending), next(iter(failures), None))
     if pending or failures or first_record:

@@ -147,7 +147,7 @@ def test_failed_publish_is_retryable_and_does_not_change_enabled_state(tmp_path,
             raise OSError("disk unavailable")
         return replace(source, target)
     monkeypatch.setattr(migration.os, "replace", fail)
-    assert migrate_bundled_plugins(roots) == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+    assert {key: value["reasonCode"] for key, value in migrate_bundled_plugins(roots).items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
     assert json.loads(marker(roots).read_text())[PLUGIN] == "repairing"
     assert (roots.user_root / "config/plugins.yaml").read_bytes() == before
     assert not installed(roots).exists()
@@ -160,7 +160,7 @@ def test_missing_source_is_reported_without_completing(tmp_path):
     roots = roots_for(tmp_path)
     shutil.rmtree(roots.distribution_root)
     events = []
-    assert migrate_bundled_plugins(roots, progress=events.append) == {PLUGIN: "PLUGIN_MIGRATION_SOURCE_MISSING"}
+    assert {key: value["reasonCode"] for key, value in migrate_bundled_plugins(roots, progress=events.append).items()} == {PLUGIN: "PLUGIN_MIGRATION_SOURCE_MISSING"}
     assert json.loads(marker(roots).read_text())[PLUGIN] == "repairing"
     assert events[-1]["state"] == "failed"
 
@@ -183,7 +183,7 @@ def test_cache_only_old_directory_uses_complete_local_payload(tmp_path, developm
 def test_corrupt_marker_is_preserved_without_blocking_core(tmp_path, text):
     roots = roots_for(tmp_path)
     marker(roots).write_text(text)
-    assert migrate_bundled_plugins(roots)[PLUGIN] == "PLUGIN_MIGRATION_STATE_INVALID"
+    assert migrate_bundled_plugins(roots)[PLUGIN]["reasonCode"] == "PLUGIN_MIGRATION_STATE_INVALID"
     assert marker(roots).read_text() == text
     assert not installed(roots).exists()
 
@@ -236,7 +236,7 @@ def test_retired_api_repair_prepares_before_moving_original(tmp_path, monkeypatc
         monkeypatch.setattr(migration.shutil, "copytree", fail)
     failures = migrate_bundled_plugins(roots)
     if fails:
-        assert failures == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+        assert {key: value["reasonCode"] for key, value in failures.items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
         assert manifest.read_bytes() == original
     else:
         assert failures == {}
@@ -268,7 +268,7 @@ def test_one_failed_plugin_does_not_skip_other_migrations(tmp_path, monkeypatch)
     roots = roots_for(tmp_path)
     monkeypatch.setattr(migration, "MIGRATIONS", {"missing.plugin": "missing", PLUGIN: PLUGIN})
     events = []
-    assert migrate_bundled_plugins(roots, progress=events.append) == {"missing.plugin": "PLUGIN_MIGRATION_SOURCE_MISSING"}
+    assert {key: value["reasonCode"] for key, value in migrate_bundled_plugins(roots, progress=events.append).items()} == {"missing.plugin": "PLUGIN_MIGRATION_SOURCE_MISSING"}
     assert (installed(roots) / "plugin.yaml").is_file()
     assert events[-1] == {"state": "failed", "completed": 1, "total": 2, "pluginId": "missing.plugin"}
 
@@ -398,7 +398,7 @@ def test_repair_does_not_replace_another_plugin_in_the_target_directory(tmp_path
     (target / "plugin.py").write_text("class Plugin: pass\n")
     marker(roots).write_text(json.dumps({PLUGIN: "completed"}))
     before = (target / "plugin.yaml").read_bytes()
-    assert migrate_bundled_plugins(roots) == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+    assert {key: value["reasonCode"] for key, value in migrate_bundled_plugins(roots).items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
     assert (target / "plugin.yaml").read_bytes() == before
 
 

@@ -1262,6 +1262,7 @@ class TTSBoundary:
                         else None
                     ),
                     "available": bool(status.get("available")),
+                    **{key: status[key] for key in ("reasonCode", "diagnostics") if key in status},
                 }
                 if isinstance(status, Mapping)
                 else None
@@ -1279,6 +1280,7 @@ class TTSBoundary:
                         "sectionId",
                         "title",
                         "reasonCode",
+                        "diagnostics",
                         "fields",
                         "values",
                         "actions",

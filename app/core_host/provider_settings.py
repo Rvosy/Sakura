@@ -93,9 +93,10 @@ class ProviderSettingsBoundary:
         issue = getattr(application, "model_configuration_issue", lambda: None)()
         try:
             selections = self._repository.load()
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
             logging.getLogger(__name__).exception("模型选择配置读取失败")
-            issue = "CONFIG_DATA_INVALID"
+            diagnostics = exception_diagnostics(error, reason_code="CONFIG_DATA_INVALID", stage="model.settings.load")
+            issue = {"code": "CONFIG_DATA_INVALID", "message": diagnostics["diagnostic"], "diagnostics": diagnostics}
             selections = {name: dict(EMPTY_REFERENCE) for name in ("chat", "vision_chat")}
         slots = [{"identity": f"core:{name}", "ownerType": "core", "ownerId": "sakura.core", "slotId": name,
                   "label": label, "description": "", "modelKind": "chat_completion", "required": name == "chat",
@@ -110,7 +111,7 @@ class ProviderSettingsBoundary:
             if selection.get("serviceKey") and tuple(selection.get(key, "") for key in EMPTY_REFERENCE) not in choices:
                 slot["reasonCode"] = "MODEL_REFERENCE_UNAVAILABLE"
         return {"schema_version": 2, "providers": catalog, "model_slots": sorted(slots, key=lambda slot: (slot.get("order", 100), slot["identity"])),
-                "configuration_issue": {"code": issue, "message": "原模型配置无法读取。请在模型服务中检查连接，重新选择并保存模型。旧 API 配置会保留。"} if issue else None,
+                "configuration_issue": issue,
                 "setup_complete": bool(selections["chat"]["serviceKey"] and slots[0]["reasonCode"] == "READY"), "change_plans": ["applied"]}
 
     def _save(self, raw):

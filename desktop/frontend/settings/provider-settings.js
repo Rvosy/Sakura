@@ -1,4 +1,5 @@
 import { createProviderModelController } from "./provider-model-runtime.js";
+import { errorText } from "../core/error-display.js";
 
 const emptyReference = () => ({ serviceKey: "", profileId: "", modelId: "" });
 
@@ -34,6 +35,11 @@ export function createProviderSettingsFeature({ document, onDirty, onError, invo
       issue.textContent = snapshot.configuration_issue.message; container.append(issue);
     }
     const profiles = mergedProviders().flatMap(provider => provider.profiles.map(profile => ({ ...profile, serviceKey: provider.serviceKey, providerLabel: provider.label })));
+    for (const failed of [...snapshot.providers, ...snapshot.model_slots].filter(item => item.diagnostics?.diagnostic)) {
+      const issue = document.createElement("p"); issue.className = "error"; issue.setAttribute("role", "alert");
+      issue.textContent = `${failed.label}: ${errorText({ diagnostics: failed.diagnostics, code: failed.reasonCode })}`;
+      container.append(issue);
+    }
     for (const slot of snapshot.model_slots) {
       const selection = selections[slot.identity];
       const row = document.createElement("div"); row.className = "form-row model-slot-row";

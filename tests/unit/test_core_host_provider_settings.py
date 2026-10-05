@@ -138,7 +138,8 @@ def test_corrupt_model_configuration_keeps_plugin_management_and_explicit_repair
     application = PluginRuntimeApplication(RuntimeRoots(tmp_path, tmp_path), "fixture", SimpleNamespace(), specs=[])
     try:
         assert application.active_models() == {"chat": None, "vision_chat": None}
-        assert application.model_configuration_issue() == "CONFIG_DATA_INVALID"
+        assert application.model_configuration_issue()["code"] == "CONFIG_DATA_INVALID"
+        assert application.model_configuration_issue()["diagnostics"]["exception_chain"]
         # The real manager/HostService registration exists even when models fail.
         assert application.model_catalog() == []
         application.model_catalog = lambda: CATALOG
@@ -147,6 +148,7 @@ def test_corrupt_model_configuration_keeps_plugin_management_and_explicit_repair
         result = boundary.handle(_request("get"))
         assert result["ok"]
         assert result["payload"]["configuration_issue"]["code"] == "CONFIG_DATA_INVALID"
+        assert result["payload"]["configuration_issue"]["diagnostics"]["exception_stack"]
         draft = _draft(boundary)
         denied = boundary.handle(_request("save", {"draft": draft}))
         assert denied["error"]["code"] == "MODEL_CONFIGURATION_NOT_READY"

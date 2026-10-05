@@ -13,7 +13,7 @@ import re
 import secrets
 import stat
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -21,6 +21,7 @@ import yaml
 
 from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
+from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.plugins.app_compatibility import app_version_reason, minimum_app_version
 from app.config.plugin_requirements import tts_resource_types
 from app.plugins.visuals import VisualCapability, visual_capabilities_from_manifest
@@ -115,6 +116,7 @@ class InstalledPluginRecord:
     capability_issues: tuple[dict[str, str], ...] = ()
     visuals: tuple[VisualCapability, ...] = ()
     min_app_version: str = ""
+    diagnostics: dict[str, object] = field(default_factory=dict)
 
     @property
     def can_uninstall(self) -> bool:
@@ -219,7 +221,7 @@ class PluginInventory:
         roots: RuntimeRoots | Path,
         desired: PluginDesiredStateStore | None = None,
         *,
-        migration_failures: Mapping[str, str] | None = None,
+        migration_failures: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self._roots = coerce_runtime_roots(roots)
         self._distribution = DistributionPaths(self._roots.distribution_root)
@@ -269,7 +271,7 @@ class PluginInventory:
                 records.append(record)
 
         installed_ids = {record.plugin_id for record in records}
-        for plugin_id, reason in self._migration_failures.items():
+        for plugin_id, failure in self._migration_failures.items():
             if plugin_id not in MIGRATIONS or plugin_id in installed_ids:
                 continue
             directory = MIGRATIONS[plugin_id]
@@ -278,7 +280,8 @@ class PluginInventory:
             records.append(replace(
                 _invalid_record(_install_id("bundled", directory), "bundled", directory,
                                 plugin_id=plugin_id),
-                desired_enabled=desired.get(plugin_id, True), reason_code=reason,
+                desired_enabled=desired.get(plugin_id, True), reason_code=failure["reasonCode"],
+                diagnostics=dict(failure["diagnostics"]),
             ))
         records = self._resolve_duplicates(records)
         runtime_specs = tuple(
@@ -307,19 +310,20 @@ class PluginInventory:
         manifest = directory / "plugin.yaml"
         try:
             raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError):
+        except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as error:
             logging.getLogger(__name__).exception("插件清单读取失败: %s", manifest)
-            return _invalid_record(install_id, source, directory.name)
+            return _invalid_record(install_id, source, directory.name, diagnostics=exception_diagnostics(
+                error, reason_code="PLUGIN_MANIFEST_INVALID", stage="plugin.manifest"))
         if not isinstance(raw, Mapping):
-            return _invalid_record(install_id, source, directory.name)
+            return _invalid_record(install_id, source, directory.name, detail=f"清单应为 object，实际为 {type(raw).__name__}")
 
         if "plugin_id" in raw or "api_version" in raw:
-            return _invalid_record(install_id, source, directory.name)
+            return _invalid_record(install_id, source, directory.name, detail="清单使用了已移除的 plugin_id/api_version 字段；应使用 id/api")
         plugin_id = raw.get("id")
         entry = raw.get("entry")
         api_version = raw.get("api")
         if not isinstance(plugin_id, str) or not PLUGIN_ID_PATTERN.fullmatch(plugin_id):
-            return _invalid_record(install_id, source, directory.name)
+            return _invalid_record(install_id, source, directory.name, detail="id 缺失或不符合插件标识格式")
         if (
             ("enabled" in raw and not isinstance(raw.get("enabled"), bool))
             or ("required" in raw and not isinstance(raw.get("required"), bool))
@@ -329,6 +333,7 @@ class PluginInventory:
                 source,
                 directory.name,
                 plugin_id=plugin_id,
+                detail="enabled/required 必须为 boolean",
             )
         enabled = desired.get(plugin_id, raw.get("enabled", True))
         assert isinstance(enabled, bool)
@@ -338,23 +343,24 @@ class PluginInventory:
             "description": raw.get("description", ""),
             "version": raw.get("version", "0.0.0"),
         }
-        if (
-            not isinstance(entry, str)
-            or not _valid_entry(entry, directory)
-            or isinstance(api_version, bool)
-            or not isinstance(api_version, int)
-            or any(not isinstance(value, str) for value in metadata.values())
-            or not 1 <= len(metadata["version"]) <= 64
-        ):
+        invalid = []
+        if not isinstance(entry, str) or not _valid_entry(entry, directory):
+            invalid.append(f"entry 无效或对应模块不存在：{entry!r}")
+        if isinstance(api_version, bool) or not isinstance(api_version, int):
+            invalid.append("api 必须为 integer")
+        invalid.extend(f"{key} 必须为 string" for key, value in metadata.items() if not isinstance(value, str))
+        if isinstance(metadata["version"], str) and not 1 <= len(metadata["version"]) <= 64:
+            invalid.append("version 长度必须在 1–64 之间")
+        if invalid:
             return replace(
-                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
+                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id, detail="；".join(invalid)),
                 desired_enabled=enabled,
             )
         required = raw.get("required", False) if source == "bundled" else False
         assert isinstance(required, bool)
         if "optional" in raw:
             return replace(
-                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
+                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id, detail="清单不支持 optional 字段"),
                 desired_enabled=enabled,
             )
         services = {}
@@ -365,15 +371,16 @@ class PluginInventory:
                 or any(not isinstance(item, str) or not SERVICE_KEY_PATTERN.fullmatch(item) for item in value)
             ):
                 return replace(
-                    _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
+                    _invalid_record(install_id, source, directory.name, plugin_id=plugin_id, detail=f"{key} 必须为有效服务标识符的数组"),
                     desired_enabled=enabled,
                 )
             services[key] = tuple(dict.fromkeys(value))
         try:
             min_app_version = minimum_app_version(raw)
-        except ValueError:
+        except ValueError as error:
             return replace(
-                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
+                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id, diagnostics=exception_diagnostics(
+                    error, reason_code="PLUGIN_MANIFEST_INVALID", stage="plugin.manifest")),
                 desired_enabled=enabled,
             )
         reason = app_version_reason(min_app_version, self._roots.distribution_root)
@@ -472,6 +479,8 @@ def _invalid_record(
     directory_name: str,
     *,
     plugin_id: str | None = None,
+    detail: str = "清单不符合 Plugin API v4",
+    diagnostics: Mapping[str, object] | None = None,
 ) -> InstalledPluginRecord:
     return InstalledPluginRecord(
         install_id=install_id,
@@ -491,6 +500,7 @@ def _invalid_record(
         reason_code="PLUGIN_MANIFEST_INVALID",
         supported=False,
         runtime_eligible=False,
+        diagnostics=dict(diagnostics) if diagnostics else {"diagnostic": safe_diagnostic_text(f"{source}/{directory_name}/plugin.yaml: {detail}")},
     )
 
 

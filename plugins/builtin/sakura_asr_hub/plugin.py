@@ -112,6 +112,9 @@ class SakuraASRHub:
         with self.lock:
             descriptor = self.providers.get(selected)
         value = self._status(descriptor) if descriptor else {"providerId": selected, "serviceKey": None, "configVersion": None, "available": False, "state": "unavailable", "errorCode": "ASR_PROVIDER_UNAVAILABLE" if selected else "ASR_PROVIDER_NOT_SELECTED"}
+        if selected and descriptor is None:
+            value.update(provider_failure("ASR_PROVIDER_UNAVAILABLE", f"语音识别引擎 {selected} 未向 ASR Hub 注册"))
+            value["stage"] = "provider_selection"
         # A provider being initialized can import the old Hub choice once before registering.
         language = value.get("language", "auto") if descriptor else config.get("language", "auto")
         return {**value, "selectedProviderId": selected, "language": language}
@@ -140,6 +143,7 @@ class SakuraASRHub:
     def begin(self, request):
         result = self._begin(request)
         ids = {field: request.get(key) if isinstance(request, Mapping) and isinstance(request.get(key), str) and _ID.fullmatch(request[key]) else None for key, field in (("requestId", "request_id"), ("providerId", "provider_id"))}
+        result = {**result, "providerId": ids["provider_id"], "requestId": ids["request_id"]}
         if result["state"] == "running":
             self._log("asr.request.started", "语音识别请求已路由", **ids)
         else:
@@ -161,7 +165,8 @@ class SakuraASRHub:
                 return self._failed("ASR_CAPACITY_EXCEEDED")
             descriptor = self.providers.get(provider_id)
             if descriptor is None:
-                return self._failed("ASR_PROVIDER_UNAVAILABLE")
+                return {"stage": "provider_selection", **self._failed("ASR_PROVIDER_UNAVAILABLE", provider_failure(
+                    "ASR_PROVIDER_UNAVAILABLE", f"语音识别引擎 {provider_id} 未向 ASR Hub 注册")["diagnostics"])}
             try:
                 proxy = self._proxy(descriptor)
                 status = proxy.status()

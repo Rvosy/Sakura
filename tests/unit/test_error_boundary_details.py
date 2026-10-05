@@ -98,3 +98,62 @@ def test_asr_hub_and_core_keep_worker_diagnostics():
     assert details['diagnostic'] == 'model.onnx: incompatible tensor shape'
     assert details['cause_type'] == 'OSError'
     assert 'test_asr_hub_and_core_keep_worker_diagnostics' in details['exception_stack']
+
+
+@pytest.mark.parametrize("operation", ["status", "warmup"])
+def test_tts_status_failure_preserves_provider_exception(operation):
+    from types import SimpleNamespace
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+
+    def failed_status():
+        raise OSError("fixture runtime.dll could not load api_key=private-key")
+    provider = SimpleNamespace(status=failed_status)
+    config = SimpleNamespace(get=lambda: {"selections": {"fixture": {"enabled": True, "provider": "provider"}}})
+    hub = SakuraTTSHub(SimpleNamespace(get=lambda _: provider), config)
+    hub.registerProvider({"providerId": "provider", "serviceKey": "provider.service", "label": "Provider"})
+    result = getattr(hub, operation)("fixture")
+    assert "runtime.dll could not load" in result["diagnostics"]["diagnostic"]
+    assert "failed_status" in result["diagnostics"]["exception_stack"]
+    assert "private-key" not in str(result)
+
+
+@pytest.mark.parametrize("kind", ["genie", "gpt_sovits"])
+def test_provider_warmup_keeps_configuration_read_exception(tmp_path, kind):
+    from types import SimpleNamespace
+    from plugins.optional.sakura_genie.plugin import GenieProvider
+    from plugins.optional.sakura_gpt_sovits.plugin import GPTSoVITSProvider
+
+    def failed(*_args):
+        raise PermissionError("fixture character.json access denied api_key=private-key")
+    provider_type = GenieProvider if kind == "genie" else GPTSoVITSProvider
+    provider = object.__new__(provider_type)
+    (tmp_path / "api_v2.py").touch()
+    python = tmp_path / "python.exe"
+    python.touch()
+    provider._config = SimpleNamespace(enabled=True, endpoint_mode="managed", custom_base_url=None, work_dir=tmp_path, python_path=python)
+    provider._coordinator = object()
+    provider._voice = failed
+    provider._character = SimpleNamespace(get=failed)
+    result = provider.warmup("fixture")
+    assert not result["accepted"]
+    assert "character.json access denied" in result["diagnostics"]["diagnostic"]
+    assert "PermissionError" in result["diagnostics"]["exception_stack"]
+    assert "private-key" not in str(result)
+
+
+@pytest.mark.parametrize("kind", ["genie", "gpt_sovits"])
+def test_provider_config_parse_failure_is_not_replaced_by_unavailable(tmp_path, monkeypatch, kind):
+    from importlib import import_module
+    from types import SimpleNamespace
+
+    module = import_module(f"plugins.optional.sakura_{kind}.plugin")
+    def broken_config(_values):
+        raise ValueError("fixture provider config: invalid timeout api_key=private-key")
+    monkeypatch.setattr(module, "_parse_config", broken_config)
+    context = SimpleNamespace(config=SimpleNamespace(get=lambda: {}), data_path=lambda path: tmp_path / path)
+    provider_type = module.GenieProvider if kind == "genie" else module.GPTSoVITSProvider
+    provider = provider_type(context, object(), object())
+    for result in (provider.status(), provider.warmup("fixture"), provider.begin({})):
+        assert "invalid timeout" in result["diagnostics"]["diagnostic"]
+        assert "broken_config" in result["diagnostics"]["exception_stack"]
+        assert "private-key" not in str(result)

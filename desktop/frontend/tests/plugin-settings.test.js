@@ -155,12 +155,15 @@ test("failed plugin status retains accessible diagnostics in the shared error di
   const data = snapshot();
   data.plugins[0].state = "failed";
   data.plugins[0].reasonCode = "PLUGIN_DEPENDENCIES_MISSING";
+  data.plugins[0].diagnostics = { diagnostic: "File not found: C:/plugins/.sakura-dependencies.json", exception_stack: "at verified_path:233" };
   const ui = featureFixture(async () => data);
   ui.feature.initialize(data);
   assert.doesNotMatch(ui.document.body.textContent, /PLUGIN_DEPENDENCIES_MISSING/);
+  assert.match(ui.document.body.textContent, /File not found: C:\/plugins\/.sakura-dependencies.json/);
   await ui.document.querySelector(".plugin-health-notice .settings-error-details").fire("click");
   assert.equal(ui.errors.length, 1);
   assert.match(ui.errors[0].diagnostic, /PLUGIN_DEPENDENCIES_MISSING/);
+  assert.match(ui.errors[0].diagnostic, /verified_path:233/);
   ui.feature.dispose();
 });
 

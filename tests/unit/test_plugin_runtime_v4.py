@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -24,6 +25,118 @@ from app.plugins.runtime_v4 import PluginRuntimeError, PluginRuntimeManager
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
+
+
+@pytest.mark.parametrize("failure", ["missing_dependencies", "setup_exception"])
+def test_startup_cause_reaches_settings_dependents_and_voice_hubs(tmp_path: Path, failure: str) -> None:
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins/builtin"
+    for hub in ("sakura_tts_hub", "sakura_asr_hub"):
+        shutil.copytree(Path(__file__).parents[2] / "plugins/builtin" / hub, bundled / hub)
+    healthy_body = '''
+class Plugin:
+    def ping(self): return True
+    def setup(self, context):
+        context.provide("fixture.voice", self, exports=("ping",))
+'''
+    provider = _plugin_source(bundled, "fixture.voice", "fixture.voice", body=healthy_body)
+    _plugin_source(bundled, "fixture.consumer", "fixture.consumer", requires=("fixture.voice",), body='''
+class Plugin:
+    def ping(self): return True
+    def setup(self, context):
+        context.provide("fixture.consumer", self, exports=("ping",))
+''')
+    if failure == "missing_dependencies":
+        (provider / "requirements.txt").write_text("fixture-native\n", encoding="utf-8")
+        expected, cause_type = ".sakura-dependencies.json", "FileNotFoundError"
+    else:
+        (provider / "plugin.py").write_text('''
+class Plugin:
+    def setup(self, context):
+        raise PermissionError(13, "fixture access denied api_key=private-key", "fixture-native.dll")
+''', encoding="utf-8")
+        expected, cause_type = "fixture-native.dll", "PermissionError"
+    host = PluginApplicationHost(roots, "diagnostics", ToolRegistry())
+    try:
+        host.start()
+        assert host.wait_until_loaded(timeout=5)
+        boundary = PluginSettingsBoundary("diagnostics", "a" * 32, roots, application_provider=lambda: host)
+        plugins = {item["pluginId"]: item for item in boundary.snapshot()["plugins"]}
+        for plugin_id in ("fixture.voice", "fixture.consumer"):
+            assert plugins[plugin_id]["state"] == "failed"
+            assert "diagnostics" in plugins[plugin_id], (plugins[plugin_id], host.public_snapshot())
+            detail = plugins[plugin_id]["diagnostics"]
+            assert expected in detail["diagnostic"]
+            assert cause_type in detail["exception_chain"]
+            assert "exception_stack" in detail
+            assert "private-key" not in repr(detail)
+        with pytest.raises(PluginRuntimeError) as missing:
+            host.service_identity("fixture.voice")
+        assert expected in missing.value.diagnostics["diagnostic"]
+        host.call_service("sakura.tts", "configure", "fixture", {"enabled": True, "provider": "fixture.voice"})
+        host.call_service("sakura.asr", "configure", {"selectedProviderId": "fixture.voice"})
+        calls = [
+            ("sakura.tts", "status", "fixture"), ("sakura.tts", "warmup", "fixture"),
+            ("sakura.tts", "begin", {"requestId": "tts", "characterId": "fixture", "text": "hello", "options": {}}),
+            ("sakura.asr", "status"), ("sakura.asr", "warmup"),
+            ("sakura.asr", "begin", {"requestId": "asr", "providerId": "fixture.voice", "audio": {}}),
+        ]
+        for call in calls:
+            result = host.call_service(*call)
+            assert expected in result["diagnostics"]["diagnostic"], (call, result)
+        captured = {"reasonCode": "TTS_PROVIDER_UNAVAILABLE", "providerId": "fixture.voice",
+                    "stage": "provider_status", "diagnostics": {"diagnostic": "original provider RPC failure"}}
+        assert host._voice_result("sakura.tts", captured) == captured
+        if failure == "missing_dependencies":
+            (provider / "requirements.txt").unlink()
+        else:
+            (provider / "plugin.py").write_text(healthy_body, encoding="utf-8")
+        host._manager.reload_plugin("fixture.voice")
+        plugins = {item["pluginId"]: item for item in boundary.snapshot()["plugins"]}
+        assert plugins["fixture.voice"]["state"] == "active"
+        assert not plugins["fixture.voice"].get("diagnostics")
+    finally:
+        host.close()
+
+
+def test_callback_failures_keep_remote_cause_in_settings_and_model_snapshots(tmp_path: Path, monkeypatch) -> None:
+    events = []
+    monkeypatch.setattr(plugin_host_services, "log_event", lambda _component, _message, details, **metadata:
+                        events.append({**metadata, "diagnostics": details}))
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.settings", "fixture.models",
+                   requires=("sakura.host.settings", "sakura.host.model_slots.v2"), body='''
+class Plugin:
+    def ping(self): return True
+    def setup(self, context):
+        def failed():
+            raise OSError("fixture configuration read failed: /fixture/config.json api_key=private-key")
+        context.get("sakura.host.settings").register(
+            {"sectionId": "general", "title": "Fixture", "fields": []}, load=failed)
+        slots = context.get("sakura.host.model_slots.v2")
+        slots.register({"slotId": "summary", "label": "Fixture", "description": "", "modelKind": "chat_completion", "required": False, "order": 10},
+                       load=failed, save=lambda values: None)
+        slots.register_provider({"serviceKey": "fixture.models", "label": "Fixture"}, catalog=failed)
+        context.provide("fixture.models", self, exports=("ping",))
+''')
+    host = PluginApplicationHost(roots, "settings-diagnostics", ToolRegistry())
+    try:
+        host.start()
+        assert host.wait_until_loaded(timeout=5)
+        boundary = PluginSettingsBoundary("settings-diagnostics", "a" * 32, roots, application_provider=lambda: host)
+        plugin = boundary.snapshot()["plugins"][0]
+        assert plugin["state"] == "active", plugin
+        for failed in (plugin["sections"][0], host.model_slots()[0], host.model_catalog()[0]):
+            detail = failed["diagnostics"]
+            assert "/fixture/config.json" in detail["diagnostic"]
+            assert "plugin.py" in detail["exception_stack"]
+            assert "private-key" not in repr(detail)
+        reported = [item for item in events if item["event"] in {
+            "model.slot.load.failed", "model.catalog.failed", "plugin.settings.load.failed"}]
+        assert len(reported) == 3
+        assert all("/fixture/config.json" in item["diagnostics"]["diagnostic"] for item in reported)
+    finally:
+        host.close()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows verbatim process cwd")
@@ -304,6 +417,8 @@ def test_raw_plugin_diagnostics_do_not_imply_failure(output, monkeypatch) -> Non
                         captured.append((level, kwargs)))
     worker = _PluginProcess.__new__(_PluginProcess)
     worker._spec = SimpleNamespace(plugin_id="fixture.stderr", name="Fixture")
+    worker._state_lock = threading.Lock()
+    worker._stderr_tail = ""
     worker._drain_stderr(SimpleNamespace(stderr=io.BytesIO((output + "\n").encode())))
     assert len(captured) == 1
     level, row = captured[0]
@@ -1316,6 +1431,8 @@ class Plugin:
         )
         assert crashed["pid"] is None
         assert crashed["reasonCode"] == "PLUGIN_PROCESS_EXITED"
+        assert "fixture.crash" in crashed["diagnostics"]["diagnostic"]
+        assert crashed["diagnostics"]["exit_code"] == 9
     finally:
         manager.close()
 

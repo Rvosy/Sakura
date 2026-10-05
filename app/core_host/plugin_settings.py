@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from app.core_host.protocol import response
+from app.core.diagnostics import exception_diagnostics
+from app.core.runtime_log import log_event
 from app.plugins.inventory import INSTALL_ID_PATTERN, PluginDesiredStateStore, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.app_compatibility import compatibility_message
@@ -158,6 +160,7 @@ class PluginSettingsBoundary:
             )
 
     def snapshot(self) -> dict[str, object]:
+        diagnostics = {}
         application = self._application()
         inventory = self._refresh_inventory(application)
         if application is None:
@@ -185,7 +188,9 @@ class PluginSettingsBoundary:
                     [item for item in plugins[:64] if isinstance(item, Mapping)],
                     inventory,
                 )
-            except Exception:
+            except Exception as error:
+                diagnostics = exception_diagnostics(error, reason_code="PLUGIN_SETTINGS_UNAVAILABLE", stage="settings.snapshot")
+                log_event("Plugin", "插件设置读取失败", diagnostics, event="plugin.settings.failed", severity="error")
                 public = getattr(application, "public_snapshot")()
                 plugins = _project_plugins(
                     [
@@ -202,6 +207,7 @@ class PluginSettingsBoundary:
             "revision": inventory.revision,
             "state": state,
             "reasonCode": _reason_code(reason, "STATUS_INVALID"),
+            **({"diagnostics": diagnostics} if diagnostics else {}),
             "plugins": plugins,
         }
 
@@ -577,6 +583,7 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
             "starting" if supported and enabled else "disabled" if supported else "failed"
         ),
         "reasonCode": "PLUGIN_APPLICATION_NOT_READY" if supported and enabled else spec.reason_code,
+        **({"diagnostics": dict(spec.diagnostics)} if getattr(spec, "diagnostics", None) else {}),
         "sections": [],
     }
 
@@ -639,6 +646,7 @@ def _project_plugin(
             else "failed"
         ),
         "reasonCode": "MODEL_API_UPDATE_REQUIRED" if model_update_required else _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
+        **({"diagnostics": dict(raw["diagnostics"])} if isinstance(raw.get("diagnostics"), Mapping) else {}),
         "pages": raw.get("pages", []),
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
     }

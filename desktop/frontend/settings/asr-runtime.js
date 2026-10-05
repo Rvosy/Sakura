@@ -1,4 +1,5 @@
 import { createAsrInputTest } from "./asr-input-test.js";
+import { errorText } from "../core/error-display.js";
 
 export function createAsrSettingsController({ document, invoke, enhanceSelect = () => {},
   refreshSelect = () => {}, onDirty = () => {}, onStatus = () => {},
@@ -60,6 +61,10 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
 
   function renderStatus() {
     const selected = snapshot?.providers.find((item) => item.providerId === provider.value);
+    const failure = selected?.diagnostics ? selected
+      : provider.value === (snapshot?.selectedProviderId || "") ? snapshot : null;
+    status.textContent = failure?.diagnostics ? errorText({ ...failure, code: failure.errorCode || failure.reasonCode }) : "";
+    status.hidden = !status.textContent;
     location.textContent = selected?.processingLocation === "remote"
       ? "录音将发送至该引擎配置的远端服务。" : "";
   }
@@ -99,7 +104,7 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
         selectDevice(savedDraft.inputDeviceId);
       }
       refreshSelect(provider);
-      status.textContent = ""; status.hidden = true; renderStatus(); onDirty();
+      renderStatus(); onDirty();
     } catch (error) {
       if (!disposed && request === revision) {
         status.textContent = "语音输入设置暂不可用，请重新打开插件设置。";

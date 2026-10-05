@@ -791,10 +791,12 @@ class GenieProvider:
         self._coordinator: _Coordinator | None = None
         self._cache_root = context.data_path("onnx")
         self._log_path = context.data_path("logs/genie.log")
+        self._configuration_diagnostics = {}
         try:
             self._config = _parse_config(context.config.get())
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as error:
             self._config = None
+            self._configuration_diagnostics = provider_failure("TTS_PROVIDER_UNAVAILABLE", error)["diagnostics"]
 
     def start(self) -> None:
         if self._config is None or not self._config.enabled:
@@ -813,11 +815,12 @@ class GenieProvider:
             "available": self._config is not None
             and self._config.enabled
             and self._coordinator is not None,
+            **({"diagnostics": self._configuration_diagnostics} if self._configuration_diagnostics else {}),
         }
 
     def begin(self, request: Mapping[str, Any]) -> str | dict[str, str]:
         if self._config is None or self._coordinator is None:
-            raise RuntimeError("TTS_PROVIDER_UNAVAILABLE")
+            return {"errorCode": "TTS_PROVIDER_UNAVAILABLE", "diagnostics": self._configuration_diagnostics}
         character_id = request.get("characterId")
         if not isinstance(character_id, str) or not character_id:
             raise ValueError("TTS_REQUEST_INVALID")
@@ -858,6 +861,9 @@ class GenieProvider:
     def warmup(self, character_id: str) -> bool | dict[str, Any]:
         config = self._config
         coordinator = self._coordinator
+        if config is None and self._configuration_diagnostics:
+            return {"accepted": False, "reasonCode": "TTS_PROVIDER_UNAVAILABLE", "stage": "configuration",
+                    "diagnostics": self._configuration_diagnostics}
         if (
             config is None
             or not config.enabled
@@ -876,6 +882,7 @@ class GenieProvider:
                 "reasonCode": _stable_error_code(error),
                 "stage": stage,
                 "errorType": type(error).__name__,
+                "diagnostics": provider_failure(_stable_error_code(error), error)["diagnostics"],
             }
         return True
 
@@ -908,6 +915,7 @@ class GenieProvider:
             coordinator.reconfigure(config)
         changed = self._config != config
         self._config = config
+        self._configuration_diagnostics = {}
         if changed and self._logger is not None:
             self._logger.info("语音提供方配置已更新", fields={"provider": PROVIDER_ID, "enabled": config.enabled})
         return "applied"

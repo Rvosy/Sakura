@@ -29,6 +29,15 @@ function fixture(snapshot, { devices = [], defaultDeviceId = null } = {}) {
   return { controls, calls, controller };
 }
 
+test("ASR settings show the selected provider startup cause", async () => {
+  const f = fixture({ providers: [], selectedProviderId: "fixture.asr", inputDeviceId: "",
+    diagnostics: { diagnostic: "fixture-asr.dll not found", exception_stack: "at initialize:42" } });
+  await f.controller.refresh();
+  assert.equal(f.controls.asrStatus.hidden, false);
+  assert.match(f.controls.asrStatus.textContent, /fixture-asr.dll not found/);
+  assert.match(f.controls.asrStatus.textContent, /initialize:42/);
+});
+
 test("ASR choices are Hub supplied, unavailable explicit choice survives refresh, selection does not auto-save", async () => {
   const f = fixture({ providers: [{ providerId: "example.local", label: "Local", processingLocation: "local", available: true },
     { providerId: "example.remote", label: "Remote", processingLocation: "remote", available: true }],

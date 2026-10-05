@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from app.plugin_sdk.sakura_tools import Tool
 from app.core.runtime_log import log_event, log_message
+from app.core.diagnostics import exception_diagnostics
 from . import settings_ui
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE, HOST_LOGGING_SERVICE
 from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
@@ -1011,13 +1012,17 @@ class _ModelSlotsHostService:
         result: list[dict[str, Any]] = []
         for item in registrations:
             reason_code = "READY"
+            diagnostics = {}
             try:
                 selection = _model_slot_selection(
                     self._invoke_callback(item.load_handle, "model_slots.load")
                 )
-            except Exception:
+            except Exception as error:
                 selection = {"serviceKey": "", "profileId": "", "modelId": ""}
                 reason_code = "MODEL_SLOT_LOAD_FAILED"
+                diagnostics = exception_diagnostics(error, reason_code=reason_code, stage="model_slots.load")
+                log_event("Plugin", "模型选择读取失败", {**diagnostics, "slot_id": item.slot_id},
+                          event="model.slot.load.failed", severity="error", plugin_id=item.plugin_id)
             result.append({
                 "identity": f"plugin:{item.plugin_id}:{item.slot_id}",
                 "ownerType": "plugin",
@@ -1030,6 +1035,7 @@ class _ModelSlotsHostService:
                 "order": item.order,
                 "selection": selection,
                 "reasonCode": reason_code,
+                **({"diagnostics": diagnostics} if diagnostics else {}),
             })
         return result
 
@@ -1083,8 +1089,12 @@ class _ModelSlotsHostService:
                                    "models": [{"modelId": str(model["modelId"])[:256], "label": str(model.get("label", model["modelId"]))[:256]}
                                               for model in models if isinstance(model, Mapping) and isinstance(model.get("modelId"), str)]})
                 result.append({"serviceKey": service_key, "pluginId": plugin_id, "label": label, "profiles": public, "reasonCode": "READY"})
-            except Exception:
-                result.append({"serviceKey": service_key, "pluginId": plugin_id, "label": label, "profiles": [], "reasonCode": "MODEL_CATALOG_UNAVAILABLE"})
+            except Exception as error:
+                diagnostics = exception_diagnostics(error, reason_code="MODEL_CATALOG_UNAVAILABLE", stage="model_slots.catalog")
+                log_event("Plugin", "模型目录读取失败", diagnostics,
+                          event="model.catalog.failed", severity="error", plugin_id=plugin_id)
+                result.append({"serviceKey": service_key, "pluginId": plugin_id, "label": label, "profiles": [], "reasonCode": "MODEL_CATALOG_UNAVAILABLE",
+                               "diagnostics": diagnostics})
         return result
 
 
@@ -1471,6 +1481,7 @@ class _SettingsHostService:
 
     def _section_snapshot(self, registration: _SettingsRegistration) -> dict[str, Any]:
         values: Mapping[str, Any] = {}
+        diagnostics = {}
         reason_code = registration.reason_code
         if reason_code in {"READY", "SETTINGS_VALUE_INVALID"} and registration.descriptor_invalid:
             reason_code = "SETTINGS_DESCRIPTOR_INVALID"
@@ -1488,6 +1499,9 @@ class _SettingsHostService:
                     else "SETTINGS_LOAD_FAILED"
                 )
                 values = {}
+                diagnostics = exception_diagnostics(error, reason_code=reason_code, stage="settings.load")
+                log_event("Plugin", "插件设置读取失败", {**diagnostics, "section_id": registration.section_id},
+                          event="plugin.settings.load.failed", severity="error", plugin_id=registration.plugin_id)
         projected_values, invalid_value = _settings_display_values(registration.fields, values)
         if invalid_value and reason_code == "READY":
             reason_code = "SETTINGS_VALUE_INVALID"
@@ -1524,6 +1538,7 @@ class _SettingsHostService:
             "title": registration.title,
             "surface": surface,
             "reasonCode": reason_code,
+            **({"diagnostics": diagnostics} if diagnostics else {}),
             "fields": fields,
             "values": projected_values,
             "actions": actions,

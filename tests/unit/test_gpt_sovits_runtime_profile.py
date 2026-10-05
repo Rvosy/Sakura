@@ -13,6 +13,27 @@ import yaml
 from plugins.optional.sakura_gpt_sovits import _bundle, _runtime_profile, _support
 
 
+def test_profile_worker_error_survives_output_protocol(tmp_path, monkeypatch, capsys):
+    python = tmp_path / "runtime/python.exe"
+    python.parent.mkdir()
+    python.touch()
+    def broken_profile(*_args, **_kwargs):
+        try:
+            raise OSError("fixture torch_cuda.dll missing api_key=private-key")
+        except OSError as error:
+            raise _runtime_profile.RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
+    monkeypatch.setattr(_runtime_profile, "_generate_profile", broken_profile)
+    def runner(*_args, **_kwargs):
+        code = _runtime_profile._worker(tmp_path, require_cuda=False)
+        return subprocess.CompletedProcess([], code, stdout=capsys.readouterr().out, stderr="")
+    with pytest.raises(_runtime_profile.RuntimeProfileError) as caught:
+        _runtime_profile.prepare_managed_profile(tmp_path, runtime_python=python, platform="win32", runner=runner)
+    assert "torch_cuda.dll missing" in caught.value.diagnostics["diagnostic"]
+    assert "broken_profile" in caught.value.diagnostics["exception_stack"]
+    assert caught.value.exit_code == 2
+    assert "private-key" not in str(caught.value.diagnostics)
+
+
 def _candidate(
     index: int,
     name: str,

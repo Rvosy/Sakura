@@ -1,4 +1,5 @@
 import { hasIcon } from "../core/icons.js";
+import { errorText } from "../core/error-display.js";
 
 const NORMAL_REASONS = new Set(["ACTIVE", "READY"]);
 export const pluginKinds = Object.freeze({ extension: "功能扩展", provider: "功能引擎", infrastructure: "系统组件" });
@@ -72,7 +73,7 @@ function result(label, message = "", reasonCode = "", unavailable = []) {
   });
 }
 
-export function presentPluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
+function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
   if (reasonCode === "APP_VERSION_UNSUPPORTED") {
     return result("需要升级 Sakura", "请升级 Sakura 主程序后使用这个插件。", reasonCode);
   }
@@ -131,12 +132,10 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
       reasonCode,
     );
   }
-  if (reasonCode === "PLUGIN_DEPENDENCIES_MISSING" || reasonCode === "PLUGIN_DEPENDENCIES_STALE") {
+  if (["PLUGIN_DEPENDENCIES_MISSING", "PLUGIN_DEPENDENCIES_STALE", "PLUGIN_DEPENDENCIES_INVALID"].includes(reasonCode)) {
     return result(
-      "缺少依赖",
-      reasonCode === "PLUGIN_DEPENDENCIES_STALE"
-        ? "插件依赖与当前 Python 版本不一致，需要重新安装。"
-        : "插件依赖还没有安装，暂时无法使用。",
+      "依赖检查失败",
+      "未提供错误详情。",
       reasonCode,
     );
   }
@@ -162,6 +161,16 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
     "这个插件暂时无法使用。",
     reasonCode || "STATUS_UNKNOWN",
   );
+}
+
+export function presentPluginStatus(input = {}) {
+  const status = pluginStatus(input);
+  if (!input.diagnostics || !Object.keys(input.diagnostics).length) return status;
+  return Object.freeze({
+    ...status,
+    message: input.diagnostics.diagnostic ? errorText(input.diagnostics.diagnostic) : status.message,
+    diagnostic: errorText({ diagnostics: input.diagnostics, code: input.reasonCode }),
+  });
 }
 
 function pluginId(plugin) {
@@ -230,9 +239,9 @@ export function presentPluginComponent(serviceKey, plugins = []) {
     : serviceKey;
 }
 
-export function presentPluginReason(reasonCode = "") {
+export function presentPluginReason(reasonCode = "", diagnostics = null) {
   if (!reasonCode || reasonCode === "READY") return null;
-  return presentPluginStatus({ reasonCode });
+  return presentPluginStatus({ reasonCode, diagnostics });
 }
 
 function pluginSections(plugin) {

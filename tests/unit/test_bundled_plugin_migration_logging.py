@@ -112,7 +112,7 @@ def test_rejected_candidate_is_local_info_and_copy_failure_keeps_original_diagno
 
     monkeypatch.setattr(migration.shutil, "copytree", disk_full)
     failures, records = run_with_logs(roots)
-    assert failures == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+    assert {key: value["reasonCode"] for key, value in failures.items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
     assert event(records, "candidate_rejected")["severity"] == "info"
     failure = event(records, "failed")
     assert failure["severity"] == "error"
@@ -125,6 +125,12 @@ def test_rejected_candidate_is_local_info_and_copy_failure_keeps_original_diagno
     assert details["errno"] == 28
     assert "migration staging disk is full" in details["diagnostic"]
     assert "disk_full" in details["exception_stack"]
+    from app.plugins.inventory import PluginInventory
+    from app.core_host.plugin_settings import _preview_plugin
+    record = PluginInventory(roots, migration_failures=failures).scan().records[0]
+    projected = _preview_plugin(record)
+    assert "migration staging disk is full" in projected["diagnostics"]["diagnostic"]
+    assert "disk_full" in projected["diagnostics"]["exception_stack"]
     summary = event(records, "completed")["attributes"]
     assert summary["outcome"] == "failed"
     assert summary["failed"] == 1
@@ -136,7 +142,7 @@ def test_invalid_migration_state_preserves_diagnostics_and_emits_summary(roots, 
     state_path = roots.user_root / "config" / migration.STATE_NAME
     state_path.write_text(state)
     failures, records = run_with_logs(roots)
-    assert failures[PLUGIN] == "PLUGIN_MIGRATION_STATE_INVALID"
+    assert failures[PLUGIN]["reasonCode"] == "PLUGIN_MIGRATION_STATE_INVALID"
     assert event(records, "failed")["attributes"]["stage"] == "read_state"
     assert event(records, "completed")["attributes"]["outcome"] == "failed"
     assert state_path.read_text() == state
@@ -152,7 +158,7 @@ def test_publication_failure_records_rollback_and_original_stage(roots, monkeypa
 
     monkeypatch.setattr(migration.os, "replace", fail_publish)
     failures, records = run_with_logs(roots)
-    assert failures == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+    assert {key: value["reasonCode"] for key, value in failures.items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
     assert event(records, "rollback_completed")["attributes"]["outcome"] == "restored"
     failure = event(records, "failed")["attributes"]
     assert failure["stage"] == "publish_code"
@@ -169,7 +175,7 @@ def test_real_entry_failure_keeps_subprocess_trace_exit_code_and_redacts_secrets
         "class Plugin: pass\n"
     )
     failures, records = run_with_logs(roots)
-    assert failures == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+    assert {key: value["reasonCode"] for key, value in failures.items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
     failure = event(records, "failed")["attributes"]
     assert failure["code"] == "PLUGIN_MIGRATION_FAILED"
     assert failure["cause_code"] == "PLUGIN_ENTRY_IMPORT_FAILED"

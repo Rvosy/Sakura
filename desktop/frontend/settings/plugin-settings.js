@@ -83,7 +83,8 @@ export function createPluginSettingsFeature({
     if (section.reason_code && !["READY", "CONFIG_RELOAD_REQUIRED", "CONFIG_APPLY_FAILED"].includes(section.reason_code)) {
       const label = pluginPresentation.presentPluginReason(section.reason_code)?.label || "设置不可用";
       const element = pluginNode("div", "error");
-      element.append(pluginNode("p", "", label), errorDetailsButton(section.error || section.reason_code, label));
+      element.append(pluginNode("p", "", section.diagnostics?.diagnostic || label), errorDetailsButton(
+        { code: section.reason_code, error: section.error, diagnostics: section.diagnostics }, label));
       return { element, dispose: () => element.remove() };
     }
     if (presentation.component === "connection-status") {
@@ -455,6 +456,7 @@ export function createPluginSettingsFeature({
     return pluginPresentation.presentPluginStatus({
       state: plugin.state,
       reasonCode: plugin.reason_code,
+      diagnostics: plugin.diagnostics,
       unavailable,
     });
   }
@@ -575,6 +577,12 @@ export function createPluginSettingsFeature({
     const oldCards = new Map([...fields.pluginList.querySelectorAll('.plugin-card')].map((card) => [card.dataset.pluginInstallId, card]));
     const focusedId = document.activeElement?.closest('.plugin-card')?.dataset.pluginInstallId;
     fields.pluginList.textContent = '';
+    if (pluginView.diagnostics?.diagnostic) {
+      const issue = pluginNode('div', 'error');
+      issue.append(pluginNode('p', '', pluginView.diagnostics.diagnostic), errorDetailsButton(
+        { code: pluginView.reason_code, diagnostics: pluginView.diagnostics }, '插件设置读取失败'));
+      fields.pluginList.append(issue);
+    }
     fields.pluginRoleTabs.textContent = '';
     fields.pluginTotal.textContent = String(all.length);
     const roles = { all: '全部', ...pluginPresentation.pluginKinds };
@@ -1452,10 +1460,11 @@ export function createPluginSettingsFeature({
           : "";
         const presentation = pluginPresentation.presentPluginReason(
           stableError || section.reason_code,
+          section.diagnostics,
         );
         const label = presentation?.label || "设置不可用";
-        error.append(pluginNode("p", "", label), errorDetailsButton(
-          { code: section.reason_code, message: section.error, diagnostic: presentation?.diagnostic }, label,
+        error.append(pluginNode("p", "", section.diagnostics?.diagnostic || label), errorDetailsButton(
+          { code: section.reason_code, message: section.error, diagnostics: section.diagnostics, diagnostic: presentation?.diagnostic }, label,
         ));
         block.append(error);
       }
@@ -1554,12 +1563,10 @@ export function createPluginSettingsFeature({
     if (!plugin) {
       return "模型服务插件没有加载。已保存的连接和 API Key 仍会保留。";
     }
-    if (plugin.reason_code === "PLUGIN_DEPENDENCIES_MISSING" || plugin.reason_code === "PLUGIN_DEPENDENCIES_STALE") {
-      return "模型服务插件缺少运行依赖，暂时不能编辑连接。已保存的连接和密钥仍会保留。";
-    }
     const status = pluginPresentation.presentPluginStatus({
       state: plugin.state,
       reasonCode: plugin.reason_code,
+      diagnostics: plugin.diagnostics,
     });
     return status.message
       ? `${plugin.name}${status.label}。${status.message}已保存的连接和 API Key 仍会保留。`
@@ -2410,6 +2417,7 @@ export function createPluginSettingsFeature({
     if (plugin.description) fields.pluginDetail.append(pluginNode('p', 'detail-desc', plugin.description));
     if (status.message || status.diagnostic) {
       const notice = pluginNode('div', 'plugin-health-notice');
+      if (plugin.diagnostics?.diagnostic) notice.append(pluginNode('p', '', status.message));
       if (status.diagnostic || ["warning", "error", "failed"].includes(status.state)) {
         notice.append(errorDetailsButton(status, status.label));
       } else if (status.message) notice.append(pluginNode('p', '', status.message));
@@ -2613,12 +2621,15 @@ export function createPluginSettingsFeature({
         return { ...plugin, pages: previous.pages, sections: previous.settings.map(section => ({
           sectionId: section.section_id, title: section.title, surface: section.surface, placement: section.placement,
           presentation: section.presentation, order: section.order, reasonCode: plugin.reasonCode || "PLUGIN_NOT_ACTIVE",
+          diagnostics: plugin.diagnostics,
           fields: section.fields, values: section.values, actions: [], collections: [],
         })) };
       }
       return plugin;
     });
     pluginView = {
+      reason_code: snapshot.reasonCode,
+      diagnostics: clonePlain(snapshot.diagnostics),
       permission_labels: pluginView?.permission_labels || {},
       items: incoming.map((plugin) => ({
         id: plugin.installId,
@@ -2639,6 +2650,7 @@ export function createPluginSettingsFeature({
         missing_services: clonePlain(plugin.missingServices),
         state: plugin.state,
         reason_code: plugin.reasonCode,
+        diagnostics: clonePlain(plugin.diagnostics),
         pages: clonePlain(plugin.pages || []),
         settings: plugin.sections.map((section) => ({
           section_id: section.sectionId,
@@ -2649,6 +2661,7 @@ export function createPluginSettingsFeature({
           presentation: section.presentation,
           order: section.order,
           reason_code: section.reasonCode,
+          diagnostics: clonePlain(section.diagnostics),
           fields: (section.fields || []).map((field) => ({
             ...field,
             restart_required: field.restartRequired,

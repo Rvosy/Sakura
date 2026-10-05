@@ -154,7 +154,7 @@ def test_publication_error_restores_original_code_dependencies_and_settings(
 
     with monkeypatch.context() as failure:
         failure.setattr(migration.os, "replace", fail)
-        assert migration.migrate_bundled_plugins(roots) == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+        assert {key: value["reasonCode"] for key, value in migration.migrate_bundled_plugins(roots).items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
     assert code.joinpath("plugin.py").read_text() == OLD_CODE
     assert dependencies.joinpath("original.txt").read_text() == "preserve original dependencies"
     assert (dependencies / ".sakura-dependencies.json").read_bytes() == old_marker
@@ -187,13 +187,15 @@ def test_rollback_failure_keeps_both_errors_and_recoverable_backups(
         return rmtree(path, *args, **kwargs)
 
     def capture_error(error, reason, plugin_id=None, details=None):
-        errors.append(diagnostic_attributes(error, reason_code=reason, stage="migration"))
+        diagnostics = diagnostic_attributes(error, reason_code=reason, stage="migration")
+        errors.append(diagnostics)
+        return {"reasonCode": reason, "diagnostics": diagnostics}
 
     with monkeypatch.context() as failure:
         failure.setattr(migration.os, "replace", fail_publish)
         failure.setattr(migration.shutil, "rmtree", fail_rollback)
         failure.setattr(migration, "_failure", capture_error)
-        assert migration.migrate_bundled_plugins(roots) == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
+        assert {key: value["reasonCode"] for key, value in migration.migrate_bundled_plugins(roots).items()} == {PLUGIN: "PLUGIN_MIGRATION_FAILED"}
     details = json.dumps(errors)
     assert "original code publication failure" in details
     assert "dependency rollback failure" in details

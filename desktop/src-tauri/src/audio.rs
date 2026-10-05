@@ -399,10 +399,9 @@ impl AudioState {
         generation: &str,
         handle: shell_lifecycle::ShellLifecycleHandle,
     ) -> Result<tokio::sync::mpsc::UnboundedSender<AudioPlaybackEvent>, String> {
-        let mut observations = self
-            .observations
-            .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED")?;
+        let mut observations = self.observations.lock().map_err(|error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", error)
+        })?;
         if let Some((current, sender)) = observations.as_ref() {
             if current == generation {
                 return Ok(sender.clone());
@@ -468,7 +467,9 @@ impl AudioState {
         generation: &str,
         operation: &str,
     ) -> Result<Arc<AudioManager>, String> {
-        let active = self.active.lock().map_err(|_| "AUDIO_PLAYBACK_FAILED")?;
+        let active = self.active.lock().map_err(|error| {
+            crate::runtime_log::diagnostic_error("AUDIO_PLAYBACK_FAILED", error)
+        })?;
         active
             .as_ref()
             .filter(|session| {

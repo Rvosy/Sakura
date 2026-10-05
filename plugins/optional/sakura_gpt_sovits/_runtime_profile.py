@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -47,14 +48,16 @@ _REQUIRED_IMPORT_PATHS = (Path("tools"), Path("GPT_SoVITS"))
 
 
 class RuntimeProfileError(RuntimeError):
-    """Stable managed-runtime failure with body-free diagnostic context."""
+    """Managed-runtime failure retaining worker diagnostics across processes."""
 
     def __init__(
-        self, code: str, *, reason_code: str | None = None, exit_code: int | None = None
+        self, code: str, *, reason_code: str | None = None, exit_code: int | None = None,
+        diagnostics: Mapping[str, str] | None = None,
     ):
         super().__init__(code)
         self.reason_code = reason_code or code
         self.exit_code = exit_code
+        self.diagnostics = dict(diagnostics or {})
 
 
 @dataclass(frozen=True)
@@ -336,14 +339,22 @@ def prepare_managed_profile(
                 payload = value
             break
     if payload is None:
+        from sakura_provider_errors import sanitize_provider_diagnostic
+
         raise RuntimeProfileError(
             "TTS_DEVICE_PROBE_FAILED",
             reason_code="TTS_DEVICE_PROBE_OUTPUT_INVALID",
             exit_code=completed.returncode,
+            diagnostics={"diagnostic": sanitize_provider_diagnostic(
+                f"设备探测进程退出码：{completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}")},
         )
     if not payload.get("ok"):
+        from sakura_provider_errors import sanitize_provider_diagnostic
+
         code = str(payload.get("code") or "TTS_DEVICE_PROBE_FAILED")
-        raise RuntimeProfileError(code if code in _ERROR_CODES else "TTS_DEVICE_PROBE_FAILED")
+        diagnostics = {key: sanitize_provider_diagnostic(value) for key, value in payload.get("diagnostics", {}).items()}
+        raise RuntimeProfileError(code if code in _ERROR_CODES else "TTS_DEVICE_PROBE_FAILED",
+                                  exit_code=completed.returncode, diagnostics=diagnostics)
     result_path = payload.get("path")
     if completed.returncode != 0 or not isinstance(result_path, str):
         raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
@@ -585,10 +596,12 @@ def _worker(work_dir: Path, *, require_cuda: bool) -> int:
         code = 0
     except RuntimeProfileError as error:
         failure = str(error)
-        payload = {"ok": False, "code": failure if failure in _ERROR_CODES else "TTS_PROFILE_GENERATION_FAILED"}
+        payload = {"ok": False, "code": failure if failure in _ERROR_CODES else "TTS_PROFILE_GENERATION_FAILED",
+                   "diagnostics": {"diagnostic": str(error.__cause__ or error), "exception_stack": "".join(traceback.format_exception(error))}}
         code = 2
-    except Exception:
-        payload = {"ok": False, "code": "TTS_DEVICE_PROBE_FAILED"}
+    except Exception as error:
+        payload = {"ok": False, "code": "TTS_DEVICE_PROBE_FAILED",
+                   "diagnostics": {"diagnostic": str(error), "exception_stack": "".join(traceback.format_exception(error))}}
         code = 2
     print(f"{_RESULT_PREFIX}{json.dumps(payload, ensure_ascii=False)}", flush=True)
     return code

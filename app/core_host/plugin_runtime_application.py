@@ -140,8 +140,10 @@ class PluginRuntimeApplication:
         migration_failures = migrate_bundled_plugins(roots, progress=migration_progress) if specs is None else {}
         try:
             migrate_legacy_model_configuration(roots.user_root)
-        except (OSError, ValueError):
-            self._model_configuration_issue = "CONFIG_DATA_INVALID"
+        except (OSError, ValueError) as error:
+            diagnostics = exception_diagnostics(error, reason_code="CONFIG_DATA_INVALID", stage="model.migration")
+            self._model_configuration_issue = {"code": "CONFIG_DATA_INVALID", "message": diagnostics["diagnostic"], "diagnostics": diagnostics}
+            log_event("Plugin", "模型配置迁移失败", diagnostics, event="model.configuration.failed", severity="error")
         self._inventory = PluginInventory(roots, migration_failures=migration_failures)
         self._inventory_snapshot = self._inventory.scan()
         manager_options = {} if call_timeout is None else {"call_timeout": call_timeout}
@@ -370,10 +372,26 @@ class PluginRuntimeApplication:
         return self._host_services.decorate_settings_snapshot(self._manager.snapshot())
 
     def call_service(self, service_key: str, method: str, *args: object) -> object:
-        return self._manager.call_service(service_key, method, *args)
+        return self._voice_result(service_key, self._manager.call_service(service_key, method, *args))
 
     def call_bound_service(self, service_key, identity, method, *args, timeout=None):
-        return self._manager.call_bound_service(service_key, identity, method, *args, timeout=timeout)
+        return self._voice_result(service_key, self._manager.call_bound_service(service_key, identity, method, *args, timeout=timeout))
+
+    def _voice_result(self, service_key, result):
+        # Hubs cannot observe a provider that failed before registering with them.
+        # Core owns that startup failure and joins it to the selected provider.
+        if service_key not in {"sakura.tts", "sakura.asr"} or not isinstance(result, Mapping):
+            return result
+        if result.get("reasonCode", result.get("errorCode")) not in {"TTS_PROVIDER_UNAVAILABLE", "ASR_PROVIDER_UNAVAILABLE"}:
+            return result
+        if result.get("stage") != "provider_selection":
+            return result
+        provider_id = result.get("providerId")
+        failure = next((item for item in self._manager.snapshot()["plugins"]
+                        if item["pluginId"] == provider_id and item["state"] == "failed"), None)
+        if failure and failure.get("diagnostics"):
+            return {**result, "diagnostics": dict(failure["diagnostics"])}
+        return result
 
     def commit_bound_service(self, service_key, identity, commit):
         return self._manager.commit_bound_service(service_key, identity, commit)
@@ -860,8 +878,9 @@ class PluginRuntimeApplication:
         repository = ModelReferenceRepository(self._roots.user_root)
         try:
             repository.load()
-        except (OSError, ValueError):
-            return "CONFIG_DATA_INVALID"
+        except (OSError, ValueError) as error:
+            diagnostics = exception_diagnostics(error, reason_code="CONFIG_DATA_INVALID", stage="model.settings.load")
+            return {"code": "CONFIG_DATA_INVALID", "message": diagnostics["diagnostic"], "diagnostics": diagnostics}
         return self._model_configuration_issue if not repository.path.exists() else None
 
     def _resolve_model(self, selection: Mapping[str, Any]) -> dict[str, object]:

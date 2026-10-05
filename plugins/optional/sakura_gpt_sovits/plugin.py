@@ -648,15 +648,17 @@ class GPTSoVITSProvider:
         self._diagnostics = diagnostics
         self._jobs: dict[str, _Job] = {}
         self._jobs_lock = threading.RLock()
+        self._configuration_diagnostics = {}
         try:
             self._config = _parse_config(context.config.get())
             self._coordinator: _Coordinator | None = _Coordinator(
                 self._config,
                 self._emit_diagnostic,
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as error:
             self._config = None
             self._coordinator = None
+            self._configuration_diagnostics = provider_failure("TTS_PROVIDER_UNAVAILABLE", error)["diagnostics"]
 
     def status(self) -> dict[str, Any]:
         available, reason_code, stage = _config_readiness(self._config)
@@ -665,6 +667,7 @@ class GPTSoVITSProvider:
             "available": available,
             "reasonCode": reason_code,
             "stage": stage,
+            **({"diagnostics": self._configuration_diagnostics} if self._configuration_diagnostics else {}),
         }
 
     def prepareResourceUpdate(self) -> bool:
@@ -676,7 +679,8 @@ class GPTSoVITSProvider:
     def begin(self, request: Mapping[str, Any]) -> str | dict[str, str]:
         available, reason_code, _stage = _config_readiness(self._config)
         if not available or self._coordinator is None:
-            return {"errorCode": reason_code if not available else "TTS_PROVIDER_UNAVAILABLE"}
+            return {"errorCode": reason_code if not available else "TTS_PROVIDER_UNAVAILABLE",
+                    **({"diagnostics": self._configuration_diagnostics} if self._configuration_diagnostics else {})}
         character_id = request.get("characterId")
         if not isinstance(character_id, str) or not character_id:
             return {"errorCode": "TTS_REQUEST_INVALID"}
@@ -725,6 +729,7 @@ class GPTSoVITSProvider:
                 "reasonCode": reason_code,
                 "stage": stage,
                 "errorType": "RuntimeConfigurationError",
+                **({"diagnostics": self._configuration_diagnostics} if self._configuration_diagnostics else {}),
             }
         if config is None or config.custom_base_url is not None:
             return False
@@ -738,6 +743,7 @@ class GPTSoVITSProvider:
                 "reasonCode": reason_code,
                 "stage": "character_configuration",
                 "errorType": type(error).__name__,
+                "diagnostics": provider_failure(reason_code, error)["diagnostics"],
             }
         try:
             coordinator.warmup(voice)
@@ -748,6 +754,7 @@ class GPTSoVITSProvider:
                 "reasonCode": reason_code,
                 "stage": "queue",
                 "errorType": type(error).__name__,
+                "diagnostics": provider_failure(reason_code, error)["diagnostics"],
             }
         return True
 
@@ -761,6 +768,7 @@ class GPTSoVITSProvider:
             coordinator.reconfigure(config)
         changed = self._config != config
         self._config = config
+        self._configuration_diagnostics = {}
         if changed and self._logger is not None:
             self._logger.info("语音提供方配置已更新", fields={"provider": PROVIDER_ID, "enabled": config.enabled})
         return "applied"

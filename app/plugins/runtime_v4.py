@@ -11,7 +11,7 @@ import threading
 import time
 import codecs
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -121,11 +121,13 @@ class PluginRuntimeError(RuntimeError):
         *,
         plugin_id: str = "",
         service_key: str = "",
+        diagnostics: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(message or code)
         self.code = code
         self.plugin_id = plugin_id
         self.service_key = service_key
+        self.diagnostics = dict(diagnostics or {})
 
     @classmethod
     def from_api(cls, error: PluginApiError) -> "PluginRuntimeError":
@@ -134,6 +136,7 @@ class PluginRuntimeError(RuntimeError):
             str(error),
             plugin_id=error.plugin_id,
             service_key=error.service_key,
+            diagnostics=error.diagnostics,
         )
 
 
@@ -145,6 +148,7 @@ class _RuntimeRecord:
     process: "_PluginProcess | None" = None
     pid: int | None = None
     compatibility_reason: str = "READY"
+    diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,7 @@ class _PluginProcess:
         self._windows_job: int | None = None
         self._watcher: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
+        self._stderr_tail = ""
         self._closing = False
         self._cleanup_complete = threading.Event()
         self._cleanup_error: BaseException | None = None
@@ -235,6 +240,18 @@ class _PluginProcess:
     def pid(self) -> int | None:
         process = self._process
         return process.pid if process is not None and process.poll() is None else None
+
+    def exit_diagnostics(self) -> dict[str, object]:
+        from app.core.diagnostics import safe_diagnostic_text
+
+        with self._state_lock:
+            code = self._process.poll() if self._process is not None else None
+            message = f"插件 {self._spec.plugin_id} 的 RPC 连接已断开"
+            if code is not None:
+                message += f"，进程退出码：{code}"
+            if self._stderr_tail:
+                message += f"\nstderr（末尾）：\n{self._stderr_tail}"
+            return {"diagnostic": safe_diagnostic_text(message), "stage": "plugin.process", "exit_code": code}
 
     def start(self) -> dict[str, Any]:
         plugin_root = Path(self._spec.plugin_root).resolve()
@@ -382,6 +399,8 @@ class _PluginProcess:
 
         def emit(text: str) -> None:
             if text.strip():
+                with self._state_lock:
+                    self._stderr_tail = (self._stderr_tail + "\n" + safe_diagnostic_text(text))[-4096:]
                 # stderr also carries redirected print output and download progress;
                 # the stream alone does not establish a warning or failure.
                 log_message("info", "插件诊断输出", component="plugin",
@@ -858,7 +877,7 @@ class PluginRuntimeManager:
                 if len(candidates) == 1:
                     record = candidates[0]
                     return {"providerId": record.spec.plugin_id, "scopeId": record.process.scope_id}
-        raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
+        raise self._unavailable_service_error(service_key)
 
     def service_exports(self, service_key: str) -> frozenset[str]:
         with self._lock:
@@ -1100,6 +1119,8 @@ class PluginRuntimeManager:
                         else record.state
                     ),
                     "reasonCode": record.reason_code,
+                    **({"diagnostics": self._failure_diagnostics_locked(record)}
+                       if record.state == "failed" and record.reason_code not in {"NOT_STARTED", "PLUGIN_STARTING"} else {}),
                     "provides": list(record.spec.provides),
                     "requires": list(record.spec.requires),
                     "pid": record.pid,
@@ -1113,6 +1134,47 @@ class PluginRuntimeManager:
                 else ("ready", "READY")
             )
         return {"schemaVersion": 1, "state": state, "reasonCode": reason, "plugins": plugins}
+
+    def _failure_diagnostics_locked(self, record: _RuntimeRecord, seen: frozenset[str] = frozenset()) -> dict[str, object]:
+        from app.core.diagnostics import safe_diagnostic_text, TRACE_LIMIT
+
+        if record.diagnostics:
+            return dict(record.diagnostics)
+        plugin_id = record.spec.plugin_id
+        details = [f"插件 {plugin_id}: {record.reason_code}"]
+        chains, stacks = [], []
+        if plugin_id not in seen:
+            for service in record.spec.requires:
+                if service in self._services:
+                    continue
+                details.append(f"未激活的依赖服务: {service}")
+                for provider in self._records.values():
+                    if service not in provider.spec.provides or provider.spec.plugin_id in seen | {plugin_id}:
+                        continue
+                    cause = self._failure_diagnostics_locked(provider, seen | {plugin_id})
+                    details.append(str(cause["diagnostic"]))
+                    chains.append(str(cause.get("exception_chain", cause["diagnostic"])))
+                    stacks.append(str(cause.get("exception_stack", "")))
+        result = {"diagnostic": safe_diagnostic_text("\n".join(details)), "cause_code": record.reason_code,
+                  "plugin_id": plugin_id, "stage": "plugin.start"}
+        if chains:
+            result["exception_chain"] = safe_diagnostic_text("\n".join(chains), TRACE_LIMIT)
+        if any(stacks):
+            result["exception_stack"] = safe_diagnostic_text("\n".join(stacks), TRACE_LIMIT)
+        return result
+
+    def _unavailable_service_error(self, service_key: str) -> PluginRuntimeError:
+        from app.core.diagnostics import safe_diagnostic_text, TRACE_LIMIT
+
+        with self._lock:
+            failures = [self._failure_diagnostics_locked(record) for record in self._records.values()
+                        if service_key in record.spec.provides]
+        diagnostics = dict(failures[0]) if len(failures) == 1 else {}
+        if len(failures) > 1:
+            for key in ("diagnostic", "exception_chain", "exception_stack"):
+                diagnostics[key] = safe_diagnostic_text("\n".join(str(item.get(key, "")) for item in failures), TRACE_LIMIT)
+        diagnostics.setdefault("diagnostic", f"服务 {service_key} 没有已注册的提供方")
+        return PluginRuntimeError("SERVICE_MISSING", str(diagnostics["diagnostic"]), service_key=service_key, diagnostics=diagnostics)
 
     def close(self) -> None:
         with self._lock:
@@ -1347,6 +1409,9 @@ class PluginRuntimeManager:
     def _log_lifecycle(self, record: _RuntimeRecord, event: str, message: str, *, failed: bool = False, diagnostics: Mapping[str, object] | None = None) -> None:
         from app.core.runtime_log import log_message
 
+        if failed and not diagnostics:
+            with self._lock:
+                diagnostics = self._failure_diagnostics_locked(record)
         log_message("error" if failed else "info", message, component="plugin",
             plugin_id=record.spec.plugin_id, plugin_name=record.spec.name,
             fields={**(diagnostics or {}), "event": event, "state": record.state, "reason_code": record.reason_code})
@@ -1369,6 +1434,7 @@ class PluginRuntimeManager:
                 return None
             if record.process is not None:
                 return True if record.state == "active" else None
+            record.diagnostics.clear()
             if self._closed:
                 record.state = "failed"
                 record.reason_code = "GENERATION_INVALIDATED"
@@ -1409,6 +1475,7 @@ class PluginRuntimeManager:
                     return None
                 record.state = "failed"
                 record.reason_code = code
+                record.diagnostics = dict(diagnostics)
             return False
         process = _PluginProcess(
             roots=self._roots,
@@ -1486,6 +1553,7 @@ class PluginRuntimeManager:
                     record.reason_code = (
                         "DEPENDENCY_FAILED" if missing_dependency else error.code
                     )
+                    record.diagnostics = dict(diagnostics)
             return False
         should_close = False
         with self._lock:
@@ -1516,6 +1584,7 @@ class PluginRuntimeManager:
                 record.pid = process.pid
                 record.state = "active"
                 record.reason_code = "READY"
+                record.diagnostics.clear()
                 self._services.update(bindings)
                 self._activation_order.append(spec.plugin_id)
         if should_close:
@@ -1675,7 +1744,7 @@ class PluginRuntimeManager:
             ):
                 raise PluginRuntimeError("SERVICE_BINDING_EXPIRED", service_key=service_key)
         if binding is None:
-            raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
+            raise self._unavailable_service_error(service_key)
         if method not in binding.exports:
             raise PluginRuntimeError(
                 "SERVICE_METHOD_NOT_EXPORTED",
@@ -1824,22 +1893,26 @@ class PluginRuntimeManager:
             if record.process is process:
                 record.state = "failed"
                 record.reason_code = "PLUGIN_PROCESS_EXITING"
+                record.diagnostics = process.exit_diagnostics()
         try:
             process.terminate_after_transport_failure()
         except Exception as error:
+            from app.core.diagnostics import exception_diagnostics
+
+            diagnostics = exception_diagnostics(error, reason_code="PLUGIN_CLEANUP_FAILED", stage="plugin.cleanup")
             with self._lock:
                 if record.process is process:
                     record.process = None
                     record.state = "failed"
                     record.reason_code = "PLUGIN_CLEANUP_FAILED"
+                    record.diagnostics = diagnostics
                     self._draining_processes[plugin_id] = _DrainingProcess(process, time.monotonic())
-            from app.core.diagnostics import exception_diagnostics
             from app.core.runtime_log import log_event
 
             log_event(
                 "PluginManager", "插件进程未能完成清理", {
                     "plugin_id": plugin_id,
-                    **exception_diagnostics(error, reason_code="PLUGIN_CLEANUP_FAILED", stage="plugin.cleanup"),
+                    **diagnostics,
                 }, event="plugin.cleanup.failed", severity="error",
             )
             return
@@ -1856,6 +1929,7 @@ class PluginRuntimeManager:
                 record.process = None
                 record.pid = None
                 record.reason_code = "PLUGIN_PROCESS_EXITED"
+                record.diagnostics = process.exit_diagnostics()
             self._log_lifecycle(record, "plugin.process.exited", "插件进程意外退出", failed=True)
             for consumer_id in consumers:
                 self._stop_process(
@@ -1912,6 +1986,7 @@ class PluginRuntimeManager:
             record.pid = None
             record.state = "failed" if failed else "disabled"
             record.reason_code = reason
+            record.diagnostics.clear()
             self._services = {
                 key: binding
                 for key, binding in self._services.items()
@@ -1924,10 +1999,13 @@ class PluginRuntimeManager:
                     process.wait_for_cleanup()
                 else:
                     process.close(deadline=deadline)
-            except BaseException:
+            except BaseException as error:
+                from app.core.diagnostics import exception_diagnostics
+
                 with self._lock:
                     record.state = "failed"
                     record.reason_code = "PLUGIN_CLEANUP_FAILED"
+                    record.diagnostics = exception_diagnostics(error, reason_code=record.reason_code, stage="plugin.cleanup")
                 raise
             else:
                 with self._lock:

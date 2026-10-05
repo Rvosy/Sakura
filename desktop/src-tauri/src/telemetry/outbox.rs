@@ -45,7 +45,9 @@ impl Outbox {
         {
             let _ = fs::remove_file(file);
         }
-        let bytes = serde_json::to_vec(report).map_err(|_| "TELEMETRY_ENCODE_FAILED")?;
+        let bytes = serde_json::to_vec(report).map_err(|error| {
+            crate::runtime_log::diagnostic_error("TELEMETRY_ENCODE_FAILED", error)
+        })?;
         crate::ui_config::atomic_write(
             &self.directory.join(format!("{}.json", report.report_id)),
             &bytes,

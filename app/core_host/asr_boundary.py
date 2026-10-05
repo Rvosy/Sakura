@@ -85,8 +85,9 @@ class ASRBoundary:
                 try:
                     self._app().service_identity("sakura.asr")
                     result = {"enabled": True}
-                except Exception:
-                    result = {"enabled": False}
+                except Exception as error:
+                    result = {"enabled": False, "diagnostics": diagnostic_attributes(
+                        error, reason_code="ASR_SERVICE_UNAVAILABLE", stage="asr.availability")}
             elif name == "asr.settings.get":
                 result = self._settings()
             elif name == "asr.settings.save":

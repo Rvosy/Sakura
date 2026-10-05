@@ -1,4 +1,5 @@
 import { createIcon } from "../core/icons.js";
+import { errorText } from "../core/error-display.js";
 
 function clone(value) { return structuredClone(value); }
 
@@ -26,7 +27,7 @@ function hubAvailability(plugins) {
     || hubs.find((plugin) => plugin.enabled) || hubs[0];
   if (!hub) return { state: "missing" };
   if (!hub.enabled) return { state: "disabled" };
-  return { state: hub.state, reasonCode: hub.reasonCode };
+  return { state: hub.state, reasonCode: hub.reasonCode, diagnostics: hub.diagnostics };
 }
 
 export function createVoiceController({
@@ -55,6 +56,10 @@ export function createVoiceController({
   characterNotice.textContent = "选择角色后可开启语音。";
   characterNotice.hidden = true;
   fields.settings.append(characterNotice);
+  const failureNotice = document.createElement("p");
+  failureNotice.className = "error";
+  failureNotice.hidden = true;
+  fields.settings.append(failureNotice);
   let snapshot = null;
   let baseline = "";
   let disposed = false;
@@ -65,6 +70,14 @@ export function createVoiceController({
   enhanceSelect(fields.provider);
 
   function sectionKey(pluginId, sectionId) { return `${pluginId}\u0000${sectionId}`; }
+
+  function renderFailure() {
+    const selected = snapshot?.providers.find(item => item.providerId === fields.provider.value);
+    const failure = selected?.diagnostics ? selected
+      : fields.provider.value === snapshot?.selection?.providerId ? snapshot.selection : null;
+    failureNotice.textContent = failure?.diagnostics ? errorText({ ...failure, code: failure.reasonCode }) : "";
+    failureNotice.hidden = !failureNotice.textContent;
+  }
 
   function currentDraft() {
     if (!snapshot) return null;
@@ -313,6 +326,7 @@ export function createVoiceController({
       unavailable: "当前没有已启用的语音引擎。",
       error: "请重新检查；若仍然失败，可在运行日志中查看原因。",
     }[availability.state] || "语音插件暂不可用，请到插件页查看状态。";
+    if (availability.diagnostics || availability.error) message.textContent = errorText(availability.error || { ...availability, code: availability.reasonCode });
     const actions = document.createElement("div");
     const refresh = document.createElement("button");
     refresh.type = "button";
@@ -362,7 +376,8 @@ export function createVoiceController({
       if (previousDraft && draftSignature(previousDraft) !== baseline) {
         throw new Error("语音引擎暂不可用，请稍后重试。");
       }
-      renderUnavailable(next.availability?.state !== "active" ? next.availability : undefined);
+      renderUnavailable(next.availability && next.availability.state !== "active" ? next.availability
+        : { state: "unavailable", diagnostics: next.selection?.diagnostics, reasonCode: next.selection?.reasonCode });
       return;
     }
     snapshot = next;
@@ -411,6 +426,7 @@ export function createVoiceController({
       renderSections(edits);
       refreshSelect(fields.provider);
     }
+    renderFailure();
     onDirty();
     onSectionsRendered();
   }
@@ -442,7 +458,7 @@ export function createVoiceController({
     } catch (error) {
       if (preserveDraft && snapshot) throw error;
       if (!disposed) {
-        renderUnavailable({ state: "error" });
+        renderUnavailable({ state: "error", error });
         onStatus(error, "error");
       }
       return null;
@@ -453,6 +469,7 @@ export function createVoiceController({
   fields.enabled.addEventListener("change", markDirty);
   const handleProviderChange = () => {
     syncSectionVisibility();
+    renderFailure();
     markDirty();
   };
   fields.provider.addEventListener("input", handleProviderChange);

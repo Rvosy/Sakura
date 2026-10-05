@@ -119,9 +119,18 @@ test("plugin dependency projections cascade enablement and find affected consume
 
 test("missing plugin dependencies stay distinct from a bad API key", () => {
   const status = presentPluginStatus({ state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" });
-  assert.equal(status.label, "缺少依赖");
-  assert.match(status.message, /依赖还没有安装/);
+  assert.equal(status.label, "依赖检查失败");
+  assert.doesNotMatch(status.message, /没有安装/);
   assert.match(status.diagnostic, /PLUGIN_DEPENDENCIES_MISSING/);
+});
+
+test("plugin failure presentation prioritizes the original cause and keeps the traceback", () => {
+  const status = presentPluginStatus({ state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_INVALID",
+    diagnostics: { diagnostic: "Permission denied: C:/plugins/marker.json api_key=private-key", exception_stack: "at verified_path:233" } });
+  assert.match(status.message, /Permission denied: C:\/plugins\/marker.json/);
+  assert.match(status.diagnostic, /verified_path:233/);
+  assert.match(status.diagnostic, /PLUGIN_DEPENDENCIES_INVALID/);
+  assert.doesNotMatch(JSON.stringify(status), /private-key/);
 });
 
 test("unknown plugin failures stay readable and retain the original code", () => {
