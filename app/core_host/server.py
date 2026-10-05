@@ -329,6 +329,15 @@ class ReadinessController:
         if current != previous or model_changed:
             self.apply_provider_configuration()
 
+    def _notify_chat_state(self) -> None:
+        # State readers call published_session(); never invoke them while the
+        # publication lock is held or before the new Session is visible.
+        with self._lock:
+            application = self._plugin_application
+        notify = getattr(getattr(application, "chat", None), "notify_state", None)
+        if callable(notify):
+            notify()
+
     def apply_provider_configuration(self) -> None:
         """Apply Provider settings or replace/retire only the Assistant Session."""
         with self._lock:
@@ -391,6 +400,7 @@ class ReadinessController:
             report_assistant_failure(error, stage="session_bind", code="SESSION_BIND_FAILED")
             failed = ReadinessResult("failed", "SESSION_BIND_FAILED", "Assistant 会话未能完成绑定。", False, None)
             self._reject_provider_configuration(failed, session, plugin_application)
+        self._notify_chat_state()
         if callback is not None:
             try:
                 callback()
@@ -424,6 +434,7 @@ class ReadinessController:
                 self._revision += 1
         if not valid and application is not None and session is not None:
             application.unbind_session()
+            self._notify_chat_state()
         raise RuntimeError(result.code)
 
     @staticmethod
@@ -525,6 +536,7 @@ class ReadinessController:
             if candidate is not None:
                 candidate.close()
             raise
+        self._notify_chat_state()
 
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
@@ -800,6 +812,7 @@ class ReadinessController:
         finally:
             # Finish optional startup on the same owned worker, after publishing
             # visual and chat readiness. Its failures cannot revoke either.
+            self._notify_chat_state()
             with self._lock:
                 finish_plugins = not self._closed and self._plugin_application is plugin_application and plugin_application is not None
             if finish_plugins:

@@ -406,18 +406,11 @@ async function requestAppExitClose(event) {
       },
       discard: async () => {
         setSubmissionBusy(true);
-        await runtimeAppearanceController?.cancelPreview();
-        runtimeChatTimingController?.discard();
-        runtimeVoiceCacheController?.discard();
-        runtimeBubbleAutoHideController?.discard();
-        runtimeAutostartController?.discard();
-        runtimeToolsController?.discard();
-        await runtimeCharacterFeature?.discard();
+        // App shutdown owns preview/process cleanup, including an unavailable Core.
       },
       close: async () => {
         beginSettingsWindowClose();
         try {
-          await runtimeCharacterFeature?.waitForPreview();
           bypassCloseGuard = true;
           await invoke("resolve_settings_exit", { discard: true, revision: event.payload });
         } catch (error) {

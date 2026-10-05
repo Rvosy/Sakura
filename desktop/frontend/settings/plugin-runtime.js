@@ -109,8 +109,7 @@ function collectionRequest(current, input) {
 
 function validateCollectionResult(_operation, result) { return clone(result); }
 
-export function createPluginController({ invoke, applySnapshot, readDraft, onDirty, onSectionSaved = () => {}, onSectionFailed = () => {},
-  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)) }) {
+export function createPluginController({ invoke, applySnapshot, readDraft, onDirty, onSectionSaved = () => {}, onSectionFailed = () => {} }) {
   let current = null;
   let disposed = false;
   let rebindPromise = null;
@@ -125,23 +124,16 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
 
   async function bindCurrent({ preserveDraft, keepGlobalCollectionDrafts = false }) {
     if (rebindPromise) return rebindPromise;
-    const deadline = Date.now() + 10_000;
     rebindPromise = (async () => {
       if (refreshPromise) {
-        try { await refreshPromise; } catch { /* the bounded rebind below owns recovery */ }
+        try { await refreshPromise; } catch { /* read the state after the mutation below */ }
       }
-      let lastError = null;
-      while (!disposed && Date.now() < deadline) {
-        try {
-          const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
-          if (!current || JSON.stringify(next) !== JSON.stringify(current)) {
-            initialize(next, { preserveDraft, keepGlobalCollectionDrafts });
-          }
-          return next;
-        } catch (error) { lastError = error; }
-        await wait(100);
+      if (disposed) throw new Error("SETTINGS_REQUEST_ABORTED");
+      const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
+      if (!disposed && (!current || JSON.stringify(next) !== JSON.stringify(current))) {
+        initialize(next, { preserveDraft, keepGlobalCollectionDrafts });
       }
-      throw new Error(`PLUGIN_SETTINGS_REFRESH_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`, { cause: lastError });
+      return next;
     })().finally(() => { rebindPromise = null; });
     return rebindPromise;
   }
@@ -176,6 +168,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       const savedSections = [];
       let savingSection = "";
       let enableResultPending = false;
+      let refreshAttempted = false;
       try {
         for (const [pluginId, enabled] of Object.entries(settings.enabledById)) {
           const plugin = current.plugins.find((item) => item.pluginId === pluginId);
@@ -221,6 +214,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         }
         let next;
         if (hasDetailedSettings) {
+          refreshAttempted = true;
           next = await bindCurrent({ preserveDraft: false, keepGlobalCollectionDrafts });
         } else {
           next = current;
@@ -236,7 +230,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         if (savingSection && !savedSections.includes(savingSection)) {
           const [pluginId, sectionId] = savingSection.split("/"); onSectionFailed(pluginId, sectionId);
         }
-        if (hasDetailedSettings || enableResultPending || uncertainManagementError(error)) {
+        if (!refreshAttempted && (hasDetailedSettings || enableResultPending || uncertainManagementError(error))) {
           // The desired state may already be saved even when the reply is lost.
           try { await bindCurrent({ preserveDraft: true }); } catch { /* keep the original save error */ }
         }

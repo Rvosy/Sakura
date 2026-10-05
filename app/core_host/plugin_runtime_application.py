@@ -442,7 +442,8 @@ class PluginRuntimeApplication:
             candidate.close()
             raise
         self._session = session
-        self.chat.invalidate_session()
+        # Readiness publishes the new Session before notifying observers.
+        self.chat.invalidate_session(notify=False)
         self.conversation.invalidate_session()
         self.speech.invalidate_session()
         self.screen.invalidate_session()
@@ -640,7 +641,7 @@ class PluginRuntimeApplication:
         if self._session is not None:
             self._session.visual_binding = None
         self._session = None
-        self.chat.invalidate_session()
+        self.chat.invalidate_session(notify=False)
         self.conversation.invalidate_session()
         self.speech.invalidate_session()
         self.screen.invalidate_session()

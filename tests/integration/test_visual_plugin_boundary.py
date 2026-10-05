@@ -189,6 +189,60 @@ def test_cleared_models_and_disabled_assistant_intentionally_retire_session(visu
         assert application._session is None
 
 
+@pytest.mark.parametrize("change", ["models", "clear", "character"])
+def test_session_publication_notifies_chat_after_releasing_publication_lock(visual_application, monkeypatch, change):
+    import threading
+    from app.config.model_references import ModelReferenceRepository
+    from app.core_host.real_chat import RealChatBoundary
+
+    # Fail deterministically on the original same-thread deadlock rather than
+    # leaving a blocked worker (and its plugin processes) behind on test failure.
+    class PublicationLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.owner = None
+
+        def __enter__(self):
+            assert self.owner != threading.get_ident(), "session notification reentered publication lock"
+            self.lock.acquire()
+            self.owner = threading.get_ident()
+
+        def __exit__(self, *_args):
+            self.owner = None
+            self.lock.release()
+
+    application, package, _resource = visual_application
+    with initialized_controller(application, package, monkeypatch) as (controller, _state):
+        monkeypatch.setattr(controller, "_lock", PublicationLock())
+        boundary = RealChatBoundary("visual-test-generation", "a" * 32, package.parents[1],
+            session_provider=controller.published_session)
+        controller.bind_chat_boundary(boundary)
+        events = []
+        monkeypatch.setattr(application.chat, "_notify",
+            lambda name, value: events.append((value, controller.published_session())))
+        current = application.chat.current()
+        application.chat.set_ui_state({"sessionId": current["sessionId"], "idle": True, "activityRevision": 1})
+        original = controller.published_session()
+        try:
+            if change == "character":
+                controller.apply_character_configuration()
+            else:
+                ModelReferenceRepository(package.parents[1]).save({
+                    "chat": {} if change == "clear" else {
+                        "serviceKey": "fixture.model", "profileId": "fixture", "modelId": "new-model"},
+                    "vision_chat": {},
+                })
+                controller.apply_provider_configuration()
+            published = controller.published_session()
+            assert published is not original
+            assert events[-1][0]["idle"] is False
+            assert events[-1][1] is published
+            assert (published is None) == (change == "clear")
+            assert controller.minimal_snapshot(boundary)["generationId"] == "visual-test-generation"
+        finally:
+            boundary.close()
+
+
 @pytest.mark.parametrize("failure", ["visual", "projection"])
 def test_saved_character_failure_keeps_published_prompt_and_visual_until_reapply(visual_application, monkeypatch, failure):
     application, package, resource = visual_application

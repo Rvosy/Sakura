@@ -223,14 +223,15 @@ class ChatHost:
             active = [(key, value) for key, value in self._active.items() if value.owner[0] == plugin_id]
         self._revoke(active)
 
-    def invalidate_session(self) -> None:
+    def invalidate_session(self, *, notify: bool = True) -> None:
         with self._lock:
             self._session_epoch += 1
             self._ui = {"sessionId": None, "idle": False, "activityRevision": 0}
             active = tuple(self._active.items())
         self._revoke(active)
 
-        self.notify_state()
+        if notify:
+            self.notify_state()
 
     def close(self) -> None:
         with self._lock:

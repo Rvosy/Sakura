@@ -64,6 +64,29 @@ function saveResult(changePlan = "applied", applicationState = "applied") {
   };
 }
 
+for (const saved of [false, true]) {
+  test(`unavailable Core causes one settings reconciliation read after ${saved ? "successful" : "failed"} save`, async () => {
+    const calls = [];
+    const failure = new Error("GENERATION_INVALIDATED: Router closed");
+    const controller = createPluginController({
+      invoke: async (command) => {
+        calls.push(command);
+        if (command === "settings_plugins_save") {
+          if (!saved) throw failure;
+          return saveResult();
+        }
+        throw new Error("SETTINGS_CORE_UNAVAILABLE");
+      },
+      applySnapshot: () => {},
+      readDraft: () => ({ enabledById: {}, settingsById: { fixture_plugin: { general: { label: "new" } } } }),
+      onDirty: () => {},
+    });
+    controller.initialize(snapshot());
+    await assert.rejects(controller.save(), saved ? /SETTINGS_CORE_UNAVAILABLE/ : failure);
+    assert.deepEqual(calls, ["settings_plugins_save", "settings_plugins_get"]);
+  });
+}
+
 test("plugin snapshots carry encoded directory IDs", () => {
   const value = snapshot();
   value.plugins[0].installId = `pi_bundled_${Buffer.from("角色".repeat(35)).toString("hex")}`;
@@ -119,7 +142,6 @@ test("WP-4-04 plugin enable save uses the applied snapshot while the Core is reb
     },
     readDraft: () => draft,
     onDirty: () => {},
-    wait: async () => {},
   });
   controller.initialize(snapshot());
   draft = { enabledById: { fixture_plugin: false }, settingsById: {} };
@@ -437,7 +459,6 @@ test("Plugin management refresh failure preserves the original error", async () 
     applySnapshot: () => {},
     readDraft: () => ({ enabledById: {}, settingsById: {} }),
     onDirty: () => {},
-    wait: async () => { throw new Error("stop refresh retry"); },
   });
   controller.initialize(current);
 
