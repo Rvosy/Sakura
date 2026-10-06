@@ -26,6 +26,7 @@ import { Overview } from "./Overview";
 import { Diagnostics } from "./Diagnostics";
 import { Releases, ReleaseSummary } from "./Releases";
 import { Models } from "./Models";
+import { Tts } from "./Tts";
 import { Installation, ReportDrawer, Lookup } from "./Details";
 import { useRoute, href, navigate } from "./state";
 import { Panel } from "./components";
@@ -36,6 +37,7 @@ const nav = [
   { id: "releases", label: "版本发布", icon: PackageCheck },
   { id: "diagnostics", label: "诊断与分析包", icon: FileSearch },
   { id: "models", label: "模型与 Context", icon: Layers },
+  { id: "tts", label: "SakuraTTS", icon: Layers },
   { id: "installation", label: "安装实例", icon: Monitor },
   { id: "report", label: "报告查询", icon: FileSearch },
 ];
@@ -179,6 +181,7 @@ function App() {
               <Diagnostics route={route} />
             )}{" "}
             {route.view === "models" && <Models route={route} />}{" "}
+            {route.view === "tts" && <Tts route={route} />}{" "}
             {route.view === "installation" && <Installation route={route} />}{" "}
             {route.view === "report" && (
               <Panel

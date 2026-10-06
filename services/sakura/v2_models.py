@@ -72,6 +72,17 @@ class DiagnosticDetail(StrictModel):
         Literal["valid", "invalid", "request_failed", "cancelled"] | None
     ) = Field(default=None, alias="repairOutcome")
 
+    provider_id: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="providerId")
+    bundle_version: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="bundleVersion")
+    bundle_source_commit: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="bundleSourceCommit")
+    requested_backend: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="requestedBackend")
+    backend: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="backend")
+    profile: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="profile")
+    runtime_mode: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="runtimeMode")
+    gpu_name: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="gpuName")
+    gpu_driver: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="gpuDriver")
+    gpu_memory_mib: Millis | None = Field(default=None, alias="gpuMemoryMib")
+
     @model_validator(mode="after")
     def location_requires_file(self):
         if (self.line is not None or self.column is not None) and self.file is None:
@@ -132,6 +143,7 @@ class EventItemV2(TelemetryEventItem):
         "chat.ready",
         "chat.finished",
         "tts.finished",
+        "tts.operation.finished",
         "migration.recovery",
         "reply.repair.finished",
         "diagnostics.summary",

@@ -596,6 +596,19 @@ impl TelemetryService {
         self.push_breadcrumb(source, severity, channel, event, operation_id, attributes);
         let cancelled = expected_cancellation(attributes);
         let runtime_event = match event {
+            "runtime.message"
+                if source == "plugin"
+                    && attributes
+                        .and_then(|a| a.get("plugin_id"))
+                        .and_then(Value::as_str)
+                        == Some("sakura.tts.sakuratts")
+                    && attributes
+                        .and_then(|a| a.get("event"))
+                        .and_then(Value::as_str)
+                        == Some("tts.operation.finished") =>
+            {
+                Some("tts.operation.finished")
+            }
             "core.initialize.completed" => Some("core.ready"),
             "core.readiness.reached"
                 if attributes
@@ -606,6 +619,7 @@ impl TelemetryService {
                 Some("chat.ready")
             }
             "chat.finished" => Some("chat.finished"),
+            "tts.operation.finished" => Some("tts.operation.finished"),
             "tts.synthesis.finished"
             | "tts.synthesis.ready"
             | "tts.synthesis.failed"
@@ -990,6 +1004,22 @@ impl TelemetryService {
             failure_context
                 .extend(["slot_id", "provider_id"].map(|field| candidate.evidence.get(field)));
         }
+        if candidate.evidence.contains_key("bundle_version") {
+            failure_context.extend(
+                [
+                    "bundle_version",
+                    "bundle_source_commit",
+                    "backend",
+                    "requested_backend",
+                    "profile",
+                    "runtime_mode",
+                    "gpu_name",
+                    "gpu_memory_mib",
+                    "gpu_driver",
+                ]
+                .map(|field| candidate.evidence.get(field)),
+            );
+        }
         let key = serde_json::to_string(&json!([
             generation,
             candidate.component,
@@ -1185,6 +1215,7 @@ impl TelemetryService {
                 item.event.as_str(),
                 "chat.finished"
                     | "tts.finished"
+                    | "tts.operation.finished"
                     | "migration.failed"
                     | "migration.recovery"
                     | "diagnostics.summary"
@@ -1757,6 +1788,21 @@ pub(crate) fn validate_detail(detail: &DiagnosticDetail) -> bool {
                 }) {
                     return false;
                 }
+            } else if matches!(
+                key.as_str(),
+                "providerId"
+                    | "bundleVersion"
+                    | "bundleSourceCommit"
+                    | "requestedBackend"
+                    | "backend"
+                    | "profile"
+                    | "runtimeMode"
+                    | "gpuName"
+                    | "gpuDriver"
+            ) {
+                if value.chars().count() > 128 {
+                    return false;
+                }
             } else if valid_token(value, 128).is_none() {
                 return false;
             }
@@ -1869,6 +1915,43 @@ fn details_from_attributes(severity: &str, attributes: Option<&Value>) -> Diagno
     detail.timeout_ms = integer_attribute(attributes, "timeout_ms")
         .or_else(|| integer_attribute(attributes, "deadline_ms"));
     detail.elapsed_ms = integer_attribute(attributes, "elapsed_ms");
+    detail.provider_id = attributes
+        .and_then(|a| a.get("provider_id"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.bundle_version = attributes
+        .and_then(|a| a.get("bundle_version"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.bundle_source_commit = attributes
+        .and_then(|a| a.get("bundle_source_commit"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.requested_backend = attributes
+        .and_then(|a| a.get("requested_backend"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.backend = attributes
+        .and_then(|a| a.get("backend"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.profile = attributes
+        .and_then(|a| a.get("profile"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.runtime_mode = attributes
+        .and_then(|a| a.get("runtime_mode"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.gpu_name = attributes
+        .and_then(|a| a.get("gpu_name"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.gpu_driver = attributes
+        .and_then(|a| a.get("gpu_driver"))
+        .and_then(Value::as_str)
+        .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
+    detail.gpu_memory_mib = integer_attribute(attributes, "gpu_memory_mib");
     detail.exit_code = attributes
         .and_then(|a| a.get("exit_code").or_else(|| a.get("return_code")))
         .and_then(Value::as_i64);
@@ -3403,6 +3486,56 @@ mod tests {
         service.shutdown();
         let _ = fs::remove_dir_all(root);
     }
+    #[test]
+    fn sakuratts_results_cross_custom_log_bridge() {
+        use crate::runtime_log::{CoreLogContext, RuntimeLogService};
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "tts-results", 16, TEST_WAIT);
+        let log = RuntimeLogService::start(root.join("runtime.log"));
+        log.attach_telemetry(service.clone());
+        let context = CoreLogContext {
+            generation_id: "tts-results".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        log.activate_telemetry_generation(&context.generation_id);
+        for outcome in ["success", "failed", "cancelled"] {
+            let wire = json!({
+                "severity": if outcome == "failed" { "error" } else { "info" },
+                "verbosity": "info", "channel": "tts", "event": "runtime.message",
+                "custom": true, "plugin_id": "sakura.tts.sakuratts",
+                "message": "TTS operation finished", "attributes": {
+                    "event": "tts.operation.finished", "stage": "synthesis", "outcome": outcome,
+                    "provider_id": "sakura.tts.sakuratts", "bundle_version": "1.0.0",
+                    "backend": "cuda", "gpu_name": "NVIDIA GeForce RTX 4060", "gpu_memory_mib": 8192,
+                    "elapsed_ms": 125, "diagnostic": "fixture result"
+                }
+            });
+            assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+            let (endpoint, bytes) = server.next_request(&service);
+            assert_eq!(endpoint, "/v2/events");
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["items"][0]["event"], "tts.operation.finished");
+            assert_eq!(body["items"][0]["details"]["outcome"], outcome);
+            assert_eq!(
+                body["items"][0]["details"]["gpuName"],
+                "NVIDIA GeForce RTX 4060"
+            );
+            if outcome == "failed" {
+                let (endpoint, bytes) = server.next_request(&service);
+                assert_eq!(endpoint, "/v3/errors");
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(body["details"]["backend"], "cuda");
+                assert_eq!(body["evidence"]["bundle_version"], "1.0.0");
+            }
+        }
+        log.drain_and_shutdown_for_test();
+        drop(log);
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn complete_plugin_failure_fields_reach_log_file_and_telemetry() {
         use crate::runtime_log::{CoreLogContext, RuntimeLogService};

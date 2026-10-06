@@ -6,14 +6,14 @@ from queries import Filters, TABLES, page, quality, groups
 router = APIRouter(include_in_schema=False)
 
 
-def filters(request):
+def filters(request, model=Filters):
     values = dict(request.query_params)
     for key in ("cursor", "limit"):
         values.pop(key, None)
     if "includeTest" in values:
         values["includeTest"] = values["includeTest"] == "true"
     try:
-        return Filters.model_validate(values)
+        return model.model_validate(values)
     except ValidationError:
         raise HTTPException(400, "INVALID_FILTER")
 
@@ -57,6 +57,14 @@ def data_quality(request: Request):
         "server": snapshot(),
         "client": client_quality(f),
     }
+
+
+@router.get("/admin/api/v2/tts")
+def tts_results(request: Request):
+    _require_admin_host(request)
+    from queries import TtsFilters, tts_summary
+
+    return tts_summary(filters(request, TtsFilters))
 
 
 @router.get("/admin/api/v2/timeline")

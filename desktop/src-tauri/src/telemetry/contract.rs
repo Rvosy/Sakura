@@ -59,6 +59,26 @@ pub(crate) struct DiagnosticDetail {
     pub repair_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_source_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_driver: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_memory_mib: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

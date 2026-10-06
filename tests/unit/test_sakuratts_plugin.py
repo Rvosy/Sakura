@@ -16,6 +16,11 @@ from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
 
 
+@pytest.fixture(autouse=True)
+def isolated_device_inventory(monkeypatch):
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.nvidia_device', lambda: {})
+
+
 def test_voice_reads_studio_resources_without_private_extension_or_manifest_writes(tmp_path):
     from app.core_host.plugin_character import PluginCharacterStore
     package = tmp_path / 'physical-character-directory'
@@ -65,6 +70,9 @@ def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, mo
     assert store.current() is None
     assert store.load()['bundle']['taskState'] == 'failed'
     assert store.load()['bundle']['detail']
+    assert logs[0][0] == 'error'
+    assert logs[0][2]['stage'] == 'installed_bundle_read'
+    logs.clear()
     store.start({'bundlePath': str(bundle_archive(tmp_path / 'one.zip'))})
     store.thread.join(3)
     original = store.current()[0]
@@ -878,3 +886,66 @@ def test_runtime_lifecycle_logs_changes_without_settings_polling(tmp_path, monke
     runtime.observer_stop.set()
     runtime._observe(SimpleNamespace(poll=lambda: None))
     assert len(logs) == 4
+
+
+@pytest.mark.parametrize('outcome', ['success', 'failed', 'cancelled'])
+def test_operation_reports_terminal_result_and_preserves_failure(outcome):
+    from plugins.builtin.sakura_sakuratts._diagnostics import operation
+    from plugins.builtin.sakura_sakuratts._bundle import Cancelled
+    records = []
+    cancel = threading.Event()
+    def run():
+        with operation(lambda level, message, **fields: records.append((level, fields)),
+                       'synthesis', cancel=cancel):
+            if outcome == 'cancelled':
+                cancel.set()
+                raise OSError('request interrupted')
+            if outcome == 'failed':
+                raise RuntimeError('engine failed')
+    if outcome == 'success':
+        run()
+    else:
+        with pytest.raises(Cancelled if outcome == 'cancelled' else RuntimeError):
+            run()
+    assert len(records) == 1
+    level, fields = records[0]
+    assert fields['outcome'] == outcome
+    assert fields['event'] == 'tts.operation.finished'
+    assert fields['stage'] == 'synthesis'
+    assert level == ('error' if outcome == 'failed' else 'info')
+    assert ('diagnostic' in fields) == (outcome == 'failed')
+
+
+def test_optional_device_inventory(monkeypatch):
+    from plugins.builtin.sakura_sakuratts import _diagnostics as diagnostics
+    monkeypatch.setattr(diagnostics.shutil, 'which', lambda name: 'fixture-nvidia-smi')
+    monkeypatch.setattr(diagnostics.subprocess, 'run', lambda *args, **kwargs:
+                        SimpleNamespace(stdout='NVIDIA RTX 4060, 8192, 560.10\n'))
+    assert diagnostics.nvidia_device() == {
+        'gpu_name': 'NVIDIA RTX 4060', 'gpu_memory_mib': 8192, 'gpu_driver': '560.10'}
+    monkeypatch.setattr(diagnostics.shutil, 'which', lambda name: None)
+    assert diagnostics.nvidia_device() == {}
+
+
+def test_prewake_failure_includes_runtime_context_once(tmp_path, monkeypatch):
+    p, _ = provider(tmp_path, monkeypatch)
+    records = []
+    p.logger.error = lambda message, fields: records.append(fields)
+    p.runtime.backend = 'cuda'
+    p.runtime.profile = 'fp16'
+    p.runtime.device = {'gpu_name': 'NVIDIA RTX 4060', 'gpu_memory_mib': 8192}
+    monkeypatch.setattr(p.bundle, 'current', lambda: (tmp_path, {'version': '1.0.0'}))
+    def fail(*args):
+        raise RuntimeError('engine unavailable')
+    monkeypatch.setattr(p.runtime, 'start', fail)
+    try:
+        p._prewake('character', threading.Event())
+        assert len(records) == 1
+        assert records[0]['outcome'] == 'failed'
+        assert records[0]['bundle_version'] == '1.0.0'
+        assert records[0]['backend'] == 'cuda'
+        assert records[0]['gpu_memory_mib'] == 8192
+        assert records[0]['diagnostic'] == 'engine unavailable'
+        assert 'text' not in records[0] and 'prompt_text' not in records[0]
+    finally:
+        p.close()

@@ -16,8 +16,10 @@ from sakura_http import urlopen_direct_for_loopback
 from sakura_process import terminate_process_tree
 try:
     from ._bundle import Cancelled
+    from ._diagnostics import nvidia_device, operation
 except ImportError:
     from _bundle import Cancelled
+    from _diagnostics import nvidia_device, operation
 
 
 def command(root, release, *args):
@@ -66,6 +68,8 @@ class Runtime:
         self.emit = log
         self.observer = None
         self.observer_stop = threading.Event()
+        self.device = {}
+        self.device_checked = False
 
     def stop(self):
         with self.lock:
@@ -80,17 +84,28 @@ class Runtime:
             self.key = None
 
     def start(self, bundle, config, voice, cancel):
-        started = time.monotonic()
-        root, release = bundle
-        backend = config['backend']
-        profile = config['cudaProfile'] if backend == 'cuda' else None
-        key = (root, backend, profile, config['idleSeconds'], voice['gpt'], voice['sovits'])
+        root, _release = bundle
+        key = (root, config['backend'], config['cudaProfile'] if config['backend'] == 'cuda' else None,
+               config['idleSeconds'], voice['gpt'], voice['sovits'])
         with self.lock:
             if cancel.is_set():
                 raise Cancelled()
             if self.key == key and self.process is not None and self.process.poll() is None:
                 return
+        if not self.device_checked:
+            self.device = nvidia_device()
+            self.device_checked = True
+        with operation(self.emit, 'engine_start', cancel=cancel, report_error=False):
+            self._start(bundle, config, voice, cancel, key)
+
+    def _start(self, bundle, config, voice, cancel, key):
+        started = time.monotonic()
+        root, release = bundle
+        backend = config['backend']
+        profile = config['cudaProfile'] if backend == 'cuda' else None
+        with self.lock:
             self.stop()
+        self.backend, self.profile = '', None
         self.selection_reason = ''
         if backend == 'auto':
             backend = release['backend']

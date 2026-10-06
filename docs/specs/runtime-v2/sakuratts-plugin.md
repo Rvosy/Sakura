@@ -3,7 +3,7 @@ kind: spec
 status: draft
 audience: maintainer
 source_of_truth: self
-updated: 2026-10-05
+updated: 2026-10-06
 ---
 
 # SakuraTTS 插件与设置界面
@@ -169,3 +169,7 @@ SakuraTTS 作为内置 TTS Provider，负责本地角色语音合成，利用引
 
 - [Docker Desktop 软件更新设置](https://docs.docker.com/desktop/settings-and-maintenance/settings/#software-updates)：区分检查更新与后台下载。
 - [VS Code 手动安装与更新](https://code.visualstudio.com/docs/configure/extensions/extension-marketplace)：在线安装、本地 VSIX 导入和手动更新分别提供入口。
+
+## 运行诊断
+
+插件记录实际引擎启动、预加载及合成的成功、失败、取消结果，并为错误补充运行配置与可获取的设备信息。损坏的安装记录和下载记录同样产生错误日志。事件口径、采集字段、上传开关和平台统计统一遵循[远程诊断与运行统计](remote-diagnostics-telemetry.md#sakuratts-运行结果)。

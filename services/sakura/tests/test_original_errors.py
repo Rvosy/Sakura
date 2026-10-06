@@ -147,3 +147,19 @@ def test_export_failure_keeps_original_exception_in_server_log(client, monkeypat
     failures = [record for record in caplog.records if record.exc_info]
     assert len(failures) == 1
     assert "fixture export disk full" in str(failures[0].exc_info[1])
+
+
+def test_tts_environment_preserved_and_separates_failure_groups(client):
+    for backend in ('cpu', 'cuda'):
+        payload = original_report('engine failed')
+        payload['error']['fingerprint'] = f'tts-{backend}'
+        payload['evidence'].update(provider_id='sakura.tts.sakuratts',
+                                   bundle_version='1.0.0', backend=backend)
+        payload['details'].update(providerId='sakura.tts.sakuratts',
+                                  bundleVersion='1.0.0', backend=backend,
+                                  gpuName='NVIDIA RTX 4060', gpuMemoryMib=8192)
+        assert client.post('/v3/errors', json=payload).status_code == 202
+        stored = client.get(f"/admin/api/reports/{payload['reportId']}").json()
+        assert stored['rawReport']['details']['gpuName'] == 'NVIDIA RTX 4060'
+        assert stored['evidence']['backend'] == backend
+    assert client.get('/admin/api/v2/groups').json()['total'] == 2

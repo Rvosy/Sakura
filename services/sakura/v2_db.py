@@ -131,6 +131,11 @@ def insert_v2(kind, payload):
             # existing v3 groups; persisted historical keys are not rewritten.
             if any(r.evidence.get(field) is not None for field in ("slot_id", "provider_id")):
                 failure_context.extend(r.evidence.get(field) for field in ("slot_id", "provider_id"))
+            if "bundle_version" in r.evidence:
+                failure_context.extend(r.evidence.get(field) for field in (
+                    "bundle_version", "bundle_source_commit", "backend", "requested_backend",
+                    "profile", "runtime_mode", "gpu_name", "gpu_memory_mib", "gpu_driver",
+                ))
             row["group_key"] = json.dumps([
                 r.error.component, r.error.event, r.error.code,
                 r.details.reason_code, r.details.stage,

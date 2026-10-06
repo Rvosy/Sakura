@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-22
+updated: 2026-10-06
 ---
 
 # 远程诊断与运行统计
@@ -141,3 +141,15 @@ SQLite 原始记录保留 90 天，接收时间使用北京时间。Admin/API/�
 正式入口为 `adm.sakura.cialloo.cn/admin/`，旧 admin 域名保留。公开 api 域名只接受既有遥测写入路由和公开清单；
 原遥测 CDN/源站继续转发旧客户端请求，不使用 POST 重定向。故障库保留现有数据与协议，控制台只读查询并独立生成分析包。
 域名、认证、进程权限与版本管理以 [Sakura Service](sakura-service.md) 为准。
+
+## SakuraTTS 运行结果
+
+SakuraTTS 经现有插件日志桥接发送 `tts.operation.finished`，Rust 将该插件的自定义事件映射到 `/v2/events`。每次实际引擎启动、模型预加载和语音合成分别记录 `engine_start`、`preload`、`synthesis`，包含结果与耗时；复用已运行引擎不增加启动次数。合成成功表示音频已写入本地暂存文件，不代表资源提交或播放成功。
+
+结果与错误详情可包含插件 ID、整合包版本及引擎提交、请求后端、实际后端、推理档位和休眠模式。可获取时附带首张 NVIDIA 显卡的名称、总显存 MiB 和驱动版本；该信息来自一次有超时的 `nvidia-smi` 查询，不代表实际选中设备。无法获取的字段留空，不推断硬件或自动选择的推理档位。不新增文本、音频或配置全文采集。
+
+失败保留原始异常；引擎启动的失败结果由外层预加载或合成操作记录完整异常，避免同一异常重复上报。取消有独立结果，不进入错误报告。整合包已安装记录与待安装记录损坏也进入现有错误链路。
+
+管理端 `/admin/api/v2/tts` 按阶段、版本、配置和设备聚合收到的结果，失败率为失败次数除以成功与失败次数之和。取消不进入分母；默认排除开发及验收环境。事件沿用内存队列，未结束或未送达的操作不计入，因此这些数据只描述收到的样本。错误仍沿用持久化待发队列。
+
+实现借鉴 [OpenTelemetry 错误记录约定](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/general/recording-errors.md) 的统一结果计数、取消分类和避免重复记录异常原则，不引入新的遥测 SDK。字段存储复用现有 JSON 列，无数据库迁移。发布时先更新服务端契约与管理页，再发布客户端；旧服务端会拒收新增事件或字段。

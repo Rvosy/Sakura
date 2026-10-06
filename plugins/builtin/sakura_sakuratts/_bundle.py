@@ -205,6 +205,7 @@ class BundleStore:
         except Exception as error:
             self.installation_error = str(error)
             self.state, self.message, self.error = 'failed', '运行环境不可用，请重新导入整合包', str(error)
+            self.log('error', self.message, event='tts.bundle.failed', stage='installed_bundle_read', diagnostic=str(error))
         try:
             downloaded = self.directory / 'downloads/ready.json'
             if downloaded.exists():
@@ -214,6 +215,7 @@ class BundleStore:
                     self.downloaded = archive, package
         except Exception as error:
             self.state, self.message, self.error = 'failed', '已下载整合包不可用，请重新下载', str(error)
+            self.log('error', self.message, event='tts.bundle.failed', stage='downloaded_bundle_read', diagnostic=str(error))
 
     def current(self):
         return self._current

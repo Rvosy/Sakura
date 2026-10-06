@@ -13,10 +13,12 @@ try:
     from ._bundle import BundleStore, Cancelled
     from ._runtime import Runtime, probe
     from ._updates import UpdateAnnouncement
+    from ._diagnostics import operation
 except ImportError:
     from _bundle import BundleStore, Cancelled
     from _runtime import Runtime, probe
     from _updates import UpdateAnnouncement
+    from _diagnostics import operation
 
 PROVIDER_ID = 'sakura.tts.sakuratts'
 SERVICE_KEY = 'sakura.tts.provider.sakuratts'
@@ -83,10 +85,18 @@ class Provider:
         self.active = None
         self.wake = None
         self.error = ''
+        self.bundle = None
         self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish, self.log)
 
     def log(self, level, message, **fields):
-        getattr(self.logger, level)(message, fields=fields)
+        bundle = self.bundle.current() if self.bundle is not None else None
+        release = bundle[1] if bundle else {}
+        context = {'provider_id': PROVIDER_ID, 'requested_backend': self.config['backend'],
+                   'backend': self.runtime.backend or None, 'profile': self.runtime.profile,
+                   'runtime_mode': 'direct' if self.config['idleSeconds'] == 0 else 'managed',
+                   'bundle_version': (self.bundle.release_id or release.get('version')) if bundle else None,
+                   'bundle_source_commit': release.get('source_commit'), **self.runtime.device}
+        getattr(self.logger, level)(message, fields={key: value for key, value in {**context, **fields}.items() if value is not None})
 
     def publish(self, activate):
         def switch():
@@ -144,21 +154,22 @@ class Provider:
     def _prewake(self, character_id, cancel):
         started = time.monotonic()
         try:
-            self.error = ''
-            voice = character_voice(self.character, character_id)
-            self.runtime.start(self.bundle.current(), self.config, voice, cancel)
-            if not cancel.is_set():
-                self.log('info', 'SakuraTTS 正在提前加载模型', backend=self.runtime.backend)
-                if self.config['idleSeconds'] > 0:
-                    self.runtime.request('/runtime/wake', {'keep_alive_seconds': 0})
-                self.log('info', 'SakuraTTS 正在准备默认参考音频', reference_audio=Path(voice['ref_audio_path']).name)
-                self.runtime.request('/set_refer_audio?' + urlencode({'refer_audio_path': voice['ref_audio_path']}))
-                self.log('info', 'SakuraTTS 模型与默认参考音频已就绪', backend=self.runtime.backend,
-                         elapsed_ms=round((time.monotonic() - started) * 1000, 1))
+            with operation(self.log, 'preload', cancel=cancel):
+                self.error = ''
+                voice = character_voice(self.character, character_id)
+                self.runtime.start(self.bundle.current(), self.config, voice, cancel)
+                if not cancel.is_set():
+                    self.log('info', 'SakuraTTS 正在提前加载模型', backend=self.runtime.backend)
+                    if self.config['idleSeconds'] > 0:
+                        self.runtime.request('/runtime/wake', {'keep_alive_seconds': 0})
+                    self.log('info', 'SakuraTTS 正在准备默认参考音频', reference_audio=Path(voice['ref_audio_path']).name)
+                    self.runtime.request('/set_refer_audio?' + urlencode({'refer_audio_path': voice['ref_audio_path']}))
+                    self.log('info', 'SakuraTTS 模型与默认参考音频已就绪', backend=self.runtime.backend,
+                             elapsed_ms=round((time.monotonic() - started) * 1000, 1))
         except Cancelled:
             pass
         except Exception as error:
-            self.record_error(error)
+            self.error = str(error)
         finally:
             with self.lock:
                 if self.wake is cancel:
@@ -193,22 +204,23 @@ class Provider:
 
     def _synthesize(self, job, request, voice):
         try:
-            with self.lock:
-                if job['cancel'].is_set():
-                    raise Cancelled()
-                self.active = job
-            queue_ms = round((time.monotonic() - job['queued_at']) * 1000, 1)
-            self.runtime.start(self.bundle.current(), self.config, voice, job['cancel'])
-            payload = {key: voice[key] for key in ('text_lang', 'ref_audio_path', 'prompt_lang', 'prompt_text')}
-            payload.update(text=request['text'], parallel_infer=False, streaming_mode=False, media_type='wav')
-            self.log('info', 'SakuraTTS 开始合成', backend=self.runtime.backend, text_chars=len(request['text']),
-                     reference_audio=Path(voice['ref_audio_path']).name, language=voice['text_lang'], queue_ms=queue_ms)
-            audio = self.runtime.request('/tts', payload)
-            with self.lock:
-                if job['cancel'].is_set():
-                    raise Cancelled()
-                Path(job['allocation']['path']).write_bytes(audio)
-                job['state'] = 'succeeded'
+            with operation(self.log, 'synthesis', cancel=job['cancel']):
+                with self.lock:
+                    if job['cancel'].is_set():
+                        raise Cancelled()
+                    self.active = job
+                queue_ms = round((time.monotonic() - job['queued_at']) * 1000, 1)
+                self.runtime.start(self.bundle.current(), self.config, voice, job['cancel'])
+                payload = {key: voice[key] for key in ('text_lang', 'ref_audio_path', 'prompt_lang', 'prompt_text')}
+                payload.update(text=request['text'], parallel_infer=False, streaming_mode=False, media_type='wav')
+                self.log('info', 'SakuraTTS 开始合成', backend=self.runtime.backend, text_chars=len(request['text']),
+                         reference_audio=Path(voice['ref_audio_path']).name, language=voice['text_lang'], queue_ms=queue_ms)
+                audio = self.runtime.request('/tts', payload)
+                with self.lock:
+                    if job['cancel'].is_set():
+                        raise Cancelled()
+                    Path(job['allocation']['path']).write_bytes(audio)
+                    job['state'] = 'succeeded'
         except Cancelled:
             self.log('info', 'SakuraTTS 合成已取消')
             with self.lock:
@@ -220,7 +232,7 @@ class Provider:
             if job['state'] == 'cancelled':
                 self.log('info', 'SakuraTTS 合成已取消')
             else:
-                self.record_error(error)
+                self.error = str(error)
         finally:
             with self.lock:
                 if self.active is job:

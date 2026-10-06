@@ -5,6 +5,7 @@ export type View =
   | "overview"
   | "errors"
   | "models"
+  | "tts"
   | "installation"
   | "report";
 export interface Route {
@@ -35,6 +36,7 @@ export const views: View[] = [
   "overview",
   "errors",
   "models",
+  "tts",
   "installation",
   "report",
 ];

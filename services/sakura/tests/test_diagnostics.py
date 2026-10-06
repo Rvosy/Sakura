@@ -363,3 +363,24 @@ def test_export_cancellation_limits_and_expired_download_cleanup(client, tmp_pat
     exports.JOBS[key]["readers"] = 0
     exports.cleanup()
     assert not (exports.ROOT / key).exists()
+
+
+def test_tts_results_denominator_environment_and_filters(client):
+    context = dict(stage='synthesis', providerId='sakura.tts.sakuratts',
+                   bundleVersion='1.0.0', backend='cuda', gpuName='NVIDIA RTX 4060',
+                   gpuMemoryMib=8192, elapsedMs=100)
+    items = [event(report(), 'tts.operation.finished', dict(context, outcome=outcome))
+             for outcome in ('success', 'failed', 'cancelled')]
+    acceptance = report()
+    acceptance['diagnostics']['environment'] = 'acceptance'
+    items.append(event(acceptance, 'tts.operation.finished', dict(context, outcome='failed')))
+    items.append(event(report(), 'tts.finished', {'outcome': 'success'}))
+    assert client.post('/v2/events', json={'schema': 2, 'items': items}).status_code == 202
+    result = client.get('/admin/api/v2/tts').json()
+    stage = result['stages'][0]
+    assert (stage['attempts'], stage['succeeded'], stage['failed'], stage['cancelled']) == (3, 1, 1, 1)
+    assert stage['failureRate'] == 50
+    assert stage['installations'] == 1
+    assert result['items'][0]['gpuMemoryMib'] == 8192
+    assert client.get('/admin/api/v2/tts?backend=cpu').json()['items'] == []
+    assert client.get('/admin/api/v2/tts?includeTest=true').json()['stages'][0]['failed'] == 2

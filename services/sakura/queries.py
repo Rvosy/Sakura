@@ -64,6 +64,41 @@ def connection():
         c.close()
 
 
+class TtsFilters(Filters):
+    backend: str | None = Field(default=None, max_length=128)
+    bundle: str | None = Field(default=None, max_length=128)
+    gpu: str | None = Field(default=None, max_length=128)
+
+
+def tts_summary(filters):
+    condition, args = where(filters, "telemetry_events")
+    for field, name in (("backend", "backend"), ("bundle", "bundleVersion"), ("gpu", "gpuName")):
+        value = getattr(filters, field)
+        if value is not None:
+            condition += f" AND json_extract(details_json,'$.{name}')=?"
+            args.append(value)
+    context_fields = ("stage", "providerId", "bundleVersion", "bundleSourceCommit", "requestedBackend",
+                      "backend", "profile", "runtimeMode", "gpuName", "gpuMemoryMib", "gpuDriver")
+    projection = ",".join(f"json_extract(details_json,'$.{key}') AS {key}" for key in context_fields)
+    base = f"""WITH samples AS (
+        SELECT installation_id, platform, arch, app_version, {projection},
+            json_extract(details_json,'$.outcome') AS outcome,
+            json_extract(details_json,'$.elapsedMs') AS elapsed
+        FROM telemetry_events WHERE {condition} AND event='tts.operation.finished'
+    ) """
+    counts = """count(*) AS attempts, count(DISTINCT installation_id) AS installations,
+        sum(outcome='success') AS succeeded, sum(outcome='failed') AS failed,
+        sum(outcome='cancelled') AS cancelled,
+        100.0*sum(outcome='failed')/nullif(sum(outcome IN ('success','failed')),0) AS failureRate,
+        avg(elapsed) AS averageMs"""
+    dimensions = "platform,arch,app_version," + ",".join(context_fields)
+    with connection() as c:
+        c.execute("BEGIN")
+        stages = [dict(row) for row in c.execute(base + f"SELECT stage,{counts} FROM samples GROUP BY stage", args)]
+        items = [dict(row) for row in c.execute(base + f"SELECT {dimensions},{counts} FROM samples GROUP BY {dimensions} ORDER BY failed DESC,attempts DESC", args)]
+    return {"stages": stages, "items": items}
+
+
 def where(f, table, alias=""):
     prefix = alias + "." if alias else ""
     clauses = []
