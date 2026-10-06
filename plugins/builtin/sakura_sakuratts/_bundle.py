@@ -299,7 +299,7 @@ class BundleStore:
             raise Cancelled()
         self.available = package
         if self._is_current(package):
-            self.message = '已安装当前线上版本'
+            self.message = '已是最新版本'
         else:
             self.message = (f"可下载预览版 {package['releaseId']} · {package['platform']} · 魔搭 · "
                             f"下载 {package['bytes'] / 1e9:.2f} GB · 解压 {package['unpackedBytes'] / 1e9:.2f} GB")
@@ -315,7 +315,7 @@ class BundleStore:
             raise Cancelled()
         self.available = package
         if self._is_current(package):
-            self.state, self.message = 'succeeded', '已安装当前线上版本'
+            self.state, self.message = 'succeeded', '已是最新版本'
             return
         if not self.downloaded or self.downloaded[1] != package:
             self._download(package)

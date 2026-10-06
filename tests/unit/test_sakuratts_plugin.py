@@ -127,8 +127,10 @@ def provider(tmp_path, monkeypatch):
     return result, released
 
 
-def test_prewake_only_for_selected_enabled_conversation(tmp_path, monkeypatch):
+@pytest.mark.parametrize('idle_seconds', [0, 60])
+def test_prewake_only_for_selected_enabled_conversation(tmp_path, monkeypatch, idle_seconds):
     p, _ = provider(tmp_path, monkeypatch)
+    p.reconfigure({**p.config, 'idleSeconds': idle_seconds})
     calls = []
     monkeypatch.setattr(p.runtime, 'start', lambda *_: calls.append('start'))
     monkeypatch.setattr(p.runtime, 'request', lambda *args: calls.append(args))
@@ -137,17 +139,15 @@ def test_prewake_only_for_selected_enabled_conversation(tmp_path, monkeypatch):
         assert calls == []
         p.on_chat({'characterId': 'character'})
         p.executor.submit(lambda: None).result(3)
-        assert calls == ['start', ('/runtime/wake', {'keep_alive_seconds': 0}),
-                         ('/set_refer_audio?refer_audio_path=a.wav',)]
-        p.config['prewake'] = False
-        p.on_chat({'characterId': 'character'})
-        p.executor.submit(lambda: None).result(3)
-        assert len(calls) == 3
-        p.config['prewake'] = True
+        expected = ['start']
+        if idle_seconds:
+            expected.append(('/runtime/wake', {'keep_alive_seconds': 0}))
+        expected.append(('/set_refer_audio?refer_audio_path=a.wav',))
+        assert calls == expected
         p.hub.status = lambda _: {'enabled': False, 'providerId': 'sakura.tts.sakuratts'}
         p.on_chat({'characterId': 'character'})
         p.executor.submit(lambda: None).result(3)
-        assert len(calls) == 3
+        assert calls == expected
     finally:
         p.close()
 
@@ -183,7 +183,7 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
     shutil.copytree(repo / 'plugins/builtin/sakura_sakuratts', tmp_path / 'plugins/builtin/sakura_sakuratts')
     config = tmp_path / 'data/plugins/sakura.tts.sakuratts/config.json'
     config.parent.mkdir(parents=True)
-    config.write_text('{"enabled":true,"idleSeconds":90,"prewake":false,"cudaProfile":"fp32","autoCheckUpdates":false}')
+    config.write_text('{"enabled":true,"idleSeconds":90,"cudaProfile":"fp32","autoCheckUpdates":false}')
     if installed != 'none':
         import platform
         bundles = config.parent / 'bundles'
@@ -237,10 +237,9 @@ def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed)
             overview = next(s for s in sections if s['sectionId'] == 'overview')
             assert overview['values']['engineState']['state'] == 'error'
         assert host.call_service('sakura.tts.provider.sakuratts', 'status')['available'] is False
-        host.settings_save('sakura.tts.sakuratts', 'runtime', {'idleSeconds': 120})
+        host.settings_save('sakura.tts.sakuratts', 'runtime', {'idleSeconds': 0})
         saved = next(s for s in host.settings_sections('plugin') if s['sectionId'] == 'runtime')['values']
-        assert saved['idleSeconds'] == 120
-        assert saved['prewake'] is False
+        assert saved['idleSeconds'] == 0
         assert saved['cudaProfile'] == 'fp32'
         host.emit_event('sakura.host.chat.request.started', {'characterId': 'fixture'})
     finally:
@@ -288,7 +287,8 @@ def test_7z_child_cancel_and_failure(tmp_path, monkeypatch, action):
         if action == 'cancel':
             cancel.set()
         return child
-    monkeypatch.setattr(_bundle.subprocess, 'Popen', start)
+    monkeypatch.setattr(_bundle, 'subprocess', SimpleNamespace(
+        **{**vars(subprocess), 'Popen': start}))
     with pytest.raises(_bundle.Cancelled if action == 'cancel' else ValueError,
                        match=None if action == 'cancel' else 'extract failed'):
         unpack(archive, destination, cancel)
@@ -681,7 +681,6 @@ def test_online_index_rejects_invalid_package_before_download(online_repo, mutat
 
 @pytest.mark.parametrize(('initial', 'changes', 'interrupted'), [
     ({}, {'autoCheckUpdates': False}, False),
-    ({}, {'prewake': False}, False),
     ({}, {'cudaProfile': 'fp32'}, False),
     ({}, {'backend': 'cpu'}, True),
     ({}, {'idleSeconds': 30}, True),
@@ -827,3 +826,55 @@ def test_missing_character_model_returns_diagnostic_with_source_location(tmp_pat
     assert result['errorCode'] == 'TTS_CHARACTER_CONFIG_INVALID'
     assert '角色尚未配置GPT 模型' in result['diagnostics']['diagnostic']
     assert 'character_voice' in result['diagnostics']['exception_stack']
+
+
+@pytest.mark.parametrize('seconds', [0, 60])
+def test_idle_sleep_selects_engine_lifecycle(tmp_path, monkeypatch, seconds):
+    from plugins.builtin.sakura_sakuratts import _runtime
+    from plugins.builtin.sakura_sakuratts.plugin import configuration
+    commands, requests = [], []
+    def launch(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(_runtime.subprocess, 'Popen', launch)
+    monkeypatch.setattr(_runtime, 'terminate_process_tree', lambda *args, **kwargs: None)
+    runtime = _runtime.Runtime(tmp_path)
+    def request(path, **kwargs):
+        requests.append(path)
+        return {'status': 'ready', 'state': 'sleeping'}
+    monkeypatch.setattr(runtime, 'request', request)
+    try:
+        runtime.start((tmp_path, {'backend': 'cpu', 'backends': ['cpu']}),
+                      configuration({'idleSeconds': seconds}),
+                      {'gpt': 'voice.ckpt', 'sovits': 'voice.pth'}, threading.Event())
+        command = commands[0]
+        assert command[command.index('--runtime-mode') + 1] == ('direct' if seconds == 0 else 'managed')
+        if seconds == 0:
+            assert '--idle-sleep-seconds' not in command
+        else:
+            assert command[command.index('--idle-sleep-seconds') + 1] == '60'
+        assert runtime.status() == ('ready' if seconds == 0 else 'sleeping')
+        assert requests[-1] == ('/health' if seconds == 0 else '/runtime')
+    finally:
+        runtime.stop()
+
+
+def test_runtime_lifecycle_logs_changes_without_settings_polling(tmp_path, monkeypatch):
+    from plugins.builtin.sakura_sakuratts._runtime import Runtime
+    logs = []
+    runtime = Runtime(tmp_path, lambda level, message, **fields: logs.append(fields))
+    states = iter(['waking', 'awake', 'awake', 'stopping', 'sleeping'])
+    finished = [False]
+    def request(path, **kwargs):
+        assert path == '/runtime'
+        state = next(states)
+        finished[0] = state == 'sleeping'
+        return {'state': state}
+    monkeypatch.setattr(runtime, 'request', request)
+    monkeypatch.setattr(runtime.observer_stop, 'wait', lambda seconds: finished[0])
+    runtime._observe(SimpleNamespace(poll=lambda: None))
+    assert [item['event'] for item in logs] == [
+        'tts.engine.waking', 'tts.engine.awake', 'tts.engine.stopping', 'tts.engine.sleeping']
+    runtime.observer_stop.set()
+    runtime._observe(SimpleNamespace(poll=lambda: None))
+    assert len(logs) == 4

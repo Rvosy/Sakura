@@ -20,7 +20,7 @@ except ImportError:
 
 PROVIDER_ID = 'sakura.tts.sakuratts'
 SERVICE_KEY = 'sakura.tts.provider.sakuratts'
-DEFAULTS = {'backend': 'auto', 'cudaProfile': 'fp16', 'idleSeconds': 60, 'prewake': True,
+DEFAULTS = {'backend': 'auto', 'cudaProfile': 'fp16', 'idleSeconds': 60,
             'autoCheckUpdates': True}
 CUDA_PROFILES = [('fp16', 'FP16 标准'), ('fp32', 'FP32 全精度'),
                  ('low-memory', 'FP16 低显存'), ('minimum-memory', 'FP16 极低显存')]
@@ -32,10 +32,8 @@ def configuration(values):
         raise ValueError('不支持此推理后端。')
     if result['cudaProfile'] not in dict(CUDA_PROFILES):
         raise ValueError('不支持此 NVIDIA 推理档位。')
-    if type(result['idleSeconds']) is not int or result['idleSeconds'] < 1:
-        raise ValueError('空闲休眠时间必须是正整数。')
-    if type(result['prewake']) is not bool:
-        raise ValueError('提前唤醒设置无效。')
+    if type(result['idleSeconds']) is not int or result['idleSeconds'] < 0:
+        raise ValueError('空闲休眠时间必须是非负整数。')
     if type(result['autoCheckUpdates']) is not bool:
         raise ValueError('自动检查更新设置无效。')
     return result
@@ -135,7 +133,7 @@ class Provider:
         character_id = event['characterId']
         selected = self.hub.status(character_id)
         with self.lock:
-            if self.closed or not self.config['prewake'] or not selected['enabled'] or selected['providerId'] != PROVIDER_ID:
+            if self.closed or not selected['enabled'] or selected['providerId'] != PROVIDER_ID:
                 return
             if self.wake is not None or not self.bundle.current():
                 return
@@ -151,7 +149,8 @@ class Provider:
             self.runtime.start(self.bundle.current(), self.config, voice, cancel)
             if not cancel.is_set():
                 self.log('info', 'SakuraTTS 正在提前加载模型', backend=self.runtime.backend)
-                self.runtime.request('/runtime/wake', {'keep_alive_seconds': 0})
+                if self.config['idleSeconds'] > 0:
+                    self.runtime.request('/runtime/wake', {'keep_alive_seconds': 0})
                 self.log('info', 'SakuraTTS 正在准备默认参考音频', reference_audio=Path(voice['ref_audio_path']).name)
                 self.runtime.request('/set_refer_audio?' + urlencode({'refer_audio_path': voice['ref_audio_path']}))
                 self.log('info', 'SakuraTTS 模型与默认参考音频已就绪', backend=self.runtime.backend,
@@ -315,9 +314,8 @@ class SakuraTTSPlugin:
              'options': [{'value': value, 'label': label} for value, label in CUDA_PROFILES],
              'enabledWhen': {'field': 'backend', 'equals': 'cuda', 'hide': True},
              'description': '低显存档通过分阶段加载模型节省显存，可能增加耗时。首次使用 FP16 需要转换模型。'},
-            {'key': 'idleSeconds', 'label': '空闲后休眠（秒）', 'type': 'integer', 'minimum': 1, 'default': 60},
-            {'key': 'prewake', 'label': '对话开始时提前唤醒', 'type': 'boolean', 'default': True,
-             'description': '利用等待大模型 API 返回的时间，提前加载语音模型。'},
+            {'key': 'idleSeconds', 'label': '空闲后休眠（秒）', 'type': 'integer', 'minimum': 0,
+             'default': DEFAULTS['idleSeconds'], 'description': '0 为不休眠。'},
             {'key': 'autoCheckUpdates', 'label': '启动时检查整合包更新', 'type': 'boolean', 'default': True},
         ]}, load=lambda: provider.config, save=context.config.update)
         surface.register('runtime', 'plugin')

@@ -61,14 +61,22 @@ class Runtime:
         self.url = ''
         self.backend = ''
         self.profile = None
+        self.mode = 'managed'
         self.selection_reason = ''
         self.emit = log
+        self.observer = None
+        self.observer_stop = threading.Event()
 
     def stop(self):
         with self.lock:
+            self.observer_stop.set()
+            if self.observer is not None:
+                self.observer.join()
+                self.observer = None
             if self.process is not None:
                 terminate_process_tree(self.process, timeout=5)
                 self.process = None
+                self.emit('info', 'SakuraTTS 服务已停止', event='tts.engine.stopped', backend=self.backend)
             self.key = None
 
     def start(self, bundle, config, voice, cancel):
@@ -99,7 +107,7 @@ class Runtime:
         with self.lock:
             if cancel.is_set():
                 raise Cancelled()
-            self.emit('info', 'SakuraTTS 正在启动服务', backend=backend, profile=profile,
+            self.emit('info', 'SakuraTTS 正在启动服务', event='tts.engine.starting', backend=backend, profile=profile,
                       gpt_model=Path(voice['gpt']).name, sovits_model=Path(voice['sovits']).name)
             settings = self.directory / 'inference.json'
             settings.write_text(json.dumps({'custom': {'t2s_weights_path': voice['gpt'],
@@ -113,9 +121,11 @@ class Runtime:
             self.backend = backend
             self.profile = profile
             self.log = self.directory / 'server.log'
+            self.mode = 'direct' if config['idleSeconds'] == 0 else 'managed'
+            sleep_args = ['--idle-sleep-seconds', str(config['idleSeconds'])] if self.mode == 'managed' else []
             with self.log.open('wb') as output:
-                self.process = subprocess.Popen(command(root, release, 'serve', '--runtime-mode', 'managed',
-                    '--idle-sleep-seconds', str(config['idleSeconds']), '--backend', backend,
+                self.process = subprocess.Popen(command(root, release, 'serve', '--runtime-mode', self.mode,
+                    *sleep_args, '--backend', backend,
                     '-c', str(settings), '-a', '127.0.0.1', '-p', str(port)), cwd=root,
                     env=environment(self.directory / 'cache'), stdin=subprocess.DEVNULL,
                     stdout=output, stderr=subprocess.STDOUT, start_new_session=os.name != 'nt')
@@ -130,8 +140,13 @@ class Runtime:
                     raise RuntimeError(self.log.read_text(encoding='utf-8', errors='replace')[-4000:])
                 try:
                     self.request('/health', timeout=1)
-                    self.emit('info', 'SakuraTTS 服务已就绪', backend=backend,
+                    self.emit('info', 'SakuraTTS 服务已就绪', event='tts.engine.ready', backend=backend,
                               elapsed_ms=round((time.monotonic() - started) * 1000, 1))
+                    if self.mode == 'managed':
+                        self.observer_stop.clear()
+                        self.observer = threading.Thread(target=self._observe, args=(process,), daemon=True,
+                                                         name='sakuratts-state')
+                        self.observer.start()
                     return
                 except (URLError, TimeoutError, ConnectionError):
                     if time.monotonic() >= deadline:
@@ -140,6 +155,30 @@ class Runtime:
         except BaseException:
             self.stop()
             raise
+
+    def _observe(self, process):
+        previous = None
+        labels = {'waking': 'SakuraTTS 正在加载模型', 'awake': 'SakuraTTS 模型已加载',
+                  'stopping': 'SakuraTTS 正在释放模型', 'sleeping': 'SakuraTTS 已休眠',
+                  'failed': 'SakuraTTS 引擎运行失败'}
+        while not self.observer_stop.is_set() and process.poll() is None:
+            try:
+                snapshot = self.request('/runtime', timeout=1)
+            except (URLError, TimeoutError, ConnectionError, RuntimeError) as error:
+                if not self.observer_stop.is_set():
+                    self.emit('warning', 'SakuraTTS 状态读取失败', diagnostic=str(error),
+                              event='tts.engine.observation_failed')
+                return
+            state = snapshot.get('state')
+            if self.observer_stop.is_set():
+                return
+            if state != previous and state in labels:
+                self.emit('error' if state == 'failed' else 'info', labels[state],
+                          event='tts.engine.' + state, backend=self.backend,
+                          **({'diagnostic': snapshot.get('last_error')} if state == 'failed' else {}))
+            previous = state
+            if self.observer_stop.wait(1):
+                return
 
     def request(self, path, data=None, timeout=300):
         started = time.monotonic()
@@ -188,6 +227,8 @@ class Runtime:
         if not alive:
             return 'stopped'
         try:
+            if self.mode == 'direct':
+                return self.request('/health', timeout=1)['status']
             state = self.request('/runtime', timeout=1)
             return 'busy' if state.get('busy') else state.get('state', 'running')
         except (URLError, TimeoutError, ConnectionError):

@@ -945,10 +945,12 @@ def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) ->
 
 
 def test_authorization_never_probes_tts_and_disabled_begin_skips_without_failure_event(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     calls = []
     events = []
+    logs = []
+    monkeypatch.setattr("app.core_host.tts_boundary.log_event", lambda *args, **kwargs: logs.append(kwargs.get("event")))
 
     class Worker:
         def call_service(self, service_key: str, method: str, request):
@@ -993,6 +995,7 @@ def test_authorization_never_probes_tts_and_disabled_begin_skips_without_failure
     assert result["error"]["code"] == "TTS_DISABLED"
     assert calls == ["begin"]
     assert events == []
+    assert "tts.synthesis.started" not in logs
     boundary.close()
 
 

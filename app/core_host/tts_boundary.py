@@ -658,10 +658,6 @@ class TTSBoundary:
                 with self._lock:
                     if sum(item.state == "synthesizing" for item in self._authorizations.values()) > MAX_ACTIVE_SYNTHESIS:
                         raise TTSBoundaryError("TTS_SERVICE_UNAVAILABLE", "TTS synthesis capacity is full", retryable=True)
-                log_event("TTS", "TTS synthesis started", {
-                    "operation_id": operation_id, "segment_index": segment_index, "request_id": request_id,
-                    "segment_count": authorization.segment_count,
-                }, event="tts.synthesis.started")
                 self._require_storage_root()
                 descriptor, recording, provider_id = self._synthesize_with_plugin(
                     authorization,
@@ -877,6 +873,10 @@ class TTSBoundary:
             or not provider_id
         ):
             raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider identity is invalid")
+        log_event("TTS", "TTS synthesis started", {
+            "operation_id": authorization.operation_id, "segment_index": authorization.segment_index,
+            "request_id": request_id, "segment_count": authorization.segment_count,
+        }, event="tts.synthesis.started")
         handle = _PluginSynthesisHandle(application, request_id, provider_id)
         with self._lock:
             if self._closed:
