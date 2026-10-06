@@ -80,8 +80,6 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {}, o
     if (!item || item.id !== event?.playbackId || !isCurrent(item.reply)) return;
     if (event.state === "started") {
       openPlayback(item, event);
-      // Prepare one segment ahead; only the subtitle sequencer may start it.
-      void prepare(item.reply, item.index + 1);
     } else if (["finished", "stopped", "failed"].includes(event.state)) {
       openPlayback(item, event);
       releasePlayback();
@@ -104,37 +102,28 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {}, o
     return String(error?.message || error || fallback).split("|")[0];
   }
 
-  function prepare(current, index) {
-    if (!isCurrent(current) || current.silent || !playable(current.segments[index])) {
-      return Promise.resolve(null);
+  async function prepare(current, index) {
+    try {
+      if (!isCurrent(current) || current.silent || !playable(current.segments[index])) return null;
+      const segment = current.segments[index];
+      const descriptor = await invoke(current.history ? "tts_prepare_history_segment" : "tts_prepare_segment", { payload: {
+        operationId: current.operationId,
+        segmentIndex: segment.segmentIndex ?? index,
+        ...(current.history ? { historyEntryId: segment.historyEntryId } : {}),
+      } });
+      if (!isCurrent(current) || current.silent) return null;
+      if (!validDescriptor(descriptor)) {
+        onDiagnostic("AUDIO_RECORDING_INVALID", { history: current.history });
+        return null;
+      }
+      return descriptor;
+    } catch (error) {
+      if (!isCurrent(current) || current.silent) return null;
+      const code = errorCode(error, "TTS_SERVICE_UNAVAILABLE");
+      if (code === "TTS_DISABLED" && !current.history) current.silent = true;
+      else onDiagnostic(errorText(error), { history: current.history });
+      return null;
     }
-    if (!current.prepared.has(index)) {
-      const task = (async () => {
-        try {
-          if (!await current.initialized || !isCurrent(current) || current.silent) return null;
-          const segment = current.segments[index];
-          const descriptor = await invoke(current.history ? "tts_prepare_history_segment" : "tts_prepare_segment", { payload: {
-            operationId: current.operationId,
-            segmentIndex: segment.segmentIndex ?? index,
-            ...(current.history ? { historyEntryId: segment.historyEntryId } : {}),
-          } });
-          if (!isCurrent(current) || current.silent) return null;
-          if (!validDescriptor(descriptor)) {
-            onDiagnostic("AUDIO_RECORDING_INVALID", { history: current.history });
-            return null;
-          }
-          return descriptor;
-        } catch (error) {
-          if (!isCurrent(current) || current.silent) return null;
-          const code = errorCode(error, "TTS_SERVICE_UNAVAILABLE");
-          if (code === "TTS_DISABLED" && !current.history) current.silent = true;
-          else onDiagnostic(errorText(error), { history: current.history });
-          return null;
-        }
-      })();
-      current.prepared.set(index, task);
-    }
-    return current.prepared.get(index);
   }
 
   return Object.freeze({
@@ -168,7 +157,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {}, o
         resolveInterrupted,
       };
       const current = reply;
-      current.initialized = (async () => {
+      const initialized = (async () => {
         try {
           await invoke("tts_begin_reply", { payload: { operationId } });
           return true;
@@ -181,7 +170,12 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {}, o
           return false;
         }
       })();
-      void prepare(reply, 0);
+      // Synthesize in order, independently of subtitle and playback progress.
+      let pending = initialized;
+      for (const index of current.segments.keys()) {
+        pending = pending.then(() => prepare(current, index));
+        current.prepared.set(index, pending);
+      }
     },
     async beforeSegment(segment, index, { prepareVisual = () => {}, onStarted = () => {} } = {}) {
       const current = reply;
@@ -195,7 +189,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {}, o
       // boundary. Chat completion is already published; interruption still opens
       // the gate immediately and late preparation cannot start old playback.
       const [descriptor] = await Promise.race([
-        Promise.all([prepare(current, index), prepareVisual()]),
+        Promise.all([current.silent || !playable(segment) ? null : current.prepared.get(index), prepareVisual()]),
         current.interrupted.then(() => []),
       ]);
       if (!isCurrent(current)) return;

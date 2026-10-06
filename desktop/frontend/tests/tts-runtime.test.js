@@ -60,6 +60,66 @@ async function harness(implementation = () => descriptor, { emitBegin = true } =
 
 const appSource = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 
+test("all segments synthesize serially while the first segment is still playing", async () => {
+  const synthesis = [deferred(), deferred(), deferred()];
+  const h = await harness((name, args) => name === "tts_prepare_segment"
+    ? synthesis[args.payload.segmentIndex].promise : undefined);
+  const segments = [{ text: "one" }, { text: "two" }, { text: "three" }];
+  h.controller.beginReply("reply", segments);
+  const first = h.controller.beforeSegment(segments[0], 0);
+  await h.waitFor("tts_prepare_segment");
+  await new Promise(setImmediate);
+  assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
+  synthesis[0].resolve(descriptor);
+  await h.waitFor("tts_prepare_segment", 2);
+  await h.waitFor("tts_play_prepared");
+  h.emit("tts-1-0", "started");
+  await first;
+  await new Promise(setImmediate);
+  assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 2);
+  synthesis[1].resolve(descriptor);
+  await h.waitFor("tts_prepare_segment", 3);
+  synthesis[2].resolve(descriptor);
+  await new Promise(setImmediate);
+  assert.deepEqual(h.calls.filter(([name]) => name === "tts_prepare_segment")
+    .map(([, args]) => args.payload.segmentIndex), [0, 1, 2]);
+  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 1);
+  assert.equal(h.states.at(-1).state, "playing");
+  h.controller.dispose();
+});
+
+test("serial synthesis skips suppressed segments and continues after a failed segment", async () => {
+  const h = await harness((name, args) => {
+    if (name === "tts_prepare_segment" && args.payload.segmentIndex === 1) throw new Error("TTS_SERVICE_UNAVAILABLE");
+    return descriptor;
+  });
+  h.controller.beginReply("reply", [{ suppressTts: true }, { text: "failed" }, { text: "next" }]);
+  await h.waitFor("tts_prepare_segment", 2);
+  assert.deepEqual(h.calls.filter(([name]) => name === "tts_prepare_segment")
+    .map(([, args]) => args.payload.segmentIndex), [1, 2]);
+  assert.equal(h.diagnostics.length, 1);
+  assert.match(h.diagnostics[0], /TTS_SERVICE_UNAVAILABLE/);
+  h.controller.dispose();
+});
+
+for (const action of ["stop", "cancel", "dispose", "replace", "capture", "another-window"]) {
+  test(`${action} prevents remaining queued segments from synthesizing after a late result`, async () => {
+    const pending = deferred();
+    const h = await harness(name => name === "tts_prepare_segment" ? pending.promise : undefined);
+    h.controller.beginReply("old", [{ text: "one" }, { text: "two" }, { text: "three" }]);
+    await h.waitFor("tts_prepare_segment");
+    if (action === "replace") h.controller.beginReply("new", []);
+    else if (action === "capture") h.controller.setInputCaptureActive(true);
+    else if (action === "another-window") h.operationStarted("foreign");
+    else h.controller[action]();
+    pending.resolve(descriptor);
+    await new Promise(setImmediate);
+    assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
+    assert.equal(h.calls.some(([name]) => name === "tts_play_prepared"), false);
+    h.controller.dispose();
+  });
+}
+
 test("reply ownership begins before synthesis even when the first segment is suppressed", async () => {
   const begun = deferred();
   const h = await harness(name => name === "tts_begin_reply" ? begun.promise : descriptor);
@@ -476,6 +536,7 @@ for (const stage of ["synthesis", "playback"]) {
     if (stage === "playback") {
       pending.resolve(descriptor);
       await h.waitFor("tts_play_prepared");
+      await h.waitFor("tts_prepare_segment", 2);
     }
     h.controller.setInputCaptureActive(true);
     await gate;
@@ -485,7 +546,7 @@ for (const stage of ["synthesis", "playback"]) {
     pending.resolve(descriptor);
     await pending.promise;
     assert.deepEqual(shown, [0, 1]);
-    assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
+    assert.equal(h.calls.filter(([name]) => name === "tts_prepare_segment").length, stage === "playback" ? 2 : 1);
     assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, stage === "playback" ? 1 : 0);
     h.controller.dispose();
   });
