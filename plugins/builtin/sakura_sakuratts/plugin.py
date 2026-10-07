@@ -112,7 +112,10 @@ class Provider:
             return {'state': 'warning', 'label': '未安装运行环境', 'message': '请先导入整合包。'}
         if self.error:
             return {'state': 'error', 'label': '语音运行失败', 'message': self.error[-240:]}
-        status = self.runtime.status()
+        try:
+            status = self.runtime.status()
+        except RuntimeError as error:
+            return {'state': 'error', 'label': '状态读取失败', 'message': str(error)}
         if status == 'stopped':
             if self.active is not None or self.wake is not None:
                 return {'state': 'working', 'label': '正在加载', 'message': ''}

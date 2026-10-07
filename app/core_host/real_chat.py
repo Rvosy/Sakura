@@ -1317,14 +1317,14 @@ def _project_reply(reply: object) -> list[dict[str, object]]:
 def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     from app.core.diagnostics import exception_diagnostics
 
-    message = str(exception_diagnostics(error, reason_code="CHAT_EXECUTION_FAILED", stage="chat")["diagnostic"])
     if isinstance(error, _BoundaryFailure):
-        return error.code, message, error.retryable
+        return error.code, error.public_message, error.retryable
     from app.core_host.assistant_adapter import AssistantFailure
     if isinstance(error, AssistantFailure):
-        return error.code, message, error.retryable
+        return error.code, error.public_message, error.retryable
     from app.plugin_sdk.sakura_model import ApiConfigError, ApiRequestError
 
+    message = str(exception_diagnostics(error, reason_code="CHAT_EXECUTION_FAILED", stage="chat")["diagnostic"])
     if isinstance(error, ApiConfigError):
         return "PROVIDER_CONFIGURATION_INVALID", message, False
     if isinstance(error, ApiRequestError):

@@ -237,7 +237,7 @@ class BundleStore:
         actions = []
         if self.downloaded and (not self.available or self.downloaded[1] == self.available):
             actions.append('installDownload')
-        elif not self.available or not self._is_current(self.available):
+        elif not self.available or not self.is_current(self.available):
             actions.append('downloadBundle')
         actions.extend(['checkUpdate', 'importBundle'])
         if self.state == 'running':
@@ -255,7 +255,7 @@ class BundleStore:
             'availableActionIds': actions,
         }}
 
-    def _is_current(self, package):
+    def is_current(self, package):
         current = self.current()
         if not current:
             return False
@@ -300,7 +300,7 @@ class BundleStore:
         if self.cancel_event.is_set():
             raise Cancelled()
         self.available = package
-        if self._is_current(package):
+        if self.is_current(package):
             self.message = '已是最新版本'
         else:
             self.message = (f"可下载预览版 {package['releaseId']} · {package['platform']} · 魔搭 · "
@@ -316,7 +316,7 @@ class BundleStore:
         if self.cancel_event.is_set():
             raise Cancelled()
         self.available = package
-        if self._is_current(package):
+        if self.is_current(package):
             self.state, self.message = 'succeeded', '已是最新版本'
             return
         if not self.downloaded or self.downloaded[1] != package:
@@ -332,7 +332,12 @@ class BundleStore:
         # 同一时间只保留一个待安装下载，避免数 GB 的废弃包长期占用空间。
         self.downloaded = None
         for old in downloads.iterdir():
-            old.unlink()
+            try:
+                old.unlink()
+            except OSError as error:
+                if old in (archive, downloads / 'ready.json'):
+                    raise
+                self.log('warning', '旧下载文件清理失败', diagnostic=str(error))
         if shutil.disk_usage(self.directory).free < package['bytes'] + package['unpackedBytes']:
             raise ValueError('磁盘空间不足以下载和解压整合包。')
         completed = False
@@ -434,6 +439,9 @@ class BundleStore:
     def _activate(self, root, release, package=None):
         if self.cancel_event.is_set():
             raise Cancelled()
+        retained = [root]
+        if self._current:
+            retained.append(self._current[0])
         temporary = self.directory / 'current.json.tmp'
         release_id = package['releaseId'] if package else None
         temporary.write_text(json.dumps({'directory': root.relative_to(self.directory).as_posix(),
@@ -442,6 +450,12 @@ class BundleStore:
         self._current = root, release
         self.release_id = release_id
         self.installation_error = ''
+        try:
+            for version in (self.directory / 'versions').iterdir():
+                if version.is_dir() and not any(path.is_relative_to(version) for path in retained):
+                    shutil.rmtree(version)
+        except OSError as error:
+            self.log('warning', '整合包已安装，旧版本目录清理失败', diagnostic=str(error))
 
     def cancel(self, values=None):
         self.cancel_event.set()

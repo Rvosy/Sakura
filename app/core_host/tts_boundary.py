@@ -147,7 +147,7 @@ class _PluginSynthesisHandle:
     @staticmethod
     def _raise_failed(error_code: object, diagnostics: object = None) -> None:
         code = error_code if isinstance(error_code, str) else "TTS_SYNTHESIS_FAILED"
-        diagnostics = diagnostics if isinstance(diagnostics, Mapping) else {}
+        diagnostics = {"cause_code": code, **(diagnostics if isinstance(diagnostics, Mapping) else {})}
         if code == "TTS_DISABLED":
             raise TTSBoundaryError("TTS_DISABLED", "角色语音已关闭")
         if code in {
@@ -171,7 +171,7 @@ class _PluginSynthesisHandle:
             )
         raise TTSBoundaryError(
             "TTS_SYNTHESIS_FAILED",
-            str(diagnostics.get("diagnostic") or code),
+            str(diagnostics.get("diagnostic") or "语音合成失败。"),
             provider_error_code=code,
             diagnostics=diagnostics,
         )

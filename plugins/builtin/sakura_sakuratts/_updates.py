@@ -30,17 +30,23 @@ class UpdateAnnouncement:
         self.thread.start()
 
     def _run(self):
+        previous_error = None
         while not self.stop.wait(.5):
             try:
                 self.tick()
             except Exception as error:
-                self.log('warning', '整合包更新提醒失败', diagnostic=str(error))
-                return
+                diagnostic = str(error)
+                if diagnostic != previous_error:
+                    self.log('warning', '整合包更新提醒失败', diagnostic=diagnostic)
+                previous_error = diagnostic
+                self.idle_since = None
+            else:
+                previous_error = None
 
     def tick(self):
         package = self.bundles.available
         if (self.stop.is_set() or not self.enabled() or not package or not self.bundles.current()
-                or self.bundles._is_current(package)):
+                or self.bundles.is_current(package)):
             self.idle_since = None
             return
         notice = {'releaseId': package['releaseId'], 'date': datetime.now().astimezone().date().isoformat()}
@@ -58,17 +64,19 @@ class UpdateAnnouncement:
             return
         prompt = '请提醒用户 SakuraTTS 有更新，可以去插件设置里更新。'
         with self.lock:
-            if (self.stop.is_set() or not self.enabled() or self.bundles._is_current(package)
+            if (self.stop.is_set() or not self.enabled() or self.bundles.is_current(package)
                     or self.bundles.available != package):
                 return
+            # 提交结果未知时也不重发，避免重复发起模型请求。
+            self.attempted = notice
             result = self.chat.submit({'sessionId': facts['sessionId'], 'message': prompt, 'resources': [],
                                        'notification': {'kind': 'update', 'text': 'SakuraTTS 有可用更新'}})
             if result['accepted']:
                 self.operation = result['operationId'], notice
-                self.attempted = notice
-            elif result['reasonCode'] not in {'CHAT_BUSY', 'CHAT_SESSION_STALE', 'CHAT_ADMISSION_EXPIRED',
-                                              'CHAT_EXECUTION_LIMIT_EXCEEDED'}:
-                self.attempted = notice
+            elif result['reasonCode'] in {'CHAT_BUSY', 'CHAT_SESSION_STALE', 'CHAT_ADMISSION_EXPIRED',
+                                          'CHAT_EXECUTION_LIMIT_EXCEEDED'}:
+                self.attempted = None
+            else:
                 self.log('warning', '未能发起整合包更新提醒', reason_code=result['reasonCode'])
             self.idle_since = None
 

@@ -31,7 +31,9 @@ export function catalogPlugins(catalog, context) {
       const missing = (manifest?.requires || []).filter(key => !services.has(key));
       const minimum = manifest?.min_app_version;
       let reason = "", reasonCode = "";
-      if (!manifest) reason = "该版本已撤回";
+      if (!versionParts(release.version)) {
+        reason = "插件版本号格式无效"; reasonCode = "PLUGIN_MANIFEST_INVALID";
+      } else if (!manifest) reason = "该版本已撤回";
       else if (minimum !== undefined && !versionParts(minimum)) {
         reason = "插件的最低 Sakura 版本格式无效"; reasonCode = "PLUGIN_MANIFEST_INVALID";
       } else if (minimum !== undefined && !versionParts(context.appVersion)) {
@@ -49,7 +51,10 @@ export function catalogPlugins(catalog, context) {
         date: release.date || "", notes: release.notes || "",
         size: Number.isFinite(bytes) && bytes > 0 ? `${(bytes / unit[0]).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${unit[1]}` : "",
         reason };
-    }).sort((a, b) => compareVersions(b.number, a.number));
+    }).sort((a, b) => {
+      const left = versionParts(a.number), right = versionParts(b.number);
+      return left && right ? compareVersions(b.number, a.number) : left ? -1 : right ? 1 : 0;
+    });
     const next = versions.find(v => !v.yanked && !v.prerelease && v.compatible && v.package);
     const latest = versions.find(v => !v.yanked && !v.prerelease && v.package);
     const display = next || versions.find(v => v.manifest);

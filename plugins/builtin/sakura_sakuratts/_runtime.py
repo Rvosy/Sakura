@@ -173,6 +173,7 @@ class Runtime:
 
     def _observe(self, process):
         previous = None
+        previous_error = None
         labels = {'waking': 'SakuraTTS 正在加载模型', 'awake': 'SakuraTTS 模型已加载',
                   'stopping': 'SakuraTTS 正在释放模型', 'sleeping': 'SakuraTTS 已休眠',
                   'failed': 'SakuraTTS 引擎运行失败'}
@@ -180,10 +181,15 @@ class Runtime:
             try:
                 snapshot = self.request('/runtime', timeout=1)
             except (URLError, TimeoutError, ConnectionError, RuntimeError) as error:
-                if not self.observer_stop.is_set():
-                    self.emit('warning', 'SakuraTTS 状态读取失败', diagnostic=str(error),
+                diagnostic = str(error)
+                if not self.observer_stop.is_set() and diagnostic != previous_error:
+                    self.emit('warning', 'SakuraTTS 状态读取失败', diagnostic=diagnostic,
                               event='tts.engine.observation_failed')
-                return
+                previous_error = diagnostic
+                if self.observer_stop.wait(1):
+                    return
+                continue
+            previous_error = None
             state = snapshot.get('state')
             if self.observer_stop.is_set():
                 return

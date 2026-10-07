@@ -552,11 +552,14 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path, m
     [
         ("provider", False, "PROVIDER_REQUEST_FAILED", "assistant"),
         ("reply", False, "INVALID_CHAT_REPLY", "reply_processing"),
+        ("binding", False, "ASSISTANT_BINDING_EXPIRED", "assistant"),
+        ("history", False, "TIMELINE_READ_FAILED", "timeline_read"),
         ("provider", True, None, None),
     ],
 )
 def test_chat_finished_bridge_records_only_the_resolved_terminal_failure(
-    tmp_path: Path, failure: str, cancelled: bool, reason_code: str | None, stage: str | None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, cancelled: bool,
+    reason_code: str | None, stage: str | None,
 ) -> None:
     from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
     from app.plugin_sdk.sakura_model import ApiRequestError
@@ -572,14 +575,23 @@ def test_chat_finished_bridge_records_only_the_resolved_terminal_failure(
                 )["payload"]["accepted"]
             if failure == "provider":
                 raise ApiRequestError("API HTTP 400: private provider response")
+            if failure == "binding":
+                from app.core_host.assistant_adapter import AssistantFailure
+                raise AssistantFailure({"code": "ASSISTANT_BINDING_EXPIRED",
+                    "message": "Assistant 绑定已失效，请重试。", "retryable": True}) from RuntimeError("binding closed")
             return SimpleNamespace(reply=SimpleNamespace(), actions=[])
 
     session = _SessionDouble(
         character=SimpleNamespace(id="sakura"), assistant=Assistant(),
     )
+    timeline = _activated_timeline(tmp_path / "timeline.sqlite3")
+    if failure == "history":
+        def fail_history(*_args):
+            raise OSError("history file unreadable")
+        monkeypatch.setattr(timeline, "latest_cursor", fail_history)
     boundary = RealChatBoundary(
         GENERATION_ID, GENERATION_CREDENTIAL, tmp_path, session_provider=lambda: session,
-        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"), event_publisher=events.append,
+        timeline_store=timeline, event_publisher=events.append,
     )
     request = _request(operation_id, "chat.send", {"message": "private user message", "operationId": operation_id})
     stream = io.BytesIO()
@@ -610,6 +622,16 @@ def test_chat_finished_bridge_records_only_the_resolved_terminal_failure(
     else:
         assert attributes["reason_code"] == events[-1]["payload"]["error"]["code"] == reason_code
         assert attributes["stage"] == stage
+        error = events[-1]["payload"]["error"]
+        if failure == "reply":
+            assert "回复格式无效" in error["message"]
+            assert "INVALID_CHAT_REPLY" in error["details"]["diagnostics"]["diagnostic"]
+        elif failure == "binding":
+            assert error["message"] == "Assistant 绑定已失效，请重试。"
+            assert "binding closed" in error["details"]["diagnostics"]["diagnostic"]
+        elif failure == "history":
+            assert "Chat history could not be read" in error["message"]
+            assert "history file unreadable" in error["details"]["diagnostics"]["diagnostic"]
     assert "private" not in json.dumps(finished)
 
 
@@ -1895,7 +1917,8 @@ def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) 
             "retryable": False,
             "details": failure["error"]["details"],
         }
-        assert "remained invalid after repair" in failure["error"]["message"]
+        assert "响应格式无效" in failure["error"]["message"]
+        assert "remained invalid after repair" in diagnostics["diagnostic"]
         assert len(_ProviderHandler.requests) == 2
         _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert process.wait(timeout=5) == 0

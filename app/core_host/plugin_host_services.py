@@ -1202,7 +1202,6 @@ class _SettingsHostService:
                 if field is None or field["type"] != kind or not field["readonly"]:
                     raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
         if presentation and presentation["component"] == "connection-editor":
-            bindings = {field["key"]: field for field in fields}
             for key in ("valueField", "requestField", "resultField"):
                 field = bindings.get(presentation.get(key))
                 if field is None or field["type"] != "data" or (key != "resultField" and field["readonly"]):
@@ -1210,7 +1209,6 @@ class _SettingsHostService:
             if any(presentation.get(key) not in declared_action_ids for key in ("probeAction", "statusAction", "cancelAction")):
                 raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
         if presentation and presentation["component"] == "record-table":
-            bindings = {field["key"]: field for field in fields}
             required = {"itemsField": True, "valueField": False}
             if "inspectAction" in presentation:
                 required.update({"requestField": False, "resultField": True})

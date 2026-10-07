@@ -1192,14 +1192,14 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
                 "screen_captured_at" => "截图时间",
                 "screen_cleared_count" => "清空数量",
                 "screen_note" => "说明",
-                "tool_name" => "工具名称",
                 "selected" => "相关记忆数",
                 "candidates" => "候选记忆数",
                 "created" => "新增数量",
                 "updated" => "更新数量",
                 "archived" => "归档数量",
-                "model" => "模型",
-                "diagnostic"
+                "tool_name"
+                | "model"
+                | "diagnostic"
                 | "exception_chain"
                 | "exception_stack"
                 | "recovery_diagnostic"

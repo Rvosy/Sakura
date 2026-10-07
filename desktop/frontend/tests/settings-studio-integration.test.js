@@ -991,39 +991,45 @@ test("expanded character rows delete that character and the bottom button keeps 
   fixture.feature.dispose();
 });
 
-test("confirmed character delete waits for the next generation", async () => {
+for (const lastCharacter of [false, true]) test(`confirmed character delete rebinds settings with ${lastCharacter ? "no remaining character" : "the next character"}`, async () => {
   let phase = "before";
-  const catalogs = { current: catalog() };
+  const catalogs = { current: lastCharacter ? catalog(["alpha"]) : catalog() };
+  const nextLifecycle = lifecycle("generation-b", 2, "beta");
+  if (lastCharacter) {
+    delete nextLifecycle.characterPresentation;
+    nextLifecycle.snapshot.readiness = "setup_required";
+  }
+  const rebound = [];
   const fixture = await characterSettings({
     handlers: {
       settings_characters_get: () => catalogs.current,
       runtime_lifecycle_snapshot: () => (
         phase === "before"
           ? lifecycle("generation-a", 1, "alpha")
-          : lifecycle("generation-b", 2, "beta")
+          : nextLifecycle
       ),
       settings_character_delete: () => {
         phase = "after";
-        catalogs.current = catalog(["beta", "gamma"], "beta");
+        catalogs.current = lastCharacter ? catalog([], null) : catalog(["beta", "gamma"], "beta");
         return {
           schemaVersion: 1,
           snapshot: catalogs.current,
-          targetCharacterId: "beta",
+          targetCharacterId: lastCharacter ? null : "beta",
           previousCoreGenerationId: "generation-a",
           restartState: "requested",
         };
       },
     },
-    feature: { confirmAction: async () => true },
+    feature: { confirmAction: async () => true,
+      rebindSettings: async (...args) => rebound.push(args) },
   });
   await fixture.fields.characterDeleteButton.click();
   assert.deepEqual(fixture.calls.filter(([command]) => command === "settings_character_delete"), [
     ["settings_character_delete", { characterId: "alpha" }],
   ]);
-  assert.equal(fixture.feature.currentCharacterId(), "beta");
-  assert.deepEqual(fixture.transitions, [
-    ["clear"],
-    ["rebind", "generation-b"],
-  ]);
+  assert.equal(fixture.feature.currentCharacterId(), lastCharacter ? "" : "beta");
+  assert.deepEqual(fixture.transitions, [["clear"]]);
+  assert.deepEqual(rebound, [["generation-b", lastCharacter ? undefined : "beta"]]);
+  assert.deepEqual(fixture.errors, []);
   fixture.feature.dispose();
 });

@@ -841,7 +841,8 @@ function visualUnavailable(code, error, stage) {
   void activatePortraitHitTest("").then(async () => {
     syncPortraitAppearance("");
     await finishPortraitSurfaceTransition();
-  }).catch(error => reportVisualError("VISUAL_SURFACE_FINISH_FAILED", error, "visual.fallback"));
+  }, error => reportVisualError("VISUAL_HIT_TEST_FAILED", error, "visual.fallback.hit-test"))
+    .catch(error => reportVisualError("VISUAL_SURFACE_FINISH_FAILED", error, "visual.fallback"));
   showRecoverableError("角色表现暂不可用，你仍可以继续聊天。");
   // Core already recorded failed binds. Here only the renderer owns an exception.
   if (error) runtimeDiagnostics.reportError(error, { command: "visual_renderer", code,

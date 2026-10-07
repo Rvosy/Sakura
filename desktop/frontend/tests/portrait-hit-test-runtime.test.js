@@ -8,6 +8,27 @@ const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
 const callback = source.slice(source.indexOf("function activatePortraitHitTest("),
   source.indexOf("\nasync function drainPortraitScaleHitFrames("));
 
+for (const failure of ["hit-test", "finish"]) {
+  test(`visual fallback reports the failing ${failure} operation`, async () => {
+    const diagnostics = [], finished = [];
+    const error = new Error("native operation failed");
+    const context = vm.createContext({
+      portraitFallback: { hidden: true }, currentSurface: {}, renderedPortrait: "portrait",
+      activatePortraitHitTest: async () => { if (failure === "hit-test") throw error; },
+      syncPortraitAppearance() {}, showRecoverableError() {},
+      finishPortraitSurfaceTransition: async () => { finished.push(true); throw error; },
+      reportVisualError: (...args) => diagnostics.push(args),
+    });
+    const fallback = source.slice(source.indexOf("function visualUnavailable("), source.indexOf("\nconst rendererHost ="));
+    vm.runInContext(`(${fallback})`, context)("VISUAL_UNAVAILABLE");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(context.portraitFallback.hidden, false);
+    assert.equal(finished.length, failure === "finish" ? 1 : 0);
+    assert.deepEqual(diagnostics, [[failure === "hit-test" ? "VISUAL_HIT_TEST_FAILED" : "VISUAL_SURFACE_FINISH_FAILED",
+      error, failure === "hit-test" ? "visual.fallback.hit-test" : "visual.fallback"]]);
+  });
+}
+
 for (const superseded of [false, true]) {
   test(`form surface holds the native envelope until paint, superseded: ${superseded}`, async () => {
     const calls = [];

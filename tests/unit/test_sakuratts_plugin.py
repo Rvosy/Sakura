@@ -467,6 +467,26 @@ def test_runtime_preserves_engine_http_error_details(tmp_path, monkeypatch):
     assert response.closed
 
 
+def test_engine_status_http_failure_keeps_settings_available(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+    p, _ = provider(tmp_path, monkeypatch)
+    p.runtime.process = SimpleNamespace(poll=lambda: None)
+    p.runtime.url = 'http://127.0.0.1'
+    monkeypatch.setattr(p.runtime, 'stop', lambda: None)
+    def fail(*args, **kwargs):
+        raise HTTPError(p.runtime.url + '/runtime', 503, 'Service Unavailable', {},
+                        io.BytesIO(b'{"message":"engine status unavailable"}'))
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.urlopen_direct_for_loopback', fail)
+    try:
+        status = p.engine_state()
+        assert status['state'] == 'error'
+        assert '503' in status['message'] and 'engine status unavailable' in status['message']
+        monkeypatch.setattr(p.runtime, 'request', lambda *_args, **_kwargs: {'state': 'awake'})
+        assert p.engine_state()['state'] == 'ready'
+    finally:
+        p.close()
+
+
 def test_synthesis_metrics_use_host_tts_log_without_text_or_prompt(tmp_path, monkeypatch):
     from plugins.builtin.sakura_sakuratts._runtime import Runtime
     from app.core_host.plugin_host_services import _LoggingHostService
@@ -566,7 +586,55 @@ def test_online_download_install_and_new_published_index(tmp_path, online_repo):
     finish_bundle_task(store)
     assert store.current()[1]['source_commit'] == 'second'
     assert old[0].is_dir()
+    second = store.current()[0]
     store.close()
+    store = BundleStore(store.directory, lambda *_: None, lambda action: action())
+    publish('preview-3', 'third')
+    store.download()
+    finish_bundle_task(store)
+    assert store.state == 'succeeded', store.error
+    assert store.current()[1]['source_commit'] == 'third'
+    assert not old[0].exists()
+    assert second.is_dir()
+    assert len(list((store.directory / 'versions').iterdir())) == 2
+    store.close()
+
+
+def test_bundle_cleanup_failures_do_not_discard_successful_install(tmp_path, online_repo, monkeypatch):
+    from plugins.builtin.sakura_sakuratts import _bundle
+    _, publish = online_repo
+    publish('preview-1', 'first')
+    logs = []
+    store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action(),
+                        lambda level, message, **fields: logs.append((level, message, fields)))
+    downloads = store.directory / 'downloads'
+    downloads.mkdir()
+    stale_archive = downloads / 'stale.zip'
+    stale_archive.write_bytes(b'locked')
+    stale_version = store.directory / 'versions/stale'
+    stale_version.mkdir(parents=True)
+    unlink, rmtree = Path.unlink, shutil.rmtree
+    def locked_unlink(path, *args, **kwargs):
+        if path == stale_archive:
+            raise PermissionError('stale archive locked')
+        return unlink(path, *args, **kwargs)
+    def locked_rmtree(path, *args, **kwargs):
+        if path == stale_version:
+            raise PermissionError('stale version locked')
+        return rmtree(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'unlink', locked_unlink)
+    monkeypatch.setattr(_bundle.shutil, 'rmtree', locked_rmtree)
+    store.download()
+    finish_bundle_task(store)
+    assert store.state == 'succeeded', store.error
+    assert store.current()[1]['source_commit'] == 'first'
+    store.close()
+    reopened = BundleStore(store.directory, lambda *_: None, lambda action: action())
+    assert reopened.current() == store.current()
+    reopened.close()
+    diagnostics = [fields.get('diagnostic') for level, _, fields in logs if level == 'warning']
+    assert 'stale archive locked' in diagnostics
+    assert 'stale version locked' in diagnostics
 
 
 @pytest.mark.parametrize('failure', ['truncated', 'wrong-commit', 'http-error'])
@@ -867,25 +935,66 @@ def test_idle_sleep_selects_engine_lifecycle(tmp_path, monkeypatch, seconds):
         runtime.stop()
 
 
-def test_runtime_lifecycle_logs_changes_without_settings_polling(tmp_path, monkeypatch):
+@pytest.mark.parametrize('interrupted', [False, True])
+def test_runtime_lifecycle_logs_changes_without_settings_polling(tmp_path, monkeypatch, interrupted):
     from plugins.builtin.sakura_sakuratts._runtime import Runtime
     logs = []
     runtime = Runtime(tmp_path, lambda level, message, **fields: logs.append(fields))
-    states = iter(['waking', 'awake', 'awake', 'stopping', 'sleeping'])
+    states = iter(['waking', *([TimeoutError('poll timed out')] * 2 if interrupted else []),
+                   'awake', 'awake', 'stopping', 'sleeping'])
     finished = [False]
     def request(path, **kwargs):
         assert path == '/runtime'
         state = next(states)
+        if isinstance(state, Exception):
+            raise state
         finished[0] = state == 'sleeping'
         return {'state': state}
     monkeypatch.setattr(runtime, 'request', request)
     monkeypatch.setattr(runtime.observer_stop, 'wait', lambda seconds: finished[0])
     runtime._observe(SimpleNamespace(poll=lambda: None))
-    assert [item['event'] for item in logs] == [
-        'tts.engine.waking', 'tts.engine.awake', 'tts.engine.stopping', 'tts.engine.sleeping']
+    expected = ['tts.engine.waking', *(['tts.engine.observation_failed'] if interrupted else []),
+                'tts.engine.awake', 'tts.engine.stopping', 'tts.engine.sleeping']
+    assert [item['event'] for item in logs] == expected
+    if interrupted:
+        assert logs[1]['diagnostic'] == 'poll timed out'
     runtime.observer_stop.set()
     runtime._observe(SimpleNamespace(poll=lambda: None))
-    assert len(logs) == 4
+    assert len(logs) == len(expected)
+
+
+@pytest.mark.parametrize('submit_fails', [False, True])
+def test_update_observation_recovers_without_repeating_submission(tmp_path, monkeypatch, submit_fails):
+    from plugins.builtin.sakura_sakuratts._updates import UpdateAnnouncement
+    store = BundleStore(tmp_path / 'installed', lambda *_: None, lambda action: action())
+    store._current = tmp_path, {'source_commit': 'old'}
+    store.available = {'releaseId': 'new', 'sourceCommit': 'new'}
+    now, reads, submitted, logs = [0], [], [], []
+    def current():
+        reads.append(True)
+        if len(reads) <= 2:
+            raise TimeoutError('chat status timed out')
+        return {'sessionId': 'session', 'idle': True, 'activityRevision': 0, 'interactionRevision': 0}
+    def submit(request):
+        submitted.append(request)
+        if submit_fails:
+            raise TimeoutError('submission outcome unknown')
+        return {'accepted': True, 'operationId': 'notice'}
+    notice = UpdateAnnouncement(SimpleNamespace(current=current, submit=submit, cancel=lambda _: None),
+        store, lambda: True, lambda level, message, **fields: logs.append(fields), clock=lambda: now[0])
+    def wait(_):
+        now[0] += 3
+        return now[0] > 24
+    monkeypatch.setattr(notice.stop, 'wait', wait)
+    try:
+        notice._run()
+        assert len(submitted) == 1
+        assert [entry['diagnostic'] for entry in logs] == [
+            'chat status timed out', *(['submission outcome unknown'] if submit_fails else [])]
+        assert not notice.marker.exists()
+    finally:
+        notice.close()
+        store.close()
 
 
 @pytest.mark.parametrize('outcome', ['success', 'failed', 'cancelled'])

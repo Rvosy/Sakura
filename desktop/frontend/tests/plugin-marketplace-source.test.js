@@ -52,6 +52,23 @@ test("invalid declared minimum versions are blocked instead of treated as legacy
 
 class Channel { onmessage = () => {}; }
 
+test("malformed release versions cannot break the catalog or become installable", async () => {
+  const bad = release("1.0.0-beta.01");
+  const source = createMarketplaceSource({ Channel, invoke: async () => ({
+    catalog: { schema_version: 1, plugins: [
+      { id: "demo", versions: [bad, release("1.0.0")] },
+      { id: "broken", versions: [bad] },
+    ] }, context: { api: 4, services: ["host.service"] },
+  }) });
+  const result = await source.load({ signal: new AbortController().signal });
+  assert.equal(result.state, "ready");
+  assert.equal(result.plugins[0].recommendedVersion, "1.0.0");
+  const invalid = result.plugins[0].versions.find(v => v.number === bad.version);
+  assert.equal(invalid.compatible, false);
+  assert.equal(invalid.reasonCode, "PLUGIN_MANIFEST_INVALID");
+  assert.equal(result.plugins[1].recommendedVersion, undefined);
+});
+
 test("installation never invokes the host for a plugin that requires an application upgrade", async () => {
   const item = release("1.0.0"); item.manifest.min_app_version = "2.0.0";
   const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "demo", versions: [item] }] },

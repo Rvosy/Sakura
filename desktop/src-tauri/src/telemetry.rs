@@ -599,10 +599,6 @@ impl TelemetryService {
             "runtime.message"
                 if source == "plugin"
                     && attributes
-                        .and_then(|a| a.get("plugin_id"))
-                        .and_then(Value::as_str)
-                        == Some("sakura.tts.sakuratts")
-                    && attributes
                         .and_then(|a| a.get("event"))
                         .and_then(Value::as_str)
                         == Some("tts.operation.finished") =>
@@ -3487,7 +3483,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
-    fn sakuratts_results_cross_custom_log_bridge() {
+    fn tts_provider_results_cross_custom_log_bridge() {
         use crate::runtime_log::{CoreLogContext, RuntimeLogService};
         let server = TestServer::start(202, Duration::ZERO);
         let (root, service) = service_for(&server, "tts-results", 16, TEST_WAIT);
@@ -3499,14 +3495,19 @@ mod tests {
             core_pid: 42,
         };
         log.activate_telemetry_generation(&context.generation_id);
-        for outcome in ["success", "failed", "cancelled"] {
+        for (plugin_id, outcome) in [
+            ("sakura.tts.sakuratts", "success"),
+            ("third.party.tts", "success"),
+            ("third.party.tts", "failed"),
+            ("third.party.tts", "cancelled"),
+        ] {
             let wire = json!({
                 "severity": if outcome == "failed" { "error" } else { "info" },
                 "verbosity": "info", "channel": "tts", "event": "runtime.message",
-                "custom": true, "plugin_id": "sakura.tts.sakuratts",
+                "custom": true, "plugin_id": plugin_id,
                 "message": "TTS operation finished", "attributes": {
                     "event": "tts.operation.finished", "stage": "synthesis", "outcome": outcome,
-                    "provider_id": "sakura.tts.sakuratts", "bundle_version": "1.0.0",
+                    "provider_id": plugin_id, "bundle_version": "1.0.0",
                     "backend": "cuda", "gpu_name": "NVIDIA GeForce RTX 4060", "gpu_memory_mib": 8192,
                     "elapsed_ms": 125, "diagnostic": "fixture result"
                 }

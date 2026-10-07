@@ -1111,7 +1111,6 @@ class PluginRuntimeManager:
             plugins = [
                 {
                     "pluginId": record.spec.plugin_id,
-                    "minAppVersion": record.spec.min_app_version,
                     "enabled": record.spec.enabled,
                     "state": (
                         "starting" if record.spec.enabled and record.reason_code in {"NOT_STARTED", "PLUGIN_STARTING"}

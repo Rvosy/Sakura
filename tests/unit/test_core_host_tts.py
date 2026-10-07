@@ -2217,13 +2217,16 @@ def test_idle_fill_caches_a_missing_line_without_playback_and_pauses_at_peak(tmp
 
 
 @pytest.mark.parametrize("history", [True, False], ids=["history", "live"])
-def test_tts_failure_preserves_diagnostics_in_response_log_and_event(tmp_path, monkeypatch, history):
+@pytest.mark.parametrize("code_only", [False, True], ids=["diagnostic", "code-only"])
+def test_tts_failure_preserves_diagnostics_in_response_log_and_event(tmp_path, monkeypatch, history, code_only):
     from app.core import runtime_log
     from sakura_provider_errors import provider_failure
     try:
         raise ValueError('角色尚未配置GPT 模型 api_key=private-key')
     except ValueError as error:
         failure = provider_failure('TTS_CHARACTER_CONFIG_INVALID', error)
+    if code_only:
+        failure = {'errorCode': 'TTS_RUNTIME_NOT_INSTALLED'}
     _history_entry(tmp_path)
     events, logs = [], []
     monkeypatch.setattr(runtime_log, "_EXTERNAL_SINK", logs.append)
@@ -2240,11 +2243,16 @@ def test_tts_failure_preserves_diagnostics_in_response_log_and_event(tmp_path, m
             request = _request("tts.synthesis.start", {"operationId": "live-failure", "segmentIndex": 0})
         result = boundary.handle(request)
         assert result['ok'] is False
+        if code_only:
+            assert '语音合成失败' in result['error']['message']
         details = [result['error']['details']['diagnostics']]
         details.append(next(record.attributes for record in logs if record.event == 'tts.synthesis.failed'))
         if not history:
             details.append(events[-1]['payload']['error']['details']['diagnostics'])
         for diagnostic in details:
+            if code_only:
+                assert diagnostic['cause_code'] == 'TTS_RUNTIME_NOT_INSTALLED'
+                continue
             assert '角色尚未配置GPT 模型' in diagnostic['diagnostic']
             assert diagnostic['cause_type'] == 'ValueError'
             assert 'test_tts_failure_preserves_diagnostics' in diagnostic['exception_stack']
